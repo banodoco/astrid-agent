@@ -1,6 +1,8 @@
 name: Merge Linux suite
 
 on:
+  push:
+    branches: ['venue/**']
   workflow_dispatch:
     inputs:
       agent_ref:
@@ -61,18 +63,64 @@ on:
       repository_token:
         required: false
 
-# Map all inputs, including invalid reusable-workflow inputs, onto six groups.
-# queue:max preserves up to 100 waiting requests per slot; it is not a global
-# load balancer. Slots are repository-scoped for reusable workflow callers.
-concurrency:
-  group: merge-linux-suite-${{ (inputs.slot == '2' && '2') || (inputs.slot == '3' && '3') || (inputs.slot == '4' && '4') || (inputs.slot == '5' && '5') || (inputs.slot == '6' && '6') || '1' }}
-  queue: max
-
 permissions:
   contents: read
 
 jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    outputs:
+      agent_ref: ${{ steps.parse.outputs.agent_ref }}
+      runtime_ref: ${{ steps.parse.outputs.runtime_ref }}
+      app_ref: ${{ steps.parse.outputs.app_ref }}
+      pinokio_ref: ${{ steps.parse.outputs.pinokio_ref }}
+      command: ${{ steps.parse.outputs.command }}
+      artifact_paths: ${{ steps.parse.outputs.artifact_paths }}
+      slot: ${{ steps.parse.outputs.slot }}
+    steps:
+      - name: Check out push inputs
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: venue-inputs
+          persist-credentials: false
+      - name: Parse and validate inputs
+        id: parse
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_INPUTS: ${{ toJSON(inputs) }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib, uuid
+
+          if os.environ['EVENT_NAME'] == 'push':
+              data = json.loads(pathlib.Path('venue-inputs/inputs.json').read_text())
+          else:
+              data = json.loads(os.environ['DISPATCH_INPUTS'])
+          keys = ('agent_ref', 'runtime_ref', 'app_ref', 'pinokio_ref', 'command', 'artifact_paths', 'slot')
+          if not isinstance(data, dict):
+              raise ValueError('inputs must be a JSON object')
+          for key in keys:
+              if not isinstance(data.get(key), str) or not data[key].strip():
+                  raise ValueError(f'{key} must be a nonempty string')
+          for key in keys[:4]:
+              if '\n' in data[key] or '\r' in data[key]:
+                  raise ValueError(f'{key} must be a single line')
+          if data['slot'] not in ('1', '2', '3', '4', '5', '6'):
+              raise ValueError('slot must be 1 through 6')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              for key in keys:
+                  delimiter = f'EOF_{uuid.uuid4().hex}'
+                  print(f'{key}<<{delimiter}\n{data[key]}\n{delimiter}', file=out)
+          PYCODE
+
   suite:
+    needs: inputs
+    # Slots queue separately within the caller repository, up to 100 waiting.
+    concurrency:
+      group: merge-linux-suite-${{ needs.inputs.outputs.slot }}
+      queue: max
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -83,16 +131,32 @@ jobs:
     steps:
       - name: Initialize evidence and validate slot
         env:
-          SLOT: ${{ inputs.slot }}
+          SLOT: ${{ needs.inputs.outputs.slot }}
         run: |
           mkdir -p "$RUNNER_TEMP/merge-suite-evidence"
           printf 'EVIDENCE_DIR=%s/merge-suite-evidence\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           case "$SLOT" in 1|2|3|4|5|6) ;; *) echo 'slot must be 1 through 6' >&2; exit 1 ;; esac
+      - name: Record requested inputs
+        env:
+          AGENT_REF: ${{ needs.inputs.outputs.agent_ref }}
+          RUNTIME_REF: ${{ needs.inputs.outputs.runtime_ref }}
+          APP_REF: ${{ needs.inputs.outputs.app_ref }}
+          PINOKIO_REF: ${{ needs.inputs.outputs.pinokio_ref }}
+          COMMAND: ${{ needs.inputs.outputs.command }}
+          ARTIFACT_PATHS: ${{ needs.inputs.outputs.artifact_paths }}
+          SLOT: ${{ needs.inputs.outputs.slot }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib
+          keys = ('agent_ref', 'runtime_ref', 'app_ref', 'pinokio_ref', 'command', 'artifact_paths', 'slot')
+          data = {key: os.environ[key.upper()] for key in keys}
+          pathlib.Path(os.environ['EVIDENCE_DIR'], 'requested-inputs.json').write_text(json.dumps(data, indent=2) + '\n')
+          PYCODE
       - name: Check out Agent
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-agent
-          ref: ${{ inputs.agent_ref }}
+          ref: ${{ needs.inputs.outputs.agent_ref }}
           path: agent
           token: ${{ secrets.repository_token || github.token }}
           persist-credentials: false
@@ -100,7 +164,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
-          ref: ${{ inputs.runtime_ref }}
+          ref: ${{ needs.inputs.outputs.runtime_ref }}
           path: runtime
           token: ${{ secrets.repository_token || github.token }}
           persist-credentials: false
@@ -108,7 +172,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
-          ref: ${{ inputs.app_ref }}
+          ref: ${{ needs.inputs.outputs.app_ref }}
           path: app
           token: ${{ secrets.repository_token || github.token }}
           persist-credentials: false
@@ -116,7 +180,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-pinokio
-          ref: ${{ inputs.pinokio_ref }}
+          ref: ${{ needs.inputs.outputs.pinokio_ref }}
           path: pinokio
           token: ${{ secrets.repository_token || github.token }}
           persist-credentials: false
@@ -133,7 +197,7 @@ jobs:
       - name: Run requested command
         id: suite
         env:
-          SUITE_COMMAND: ${{ inputs.command }}
+          SUITE_COMMAND: ${{ needs.inputs.outputs.command }}
         run: |
           set +e
           bash --noprofile --norc -eo pipefail -c "$SUITE_COMMAND"
@@ -146,7 +210,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: merge-suite-output-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ inputs.artifact_paths }}
+          path: ${{ needs.inputs.outputs.artifact_paths }}
           if-no-files-found: error
           retention-days: 30
       - name: Upload tuple and exit code

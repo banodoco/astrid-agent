@@ -1,0 +1,9 @@
+{
+  "agent_ref": "ddd5d278796641901bd11508863a8ea21e6c9697",
+  "runtime_ref": "1a275bb339ae897e52a5be5e1da99e846e402037",
+  "app_ref": "7f6f99208100e895efebf39c70bc30af6cee0884",
+  "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+  "slot": "1",
+  "command": "mkdir -p suite-proof; printf \"venue smoke\\n\" > suite-proof/result.txt; exit 7",
+  "artifact_paths": "suite-proof/result.txt"
+}
