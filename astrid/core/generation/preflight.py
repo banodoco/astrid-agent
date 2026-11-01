@@ -64,6 +64,17 @@ def runpod_generation_owner(client: Any) -> RunPodGenerationOwner:
                                code='missing_dependency', details={'field': 'target'})
     return owner
 
+
+def call_runpod_owner(method: Callable[..., Any], /, **kwargs: Any) -> Any:
+    """Project new host-boundary failures without changing older SDK errors."""
+    from astrid.sdk.exceptions import AstridSDKError
+    try:
+        return method(**kwargs)
+    except (AstridError, AstridSDKError):
+        raise
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise generation_error(exc) from exc
+
 from astrid.core.contracts.errors import AstridError
 from astrid.core.generation.interfaces import ReadinessEnvelope, ReadinessFix, ReadinessIssue
 
@@ -526,7 +537,7 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
     """Read/probe the bound target and expose the shared error envelope."""
     try:
         if target == 'runpod' and runpod_owner is not None:
-            return runpod_owner.validation_target()
+            return call_runpod_owner(runpod_owner.validation_target)
         return _select_generation_target(target, repo=repo)
     except AstridError as exc:
         snapshot = exc.state_snapshot.get('target')

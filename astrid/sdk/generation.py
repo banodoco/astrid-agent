@@ -204,8 +204,6 @@ def _generation_boundary(method):
             if canonical is exc:
                 raise
             raise canonical from exc
-        except (ValueError, RuntimeError, OSError) as exc:
-            raise generation_error(exc) from exc
         from .results import InvocationResult
         if isinstance(result, InvocationResult) and not result.ok and result.error is not None:
             from dataclasses import replace
@@ -614,8 +612,8 @@ class GenerationFacade:
                 payload = readiness_envelope()
                 payload['preferences'] = targets.read_config().get('runpod', {})
                 if not save and client is not None:
-                    from astrid.core.generation.preflight import runpod_generation_owner
-                    payload['target'] = dict(runpod_generation_owner(client).describe())
+                    from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+                    payload['target'] = dict(call_runpod_owner(runpod_generation_owner(client).describe))
                 return payload
             if updates:
                 raise ValueError('local target input updates are not supported; select an explicit URL')
@@ -641,8 +639,8 @@ class GenerationFacade:
             _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
             if target != 'runpod' or entry is not None or workflow is not None:
                 raise GenerationInputError('target describe requires only target=runpod')
-            from astrid.core.generation.preflight import runpod_generation_owner
-            return dict(runpod_generation_owner(client).describe())
+            from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+            return dict(call_runpod_owner(runpod_generation_owner(client).describe))
         if bool(entry) == bool(workflow):
             raise GenerationInputError('describe requires an entry or a workflow')
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
@@ -655,8 +653,8 @@ class GenerationFacade:
         if canonical_engine(engine) != 'comfyui':
             raise GenerationInputError('Phase 1 release supports only comfyui')
         if target == 'runpod':
-            from astrid.core.generation.preflight import runpod_generation_owner
-            return runpod_generation_owner(client).release(wait=wait)
+            from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+            return call_runpod_owner(runpod_generation_owner(client).release, wait=wait)
         bridge = getattr(client, 'release_generation', None)
         if not callable(bridge):
             raise generation_error(ValueError('The bound host release owner is unavailable'),
@@ -1125,7 +1123,8 @@ class GenerationFacade:
                 asset_arguments["managed_assets"] = import_member(archive)
             if runpod_owner is not None:
                 import uuid
-                prepared = runpod_owner.prepare(workflow=workflow, inputs=dict(inputs), **paid)
+                from astrid.core.generation.preflight import call_runpod_owner
+                prepared = call_runpod_owner(runpod_owner.prepare, workflow=workflow, inputs=dict(inputs), **paid)
                 if controls.get('recovery_path') is None:
                     controls['recovery_path'] = prepared.selection.journal_dir / ('generation-' + uuid.uuid4().hex + '.json')
                 controls['execution_request'] = _bind_runpod_preparation(prepared,
@@ -1466,17 +1465,17 @@ class GenerationFacade:
             if not inputs.get("request") or not inputs.get("asset_map"):
                 raise CapabilityValidationError("H3 requires request and asset_map")
             if target == 'runpod':
-                from astrid.core.generation.preflight import runpod_generation_owner
+                from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
                 paid = _runpod_paid_controls(controls)
                 if client is None:
                     raise CapabilityPreconditionError('RunPod H3 requires a retained host owner client')
                 owner = runpod_generation_owner(client)
-                preview = owner.validate_h3(inputs)
+                preview = call_runpod_owner(owner.validate_h3, inputs=inputs)
                 if dry_run:
                     return preview
                 if resume:
                     raise CapabilityValidationError('follow the existing RunPod task through the retained host; do not prepare again')
-                prepared = owner.prepare_h3(inputs=inputs, **paid)
+                prepared = call_runpod_owner(owner.prepare_h3, inputs=inputs, **paid)
                 if recovery_path is None:
                     import uuid
                     recovery_path = prepared.selection.journal_dir / ('h3-parent-' + uuid.uuid4().hex + '.json')
