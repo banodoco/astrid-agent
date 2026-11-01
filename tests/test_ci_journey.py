@@ -11,6 +11,94 @@ import pytest
 from scripts import ci_journey as journey
 
 
+def test_rc0_route_selects_existing_direct_update_rows():
+    from scripts import ci_journey_rc0, journey_matrix
+
+    candidate = {
+        "app": "a55bec9ff384b5bbfee5535962880084ab2adb1b",
+        "agent": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+        "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+        "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+        "manifest_sha256": "ced136903a7319e78a0be7db0cc1709c0663eaf7d567c040fe1812a916693874",
+        "artifacts": {
+            "public/install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+            "public/install.sh": "591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285",
+            "public/install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",
+        },
+    }
+    assert ci_journey_rc0.RC0_CANDIDATE == candidate
+    selected = ci_journey_rc0.select_matrix(candidate, list(journey_matrix.RELEASE1_MATRIX))
+    assert selected == [
+        {"job_id": "direct-macos", "mode": "direct", "leg": "release0-to-release1", "runner": "macos-14", "shell": "sh", "os": "macos"},
+        {"job_id": "direct-linux", "mode": "direct", "leg": "release0-to-release1", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux"},
+        {"job_id": "direct-windows", "mode": "direct", "leg": "release0-to-release1", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
+    ]
+
+
+@pytest.mark.parametrize("field", ["app", "agent", "runtime", "pinokio", "manifest_sha256", "artifacts"])
+def test_rc0_route_rejects_changed_candidate(field):
+    from scripts import ci_journey_rc0, journey_matrix
+
+    candidate = dict(ci_journey_rc0.RC0_CANDIDATE)
+    candidate[field] = {} if field == "artifacts" else "0" * len(candidate[field])
+    with pytest.raises(ValueError):
+        ci_journey_rc0.select_matrix(candidate, list(journey_matrix.RELEASE1_MATRIX))
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "artifact-hash"])
+def test_rc0_route_rejects_candidate_shape_or_artifact_change(change):
+    from scripts import ci_journey_rc0, journey_matrix
+
+    candidate = dict(ci_journey_rc0.RC0_CANDIDATE)
+    if change == "missing":
+        del candidate["manifest_sha256"]
+    elif change == "extra":
+        candidate["unexpected"] = "value"
+    else:
+        candidate["artifacts"] = dict(candidate["artifacts"], **{"public/install": "0" * 64})
+    with pytest.raises(ValueError):
+        ci_journey_rc0.select_matrix(candidate, list(journey_matrix.RELEASE1_MATRIX))
+
+
+@pytest.mark.parametrize("field", ["mode", "leg", "runner", "shell", "os"])
+def test_rc0_route_rejects_altered_direct_row(field):
+    from scripts import ci_journey_rc0, journey_matrix
+
+    matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]
+    matrix[0][field] = "incorrect"
+    with pytest.raises(ValueError):
+        ci_journey_rc0.select_matrix(ci_journey_rc0.RC0_CANDIDATE, matrix)
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate"])
+def test_rc0_route_rejects_incomplete_or_duplicate_direct_rows(change):
+    from scripts import ci_journey_rc0, journey_matrix
+
+    matrix = [dict(row) for row in journey_matrix.RELEASE1_MATRIX]
+    if change == "missing":
+        matrix.pop(1)
+    else:
+        matrix.append(dict(matrix[1]))
+    with pytest.raises(ValueError):
+        ci_journey_rc0.select_matrix(ci_journey_rc0.RC0_CANDIDATE, matrix)
+
+
+def test_rc0_route_workflow_wires_direct_rows_and_fails_closed():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    calls, dispatch = workflow.split("  workflow_dispatch:", 1)
+    dispatch, jobs = dispatch.split("\njobs:", 1)
+    assert "      rc0_direct_only:" in calls
+    assert "      rc0_direct_only:" in dispatch
+    assert "matrix = ci_journey_rc0.select_matrix(candidate, matrix)" in jobs
+    assert "timeout-minutes: ${{ needs.config.outputs.rc0_direct_only == 'true' && 60 || 150 }}" in jobs
+    assert "'--release0-fixture', \"$pwd/agent/tests/fixtures/release0\"" in jobs
+    assert "'--allow-release0-to-release1'" in jobs
+    gate = jobs.split("      - name: Reject incomplete RC-0 installed fault coverage", 1)[1]
+    gate = gate.split("      - name:", 1)[0]
+    assert "if: always() && needs.config.outputs.rc0_direct_only == 'true'" in gate
+    assert "exit 1" in gate
+
+
 def app_checkout(tmp_path):
     app = tmp_path / "app"
     (app / "public").mkdir(parents=True)

@@ -18,6 +18,11 @@ on:
         description: Full candidate Agent SHA containing the integrated A/B stopped path
         required: true
         type: string
+      rc0_direct_only:
+        description: RC-0 direct update evidence only; overall gate remains fail-closed pending installed fault adapter
+        required: false
+        default: false
+        type: boolean
       m4_4a_executor_configs:
         description: JSON object keyed by linux/macos/windows containing complete explicit M4-4a executor configs
         required: false
@@ -75,6 +80,11 @@ on:
         description: Full candidate Agent SHA containing the integrated A/B stopped path
         required: true
         type: string
+      rc0_direct_only:
+        description: RC-0 direct update evidence only; overall gate remains fail-closed pending installed fault adapter
+        required: false
+        default: false
+        type: boolean
       m4_4a_executor_configs:
         description: JSON object keyed by linux/macos/windows containing complete explicit M4-4a executor configs
         required: false
@@ -135,6 +145,7 @@ jobs:
       driver_agent_ref: ${{ steps.config.outputs.driver_agent_ref }}
       old_launcher_ref: ${{ steps.config.outputs.old_launcher_ref }}
       stopped_path_agent_ref: ${{ steps.config.outputs.stopped_path_agent_ref }}
+      rc0_direct_only: ${{ steps.config.outputs.rc0_direct_only }}
       m4_4a_executor_configs: ${{ steps.config.outputs.m4_4a_executor_configs }}
       m4_4a_backend_only: ${{ steps.config.outputs.m4_4a_backend_only }}
       m4_5_enabled: ${{ steps.config.outputs.m4_5_enabled }}
@@ -163,6 +174,7 @@ jobs:
           WORKFLOW_REPOSITORY: ${{ github.repository }}
           OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref }}
+          RC0_DIRECT_ONLY: ${{ inputs.rc0_direct_only }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled }}
@@ -177,6 +189,7 @@ jobs:
           import json, os, re
           import sys
           sys.path.insert(0, "driver/scripts")
+          import ci_journey_rc0
           import journey_matrix
           import journey_release2
           import journey_failure_modes
@@ -255,12 +268,18 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if backend_only:
+          rc0_direct_only = os.environ["RC0_DIRECT_ONLY"].lower() == "true"
+          if rc0_direct_only:
+              if backend_only or m4_5_enabled or m4_5_only or m4_4b_enabled or m4_6_enabled:
+                  raise SystemExit("rc0_direct_only cannot be combined with other optional matrices")
+              matrix = ci_journey_rc0.select_matrix(candidate, matrix)
+          elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
                                   ("old_launcher_ref", old_launcher),
                                   ("stopped_path_agent_ref", stopped_path),
+                                  ("rc0_direct_only", str(rc0_direct_only).lower()),
                                   ("m4_4a_executor_configs", executor_configs),
                                   ("m4_4a_backend_only", str(backend_only).lower()),
                                   ("m4_5_enabled", str(m4_5_enabled).lower()),
@@ -280,7 +299,7 @@ jobs:
     if: needs.config.outputs.m4_5_only != 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: ${{ needs.config.outputs.rc0_direct_only == 'true' && 60 || 150 }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
@@ -692,13 +711,19 @@ jobs:
           path: receipts
           merge-multiple: true
       - name: Aggregate the exact Release-1 receipt matrix
-        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true' && needs.config.outputs.rc0_direct_only != 'true'
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1
+      - name: Reject incomplete RC-0 installed fault coverage
+        if: always() && needs.config.outputs.rc0_direct_only == 'true'
+        shell: bash
+        run: |
+          echo "RC-0 interrupted-update and authentic rollback require an installed native-service fault adapter; disposable executor output cannot satisfy these predicates." >&2
+          exit 1
       - name: Aggregate the exact M4-4a Pinokio backend receipts
         if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only == 'true'
         shell: bash
