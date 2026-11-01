@@ -392,9 +392,7 @@ def test_remote_create_empty_emits_guarded_raw_config_and_replays_exact_receipt(
     payload = result.data["canonical_document"]["parent_revision"]["payload"]
     assert payload["name"] == "Second Cut" and payload["slug"] == "second-cut"
     assert payload["config"] == {
-        "tracks": [],
-        "theme_overrides": config["theme_overrides"],
-        "meta": config["meta"],
+        "tracks": [], "theme_overrides": config["theme_overrides"], "meta": config["meta"],
         "output": {
             "resolution": "640x360", "fps": 24, "file": "output.mp4",
             "background": None, "background_scale": None,

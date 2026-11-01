@@ -351,7 +351,8 @@ def test_remote_create_empty_uses_live_commit_bootstrap_and_exact_replay(
         "resolution": "640x360", "fps": 24, "file": "output.mp4",
         "background": None, "background_scale": None,
     }
-    # A raw SDK config can still request a genuinely empty track list.
+    # Explicit empty tracks remain a caller choice, even when Runtime now
+    # supplies canonical tracks in the bootstrap head.
     assert document["parent_revision"]["payload"]["config"]["tracks"] == []
     opened = client.timelines.open_bundle(project, "film")
     assert opened.ok, opened.as_dict()
