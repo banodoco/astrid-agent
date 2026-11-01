@@ -6,7 +6,7 @@ all writes target ``app.astrid`` and leave unrelated metadata intact.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Iterable
+from typing import Any
 
 
 def _legacy(clip: Mapping[str, Any]) -> Mapping[str, Any]:

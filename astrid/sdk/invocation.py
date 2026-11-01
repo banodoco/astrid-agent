@@ -776,6 +776,8 @@ def _validate_timeline_visualize_inputs(
     except ValueError as exc:
         raise CapabilityValidationError(str(exc)) from exc
     context = prepare_filmstrip(values, project=project, client=_client)
+    if values.get("mode") == "scene_only":
+        context = {**context, "mode": "scene_only"}
     from copy import deepcopy
     # These snapshots are host-prepared immutable closures. Carry resource
     # identity in derived metadata; never rewrite their authored config.
@@ -1023,10 +1025,17 @@ def _admitted_timeline_element_resources(config: Mapping[str, Any], *, registry=
     if packs is None:
         packs = [row.pack for row in discover_pack_metadata(project_root=Path(REPO_ROOT))]
     bound = {}
+    from astrid.core.rendering.project_elements import selection_key, selections
+
+    project_selections = {selection_key(row["reference"]) for row in selections(config)}
     for clip in candidates:
         ref = clip.get("elementRef")
         explicit = isinstance(ref, Mapping)
         ref = ref if explicit else {"kind": "effects", "id": clip.get("clipType")}
+        if explicit and all(key in ref for key in ("packId", "kind", "id", "revision")) and selection_key(ref) in project_selections:
+            # Project source is staged by the Remotion renderer. It does not
+            # nominate checkout-local native motion modules for review tools.
+            continue
         clip_id, element_id, kind = clip.get("id"), ref.get("id"), ref.get("kind")
         if not all(isinstance(value, str) and value for value in (clip_id, element_id, kind)):
             raise CapabilityValidationError("element resource binding requires exact clip/element/kind identities")
@@ -1194,6 +1203,7 @@ def _render_reuse_toolchain_digest() -> str | None:
             "pack_source": source_checkout_digest(root),
             "core_source": source_checkout_closure_digest(root),
             "remotion": {part: _source_digest(remotion / part) for part in remotion_parts},
+            "validated_runtime": os.environ.get("ASTRID_REMOTION_VALIDATION_SHA256"),
             "external_tools": {
                 name: _source_digest(Path(path).resolve()) if path else None
                 for name, path in binaries.items()
@@ -1327,6 +1337,19 @@ def _prepare_managed_render_inputs(
             snapshot = candidate_preview_snapshot(
                 authoring_preview, snapshot=snapshot, client=_client
             )
+        # `resolve_managed_render_snapshot` returned this graph only after
+        # reading and validating the exact typed parent -> shot -> internal
+        # revision closure. Preserve that producer proof across the ordinary
+        # managed-render snapshot boundary. Unpublished candidate exports are
+        # not certified by this saved-revision path.
+        host_transition_contract = (
+            "runtime-parent-closure/v1"
+            if authoring_preview is None
+            and isinstance(snapshot.composition_graph, Mapping)
+            and isinstance(snapshot.expansion, Mapping)
+            and snapshot.expansion.get("canonical") is True
+            else None
+        )
         child_records: list[dict[str, Any]] = []
         review_shots: list[dict[str, Any]] = []
         review_phrases: list[dict[str, Any]] = []
@@ -1464,6 +1487,11 @@ def _prepare_managed_render_inputs(
                 "expanded_config_hash": _expanded_config_hash(expanded_config),
             },
         )
+        if authoring_preview is not None:
+            from astrid.core.rendering.project_elements import resolve_project_elements
+
+            config = resolve_project_elements(snapshot.config, project=snapshot.project_id, client=_client)
+            snapshot = replace(snapshot, config=config, config_hash=_expanded_config_hash(config))
         validate_managed_render_snapshot(snapshot)
     except ManagedRenderValidationError as exc:
         raise CapabilityValidationError(str(exc), details=exc.details) from exc
@@ -1528,15 +1556,20 @@ def _prepare_managed_render_inputs(
         "element_resources": _admitted_timeline_element_resources(snapshot.config),
     }
     authority = snapshot.authority()
+    timeline_snapshot = {
+        "config": dict(snapshot.config),
+        "registry": dict(snapshot.registry),
+    }
+    if host_transition_contract == "runtime-parent-closure/v1":
+        timeline_snapshot["metadata"] = {
+            "host_transition_contract": host_transition_contract,
+        }
     values.update(
         {
             # The generic host materializes this immutable snapshot below the
             # assigned attempt.  The SDK never writes a project-side render
             # snapshot or hands a project-root locator to a renderer.
-            "timeline_snapshot": {
-                "config": dict(snapshot.config),
-                "registry": dict(snapshot.registry),
-            },
+            "timeline_snapshot": timeline_snapshot,
             "timeline_authority": authority,
         }
     )
@@ -2740,7 +2773,7 @@ def _kernel_invoke(
     # renders source previews.
     if (str(capability.id) == "rendering.timeline_visualize"
             and isinstance(idempotency_context, Mapping)
-            and idempotency_context.get("mode") in {"filmstrip", "input_only", "composed_capture"}):
+            and idempotency_context.get("mode") in {"filmstrip", "input_only", "composed_capture", "scene_only"}):
         authority_snapshot = (
             idempotency_context.get("filmstrip_snapshot")
             or idempotency_context.get("input_snapshot")
@@ -2869,13 +2902,29 @@ def _kernel_invoke(
     # Admission has already used the projected documents to derive media and
     # storage bounds. Persist each exact projection once in Runtime CAS and
     # send only its digest/revision identity in the task request.
-    spec_inputs = spec.get("inputs") if isinstance(spec.get("inputs"), dict) else {}
-    snapshot_context = spec.get("authority_context") if isinstance(spec.get("authority_context"), dict) else {}
+    spec_inputs: dict[str, Any] = spec.get("inputs") if isinstance(spec.get("inputs"), dict) else {}
+    snapshot_context: dict[str, Any] = spec.get("authority_context") if isinstance(spec.get("authority_context"), dict) else {}
     has_inline_snapshot = isinstance(spec_inputs.get("timeline_snapshot"), Mapping) or any(
         isinstance(snapshot_context.get(key), Mapping)
         for key in ("filmstrip_snapshot", "input_snapshot", "capture_snapshot")
     )
-    if str(capability.id) in {"rendering.render", "rendering.timeline_visualize"} and has_inline_snapshot:
+    # Capture admission must validate the candidate and every duplicate before
+    # Runtime publishes anything. Leave its inline snapshot for that publisher.
+    capture_snapshot = snapshot_context.get("capture_snapshot")
+    capture_authority = capture_snapshot.get("metadata", {}).get("capture_authority", {}) if isinstance(capture_snapshot, Mapping) else {}
+    # A working copy whose candidate was not forwarded cannot be certified: it
+    # is sent as explicit CAS-only data, never as a revision or working copy.
+    candidate_forwarded = isinstance(spec_inputs.get("authoring_preview"), Mapping)
+
+    def uncertified(snapshot: Any) -> bool:
+        metadata = snapshot.get("metadata") if isinstance(snapshot, Mapping) else None
+        return (isinstance(metadata, Mapping) and isinstance(metadata.get("working_copy"), Mapping)
+                and not candidate_forwarded)
+
+    runtime_capture = (str(capability.id) == "rendering.timeline_visualize"
+                       and bool(capture_authority.get("parent_revision_id"))
+                       and not uncertified(capture_snapshot))
+    if str(capability.id) in {"rendering.render", "rendering.timeline_visualize"} and has_inline_snapshot and not runtime_capture:
         remote = getattr(_client, "_remote", _client)
         transport = getattr(remote, "_transport", remote)
         ingest = getattr(transport, "ingest_project_object", None)
@@ -2893,6 +2942,9 @@ def _kernel_invoke(
                 raise CapabilityInvocationError("Runtime snapshot object digest differs from prepared snapshot")
             if digest not in input_manifest:
                 input_manifest.append(digest)
+            if uncertified(snapshot):
+                return {"digest": digest, "project_id": provenance.get("project_id"),
+                        "timeline_id": provenance.get("timeline_id"), "source_kind": "cas"}
             revision_id = provenance.get("revision_id")
             metadata = snapshot.get("metadata") if isinstance(snapshot.get("metadata"), Mapping) else {}
             working_copy = metadata.get("working_copy") if isinstance(metadata.get("working_copy"), Mapping) else None
@@ -3833,7 +3885,8 @@ def _invoke_bridge_child(
     from astrid.core.foundation.hash import executor_definition_digest
     from ._child_bridge import (
         _BridgeRejected, _BridgeReplyTimeout, _BridgeTimeout, _ChildOutputBinding,
-        _child_request, _valid_id, _validate_output_page, _validate_publication_readback,
+        _child_request, _child_status_error, _valid_id, _validate_output_page,
+        _validate_publication_readback,
     )
 
     digest = executor_definition_digest(registries[0].get(capability.id))
@@ -3864,9 +3917,8 @@ def _invoke_bridge_child(
 
         def validate_status(observed: Any) -> None:
             nonlocal protocol_error
-            if not isinstance(observed, Mapping) or observed.get("task_id") != task_id or observed.get("run_id") != run_id:
-                bridge.close()
-                protocol_error = CapabilityInvocationError("child bridge status returned a foreign task resource")
+            protocol_error = _child_status_error(observed, task_id=task_id, run_id=run_id, close=bridge.close)
+            if protocol_error is not None:
                 raise protocol_error
 
         def status(observed_id: str) -> Any:
@@ -4248,6 +4300,13 @@ def invoke(
                         key: item for key, item in value.items()
                         if key in {"digest", "object_id", "filename"}
                     }
+    if capability.id in {"rendering.render", "rendering.timeline_visualize"}:
+        from astrid.core.rendering.verified_source import reject_source_keys
+
+        try:
+            reject_source_keys(request_inputs)
+        except ValueError as exc:
+            raise CapabilityValidationError(str(exc)) from exc
     if capability.id == "rendering.render":
         # Apply caller/mode checks before delegated child dispatch as well as
         # top-level preflight. Child file custody still belongs to the bridge.
@@ -4457,6 +4516,13 @@ def invoke(
     # a project tree or materialize a render snapshot.
     if not dry_run:
         if capability.id == "rendering.timeline_visualize":
+            inputs = dict(inputs or {})
+            preview = inputs.get("authoring_preview")
+            if preview is not None:
+                if not isinstance(preview, Mapping):
+                    raise CapabilityValidationError("authoring_preview must be a frozen candidate artifact")
+                # Keep the authored task data identical to what preflight projects.
+                inputs["authoring_preview"] = _json_safe_mapping(preview)
             invocation_authority_context = _validate_timeline_visualize_inputs(
                 inputs,
                 project=project,
@@ -4475,7 +4541,7 @@ def invoke(
                         "transcript input is host-owned; config.app.transcript supplies the CAS object"
                     )
                 inputs["transcript.json"] = transcript_input
-            if invocation_authority_context.get("mode") in {"filmstrip", "input_only", "composed_capture"}:
+            if invocation_authority_context.get("mode") in {"filmstrip", "input_only", "composed_capture", "scene_only"}:
                 # Only preflight may turn a successful project-owned render
                 # into a file input. Public paths were rejected above.
                 inputs = dict(inputs or {})
@@ -4500,11 +4566,16 @@ def invoke(
                 # and the admission receipt. Store the authority and the
                 # snapshot's timeline and registry as managed objects instead;
                 # the host materializes them as the executor's input files.
-                stored = _store_visualize_objects(
+                # Runtime must see a canonical capture before publishing it;
+                # objectifying authority first hides its binding from admission.
+                capture_authority = authority_snapshot.get("metadata", {}).get("capture_authority", {})
+                canonical_capture = (isinstance(invocation_authority_context.get("capture_snapshot"), Mapping)
+                                     and bool(capture_authority.get("parent_revision_id")))
+                stored = None if canonical_capture else _store_visualize_objects(
                     _client, project, authority_json, authority_snapshot,
                 )
                 if stored is None:
-                    inputs["filmstrip_authority"] = authority_json  # a client without import_bytes
+                    inputs["filmstrip_authority"] = authority_json  # admission publishes snapshot refs
                 else:
                     inputs.update(stored)
                     invocation_authority_context = {

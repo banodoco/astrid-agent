@@ -8,7 +8,31 @@ from typing import Any
 
 from astrid.core.cli.domain_output import DomainResult, print_result
 from astrid.sdk.contracts import ErrorObject
-from astrid.sdk.timeline import journal, store
+
+
+class _StoreProxy:
+    """Keep parser construction independent of the optional Runtime client."""
+
+    @staticmethod
+    def resolve_ids(*args, **kwargs):
+        from astrid.sdk.timeline import store
+
+        return store.resolve_ids(*args, **kwargs)
+
+
+store = _StoreProxy()
+
+
+class _JournalProxy:
+    """Delay the Runtime protocol import until a log command actually runs."""
+
+    def __getattr__(self, name):
+        from astrid.sdk.timeline import journal
+
+        return getattr(journal, name)
+
+
+journal = _JournalProxy()
 
 
 def configure_log(parser: argparse.ArgumentParser) -> None:

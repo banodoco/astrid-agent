@@ -1,0 +1,40 @@
+{
+  "test_captured_config_root_mirror": {
+    "fixture_file": "/home/user/work/wt/agt-R1-full-tamper-sol-1105/tests/editing_conformance/test_captured_config_root_mirror.py",
+    "request_sha256": "5326c0a2c735c8976ca267aa89fa3a89d90044c94475d7c6f33dde658e1636dd",
+    "head": {
+      "publication_id": "txn-d59a7caf610544b5a747c99cc8a67d58",
+      "revision_id": "authoring-parent-revision-306f5597077eed2194e4eb8a75fb381e9568b6e2e46b8dff49cc7f8c4d57db2f"
+    },
+    "publications": [
+      "txn-dca405e7f44942b0a5818dd683a3a009",
+      "txn-d59a7caf610544b5a747c99cc8a67d58"
+    ],
+    "raw_capture_sha256": "16d87e20b1dc37be2246c8f9db0e61d3af12069c42acd03a980a9cd68a94c970"
+  },
+  "test_nested_config_root_history": {
+    "fixture_file": "/home/user/work/wt/agt-R1-full-tamper-sol-1105/tests/editing_conformance/test_nested_config_root_history.py",
+    "request_sha256": "683e2c7e5c0d2c1326485ba1ce6c4e01f3c41dc7993300fc7c15a502f189f779",
+    "head": {
+      "publication_id": "txn-45f6130bd60547deaa31ae4cb6c5c8ad",
+      "revision_id": "authoring-parent-revision-940a49980b490326af609a27f42d497c37fad0823c19ffe8ae8e5d8f2ca6aed7"
+    },
+    "publications": [
+      "txn-57e4537a07654c29826e8c656547a634",
+      "txn-ef6b2245706e46e889363bc11086a295",
+      "txn-5afcf5f2b7c64d7299f0e9c734e94728",
+      "txn-18fea58c971a4d42b8e6fdad65537ae3",
+      "txn-2c5b0d19cf7e4a5498abaef5c31741eb",
+      "txn-febab52b711e472db36a9c90d8cfe6c8",
+      "txn-fc61e271449d45e395c745b7668fd872",
+      "txn-6f5a6d16e78d4704816d6a7352456530",
+      "txn-b62ac109dd28406ca92d328d12ea6a79",
+      "txn-9c795bfbcd124f97b41a087aa46c9505",
+      "txn-a629da89a561462eb0b2e7a734b0f591",
+      "txn-c3118841253d410eb004003166672f13",
+      "txn-cf7414c63cc24496b86f4d6e67ce9b10",
+      "txn-45f6130bd60547deaa31ae4cb6c5c8ad"
+    ],
+    "raw_capture_sha256": "88fbb433d3c142151fab490939268216f8f01a0564d3ac44ef694dcf842365e8"
+  }
+}

@@ -70,7 +70,7 @@ def _prepare_cli(monkeypatch, tmp_path, root, data, backend):
 
 @pytest.mark.parametrize("missing", ["manifest", "uv"])
 def test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs(
-        tmp_path, monkeypatch, missing):
+        tmp_path, monkeypatch, missing, capsys):
     root, data = tmp_path / "program", tmp_path / "workspace"
     backend = _cli_backend(tmp_path, root, data)
     _prepare_cli(monkeypatch, tmp_path, root, data, backend)
@@ -109,6 +109,8 @@ def test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs
     assert recovered == ["restoring_realm"]
     assert (data / "runtime" / "realms" / "original-realm").is_dir()
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "Recovered your previous version — run Update again")
 
 
 @pytest.mark.parametrize("update_flag", [False, True], ids=["install", "update"])
@@ -215,7 +217,7 @@ def test_recovery_only_cli_sweeps_owned_job_under_installer_lock_after_recovery(
     assert repaired["update_job_residue"] == original_residues
 
 
-def test_regular_cli_recovers_app_journal_without_holding_installer_lock(
+def test_regular_cli_recovers_app_journal_with_stopped_custody(
         tmp_path, monkeypatch):
     root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     backend = _cli_backend(tmp_path, root, data, managed_by="pinokio")
@@ -241,8 +243,9 @@ def test_regular_cli_recovers_app_journal_without_holding_installer_lock(
         assert actual_backend is backend
         path = app_update.installer_lock_path(backend.service.home, backend.service.system)
         with path.open("a+b") as stream:
-            platform.lock_file(stream.fileno(), blocking=False)
-            platform.unlock_file(stream.fileno())
+            with pytest.raises(BlockingIOError):
+                platform.lock_file(stream.fileno(), blocking=False)
+        assert actual_backend._pinokio_custody is not None
         recovery.append("called")
 
     monkeypatch.setattr(app_update, "recover_app", recover_app)
@@ -431,6 +434,8 @@ def _prepare_gateway_lifecycle(tmp_path, monkeypatch, *, installed=9):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setattr("astrid.installer.core.install_launcher", lambda *_args: None)
+    monkeypatch.setattr("astrid.installer.core.inspect_schema",
+                        lambda *_args, **_kwargs: {"identity": {"version": 29}, "target": 33})
     return root, data, old, backend
 
 
@@ -557,7 +562,7 @@ def test_recovery_only_return_then_next_gateway_call_compares_restored_release(
     assert current(root).release == 8
 
 
-def test_update_app_cli_recovers_before_checking_manifest_or_uv(tmp_path, monkeypatch):
+def test_update_app_cli_recovers_before_checking_manifest_or_uv(tmp_path, monkeypatch, capsys):
     root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     backend = _cli_backend(tmp_path, root, data, managed_by="pinokio")
     _prepare_cli(monkeypatch, tmp_path, root, data, backend)
@@ -572,6 +577,8 @@ def test_update_app_cli_recovers_before_checking_manifest_or_uv(tmp_path, monkey
     assert cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(root),
                      "--uv", str(tmp_path / "absent-uv")]) == 0
     assert recovered == [True]
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "Recovered your previous version — run Update again")
 
 
 def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_inputs(
