@@ -1,0 +1,12 @@
+python: 3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]
+command: urllib.request.Request(url, headers={"User-Agent": "astrid-installer/0.1.0"}); urllib.request.urlopen(request, timeout=120); shutil.copyfileobj(response, output)
+http_status: 200
+header_Content-Type: application/x-xz
+header_Content-Length: 41888096
+header_Last-Modified: Sat, 24 Aug 2024 16:01:05 GMT
+header_ETag: "276030c-27f2960-6206fffcb9736"
+header_Date: Sun, 01 Nov 2026 21:48:58 GMT
+header_Server: Apache
+download_exit: 0
+bytes: 41888096 sha256: abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67 expected: abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67 match: True
+command: xz -t <download>; xz_exit: 0

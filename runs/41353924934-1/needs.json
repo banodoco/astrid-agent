@@ -1,0 +1,14 @@
+{
+  "linux": {
+    "result": "success",
+    "outputs": {}
+  },
+  "windows": {
+    "result": "success",
+    "outputs": {}
+  },
+  "macos": {
+    "result": "cancelled",
+    "outputs": {}
+  }
+}
