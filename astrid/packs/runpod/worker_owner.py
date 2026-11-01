@@ -62,6 +62,8 @@ def runpod_idle_seconds(*, requested: float | None = None,
     """Request, caller environment, service environment, then ten minutes."""
     if isinstance(requested, bool):
         raise RunPodWorkerOwnerError("RunPod idle seconds must be finite and nonnegative")
+    if requested is not None and (not math.isfinite(requested) or requested < 0):
+        raise RunPodWorkerOwnerError("RunPod idle seconds must be finite and nonnegative")
     default = idle_seconds(600.0, environ=service_environ or {})
     try:
         value = idle_seconds(default, requested=requested, environ=environ)
