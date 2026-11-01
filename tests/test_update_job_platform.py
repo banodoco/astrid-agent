@@ -91,6 +91,13 @@ def test_linux_query_distinguishes_active_inactive_unknown_and_cleanup(tmp_path,
         platform.is_active(descriptor)
 
 
+def test_linux_empty_query_is_unknown_not_inactive(tmp_path, monkeypatch):
+    descriptor = platform.describe(job(tmp_path), ["worker"], system="linux")
+    monkeypatch.setattr(platform, "_run", lambda args: completed(args, stdout=" \n"))
+    with pytest.raises(RuntimeError, match="Unknown systemd update job state"):
+        platform.is_active(descriptor)
+
+
 def test_linux_cleanup_accepts_already_collected_unit(tmp_path, monkeypatch):
     descriptor = platform.describe(job(tmp_path), ["worker"], system="linux")
     calls = []
