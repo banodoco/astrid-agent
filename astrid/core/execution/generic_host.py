@@ -9162,7 +9162,6 @@ class GenericPackHost:
                     import_reference = import_receipt.finish()
                 except BaseException as exc:
                     import_reference = {"observation": "unavailable", "persistence": "failed"}
-                    _LOGGER.warning("child import receipt unavailable: %s", type(exc).__name__)
             return SimpleNamespace(
                 outputs=outputs,
                 output_root=output_root,
@@ -9206,20 +9205,25 @@ class GenericPackHost:
                     remotion_lease.close()
                 except BaseException as exc:
                     finalizer_errors.append(type(exc).__name__)
-            if import_receipt is not None:
-                try:
-                    reference = import_reference if import_finished else import_receipt.finish()
-                    if reference["persistence"] == "failed":
-                        _LOGGER.warning("child import receipt persistence failed launch_id=%s",
-                                        reference.get("launch_id", "unavailable"))
+            try:
+                if import_receipt is not None:
+                    try:
+                        reference = import_reference if import_finished else import_receipt.finish()
+                    except BaseException:
+                        reference = {"observation": "unavailable", "persistence": "failed"}
                     if primary_error is not None:
                         primary_error.child_import_receipt = reference
-                except BaseException as exc:
-                    # Observation is diagnostic; it cannot change execution.
-                    _LOGGER.warning("child import receipt unavailable: %s", type(exc).__name__)
-            env.clear()
-            stream_secrets.clear()
-            secrets.clear()
+                    if reference["persistence"] == "failed":
+                        # Observation and its diagnostic sink cannot change the
+                        # execution outcome or bypass secret removal.
+                        try:
+                            _LOGGER.warning("child import receipt persistence failed")
+                        except BaseException:
+                            pass
+            finally:
+                env.clear()
+                stream_secrets.clear()
+                secrets.clear()
             if cleanup_error is not None or finalizer_errors:
                 with self._handoff_condition:
                     self._handoff_observation_known = False
@@ -9812,14 +9816,24 @@ class GenericPackHost:
         """
         from astrid.sdk.results import InvocationResult
 
+        def completion_snapshot(receipt):
+            # Caller holds completion_lock across this snapshot and the write.
+            unconfirmed = terminal.get("completion_state") in {"in_flight", "unknown"}
+            receipt["publication"] = {
+                "status": "unconfirmed" if unconfirmed else "settled" if terminal.get("settled") else "not_settled",
+                "receipt": terminal.get("settlement"), "effect": terminal.get("effect"),
+            }
+            if unconfirmed:
+                receipt["completion_diagnostic"] = {"status": "unconfirmed"}
+            else:
+                receipt.pop("completion_diagnostic", None)
+
         if terminal.get("receipt_final"):
             with terminal["completion_lock"]:
                 if terminal.get("completion_state") == "acknowledged":
                     path = terminal["root"] / "result.json"
                     receipt = json.loads(path.read_text(encoding="utf-8"))
-                    receipt["publication"] = {"status": "settled" if terminal.get("settled") else "not_settled",
-                                              "receipt": terminal.get("settlement"), "effect": terminal.get("effect")}
-                    receipt.pop("completion_diagnostic", None)
+                    completion_snapshot(receipt)
                     write_json_atomic(path, receipt)
             return
         terminal["write_attempted"] = True
@@ -9948,14 +9962,10 @@ class GenericPackHost:
             parent_attempt_id=task.get("parent_attempt_id", parent.get("parent_attempt_id")),
             request_digest="sha256:" + _canonical_digest(request),
             resolved_options=options, cost=cost, warnings=warnings,
-            settled=terminal.get("settled"), settlement=terminal.get("settlement"),
-            effect=terminal.get("effect"),
+            settled=None, settlement=None, effect=None,
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
-        if terminal.get("completion_state") in {"in_flight", "unknown"}:
-            receipt["completion_diagnostic"] = {"status": "unconfirmed"}
-            receipt["publication"]["status"] = "unconfirmed"
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -9965,6 +9975,7 @@ class GenericPackHost:
             if (terminal.get("receipt_final") or terminal.get("forced") != forced_at_start
                     or (terminal.get("forced") and not minimal)):
                 return
+            completion_snapshot(receipt)
             root.mkdir(parents=True, exist_ok=True)
             write_json_atomic(root / "result.json", receipt)
             if terminal.get("forced"):
@@ -11886,8 +11897,11 @@ class GenericPackHost:
                 except BaseException:
                     pass
             if _terminal.get("recorded"):
-                pump_stop.set()
-                pump_thread.join(timeout=2)
+                try:
+                    pump_stop.set()
+                    pump_thread.join(timeout=2)
+                except BaseException as exc:
+                    cleanup_errors.append("lease observer: " + type(exc).__name__)
             if child_bridge is not None:
                 try:
                     child_bridge.revoke()
@@ -11912,7 +11926,7 @@ class GenericPackHost:
                     self._handoff_observation_known = False
                 try:
                     self._latch_cleanup_uncertainty("Runtime completion unconfirmed; attempt retained")
-                except Exception as exc:
+                except BaseException as exc:
                     _terminal["completion_latch_error"] = exc
             if (_terminal.get("evidence_pending")
                     or (bool(_terminal.get("pending_result")) and not _terminal.get("recorded"))):
@@ -11931,8 +11945,8 @@ class GenericPackHost:
             if network_broker is not None:
                 try:
                     network_broker.stop()
-                except Exception as exc:
-                    cleanup_errors.append(f"network broker: {exc}")
+                except BaseException as exc:
+                    cleanup_errors.append("network broker: " + type(exc).__name__)
             if managed_token is not None and not managed_settled:
                 if deadline_exceeded or cancelled_attempt or cancel_signal.is_set() or self._shutdown.is_set():
                     try:
@@ -11940,19 +11954,19 @@ class GenericPackHost:
                             managed_token,
                             outcome="confirmed",
                         )
-                    except Exception as exc:
-                        cleanup_errors.append(f"managed cancellation: {exc}")
+                    except BaseException as exc:
+                        cleanup_errors.append("managed cancellation: " + type(exc).__name__)
                         # A missing or stale token is already a fail-closed
                         # condition; release below preserves the poisoned slot.
                         try:
                             self.managed_tool_session.fence(reason="cancel_unconfirmed")
-                        except Exception as fence_exc:
-                            cleanup_errors.append(f"managed fence: {fence_exc}")
+                        except BaseException as fence_exc:
+                            cleanup_errors.append("managed fence: " + type(fence_exc).__name__)
                 else:
                     try:
                         self.managed_tool_session.fence(reason="task_failed")
-                    except Exception as exc:
-                        cleanup_errors.append(f"managed fence: {exc}")
+                    except BaseException as exc:
+                        cleanup_errors.append("managed fence: " + type(exc).__name__)
             if managed_opened:
                 retain_persistent_session = (
                     isinstance(managed_adapter, tuple(_WARM_SESSION_ADAPTERS))
@@ -11974,8 +11988,8 @@ class GenericPackHost:
                                 else "task_failed"
                             )
                         )
-                    except Exception as exc:
-                        cleanup_errors.append(f"managed release: {exc}")
+                    except BaseException as exc:
+                        cleanup_errors.append("managed release: " + type(exc).__name__)
             if endpoint_transport is not None and (
                 not managed_opened or self.managed_tool_session.current_adapter is not managed_adapter
             ):
@@ -11990,22 +12004,25 @@ class GenericPackHost:
             try:
                 if session_hold is not None:
                     self._settle_session_hold(session_hold)
-            except Exception:
+            except BaseException:
                 # Never let idle bookkeeping mask the task's own outcome.
-                _LOGGER.exception("warm session hold was not armed")
+                try:
+                    _LOGGER.exception("warm session hold was not armed")
+                except BaseException:
+                    pass
             self._requested_idle_seconds = None
             if capability_id == "generation.generate_image_codex":
                 # A force-killed child cannot run its credential finally.
                 # Scrub before retaining any attempt evidence as well.
                 try:
                     (root / "codex-home" / "auth.json").unlink(missing_ok=True)
-                except OSError as exc:
+                except BaseException as exc:
                     cleanup_errors.append(
-                        f"Codex credential copy not removed, remove it by hand: {root / 'codex-home' / 'auth.json'}: {exc}")
+                        f"Codex credential copy not removed, remove it by hand: {root / 'codex-home' / 'auth.json'}: {type(exc).__name__}")
             try:
                 self._write_task_result(_terminal)
-            except Exception as exc:
-                cleanup_errors.append(f"terminal result: {exc}")
+            except BaseException as exc:
+                cleanup_errors.append("terminal result: " + type(exc).__name__)
             # An unverified session release may still own a writer: fail this
             # task and keep its attempt below; the host keeps accepting work.
             if keep_attempt or retain_for_unresolved_scope:

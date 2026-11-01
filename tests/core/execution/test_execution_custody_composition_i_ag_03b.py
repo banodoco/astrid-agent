@@ -301,6 +301,46 @@ def test_finalizer_failures_do_not_skip_cleanup_or_resettle(launch_case, monkeyp
     assert case.runtime.failures == case.runtime.settlements == []
 
 
+@pytest.mark.parametrize("action_fails", [False, True])
+@pytest.mark.parametrize("receipt_fault", ["raise", "persistence"])
+def test_receipt_and_logger_faults_preserve_outcome_and_clear_secrets(
+    launch_case, monkeypatch, action_fails, receipt_fault,
+):
+    case = launch_case
+    from tests.test_generic_host_result_json import _legacy_output
+    _legacy_output(case, case.root / "outputs")
+    original = RuntimeError("original execution failure")
+    if action_fails:
+        monkeypatch.setattr(case.capture_class, "start", lambda *a: (_ for _ in ()).throw(original))
+    receipt_calls, log_calls = [], []
+
+    def finish(receipt):
+        receipt_calls.append(receipt)
+        if receipt_fault == "raise":
+            raise OSError("fake-custody-secret")
+        return {"persistence": "failed", "launch_id": "fixture"}
+
+    def warn(*args):
+        log_calls.append(args)
+        raise RuntimeError("diagnostic sink failed")
+
+    monkeypatch.setattr(case.receipt_class, "finish", finish)
+    monkeypatch.setattr(gh._LOGGER, "warning", warn)
+    if action_fails:
+        with pytest.raises(RuntimeError) as raised:
+            case.command()
+        assert raised.value is original
+    else:
+        assert case.command().returncode == 0
+    assert len(receipt_calls) == len(log_calls) == 1
+    assert "fake-custody-secret" not in repr(log_calls)
+    assert case.events.count(("contained", case.process)) == 1
+    assert case.events.count("capture_finished") == 1
+    assert case.host._active_processes == set()
+    assert case.env == case.secrets == case.stream_secrets == {}
+    assert case.runtime.failures == case.runtime.settlements == []
+
+
 def test_setup_failure_terminalizes_exact_attempt_without_launch(host_case, monkeypatch):
     case = host_case
     error = RuntimeError("admission rejected")
@@ -604,6 +644,87 @@ def test_force_kill_credential_copy_is_removed_before_attempt_retention(host_cas
     for path in case.root.rglob("*"):
         if path.is_file():
             assert b"credential-copy-sentinel" not in path.read_bytes()
+
+
+@pytest.mark.parametrize("fault", ["broker", "cancel_and_fence", "fence", "release", "hold_and_logger"])
+@pytest.mark.parametrize("action_fails", [False, True])
+def test_finalizer_baseexceptions_cannot_skip_credentials_or_resettle(host_case, monkeypatch, fault, action_fails):
+    case = host_case
+    original_record = case.host.capabilities["test.echo"]
+    identifier = "generation.generate_image_codex"
+    case.host.capabilities[identifier] = replace(original_record, definition=replace(original_record.definition, id=identifier))
+    case.task["task"]["capability"] = identifier
+    _success_boundary(case, monkeypatch)
+    execute = case.host._run_command_definition
+    original = RuntimeError("original action failure")
+    events, terminal = [], {}
+    run_impl = case.host._run_task_impl
+
+    class FinalizerAbort(BaseException):
+        def __str__(self):
+            raise AssertionError("cleanup errors must not be formatted")
+
+    def abort(name):
+        def fail(*a, **kw):
+            events.append(name)
+            raise FinalizerAbort()
+        return fail
+
+    def run(*a, _terminal, **kw):
+        terminal.update(value=_terminal)
+        return run_impl(*a, _terminal=_terminal, **kw)
+
+    def action(*a, **kw):
+        credential = case.root / "codex-home" / "auth.json"
+        credential.parent.mkdir(parents=True, exist_ok=True)
+        credential.write_text('{"token":"credential-copy-sentinel"}')
+        if fault == "cancel_and_fence" and action_fails:
+            # Exercise the cancellation cleanup branch without asking Runtime
+            # for an opposite completion after acknowledged success.
+            terminal["value"]["cancel_signal"].set()
+        if action_fails:
+            raise original
+        return execute(*a, **kw)
+
+    monkeypatch.setattr(case.host, "_run_task_impl", run)
+    monkeypatch.setattr(case.host, "_run_command_definition", action)
+    monkeypatch.setattr(case.host, "_start_network_broker", lambda *a, **kw: SimpleNamespace(
+        stop=abort("broker") if fault == "broker" else lambda: events.append("broker")))
+    if fault in {"cancel_and_fence", "fence"}:
+        monkeypatch.setattr(case.host.managed_tool_session, "cancel", abort("cancel"))
+        monkeypatch.setattr(case.host.managed_tool_session, "fence", abort("fence"))
+    release = case.host.managed_tool_session.release
+    def release_session(**kw):
+        events.append("release")
+        if fault == "release":
+            raise FinalizerAbort()
+        return release(**kw)
+    monkeypatch.setattr(case.host.managed_tool_session, "release", release_session)
+    if fault == "hold_and_logger":
+        monkeypatch.setattr(case.host, "_settle_session_hold", abort("hold"))
+        monkeypatch.setattr(gh._LOGGER, "exception", abort("logger"))
+    expects_cleanup_error = fault in {"broker", "release"} or action_fails
+    if action_fails or expects_cleanup_error:
+        with pytest.raises(RuntimeError if action_fails else HostError) as raised:
+            case.host.run_task(case.task, lease_token="lease-result", keep_attempt=True)
+        if action_fails:
+            assert raised.value is original
+    else:
+        case.host.run_task(case.task, lease_token="lease-result", keep_attempt=True)
+    assert events.count("broker") == events.count("release") == 1
+    if fault in {"cancel_and_fence", "fence"} and action_fails:
+        assert events.count("fence") == 1
+        assert events.count("cancel") == int(fault == "cancel_and_fence")
+    if fault == "hold_and_logger":
+        assert events.count("hold") == events.count("logger") == 1
+    assert not (case.root / "codex-home" / "auth.json").exists()
+    assert not terminal["value"]["pump_thread"].is_alive()
+    assert case.host._handoff_active_attempts == 0
+    assert len(case.runtime.settlements) == int(not action_fails)
+    assert len(case.runtime.failures) == int(action_fails)
+    receipt = json.loads((case.root / "result.json").read_text())
+    assert receipt["publication"]["status"] == ("not_settled" if action_fails else "settled")
+    assert "credential-copy-sentinel" not in json.dumps(receipt)
 
 
 @pytest.mark.parametrize("observed", [{"runtime_epoch": 8}, {"runtime_epoch": True}, {"lease_id": "foreign"}])
