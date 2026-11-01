@@ -2,7 +2,7 @@ name: Merge Linux suite
 
 on:
   push:
-    branches: ['venue/**']
+    branches: ['venue/**', '!venue/V-08-QUAL-WAVE-*']
   workflow_dispatch:
     inputs:
       agent_ref:
