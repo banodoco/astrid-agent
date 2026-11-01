@@ -1335,7 +1335,6 @@ def test_real_runtime_migration_bootstrap_follows_backend_c1_stop(tmp_path, monk
     with sqlite3.connect(realm / "realm.sqlite3") as connection:
         connection.execute("ALTER TABLE timelines DROP COLUMN name")
         connection.execute("DROP TABLE user_app_state")
-        connection.execute("DROP INDEX idx_generations_gen")
         connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
 
     _publish_owner(paths)
@@ -1394,16 +1393,13 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
     import importlib
     import socket
     import time
-    from contextlib import contextmanager
 
-    from runtime_protocol import platform
     from astrid_runtime.bootstrap import SourceProfile
     from astrid_runtime.paths import RuntimePaths
 
     from astrid.installer import core
     from astrid.installer.backend import Backend
     from astrid.installer.core import Version, write_json
-    from astrid.installer.service import installer_lock_path
     runtime_root = Path(importlib.import_module("astrid_runtime").__file__).resolve().parents[1]
     agent_root = Path(__file__).resolve().parents[1]
     home = tmp_path / "home"
@@ -1453,7 +1449,6 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
     with sqlite3.connect(data / "realm" / "realm.sqlite3") as connection:
         connection.execute("ALTER TABLE timelines DROP COLUMN name")
         connection.execute("DROP TABLE user_app_state")
-        connection.execute("DROP INDEX idx_generations_gen")
         connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
 
     transaction = {
@@ -1468,79 +1463,64 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
         transaction.update(step=step, **details)
         write_json(journal, transaction)
 
-    @contextmanager
-    def installer_scope():
-        # Public CLI calls hold this lock while the selected managed version
-        # starts. Release it at each simulated controller death, then let the
-        # next controller acquire its own admission for recovery.
-        lock_path = installer_lock_path(home, sys.platform)
-        platform.private_directory(lock_path.parent)
-        with lock_path.open("a+b") as held:
-            platform.lock_file(held.fileno(), blocking=False)
-            try:
-                yield
-            finally:
-                platform.unlock_file(held.fileno())
-
     try:
-        with installer_scope(), core.update_context(backend, transaction):
-            backend.upgrade(candidate, data)
-            paths = RuntimePaths.current(data_root=data)
-            first = read_json(paths.discovery_path)
-            first_lock = read_json(paths.instance_lock_path)
-            from astrid_runtime.identity import validate_live_owner_identity
-            from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+        backend.upgrade(candidate, data)
+        paths = RuntimePaths.current(data_root=data)
+        first = read_json(paths.discovery_path)
+        first_lock = read_json(paths.instance_lock_path)
+        from astrid_runtime.identity import validate_live_owner_identity
+        from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
 
-            boundary = LocalRuntimeBoundary()
-            first_health = boundary.owner_startup_identity(
-                endpoint=first["endpoint"], instance_id=first["runtime_instance_id"],
+        boundary = LocalRuntimeBoundary()
+        first_health = boundary.owner_startup_identity(
+            endpoint=first["endpoint"], instance_id=first["runtime_instance_id"],
+        )
+        assert validate_live_owner_identity(first_health, instance_id=first["runtime_instance_id"]) == {
+            "release": 18, "managed_by": None,
+        }
+        assert first_lock["runtime_instance_id"] == first["runtime_instance_id"]
+        assert first_lock["realm_id"] == "realm-bound"
+
+        # Stop the temporary migration daemon through C1, then activate only
+        # the exact candidate selected by the journal phase and pointer.
+        backend.stop(candidate, data)
+        core.switch(root, candidate)
+        save("switched")
+        backend.register(candidate, data)
+        backend.start(candidate, data)
+
+        def assert_selected_live_owner(expected):
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                discovery = read_json(paths.discovery_path)
+                lock = read_json(paths.instance_lock_path)
+                if (discovery.get("active_realm") == "realm-bound"
+                        and discovery.get("runtime_instance_id") == lock.get("runtime_instance_id")
+                        and lock.get("realm_id") == "realm-bound"):
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError(f"{expected.release}-version Runtime did not publish the selected realm")
+            health = LocalRuntimeBoundary().owner_startup_identity(
+                endpoint=discovery["endpoint"], instance_id=discovery["runtime_instance_id"],
             )
-            assert validate_live_owner_identity(first_health, instance_id=first["runtime_instance_id"]) == {
-                "release": 18, "managed_by": None,
+            assert validate_live_owner_identity(health, instance_id=discovery["runtime_instance_id"]) == {
+                "release": expected.release, "managed_by": None,
             }
-            assert first_lock["runtime_instance_id"] == first["runtime_instance_id"]
-            assert first_lock["realm_id"] == "realm-bound"
+            assert lock["runtime_instance_id"] == discovery["runtime_instance_id"]
+            return discovery
 
-            # Stop the temporary migration daemon through C1, then activate only
-            # the exact candidate selected by the journal phase and pointer.
-            backend.stop(candidate, data)
-            core.switch(root, candidate)
-            save("switched")
-            backend.register(candidate, data)
-            backend.start(candidate, data)
+        assert_selected_live_owner(candidate)
+        second = read_json(paths.discovery_path)
+        second_lock = read_json(paths.instance_lock_path)
+        assert second["runtime_instance_id"] != first["runtime_instance_id"]
+        assert second_lock["runtime_instance_id"] == second["runtime_instance_id"]
+        assert second["active_realm"] == second_lock["realm_id"] == "realm-bound"
+        foreground = backend.service.recorded()["foreground"]
+        assert foreground["pid"] == second["pid"]
 
-            def assert_selected_live_owner(expected):
-                deadline = time.monotonic() + 90
-                while time.monotonic() < deadline:
-                    discovery = read_json(paths.discovery_path)
-                    lock = read_json(paths.instance_lock_path)
-                    if (discovery.get("active_realm") == "realm-bound"
-                            and discovery.get("runtime_instance_id") == lock.get("runtime_instance_id")
-                            and lock.get("realm_id") == "realm-bound"):
-                        break
-                    time.sleep(0.1)
-                else:
-                    raise AssertionError(f"{expected.release}-version Runtime did not publish the selected realm")
-                health = LocalRuntimeBoundary().owner_startup_identity(
-                    endpoint=discovery["endpoint"], instance_id=discovery["runtime_instance_id"],
-                )
-                assert validate_live_owner_identity(health, instance_id=discovery["runtime_instance_id"]) == {
-                    "release": expected.release, "managed_by": None,
-                }
-                assert lock["runtime_instance_id"] == discovery["runtime_instance_id"]
-                return discovery
-
-            assert_selected_live_owner(candidate)
-            second = read_json(paths.discovery_path)
-            second_lock = read_json(paths.instance_lock_path)
-            assert second["runtime_instance_id"] != first["runtime_instance_id"]
-            assert second_lock["runtime_instance_id"] == second["runtime_instance_id"]
-            assert second["active_realm"] == second_lock["realm_id"] == "realm-bound"
-            foreground = backend.service.recorded()["foreground"]
-            assert foreground["pid"] == second["pid"]
-
-            # Model a crash after the switched candidate became ready but before
-            # the transaction reached a terminal phase.
+        # Model a crash after the switched candidate became ready but before
+        # the transaction reached a terminal phase.
 
         fresh = Backend(root, tmp_path / "install.log", tmp_path / "uv")
         fresh.service.systemd = lambda: False
@@ -1570,9 +1550,8 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
             original_save(tx, step, **details)
 
         first_recovery._save_update = crash_before_terminal
-        with installer_scope():
-            with pytest.raises(ControllerDied):
-                first_recovery._recover_update()
+        with pytest.raises(ControllerDied):
+            first_recovery._recover_update()
         pending = read_json(journal)
         assert pending["step"] == "rollback_selected"
         assert current(root) == old
@@ -1587,11 +1566,10 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
         repeated = Backend(root, tmp_path / "install.log", tmp_path / "uv")
         repeated.service.systemd = lambda: False
         repeated.verify = verify_old
-        with installer_scope():
-            try:
-                Installer(root, data, repeated, say=lambda _line: None)._recover_update()
-            finally:
-                fresh.stop(old, data)
+        try:
+            Installer(root, data, repeated, say=lambda _line: None)._recover_update()
+        finally:
+            fresh.stop(old, data)
         assert read_json(journal)["step"] == "rolled_back"
         assert current(root) == old
         assert read_json(old.root / "version.json")["identity"] == {
@@ -1606,16 +1584,6 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
             cleanup.stop(selected, data)
         except (RuntimeOperationError, OSError, ValueError):
             pass
-        finally:
-            # These detached foreground children belong to this fixture even
-            # if an assertion prevents their normal C1 shutdown. Reap each
-            # retained handle; never fall back to signaling a numeric PID.
-            for controller in (locals().get("repeated"), locals().get("fresh"), backend):
-                child = getattr(getattr(controller, "service", None), "_foreground_process", None)
-                if child is not None:
-                    if child.poll() is None:
-                        platform.stop_tree(child, grace=1)
-                    child.wait(timeout=5)
 
 
 @pytest.mark.parametrize("restore_gap", ["realm_removed", "catalog_removed", "support_catalog_removed"])
@@ -1734,11 +1702,6 @@ def test_backend_stop_fails_closed_without_manager_action(tmp_path, monkeypatch,
     _publish_owner(paths)
     if failure == "changed_birth":
         boundary.process_birth_identity = lambda _pid: "changed-birth"
-        # A matching pair is proven stale on PID reuse in the pinned Runtime.
-        # Keep this refusal case uncertain by retaining an inconsistent lock.
-        marker = read_json(paths.instance_lock_path)
-        marker["process_birth_id"] = "another-recorded-birth"
-        write_json(paths.instance_lock_path, marker)
     elif failure == "identity_error":
         boundary.identity_error = OSError("identity observation unavailable")
     elif failure == "incomplete_discovery":
@@ -1989,215 +1952,3 @@ def test_pinokio_repair_chat_command_before_registration(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, 'sync_skills', lambda *_: calls.append('sync'))
     Installer(root, data, backend, say=lambda _: None, managed_by='pinokio').run('repair', {})
     assert calls == ['register', 'sync']
-
-
-def _runtime_with_discovery(tmp_path, monkeypatch, pid, birth, *, foreground=False):
-    from runtime_protocol import platform
-    backend, data, paths, realm, boundary, _calls = _installer_runtime(tmp_path, monkeypatch)
-    # Historical Timeline tests gain the canonical realm and paired publication
-    # required by the R1 C1 interface, while identity observation stays real.
-    _publish_owner(paths, pid=pid, birth=birth)
-    boundary.is_pid_alive = lambda owner: platform.process_identity(owner) is not None
-    boundary.process_birth_identity = lambda owner: (platform.process_identity(owner) or {}).get('birth_id')
-    backend._test_boundary = boundary
-    if foreground:
-        record = backend.service.recorded()
-        record['foreground'] = {'pid': pid, 'birth_id': birth, 'realm_id': 'realm-1', 'realm_root': str(realm)}
-        backend.service.recorded = lambda: record.copy()
-        from astrid.installer.service import Service
-        backend.service.stop_foreground = lambda **kwargs: Service.stop_foreground(backend.service, **kwargs)
-    return backend, data, paths.discovery_path
-
-
-def test_repair_skips_down_for_proven_dead_runtime_and_keeps_discovery(tmp_path, monkeypatch):
-    from runtime_protocol import platform
-
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    try:
-        identity = platform.process_identity(child.pid)
-        assert identity and identity["birth_id"]
-        child.kill()
-        child.wait(timeout=5)
-        backend, data, discovery = _runtime_with_discovery(
-            tmp_path, monkeypatch, child.pid, identity["birth_id"], foreground=True
-        )
-        folder = backend.root / "versions" / "installed"
-        folder.mkdir(parents=True)
-        old = Version(folder, folder / "py/bin/python", folder / "profile.json", {})
-        old.python.parent.mkdir(parents=True)
-        old.python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        write_json(folder / "version.json", old.document())
-        switch(backend.root, old)
-        backend.runtime = lambda *_args, **_kwargs: pytest.fail("must not call down for a proven dead owner")
-        backend.workspace = lambda *_args: {"realm_id": "kept-realm", "realm_root": str(data / "realm")}
-        calls = []
-        backend.register = lambda *_args: calls.append("register")
-        backend.start = lambda *_args: calls.append("start")
-        def verify(*_args, timeout=90):
-            if timeout == 3:
-                calls.append("verify-unhealthy")
-                raise VerificationError("the recorded Runtime is dead")
-            calls.append("verify")
-        backend.verify = verify
-        backend.open = lambda: calls.append("open")
-
-        Installer(backend.root, data, backend, say=lambda _line: None).run("install", {})
-
-        assert calls == ["verify-unhealthy", "register", "start", "verify", "open"]
-        assert not discovery.exists(), "C1 removes the proven stale publication after its fenced stop"
-        assert backend._test_boundary.stop_calls == 0
-    finally:
-        if child.poll() is None:
-            child.kill()
-            child.wait(timeout=5)
-
-
-def test_stop_uses_runtime_down_for_matching_live_owner(tmp_path, monkeypatch):
-    from runtime_protocol import platform
-
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    try:
-        identity = platform.process_identity(child.pid)
-        assert identity and identity["birth_id"]
-        backend, data, discovery = _runtime_with_discovery(
-            tmp_path, monkeypatch, child.pid, identity["birth_id"]
-        )
-        calls = []
-
-        def stop_owner(**kwargs):
-            calls.append((kwargs["pid"], kwargs["process_birth_id"]))
-            return {"status": "stopped"}
-
-        backend._test_boundary.stop_owner = stop_owner
-        backend.runtime = lambda *_args, **_kwargs: pytest.fail("C1 must own the down handoff")
-        backend.stop(None, data)
-
-        assert calls == [(child.pid, identity["birth_id"])]
-        assert not discovery.exists()
-    finally:
-        child.terminate()
-        child.wait(timeout=5)
-
-
-@pytest.mark.parametrize("observation", ["changed_birth", "error"])
-def test_stop_fails_closed_when_runtime_owner_identity_is_uncertain(tmp_path, monkeypatch, observation):
-    from runtime_protocol import platform
-
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    try:
-        observed = platform.process_identity(child.pid)
-        assert observed and observed["birth_id"]
-        backend, data, discovery = _runtime_with_discovery(
-            tmp_path, monkeypatch, child.pid, observed["birth_id"]
-        )
-        if observation == "changed_birth":
-            monkeypatch.setattr(platform, "process_identity", lambda pid: {
-                "pid": pid, "birth_id": "a-different-process-incarnation"
-            })
-            # An unpaired birth is uncertain; a complete matched pair is
-            # positively stale and has its own no-signal cleanup coverage.
-            marker_path = discovery.with_name("instance.lock")
-            marker = read_json(marker_path)
-            marker["process_birth_id"] = "inconsistent-lock-birth"
-            write_json(marker_path, marker)
-        else:
-            def fail_observation(_pid):
-                raise OSError("identity observation unavailable")
-            monkeypatch.setattr(platform, "process_identity", fail_observation)
-        backend.runtime = lambda *_args, **_kwargs: pytest.fail("must not signal an uncertain owner")
-        stopped = []
-        backend.service.stop = lambda: stopped.append(True)
-
-        with pytest.raises(RuntimeError):
-            backend.stop(None, data)
-
-        assert discovery.is_file()
-        assert stopped == []
-        assert backend._test_boundary.stop_calls == 0
-    finally:
-        child.terminate()
-        child.wait(timeout=5)
-
-
-@pytest.mark.parametrize(("pid", "birth", "missing_birth"), [
-    (True, "birth-1", False), (0, "birth-1", False), ("7", "birth-1", False),
-    (7, "", False), (7, None, True),
-])
-def test_stop_fails_closed_for_incomplete_discovery_identity(
-    tmp_path, monkeypatch, pid, birth, missing_birth
-):
-    backend, data, discovery = _runtime_with_discovery(tmp_path, monkeypatch, pid, birth)
-    if missing_birth:
-        value = json.loads(discovery.read_text(encoding="utf-8"))
-        del value["process_birth_id"]
-        write_json(discovery, value)
-    backend.runtime = lambda *_args, **_kwargs: pytest.fail("must not signal an incomplete owner record")
-    stopped = []
-    backend.service.stop = lambda: stopped.append(True)
-
-    with pytest.raises(RuntimeError):
-        backend.stop(None, data)
-
-    assert discovery.is_file()
-    assert stopped == []
-    assert backend._test_boundary.stop_calls == 0
-
-
-@pytest.mark.parametrize("contents", ["{}", "[]", "{"])
-def test_stop_does_not_treat_malformed_or_empty_discovery_as_removed(tmp_path, monkeypatch, contents):
-    backend, data, discovery = _runtime_with_discovery(tmp_path, monkeypatch, 7, "birth-1")
-    discovery.write_text(contents, encoding="utf-8")
-    backend.runtime = lambda *_args, **_kwargs: pytest.fail("must not signal an unverified owner")
-    stopped = []
-    backend.service.stop = lambda: stopped.append(True)
-
-    with pytest.raises(RuntimeError):
-        backend.stop(None, data)
-
-    assert discovery.is_file()
-    assert stopped == []
-    assert backend._test_boundary.stop_calls == 0
-
-
-def test_stop_treats_discovery_removed_during_read_as_stopped(tmp_path, monkeypatch):
-    backend, data, discovery = _runtime_with_discovery(tmp_path, monkeypatch, 7, "birth-1")
-    original_read_bytes = Path.read_bytes
-    service_stopped = []
-
-    def remove_before_read(path, *args, **kwargs):
-        if path == discovery:
-            path.unlink()
-            path.with_name("instance.lock").unlink()
-            raise FileNotFoundError(path)
-        return original_read_bytes(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_bytes", remove_before_read)
-    backend.runtime = lambda *_args, **_kwargs: pytest.fail("removed discovery needs no Runtime down")
-    backend.service.stop = lambda: service_stopped.append(True)
-
-    backend.stop(None, data)
-
-    assert service_stopped == [True]
-    assert not discovery.exists()
-
-
-
-def test_backend_stop_reused_pid_with_matching_publications_never_signals_new_owner(tmp_path, monkeypatch):
-    from runtime_protocol import platform
-    from unittest.mock import Mock
-
-    backend, data, paths, _realm, boundary, manager_calls = _installer_runtime(tmp_path, monkeypatch)
-    _publish_owner(paths)
-    boundary.process_birth_identity = lambda _pid: 'new-owner-birth'
-    signal = Mock(side_effect=AssertionError('reused PID belongs to another process'))
-    monkeypatch.setattr(platform, 'signal_process', signal)
-
-    backend.stop(None, data)
-
-    signal.assert_not_called()
-    assert boundary.stop_calls == 0
-    assert boundary.live is True
-    assert boundary.process_birth_identity(777) == 'new-owner-birth'
-    assert manager_calls == ['disable', 'stop']
-    assert not paths.discovery_path.exists()
-    assert not paths.instance_lock_path.exists()

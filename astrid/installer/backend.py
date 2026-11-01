@@ -119,8 +119,7 @@ class Backend:
         env = {k: v for k, v in os.environ.items() if k not in {
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
             "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
-            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH", "ASTRID_INSTALLER_OPERATION_ID",
-            "ASTRID_TIMELINE_SCHEMA_PYTHONPATH"}
+            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH", "ASTRID_INSTALLER_OPERATION_ID"}
                and not (clean_bun_env and (k.startswith("BUN_") or k == "NODE_OPTIONS"))}
         env.update({"PYTHONIOENCODING": "utf-8"})
         env.update(extra_env or {})
@@ -382,38 +381,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     or any(part.is_symlink() for part in (path, *path.parents))):
                 raise RuntimeError("The selected Python resolves Astrid code outside its installed product tree.")
         return product_root
-    @staticmethod
-    def _verify_local_timeline_schema(agent: Path) -> Path:
-        """Verify the Agent's vendored schema against its Runtime source pin."""
-        relative = Path("astrid/core/timeline/schema/timeline-config.schema.json")
-        schema = agent / relative
-        if not schema.is_file() or schema.is_symlink():
-            raise ValueError("staged Agent is missing the local canonical timeline schema")
-        lock = read_json(agent / "runtime.lock.json")
-        files = lock.get("files") if isinstance(lock, dict) else None
-        pin = files.get(relative.as_posix()) if isinstance(files, dict) else None
-        if not isinstance(pin, dict) or pin.get("from") != "contract/schemas/timeline-config.schema.json":
-            raise ValueError("staged Agent has no approved Runtime source pin for the local timeline schema")
-        expected = pin.get("sha256")
-        actual = "sha256:" + hashlib.sha256(schema.read_bytes()).hexdigest()
-        if expected != actual:
-            raise ValueError("staged Agent local timeline schema does not match its Runtime source pin")
-        return schema
-
-    def _verify_installed_timeline_schema(self, python: Path, product_root: Path,
-                                          env: dict[str, str]) -> None:
-        """Prove admission with the reader and validator the selected Python imports."""
-        script = "\n".join((
-            "import os,sys",
-            "from pathlib import Path",
-            "from astrid.core.rendering._local_schema import load_verified_schema",
-            "from astrid.core.timeline import banodoco_schema as reader",
-            "root = Path(sys.argv[1])",
-            "schema = load_verified_schema(root, os.environ['ASTRID_TIMELINE_SCHEMA_PYTHONPATH'])",
-            "if reader._shared_timeline_validator().schema != schema:",
-            "    raise ValueError('installed timeline validator differs from verified schema')",
-        ))
-        self.run([python, "-X", "utf8", "-I", "-B", "-c", script, product_root], extra_env=env)
 
     def workspace(self, version: Version | None, data: Path) -> dict:
         interpreter = version if version is not None and version.python.is_file() else None
@@ -622,11 +589,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # CLI entry already preflighted; down takes fresh C1 admission for
             # every stop, including recovery and rollback.
             discovery = read_json(paths.discovery_path)
-            if discovery and (type(discovery.get("pid")) is not int
-                              or discovery["pid"] <= 0
-                              or not isinstance(discovery.get("process_birth_id"), str)
-                              or not discovery["process_birth_id"].strip()):
-                raise ValueError("Runtime discovery owner identity is incomplete; refusing to stop it.")
             owner_pid = discovery.get("pid") if isinstance(discovery, dict) else None
             if type(owner_pid) is not int or owner_pid <= 0:
                 owner_pid = None
@@ -896,7 +858,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                          **({"repo": manifest["runtime"]["repo"]} if "repo" in manifest["runtime"] else {}))
         vibecomfy = source("vibecomfy", manifest["vibecomfy"]["sha"], folder / "v",
                           **({"repo": manifest["vibecomfy"]["repo"]} if "repo" in manifest["vibecomfy"] else {}))
-        self._verify_local_timeline_schema(agent)
         environment = folder / "py"
         self.run([self.uv, "venv", "--python", manifest["tools"]["python"]["version"], environment])
         python = venv_python(environment)
@@ -915,16 +876,15 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         version = Version(folder, python, profile, env, **install_identity(folder))
         env = version.env
         npm = binary(folder / "tools" / "node", "npm-cli.js")
-        self.install_remotion_dependencies(agent, env, npm)
+        npm_installed = self.install_remotion_dependencies(agent, env, npm)
+        # The lockfile's transitive @banodoco/timeline-schema package is the
+        # source used by host_bootstrap. Install its Python subtree from this
+        # candidate's npm tree so the environment follows the same pinned
+        # package as the Remotion bundle.
+        if npm_installed:
+            schema_python = agent / "remotion" / "node_modules" / "@banodoco" / "timeline-schema" / "python"
+            self.run([self.uv, "pip", "install", "--python", python, "--no-deps", schema_python])
         product_root = self._installed_product_root(python, env)
-        # The wheel contains the schema and its reader. Retain the producer's
-        # unmodified lock beside the installed package, then admit those bytes
-        # before declaring services. The source and npm trees never substitute
-        # for a missing or changed wheel resource.
-        shutil.copyfile(agent / "runtime.lock.json", product_root / "runtime.lock.json")
-        schema = self._verify_local_timeline_schema(product_root)
-        env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] = str(schema)
-        self._verify_installed_timeline_schema(python, product_root, env)
         # Python files execute from the selected venv's noneditable install.
         # Keep source-only resources explicit because they are not wheel data.
         env["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
@@ -932,6 +892,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         remotion_project = agent / "remotion"
         if (remotion_project / "package.json").is_file() and (remotion_project / "node_modules").is_dir():
             env["ASTRID_REMOTION_PROJECT_DIR"] = str(remotion_project.resolve())
+        schema_root = remotion_project / "node_modules" / "@banodoco" / "timeline-schema" / "python"
+        if (schema_root / "banodoco_timeline_schema" / "__init__.py").is_file():
+            env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] = str(schema_root.resolve())
         capability_matrix = agent / "config" / "astrid-beta-capabilities.json"
         if capability_matrix.is_file():
             env["ASTRID_CAPABILITY_MATRIX_PATH"] = str(capability_matrix.resolve())
@@ -983,12 +946,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         declaration = absolute(profile["service_declaration"])
         if not declaration.is_file():
             raise ValueError("The staged service declaration is missing or is not a file.")
-        if version.env.get("ASTRID_HOST_EXECUTION_PROFILE") == "installed":
-            product_root = absolute(profile["source_checkout"])
-            schema = self._verify_local_timeline_schema(product_root)
-            if version.env.get("ASTRID_TIMELINE_SCHEMA_PYTHONPATH") != str(schema):
-                raise ValueError("The candidate timeline schema differs from its installed package.")
-            self._verify_installed_timeline_schema(version.python, product_root, version.env)
         validate_script = "\n".join((
             "import sys",
             "from pathlib import Path",

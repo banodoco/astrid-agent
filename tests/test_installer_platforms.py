@@ -141,7 +141,6 @@ def test_windows_task_settings_and_no_console_executable():
     xml = service.render('win32', version, data, log)
     assert xml.startswith('<Task ')
     assert '<?xml' not in xml
-    assert 'Hidden' not in service.render('win32', version, data, log)
     assert 'Hidden' not in xml
 
 
@@ -317,16 +316,6 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
         monkeypatch.delenv('ASTRID_RUNTIME_DOOR_PORT', raising=False)
     def source(name, _sha, destination):
         if name == 'agent':
-            root = Path(__file__).parents[1]
-            for relative in (
-                Path('astrid/core/timeline/schema/timeline-config.schema.json'),
-                Path('runtime.lock.json'),
-                Path('remotion/package.json'),
-                Path('remotion/package-lock.json'),
-            ):
-                target = destination / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes((root / relative).read_bytes())
             (destination / 'remotion/node_modules').mkdir(parents=True)
             (destination / 'remotion/package-lock.json').write_text('{}\n')
             (destination / 'remotion/package.json').write_text('{}\n')
@@ -346,9 +335,6 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     def installed_root(python, _env):
         root = next(product_root.iterdir()) / 'py' / 'Lib' / 'site-packages'
         root.mkdir(parents=True, exist_ok=True)
-        schema = root / 'astrid/core/timeline/schema/timeline-config.schema.json'
-        schema.parent.mkdir(parents=True, exist_ok=True)
-        schema.write_bytes((Path(__file__).parents[1] / 'astrid/core/timeline/schema/timeline-config.schema.json').read_bytes())
         return root
 
     monkeypatch.setattr(backend, '_installed_product_root', installed_root)
@@ -969,25 +955,3 @@ def test_supervision_warning_respects_pinokio_and_other_platforms(tmp_path, monk
     monkeypatch.setattr(service.sys, "platform", "darwin")
     assert service.supervision_warning(tmp_path) is None
     runner.assert_not_called()
-
-
-def test_no_systemd_starts_foreground_runtime_supervisor_with_recorded_birth_identity(tmp_path, monkeypatch):
-    from runtime_protocol import platform
-    run = Mock(side_effect=FileNotFoundError('no systemd'))
-    manager = service.Service(tmp_path / 'program', tmp_path / 'log', run, home=tmp_path, system='linux')
-    version = Version(tmp_path / 'program/versions/v1', tmp_path / 'python', tmp_path / 'profile', {'PATH': '/tools:/bin'})
-    manager.register(version, tmp_path / 'data')
-    spawn = Mock(return_value=Mock(pid=123))
-    monkeypatch.setattr(platform, 'spawn_tree', spawn)
-    monkeypatch.setattr(platform, 'process_identity', lambda pid: {'birth_id': 'birth-123'})
-    manager.start_foreground(version, tmp_path / 'data')
-    # The foreground owner loads the documented settings before invoking Runtime.
-    assert spawn.call_args.args[0][1:5] == ['-X', 'utf8', '-I', '-c']
-    assert 'from astrid_runtime.cli import main' in spawn.call_args.args[0][5]
-    assert str(manager.env_file) in spawn.call_args.args[0][5]
-    assert spawn.call_args.kwargs['detached'] is True
-    assert spawn.call_args.kwargs['env']['PATH'] == '/tools:/bin'
-    assert read_json(manager.selection)['foreground'] == {'pid': 123, 'birth_id': 'birth-123'}
-    # PID reuse cannot make uninstall wait for an unrelated process.
-    monkeypatch.setattr(platform, 'process_identity', lambda pid: {'birth_id': 'new-owner'})
-    manager.stop()

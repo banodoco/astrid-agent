@@ -8,7 +8,6 @@ from copy import deepcopy
 from fractions import Fraction
 from typing import Any
 
-from . import _timeline_filmstrip_scene as _filmstrip_scene
 from .exceptions import CapabilityValidationError
 from .pagination import page_pair, paged_rows
 from .project_render import _SUCCESS_STATES, _identifier, _render_capability, _state
@@ -18,20 +17,6 @@ _AUTHORITY_IDENTITY_FIELDS = (
     'config_version', 'head_event_id', 'head_hash', 'config_hash', 'registry_hash',
     'materialized_registry_hash',
 )
-
-_SCENE_ONLY_FORBIDDEN_INPUTS = _filmstrip_scene._SCENE_ONLY_FORBIDDEN_INPUTS
-_SCENE_ONLY_FORMATS = _filmstrip_scene._SCENE_ONLY_FORMATS
-_SCENE_ONLY_MODE = _filmstrip_scene._SCENE_ONLY_MODE
-_invoke_scene_only = _filmstrip_scene._invoke_scene_only
-_scene_only_authority = _filmstrip_scene._scene_only_authority
-_scene_only_bundle_payload = _filmstrip_scene._scene_only_bundle_payload
-_scene_only_candidate_request = _filmstrip_scene._scene_only_candidate_request
-_scene_only_expected_label = _filmstrip_scene._scene_only_expected_label
-_scene_only_request = _filmstrip_scene._scene_only_request
-_scene_only_result_payload = _filmstrip_scene._scene_only_result_payload
-_scene_only_result_sources = _filmstrip_scene._scene_only_result_sources
-_scene_only_spans = _filmstrip_scene._scene_only_spans
-_scene_only_unavailable = _filmstrip_scene._scene_only_unavailable
 
 
 def matching_composed_render(
@@ -353,16 +338,12 @@ def _open_current_input_closure(
     if not isinstance(projected_config, Mapping) or not isinstance(projected_registry, Mapping):
         _fail("Runtime returned an invalid exact parent composition closure.")
     authority = {
-        **deepcopy(dict(expansion or {})),
         "parent_revision_id": parent_head,
         "parent_content_digest": parent.get("content_digest"),
         "children": deepcopy(list((expansion or {}).get("children") or [])),
         "shots": deepcopy(list((expansion or {}).get("shots") or [])),
         "occurrences": deepcopy(list((expansion or {}).get("occurrences") or [])),
         "canonical": True,
-        # Transient host proof. It is stripped before this closure is sent to
-        # Runtime, whose expansion must remain byte-for-byte authoritative.
-        "_host_transition_contract": "runtime-parent-closure/v1",
     }
     return deepcopy(dict(projected_config)), deepcopy(dict(projected_registry)), authority
 
@@ -423,14 +404,13 @@ def _candidate_shot_row(shot: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "shot_id": shot["shot_id"],
         "revision_id": shot["revision_id"],
-        "content_digest": shot["content_digest"],
         "name": str(metadata.get("name") or metadata.get("title") or payload.get("name") or shot["shot_id"]),
         "text_bindings": list(payload.get("text_bindings") or []) if isinstance(payload.get("text_bindings"), list) else [],
     }
 
 
 def _open_candidate_input_closure(
-    client: Any, *, project_id: str, timeline_id: str, preview: Mapping[str, Any],
+    client: Any, *, project_id: str, preview: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Like ``_open_current_input_closure``, but for an unpublished working copy (a frozen candidate)."""
     from astrid.sdk.authoring_render_preview import candidate_projection
@@ -441,11 +421,8 @@ def _open_candidate_input_closure(
         _fail(f"The working copy cannot be projected for inspection: {exc}")
     projected = built["projected"]
     publication = built["publication"]
-    if publication["project_id"] != project_id or publication["timeline_id"] != timeline_id:
-        _fail("The working copy targets a different project or timeline.")
     authority = {
         "parent_revision_id": publication["parent_revision_id"],
-        "parent_content_digest": publication["content_digest"],
         "children": [
             {"timeline_id": row["timeline_id"], "revision_id": row["revision_id"],
              "config_version": 1, "config_hash": row["content_digest"]}
@@ -455,9 +432,6 @@ def _open_candidate_input_closure(
         "occurrences": [dict(row) for row in projected.occurrences],
         "canonical": True,
         "working_copy": built["marker"],
-        # candidate_projection has validated and frozen this exact typed
-        # authoring bundle; the marker never comes from caller labels.
-        "_host_transition_contract": "runtime-parent-closure/v1",
     }
     return deepcopy(dict(projected.config)), deepcopy(dict(projected.registry)), authority
 
@@ -698,9 +672,6 @@ def prepare_filmstrip(
     _composed_media_attachment: bool = False,
 ) -> dict:
     """Select a successful managed render; never admit a caller-provided file."""
-    from astrid.core.rendering.verified_source import reject_source_keys
-
-    reject_source_keys(inputs)
     if client is None:
         from .client import AstridClient
         with AstridClient.open_from_launcher() as connected:
@@ -739,38 +710,14 @@ def prepare_filmstrip(
     if 'output' not in components['resolved'] and timeline_row is not None and not exact:
         if not (timeline_row.get('head_revision_id') or timeline_row.get('parent_revision_id')):
             _fail('Timeline has no canonical current parent head.')
-        timeline_identity_keys: tuple[str, ...] = (
-            'timeline_id', 'slug', 'config_version', 'head_event_id', 'head_hash',
-            'config_hash', 'registry_hash',
-        )
         if isinstance(inputs.get('authoring_preview'), Mapping):
             config, registry, closure = _open_candidate_input_closure(
-                client, project_id=project_id,
-                timeline_id=str(_identifier(timeline_row, 'timeline_id', 'id')),
-                preview=inputs['authoring_preview'])
+                client, project_id=project_id, preview=inputs['authoring_preview'])
         else:
-            requested_revision = inputs.get('revision_id')
-            if requested_revision not in (None, '') and (
-                not isinstance(requested_revision, str) or not requested_revision.strip()
-            ):
-                _fail('Input inspection revision_id must be a non-empty revision string.')
-            selected_row = dict(timeline_row)
-            if requested_revision not in (None, ''):
-                # The listing is the mutable current-head scope. Replace only
-                # its parent selector; the exact closure reader below verifies
-                # that Runtime returned this immutable requested revision.
-                selected_row['head_revision_id'] = str(requested_revision)
-                selected_row['parent_revision_id'] = str(requested_revision)
-                # These fields describe the mutable listing, not the exact
-                # historical closure. Do not carry them beside old content.
-                timeline_identity_keys = ('timeline_id', 'slug')
             config, registry, closure = _open_current_input_closure(
-                client, project_id=project_id, timeline_row=selected_row,
+                client, project_id=project_id, timeline_row=timeline_row,
                 config={}, registry={'assets': {}},
             )
-            if requested_revision not in (None, '') and closure.get('parent_revision_id') != str(requested_revision):
-                _fail('Input inspection resolved a different immutable parent than the requested revision.')
-        closure.pop('_host_transition_contract', None)
         from astrid.core.timeline.duration import timeline_duration_frames
         canvas = config.get('theme_overrides', {}).get('visual', {}).get('canvas', {})
         fps = canvas.get('fps', 30) if isinstance(canvas, Mapping) else 30
@@ -807,7 +754,7 @@ def prepare_filmstrip(
                     },
                     'timeline_identity': {
                         key: timeline_row.get(key)
-                        for key in timeline_identity_keys
+                        for key in ('timeline_id', 'slug', 'config_version', 'head_event_id', 'head_hash', 'registry_hash')
                         if timeline_row.get(key) is not None
                     },
                     **({'parent_revision_id': closure['parent_revision_id']} if closure else {}),
@@ -839,9 +786,7 @@ def prepare_filmstrip(
             _fail('Composed frame capture requires an immutable parent revision.')
         if isinstance(inputs.get('authoring_preview'), Mapping):
             config, registry, closure = _open_candidate_input_closure(
-                client, project_id=project_id,
-                timeline_id=str(_identifier(capture_row, 'timeline_id', 'id')),
-                preview=inputs['authoring_preview'])
+                client, project_id=project_id, preview=inputs['authoring_preview'])
             requested_revision = None
         else:
             try:
@@ -853,18 +798,19 @@ def prepare_filmstrip(
                 _fail(f'Composed frame capture cannot resolve admitted saved revision {requested_revision!r}: {exc}')
             except Exception as exc:
                 _fail(f'Composed frame capture cannot resolve admitted saved revision {requested_revision!r}: {exc}')
-        host_transition_contract = closure.pop('_host_transition_contract', None)
-        # The parent projection carries canonical media identities. Check them
-        # against managed render admission so every asset is authorized and
-        # materializable before Remotion runs, but send the projection itself:
-        # Runtime admits a capture only when its registry equals that projection.
+        # The parent projection carries canonical media identities, but the
+        # generic host only accepts a runtime-admitted registry snapshot. Keep
+        # this composed-capture path aligned with managed render admission so
+        # every asset is authorized and materializable before Remotion runs.
         from astrid.packs.rendering.actions.render.managed_timeline import (
             _runtime_snapshot_registry,
         )
         registry_client = remote if callable(
             getattr(getattr(remote, 'media', None), 'list', None)
         ) else client
-        _runtime_snapshot_registry(registry, project_ref=canonical_project, client=registry_client)
+        registry = _runtime_snapshot_registry(
+            registry, project_ref=canonical_project, client=registry_client
+        )
         parent_revision = (
             closure.get('parent_revision_id')
             or capture_row.get('head_revision_id')
@@ -885,9 +831,12 @@ def prepare_filmstrip(
         if closure.get('parent_content_digest') is not None:
             authority['parent_content_digest'] = closure['parent_content_digest']
         authority['expansion'] = deepcopy(closure)
-        from astrid.core.rendering.profile import resolve_render_profile
-
-        fps = Fraction(*resolve_render_profile(config, registry).fps_rational)
+        canvas = config.get('theme_overrides', {}).get('visual', {}).get('canvas', {})
+        fps_value = canvas.get('fps', 30) if isinstance(canvas, Mapping) else 30
+        try:
+            fps = Fraction(str(fps_value))
+        except (TypeError, ValueError, ZeroDivisionError):
+            fps = Fraction(30, 1)
         capture_identity = 'sha256:' + hashlib.sha256(
             json.dumps(
                 {'authority': authority, 'config': config, 'registry': registry},
@@ -910,30 +859,7 @@ def prepare_filmstrip(
         snapshot['registry'] = deepcopy(registry)
         snapshot['metadata']['selection'] = 'composed_frame_capture'
         snapshot['metadata']['capture_authority'] = deepcopy(authority)
-        if host_transition_contract == 'runtime-parent-closure/v1':
-            # Host-only provenance is kept alongside the immutable capture,
-            # never mixed into Runtime's authoritative expansion payload.
-            snapshot['metadata']['host_transition_contract'] = host_transition_contract
         snapshot['metadata']['capture_identity'] = capture_identity
-        from astrid.core.timeline.astrid_ns import read_app
-
-        # The projector retains the original IDs explicitly, including opaque
-        # IDs containing colons. Keep every clip, including audio-only clips.
-        scene_clips = {}
-        for clip in config.get('clips', []):
-            clip_id = clip['id']
-            if clip_id in scene_clips:
-                _fail('Composed frame capture has duplicate projected clip IDs.')
-            app = read_app(clip)
-            source = clip.get('app', {}).get('astrid_shot_composition', {})
-            source_id = source.get('source_clip_id', clip_id)
-            cut, layer = app.get('cut'), app.get('layer')
-            scene_clips[clip_id] = {
-                'address': f'{cut}.{layer}' if cut and layer else source_id,
-                'source_clip_id': source_id,
-                'occurrence_id': source.get('occurrence_id'),
-            }
-        snapshot['metadata']['scene_clips'] = scene_clips
         snapshot['metadata']['requested_revision_id'] = requested_revision or parent_revision
         if isinstance(closure.get('working_copy'), Mapping):
             # Provenance: these frames are of an unpublished working copy, built on this base.

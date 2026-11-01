@@ -1701,15 +1701,6 @@
             "--draft": {
               "required": false
             },
-            "--dry-run": {
-              "required": false
-            },
-            "--idempotency-key": {
-              "required": false
-            },
-            "--json": {
-              "required": false
-            },
             "--project": {
               "required": false
             }
@@ -1806,35 +1797,6 @@
             },
             "--project": {
               "required": false
-            }
-          },
-          "positionals": [
-            "ref"
-          ],
-          "verbs": {}
-        },
-        "commit": {
-          "flags": {
-            "--dry-run": {
-              "required": false
-            },
-            "--file": {
-              "required": true
-            },
-            "--idempotency-key": {
-              "required": true
-            },
-            "--json": {
-              "required": false
-            },
-            "--message": {
-              "required": true
-            },
-            "--project": {
-              "required": false
-            },
-            "-m": {
-              "required": true
             }
           },
           "positionals": [
@@ -2009,9 +1971,6 @@
             "--draft": {
               "required": false
             },
-            "--dry-run": {
-              "required": false
-            },
             "--duration": {
               "required": false
             },
@@ -2067,9 +2026,6 @@
             "--id": {
               "required": false
             },
-            "--idempotency-key": {
-              "required": false
-            },
             "--insert": {
               "required": false
             },
@@ -2077,9 +2033,6 @@
               "required": false
             },
             "--insert-line": {
-              "required": false
-            },
-            "--json": {
               "required": false
             },
             "--keep": {
@@ -2496,72 +2449,13 @@
           ],
           "verbs": {}
         },
-        "pending": {
-          "flags": {},
-          "positionals": [],
-          "verbs": {
-            "drop": {
-              "flags": {
-                "--json": {
-                  "required": false
-                },
-                "--project": {
-                  "required": true
-                },
-                "--reason": {
-                  "required": false
-                }
-              },
-              "positionals": [
-                "ref",
-                "ref_id"
-              ],
-              "verbs": {}
-            },
-            "list": {
-              "flags": {
-                "--all": {
-                  "required": false
-                },
-                "--all-actors": {
-                  "required": false
-                },
-                "--json": {
-                  "required": false
-                },
-                "--project": {
-                  "required": true
-                }
-              },
-              "positionals": [
-                "ref"
-              ],
-              "verbs": {}
-            },
-            "show": {
-              "flags": {
-                "--json": {
-                  "required": false
-                },
-                "--project": {
-                  "required": true
-                }
-              },
-              "positionals": [
-                "ref",
-                "ref_id"
-              ],
-              "verbs": {}
-            }
-          }
-        },
-        "place-element": {
+        "publish": {
           "flags": {
-            "--element": {
-              "required": true
+            "--draft": {
+              "required": false
             },
-            "--expected-head": {
-              "required": true
+            "--force": {
+              "required": false
             },
             "--idempotency-key": {
               "required": false
@@ -2569,25 +2463,13 @@
             "--json": {
               "required": false
             },
-            "--kind": {
-              "choices": [
-                "effect"
-              ],
-              "required": false
-            },
-            "--pack": {
+            "--message": {
               "required": true
             },
             "--project": {
-              "required": true
+              "required": false
             },
-            "--realm": {
-              "required": true
-            },
-            "--revision": {
-              "required": true
-            },
-            "--target": {
+            "-m": {
               "required": true
             }
           },
@@ -2615,19 +2497,7 @@
         },
         "redo": {
           "flags": {
-            "--commit": {
-              "required": false
-            },
             "--draft": {
-              "required": false
-            },
-            "--dry-run": {
-              "required": false
-            },
-            "--idempotency-key": {
-              "required": false
-            },
-            "--json": {
               "required": false
             },
             "--project": {
@@ -2766,24 +2636,6 @@
           },
           "positionals": [
             "ref"
-          ],
-          "verbs": {}
-        },
-        "retry": {
-          "flags": {
-            "--commit": {
-              "required": false
-            },
-            "--json": {
-              "required": false
-            },
-            "--project": {
-              "required": true
-            }
-          },
-          "positionals": [
-            "ref",
-            "ref_id"
           ],
           "verbs": {}
         },
@@ -3060,9 +2912,6 @@
             "--limit": {
               "required": false
             },
-            "--native": {
-              "required": false
-            },
             "--occurrence": {
               "required": false
             },
@@ -3151,19 +3000,7 @@
         },
         "undo": {
           "flags": {
-            "--commit": {
-              "required": false
-            },
             "--draft": {
-              "required": false
-            },
-            "--dry-run": {
-              "required": false
-            },
-            "--idempotency-key": {
-              "required": false
-            },
-            "--json": {
               "required": false
             },
             "--project": {

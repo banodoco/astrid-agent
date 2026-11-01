@@ -138,9 +138,7 @@ def _card_chapter(card: Mapping[str, Any], index_by_occurrence: Mapping[str, int
 
 def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: str, render_run_id: str,
                        render_selection: str, occurrences=(), duration_seconds: float | None = None,
-                       show_output: bool = True, thinned_from: int | None = None, overlay=None, audio=None,
-                       revision_label: Mapping[str, Any] | None = None,
-                       event_coverage: Mapping[str, Any] | None = None) -> list[str]:
+                       show_output: bool = True, thinned_from: int | None = None, overlay=None, audio=None) -> list[str]:
     """Write one bounded contact sheet (``contact-sheet.png``) and return its path."""
     from PIL import Image, ImageDraw
 
@@ -189,23 +187,11 @@ def static_contact_png(cards, out_root: Path, *, columns: int, timeline_name: st
         title = f'{timeline_name} · contact sheet · {len(cards)} tiles'
     if thinned_from:
         title += f' · {thinned_from} cuts, thinned to fit'
-    revision_text = revision_label.get('label') if isinstance(revision_label, Mapping) else None
-    if revision_text:
-        title += f' · {revision_text}'
     title_lines = _png_chrome_lines(measure, title, title_font, width - 2 * CONTACT_MARGIN, 2)
     provenance = (f'Render {render_run_id} · selection: {render_selection} ({selection_gloss(render_selection)}) · '
                   'cNN = cut number, chNN = chapter; each tile is the cut once its layers have entered; '
                   'words are word-aligned only when VO app.words exist, else the shot script.')
-    if revision_text:
-        provenance += f' · revision: {revision_text}'
-    if isinstance(event_coverage, Mapping) and event_coverage.get('event_count'):
-        provenance += (f" · event moments: {event_coverage.get('sampled_event_moment_count', 0)} sampled, "
-                       f"{event_coverage.get('omitted_event_moment_count', 0)} omitted, "
-                       f"{event_coverage.get('clipped_event_count', 0)} clipped")
-    provenance_lines = _png_chrome_lines(
-        measure, provenance, chrome_font, width - 2 * CONTACT_MARGIN,
-        3 if isinstance(event_coverage, Mapping) and event_coverage.get('event_count') else 2,
-    )
+    provenance_lines = _png_chrome_lines(measure, provenance, chrome_font, width - 2 * CONTACT_MARGIN, 2)
     header_bottom = 10 + 22 * len(title_lines) + 4 + 16 * len(provenance_lines)
     band_y = header_bottom + 10
     audio_y = band_y + CONTACT_BAND_HEIGHT + 2

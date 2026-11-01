@@ -109,16 +109,12 @@ def test_every_recorded_case_is_present() -> None:
 
 # -- Astrid's own path over the recorded bytes ------------------------------------------------------
 
-def _client(
-    case: str, *, sent_headers: list[dict[str, str]] | None = None,
-) -> tuple[WorkspaceClient, list[tuple[str, str, bytes | None]]]:
+def _client(case: str) -> tuple[WorkspaceClient, list[tuple[str, str, bytes | None]]]:
     recorded = fixture(case)
     calls: list[tuple[str, str, bytes | None]] = []
 
     def transport(method, path, headers, body):
         calls.append((method, path, body))
-        if sent_headers is not None:
-            sent_headers.append(dict(headers))
         return recorded["status"], {"content-type": "application/json"}, json.dumps(recorded["body"]).encode()
 
     client = object.__new__(WorkspaceClient)
@@ -128,26 +124,18 @@ def _client(
     return client, calls
 
 
-def _sent_the_recorded_request(case: str, calls: list, *, exact_request: bool = False, **ids: str) -> None:
+def _sent_the_recorded_request(case: str, calls: list, **ids: str) -> None:
     recorded = _concrete(fixture(case)["request"], **ids)
     method, path, body = calls[-1]
     assert method == recorded["method"]
     sent_path, _, sent_query = path.partition("?")
     recorded_path, _, recorded_query = recorded["path"].partition("?")
-    if exact_request:
-        assert path == recorded["path"]
-    else:
-        assert sent_path == recorded_path
-        assert set(recorded_query.split("&")) - {""} <= set(sent_query.split("&"))  # Astrid may add defaults (limit)
+    assert sent_path == recorded_path
+    assert set(recorded_query.split("&")) - {""} <= set(sent_query.split("&"))  # Astrid may add defaults (limit)
     if recorded["body"] is not None:
         sent = json.loads(body)
-        expected = _concrete(recorded["body"], **ids)
-        if exact_request:
-            assert sent == expected
-        else:
-            # Legacy task admission adds generated fields and uses ``project`` as its scope key.
-            assert {k: v for k, v in sent.items() if k in expected and k != "project"} == {
-                k: v for k, v in expected.items() if k != "project"}
+        assert {k: v for k, v in sent.items() if k in recorded["body"] and k != "project"} == {
+            k: v for k, v in recorded["body"].items() if k != "project"}
 
 
 def test_task_admission_201_parses_to_data_and_receipt() -> None:
@@ -217,37 +205,16 @@ def test_validation_error_422_maps_to_validation_error() -> None:
     assert calls[-1][:2] == ("POST", "/v1/tasks")
 
 
-def test_commit_conflict_409_maps_to_conflict_and_keeps_its_details() -> None:
-    """The recorded conflict is returned by the canonical timeline commit route."""
-    sent_headers: list[dict[str, str]] = []
-    client, calls = _client("publish_conflict_409", sent_headers=sent_headers)
+def test_publish_conflict_409_maps_to_conflict_and_keeps_its_details() -> None:
+    client, calls = _client("publish_conflict_409")
     recorded = fixture("publish_conflict_409")
-    request = _concrete(recorded["request"]["body"], project_id="project-1")
-    idempotency_key = "commit-conflict-409"
     with pytest.raises(WorkspaceClientError) as raised:
-        client.commit_timeline("project-1", "main", request, idempotency_key=idempotency_key)
+        client.publish_parent_composition("project-1", "main", recorded["request"]["body"], idempotency_key="k")
     error = raised.value
     assert (error.status, error.code) == (409, "conflict")
     assert error.details == recorded["body"]["details"] and error.request_id == "<request_id>"
     assert _SERVICE_ERROR_CLASSES[error.code] is ServiceConflictError
-    _sent_the_recorded_request("publish_conflict_409", calls, exact_request=True, project_id="project-1")
-    assert sent_headers[-1]["Idempotency-Key"] == idempotency_key
-
-
-def test_commit_conflict_409_migration_keeps_details_request_id_and_request() -> None:
-    sent_headers: list[dict[str, str]] = []
-    client, calls = _client("publish_conflict_409", sent_headers=sent_headers)
-    recorded = fixture("publish_conflict_409")
-    request = _concrete(recorded["request"]["body"], project_id="project-1")
-    idempotency_key = "commit-conflict-409"
-    with pytest.raises(WorkspaceClientError) as raised:
-        client.commit_timeline("project-1", "main", request, idempotency_key=idempotency_key)
-    error = raised.value
-    assert (error.status, error.code) == (409, "conflict")
-    assert error.details == recorded["body"]["details"] and error.request_id == "<request_id>"
-    assert _SERVICE_ERROR_CLASSES[error.code] is ServiceConflictError
-    _sent_the_recorded_request("publish_conflict_409", calls, exact_request=True, project_id="project-1")
-    assert sent_headers[-1]["Idempotency-Key"] == idempotency_key
+    _sent_the_recorded_request("publish_conflict_409", calls, project_id="project-1")
 
 
 def test_invalid_cursor_400_keeps_its_status_and_code() -> None:
@@ -326,16 +293,3 @@ def test_journey_loopback_runtime_answers_with_the_recorded_status_and_shape(met
     recorded = fixture(case)
     assert status == recorded["status"]
     assert shape_diff(body, recorded["body"]) == []
-
-
-# Parent coverage retained during the Release-1 + Timeline merge.
-def test_publish_conflict_409_maps_to_conflict_and_keeps_its_details() -> None:
-    client, calls = _client("publish_conflict_409")
-    recorded = fixture("publish_conflict_409")
-    with pytest.raises(WorkspaceClientError) as raised:
-        client.publish_parent_composition("project-1", "main", recorded["request"]["body"], idempotency_key="k")
-    error = raised.value
-    assert (error.status, error.code) == (409, "conflict")
-    assert error.details == recorded["body"]["details"] and error.request_id == "<request_id>"
-    assert _SERVICE_ERROR_CLASSES[error.code] is ServiceConflictError
-    _sent_the_recorded_request("publish_conflict_409", calls, project_id="project-1")

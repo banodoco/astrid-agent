@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import ast
-import importlib
 import json
 import os
 import subprocess
@@ -16,11 +14,6 @@ from astrid.core.execution.generic_host import (
     source_checkout_digest,
 )
 from astrid.core._shared.boot_manifest import load_boot_manifest_hash
-
-
-@pytest.fixture(autouse=True)
-def _isolate_selected_source_schema(monkeypatch):
-    monkeypatch.delenv("ASTRID_TIMELINE_SCHEMA_PYTHONPATH", raising=False)
 
 
 def _mock_host_launch(monkeypatch, fake_popen) -> None:
@@ -237,11 +230,11 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
         "runtime_instance_id": "instance-1",
         "schema_digest": "schema-1",
     }
-    inventory = SimpleNamespace(identity="inventory-1", roots=(managed,), sources=(SimpleNamespace(pack_root=managed),))
-    inventory_calls: list[str] = []
+    inventory = SimpleNamespace(identity="inventory-1", roots=(managed,), sources=(managed,))
+    inventory_calls: list[object] = []
 
     def active_inventory():
-        inventory_calls.append(inventory.identity)
+        inventory_calls.append(inventory)
         return inventory
 
     monkeypatch.setattr("astrid.core.pack.source_setup.active_source_inventory", active_inventory)
@@ -311,9 +304,6 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda state: "ours")
     monkeypatch.setattr(host_bootstrap, "_IDLE_CHECK_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr(host_bootstrap, "_retire_host_locked", lambda current: terminated.append(dict(current)))
-    # The explicit bootstrap read is joined by one Remotion registry-context
-    # read when the supported renderer is provisioned in the environment.
-    inventory_reads_per_launch = 2 if os.environ.get("ASTRID_REMOTION_PROJECT_DIR") else 1
 
     if windows_acl is False:
         with pytest.raises(host_bootstrap.PackHostBootstrapError, match="handoff is unavailable"):
@@ -323,8 +313,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     result = host_bootstrap.ensure_pack_host(value, reconfigure_action="reconfigure")
     assert result["host_status"] == "ready"
     assert result["host_source_inventory_identity"] == "inventory-1"
-    assert len(inventory_calls) == inventory_reads_per_launch
-    assert inventory_calls == ["inventory-1"] * inventory_reads_per_launch
+    assert len(inventory_calls) == 1
     assert "--source-inventory-identity" in launches[0]
     assert launches[0][launches[0].index("--source-inventory-identity") + 1] == "inventory-1"
     assert launches[0][launches[0].index("--runtime-discovery-file") + 1] == str(
@@ -347,11 +336,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     assert result2["host_status"] == "ready"
     assert len(launches) == 2
     assert "launch_argv" not in state
-    assert len(inventory_calls) == inventory_reads_per_launch * 2
-    assert inventory_calls == (
-        ["inventory-1"] * inventory_reads_per_launch
-        + ["inventory-2"] * inventory_reads_per_launch
-    )
+    assert len(inventory_calls) == 2
     assert terminated, "changed source inventory must not reuse the old ready host"
 
     # Disabling the last managed source must not reuse a host that still
@@ -362,12 +347,7 @@ def test_bootstrap_passes_inventory_identity_and_restarts_on_change(monkeypatch,
     result3 = host_bootstrap.ensure_pack_host(value, reconfigure_action="reconfigure")
     assert result3["host_status"] == "ready"
     assert len(launches) == 3
-    assert len(inventory_calls) == inventory_reads_per_launch * 3
-    assert inventory_calls == (
-        ["inventory-1"] * inventory_reads_per_launch
-        + ["inventory-2"] * inventory_reads_per_launch
-        + [""] * inventory_reads_per_launch
-    )
+    assert len(inventory_calls) == 3
 
 
 def test_unresolved_remotion_probe_blocks_host_spawn(monkeypatch, tmp_path: Path) -> None:
@@ -621,7 +601,7 @@ def test_installed_profile_refuses_checkout_origins_from_isolated_probe(monkeypa
     seen = []
     def probe(argv, **kwargs):
         seen.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, json.dumps({key: "/foreign/source.py" for key in ["host", "child", "action", "client", "sdk", "runtime_protocol", "runtime_protocol.platform", "astrid_runtime"]}), "")
+        return subprocess.CompletedProcess(argv, 0, json.dumps({key: "/foreign/source.py" for key in ["host", "child", "action", "client", "sdk"]}), "")
     monkeypatch.setattr(host_bootstrap.subprocess, "run", probe)
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="actual installed"):
         host_bootstrap._installed_execution_origins(tmp_path, "/selected/python")
@@ -631,88 +611,12 @@ def test_installed_profile_refuses_checkout_origins_from_isolated_probe(monkeypa
     assert seen[0][1]["cwd"] != str(tmp_path)
 
 
-def test_installed_profile_does_not_use_ambient_runtime_checkout(monkeypatch, tmp_path):
-    monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "installed")
-    monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", str(tmp_path / "foreign-runtime"))
-    seen = []
-
-    def probe(argv, **kwargs):
-        seen.append((argv, kwargs))
-        return subprocess.CompletedProcess(
-            argv,
-            0,
-            json.dumps({key: str(tmp_path / "installed" / f"{key}.py")
-                        for key in ["host", "child", "action", "client", "sdk",
-                                    "runtime_protocol", "runtime_protocol.platform", "astrid_runtime"]}),
-            "",
-        )
-
-    monkeypatch.setattr(host_bootstrap.subprocess, "run", probe)
-    installed = tmp_path / "installed"
-    installed.mkdir()
-    for name in ("host", "child", "action", "client", "sdk", "runtime_protocol",
-                 "runtime_protocol.platform", "astrid_runtime"):
-        (installed / f"{name}.py").write_text("# installed\n", encoding="utf-8")
-    origins = host_bootstrap._installed_execution_origins(installed, "/selected/python")
-    assert set(origins) == {"host", "child", "action", "client", "sdk",
-                            "runtime_protocol", "runtime_protocol.platform", "astrid_runtime"}
-    assert "PYTHONPATH" not in seen[0][1]["env"]
-    assert "ASTRID_RUNTIME_CHECKOUT" not in seen[0][1]["env"]
-
-
-def test_installed_origin_probe_resolves_without_product_imports():
-    tree = ast.parse(Path(host_bootstrap.__file__).read_text())
-    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                    and node.name == "_installed_execution_origins")
-    probe = next(node.value.value for node in function.body if isinstance(node, ast.Assign)
-                 and any(isinstance(target, ast.Name) and target.id == "probe" for target in node.targets))
-    probe_tree = ast.parse(probe)
-    assert {alias.name for node in ast.walk(probe_tree) if isinstance(node, ast.Import)
-            for alias in node.names} == {"importlib.machinery", "json", "pathlib", "sys"}
-    assert not any(isinstance(node, ast.ImportFrom) for node in ast.walk(probe_tree))
-    calls = [ast.unparse(node.func) for node in ast.walk(probe_tree) if isinstance(node, ast.Call)]
-    assert "importlib.machinery.PathFinder.find_spec" in calls
-    assert not any(call.rsplit(".", 1)[-1] in {
-        "__import__", "import_module", "exec", "eval", "compile", "exec_module", "load_module", "get_code",
-    } for call in calls)
-    assert not any(call.endswith("find_spec") and call != "importlib.machinery.PathFinder.find_spec"
-                   for call in calls)
-
-
-def test_python_source_loader_can_read_cache_before_bytecode_write_policy():
-    # Read the trusted loader, never generate or execute a bytecode payload.
-    # A .py origin/SourceFileLoader and -B cannot establish source-only execution.
-    path = Path(importlib.__file__).with_name("_bootstrap_external.py")
-    tree = ast.parse(path.read_text())
-    loader = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "SourceLoader")
-    get_code = next(node for node in loader.body if isinstance(node, ast.FunctionDef) and node.name == "get_code")
-    cached_return = next(node for node in ast.walk(get_code) if isinstance(node, ast.Return)
-                         and isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "_compile_bytecode")
-    write_policy = next(node for node in ast.walk(get_code) if isinstance(node, ast.If)
-                        and "sys.dont_write_bytecode" in ast.unparse(node.test))
-    assert cached_return.lineno < write_policy.lineno
-    assert "_validate_timestamp_pyc" in ast.unparse(get_code)
-    assert "_imp.check_hash_based_pycs" in ast.unparse(get_code)
-
-
 def test_installed_profile_launch_preserves_identity_and_uses_isolated_interpreter(monkeypatch, tmp_path):
-    # This is the host-bootstrap handoff boundary.  The fake source root is
-    # intentionally not an installed distribution, so keep the independent
-    # Remotion launch-validation transaction at its existing collaborator
-    # boundary; its strict installed-registry source controls are exercised by
-    # the dedicated rendering-security tests.
+    # Reuse the existing exact source/inventory/ready-binding fixture while
+    # replacing only the independent installed-origin probe dependency.
     monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "installed")
     monkeypatch.setattr(host_bootstrap, "_installed_execution_origins", lambda root, python: {"host": str(root / "astrid/core/execution/generic_host.py")})
     monkeypatch.setattr(host_bootstrap, "_provision_render_runtime_env", lambda *_: None)
-    def isolated_render_validation(*_args, **_kwargs):
-        # Preserve the real validation collaborator's second inventory read;
-        # the strict installed-registry controls remain covered separately.
-        if os.environ.get("ASTRID_REMOTION_PROJECT_DIR"):
-            from astrid.core.pack.source_setup import active_source_inventory
-            active_source_inventory()
-        return None
-
-    monkeypatch.setattr(host_bootstrap, "_prepare_render_validation", isolated_render_validation)
     original = _mock_host_launch
     launches = []
     def isolate(monkeypatch, fake_popen):

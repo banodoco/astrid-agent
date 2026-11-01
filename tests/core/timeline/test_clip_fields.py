@@ -395,8 +395,9 @@ def test_render_status_clip_type_entry_wins_over_element_kind():
 
 
 def test_render_status_defaults_to_pinned_union_composition():
-    # 0.0.7 remains an explicit compatibility case above, not the receiving default.
-    assert cf.render_status("am-type", "opacity") == "renders"
+    # This isolated S0 still pins timeline-composition 0.0.6; 0.0.7 remains
+    # an explicit compatibility case above, not the receiving default.
+    assert cf.render_status("am-type", "opacity") == "unrendered"
     assert cf.render_status("am-type", "opacity", "0.0.7") == "renders"
 
 

@@ -41,7 +41,6 @@
     "h3_av.compose",
     "h3_av.prepare",
     "h3_av.publication_finalizer",
-    "h3_av.transform",
     "h3_av.verify",
     "hivemind.contribute",
     "hivemind.get_item",

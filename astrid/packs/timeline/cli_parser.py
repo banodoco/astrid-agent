@@ -1,14 +1,13 @@
 """The timelines parser: a positional after the flags still fills the verb's open positional."""
-
 from __future__ import annotations
 
 import argparse
-import sys
 from typing import Any
+
 
 # Verbs whose --project is optional: omitted, it is the workspace runtime's current project.
 CURRENT_PROJECT_VERBS = frozenset(
-    {"checkout", "apply", "assets", "check", "commit", "create", "discard", "find", "history", "lines", "redo", "status", "undo"}
+    {"checkout", "apply", "assets", "check", "discard", "find", "lines", "publish", "redo", "status", "undo"}
 )
 
 
@@ -37,7 +36,6 @@ class TimelinesParser(argparse.ArgumentParser):
     (address, word, query, sheet file, asset key) instead of failing with "unrecognized arguments"."""
 
     def parse_args(self, args: Any = None, namespace: Any = None) -> argparse.Namespace:
-        args = list(sys.argv[1:] if args is None else args)
         parsed, extras = self.parse_known_args(args, namespace)
         loose = [e for e in extras if not e.startswith("-")]
         if extras and len(loose) == len(extras):
@@ -53,9 +51,7 @@ class TimelinesParser(argparse.ArgumentParser):
                 parsed.more_addresses, loose = list(loose), []  # show TL a b c: one record each
         if loose or len(extras) != len([e for e in extras if not e.startswith("-")]):
             self.error(f"unrecognized arguments: {' '.join(extras)}")
-        if (getattr(parsed, "command", None) in CURRENT_PROJECT_VERBS
-                and not getattr(parsed, "project", None)
-                and (getattr(parsed, "command", None) == "commit" or not getattr(parsed, "file", None))):
+        if getattr(parsed, "command", None) in CURRENT_PROJECT_VERBS and not getattr(parsed, "project", None) and not getattr(parsed, "file", None):
             project = resolve_current_project(parsed)  # an explicit --project always wins
             if project is None:
                 self.error(

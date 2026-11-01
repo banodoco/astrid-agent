@@ -119,10 +119,6 @@ on:
         required: false
         type: string
 
-concurrency:
-  group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
@@ -390,7 +386,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          retention-days: 30
           name: journey-receipt-${{ matrix.job_id }}
           # Keep the job-id directory in the artifact so merge-multiple cannot
           # overwrite nine identically named journey-result.json files.
@@ -475,7 +470,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          retention-days: 30
           name: m4-5-receipt-${{ matrix.scenario_id }}
           path: ${{ runner.temp }}/m4-5-${{ matrix.scenario_id }}/journey-result.json
           if-no-files-found: warn
@@ -524,7 +518,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          retention-days: 30
           name: m4-4b-local-m4-4b-fully-local-linux-smoke
           path: ${{ runner.temp }}/m4-4b-results
           if-no-files-found: warn
@@ -638,7 +631,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          retention-days: 30
           name: m4-6-local-${{ matrix.job_id }}
           path: ${{ runner.temp }}/m4-6-${{ matrix.job_id }}/output
           if-no-files-found: warn

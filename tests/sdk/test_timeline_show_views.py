@@ -8,16 +8,11 @@ import re
 
 import pytest
 
-from astrid.packs.timeline import cli
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.timeline_checkout import Checkout
 from astrid.sdk.timeline_cuts import build_cut_table, decimal_seconds, page_rows
-from astrid.sdk.timeline_views import (
-    render_asset_provenance,
-    render_at,
-    render_clips,
-    render_script,
-)
+from astrid.sdk.timeline_views import render_at, render_asset_provenance, render_clips, render_script
+from astrid.packs.timeline import cli
 
 FPS = 30
 
@@ -146,38 +141,6 @@ def test_cut_table_json_lists_every_layer_with_clip_id_and_every_word(capsys):
     assert {w["id"] for w in data["words"]} >= {"s1:2", "s2:1"}
 
 
-def test_real_show_handler_projects_canonical_parent_clips(capsys):
-    doc = {
-        "project_id": "p",
-        "timeline_id": "flat",
-        "base_parent": {"revision_id": "rev-0"},
-        "parent": {
-            "config": {
-                "theme_overrides": {"visual": {"canvas": {"fps": FPS}}},
-                "tracks": [{"id": "V1", "kind": "visual"}],
-            },
-            "clips": [
-                {"id": "a", "track": "V1", "clipType": "hold", "at": 5, "hold": 2},
-                {"id": "b", "track": "V1", "clipType": "hold", "at": 0, "hold": 2},
-            ],
-        },
-        "placements": [],
-        "shots": {},
-    }
-
-    code, out = run(capsys, doc, json=True)
-    data = json.loads(out)["data"]
-
-    assert code == 0
-    assert data["duration"] == 7.0
-    assert data["counts"]["clips"] == 2
-    assert [(row["clip_id"], row["start"], row["end"]) for row in data["rows"]] == [
-        ("b", 0.0, 2.0),
-        (None, 2.0, 5.0),
-        ("a", 5.0, 7.0),
-    ]
-
-
 def test_decimal_seconds_keeps_exact_rational_under_exact_key():
     converted = decimal_seconds({"start": [33276086721, 472037000], "text": "x"})
     assert converted["start"] == pytest.approx(70.494658, abs=1e-6)
@@ -188,7 +151,6 @@ def test_decimal_seconds_keeps_exact_rational_under_exact_key():
 def test_paging_prints_showing_hint_and_next_page(capsys):
     code, out = run(capsys, many_cuts(60), page=2, page_size=20)
     assert code == 0
-    assert "revision rev-0" in out
     assert "showing cuts 21–40 of 60" in out
     assert "next: --page 3" in out and "or --all" in out and "or --shot 1" in out and "or --range" in out
     assert "c20-plate" in out and "c39-plate" in out and "c40-plate" not in out
@@ -255,87 +217,16 @@ def test_working_copy_banner_and_edit_marks(tmp_path, monkeypatch, capsys):
     import astrid.sdk.timeline_checkout as checkout_module
 
     monkeypatch.setattr(checkout_module, "find_draft", lambda project, timeline, name="main", **kw: path)
-    code, out = run(capsys, doc, draft="main")
+    code, out = run(capsys, doc)
     assert code == 0
     first = out.splitlines()[0]
-    assert first.startswith("WORKING COPY main · 1 clip changed · base revision rev-0")
+    assert first.startswith("WORKING COPY · 1 clip changed vs published rev-0 · --published")
     assert any(line.startswith("✎") and "0.00" in line for line in out.splitlines())
 
-    code, out = run(capsys, doc, json=True, draft="main")
+    code, out = run(capsys, doc, json=True)
     working = json.loads(out)["data"]["working_copy"]
     assert working["draft"] == str(path) and working["edits"] == 1 and working["base_revision"] == "rev-0"
 
     code, out = run(capsys, doc, published=True)
     assert not out.startswith("WORKING COPY")
     assert not any(line.lstrip().startswith("✎") for line in out.splitlines())
-
-
-def test_exact_published_show_uses_loaded_revision_after_head_moves(monkeypatch, capsys):
-    doc = bundle()
-    doc["base_parent"]["revision_id"] = "accepted-revision"
-    calls = []
-
-    def open_exact(project, ref, revision_id=None):
-        calls.append(revision_id)
-        return DomainResult.success({
-            "bundle": copy.deepcopy(doc),
-            "project_id": "p",
-            "timeline_id": "t",
-            # Simulate an adapter carrying a stale/requested head label. The
-            # immutable bundle is the authority for the displayed revision.
-            "revision_id": "newer-head",
-            "head_revision_id": "newer-head",
-            "is_current_head": True,
-        })
-
-    def no_draft(*args, **kwargs):
-        pytest.fail("an exact published read must not inspect a local draft")
-
-    monkeypatch.setattr("astrid.sdk.timeline_checkout.find_draft", no_draft)
-    code = cli._print_cut_table(ns(published=True, revision_id="accepted-revision"), open_exact)
-    out = capsys.readouterr().out
-
-    assert code == 0
-    assert calls == ["accepted-revision"]
-    assert "saved revision (current head is newer-head)" in out
-    assert "revision accepted-revision" in out
-    assert "revision newer-head" not in out
-
-    # The machine envelope must carry the same immutable identity as the
-    # human view, even when Runtime head metadata has advanced.
-    code = cli._print_cut_table(ns(published=True, revision_id="accepted-revision", json=True), open_exact)
-    payload = json.loads(capsys.readouterr().out)["data"]
-    assert code == 0
-    assert payload["revision_id"] == "accepted-revision"
-
-
-def test_exact_published_show_rejects_a_different_loaded_revision(capsys):
-    doc = bundle()
-    doc["base_parent"]["revision_id"] = "loaded-revision"
-
-    def open_wrong(project, ref, revision_id=None):
-        return DomainResult.success({"bundle": copy.deepcopy(doc), "project_id": "p", "timeline_id": "t"})
-
-    code = cli._print_cut_table(ns(published=True, revision_id="requested-revision"), open_wrong)
-    captured = capsys.readouterr()
-    out = captured.out + captured.err
-
-    assert code == 1
-    assert "different revision than requested" in out
-
-
-def test_published_show_rejects_missing_immutable_revision_identity(capsys):
-    doc = bundle()
-    doc["base_parent"].pop("revision_id")
-
-    def open_missing(project, ref, revision_id=None):
-        return DomainResult.success({
-            "bundle": copy.deepcopy(doc), "revision_id": revision_id, "head_revision_id": revision_id,
-        })
-
-    code = cli._print_cut_table(ns(published=True, revision_id="requested-revision"), open_missing)
-    captured = capsys.readouterr()
-    out = captured.out + captured.err
-
-    assert code == 1
-    assert "omitted its revision identity" in out

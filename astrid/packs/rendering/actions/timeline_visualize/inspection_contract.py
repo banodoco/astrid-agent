@@ -17,7 +17,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 from astrid.core.timeline.duration import clip_end_frame, clip_start_frame
-from astrid.packs.rendering.actions.timeline_visualize.provenance import snapshot_label
 
 COMPONENTS = ("output", "text", "audio", "inputs")
 DEFAULT_COMPONENTS = ("output", "text", "audio")
@@ -1066,7 +1065,6 @@ def compact_render_receipt(index: Mapping, snapshot: Mapping, root: Path) -> dic
     """Persist sample evidence, never a duplicate timeline/navigation graph."""
     provenance = _projection(snapshot, _IDENTITY_KEYS)
     provenance["fps_rational"] = list(snapshot["fps_rational"])
-    provenance["revision"] = snapshot_label(snapshot)
     canonical = (snapshot.get("metadata") or {}).get("canonical_timeline") or {}
     timeline = _projection(canonical, ("config_version", "config_hash", "authority"))
     timeline["timeline_ref"] = provenance.get("timeline_id")
@@ -1102,25 +1100,6 @@ def compact_render_receipt(index: Mapping, snapshot: Mapping, root: Path) -> dic
                "coverage": _projection(index.get("coverage", {}), ("full_duration", "selected_frame_count", "page_count", "page_size", "all_boundaries_sampled")),
                "inspection": {"command": "python3 -m astrid timelines inspect --manifest MANIFEST --section summary",
                               "sections": list(INSPECTION_SECTIONS)}}
-    event_coverage = (index.get("coverage") or {}).get("event_moments")
-    if isinstance(event_coverage, Mapping):
-        receipt["coverage"]["event_moments"] = _projection(event_coverage, (
-            "event_count", "sampled_event_moment_count", "omitted_event_moment_count",
-            "omitted_event_count", "clipped_event_count",
-        ))
-        omissions = event_coverage.get("omissions")
-        if isinstance(omissions, list):
-            projected_omissions = []
-            for row in omissions[:100]:
-                if not isinstance(row, Mapping):
-                    continue
-                projected = _projection(row, ("id", "clip_id", "kind", "status", "reason",
-                                                "sampled_moments", "omitted_moments", "clipped"))
-                frames = _bounded_pair(row.get("requested_window_frames"))
-                if frames is not None and all(isinstance(frame, int) for frame in frames):
-                    projected["requested_window_frames"] = frames
-                projected_omissions.append(projected)
-            receipt["coverage"]["event_moments"]["omissions"] = projected_omissions
     components = _component_list(index.get("components"))
     if components is not None:
         receipt["components"] = components

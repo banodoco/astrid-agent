@@ -339,3 +339,4 @@ def test_zip64_writer_streams_media_above_four_gib_into_sparse_archive(tmp_path,
         info = archive.getinfo("media/" + "a" * 64)
         assert info.file_size == size
         assert info.compress_type == zipfile.ZIP_STORED
+

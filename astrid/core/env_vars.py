@@ -35,7 +35,8 @@ The render task API never accepts this value from callers and the renderer
 never resolves Node through the ambient ``PATH``."""
 
 ASTRID_TIMELINE_SCHEMA_PYTHONPATH = "ASTRID_TIMELINE_SCHEMA_PYTHONPATH"
-"""Absolute server-owned Runtime-pinned timeline-config schema file."""
+"""Absolute server-owned Python install root containing
+``banodoco_timeline_schema`` for Remotion timeline validation."""
 
 ASTRID_CAPABILITY_MATRIX_PATH = "ASTRID_CAPABILITY_MATRIX_PATH"
 """Absolute server-owned capability matrix path for the installed host."""
@@ -43,12 +44,6 @@ ASTRID_CAPABILITY_MATRIX_PATH = "ASTRID_CAPABILITY_MATRIX_PATH"
 ASTRID_SOURCE_PROVENANCE_ROOT = "ASTRID_SOURCE_PROVENANCE_ROOT"
 """Absolute pinned source checkout retained for non-wheel build assets and provenance."""
 
-
-ASTRID_REMOTION_VALIDATION_PATH = "ASTRID_REMOTION_VALIDATION_PATH"
-ASTRID_REMOTION_VALIDATION_SHA256 = "ASTRID_REMOTION_VALIDATION_SHA256"
-ASTRID_REMOTION_VALIDATION_LAUNCH = "ASTRID_REMOTION_VALIDATION_LAUNCH"
-ASTRID_REMOTION_VALIDATION_ROLE = "ASTRID_REMOTION_VALIDATION_ROLE"
-"""Internal launch-owner readiness reference; never a task-selected input."""
 
 ASTRID_VIBECOMFY_CHECKOUT = "ASTRID_VIBECOMFY_CHECKOUT"
 """Absolute, server-selected VibeComfy checkout at the supported revision."""
@@ -170,11 +165,6 @@ __all__ = [
     "ASTRID_PROJECT_SLUG",
     "ASTRID_PROJECTS_ROOT",
     "ASTRID_NODE_EXECUTABLE",
-    "ASTRID_REMOTION_VALIDATION_PATH",
-    "ASTRID_REMOTION_VALIDATION_SHA256",
-    "ASTRID_REMOTION_VALIDATION_LAUNCH",
-    "ASTRID_REMOTION_VALIDATION_ROLE",
-
 
     "ASTRID_REMOTION_PROJECT_DIR",
     "ASTRID_CAPABILITY_MATRIX_PATH",

@@ -1601,7 +1601,7 @@ def test_session_nonzero_remote_exit_writes_diagnostics_artifacts_result_and_cos
              patch("runpod_lifecycle.get_pod", AsyncMock(return_value=mock_pod)), \
              patch("runpod_lifecycle.ship_and_run_detached", ship), \
              patch("runpod_lifecycle.RunPodConfig", MagicMock()):
-            from astrid.packs.runpod.shared.common import cmd_session
+            from astrid.packs.runpod.actions.provision.run import cmd_session
 
             class Args:
                 gpu_type = None

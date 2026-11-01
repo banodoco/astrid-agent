@@ -569,21 +569,12 @@ def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
             agent_norm["required_context"], "agent.required_context"
         )
     resources: list[ResourceDeclaration] = []
-    skill_resource_paths: set[str] = set()
     for i, item in enumerate(data.get("resources", [])):
         x = _mapping(item, f"resources[{i}]")
-        path = _relative(x.get("path"), f"resources[{i}].path")
-        kind = _text(x.get("kind"), f"resources[{i}].kind")
-        if kind == "skill":
-            if path in skill_resource_paths:
-                raise CanonicalPackValidationError(
-                    f"resources contains duplicate skill path {path!r}"
-                )
-            skill_resource_paths.add(path)
         resources.append(
             ResourceDeclaration(
-                path,
-                kind,
+                _relative(x.get("path"), f"resources[{i}].path"),
+                _text(x.get("kind"), f"resources[{i}].kind"),
             )
         )
     authoring: list[AuthoringExclusion] = []

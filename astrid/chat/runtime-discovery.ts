@@ -35,3 +35,4 @@ export function currentRuntime(discoveryPath: string, { credentialFile: credenti
   if (!credentialFile) throw new Error('runtime discovery has no credential file');
   return { endpoint, token: readToken(credentialFile) };
 }
+

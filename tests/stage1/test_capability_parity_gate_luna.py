@@ -155,10 +155,10 @@ def test_stage1_capability_parity_is_explicit_and_family_proven(tmp_path: Path) 
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     assert report["schema"] == "astrid.stage1.capability_parity.v1"
-    assert report["discovered_count"] == 108
+    assert report["discovered_count"] == 107
     discovered_ids = {record.id for record in records}
     assert discovered_ids <= set(host.matrix)
-    assert len(set(host.matrix) - discovered_ids) == 7
+    assert len(set(host.matrix) - discovered_ids) == 8
 
     allowed = {"required", "optional", "unsupported", "retired"}
     for record in records:

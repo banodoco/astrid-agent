@@ -181,12 +181,8 @@ class _Timelines:
     def open_bundle(self, project, ref, *, revision_id=None):
         self.calls.append((project, ref, revision_id))
         revision = revision_id or "head-2"
-        bundle = copy.deepcopy(self.bundles[revision])
-        # The immutable closure carries the identity of the exact parent
-        # revision it contains; envelope head metadata is not readback proof.
-        bundle.setdefault("base_parent", {})["revision_id"] = revision
         return DomainResult.success({
-            "bundle": bundle, "project_id": "p-1", "timeline_id": "T1",
+            "bundle": self.bundles[revision], "project_id": "p-1", "timeline_id": "T1",
             "revision_id": revision, "head_revision_id": "head-2", "is_current_head": revision == "head-2",
         })
 
@@ -206,7 +202,7 @@ def test_show_prints_the_cut_table_by_default(capsys):
     out = capsys.readouterr().out
     assert "Timeline T1 · project demo · current head" in out
     assert "showing 1" in out and 'VO "I invited"' in out
-    assert "see these cuts: python3 -m astrid timelines visualize T1 --project demo --revision-id head-2 --view contact --range 2.00..3.50" in out
+    assert "see these cuts: python3 -m astrid timelines visualize T1 --project demo --view contact --range 2.00..3.50" in out
     assert "per-track layer rows: --layers" in out
     assert client.timelines.calls == [("demo", "T1", None)]
 

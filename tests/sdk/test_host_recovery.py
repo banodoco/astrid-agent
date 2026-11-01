@@ -33,7 +33,6 @@ LEADER = ("import subprocess,sys,time;"
 class Harness:
     def __init__(self, tmp_path: Path, monkeypatch) -> None:
         self.tmp, self.mp = tmp_path, monkeypatch
-        monkeypatch.delenv("ASTRID_TIMELINE_SCHEMA_PYTHONPATH", raising=False)
         self.source = tmp_path / "source"
         (self.source / "astrid" / "packs").mkdir(parents=True)
         _materialize_source_closure(self.source)
@@ -50,9 +49,6 @@ class Harness:
         }
         self.launches: list[dict] = []
         self.procs: list[subprocess.Popen] = []
-        # The fake host writes no Remotion launch marker, so ambient Remotion provisioning must not
-        # make the reuse path refuse it; the Remotion gate has its own test below.
-        monkeypatch.delenv("ASTRID_REMOTION_PROJECT_DIR", raising=False)
         inventory = SimpleNamespace(identity="", roots=(), sources=())
         monkeypatch.setattr("astrid.core.pack.source_setup.active_source_inventory", lambda: inventory)
 

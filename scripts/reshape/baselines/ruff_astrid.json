@@ -4,7 +4,7 @@
     "pyproject.toml [tool.ruff].include"
   ],
   "command": [
-    "/home/user/work/venv-agent/bin/python",
+    "/tmp/astrid-runtime-pin-venv/bin/python",
     "-m",
     "ruff",
     "check",
@@ -12,22 +12,22 @@
     "--output-format",
     "json"
   ],
-  "finding_count": 2128,
+  "finding_count": 2168,
   "code_counts": {
-    "F401": 140,
-    "I001": 194,
-    "BLE001": 211,
-    "E701": 442,
-    "E702": 219,
-    "E731": 10,
-    "F821": 12,
+    "F401": 142,
+    "I001": 203,
+    "BLE001": 209,
+    "E701": 462,
+    "E702": 227,
+    "E731": 11,
+    "F821": 13,
     "E402": 824,
     "F402": 2,
     "F841": 60,
     "F822": 6,
     "F541": 3,
     "F601": 1,
-    "E401": 1,
-    "E741": 3
+    "E741": 4,
+    "E401": 1
   }
 }

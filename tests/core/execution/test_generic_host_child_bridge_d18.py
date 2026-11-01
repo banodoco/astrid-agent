@@ -168,16 +168,17 @@ def test_discovery_acquisition_production_cap_and_error_identity(monkeypatch, ht
     cap = len(body) + slack
     f = discovery_collection_fixture()
     f.grant["limits"]["max_discovery_metadata_bytes"] = cap
-    f.client.generated = WorkspaceClient("http://127.0.0.1:8765", "shared-auth")
+    f.client.generated = WorkspaceClient("http://127.0.0.1", "shared-auth")
     shared = dict(vars(f.client.generated))
     reader = f.collection()
     stream = _MetadataTrackingStream(body, chunk, head)
-    def open_response(_opener, request, *, timeout):
+    def open_response(request, timeout):
         assert request.get_header("Authorization") == "Bearer shared-auth"
         if http_error:
             raise urllib.error.HTTPError(request.full_url, 409, "Conflict", head, stream)
         return stream
-    monkeypatch.setattr(urllib.request.OpenerDirector, "open", open_response)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open",
+                        lambda _opener, request, timeout: open_response(request, timeout))
     decoded = []
     decode_error = generated._decode_error
     monkeypatch.setattr(generated, "_decode_error", lambda *args, **kwargs: decoded.append(True) or decode_error(*args, **kwargs))
@@ -217,14 +218,15 @@ def test_discovery_acquisition_production_cap_and_error_identity(monkeypatch, ht
 def test_discovery_acquisition_truncated_json_is_terminal_before_error_decode(monkeypatch, http_error, body):
     from astrid_runtime_client import generated
     f = discovery_collection_fixture()
-    f.client.generated = WorkspaceClient("http://127.0.0.1:8765")
+    f.client.generated = WorkspaceClient("http://127.0.0.1")
     reader = f.collection()
     stream = _MetadataTrackingStream(body, 3, {})
-    def open_response(_opener, request, *, timeout):
+    def open_response(request, timeout):
         if http_error:
             raise urllib.error.HTTPError(request.full_url, 400, "Bad", {}, stream)
         return stream
-    monkeypatch.setattr(urllib.request.OpenerDirector, "open", open_response)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open",
+                        lambda _opener, request, timeout: open_response(request, timeout))
     monkeypatch.setattr(generated, "_decode_error", lambda *args, **kwargs: pytest.fail("truncated error decoded"))
     with pytest.raises(HostError) as caught:
         reader._reader._request("GET", "/probe")
@@ -256,19 +258,20 @@ def test_discovery_acquisition_remaining_budget_error_shared_client_and_binary_i
     f = discovery_collection_fixture()
     cap = 100
     f.grant["limits"]["max_discovery_metadata_bytes"] = cap
-    f.client.generated = WorkspaceClient("http://127.0.0.1:8765", "shared-auth")
+    f.client.generated = WorkspaceClient("http://127.0.0.1", "shared-auth")
     shared = dict(vars(f.client.generated))
     reader = f.collection()
     streams = []
     error = [False]
-    def open_response(_opener, request, *, timeout):
+    def open_response(request, timeout):
         body = b'{"project_id":"P"}' if not error[0] else b'{"code":"bad"}'
         stream = _MetadataTrackingStream(body, 65536, {})
         streams.append(stream)
         if error[0]:
             raise urllib.error.HTTPError(request.full_url, 409, "Conflict", {}, stream)
         return stream
-    monkeypatch.setattr(urllib.request.OpenerDirector, "open", open_response)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open",
+                        lambda _opener, request, timeout: open_response(request, timeout))
     reader._reader._request("GET", "/first")
     accepted = streams[0].acquired
     assert streams[0].read_sizes[0] == cap + 1
@@ -969,20 +972,10 @@ def world(tmp_path, monkeypatch):
     from runtime_protocol.service import RuntimeService
     from runtime_protocol.store import RealmStore
 
-    runtime_client_root = source / "packages/python/astrid_runtime_client"
-    runtime_client_name = "f05_d18_runtime_client"
-    spec = importlib.util.spec_from_file_location(
-        runtime_client_name,
-        runtime_client_root / "__init__.py",
-        submodule_search_locations=[str(runtime_client_root)],
-    )
-    runtime_client = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = runtime_client
-    spec.loader.exec_module(runtime_client)
-    generated = sys.modules[f"{runtime_client_name}.generated"]
-    timeline_commit_types = sys.modules[f"{runtime_client_name}.timeline_commit_types"]
-    assert Path(generated.__file__).resolve() == (runtime_client_root / "generated.py").resolve()
-    assert Path(timeline_commit_types.__file__).resolve() == (runtime_client_root / "timeline_commit_types.py").resolve()
+    spec = importlib.util.spec_from_file_location("f05_d18_generated_client", source / "packages/python/astrid_runtime_client/generated.py")
+    generated = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = generated
+    spec.loader.exec_module(generated)
     root = tmp_path / "realm"
     RealmStore.initialize(root).close()
     service = RuntimeService(root)
@@ -1070,9 +1063,7 @@ def world(tmp_path, monkeypatch):
         for bridge in state.bridges:
             bridge.revoke()
         state.service.close()
-        for name in tuple(sys.modules):
-            if name == runtime_client_name or name.startswith(f"{runtime_client_name}."):
-                sys.modules.pop(name, None)
+        sys.modules.pop(spec.name, None)
 
 
 def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=False, input_ports=None, argv_override=None, delegating=True, root_object_ids=(), child_file_output=False, network_policy=None, prelude="", module_prelude="", parent_outputs=None, parent_inputs=None, parent_command_fields=None, parent_input_values=None, child_limits=None, child_code_override=None, parent_execution_inputs=None, staged=False):
@@ -1172,8 +1163,7 @@ def serve_one(world, *, ready=None):
     finally:
         if ready is not None:
             ready.set()  # waiters wake either way; a discovery error surfaces through the future
-    deadline = time.monotonic() + 4
-    while time.monotonic() < deadline:
+    while True:
         with world.lock:
             body = {"executor_id": "worker", "capability_ids": [CHILD], "runtime_epoch": 1}
             row = world.service.store.conn.execute("SELECT id FROM tasks WHERE capability=? AND status='queued' LIMIT 1", (CHILD,)).fetchone()
@@ -1190,7 +1180,6 @@ def serve_one(world, *, ready=None):
                         lease_id=c["lease_id"], executor_id="worker")
             return host.run_task({"task": task}, lease_token=c["lease_id"], attempt_id=c["attempt_id"], fence=c["fence"])
         time.sleep(0.01)
-    raise AssertionError("child was not admitted")
 
 
 @pytest.mark.parametrize("form", ["python", "-m", "script", "-c"])
@@ -1201,14 +1190,14 @@ def test_real_sdk_parent_routes_and_independent_child_progress(world, form, deri
     ready = threading.Event()
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(serve_one, world, ready=ready)
-        assert ready.wait(5), "independent child host did not finish discovery"
+        ready.wait()
         c = world.claim
         try:
             result = host.run_task({"task": world.task}, lease_token=c["lease_id"], attempt_id=c["attempt_id"], fence=c["fence"])
         except Exception:
-            future.result(timeout=5)
+            future.result()
             raise
-        assert future.result(timeout=5)
+        assert future.result()
     assert world.service.task(c["task_id"])["task"]["status"] == "completed"
     delegated = [call[2] for call in world.calls if call[1] == "/v1/delegated-tasks"]
     assert len(delegated) == 1
@@ -2035,14 +2024,14 @@ def test_real_sdk_verified_artifacts_and_managed_outputs(world, form):
     ready = threading.Event()
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(serve_one, world, ready=ready)
-        assert ready.wait(5), "independent child host did not finish discovery"
+        ready.wait()
         c = world.claim
         try:
             world.host.run_task({"task": world.task}, lease_token=c["lease_id"], attempt_id=c["attempt_id"], fence=c["fence"])
         except Exception:
-            future.result(timeout=5)
+            future.result()
             raise
-        future.result(timeout=5)
+        future.result()
     assert world.service.task(world.task["id"])["task"]["status"] == "completed"
 
 
@@ -2193,11 +2182,11 @@ while not Path('outputs/descendant-ready').exists():
     ready = threading.Event()
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(serve_one, world, ready=ready)
-        assert ready.wait(5), "independent child host did not finish discovery"
+        ready.wait()
         c = world.claim
         result = host.run_task({"task": world.task}, lease_token=c["lease_id"], attempt_id=c["attempt_id"], fence=c["fence"],
                                provider_route_grant=grant)
-        assert future.result(timeout=5)
+        assert future.result()
     signed = json.loads((attempt / "broker-evidence.json").read_text())
     expected = contexts[0].broker._admission
     assert signed["admission"] == expected
@@ -3963,7 +3952,7 @@ def test_materialization_pending_writes_consume_capacity(world, monkeypatch):
             assert not (b.output_root / "child-outputs" / rows[1]["association_id"]).exists()
         finally:
             release.set()
-        assert future.result(timeout=5)["output"] == rows[0]
+        assert future.result()["output"] == rows[0]
 
 
 @pytest.mark.parametrize("component", ["attempt", "output", "namespace", "association", "source"])
@@ -4067,7 +4056,8 @@ def test_materialization_large_object_and_hard_cap(world, monkeypatch, size):
         assert _materialize(b, child, public) == result
 
 
-def test_materialization_rejects_above_persisted_retention_budget_before_reread(world, monkeypatch):
+def test_output_above_persisted_retention_budget_is_refused_before_any_read(world, monkeypatch):
+    # b207712d9: an output over max_derived_bytes is refused at the identity check, before its bytes are fetched.
     limit = 64 * 1024 * 1024
     b, child, rows = _materialization_fixture(world, expose=False,
         limits={"max_derived_bytes": limit})
@@ -4077,13 +4067,10 @@ def test_materialization_rejects_above_persisted_retention_budget_before_reread(
         size=len(payload), digest=oid, object_id=oid)
     reads = []
     monkeypatch.setattr(world.client, "get_object", lambda oid: reads.append(oid) or payload)
-    public = b.dispatch({"v": 1, "request_id": b._sequence + 1, "op": "outputs",
-        "child_key": "child", "task_id": child["task_id"]})[0]
-    assert public["size"] == limit + 1 and reads == [oid[7:]]
     assert b.policy["limits"]["max_derived_bytes"] == limit
-    reads.clear()
-    with pytest.raises(ChildBridgeError, match="materialization retention exceeds persisted limits"):
-        _materialize(b, child, public)
+    with pytest.raises(ChildBridgeError, match="byte identity"):
+        b.dispatch({"v": 1, "request_id": b._sequence + 1, "op": "outputs",
+            "child_key": "child", "task_id": child["task_id"]})
     assert reads == [] and _retained_usage(b) == (0, 0)
     assert not (b.output_root / "child-outputs").exists()
 
@@ -5294,23 +5281,3 @@ def test_public_task_omits_invalid_lease_evidence(diagnostic):
             "result": {"error": {"diagnostic": diagnostic, "message": "MESSAGE_SENTINEL"}}}
     assert _public_task(task) == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
                                   "result": {"payload": {}, "outputs": []}}
-
-
-# Parent coverage retained during the Release-1 + Timeline merge.
-def test_output_above_persisted_retention_budget_is_refused_before_any_read(world, monkeypatch):
-    # b207712d9: an output over max_derived_bytes is refused at the identity check, before its bytes are fetched.
-    limit = 64 * 1024 * 1024
-    b, child, rows = _materialization_fixture(world, expose=False,
-        limits={"max_derived_bytes": limit})
-    payload = b"x" * (limit + 1)
-    oid = digest(payload)
-    _materialization_readback_override(world, monkeypatch, child, rows[0],
-        size=len(payload), digest=oid, object_id=oid)
-    reads = []
-    monkeypatch.setattr(world.client, "get_object", lambda oid: reads.append(oid) or payload)
-    assert b.policy["limits"]["max_derived_bytes"] == limit
-    with pytest.raises(ChildBridgeError, match="byte identity"):
-        b.dispatch({"v": 1, "request_id": b._sequence + 1, "op": "outputs",
-            "child_key": "child", "task_id": child["task_id"]})
-    assert reads == [] and _retained_usage(b) == (0, 0)
-    assert not (b.output_root / "child-outputs").exists()

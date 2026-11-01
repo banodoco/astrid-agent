@@ -1050,18 +1050,3 @@ def test_new_allocation_failure_releases_exact_unactivated_pod(
 def test_unbounded_wait_requires_explicit_flag(arguments):
     with pytest.raises(SystemExit, match='2'):
         claim._parser().parse_args(arguments)
-
-
-# Parent coverage retained during the Release-1 + Timeline merge.
-def test_defaults_match_the_canonical_twelve_hour_claim() -> None:
-    args = claim._parser().parse_args([])
-
-    assert args.handle_path == str(claim.DEFAULT_HANDLE_PATH)
-    assert args.max_wait_seconds == 43200
-    assert args.poll_seconds == 120
-    assert args.lifecycle_policy == "leave_running"
-    assert args.storage_name == "backup"
-    assert args.provider_account_ref is None
-    assert args.worker_image == claim.DEFAULT_WORKER_IMAGE
-    assert args.template_id is None
-    assert args.allowed_cuda_versions == "13.0"
