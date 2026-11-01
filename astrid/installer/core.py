@@ -376,9 +376,13 @@ class Installer:
 
     def _save_update(self, transaction: dict, step: str, **details) -> None:
         transaction.update(step=step, **details)
-        write_json(absolute(self.root / "update-transaction.json"), transaction)
         binding = transaction.get("update_job")
         if step == "staged" and isinstance(binding, dict):
+            # Reserve the link on the durable job before publishing the first
+            # C2 journal.  A crash between these writes is deliberately
+            # conservative: the reconciler sees a job with a transaction but
+            # no matching journal and refuses rather than guessing that it is
+            # a pre-bootstrap continuation.
             marker_path = absolute(self.root / "install.json")
             marker = read_json(marker_path)
             job = marker.get("update_job")
@@ -388,6 +392,7 @@ class Installer:
             job["transaction_id"] = transaction["operation_id"]
             marker["update_job"] = job
             write_json(marker_path, marker)
+        write_json(absolute(self.root / "update-transaction.json"), transaction)
 
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""

@@ -8,8 +8,8 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from astrid.installer import update_job
-from astrid.installer.core import Version, read_json, write_json
+from astrid.installer import core, update_job
+from astrid.installer.core import Installer, Version, read_json, write_json
 from tests.test_installer_update_job import _fixture
 
 
@@ -137,6 +137,114 @@ def test_reconcile_runs_under_the_installer_lock_before_new_input_preparation(tm
     assert update_job.reconcile(request) == {"disposition": "prepare-new"}
     assert observed == [request["operation_id"]]
     assert read_json(root / "install.json").get("update_job") is None
+
+
+@pytest.mark.parametrize("case", ["C1", "C2", "C3"])
+def test_prebootstrap_recovery_preserves_operation_id(tmp_path, monkeypatch, case):
+    """Each proved pre-bootstrap case continues one existing operation once."""
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    original = update_job.accept(request)
+    descriptor = _descriptor(original)
+    marker = read_json(root / "install.json")
+    job = marker["update_job"]
+    job.update(state="recovery-needed", launch_status="unknown")
+    if case != "C1":
+        job["platform"] = descriptor
+    if case == "C3":
+        job["bootstrap_proof"].update({
+            "claim_state": "claimed",
+            "native_claim": {
+                "operation_id": original["operation_id"],
+                "program_root": original["program_root"],
+                "data_root": original["data_root"],
+                "owner": "haus.astrid.runtime",
+                "descriptor": descriptor,
+            },
+        })
+    marker["update_job"] = job
+    write_json(root / "install.json", marker)
+    events = []
+
+    class Adapter:
+        def describe(self, value, command):
+            assert value["operation_id"] == original["operation_id"]
+            return {**descriptor, "command": command}
+
+        def is_registered(self, _descriptor_value, _command):
+            events.append("registered")
+            return case != "C1"
+
+        def is_active(self, _descriptor_value):
+            events.append("inactive")
+            return False
+
+        def cleanup(self, _descriptor_value):
+            events.append("retired")
+
+        def launch(self, _descriptor_value, _command, _log_path):
+            events.append("launch")
+
+    monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
+    continued = update_job.accept(request)
+
+    assert continued["operation_id"] == original["operation_id"]
+    assert continued["launch_status"] == "acknowledged"
+    assert events.count("launch") == 1
+    assert events == (["registered", "launch"] if case == "C1"
+                      else ["registered", "inactive", "retired", "launch"])
+
+
+def test_crash_between_journal_and_job_binding_writes(tmp_path, monkeypatch):
+    """A job-first reservation with no journal is a held refusal, never C1."""
+    root, data, _, request = _fixture(tmp_path, monkeypatch)
+    job = update_job.accept(request)
+    marker = read_json(root / "install.json")
+    marker["update_job"]["state"] = "active"
+    write_json(root / "install.json", marker)
+    transaction_id = "b" * 32
+    transaction = {
+        "operation_id": transaction_id,
+        "update_job": {"operation_id": job["operation_id"]},
+    }
+    real_write_json = core.write_json
+    writes = []
+
+    def crash_before_journal(path, value):
+        path = Path(path)
+        writes.append(path.name)
+        if path.name == "update-transaction.json":
+            raise OSError("simulated crash before journal publication")
+        return real_write_json(path, value)
+
+    monkeypatch.setattr(core, "write_json", crash_before_journal)
+    with pytest.raises(OSError, match="simulated crash"):
+        Installer(root, data, object())._save_update(transaction, "staged")
+    assert writes == ["install.json", "update-transaction.json"]
+    assert read_json(root / "install.json")["update_job"]["transaction_id"] == transaction_id
+    assert not (root / "update-transaction.json").exists()
+
+    # Model the next locked reconciliation after the interrupted writer.  The
+    # retained reservation blocks a replacement submission without invoking
+    # any native launch API.
+    monkeypatch.setattr(core, "write_json", real_write_json)
+    marker = read_json(root / "install.json")
+    marker["update_job"]["state"] = "recovery-needed"
+    write_json(root / "install.json", marker)
+
+    class Adapter:
+        def describe(self, value, command):
+            return _descriptor(value, command)
+
+        def is_registered(self, _descriptor_value, _command):
+            return False
+
+        def launch(self, *_args):
+            pytest.fail("partial C2 evidence must never launch a replacement")
+
+    monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
+    with pytest.raises(ValueError) as refusal:
+        update_job.accept(request)
+    assert getattr(refusal.value, "reason", None) == "busy"
 
 
 def test_matching_unfinished_recovery_returns_i3_and_ends_this_update_request(tmp_path, monkeypatch):
