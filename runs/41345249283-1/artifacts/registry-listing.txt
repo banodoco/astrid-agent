@@ -1,0 +1,6 @@
+total 32
+drwxr-xr-x 2 runner runner  4096 Nov  1 20:13 .
+drwxr-xr-x 3 runner runner  4096 Nov  1 20:13 ..
+-rw-r--r-- 1 runner runner  2895 Nov  1 20:13 animations.generated.ts
+-rw-r--r-- 1 runner runner 12742 Nov  1 20:13 effects.generated.ts
+-rw-r--r-- 1 runner runner  1186 Nov  1 20:13 transitions.generated.ts
