@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+usage() {
+  echo "usage: $0 [--hook remote-name remote-url]" >&2
+}
+
+base_for_new_push() {
+  local candidate
+  local -a candidates=()
+  if [[ -n "${ASTRID_PREPUSH_BASE_REF:-}" ]]; then
+    candidates=("$ASTRID_PREPUSH_BASE_REF")
+  else
+    candidates=(refs/remotes/origin/int/r1 refs/remotes/origin/main refs/remotes/origin/release-1)
+  fi
+  for candidate in "${candidates[@]}"; do
+    if git rev-parse --verify --quiet "$candidate^{commit}" >/dev/null &&
+       git merge-base --is-ancestor "$candidate" "$1" 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  echo "cannot establish the pushed range for a new branch; run the deeper check explicitly" >&2
+  return 2
+}
+
+changed_for_push() {
+  local _local_ref local_sha _remote_ref remote_sha base
+  local saw_ref=0
+  while IFS=' ' read -r _local_ref local_sha _remote_ref remote_sha _rest; do
+    [[ -n "${local_sha:-}" ]] || continue
+    [[ "$local_sha" =~ ^0+$ ]] && continue
+    saw_ref=1
+    if [[ "${remote_sha:-}" =~ ^0+$ ]]; then
+      base="$(base_for_new_push "$local_sha")"
+    else
+      git cat-file -e "$remote_sha^{commit}" 2>/dev/null || {
+        echo "cannot read the remote pre-push base $remote_sha; run the deeper check explicitly" >&2
+        return 2
+      }
+      base="$remote_sha"
+    fi
+    git diff --check "$base" "$local_sha"
+    git diff --name-only --diff-filter=ACMRTUXB "$base" "$local_sha"
+  done
+  ((saw_ref == 1)) || {
+    echo "pre-push supplied no update refs; run scripts/check-fast directly for a local check" >&2
+    return 2
+  }
+}
+
+changed_for_head() {
+  local base
+  base="$(base_for_new_push HEAD)"
+  git diff --check "$base" HEAD
+  git diff --name-only --diff-filter=ACMRTUXB "$base" HEAD
+}
+
+is_protected() {
+  case "$1" in
+    astrid/core/execution/process_group.py|astrid/sdk/autobootstrap.py|astrid/packs/rendering/*|remotion/*) return 0 ;;
+    */custody_broker.py|custody_broker.py|*/task_scope.py|task_scope.py|*/host_bootstrap.py|host_bootstrap.py|*/workspace_client.py|workspace_client.py|*/generic_host*.py|generic_host*.py) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+changed=""
+if [[ "${1:-}" == "--hook" ]]; then
+  [[ "$#" -eq 3 ]] || { usage; exit 2; }
+  changed="$(changed_for_push)"
+elif [[ "$#" -eq 0 ]]; then
+  changed="$(changed_for_head)"
+else
+  usage
+  exit 2
+fi
+
+changed="$({ printf '%s\n' "$changed"; git diff --check; git diff --cached --check; git diff --name-only HEAD; git ls-files --others --exclude-standard; } | sed '/^$/d' | sort -u)"
+
+syntax_failed=0
+protected=()
+while IFS= read -r path; do
+  [[ -n "$path" ]] || continue
+  if is_protected "$path"; then
+    protected+=("$path")
+  fi
+  if [[ "$path" == *.sh && -f "$path" ]] && ! bash -n "$path"; then
+    echo "shell syntax check failed: $path" >&2
+    syntax_failed=1
+  fi
+done <<< "$changed"
+
+if (( ${#protected[@]} > 0 )); then
+  printf '%s\n' "Protected Agent host/render paths changed; the bounded hook fails closed." >&2
+  printf '  %s\n' "${protected[@]}" >&2
+  printf '%s\n' 'Run the explicit deeper `bash scripts/check-before-push` before pushing.' >&2
+  exit 1
+fi
+if (( syntax_failed != 0 )); then
+  exit 1
+fi
+
+printf '%s\n' 'Fast changed-file checks passed.'
