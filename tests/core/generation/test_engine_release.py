@@ -130,8 +130,8 @@ print(json.dumps({s.name:{'repository':s.pin.repository,'revision':s.pin.revisio
     assert json.loads(result.stdout) == {
         'comfyui': {'repository': 'https://github.com/Comfy-Org/ComfyUI.git',
                     'revision': '423cbd20511becb1f16122ab518e92e58bfa03d9', 'path': 'runtime/ComfyUI'},
-        'vibecomfy': {'repository': 'https://github.com/AstridPseudon/vibecomfy-proof',
-                      'revision': '3bebae39655eb460454885040be4d3aefaf2ef31', 'path': 'runtime/vibecomfy'},
+        'vibecomfy': {'repository': 'https://github.com/banodoco/VibeComfy.git',
+                      'revision': '2967033970cbb5884651c9565265778482d3b44e', 'path': 'runtime/vibecomfy'},
     }
 
 

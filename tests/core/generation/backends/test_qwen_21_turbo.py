@@ -172,7 +172,7 @@ def test_generate_pin_and_h3_pin_are_independent():
     assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
     assert generate_sources['vibecomfy'] == (
-        'https://github.com/AstridPseudon/vibecomfy-proof', '3bebae39655eb460454885040be4d3aefaf2ef31')
+        'https://github.com/banodoco/VibeComfy.git', '2967033970cbb5884651c9565265778482d3b44e')
     assert h3_sources['vibecomfy'] == (
         'https://github.com/peteromallet/VibeComfy.git', 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6')
     assert {k: v for k, v in generate_sources.items() if k not in {'comfyui', 'vibecomfy'}} == {
