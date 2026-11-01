@@ -18,6 +18,7 @@ from astrid.core.element.catalog import (  # noqa: E402
     _clear_registry_cache,
     list_element_descriptors,
 )
+from scripts.gen_effect_registry import _public_registry_ids  # noqa: E402
 
 DEFAULT_OUTPUT = REPO_ROOT / "astrid" / "packs" / "rendering" / "elements" / "catalog.ts"
 
@@ -53,6 +54,7 @@ def generate() -> str:
         logger.removeHandler(warnings)
     if warnings.messages:
         raise ValueError("Cannot generate an incomplete element catalog:\n" + "\n".join(warnings.messages))
+    descriptors = _preserve_public_renderability(descriptors)
     payload = json.dumps(descriptors, indent=2, sort_keys=True, ensure_ascii=False)
     return "\n".join(
         (
@@ -109,6 +111,52 @@ def generate() -> str:
             "",
         )
     )
+
+
+def _preserve_public_renderability(
+    descriptors: tuple[dict[str, object], ...],
+) -> tuple[dict[str, object], ...]:
+    """Keep public Composition wrappers renderable after source deletion.
+
+    The Agent registry retains the canonical descriptors for the nine bundled
+    wrappers, while their executable implementations now live in Composition.
+    Membership comes from Composition's public registry resolver; no bundled
+    ID list is duplicated here.  A source-backed descriptor keeps the normal
+    renderability result, and an unknown source-less rendering descriptor is
+    supported only when Composition actually publishes that ID.
+    """
+    public_ids = _public_registry_ids()
+    projected: list[dict[str, object]] = []
+    for descriptor in descriptors:
+        renderability = descriptor.get("renderability")
+        kind = descriptor.get("kind")
+        element_id = descriptor.get("id")
+        if (
+            descriptor.get("source") == "pack:rendering"
+            and isinstance(renderability, dict)
+            and renderability.get("preview") == "unknown"
+        ):
+            if not isinstance(kind, str) or not isinstance(element_id, str):
+                raise ValueError(
+                    "Cannot generate an incomplete element catalog: invalid "
+                    "rendering descriptor identity"
+                )
+            if element_id not in public_ids.get(f"{kind}s", frozenset()):
+                raise ValueError(
+                    f"Cannot generate an incomplete element catalog: rendering "
+                    f"element {kind}/{element_id} has no component and is not "
+                    "supplied by Composition's public registry"
+                )
+            descriptor = {
+                **descriptor,
+                "renderability": {
+                    "preview": "supported",
+                    "browserExport": "supported",
+                    "workerExport": "supported",
+                },
+            }
+        projected.append(descriptor)
+    return tuple(projected)
 
 
 def build_parser() -> argparse.ArgumentParser:

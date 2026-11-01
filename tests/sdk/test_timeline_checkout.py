@@ -8,7 +8,7 @@ import json
 import pytest
 
 from astrid.sdk import timeline_intent as intent
-from astrid.sdk.timeline_checkout import Checkout, TimelineEditError, describe_changes, three_way
+from astrid.sdk.timeline_checkout import Checkout, TimelineEditError, describe_changes
 
 FPS = 30
 
@@ -62,6 +62,40 @@ def test_words_are_in_timeline_seconds_with_stable_ids():
     assert live.start == pytest.approx(4.0 + 1.9 + 0.1)  # shot B starts at 4 s
     assert tl.word("s2:1").text == "now"
     assert tl.word("went viral").id == "s1:1"  # phrases match their first word
+
+
+def test_parent_text_track_order_move_and_remove_are_thin_checkout_edits():
+    data = bundle()
+    data["parent"]["config"]["tracks"] = [
+        {"id": "picture", "kind": "visual", "role": "output"},
+        {"id": "music", "kind": "audio", "role": "output"},
+    ]
+    data["parent"]["clips"] = [
+        {"id": "parent-clip", "clipType": "media", "track": "picture", "at": 0, "hold": 2}
+    ]
+    tl = Checkout(data)
+
+    tl.track("titles", above="picture").rename("Opening")
+    added = tl.add_text("Chapter one", at=1, hold=3, track="titles", id="chapter-one")
+    added.set_track("picture")
+    tl.clip("parent-clip").remove()
+
+    assert [row["id"] for row in tl._parent_track_list()] == ["titles", "picture", "music"]
+    assert tl._parent_track_list()[0]["label"] == "Opening"
+    assert (added.id, added.track, added.text) == ("chapter-one", "picture", "Chapter one")
+    assert [clip.id for clip in tl.clips() if clip.shot_id == ""] == ["chapter-one"]
+
+
+def test_hold_for_replaces_stale_duration_intent():
+    data = bundle()
+    clip = data["shots"]["B"]["internal_timeline"]["clips"][1]
+    intent.set_for(clip, 9)
+    intent.set_until(clip, '"live"')
+    edited = Checkout(data).clip("b-type").hold_for(2.2)
+
+    assert edited.duration == pytest.approx(2.2)
+    assert intent.for_s(edited.data) == pytest.approx(2.2)
+    assert intent.until(edited.data) is None
 
 
 def test_first_draft_pins_the_fetched_bundle_for_edit_diffs(tmp_path, monkeypatch):
@@ -282,18 +316,29 @@ def test_save_load_round_trip_shows_both_clocks_and_honours_timeline_edits(tmp_p
     assert "_index" not in again.document() and '"_timeline"' not in json.dumps(again.document())
 
 
-def test_three_way_merges_disjoint_edits_and_refuses_overlapping_ones():
-    base = bundle()
-    ours, theirs = copy.deepcopy(base), copy.deepcopy(base)
-    Checkout(ours).clip("R").nudge(0.5)
-    Checkout(theirs).clip("b-type").set(text="LIVE!")
-    merged, conflicts = three_way(base, theirs, ours)
-    assert not conflicts
-    m = Checkout(merged)
-    assert m.clip("R").start == pytest.approx(1.5) and m.clip("b-type").params["text"] == "LIVE!"
-    Checkout(theirs).clip("R").nudge(-0.5)
-    _merged, conflicts = three_way(base, theirs, ours)
-    assert conflicts and "a-rocket" in conflicts[0]
+def test_three_way_merges_disjoint_edits_and_refuses_overlapping_ones(tmp_path):
+    path = tmp_path / "main.json"
+    Checkout(bundle()).save(path, quiet=True)
+    ours, theirs = Checkout.load(path), Checkout.load(path)
+    ours.clip("R").nudge(0.5)
+    theirs.clip("b-type").set(text="LIVE!")
+    ours.save(quiet=True)
+    theirs.save(quiet=True)
+    merged = Checkout.load(path)
+    assert merged.clip("R").start == pytest.approx(1.5) and merged.clip("b-type").params["text"] == "LIVE!"
+
+    conflict_path = tmp_path / "conflict.json"
+    Checkout(bundle()).save(conflict_path, quiet=True)
+    ours, theirs = Checkout.load(conflict_path), Checkout.load(conflict_path)
+    ours.clip("R").nudge(0.5)
+    theirs.clip("b-type").set(text="LIVE!")
+    theirs.clip("R").nudge(-0.5)
+    theirs.save(quiet=True)
+    with pytest.raises(TimelineEditError, match="another writer"):
+        ours.save(quiet=True)
+    assert Checkout.load(conflict_path).clip("R").start == pytest.approx(0.5)
+    ours.save(force=True, quiet=True)
+    assert Checkout.load(conflict_path).clip("R").start == pytest.approx(1.5)
 
 
 def test_add_overlay_on_a_word_in_a_corner():
@@ -841,6 +886,149 @@ def test_two_writers_on_one_working_copy_merge_and_never_drop_each_others_edits(
     assert Checkout.load(path).clip("a-rocket").start == pytest.approx(1.4)
 
 
+@pytest.mark.parametrize("remote_clip", ["a-rocket", "b-plate"])
+def test_local_patch_replay_preserves_the_whole_bundle_and_landing_history(tmp_path, monkeypatch, remote_clip):
+    from astrid.sdk.timeline import store
+
+    def retired(*args, **kwargs):
+        raise AssertionError("local saves must not use the publication merger")
+
+    monkeypatch.setattr(store, "three_way", retired, raising=False)
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path))
+    data = bundle()
+    data["opaque"] = {"raw": [None, False, 0, {"id:not-a-selector": "A"}]}
+    child = data["shots"]["A"]["internal_timeline"]
+    child["clips"].append({"id": "a-other", "clipType": "am-type", "track": "type",
+                           "at": 2, "hold": 1, "params": {"text": "Old"},
+                           "opaque": {"null": None, "raw": [False, 0, "a-rocket"]}})
+    path = store.drafts_root() / "p" / "t" / "main.json"
+    Checkout(data).save(path, quiet=True)
+    first, second = Checkout.load(path), Checkout.load(path)
+    first.clip(remote_clip).nudge(0.5)
+    first.save(quiet=True)
+    landing = Checkout.load(path).bundle
+    if remote_clip == "b-plate":
+        assert landing["placements"][-1]["duration_ms"] == 4500
+    second.clip("a-other").set(text="New")
+    expected = copy.deepcopy(landing)
+    expected["shots"]["A"]["internal_timeline"]["clips"][-1] = copy.deepcopy(second.clip("a-other").data)
+    second.save(quiet=True)
+    assert Checkout.load(path).bundle == expected
+    assert "absent" not in second.clip("a-other").data["opaque"]
+    assert second.clip("a-other").data["opaque"]["null"] is None
+    second.undo()
+    assert second.bundle == landing
+    second.redo()
+    assert second.bundle == expected
+
+
+def test_local_patch_replay_preserves_explicit_absence_null_and_opaque_array_order(tmp_path):
+    data = bundle()
+    data["parent"]["opaque"] = {"remove": None, "array": [{"id": "literal", "value": False}, None, 0]}
+    path = tmp_path / "main.json"
+    Checkout(data).save(path, quiet=True)
+    tl = Checkout.load(path)
+    opaque = tl.bundle["parent"]["opaque"]
+    del opaque["remove"]
+    opaque["null"] = None
+    opaque["array"].reverse()
+    expected = copy.deepcopy(tl.bundle)
+    # A second writer only reformats the file; the free transform's scope still
+    # matches its base, so its guarded clear and opaque whole-array set succeed.
+    path.write_text(path.read_text() + "\n")
+    tl.save(quiet=True)
+    assert Checkout.load(path).bundle == expected
+
+
+def test_local_patch_replay_failed_replacement_keeps_pending_intent_for_retry(tmp_path, monkeypatch):
+    from astrid.sdk.timeline import checkout
+
+    path = tmp_path / "main.json"
+    Checkout(bundle()).save(path, quiet=True)
+    first, second = Checkout.load(path), Checkout.load(path)
+    first.clip("a-rocket").nudge(0.25)
+    first.save(quiet=True)
+    second.clip("b-type").set(text="Retry")
+    pending, original = copy.deepcopy(second.bundle), path.read_bytes()
+    replace = checkout.os.replace
+    def fail(source, target):
+        if target == path:
+            raise OSError("injected replacement failure")
+        return replace(source, target)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(checkout.os, "replace", fail)
+        with pytest.raises(OSError, match="injected"):
+            second.save(quiet=True)
+    assert path.read_bytes() == original
+    assert second.bundle == pending
+    second.save(quiet=True)
+    both = Checkout.load(path)
+    assert both.clip("a-rocket").start == first.clip("a-rocket").start
+    assert both.clip("b-type").params["text"] == "Retry"
+
+
+@pytest.mark.parametrize("transform", ["free", "step", "mixed", "order"])
+def test_local_patch_replay_keeps_unknown_reads_and_collection_order_conservative(tmp_path, transform):
+    path = tmp_path / "main.json"
+    Checkout(bundle()).save(path, quiet=True)
+    first, second = Checkout.load(path), Checkout.load(path)
+    first.clip("a-rocket").nudge(0.25)
+    first.save(quiet=True)
+    if transform == "order":
+        first.bundle["shots"]["A"]["internal_timeline"]["clips"].reverse()
+        first.save(quiet=True)
+        second.clip("a-plate").nudge(0.25)
+    elif transform == "step":
+        with second.step("unknown transform"):
+            second.clip("a-plate").nudge(0.25)
+    else:
+        second.clip("a-plate").data["params"]["opaque"] = None
+        if transform == "mixed":
+            second.clip("a-plate").nudge(0.25)
+    before, draft = path.read_bytes(), copy.deepcopy(second.bundle)
+    with pytest.raises(TimelineEditError, match="another writer"):
+        second.save(quiet=True)
+    assert path.read_bytes() == before
+    assert second.bundle == draft
+
+
+@pytest.mark.parametrize("root", ["parent", "internal"])
+def test_local_patch_replay_keeps_source_bound_children_and_raw_parent_mirrors(tmp_path, root):
+    from astrid.sdk.timeline._common import PARENT_SHOT
+    from astrid.sdk.timeline.commit import bundle_from_document
+    from astrid.sdk.timeline.model import Clip
+    from tests.sdk.test_timeline_commit_provider_document import document_fixture
+
+    path = tmp_path / "main.json"
+    initial = Checkout({})
+    initial.bundle = bundle_from_document(document_fixture(shared=False))
+    initial.save(path, quiet=True)
+    first, second = Checkout.load(path), Checkout.load(path)
+    local = initial.bundle["placements"][0]["shot_id"]
+    def clips(tl):
+        return (tl.bundle["parent"]["clips"] if root == "parent" else
+                tl.bundle["shots"][local]["internal_timeline"]["clips"])
+
+    # Parent handles retain both storage mirrors; child handles retain source
+    # ownership. Neither save materializes or publishes a new physical revision.
+    for tl, index in ((first, 0), (second, 1)):
+        tl._parent_clip_list()
+        clip = Clip(tl, PARENT_SHOT if root == "parent" else local, clips(tl)[index])
+        if root == "internal" and index == 1:
+            clip.set(_allow_new=True, note="local")
+        else:
+            clip.nudge(0.25)
+    first.save(quiet=True)
+    expected = copy.deepcopy(first.bundle)
+    target = (expected["parent"]["clips"] if root == "parent" else
+              expected["shots"][local]["internal_timeline"]["clips"])
+    target[1] = copy.deepcopy(clips(second)[1])
+    expected["parent"]["config"]["clips"] = copy.deepcopy(expected["parent"]["clips"])
+    second.save(quiet=True)
+    assert Checkout.load(path).bundle == expected
+
+
 def test_position_units_come_from_the_element_declaration_so_am_pixel_shape_takes_marks_and_canvas_px():
     """Units are data: am-pixel-shape declares metadata.units in its element.yaml, so canvas px and ƒ(MARK) work."""
     from astrid.sdk.timeline_checkout import element_units
@@ -1127,7 +1315,7 @@ def test_duplicate_is_all_or_nothing(monkeypatch):
         td._duplicate(client, "p", "t", slug=None, name=None, revision_id=None)
     assert calls == []
     good = Checkout(bundle())
-    good.check = lambda: SimpleNamespace(valid=True, blocking=[], problems=[])
+    good._check_core = lambda: SimpleNamespace(valid=True, blocking=[], problems=[])
     monkeypatch.setattr(td.Checkout, "open", classmethod(lambda cls, p, t, client=None, revision_id=None: good))
     monkeypatch.setattr(td, "copy_content", lambda *a, **k: (_ for _ in ()).throw(TimelineEditError("the copy failed")))
     with pytest.raises(TimelineEditError, match="archived again"):

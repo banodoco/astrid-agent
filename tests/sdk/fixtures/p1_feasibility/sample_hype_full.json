@@ -1,0 +1,178 @@
+{
+  "theme": "banodoco-default",
+  "theme_overrides": {
+    "visual": {
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30
+      }
+    },
+    "generation": {
+      "style_prompt": "archival sepia cinematic, golden hour amber light",
+      "negative_prompt": "neon, glitch, modern UI",
+      "image_model": "flux-1.1-pro",
+      "video_model": "veo-3",
+      "aspect": "16:9",
+      "references": [
+        {
+          "id": "r1",
+          "file": "/abs/refs/r1.jpg",
+          "description": "mood"
+        }
+      ],
+      "assets": []
+    },
+    "voice": {
+      "tone": "calm"
+    },
+    "audio": {
+      "music_style": "soft strings"
+    },
+    "pacing": {
+      "cut_tempo": "calm"
+    }
+  },
+  "tracks": [
+    {
+      "id": "v_manual",
+      "kind": "visual",
+      "label": "Manual Viewport",
+      "scale": 1.0,
+      "fit": "manual",
+      "opacity": 1.0,
+      "blendMode": "normal"
+    },
+    {
+      "id": "v_cover",
+      "kind": "visual",
+      "label": "Cover Track",
+      "scale": 1.25,
+      "fit": "cover",
+      "opacity": 0.8,
+      "blendMode": "multiply"
+    },
+    {
+      "id": "a1",
+      "kind": "audio",
+      "label": "Music",
+      "scale": 1.0,
+      "fit": "contain",
+      "opacity": 1.0,
+      "volume": 0.5,
+      "muted": true,
+      "blendMode": "normal"
+    }
+  ],
+  "clips": [
+    {
+      "id": "clip_manual_image",
+      "source_uuid": "a3f4b21c",
+      "at": 0.0,
+      "track": "v_manual",
+      "clipType": "media",
+      "asset": "poster",
+      "to": 4.0,
+      "speed": 1.0,
+      "volume": 0.4,
+      "x": 120.0,
+      "y": 80.0,
+      "width": 960.0,
+      "height": 640.0,
+      "cropTop": 0.05,
+      "cropBottom": 0.1,
+      "cropLeft": 0.08,
+      "cropRight": 0.12,
+      "opacity": 0.92,
+      "entrance": {
+        "type": "slide-up",
+        "duration": 0.4,
+        "intensity": 0.6,
+        "params": {
+          "overshoot": 0.15
+        }
+      },
+      "exit": {
+        "type": "slide-down",
+        "duration": 0.35,
+        "intensity": 0.5,
+        "params": {
+          "ease": "easeIn"
+        }
+      },
+      "continuous": {
+        "type": "drift",
+        "intensity": 0.2,
+        "params": {
+          "axis": "x"
+        }
+      },
+      "transition": {
+        "type": "fade",
+        "duration": 0.3
+      },
+      "effects": {
+        "fade_in": 0.25,
+        "fade_out": 0.3
+      },
+      "from": 0.0
+    },
+    {
+      "id": "clip_cover_video",
+      "at": 1.0,
+      "track": "v_cover",
+      "clipType": "media",
+      "asset": "broll",
+      "to": 6.0,
+      "speed": 1.5,
+      "hold": 2.5,
+      "volume": 0.7,
+      "opacity": 0.88,
+      "from": 1.0
+    },
+    {
+      "id": "clip_text",
+      "at": 2.0,
+      "track": "v_cover",
+      "clipType": "text",
+      "opacity": 1.0,
+      "text": {
+        "content": "Sprint 2 full fixture",
+        "fontFamily": "IBM Plex Sans",
+        "fontSize": 72.0,
+        "color": "#f7f3e8",
+        "align": "center",
+        "bold": true,
+        "italic": true
+      }
+    },
+    {
+      "id": "clip_audio",
+      "at": 0.0,
+      "track": "a1",
+      "clipType": "media",
+      "asset": "main",
+      "to": 8.0,
+      "speed": 1.25,
+      "volume": 0.6,
+      "from": 0.5
+    },
+    {
+      "id": "clip_text_card",
+      "at": 4.0,
+      "track": "v_cover",
+      "clipType": "text-card",
+      "hold": 2.0,
+      "pool_id": "pool_g_text_card",
+      "clip_order": 1,
+      "params": {
+        "content": "Generated quote card",
+        "align": "center",
+        "bold": true
+      },
+      "generation": {
+        "aspect": "9:16"
+      }
+    }
+  ]
+}

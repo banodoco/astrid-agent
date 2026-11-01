@@ -1,4 +1,4 @@
-import type {ReactElement, ReactNode} from 'react';
+import type {ReactElement} from 'react';
 
 // `EffectProps` is the registry-side contract that the Remotion
 // timeline-composition package passes into every effect component. Re-exported
@@ -6,24 +6,12 @@ import type {ReactElement, ReactNode} from 'react';
 // without having to dip into the upstream package path.
 import type {EffectProps} from '@banodoco/timeline-composition/theme-api';
 
-// Contract for animation element components. The canonical builtin animations
-// pass children through unchanged; themes override these with real motion.
-export type AnimationComponentProps = {
-  readonly children?: ReactNode;
-};
-
-export type AnimationComponent = (
-  props: AnimationComponentProps,
-) => ReactElement | null;
-
-// Contract for transition element components. Builtins return a null-pair
-// describing "no transition"; themes provide presentation + timing nodes.
-export type TransitionResult = {
-  readonly presentation: ReactNode | null;
-  readonly timing: ReactNode | null;
-};
-
-export type TransitionComponent = () => TransitionResult;
+export type {
+  AnimationComponent,
+  BaseAnimationProps as AnimationComponentProps,
+  TransitionComponent,
+  TransitionComponentResult as TransitionResult,
+} from '@banodoco/timeline-composition/theme-api';
 
 // Contract for effect element components (text-card, model-trends, etc.).
 // The registry calls components with `params: unknown` because the upstream

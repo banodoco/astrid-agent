@@ -28,6 +28,36 @@ from typing import Any, Protocol
 
 from astrid.core.foundation.hash import validate_digest
 
+_CONTENT_ADDRESSED_MEDIA_ID = re.compile(r"(?:sha256:)?([0-9a-f]{64})\Z")
+_EXPLICIT_DIGEST_FIELDS = ("digest", "content_sha256", "sha256", "hash")
+
+
+def managed_asset_digest(entry: Mapping[str, Any]) -> str | None:
+    """Return the digest of a managed registry entry, from its media record.
+
+    This is the one identity source for the host, the materializer and the
+    scene observer. An edit entry added through the managed media path carries
+    only ``media_id``, which is the media record's content address (its
+    sha256), so the digest is derived from it and no digest field is required
+    on the entry. An explicit digest field is still honoured, and when the
+    entry has both they must agree, so a contradictory record is refused.
+    Opaque media ids have no derivable digest; the result is then the explicit
+    field, or None when there is none. The ``file`` locator never takes part.
+    """
+    explicit = next(
+        (entry[name] for name in _EXPLICIT_DIGEST_FIELDS if entry.get(name)), None
+    )
+    media_id = entry.get("media_id")
+    match = _CONTENT_ADDRESSED_MEDIA_ID.fullmatch(media_id) if isinstance(media_id, str) else None
+    if match is None:
+        return explicit
+    if explicit is None:
+        return match.group(1)
+    if not isinstance(explicit, str) or explicit.removeprefix("sha256:") != match.group(1):
+        raise ValueError("managed asset digest contradicts its media record")
+    return explicit
+
+
 @dataclass
 class MaterializedAsset:
     """One registry asset resolved for the lifetime of a render invocation."""
@@ -247,7 +277,7 @@ class AssetMaterializer:
             object_id = entry.get("object_id") or entry.get("media_id")
             if not isinstance(object_id, str) or not object_id.strip():
                 raise ValueError(f"Asset {key!r} requires a runtime-managed object_id")
-            raw_digest = entry.get("digest") or entry.get("content_sha256") or entry.get("sha256") or entry.get("hash")
+            raw_digest = managed_asset_digest(entry)
             if not isinstance(raw_digest, str) or not raw_digest.strip():
                 raise ValueError(f"Asset {key!r} requires a runtime-managed digest")
             if self.allow_derived_files and isinstance(entry.get("file"), str):

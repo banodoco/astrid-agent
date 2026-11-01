@@ -436,3 +436,58 @@ def test_public_visualizer_always_composes_current_saved_revision_with_matching_
         )
     if operation_error is not None:
         raise operation_error
+
+
+@pytest.mark.opt_in
+@pytest.mark.parametrize(
+    "corruption",
+    [None, "sidecar-bytes", "saved-revision", "requested-frame", "render-digest", "sidecar-path"],
+)
+def test_saved_actual_filmstrip_v2_composed_capture_readback(tmp_path, corruption):
+    """Replay a saved integration artifact; this does not claim a new lifecycle."""
+    fixture = os.environ.get("ASTRID_C06_SAVED_FRAME_INDEX")
+    if fixture is None:
+        unavailable("provide the saved actual public C06 frame-index artifact for affected readback replay")
+    source = Path(fixture).resolve()
+    if not source.is_file():
+        unavailable(f"saved actual public C06 frame-index artifact is unavailable at {source}")
+    index = json.loads(source.read_text(encoding="utf-8"))
+    raw = (source.parent / index["snapshot_sidecar"]["path"]).read_bytes()
+    snapshot = json.loads(raw)
+    authority = snapshot["metadata"]["capture_authority"]
+    project_id, timeline_id, revision = (
+        authority[k] for k in ("project_id", "timeline_id", "parent_revision_id")
+    )
+    frame = index["sampling"]["requested_frame"]
+    if corruption == "sidecar-bytes":
+        raw += b" "
+    elif corruption == "saved-revision":
+        snapshot["metadata"]["capture_authority"]["parent_revision_id"] = "wrong-saved-revision"
+        raw = json.dumps(snapshot).encode()
+        index["snapshot_sidecar"].update(bytes=len(raw), digest="sha256:" + hashlib.sha256(raw).hexdigest())
+    elif corruption == "requested-frame":
+        index["provenance"]["frame_capture"]["requested_frame_bounds"] = [frame + 1, frame + 1]
+    elif corruption == "render-digest":
+        index["provenance"]["video_digest"] = "sha256:" + "0" * 64
+    elif corruption == "sidecar-path":
+        index["snapshot_sidecar"]["path"] = "../render-snapshot.json"
+    (tmp_path / "render-snapshot.json").write_bytes(raw)
+    target = tmp_path / "frame-index.json"
+    target.write_text(json.dumps(index))
+
+    def read():
+        return _saved_composed_capture(
+            target,
+            project_id=project_id,
+            timeline_id=timeline_id,
+            saved_revision=revision,
+            frame=frame,
+        )
+
+    if corruption:
+        with pytest.raises(AssertionError):
+            read()
+    else:
+        observed, capture, sidecar = read()
+        assert observed["schema"] == "astrid.filmstrip.v2" and capture["fresh_frames"] == 1
+        assert sidecar == tmp_path / "render-snapshot.json"

@@ -76,6 +76,10 @@ def test_workflow_nonstandard_input_binding_alias_default_and_range(monkeypatch)
     description = entries.describe_entry('custom', registry=registry)
     field = description['inputs'][0]
     assert field == {'name': 'texture', 'type': 'number', 'default': 0.6}
+    native_field = entries.describe_entry('custom', registry=registry, _native=True)['inputs'][0]
+    assert native_field['name'] == 'texture' and native_field['type'] == 'number'
+    assert 'texture_amount' in native_field['aliases']
+    assert native_field['default'] == 0.6 and native_field['max'] == 1
     assert description['inputs'][1]['name'] == 'instruction'
     assert description['inputs'][1]['type'] == 'string'
     assert entries.resolve_entry_inputs('custom', {'grain': 0.8}, registry=registry)[1] == {'texture': 0.8}

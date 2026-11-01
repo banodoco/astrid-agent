@@ -70,12 +70,9 @@ class RenderRemotionRegistryGenerationTest(unittest.TestCase):
     def _write_fake_remotion_project(self, tmp: Path) -> tuple[Path, Path]:
         project_dir = tmp / "remotion"
         banodoco_root = project_dir / "node_modules" / "@banodoco"
-        composition_src = banodoco_root / "timeline-composition" / "typescript" / "src"
+        composition_src = project_dir / "src"
         composition_src.mkdir(parents=True)
-        # _validate_project_dir requires all three @banodoco adapter packages
-        # (see docs/reference/render-adapter.md).  Create stub directories for the other two.
-        (banodoco_root / "timeline-schema").mkdir(parents=True)
-        (banodoco_root / "timeline-theme-2rp").mkdir(parents=True)
+        (banodoco_root / "timeline-composition").mkdir(parents=True)
         (project_dir / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
         cli = project_dir / "node_modules" / "@remotion" / "cli" / "remotion-cli.js"
         cli.parent.mkdir(parents=True)
@@ -190,9 +187,10 @@ class RenderRemotionRegistryGenerationTest(unittest.TestCase):
                 # (the fixture's local effect must be mountable).
                 if any(str(part).endswith("gen_effect_registry.py") for part in command):
                     env = kwargs.get("env", {})
-                    src = env.get("ASTRID_TIMELINE_COMPOSITION_SRC")
+                    src = env.get("ASTRID_REMOTION_PROJECT_DIR")
                     if src:
-                        src_path = Path(src)
+                        src_path = Path(src) / "src"
+                        src_path.mkdir(parents=True, exist_ok=True)
                         for kind in ("effects", "animations", "transitions"):
                             (src_path / f"{kind}.generated.ts").write_text(
                                 render_remotion.gen_effect_registry.generate_element_registry(kind),
