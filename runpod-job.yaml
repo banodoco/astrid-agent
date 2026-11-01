@@ -1,0 +1,54 @@
+repos:
+  astrid-agent: 008cdfa7ead3bf6bc5c4d9588dee266b81c7aa5e
+  astrid-runtime: 1a275bb339ae897e52a5be5e1da99e846e402037
+cpu:
+  vcpu: 8
+gpu: false
+max_minutes: 60
+setup:
+  - |
+      set -euo pipefail
+      mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"
+      export TMPDIR="$PWD/runpod-tmp"
+      avail_kb=$(df -Pk "$PWD" | awk 'NR==2 {print $4}')
+      test "$avail_kb" -ge 2097152
+      python3 -m venv "$PWD/runpod-tmp/venv"
+      CUSTODY_PYTHON="$PWD/runpod-tmp/venv/bin/python"
+      "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+      "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation . ../astrid-runtime ../astrid-runtime/packages/python
+      "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "banodoco-timeline-schema @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python"
+      "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "git+https://github.com/peteromallet/VibeComfy.git@ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      NODE_VERSION=v20.19.4
+      curl --fail --location --silent --show-error "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-x64.tar.xz" -o "$PWD/runpod-tmp/node.tar.xz"
+      tar -xJf "$PWD/runpod-tmp/node.tar.xz" -C "$PWD/runpod-tmp"
+      export PATH="$PWD/runpod-tmp/node-$NODE_VERSION-linux-x64/bin:$PATH"
+      test "$(node --version)" = "$NODE_VERSION"
+      npm --prefix remotion ci --ignore-scripts --no-audit --no-fund
+      (cd remotion && npx remotion browser ensure)
+      "$CUSTODY_PYTHON" -m pip freeze > runpod-evidence/environment.txt
+run:
+  - |
+      set -euo pipefail
+      mkdir -p "$PWD/runpod-evidence" "$PWD/runpod-tmp"
+      trap 'code=$?; printf "%s\n" "$code" > runpod-evidence/exit-code.txt' EXIT
+      export TMPDIR="$PWD/runpod-tmp" PYTHONDONTWRITEBYTECODE=1
+      export ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)"
+      export PYTHONPATH="$PWD:$ASTRID_RUNTIME_CHECKOUT:$ASTRID_RUNTIME_CHECKOUT/packages/python"
+      export PATH="$PWD/runpod-tmp/node-v20.19.4-linux-x64/bin:$PATH"
+      CUSTODY_PYTHON="$PWD/runpod-tmp/venv/bin/python"
+      test "$(git rev-parse HEAD)" = 008cdfa7ead3bf6bc5c4d9588dee266b81c7aa5e
+      test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 1a275bb339ae897e52a5be5e1da99e846e402037
+      test "$(node --version)" = v20.19.4
+      git rev-parse HEAD > runpod-evidence/agent-head.txt
+      git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
+      node --version > runpod-evidence/node.txt
+      "$CUSTODY_PYTHON" --version > runpod-evidence/python.txt
+      "$CUSTODY_PYTHON" -m pytest --version > runpod-evidence/pytest.txt
+      uname -a > runpod-evidence/platform.txt
+      df -Pk "$PWD" | tee runpod-evidence/disk-before-tests.txt
+      "$CUSTODY_PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT" 2>&1 | tee runpod-evidence/vendor-lock.txt
+      sha256sum runtime.lock.json artifacts.json astrid_runtime_client/generated.py astrid_runtime_client/contract_metadata.py astrid_runtime_client/__init__.py astrid/chat/service.mjs > runpod-evidence/generated-and-lock.sha256
+      "$CUSTODY_PYTHON" -m pytest -p no:cacheprovider -o addopts= -q --basetemp="$TMPDIR/pytest-protected" --junitxml=runpod-evidence/protected-linux-native.xml tests/integrations/test_execution_custody_runtime_i_ag_03b.py::test_native_render_uses_exact_verified_inputs_and_proves_cleanup tests/integrations/test_generic_host_remotion_render.py::test_generic_host_remotion_register_claim_execute_settle_and_cas tests/core/rendering/test_remotion_host_regressions.py::test_captured_orchestrator_uses_platform_descriptor_launch tests/core/rendering/test_remotion_host_regressions.py::test_native_platform_launch_inherits_source_descriptor tests/packs/rendering/test_verified_source.py tests/sdk/test_workspace_client_custody_composition_i_ag_03b.py::test_verified_media_and_filtered_object_operations_coexist tests/core/gateway/test_doctor_bundle.py::test_doctor_custody_union_handles_unavailable_runtime 2>&1 | tee runpod-evidence/protected-linux-native.txt
+      df -Pk "$PWD" | tee runpod-evidence/disk-after-tests.txt
+artifacts:
+  - runpod-evidence/**
