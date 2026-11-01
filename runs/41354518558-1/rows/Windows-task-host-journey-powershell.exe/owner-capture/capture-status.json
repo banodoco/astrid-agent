@@ -1,0 +1,7 @@
+{
+  "journey_install_exit": 1,
+  "capture_missing_or_failed": [
+    "before: FileNotFoundError(2, 'No such file or directory')",
+    "after: FileNotFoundError(2, 'No such file or directory')"
+  ]
+}
