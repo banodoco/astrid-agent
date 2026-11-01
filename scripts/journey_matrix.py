@@ -28,6 +28,36 @@ RELEASE1_MATRIX: Final = (
     {"job_id": "pinokio-fully-local-macos", "mode": "pinokio-fully-local", "runner": "macos-14", "shell": "sh", "os": "macos"},
     {"job_id": "pinokio-fully-local-linux", "mode": "pinokio-fully-local", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux"},
     {"job_id": "pinokio-fully-local-windows", "mode": "pinokio-fully-local", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
+    {
+        "scenario_id": "direct-windows-interrupted-update",
+        "job_id": "direct-windows-interrupted-update", "mode": "direct",
+        "runner": "windows-2022", "shell": "powershell.exe", "os": "windows",
+        "scenario": "interrupted-update", "leg": "interrupted-update", "manager": "task-scheduler",
+        "executor": "failure_mode_executor.execute_installed_fault",
+        "steps": ("baseline", "interrupt", "recover", "verify"),
+        "required_evidence": (
+            "release0_fixture_and_installed_identity", "populated_data_before_and_after",
+            "sentinel_identity_and_survival", "interruption_and_same_operation_terminal_journal",
+            "installed_identity_after_recovery", "task_scheduler_ownership_health_and_one_runtime",
+            "keep_data_and_task_scheduler_process_cleanup", "per_step_command_and_inner_exit",
+            "scenario_tuple_runner_and_evidence_file_hashes",
+        ),
+    },
+    {
+        "scenario_id": "direct-windows-rollback",
+        "job_id": "direct-windows-rollback", "mode": "direct",
+        "runner": "windows-2022", "shell": "powershell.exe", "os": "windows",
+        "scenario": "rollback", "leg": "rollback", "manager": "task-scheduler",
+        "executor": "failure_mode_executor.execute_installed_fault",
+        "steps": ("baseline", "fail_candidate", "verify"),
+        "required_evidence": (
+            "release0_fixture_and_installed_identity", "populated_data_before_and_after",
+            "sentinel_identity_and_survival", "authenticated_selected_release0_predecessor_identity",
+            "candidate_failure_and_rollback_transaction_journal", "restored_predecessor_identity",
+            "task_scheduler_ownership_health_and_one_runtime", "keep_data_and_task_scheduler_process_cleanup",
+            "per_step_command_and_inner_exit", "scenario_tuple_runner_and_evidence_file_hashes",
+        ),
+    },
 )
 
 RELEASE1_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_MATRIX)
