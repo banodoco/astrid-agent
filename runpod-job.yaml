@@ -1,0 +1,71 @@
+repos:
+  astrid-agent: 5eea09fc370957f8f96b9fec939e4aac0446befa
+  astrid-runtime: 3b12fface79a3be029f3b6623765a7f3e1e5e24f
+cpu:
+  vcpu: 8
+max_minutes: 30
+setup:
+- 'set -euo pipefail
+
+  mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"
+
+  export TMPDIR="$PWD/runpod-tmp"
+
+  python3 -m venv "$PWD/runpod-tmp/venv"
+
+  CUSTODY_PYTHON="$PWD/runpod-tmp/venv/bin/python"
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --require-hashes -r
+  requirements/proof.lock -r requirements/build.lock
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation
+  . ../astrid-runtime ../astrid-runtime/packages/python
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "banodoco-timeline-schema
+  @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python"
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "git+https://github.com/peteromallet/VibeComfy.git@ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+
+  "$CUSTODY_PYTHON" -m pip freeze > runpod-evidence/environment.txt
+
+  '
+run:
+- 'set -euo pipefail
+
+  mkdir -p "$PWD/runpod-evidence" "$PWD/runpod-tmp"
+
+  trap ''code=$?; printf "%s\n" "$code" > runpod-evidence/exit-code.txt'' EXIT
+
+  export TMPDIR="$PWD/runpod-tmp" PYTHONDONTWRITEBYTECODE=1
+
+  export ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)"
+
+  CUSTODY_PYTHON="$PWD/runpod-tmp/venv/bin/python"
+
+  test "$(git rev-parse HEAD)" = 5eea09fc370957f8f96b9fec939e4aac0446befa
+
+  test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 3b12fface79a3be029f3b6623765a7f3e1e5e24f
+
+  git rev-parse HEAD > runpod-evidence/agent-head.txt
+
+  git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
+
+  "$CUSTODY_PYTHON" --version > runpod-evidence/python.txt
+
+  "$CUSTODY_PYTHON" -m pytest --version > runpod-evidence/pytest.txt
+
+  uname -a > runpod-evidence/platform.txt
+
+  "$CUSTODY_PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT"
+  2>&1 | tee runpod-evidence/vendor-check.txt
+
+  "$CUSTODY_PYTHON" -m pytest -p no:cacheprovider -o addopts= -q --basetemp="$TMPDIR/pytest"
+  --junitxml=runpod-evidence/focused.xml tests/test_generic_host.py::test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit
+  tests/test_generic_host.py::test_cancellation_reaps_descendant_spawned_by_sigterm_handler
+  tests/test_generic_host.py::test_descendant_terminated_requires_matching_zombie
+  tests/test_generic_host.py::test_descendant_terminated_fails_closed_on_observation_errors
+  2>&1 | tee runpod-evidence/focused.txt
+
+  '
+artifacts:
+- runpod-evidence/**
