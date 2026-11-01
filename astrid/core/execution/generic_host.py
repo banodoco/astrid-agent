@@ -5,6 +5,17 @@ pack-side process: discovery and execution happen here, while admission,
 leases, reservations, and settlement remain protocol operations on the daemon.
 """
 
+# Module map (symbol anchors keep this useful as the file evolves):
+# - Startup and process/source identity: _emit_startup_phase, source helpers,
+#   and the task-scope/process-control helpers.
+# - Adapter contracts and session lifecycle: AdapterSpec, AdapterRegistry,
+#   CapabilityRecord, and the engine/session adapters.
+# - Runtime protocol boundary: RuntimeProtocolClient and wire/error handling.
+# - Host lifecycle: GenericPackHost discovery/admission, invocation, output
+#   settlement, cancellation, handoff, and supervision.
+# - Local execution and entry points: LocalExecutionPreparation, publication
+#   and activation helpers, then _cli/module shutdown.
+
 from __future__ import annotations
 
 import argparse
