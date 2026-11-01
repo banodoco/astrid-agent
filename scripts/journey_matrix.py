@@ -20,6 +20,36 @@ else:
 
 RELEASE1_MATRIX: Final = (
     {"job_id": "direct-macos", "mode": "direct", "runner": "macos-14", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
+    # Separate receipts for installed fault journeys; these rows do not run them.
+    {
+        "scenario_id": "direct-macos-interrupted-update",
+        "job_id": "direct-macos-interrupted-update", "mode": "direct",
+        "runner": "macos-14", "shell": "sh", "os": "macos",
+        "leg": "interrupted-update", "scenario": "interrupted-update", "manager": "launchd",
+        "executor": "failure_mode_executor.execute_installed_fault",
+        "steps": ("baseline", "interrupt", "recover", "verify"),
+        "required_evidence": (
+            "release0_fixture_and_installed_identity", "populated_data_before_and_after",
+            "sentinel_identity_and_survival", "interruption_and_same_operation_terminal_journal",
+            "installed_identity_after_recovery", "launchd_ownership_health_and_one_runtime",
+            "per_step_command_and_inner_exit", "scenario_tuple_runner_and_evidence_file_hashes",
+        ),
+    },
+    {
+        "scenario_id": "direct-macos-rollback",
+        "job_id": "direct-macos-rollback", "mode": "direct",
+        "runner": "macos-14", "shell": "sh", "os": "macos",
+        "leg": "rollback", "scenario": "rollback", "manager": "launchd",
+        "executor": "failure_mode_executor.execute_installed_fault",
+        "steps": ("baseline", "fail_candidate", "verify"),
+        "required_evidence": (
+            "release0_fixture_and_installed_identity", "populated_data_before_and_after",
+            "sentinel_identity_and_survival", "authenticated_selected_release0_predecessor_identity",
+            "candidate_failure_and_rollback_transaction_journal", "restored_predecessor_identity",
+            "launchd_ownership_health_and_one_runtime", "per_step_command_and_inner_exit",
+            "scenario_tuple_runner_and_evidence_file_hashes",
+        ),
+    },
     {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},
     {"job_id": "direct-windows", "mode": "direct", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows", "leg": "release0-to-release1"},
     {"job_id": "pinokio-backend-macos", "mode": "pinokio-backend", "runner": "macos-14", "shell": "sh", "os": "macos"},
