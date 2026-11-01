@@ -32,6 +32,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
 import shlex
 import tarfile
@@ -308,6 +309,32 @@ class RemotePlacement:
         self._deadline_at: float | None = None
 
     # -- public ------------------------------------------------------------
+
+    def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float) -> RemoteRun:
+        """Bootstrap/install an exact existing claim for ordinary prepared work.
+
+        Claim/admission/release stay with their existing journal and Runtime
+        owners. This method never claims a pod or invokes the H3 transform.
+        """
+        if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+            raise RemotePlacementError("prepared claim has no remaining paid lifetime")
+        self._deadline_at = self._clock() + deadline_seconds
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        run_id = uuid.uuid4().hex
+        state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim)
+        try:
+            self._bootstrap(state)
+            self._install(state)
+            self._check_deadline("prepared install")
+        except BaseException:
+            if state.job_id is not None:
+                try:
+                    claim.ops.job_cancel(state.job_id)
+                except Exception:
+                    pass
+            raise
+        return state
 
     def run(
         self,

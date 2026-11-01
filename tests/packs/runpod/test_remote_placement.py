@@ -215,6 +215,28 @@ def _provider(sources, volume=None):
     return FakeProvider(f"{rp.BOOTSTRAP_ROOT}/{digest}/ok", volume)
 
 
+def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp_path, sources):
+    provider = _provider(sources)
+    claim = provider.claim(rp.ClaimSpec())
+    wrapper = _wrapper(provider, sources)
+    state = wrapper.prepare_claimed(claim, out=tmp_path / "prepare", deadline_seconds=120)
+    assert state.claim is claim
+    assert provider.claims == 1
+    assert provider.releases == 0
+    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+    assert all("h3_av.transform" not in command for command in claim.ops.job_log)
+    assert not any("/01-prepare/" in path for path in claim.ops.files)
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("inf"), float("nan")])
+def test_prepare_claimed_refuses_missing_paid_lifetime_without_provider_use(tmp_path, seconds):
+    provider = FakeProvider("unused")
+    wrapper = _wrapper(provider, None)
+    with pytest.raises(RemotePlacementError, match="remaining paid lifetime"):
+        wrapper.prepare_claimed(None, out=tmp_path / "prepare", deadline_seconds=seconds)
+    assert provider.claims == provider.releases == 0
+
+
 def test_happy_path_runs_all_seven_steps(tmp_path, sources, inputs):
     provider = _provider(sources)
     seen = {}

@@ -114,12 +114,58 @@ def test_terminal_admission_receipt_skips_activation_but_retires_after_readback(
     ]
 
 
+def test_no_wait_activates_the_admitted_task_before_returning_its_receipt() -> None:
+    client = _Client([_task()])
+    wrapper = PreparedRunPodTaskClient(client, _Runtime(client.events))
+    kwargs = {**_kwargs(), "wait": False}
+    assert wrapper.invoke_result("vibecomfy.run", kind="executor", **kwargs) is client.first
+    assert [event[0] for event in client.events] == ["invoke", "show", "activate"]
+    assert client.events[-1] == ("activate", _task())
+
+
+def test_no_wait_terminal_receipt_retires_without_another_activation() -> None:
+    client = _Client([_task(state="succeeded")])
+    wrapper = PreparedRunPodTaskClient(client, _Runtime(client.events))
+    assert wrapper.invoke_result("vibecomfy.run", kind="executor", **{**_kwargs(), "wait": False}) is client.first
+    assert [event[0] for event in client.events] == ["invoke", "show", "retire"]
+
+
+def test_prepared_selection_rejects_changed_claim_and_conflicting_mount(tmp_path: Path) -> None:
+    from astrid.packs.runpod.prepared_task import PreparedWorkerSelection, _claim_target
+
+    claim_path = tmp_path / "claim.json"
+    claim = {"state": "claimed", "pod_id": "pod-1", "provider_account_ref": "account-1",
+             "network_volume_id": "volume-1", "volume_mount_path": "/workspace"}
+    claim_path.write_text(json.dumps(claim))
+    selected = PreparedWorkerSelection(claim_path, tmp_path / "profile", tmp_path / "staging",
+                                       tmp_path / "journal", _claim_target(claim), {}, {})
+    target = dict(selected.target)
+    assert selected.execution_request(None)["target"]["mounts"][0]["target"] == "/workspace"
+    with pytest.raises(PreparedWorkerError, match="mount differs"):
+        selected.execution_request({"target": {**target, "mounts": [
+            {"source": "volume-1", "target": "/wrong", "read_only": False},
+        ]}})
+    claim_path.write_text(json.dumps({**claim, "pod_id": "other-pod"}))
+    with pytest.raises(PreparedWorkerError, match="identity changed"):
+        selected.execution_request(None)
+
+
+def test_existing_installed_runpod_transport_blocks_unverified_live_session() -> None:
+    from astrid.packs.runpod.installed_session import RunPodInstalledVibeComfySessionTransport
+    from astrid.packs.runpod.worker_session import ManagedSessionError
+
+    # This is the real production verification method with fake identity,
+    # demonstrating the missing capability without a provider or a process.
+    transport = RunPodInstalledVibeComfySessionTransport(SimpleNamespace(id="fake-pod"))
+    with pytest.raises(ManagedSessionError, match="lacks live installer session composite verification"):
+        transport._verify_live(SimpleNamespace(pod_id="fake-pod"), {})
+
+
 @pytest.mark.parametrize("capability_id,changes", [
     ("pack.render", {}),
     ("vibecomfy.run", {"execution_request": {"remote_activation_required": False}}),
-    ("vibecomfy.run", {"wait": False}),
 ])
-def test_non_prepared_or_non_waiting_calls_pass_through(
+def test_non_prepared_calls_pass_through(
     capability_id: str, changes: dict[str, object],
 ) -> None:
     client = _Client([])
@@ -371,9 +417,10 @@ def test_restart_retires_pre_readiness_generation_before_replacement(tmp_path: P
     assert events == ["retire-uncommitted", "park", "relinquish-local", "activate"]
 
 
-def test_restart_reconciles_ready_generation_without_rotating_or_replacing_it(tmp_path: Path):
+@pytest.mark.parametrize("state", ["ready", "committed"])
+def test_restart_reconciles_ready_generation_without_rotating_or_replacing_it(tmp_path: Path, state: str):
     managed = {
-        "state": "ready",
+        "state": state,
         "activation_qualification": {"task_id": "task-1", "run_id": "run-1", "activation_id": "old"},
     }
     runtime, events = _production_runtime(tmp_path, managed)

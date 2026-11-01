@@ -33,6 +33,7 @@ def test_prepared_selection_round_trips_exact_runtime_binding(tmp_path, monkeypa
     claim_path.write_text(json.dumps({
         "state": "claimed", "provider_account_ref": "fake-account", "pod_id": "fake-pod",
         "network_volume_id": "fake-volume", "network_volume_name": "storage",
+        "volume_mount_path": "/workspace",
     }), encoding="utf-8")
     selection = PreparedWorkerSelection(
         claim_path, tmp_path / "profile.json", tmp_path / "staging.json",

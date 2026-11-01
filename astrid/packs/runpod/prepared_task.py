@@ -56,12 +56,19 @@ def _claim_target(claim: Mapping[str, Any]) -> dict[str, Any]:
     storage = {"network_volume_id": claim["network_volume_id"]}
     if isinstance(claim.get("network_volume_name"), str) and claim["network_volume_name"]:
         storage["name"] = claim["network_volume_name"]
-    return {
+    target = {
         "kind": "runpod",
         "pod_id": claim["pod_id"],
         "provider_account_ref": claim["provider_account_ref"],
         "storage": storage,
     }
+    mount_path = claim.get("volume_mount_path")
+    if mount_path is not None:
+        if (not isinstance(mount_path, str) or not mount_path.startswith("/")
+                or ".." in Path(mount_path).parts):
+            raise PreparedWorkerError("P1 claim has an invalid network volume mount")
+        target["mounts"] = [{"source": claim["network_volume_id"], "target": mount_path, "read_only": False}]
+    return target
 
 
 @dataclass(frozen=True)
@@ -83,6 +90,8 @@ class PreparedWorkerSelection:
         claim = _read_mapping(self.claim_handle_path, label="P1 claim")
         if claim.get("state") != "claimed":
             raise PreparedWorkerError("prepared H3 tasks require an actively claimed RunPod target")
+        if _claim_target(claim) != dict(self.target):
+            raise PreparedWorkerError("P1 claim identity changed after worker selection")
         request = dict(normalize_execution_request(supplied) or {}) if supplied else {}
         target = dict(self.target)
         if request.get("target") is not None:
@@ -102,6 +111,8 @@ class PreparedWorkerSelection:
             if (supplied_volume_name is not None and expected_volume_name is not None
                     and supplied_volume_name != expected_volume_name):
                 raise PreparedWorkerError("supplied H3 target volume name differs from the exact P1 claim")
+            if existing.get("mounts") is not None and existing["mounts"] != expected.get("mounts"):
+                raise PreparedWorkerError("supplied target mount differs from the exact P1 claim")
             # Keep the P1 claim's canonical target (including its optional
             # volume label) so admission, selection, and Runtime binding use
             # one byte-for-byte representation after identity is validated.
@@ -213,9 +224,6 @@ class PreparedRunPodTaskClient:
         prepared = isinstance(request, Mapping) and request.get("remote_activation_required") is True
         if capability_id != "vibecomfy.run" or not prepared:
             return self._client.invoke_result(capability_id, kind=kind, **kwargs)
-        if kwargs.get("wait") is not True:
-            return self._client.invoke_result(capability_id, kind=kind, **kwargs)
-
         recovery_path = kwargs.get("recovery_path")
         if recovery_path is None:
             raise PreparedWorkerError("prepared H3 execution requires the ordinary SDK recovery receipt path")
@@ -234,6 +242,10 @@ class PreparedRunPodTaskClient:
         if state not in {"succeeded", "completed", "failed", "cancelled", "canceled"}:
             self._runtime.ensure_for_task(task)
             activated = True
+        if kwargs.get("wait") is not True:
+            if not activated:
+                self._runtime.retire_after_task(task)
+            return first
 
         finish_args = dict(kwargs)
         finish_args["wait"] = True
