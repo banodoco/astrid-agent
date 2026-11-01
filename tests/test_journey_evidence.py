@@ -1,8 +1,12 @@
 """The evidence gate rejects incomplete or dishonest qualification results."""
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
+
+from scripts import failure_mode_executor, journey_matrix
+from tests.failure_mode_fixtures import PROVISIONAL_CANDIDATE
 
 spec = importlib.util.spec_from_file_location('journey_evidence', Path(__file__).parents[1] / 'scripts/check_journey_evidence.py')
 gate = importlib.util.module_from_spec(spec)
@@ -180,6 +184,150 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     direct.write_text(json.dumps(data), encoding="utf-8")
     assert any("direct-macos: runtime installed/source identity differs" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+
+def _m4_6_local_observation(slot_id):
+    contract = journey_matrix.validate_m4_6_slot(slot_id)
+
+    def identity():
+        return {
+            "loaded_sources": {
+                "agent_module": "/tmp/agent.py",
+                "agent_module_sha256": "a" * 64,
+                "runtime_module": "/tmp/runtime.py",
+                "runtime_module_sha256": "b" * 64,
+                "runtime_discovery": {
+                    "pid": 123,
+                    "process_birth_id": "birth",
+                    "runtime_instance_id": "instance",
+                },
+            },
+        }
+
+    cleanup = {"owned_processes_after": 0, "process_absent": True}
+    pair = {"before": identity(), "after": identity()}
+    stop_cases = {
+        outcome: {
+            "executable_identity": copy.deepcopy(pair),
+            "cleanup": copy.deepcopy(cleanup),
+            "mutation_inventory": {"unchanged": True, "before": "same", "after": "same"},
+        }
+        for outcome in failure_mode_executor.failure.STOP_OUTCOMES
+    }
+    return {
+        "slot_id": slot_id,
+        "runner_image": contract["runner"],
+        "shell": contract["shell"],
+        "execution_scope": "local-disposable",
+        "runner_provenance": {"ImageVersion": "local-disposable"},
+        "candidate_checkouts": {
+            name: {"sha": PROVISIONAL_CANDIDATE[name]}
+            for name in ("app", "agent", "runtime", "pinokio")
+        },
+        "manifest_sha256": PROVISIONAL_CANDIDATE["manifest_sha256"],
+        "evidence_files": [],
+        "scenarios": {
+            "interruption_recovery": {"terminal_identity": identity(), "cleanup": copy.deepcopy(cleanup)},
+            "failed_candidate_rollback": {
+                "executable_identity": copy.deepcopy(pair),
+                "candidate_process_boundary": {
+                    "started": True,
+                    "exit_code": 73,
+                    "process_identity_sha256": "c" * 64,
+                    "loaded_sources": {"agent_module_sha256": "d" * 64},
+                },
+                "cleanup": copy.deepcopy(cleanup),
+            },
+            "keep_data_uninstall": {"executable_identity_before": identity(), "cleanup": copy.deepcopy(cleanup)},
+            "stop_safety": {"cases": stop_cases},
+        },
+    }
+
+
+def _write_m4_6_local_receipts(root):
+    paths = {}
+    for contract in journey_matrix.M4_6_MATRIX:
+        slot_id = contract["job_id"]
+        observation = _m4_6_local_observation(slot_id)
+        evidence = []
+        for scenario in failure_mode_executor.failure.SCENARIOS:
+            path = root / slot_id / "evidence" / f"{scenario}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            contents = json.dumps({"slot_id": slot_id, "scenario": scenario}).encode("utf-8")
+            path.write_bytes(contents)
+            evidence.append({
+                "path": f"evidence/{scenario}.json",
+                "sha256": hashlib.sha256(contents).hexdigest(),
+                "kind": "machine-observation",
+                "scenario": scenario,
+            })
+        observation["evidence_files"] = copy.deepcopy(evidence)
+        receipt = {
+            "schema_version": 1,
+            "receipt_kind": "m4-6-local-disposable-execution",
+            "status": "exercised",
+            "slot_id": slot_id,
+            "execution_scope": "local-disposable",
+            "source_override_test_mode": False,
+            "candidate": copy.deepcopy(PROVISIONAL_CANDIDATE),
+            "evidence_files": copy.deepcopy(evidence),
+            "observation": observation,
+        }
+        path = root / slot_id / "m4-6-local-result.json"
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        paths[slot_id] = path
+    return paths
+
+
+def test_m4_6_canonical_evaluator_rejects_missing_duplicate_stale_failed_and_prepared_evidence(tmp_path):
+    valid = tmp_path / "valid"
+    paths = _write_m4_6_local_receipts(valid)
+    assert gate.evaluate_m4_6_local_matrix(valid, PROVISIONAL_CANDIDATE) == []
+
+    missing = tmp_path / "missing"
+    paths = _write_m4_6_local_receipts(missing)
+    paths["direct-linux"].unlink()
+    assert any("direct-linux: missing M4-6 local execution" in error
+               for error in gate.evaluate_m4_6_local_matrix(missing, PROVISIONAL_CANDIDATE))
+
+    duplicates = tmp_path / "duplicates"
+    paths = _write_m4_6_local_receipts(duplicates)
+    duplicate = duplicates / "duplicate" / "m4-6-local-result.json"
+    duplicate.parent.mkdir()
+    duplicate.write_bytes(paths["direct-linux"].read_bytes())
+    assert any("direct-linux: duplicate M4-6 local receipt" in error
+               for error in gate.evaluate_m4_6_local_matrix(duplicates, PROVISIONAL_CANDIDATE))
+
+    stale_root = tmp_path / "stale"
+    paths = _write_m4_6_local_receipts(stale_root)
+    stale = json.loads(paths["direct-linux"].read_text())
+    stale["candidate"]["agent"] = "f" * 40
+    paths["direct-linux"].write_text(json.dumps(stale), encoding="utf-8")
+    assert any("direct-linux: local receipt candidate tuple differs" in error
+               for error in gate.evaluate_m4_6_local_matrix(stale_root, PROVISIONAL_CANDIDATE))
+
+    failed_root = tmp_path / "failed"
+    paths = _write_m4_6_local_receipts(failed_root)
+    failed = json.loads(paths["direct-linux"].read_text())
+    failed["status"] = "failed"
+    paths["direct-linux"].write_text(json.dumps(failed), encoding="utf-8")
+    assert any("direct-linux: local receipt status is not 'exercised'" in error
+               for error in gate.evaluate_m4_6_local_matrix(failed_root, PROVISIONAL_CANDIDATE))
+
+    prepared_root = tmp_path / "prepared"
+    paths = _write_m4_6_local_receipts(prepared_root)
+    prepared = json.loads(paths["direct-linux"].read_text())
+    prepared["status"] = "prepared"
+    paths["direct-linux"].write_text(json.dumps(prepared), encoding="utf-8")
+    assert any("direct-linux: local receipt status is not 'exercised'" in error
+               for error in gate.evaluate_m4_6_local_matrix(prepared_root, PROVISIONAL_CANDIDATE))
+
+    missing_sidecar = tmp_path / "missing-sidecar"
+    paths = _write_m4_6_local_receipts(missing_sidecar)
+    evidence = missing_sidecar / "direct-linux" / "evidence" / "interruption_recovery.json"
+    evidence.unlink()
+    assert any("direct-linux: evidence_files[0]: missing evidence file" in error
+               for error in gate.evaluate_m4_6_local_matrix(missing_sidecar, PROVISIONAL_CANDIDATE))
 
 
 def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():

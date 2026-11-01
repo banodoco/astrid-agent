@@ -1,6 +1,7 @@
 """Regressions for the explicitly enabled, local-only M4 shared routes."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -83,6 +84,19 @@ def _write_local_matrix(root, mutate=None):
     for contract in journey_matrix.M4_6_MATRIX:
         slot = contract["job_id"]
         observation = _local_observation(slot)
+        evidence = []
+        for scenario in failure_mode_executor.failure.SCENARIOS:
+            path = root / slot / "evidence" / f"{scenario}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            contents = json.dumps({"slot_id": slot, "scenario": scenario}).encode("utf-8")
+            path.write_bytes(contents)
+            evidence.append({
+                "path": f"evidence/{scenario}.json",
+                "sha256": hashlib.sha256(contents).hexdigest(),
+                "kind": "machine-observation",
+                "scenario": scenario,
+            })
+        observation["evidence_files"] = copy.deepcopy(evidence)
         row = {
             "schema_version": 1,
             "receipt_kind": "m4-6-local-disposable-execution",
@@ -91,7 +105,7 @@ def _write_local_matrix(root, mutate=None):
             "execution_scope": "local-disposable",
             "source_override_test_mode": False,
             "candidate": copy.deepcopy(PROVISIONAL_CANDIDATE),
-            "evidence_files": [],
+            "evidence_files": copy.deepcopy(evidence),
             "observation": observation,
         }
         if mutate:

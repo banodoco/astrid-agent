@@ -8,7 +8,7 @@ import platform
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 if __package__:
     from .journey_matrix import (
@@ -608,21 +608,86 @@ def evaluate_m4_4b_local_smoke(results):
     return errors
 
 
+def _verify_m4_6_evidence_files(receipt, receipt_path, scenarios):
+    """Bind M4-6 machine observations to the downloaded run artifact.
+
+    This is deliberately kept in the canonical journey evaluator rather than
+    delegating to the retired C-06/R-36 receipt verdict.  Receipt declarations
+    do not authenticate a file: every required, run-owned sidecar must be
+    present, regular, contained by the receipt directory, and match its
+    declared digest.
+    """
+    errors = []
+    evidence = receipt.get("evidence_files")
+    if not isinstance(evidence, list):
+        return ["evidence_files: machine evidence list is required"]
+
+    receipt_root = receipt_path.parent.resolve()
+    paths = set()
+    covered = set()
+    for index, item in enumerate(evidence):
+        prefix = f"evidence_files[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{prefix}: machine evidence declaration must be an object")
+            continue
+        raw_path = item.get("path")
+        scenario = item.get("scenario")
+        if (not isinstance(raw_path, str) or not raw_path or "\\" in raw_path
+                or "\x00" in raw_path):
+            errors.append(f"{prefix}: run-owned relative evidence path is required")
+            continue
+        relative = PurePosixPath(raw_path)
+        if relative.is_absolute() or ".." in relative.parts or str(relative) != raw_path:
+            errors.append(f"{prefix}: evidence path must be run-owned and relative")
+            continue
+        if raw_path in paths:
+            errors.append(f"{prefix}: duplicate evidence path {raw_path!r}")
+        paths.add(raw_path)
+        if scenario not in scenarios:
+            errors.append(f"{prefix}: unknown failure scenario {scenario!r}")
+        elif scenario in covered:
+            errors.append(f"{prefix}: duplicate evidence scenario {scenario!r}")
+        else:
+            covered.add(scenario)
+        if item.get("kind") != "machine-observation":
+            errors.append(f"{prefix}: prose/source evidence is not admissible")
+        expected = item.get("sha256")
+        if not isinstance(expected, str) or not DIGEST.fullmatch(expected):
+            errors.append(f"{prefix}: evidence SHA-256 is required")
+            continue
+        evidence_path = receipt_root / relative
+        try:
+            resolved = evidence_path.resolve(strict=True)
+        except OSError as exc:
+            errors.append(f"{prefix}: missing evidence file {raw_path!r}: {exc}")
+            continue
+        if not resolved.is_relative_to(receipt_root) or evidence_path.is_symlink():
+            errors.append(f"{prefix}: evidence path escapes the receipt artifact")
+            continue
+        if not resolved.is_file():
+            errors.append(f"{prefix}: evidence path is not a regular file")
+            continue
+        if digest(resolved) != expected:
+            errors.append(f"{prefix}: evidence SHA-256 does not match {raw_path!r}")
+
+    missing = set(scenarios) - covered
+    if missing:
+        errors.append("evidence_files: missing machine observation for " + ", ".join(sorted(missing)))
+    return errors
+
+
 def evaluate_m4_6_local_matrix(results, candidate):
     """Validate all nine local-disposable M4-6 executions, never hosted receipts."""
     if __package__:
         from . import failure_mode_executor
-        from .check_failure_receipts import verify_evidence_files
-        from .journey_failure_modes import candidate_errors
+        from .journey_failure_modes import SCENARIOS, candidate_errors
     else:
         try:
             import failure_mode_executor
-            from check_failure_receipts import verify_evidence_files
-            from journey_failure_modes import candidate_errors
+            from journey_failure_modes import SCENARIOS, candidate_errors
         except ModuleNotFoundError:
             from scripts import failure_mode_executor
-            from scripts.check_failure_receipts import verify_evidence_files
-            from scripts.journey_failure_modes import candidate_errors
+            from scripts.journey_failure_modes import SCENARIOS, candidate_errors
 
     errors = [f"candidate: {error}" for error in candidate_errors(candidate)]
     expected = {row["job_id"]: row for row in M4_6_MATRIX}
@@ -671,7 +736,12 @@ def evaluate_m4_6_local_matrix(results, candidate):
             errors.append(f"{slot_id}: local executor observation has a wrong tuple or scope")
         observation_errors = failure_mode_executor.execution_observation_errors(observation)
         errors.extend(f"{slot_id}: {error}" for error in observation_errors)
-        errors.extend(f"{slot_id}: {error}" for error in verify_evidence_files(row, path))
+        if row.get("evidence_files") != observation.get("evidence_files"):
+            errors.append(f"{slot_id}: receipt evidence declarations differ from the executor observation")
+        errors.extend(
+            f"{slot_id}: {error}"
+            for error in _verify_m4_6_evidence_files(row, path, SCENARIOS)
+        )
     return errors
 
 
