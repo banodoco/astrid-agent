@@ -2,7 +2,7 @@ name: R-51 focused Windows preflight
 
 on:
   push:
-    branches: [venue/M-QUAL-R51-WINDOWS-PREFLIGHT-1]
+    branches: [venue/M-QUAL-R51-WINDOWS-PREFLIGHT-2]
 
 permissions:
   contents: write
@@ -23,7 +23,7 @@ jobs:
         run: |
           mkdir -p evidence
           {
-            printf 'repository=%s\nref=%s\nsource_candidate=%s\n' "$GITHUB_REPOSITORY" "$GITHUB_REF" '20edad6136da2cba1bc81ad6d8ee75672daa5f8a'
+            printf 'repository=%s\nref=%s\nsource_candidate=%s\n' "$GITHUB_REPOSITORY" "$GITHUB_REF" '8506e75f7cd474b6da13316385e871efe11d0e60'
             printf 'checkout_sha=%s\nworkflow_sha=%s\n' "$(git rev-parse HEAD)" "$GITHUB_WORKFLOW_SHA"
             printf 'workflow_ref=%s\nrun_id=%s\nrun_attempt=%s\njob=%s\nrunner_os=%s\nrunner_arch=%s\n' "$GITHUB_WORKFLOW_REF" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" "$RUNNER_OS" "$RUNNER_ARCH"
             python --version
@@ -38,8 +38,8 @@ jobs:
           set +e
           export PYTHONPATH=.
           export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-          printf '%s\n' 'pytest -c /dev/null --no-conftest -q tests/test_ci_journey.py::test_windows_preflight_handles_absent_tasks_without_hiding_scheduler_errors tests/test_ci_journey.py::test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root' > evidence/focused-tests.log
-          pytest -c /dev/null --no-conftest -q tests/test_ci_journey.py::test_windows_preflight_handles_absent_tasks_without_hiding_scheduler_errors tests/test_ci_journey.py::test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root 2>&1 | tee -a evidence/focused-tests.log
+          printf '%s\n' 'pytest -c /dev/null --noconftest -q tests/test_ci_journey.py::test_windows_preflight_handles_absent_tasks_without_hiding_scheduler_errors tests/test_ci_journey.py::test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root' > evidence/focused-tests.log
+          pytest -c /dev/null --noconftest -q tests/test_ci_journey.py::test_windows_preflight_handles_absent_tasks_without_hiding_scheduler_errors tests/test_ci_journey.py::test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root 2>&1 | tee -a evidence/focused-tests.log
           rc=${PIPESTATUS[0]}
           printf '%s\n' "$rc" > evidence/inner-exit.txt
           exit "$rc"
@@ -83,4 +83,4 @@ jobs:
           git -C "$result_dir" commit -qm 'Retain R-51 focused Windows evidence'
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\r\n')"
-          git -C "$result_dir" push "https://github.com/$GITHUB_REPOSITORY.git" HEAD:refs/heads/venue-results/M-QUAL-R51-WINDOWS-PREFLIGHT-1
+          git -C "$result_dir" push "https://github.com/$GITHUB_REPOSITORY.git" HEAD:refs/heads/venue-results/M-QUAL-R51-WINDOWS-PREFLIGHT-2
