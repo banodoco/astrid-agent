@@ -184,6 +184,20 @@ M4_5_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in M4_5_MATRIX)
 M4_6_MATRIX: Final = RELEASE1_MATRIX
 M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
 
+# One independent installed-App guard scenario, co-owned with M-APP.  Its
+# inventory contract is not evidence that an installed journey has run.
+APP_UPDATE_GUARD_SCENARIO: Final = {
+    "scenario_id": "installed-app-update-guard-linux",
+    "os": "linux",
+    "runner": "ubuntu-24.04",
+    "shell": "sh",
+    "evidence_class": "installed_app",
+    "phases": (
+        {"save_state": "unresolved", "expected_update_post_count": 0},
+        {"save_state": "settled", "expected_update_post_count": 1},
+    ),
+}
+
 
 def m4_4a_backend_job(job_id: str) -> dict:
     for row in M4_4A_BACKEND_MATRIX:

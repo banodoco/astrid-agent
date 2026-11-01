@@ -95,6 +95,39 @@ def test_existing_release1_and_release2_inventory_remains_available():
         }
 
 
+def test_installed_app_update_guard_inventory_has_one_linux_row():
+    row = journey_matrix.APP_UPDATE_GUARD_SCENARIO
+
+    assert row["scenario_id"] == "installed-app-update-guard-linux"
+    assert (row["os"], row["runner"], row["shell"], row["evidence_class"]) == (
+        "linux", "ubuntu-24.04", "sh", "installed_app"
+    )
+    assert row["phases"] == (
+        {"save_state": "unresolved", "expected_update_post_count": 0},
+        {"save_state": "settled", "expected_update_post_count": 1},
+    )
+
+
+def test_existing_release1_and_release2_inventory_remains_present():
+    original_ids = {
+        f"{mode}-{os_name}"
+        for mode in ("direct", "pinokio-backend", "pinokio-fully-local")
+        for os_name in ("macos", "linux", "windows")
+    }
+    jobs = [row for row in journey_matrix.RELEASE1_MATRIX if row["job_id"] in original_ids]
+    assert {(row["mode"], row["os"]) for row in jobs} == {
+        (mode, os_name)
+        for mode in ("direct", "pinokio-backend", "pinokio-fully-local")
+        for os_name in ("macos", "linux", "windows")
+    }
+    assert len(jobs) == 9
+    assert all(row["leg"] == "release0-to-release1" for row in jobs if row["mode"] == "direct")
+    release2 = journey_matrix.M4_5_MATRIX
+    assert len(release2) == 12
+    assert len({row["scenario_id"] for row in release2}) == 12
+    assert all(row["scenario"] == "release1-to-release2" for row in release2)
+
+
 def app_checkout(tmp_path):
     app = tmp_path / "app"
     (app / "public").mkdir(parents=True)
