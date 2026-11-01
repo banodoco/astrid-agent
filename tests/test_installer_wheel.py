@@ -17,6 +17,7 @@ INSTALLER_IMPORT_RESOURCES = (
     "core/generation/engine_recipe.py",
     "core/generation/vibecomfy_dependency.py",
     "packs/engine-index.json",
+    "packs/runpod/pins.json",
     "packs/vibecomfy/pins.json",
     "packs/vibecomfy/recipe.windows-cu130.json",
 )
