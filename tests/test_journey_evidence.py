@@ -1,8 +1,11 @@
 """The evidence gate rejects incomplete or dishonest qualification results."""
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
+
+import yaml
 
 spec = importlib.util.spec_from_file_location('journey_evidence', Path(__file__).parents[1] / 'scripts/check_journey_evidence.py')
 gate = importlib.util.module_from_spec(spec)
@@ -193,3 +196,139 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert "candidate-agent" in workflow and "pinokio" in workflow
     assert '"leg":"release0-to-release1"' in workflow
     assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
+
+
+def windows_task_host_receipt(root, shell="powershell.exe"):
+    """Create one synthetic X5 artifact; it is never presented as hosted proof."""
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    manifest = {"agent": {"sha": candidate["agent"]}, "runtime": {"sha": candidate["runtime"]}}
+    manifest_bytes = (json.dumps(manifest, sort_keys=True) + "\n").encode()
+    candidate["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+    candidate["artifacts"] = {path: letter * 64 for path, letter in zip(gate.ARTIFACTS, "ef0")}
+    task = {
+        "ok": True,
+        "data": {"state": "succeeded", "result": {"outputs": [
+            {"name": "sfx", "digest": "sha256:" + "1" * 64, "size": 1},
+            {"name": "sfx_meta", "digest": "sha256:" + "2" * 64, "size": 1},
+        ]}},
+    }
+    contents = {
+        "install-manifest.json": manifest_bytes,
+        "installed-manifest.json": manifest_bytes,
+        "sources.json": json.dumps({
+            "app": {"sha": candidate["app"]}, "agent": manifest["agent"], "runtime": manifest["runtime"],
+        }).encode(),
+        "bootstrap.log": b"installed\n",
+        "start.log": b"started\n",
+        "health.json": json.dumps({"status": "ok", "runtime_instance_id": "instance-1"}).encode(),
+        "pack-host-ready.json": json.dumps({"status": "ready", "runtime_instance_id": "instance-1"}).encode(),
+        "processes-host-ready.json": json.dumps({"astrid_processes": [{"pid": 1}]}).encode(),
+        "installed-profile-binding-summary.json": json.dumps({"profile_bound": True, "service_bound": True}).encode(),
+        "sdk-invocation.json": json.dumps({"ok": True}).encode(),
+        "task-settled.json": json.dumps(task).encode(),
+        "disable-scheduled-task.log": b"disabled\n",
+        "down.json": json.dumps({"ok": True}).encode(),
+        "processes-after-down.json": json.dumps({"astrid_processes": []}).encode(),
+        "collection.json": json.dumps({"errors": []}).encode(),
+    }
+    for name, content in contents.items():
+        (root / name).write_bytes(content)
+    evidence_files = [
+        {"path": name, "sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)}
+        for name, content in sorted(contents.items())
+    ]
+    commands = {
+        name: {"command": f"ci_windows_journey.py {name}", "outcome": "success", "conclusion": "success"}
+        for name in gate.WINDOWS_TASK_HOST_REQUIRED_STEPS
+    }
+    row = {
+        "schema_version": 1,
+        "receipt_kind": gate.WINDOWS_TASK_HOST_RECEIPT_KIND,
+        "scenario": "windows-task-host",
+        "status": "pass",
+        "evidence_class": "hosted-installed-task-host",
+        "source_override_test_mode": False,
+        "shell": shell,
+        "runner_selector": "windows-latest",
+        "runner_provenance": {"RUNNER_OS": "Windows", "ImageOS": "win25", "ImageVersion": "20261030.1"},
+        "os_build": "Windows-10.0.26100",
+        "workflow": {
+            "repository": "banodoco/astrid-agent", "commit": candidate["agent"],
+            "workflow_sha": candidate["agent"], "workflow_ref": "banodoco/astrid-agent/.github/workflows/windows-journey.yml@abc",
+            "run_id": "123", "run_attempt": "1",
+        },
+        "candidate": {key: candidate[key] for key in ("app", "agent", "runtime", "manifest_sha256", "artifacts")},
+        "inner_steps": commands,
+        "coverage": {
+            "journey": "windows-task-host", "platform": "windows", "installer_shell": shell,
+            "required_evidence": list(gate.WINDOWS_TASK_HOST_REQUIRED_EVIDENCE),
+        },
+        "limitations": sorted(gate.WINDOWS_TASK_HOST_LIMITATIONS),
+        "evidence_files": evidence_files,
+    }
+    receipt = root / "journey-result.json"
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    return candidate, manifest, row, receipt
+
+
+def test_windows_task_host_receipt_is_admitted_by_the_canonical_evaluator(tmp_path):
+    candidate, manifest, _, _ = windows_task_host_receipt(tmp_path)
+    assert not gate.evaluate(candidate, manifest, tmp_path, ["windows-task-host"], "windows-latest", "powershell.exe")
+
+
+def test_windows_task_host_rejects_missing_duplicate_and_stale_tuple(tmp_path):
+    candidate, manifest, _, _ = windows_task_host_receipt(tmp_path / "one")
+    assert any("windows-task-host: missing" in error
+               for error in gate.evaluate(candidate, manifest, tmp_path / "empty", ["windows-task-host"], "windows-latest", "powershell.exe"))
+    windows_task_host_receipt(tmp_path / "two")
+    assert any("duplicate scenario" in error
+               for error in gate.evaluate(candidate, manifest, tmp_path, ["windows-task-host"], "windows-latest", "powershell.exe"))
+    stale = copy.deepcopy(candidate)
+    stale["runtime"] = "e" * 40
+    assert any("candidate runtime differs" in error
+               for error in gate.evaluate(stale, manifest, tmp_path / "one", ["windows-task-host"], "windows-latest", "powershell.exe"))
+
+
+def test_windows_task_host_rejects_prepared_incomplete_and_failed_inner_receipts(tmp_path):
+    candidate, manifest, row, receipt = windows_task_host_receipt(tmp_path)
+    row["status"] = "prepared"
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    assert any("status 'prepared'" in error
+               for error in gate.evaluate(candidate, manifest, tmp_path, ["windows-task-host"], "windows-latest", "powershell.exe"))
+    row["status"] = "pass"
+    del row["inner_steps"]["collect"]
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    assert any("inner command results are incomplete" in error
+               for error in gate.evaluate(candidate, manifest, tmp_path, ["windows-task-host"], "windows-latest", "powershell.exe"))
+    row["inner_steps"]["collect"] = {"command": "ci_windows_journey.py collect", "outcome": "success", "conclusion": "success"}
+    row["inner_steps"]["task"]["outcome"] = "failure"
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    assert any("inner command task did not pass" in error
+               for error in gate.evaluate(candidate, manifest, tmp_path, ["windows-task-host"], "windows-latest", "powershell.exe"))
+    row["inner_steps"]["task"]["outcome"] = "success"
+    evidence_files = row["evidence_files"]
+    row["evidence_files"] = {"not": "a list"}
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    assert any("evidence file inventory is absent" in error
+               for error in gate.evaluate(candidate, manifest, tmp_path, ["windows-task-host"], "windows-latest", "powershell.exe"))
+    row["evidence_files"] = evidence_files
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    (tmp_path / "installed-manifest.json").unlink()
+    assert any("required evidence is missing: installed-manifest.json" in error
+               for error in gate.evaluate(candidate, manifest, tmp_path, ["windows-task-host"], "windows-latest", "powershell.exe"))
+
+
+def test_windows_workflow_declares_int_r1_and_canonical_receipt_contract():
+    workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "windows-journey.yml"
+    document = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert document["on"]["push"]["branches"] == ["main", "release-1", "int/r1", "windows/**"]
+    assert "workflow_dispatch" in document["on"]
+    job = document["jobs"]["windows-journey"]
+    assert job["concurrency"] if "concurrency" in job else document["concurrency"]
+    receipt = next(step for step in job["steps"] if step.get("id") == "receipt")
+    assert receipt["if"] == "always()"
+    assert "steps.task.outcome" in receipt["env"]["STEP_TASK_OUTCOME"]
+    upload = next(step for step in job["steps"] if step["name"] == "Upload Windows task host journey evidence")
+    assert upload["with"]["path"] == "${{ runner.temp }}/X5-windows-journey/"
+    assert upload["with"]["name"] == "Windows-task-host-journey-${{ matrix.installer-shell }}"

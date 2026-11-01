@@ -77,6 +77,20 @@ REQUIRED = {
     "release-candidate": RELEASE1_JOB_IDS,
     "weekly": ("fresh-install", "update-from-release:pre-updater"),
 }
+WINDOWS_TASK_HOST_RECEIPT_KIND = "windows-task-host-journey"
+WINDOWS_TASK_HOST_REQUIRED_STEPS = (
+    "install", "start", "health", "host", "task", "down", "stopped", "collect",
+)
+WINDOWS_TASK_HOST_REQUIRED_EVIDENCE = (
+    "install-manifest.json", "installed-manifest.json", "sources.json", "bootstrap.log",
+    "start.log", "health.json", "pack-host-ready.json", "processes-host-ready.json",
+    "installed-profile-binding-summary.json", "sdk-invocation.json", "task-settled.json",
+    "disable-scheduled-task.log", "down.json", "processes-after-down.json", "collection.json",
+)
+WINDOWS_TASK_HOST_LIMITATIONS = {
+    "Hosted Windows runner evidence only; this receipt does not claim Windows client coverage.",
+    "This task-host journey does not exercise Pinokio lifecycle ownership.",
+}
 
 
 def read(path):
@@ -114,6 +128,182 @@ def validate_tuple(candidate, app, manifest):
     return manifest_data
 
 
+def _windows_artifact_entries(receipt_path, row):
+    """Return verified X5 artifact entries, without trusting receipt paths or hashes."""
+    errors = []
+    entries = row.get("evidence_files")
+    if not isinstance(entries, list):
+        return {}, ["windows task-host evidence file inventory is absent"]
+    indexed = {}
+    root = receipt_path.parent.resolve()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            errors.append("windows task-host evidence file entry is malformed")
+            continue
+        relative, expected_hash, byte_count = entry.get("path"), entry.get("sha256"), entry.get("bytes")
+        if (not isinstance(relative, str) or not relative or Path(relative).is_absolute()
+                or ".." in Path(relative).parts or relative in indexed):
+            errors.append("windows task-host evidence file path is malformed or duplicate")
+            continue
+        if not isinstance(expected_hash, str) or not DIGEST.fullmatch(expected_hash):
+            errors.append(f"windows task-host evidence hash is malformed: {relative}")
+            continue
+        if type(byte_count) is not int or byte_count < 0:
+            errors.append(f"windows task-host evidence byte count is malformed: {relative}")
+            continue
+        artifact = (root / relative).resolve()
+        if not artifact.is_relative_to(root) or not artifact.is_file():
+            errors.append(f"windows task-host evidence file is missing: {relative}")
+            continue
+        if artifact.stat().st_size != byte_count or digest(artifact) != expected_hash:
+            errors.append(f"windows task-host evidence hash differs: {relative}")
+            continue
+        indexed[relative] = artifact
+    for name in WINDOWS_TASK_HOST_REQUIRED_EVIDENCE:
+        if name not in indexed:
+            errors.append(f"windows task-host required evidence is missing: {name}")
+    return indexed, errors
+
+
+def _windows_json_artifact(artifacts, name, errors):
+    path = artifacts.get(name)
+    if path is None:
+        return None
+    try:
+        return read(path)
+    except (OSError, ValueError) as exc:
+        errors.append(f"windows task-host {name} is malformed: {exc}")
+        return None
+
+
+def evaluate_windows_task_host_receipt(candidate, manifest, row, receipt_path,
+                                       expected_runner, expected_shell):
+    """Adapt one X5 Windows task-host artifact into the canonical evidence verdict.
+
+    The task-host journey is deliberately a component signal, rather than a
+    second lifecycle matrix: it observes the Agent/App/Runtime install tuple
+    and explicitly declares that Pinokio ownership is outside its coverage.
+    """
+    errors = []
+    if row.get("scenario") != "windows-task-host":
+        errors.append("windows-task-host: scenario is not the task-host journey")
+    if row.get("schema_version") != 1:
+        errors.append("windows-task-host: unsupported receipt schema")
+    if row.get("receipt_kind") != WINDOWS_TASK_HOST_RECEIPT_KIND:
+        errors.append("windows-task-host: wrong receipt kind")
+    if row.get("status") != "pass":
+        errors.append(f"windows-task-host: status {row.get('status')!r} is not pass")
+    if row.get("source_override_test_mode") is not False:
+        errors.append("windows-task-host: source override is not admissible")
+    if row.get("evidence_class") != "hosted-installed-task-host":
+        errors.append("windows-task-host: evidence class is not hosted installed-product evidence")
+    if expected_runner != "windows-latest":
+        errors.append("windows-task-host: expected runner must be windows-latest")
+    if row.get("runner_selector") != "windows-latest":
+        errors.append("windows-task-host: workflow runner selector differs from windows-latest")
+    provenance = row.get("runner_provenance")
+    if (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != "Windows"
+            or not isinstance(provenance.get("ImageOS"), str)
+            or not re.fullmatch(r"win[0-9]{2}", provenance["ImageOS"])
+            or not isinstance(provenance.get("ImageVersion"), str)
+            or not provenance["ImageVersion"].strip()):
+        errors.append("windows-task-host: observed Windows runner provenance is absent or malformed")
+    os_build = row.get("os_build")
+    if not isinstance(os_build, str) or not os_build.startswith("Windows-"):
+        errors.append("windows-task-host: observed OS build is absent or not Windows")
+    if row.get("shell") != expected_shell or expected_shell not in {"powershell.exe", "pwsh.exe"}:
+        errors.append(f"windows-task-host: shell does not match {expected_shell}")
+
+    workflow = row.get("workflow")
+    if (not isinstance(workflow, dict) or workflow.get("repository") != "banodoco/astrid-agent"
+            or workflow.get("commit") != candidate["agent"]
+            or not isinstance(workflow.get("run_id"), str) or not workflow["run_id"].strip()
+            or not isinstance(workflow.get("run_attempt"), str) or not workflow["run_attempt"].strip()
+            or not isinstance(workflow.get("workflow_sha"), str)
+            or not SHA.fullmatch(workflow["workflow_sha"])):
+        errors.append("windows-task-host: workflow identity is incomplete or stale")
+
+    observed = row.get("candidate")
+    if not isinstance(observed, dict) or set(observed) != {"app", "agent", "runtime", "manifest_sha256", "artifacts"}:
+        errors.append("windows-task-host: candidate tuple or manifest binding is incomplete")
+    else:
+        for name in ("app", "agent", "runtime", "manifest_sha256"):
+            if observed.get(name) != candidate.get(name):
+                errors.append(f"windows-task-host: candidate {name} differs from frozen candidate")
+        if observed.get("artifacts") != candidate.get("artifacts"):
+            errors.append("windows-task-host: bootstrap artifact hashes differ from frozen candidate")
+
+    steps = row.get("inner_steps")
+    if not isinstance(steps, dict) or set(steps) != set(WINDOWS_TASK_HOST_REQUIRED_STEPS):
+        errors.append("windows-task-host: inner command results are incomplete")
+    else:
+        for name in WINDOWS_TASK_HOST_REQUIRED_STEPS:
+            step = steps[name]
+            if (not isinstance(step, dict) or not isinstance(step.get("command"), str)
+                    or not step["command"].strip() or step.get("outcome") != "success"
+                    or step.get("conclusion") != "success"):
+                errors.append(f"windows-task-host: inner command {name} did not pass")
+
+    coverage = row.get("coverage")
+    if (not isinstance(coverage, dict) or coverage.get("journey") != "windows-task-host"
+            or coverage.get("platform") != "windows" or coverage.get("installer_shell") != row.get("shell")
+            or coverage.get("required_evidence") != list(WINDOWS_TASK_HOST_REQUIRED_EVIDENCE)):
+        errors.append("windows-task-host: coverage inventory is incomplete")
+    limitations = row.get("limitations")
+    if not isinstance(limitations, list) or not WINDOWS_TASK_HOST_LIMITATIONS.issubset(set(limitations)):
+        errors.append("windows-task-host: coverage limitations are absent")
+
+    artifacts, artifact_errors = _windows_artifact_entries(receipt_path, row)
+    errors.extend(artifact_errors)
+    install_manifest = _windows_json_artifact(artifacts, "install-manifest.json", errors)
+    installed_manifest = _windows_json_artifact(artifacts, "installed-manifest.json", errors)
+    sources = _windows_json_artifact(artifacts, "sources.json", errors)
+    task = _windows_json_artifact(artifacts, "task-settled.json", errors)
+    health = _windows_json_artifact(artifacts, "health.json", errors)
+    ready = _windows_json_artifact(artifacts, "pack-host-ready.json", errors)
+    stopped = _windows_json_artifact(artifacts, "processes-after-down.json", errors)
+    collection = _windows_json_artifact(artifacts, "collection.json", errors)
+    binding = _windows_json_artifact(artifacts, "installed-profile-binding-summary.json", errors)
+
+    if observed is not None and isinstance(observed, dict) and install_manifest is not None:
+        if digest(artifacts["install-manifest.json"]) != observed.get("manifest_sha256"):
+            errors.append("windows-task-host: installed manifest hash differs from candidate")
+        for name in ("agent", "runtime"):
+            if (install_manifest.get(name) or {}).get("sha") != candidate[name]:
+                errors.append(f"windows-task-host: install manifest {name} differs from frozen candidate")
+        if install_manifest != manifest:
+            errors.append("windows-task-host: captured install manifest differs from candidate App manifest")
+    for name, value in (("sources", sources), ("installed manifest", installed_manifest)):
+        if value is not None:
+            for source in ("agent", "runtime"):
+                if (value.get(source) or {}).get("sha") != candidate[source]:
+                    errors.append(f"windows-task-host: {name} {source} differs from frozen candidate")
+    if sources is not None and (sources.get("app") or {}).get("sha") != candidate["app"]:
+        errors.append("windows-task-host: sources app differs from frozen candidate")
+    if task is not None:
+        task_row = task.get("data") or {}
+        outputs = {item.get("name"): item for item in (task_row.get("result") or {}).get("outputs", [])
+                   if isinstance(item, dict)}
+        if (task.get("ok") is not True or task_row.get("state") != "succeeded"
+                or not {"sfx", "sfx_meta"} <= set(outputs)
+                or any(not isinstance(outputs[name].get("digest"), str)
+                       or not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name]["digest"])
+                       or type(outputs[name].get("size")) is not int or outputs[name]["size"] <= 0
+                       for name in ("sfx", "sfx_meta"))):
+            errors.append("windows-task-host: task did not settle with both hashed outputs")
+    if health is not None and (health.get("status") != "ok" or not health.get("runtime_instance_id")):
+        errors.append("windows-task-host: health receipt is not ready")
+    if ready is not None and ready.get("status") != "ready":
+        errors.append("windows-task-host: pack-host ready receipt is not ready")
+    if stopped is not None and stopped.get("astrid_processes") != []:
+        errors.append("windows-task-host: managed processes remained after shutdown")
+    if collection is not None and collection.get("errors") != []:
+        errors.append("windows-task-host: final collection was incomplete")
+    if binding is not None and not binding or binding is not None and not all(binding.values()):
+        errors.append("windows-task-host: installed profile binding did not pass")
+    return errors
+
+
 def evaluate(candidate, manifest, results, required, expected_runner, expected_shell, allow_override=False):
     errors = []
     by_name = {}
@@ -124,13 +314,22 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
             if not isinstance(name, str) or name in by_name:
                 errors.append(f"{path}: missing or duplicate scenario")
             else:
-                by_name[name] = row
+                by_name[name] = (row, path)
         except (OSError, ValueError) as exc:
             errors.append(f"{path}: {exc}")
     for name in required:
-        row = by_name.get(name)
-        if row is None:
+        item = by_name.get(name)
+        if item is None:
             errors.append(f"{name}: missing")
+            continue
+        row, path = item
+        if name == "windows-task-host" and row.get("receipt_kind") != WINDOWS_TASK_HOST_RECEIPT_KIND:
+            errors.append("windows-task-host: receipt is not a Windows task-host receipt")
+            continue
+        if row.get("receipt_kind") == WINDOWS_TASK_HOST_RECEIPT_KIND:
+            errors.extend(evaluate_windows_task_host_receipt(
+                candidate, manifest, row, path, expected_runner, expected_shell,
+            ))
             continue
         if row.get("status") != "pass":
             errors.append(f"{name}: status {row.get('status')!r} is not pass")
@@ -680,7 +879,7 @@ def main():
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--app-checkout", type=Path)
     parser.add_argument("--results", type=Path)
-    parser.add_argument("--expected-runner", choices=("ubuntu-24.04", "ubuntu-22.04", "windows-2022", "macos-14", "local"))
+    parser.add_argument("--expected-runner", choices=("ubuntu-24.04", "ubuntu-22.04", "windows-2022", "windows-latest", "macos-14", "local"))
     parser.add_argument("--expected-shell", choices=("sh", "powershell.exe", "pwsh.exe"))
     parser.add_argument("--cadence", choices=tuple(REQUIRED), default="release-candidate")
     parser.add_argument("--required", action="append", help="Override scenario list for focused local checks")
@@ -737,7 +936,7 @@ def main():
                 raise ValueError("release-candidate evidence requires --aggregate-release1")
             if args.results is None or args.expected_runner is None or args.expected_shell is None:
                 raise ValueError("--results, --expected-runner and --expected-shell are required")
-            if args.expected_runner != "local" and (args.expected_runner == "windows-2022") != (args.expected_shell in ("powershell.exe", "pwsh.exe")):
+            if args.expected_runner != "local" and (args.expected_runner in ("windows-2022", "windows-latest")) != (args.expected_shell in ("powershell.exe", "pwsh.exe")):
                 raise ValueError("expected runner and shell are inconsistent")
             errors.extend(evaluate(candidate, manifest, args.results, args.required or REQUIRED[args.cadence], args.expected_runner, args.expected_shell, args.allow_source_override))
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
