@@ -278,7 +278,9 @@ def test_remote_output_custody_downloads_metadata_descriptors_atomically(
         json.dumps(
             {
                 "comfy_outputs": {"9": {"images": [
-                    {"filename": "remote.png", "subfolder": "", "type": "output"}
+                    {"filename": "remote.png", "subfolder": "", "type": "output",
+                     "metadata": {"kind": "image", "width": 512, "height": 512},
+                     "future": "ignored for routing"}
                 ]}}}
         ),
         encoding="utf-8",
@@ -318,7 +320,7 @@ def test_remote_output_custody_downloads_metadata_descriptors_atomically(
         [{"filename": "../escape.png", "subfolder": "", "type": "output"}],
         [{"filename": "ok.png", "subfolder": "../escape", "type": "output"}],
         [{"filename": "ok.png", "subfolder": "", "type": "input"}],
-        [{"filename": "ok.png", "subfolder": "", "type": "output", "extra": "x"}],
+        [{"filename": "ok.png", "subfolder": "", "type": "output", "extra": "x" * 65536}],
     ],
 )
 def test_remote_output_custody_rejects_empty_or_malformed_descriptors(

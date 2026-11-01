@@ -203,7 +203,8 @@ class ComfyTargetClient:
             if not (scoped_delete or scoped_interrupt):
                 raise ValueError("attached Comfy target refuses unowned control operations")
         try:
-            return self._json(path, payload, timeout=timeout, response_limit=response_limit)
+            return self._json(path, payload, timeout=timeout, response_limit=response_limit,
+                              acknowledge_empty=payload is not None)
         except (OSError, urllib_error.URLError) as exc:
             raise ValueError(f"checkout_server {path} request failed") from exc
 
@@ -280,8 +281,12 @@ class ComfyTargetClient:
             raise ValueError("Comfy cancellation requires witnessed prompt acceptance")
         self.request_json("/queue", {"delete": [prompt_id]})
         queue = self.request_json("/queue")
-        running = queue.get("queue_running", []) if isinstance(queue, dict) else []
-        if any(isinstance(item, list) and len(item) > 1 and item[1] == prompt_id for item in running):
+        running = queue.get("queue_running") if isinstance(queue, dict) else None
+        if (not isinstance(running, list) or any(
+                not isinstance(item, list) or len(item) < 2 or not isinstance(item[1], str)
+                for item in running)):
+            raise ValueError("Comfy queue response has invalid running prompt identities")
+        if any(item[1] == prompt_id for item in running):
             self.request_json("/interrupt", {"prompt_id": prompt_id})
 
     def upload_media(self, source: Path, *, task_id: str, kind: str = "image",

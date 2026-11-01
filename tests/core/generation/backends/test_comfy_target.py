@@ -158,6 +158,18 @@ def test_attached_interrupt_is_scoped_to_its_witnessed_running_prompt(comfy, net
     ]
 
 
+@pytest.mark.parametrize("queue", [{}, {"queue_running": {}}, {"queue_running": [[0, None]]}])
+def test_invalid_queue_cannot_silently_skip_scoped_interrupt(queue, comfy, network, monkeypatch):
+    client = attached(network)
+    client.submit_prompt(PROMPT)
+    original = client.request_json
+    monkeypatch.setattr(client, "request_json", lambda path, payload=None, **kw:
+                        queue if path == "/queue" and payload is None else original(path, payload, **kw))
+    with pytest.raises(ValueError, match="running prompt identities"):
+        client.cancel_prompt("ours")
+    assert comfy["controls"] == [("/queue", {"delete": ["ours"]})]
+
+
 def test_local_request_compatibility_uses_guarded_prompt_submission(comfy, network):
     from astrid.core.generation.backends.vibecomfy_local_server import _request
 
