@@ -67,7 +67,7 @@ Current shipped domains:
 |---|---|
 | `media` | `rendering`, `understanding`, `video_editing`, `foley`, `stream_content` — media creation and editing |
 | `editorial` | `editorial` — transcript-to-cut editorial pipeline |
-| `generation` | `generation`, `comfy_wrap` — image/video generation |
+| `generation` | `generation` — image/video generation |
 | `integration` | `youtube`, `fal`, `vibecomfy`, `moirae` — connections to external services |
 | `development` | `iteration`, `training` — author-test-iterate tooling and model training |
 | `infrastructure` | `runpod` — GPU provisioning and execution |
@@ -264,7 +264,7 @@ Not every pack directory in the repository is a runtime-discovered pack:
 - **`astrid/packs/`** — Runtime packs. Discovered by `python3 -m astrid.core.pack.cli list`,
   `status`, and capability searches. Currently: `rendering`, `understanding`, `generation`,
   `editorial`, `video_editing`, `foley`, `training`, `youtube`, `fal`,
-  `vibecomfy`, `runpod`, `moirae`, `iteration`, `media`, `comfy_wrap`,
+  `vibecomfy`, `runpod`, `moirae`, `iteration`, `media`,
   `stream_content`, plus the dynamically-created `local` scratch
   pack. The `_core` directory is a skill-only shell — it contains only `docs/SKILL.md`
   and is not a pack (no `pack.yaml`).
@@ -315,18 +315,17 @@ and is not discovered by `packs list` or `packs status`.
 M2 treats `_core` as a **permanent visible exception** — it is not moved
 under `_shells/` because the coupled paths above depend on its location.
 
-#### `stream_content`, `comfy_wrap` — Real Shipped Packs
+#### `stream_content` — Real Shipped Packs
 
-These two packs are **real shipped pack data** with stable pack and
+This pack is **real shipped pack data** with stable pack and
 capability IDs:
 
 | Pack | Type | Capabilities | Taxonomy |
 |---|---|---|---|
 | `stream_content` | Mixed executor+orchestrator | `stream_content.clip_candidates`, `stream_content.segment_map`, `stream_content.distill` | origin=`builtin`, domain=`media`, install_tier=`default` |
-| `comfy_wrap` | Executor pack | `comfy_wrap.run` | origin=`external`, domain=`generation`, install_tier=`default` |
 
-They are discovered, listed, and inspected through the normal pack CLI
-surface. Their pack ids and capability ids are **stable** across M2.
+It is discovered, listed, and inspected through the normal pack CLI
+surface. Its pack id and capability ids are **stable** across M2.
 
 ### Canonical Clip Extraction
 

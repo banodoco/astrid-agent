@@ -106,7 +106,7 @@ def test_provisioning_a_windows_plan_on_linux_names_the_current_host(monkeypatch
         gpu.provision_environment({"managed": True, "pack": "vibecomfy", "platform": "win32"})
 
 
-@pytest.mark.parametrize("capability", ["wan2gp.generate_video", "vibecomfy.run", "vibecomfy.generate_image", "vibecomfy.video_enhance", "comfy_wrap.run"])
+@pytest.mark.parametrize("capability", ["wan2gp.generate_video", "vibecomfy.run", "vibecomfy.generate_image", "vibecomfy.video_enhance"])
 @pytest.mark.parametrize("opt_in", ["", "true", "0", "1"])
 def test_unqualified_label_is_a_warning_and_the_retired_opt_in_changes_nothing(capability, opt_in):
     status = gpu.windows_gpu_status(capability, platform="win32", environ={gpu.ALLOW_UNQUALIFIED_ENV: opt_in}, detection=DEVICE)
@@ -125,7 +125,7 @@ def test_unqualified_label_is_a_warning_and_the_retired_opt_in_changes_nothing(c
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_other_platforms_do_not_probe_or_change_readiness(platform, monkeypatch):
     monkeypatch.setattr(gpu, "detect_nvidia", lambda: pytest.fail("non-Windows probe"))
-    for capability in ("wan2gp.generate_video", "vibecomfy.run", "comfy_wrap.run"):
+    for capability in ("wan2gp.generate_video", "vibecomfy.run"):
         assert gpu.windows_gpu_status(capability, platform=platform) is None
 
 
@@ -145,7 +145,7 @@ def test_qualification_table_is_specific_to_pack_os_and_gpu(monkeypatch):
     assert gpu.windows_gpu_status("wan2gp.generate_video", platform="win32", environ={}, detection=other)["ok"] is True
 
 
-@pytest.mark.parametrize("capability", ["vibecomfy.run", "vibecomfy.generate_image", "comfy_wrap.run"])
+@pytest.mark.parametrize("capability", ["vibecomfy.run", "vibecomfy.generate_image"])
 def test_vibecomfy_readiness_does_not_require_detected_nvidia(capability):
     status = gpu.windows_gpu_status(
         capability, platform="win32", environ={},

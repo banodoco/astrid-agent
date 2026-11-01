@@ -10,7 +10,6 @@
 | blender | Render standalone Blender scenes or .blend files to still images or animations locally or through a remote Blender re... | `astrid/packs/blender/docs/SKILL.md` |
 | capture | Capture admitted HTTPS web pages with a host-provisioned Remotion browser, broker evidence, and managed PNG provenance. | `astrid/packs/capture/docs/SKILL.md` |
 | chiptune | Generate deterministic procedural retro music and sound effects locally without samples, network services, or models. | `astrid/packs/chiptune/docs/SKILL.md` |
-| comfy_wrap | Comfy Workflow Wrapper — generate images by injecting a text prompt into a ComfyUI workflow JSON and running it via v... | `astrid/packs/comfy_wrap/docs/SKILL.md` |
 | developer | Develop Astrid itself: the repositories, building and testing, and the developer skills. | `astrid/packs/developer/docs/SKILL.md` |
 | developer / fast-iteration | Iterate fast on Astrid with evidence you can trust.; developer skill: `astrid skills sync --developer` | `astrid/packs/developer/docs/fast-iteration/SKILL.md` |
 | developer / releasing | Astrid's release gates and qualification, from candidate to go/no-go.; developer skill: `astrid skills sync --developer` | `astrid/packs/developer/docs/releasing/SKILL.md` |
