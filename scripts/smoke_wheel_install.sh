@@ -172,6 +172,18 @@ try:
     version = harness.run_module("version", "astrid", ["--version"], check=True)
     assert version.stdout.strip() == f"astrid/{wheel_version}", version.stdout
 
+    # The installed console script must dispatch through the packaged
+    # ``astrid.console`` entry point, not merely import the package module.
+    # ``generate list`` is deliberately read-only, so it proves the console
+    # route without requiring a configured generation target.
+    console_help = harness.run_console("console-help", ["--help"], check=True)
+    assert console_help.returncode == 0
+    console_generate = harness.run_console(
+        "console-generate-list", ["generate", "list", "--json"], check=True
+    )
+    assert console_generate.returncode == 0
+    assert isinstance(json.loads(console_generate.stdout), list)
+
     # --- Product contract: family census, from the installed registry ---------
     registry_record = harness.run_lane("registry", ["-c", REGISTRY_LANE], check=True)
     registry = json.loads(registry_record.stdout.strip().splitlines()[-1])
@@ -272,6 +284,8 @@ try:
         "wheel_sha256": harness.artifact_digest,
         "version": harness.installed_version,
         "family_census": sorted(census_names),
+        "console_help_lane": console_help.as_dict(),
+        "console_generate_list_lane": console_generate.as_dict(),
         "doctor_ok": doctor.returncode == 0,
         "pack_manifests": len(pack_manifests),
         "resource_lane": resource_probe.as_dict(),
