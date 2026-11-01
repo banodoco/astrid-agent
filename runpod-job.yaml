@@ -1,0 +1,67 @@
+repos:
+  astrid-agent: 97cf9fb4ca100a0256b5d20f6976565ea8f22e19
+cpu:
+  vcpu: 8
+max_minutes: 30
+setup:
+- 'set -euo pipefail
+
+  mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"
+
+  export TMPDIR="$PWD/runpod-tmp"
+
+  python3 -c ''import sys; assert sys.version_info >= (3,11)''
+
+  python3 -m venv "$PWD/runpod-tmp/venv"
+
+  PYTHON="$PWD/runpod-tmp/venv/bin/python"
+
+  "$PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+
+  git clone --filter=blob:none --no-checkout https://github.com/banodoco/astrid-runtime.git "$PWD/runpod-tmp/runtime"
+
+  git -C "$PWD/runpod-tmp/runtime" checkout --detach 3b12fface79a3be029f3b6623765a7f3e1e5e24f
+
+  test -z "$(git -C "$PWD/runpod-tmp/runtime" status --porcelain)"
+
+  "$PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation "$PWD/runpod-tmp/runtime" "$PWD/runpod-tmp/runtime/packages/python"
+  .
+
+  "$PYTHON" -m pip freeze > runpod-evidence/environment.txt
+
+  uname -a > runpod-evidence/platform.txt
+
+  df -h . > runpod-evidence/disk.txt
+
+  '
+run:
+- 'set -euo pipefail
+
+  export TMPDIR="$PWD/runpod-tmp" ASTRID_RUNTIME_CHECKOUT="$PWD/runpod-tmp/runtime"
+
+  PYTHON="$PWD/runpod-tmp/venv/bin/python"
+
+  test "$(git rev-parse HEAD)" = 97cf9fb4ca100a0256b5d20f6976565ea8f22e19
+
+  test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 3b12fface79a3be029f3b6623765a7f3e1e5e24f
+
+  git rev-parse HEAD > runpod-evidence/head.txt
+
+  "$PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT" 2>&1 | tee runpod-evidence/vendor-check.txt
+
+  sha256sum runtime.lock.json astrid/core/timeline/schema/timeline-config.schema.json astrid_runtime_client/*.py artifacts.json
+  > runpod-evidence/pinned-SHA256SUMS
+
+  "$PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/installer.xml tests/test_installer_schema.py tests/test_installer_bootstrap_schema.py
+  tests/test_installer_installed_schema.py tests/test_installer_candidate_validation.py tests/test_installer_backup.py tests/test_installer_current.py
+  tests/test_installer_service_env.py tests/test_services.py tests/test_installer_lifecycle.py tests/test_installer_startup_stop.py
+  tests/test_installer_platforms.py tests/test_installer_pinokio_locking.py tests/test_installer_transaction_authority.py
+  tests/test_installer_pre_stop_recovery.py tests/test_vendor_lock.py tests/core/rendering/test_local_schema.py tests/core/timeline/test_source_role_tracks.py
+  tests/timeline/test_meta_validator.py tests/test_schema_contract.py tests/test_installer_update_recovery.py::test_candidate_validation_failure_keeps_owner_pointer_and_workspace
+  2>&1 | tee runpod-evidence/installer.log
+
+  sha256sum runpod-evidence/*.txt runpod-evidence/*.log runpod-evidence/*.xml > runpod-evidence/SHA256SUMS
+
+  '
+artifacts:
+- runpod-evidence/**
