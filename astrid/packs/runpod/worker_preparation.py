@@ -15,6 +15,7 @@ import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
@@ -120,6 +121,32 @@ def replace_target_record(path: Path, value: dict[str, Any], *, operation_id: st
     write_target_record(path, value)
 
 
+@contextmanager
+def target_owner(handle_path: Path):
+    """Own the existing claim lock, including first creation of its journal.
+
+    Product selection and worker preparation use the same lock pathname.
+    Provider calls happen under this lock, never under the TOML config lock.
+    """
+    path = handle_path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.owner.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            platform.lock_file(fd, blocking=False)
+        except BlockingIOError as exc:
+            raise AcquisitionUnresolvedError(
+                f"another process currently owns RunPod target journal {path}; retry after it exits"
+            ) from exc
+        yield fd
+    finally:
+        try:
+            platform.unlock_file(fd)
+        finally:
+            os.close(fd)
+
+
 def _exclusive_target_owner(function: Any) -> Any:
     """Serialize acquisition/reconciliation and reject stale journal snapshots."""
 
@@ -132,16 +159,7 @@ def _exclusive_target_owner(function: Any) -> Any:
         **kwargs: Any,
     ) -> Any:
         path = handle_path.expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = path.with_name(f".{path.name}.owner.lock")
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            try:
-                platform.lock_file(fd, blocking=False)
-            except BlockingIOError as exc:
-                raise AcquisitionUnresolvedError(
-                    f"another process currently owns RunPod target journal {path}; retry after it exits"
-                ) from exc
+        with target_owner(path):
             try:
                 current = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
@@ -161,12 +179,6 @@ def _exclusive_target_owner(function: Any) -> Any:
                 attempt=current,
                 **kwargs,
             )
-        finally:
-            try:
-                platform.unlock_file(fd)
-            finally:
-                os.close(fd)
-
     return wrapped
 
 
@@ -377,6 +389,35 @@ async def observe_exact_target(
     return await asyncio.to_thread(observe_target, api_key, contract)
 
 
+def read_exact_pod(api_key: str, pod_id: str) -> tuple[int, dict[str, Any] | None]:
+    """Preserve exact REST GET status; null/errors never become absence proof.
+
+    Return only to the owner: provider bodies may contain transport details and
+    must not be copied into custody journals or public error messages.
+    """
+    import httpx
+    from urllib.parse import quote
+    from runpod_lifecycle.api import PODS_URL
+
+    try:
+        response = httpx.get(
+            f"{PODS_URL}/{quote(pod_id, safe='')}",
+            headers={"Authorization": f"Bearer {api_key}"}, timeout=30,
+        )
+        if response.status_code == 404:
+            return 404, None
+        if response.status_code != 200:
+            raise TargetObservationError("exact pod GET did not succeed")
+        record = response.json()
+        if not isinstance(record, dict) or record.get("id") != pod_id:
+            raise TargetObservationError("exact pod GET returned an unverified identity")
+        return 200, record
+    except TargetObservationError:
+        raise
+    except Exception:
+        raise TargetObservationError("exact pod GET could not be confirmed") from None
+
+
 def _target_contract(
     config: Any,
     *,
@@ -392,6 +433,7 @@ def _target_contract(
         network_volume_id=str(volume.get("id") or ""),
         network_volume_name=_text(volume.get("name")),
         network_volume_size_gb=int(volume["size"]),
+        datacenter_id=_text(volume.get("dataCenterId")),
     )
 
 
