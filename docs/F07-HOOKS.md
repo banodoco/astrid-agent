@@ -103,3 +103,8 @@ binding/generation, and retains a poisoned slot when fencing or release fails.
 It preserves the native evidence. No independent CLI-owned adapter may be
 constructed for release. The actual public control route is owned by the shared
 hooks lane and remains unimplemented here.
+
+## Binding field mappings (recorded per M-GPU, 2026-11-01T15:17Z)
+- engine_birth_id = comfy_process_birth_id.
+- launch_generation = the same process birth value on both the managed and the attached paths, matching the wan2gp and generic_host builders. It is NEVER launch_token, which is a credential.
+- execution_identity = the residency digest. The attached path refuses when the hc03 profile has none. The managed path takes it from the attested engine environment, or refuses.
