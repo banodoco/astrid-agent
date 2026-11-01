@@ -30,6 +30,49 @@ RELEASE1_MATRIX: Final = (
     {"job_id": "pinokio-fully-local-windows", "mode": "pinokio-fully-local", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
 )
 
+# Independently attributable direct Windows faults. Each scenario starts with
+# its own installed Release-0 fixture; workflow/checker routing is still needed.
+DIRECT_WINDOWS_FAULT_SCENARIOS: Final = (
+    {
+        "scenario_id": "direct-windows-interrupted-update",
+        "job_id": "direct-windows-interrupted-update",
+        "scenario": "interrupted-update",
+        "mode": "direct", "os": "windows", "runner": "windows-2022", "shell": "powershell.exe",
+        "manager": "task-scheduler",
+        "helper": "failure_mode_executor.execute_installed_fault",
+        "steps": ("baseline", "interrupt", "recover", "verify"),
+        "required_evidence": (
+            "direct-installed-release0-fixture-and-native-service",
+            "populated-semantic-data-and-live-sentinel-before",
+            "durable-interrupted-operation-and-same-operation-terminal-journal",
+            "selected-installed-program-and-restored-healthy-native-service",
+            "unchanged-semantic-data-and-same-live-sentinel-after",
+            "task-scheduler-ownership-and-keep-data-cleanup",
+            "per-step-command-and-inner-exits-and-sha256-evidence-binding",
+            "candidate-tuple-and-runner-provenance",
+        ),
+    },
+    {
+        "scenario_id": "direct-windows-rollback",
+        "job_id": "direct-windows-rollback",
+        "scenario": "rollback",
+        "mode": "direct", "os": "windows", "runner": "windows-2022", "shell": "powershell.exe",
+        "manager": "task-scheduler",
+        "helper": "failure_mode_executor.execute_installed_fault",
+        "steps": ("baseline", "fail_candidate", "verify"),
+        "required_evidence": (
+            "direct-installed-release0-fixture-and-native-service",
+            "populated-semantic-data-and-live-sentinel-before",
+            "observed-failed-candidate-operation-and-terminal-rollback-journal",
+            "authentic-selected-release0-predecessor-and-restored-healthy-native-service",
+            "unchanged-semantic-data-and-same-live-sentinel-after",
+            "task-scheduler-ownership-and-keep-data-cleanup",
+            "per-step-command-and-inner-exits-and-sha256-evidence-binding",
+            "candidate-tuple-and-runner-provenance",
+        ),
+    },
+)
+
 RELEASE1_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_MATRIX)
 RELEASE1_MODES: Final = tuple(sorted({row["mode"] for row in RELEASE1_MATRIX}))
 
