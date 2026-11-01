@@ -21,7 +21,6 @@ from .backend import Backend
 from .core import Version, absolute, current, inspect_schema, read_json, separate_roots, write_json
 from .service import LABEL, install_selection
 
-
 PLAN_FORMAT = "astrid-update-maintenance-plan/v1"
 RECEIPT_FORMAT = "astrid-update-maintenance/v1"
 

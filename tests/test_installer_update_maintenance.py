@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.installer import maintenance
-from astrid.installer import cli
+from astrid.installer import cli, maintenance
 from astrid.installer.core import Version, read_json, write_json
 from astrid.installer.service import LABEL, install_selection
 
