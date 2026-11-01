@@ -4,6 +4,9 @@ from pathlib import Path
 import pytest
 
 import astrid
+from astrid.core.contracts.binding import expand_command
+from astrid.packs.vibecomfy.actions.run.run import build_parser as run_parser
+from astrid.packs.vibecomfy.actions.validate.run import build_parser as validate_parser
 from tests.sdk.test_child_bridge_d18 import channel as channel
 from tests.sdk.test_child_bridge_d18 import isolated as isolated
 
@@ -49,6 +52,26 @@ def test_optional_workflow_files_stay_absent_on_serialized_child_request(
     assert not absent.intersection(request["inputs"])
     assert all(request["inputs"][name] == value for name, value in inputs.items())
     assert request["stage"] == action and request["input_refs"] == refs
+
+    # After custody, only supplied file descriptors become worker-local paths.
+    # Exercise the declared command too: an omitted positional placeholder is
+    # still an error even when transport correctly omits its file descriptor.
+    capability = astrid.get_capability(
+        "vibecomfy." + action, kind="action", extra_pack_roots=(str(PACK_ROOT),),
+    )
+    paths = {name: "/worker/" + value["filename"] for name, value in file_inputs.items()}
+    values = {**request["inputs"], **paths, "out": "/worker/out", "python_exec": "python",
+              "task_identity": "task", "attempt_identity": "attempt", "execution_identity": "execution",
+              "readiness_profile_path": "/worker/profile.json", "readiness_profile_hash": "sha256:" + "5" * 64}
+    command = expand_command(
+        capability.definition["command"], capability.inputs, values, capability.definition["metadata"],
+    ).argv
+    parsed = (validate_parser() if action == "validate" else run_parser()).parse_args(command[3:])
+    assert parsed.workflow == ("" if canonical else paths["workflow"])
+    for name in MEMBERS:
+        assert getattr(parsed, name) == (paths[name] if canonical else "")
+    if action == "run":
+        assert parsed.source_video == parsed.managed_assets == ""
 
 
 @pytest.mark.parametrize("action", ["validate", "run"])

@@ -607,7 +607,6 @@ actions:
         - -m
         - astrid.packs.vibecomfy.actions.run.run
         - run
-        - '{workflow}'
         - --python
         - '{python}'
         - --companion
@@ -640,6 +639,10 @@ actions:
         - '{comfy_url}'
         - --comfy-output-dir
         - '{comfy_output_dir}'
+        input_args:
+        - input: workflow
+          optional: true
+          before: --out
         env:
           VIBECOMFY_HEADLESS: '1'
     resources:
@@ -753,7 +756,6 @@ actions:
         - -m
         - astrid.packs.vibecomfy.actions.validate.run
         - validate
-        - '{workflow}'
         - --python
         - '{python}'
         - --companion
@@ -763,6 +765,9 @@ actions:
         - --out
         - '{out}'
         input_args:
+        - input: workflow
+          optional: true
+          before: --out
         - input: python_execution_consent
           flag: --python-execution-consent
           optional: true
