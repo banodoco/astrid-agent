@@ -1,11 +1,11 @@
 """Alternative workflow file ports stay absent across staged child admission."""
 from pathlib import Path
 
-import astrid
 import pytest
 
-from tests.sdk.test_child_bridge_d18 import channel, isolated  # noqa: F401
-
+import astrid
+from tests.sdk.test_child_bridge_d18 import channel as channel
+from tests.sdk.test_child_bridge_d18 import isolated as isolated
 
 PACK_ROOT = Path(astrid.__file__).parent / "packs" / "vibecomfy"
 MEMBERS = {"python": "workflow.py", "companion": "workflow.vibe.json", "source": "source.json"}
