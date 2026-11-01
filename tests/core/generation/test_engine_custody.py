@@ -10,7 +10,9 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +37,12 @@ if mode.read_text()=='exit': raise SystemExit(3)
 class Handler(BaseHTTPRequestHandler):
  def do_POST(self):
   request=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))))
+  if self.path=='/api/free':
+   if mode.read_text()=='freefails':
+    self.send_response(500);self.end_headers();return
+   with (started.parent/'release-posts').open('a') as f: f.write(self.path+'\n')
+   data=json.dumps({'models_unloaded':True}).encode()
+   self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
   prompt_id=request['client_id']
   with (started.parent/'prompts').open('a') as f: f.write(prompt_id+'\n')
   data=json.dumps({'prompt_id':prompt_id,'number':1,'node_errors':{}}).encode()
@@ -43,9 +51,14 @@ class Handler(BaseHTTPRequestHandler):
  def do_GET(self):
   setting=mode.read_text()
   if setting=='slow': time.sleep(30)
+  if setting=='releasewait' and self.path=='/queue':
+   (started.parent/'queue-entered').write_text('yes')
+   time.sleep(2)
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
   value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'VHS_VideoCombine':{}}
+  if self.path=='/queue': value={'queue_running':[[1]] if setting=='busy' else [],'queue_pending':[]}
+  if self.path=='/system_stats': value={'system':{'comfyui_version':'0.36.0'},'devices':[{'vram_total':24000,'vram_free':20000}]}
   if self.path.startswith('/history/'):
    prompt_id=self.path.rsplit('/',1)[1]
    value={prompt_id:{'status':{'completed':True,'status_str':'success'},'outputs':{}}}
@@ -1296,3 +1309,116 @@ def test_original_prepared_owner_records_installed_engine_without_allocation(ins
             )
     assert json.loads(claim_path.read_bytes()) == saved
     assert len(started.read_text().splitlines()) == 1
+
+
+def test_release_runs_in_live_supervisor_against_owned_child(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    result = client._request("release", {}, time.monotonic() + 8, start=False)
+    assert result == {"status": "completed", "models_unloaded": True,
+                      "vram_total_bytes": 24000, "vram_free_before_bytes": 20000,
+                      "vram_free_after_bytes": 20000}
+    assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
+    from astrid.core.generation import preflight, engine_recipe
+    from astrid.sdk.client import AstridClient
+    monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: {
+        "owner": "astrid", "root": str(root), "endpoint": f"http://127.0.0.1:{recipe.start.port}"})
+    monkeypatch.setattr(engine_recipe, "load_recipe", lambda *args: recipe)
+    result = AstridClient(remote=object()).release_generation(engine="comfyui", target="managed")
+    assert result["released"] and result["models_unloaded"] and result["queue_idle"]
+    assert result["vram_total_bytes"] == 24000 and result["vram_free_after_bytes"] == 20000
+    assert (root / "release-posts").read_text().splitlines() == ["/api/free", "/api/free"]
+
+
+def test_stale_registration_foreign_listener_receives_no_release(session, monkeypatch):
+    from tests.sdk.test_release_generation_client import _FakeComfy
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    pid = int(started.read_text().strip())
+    os.kill(pid, 9)
+    _wait(lambda: not _alive(pid))
+    from http.server import ThreadingHTTPServer
+    fake = _FakeComfy()
+    fake.server.server_close()
+    fake.server = ThreadingHTTPServer(("127.0.0.1", recipe.start.port), fake.server.RequestHandlerClass)
+    fake.thread = threading.Thread(target=fake.server.serve_forever, daemon=True)
+    with fake:
+        with pytest.raises((EndpointOwnershipError, CustodyUnresolved, DeadlineExceeded)):
+            client._request("release", {}, time.monotonic() + 4, start=False)
+        from astrid.core.generation import preflight, engine_recipe
+        from astrid.sdk.client import AstridClient
+        monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: {
+            "owner": "astrid", "root": str(root), "endpoint": f"http://127.0.0.1:{recipe.start.port}"})
+        monkeypatch.setattr(engine_recipe, "load_recipe", lambda *args: recipe)
+        with pytest.raises(Exception) as error:
+            AstridClient(remote=object()).release_generation(engine="comfyui", target="managed")
+        assert "release_not_proven" in str(error.value) or "could not be proven" in str(error.value)
+        assert fake.posts == []
+
+
+def test_stop_racing_release_cancels_before_replacement(session):
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    mode.write_text("releasewait")
+    errors = []
+    def release():
+        try:
+            client._request("release", {}, time.monotonic() + 8, start=False)
+        except Exception as exc:
+            errors.append(exc)
+    thread = threading.Thread(target=release)
+    thread.start()
+    _wait(lambda: (root / "queue-entered").exists())
+    client.stop_owned(deadline=time.monotonic() + 8)
+    thread.join(timeout=8)
+    assert not thread.is_alive() and errors
+    assert not (root / "release-posts").exists()
+    from tests.sdk.test_release_generation_client import _FakeComfy
+    from http.server import ThreadingHTTPServer
+    fake = _FakeComfy()
+    fake.server.server_close()
+    fake.server = ThreadingHTTPServer(("127.0.0.1", recipe.start.port), fake.server.RequestHandlerClass)
+    fake.thread = threading.Thread(target=fake.server.serve_forever, daemon=True)
+    with fake:
+        assert client._request("release", {}, time.monotonic() + 2, start=False) is None
+        assert fake.posts == []
+
+
+def test_connected_peer_must_be_owned_even_if_listener_check_passes(monkeypatch):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(3)
+    port = listener.getsockname()[1]
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+    received = []
+    def foreign():
+        peer, _ = listener.accept()
+        with peer:
+            peer.settimeout(3)
+            received.append(peer.recv(4096))
+    thread = threading.Thread(target=foreign)
+    thread.start()
+    monkeypatch.setattr(custody, "_listener_owned", lambda process, port: True)
+    owned = SimpleNamespace(process=child, live=lambda: child.poll() is None)
+    try:
+        with pytest.raises(DeadlineExceeded):
+            custody._get_json(port, "/api/free", 1024, time.monotonic() + 0.5,
+                              lambda: None, owned=owned, payload={"unload_models": True})
+        thread.join(timeout=4)
+        assert not thread.is_alive() and received == [b""]
+    finally:
+        listener.close()
+        child.terminate()
+        child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("setting, expected", [("busy", "busy"), ("freefails", "failed")])
+def test_live_supervisor_busy_and_failed_free_are_not_released(session, setting, expected):
+    client, payload, recipe, root, mode, started = session
+    _call(client, payload)
+    mode.write_text(setting)
+    result = client.release_owned(deadline=time.monotonic() + 8)
+    assert result["status"] == expected
+    assert result.get("models_unloaded") is not True
+    assert not (root / "release-posts").exists()
