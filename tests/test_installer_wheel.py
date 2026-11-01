@@ -17,6 +17,67 @@ GENERATION_GUIDE_RESOURCES = (
 )
 
 
+def _engine_resources():
+    from astrid.core.generation.engine_recipe import load_recipe, load_recipe_index
+    from astrid.core.generation.engine_runner import _A2_PATHS, _CODE_PATHS
+
+    resources = {'packs/engine-index.json', *_CODE_PATHS, *_A2_PATHS}
+    locks = set()
+    for entry in load_recipe_index().entries:
+        recipe = load_recipe(entry.engine, entry.platform)
+        resources.update(ref.path for ref in (entry.recipe, recipe.pins, recipe.models_lock))
+        for environment in recipe.environments:
+            lock = environment.requirements.packaged_lock
+            if lock is not None:
+                resources.add(lock.path)
+                locks.add(lock.path)
+    assert locks  # This exercises actual recipe locks, not just JSON metadata.
+    return resources, locks
+
+
+def test_built_wheel_loads_every_engine_helper_and_packaged_lock(tmp_path):
+    source = tmp_path / 'source'
+    source.mkdir()
+    shutil.copy2(ROOT / 'pyproject.toml', source / 'pyproject.toml')
+    resources, locks = _engine_resources()
+    for name in resources:
+        destination = source / 'astrid' / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / 'astrid' / name, destination)
+    built = subprocess.run(
+        [sys.executable, '-m', 'build', '--wheel', '--no-isolation', '--outdir', str(tmp_path / 'dist')],
+        cwd=source, capture_output=True, text=True, check=False,
+    )
+    assert built.returncode == 0, built.stdout + built.stderr
+    installed = tmp_path / 'installed'
+    wheel_path, = (tmp_path / 'dist').glob('*.whl')
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for name in locks:
+            assert wheel.read('astrid/' + name) == (ROOT / 'astrid' / name).read_bytes()
+        wheel.extractall(installed)
+    # No source checkout or ambient site packages can supply a missing resource.
+    script = '''
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from astrid.core.generation import engine_recipe
+from astrid.core.generation.engine_runner import helper_manifest
+assert Path(engine_recipe.__file__).is_relative_to(Path(sys.argv[1]))
+for entry in engine_recipe.load_recipe_index().entries:
+    recipe = engine_recipe.load_recipe(entry.engine, entry.platform)
+    manifest = helper_manifest(recipe)
+    for environment in recipe.environments:
+        lock = environment.requirements.packaged_lock
+        if lock is not None:
+            assert manifest[lock.path] == lock.sha256
+'''
+    checked = subprocess.run(
+        [sys.executable, '-I', '-S', '-c', script, str(installed)],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
 def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
     # Use the real release configuration and source files without copying the
     # whole checkout or writing build/egg-info output into a developer's tree.
@@ -25,6 +86,7 @@ def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
     shutil.copy2(ROOT / "pyproject.toml", source / "pyproject.toml")
     files = ("__init__.py", "version.py", "services.py", "chat/__init__.py", *CHAT_RESOURCES,
              "installer/__init__.py", "installer/tools.py", *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES,
+             *_engine_resources()[0], "core/generation/vibecomfy_dependency.py",
              "chat/service.ts", "chat/service.test.ts")
     for name in files:
         destination = source / "astrid" / name
