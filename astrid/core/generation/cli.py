@@ -145,7 +145,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
             help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
-        command.add_argument("--out", help="Output destination passed to the runtime.")
+        command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
         command.add_argument("--width", action=_Once, type=int)
@@ -290,6 +290,9 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     else:
         with _open_client() as client:
             result = generate(client)
+            if not parsed.no_wait:
+                from .delivery import deliver_generation
+                result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
     if getattr(result, "ok", True) is False:
         from astrid.core.generation.preflight import generation_error
         raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
@@ -413,9 +416,15 @@ def _main(argv: list[str]) -> int:
         generate = getattr(_generate_facade(), parsed.modality)
         if parsed.dry_run or (description is not None and description["source"] == "action" and parsed.target != 'runpod'):
             result = generate(**kwargs)
+            if not parsed.dry_run and not parsed.no_wait:
+                from .delivery import deliver_generation
+                result = deliver_generation(result, client=None, out=parsed.out, project=parsed.project)
         else:
             with _open_client() as client:
                 result = generate(client=client, **kwargs)
+                if not parsed.no_wait:
+                    from .delivery import deliver_generation
+                    result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
     except AstridSDKError as exc:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
