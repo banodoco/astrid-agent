@@ -1477,8 +1477,11 @@ class ComfyHostHooks:
         endpoint_transport: Any,
         verified: Mapping[str, Any],
         expected_comfyui_version: str | None,
+        host: Any = None,
     ) -> None:
         self._binding = binding
+        self._host = host
+        self._generation: int | None = None
         self._profile = hc03_profile
         self._endpoint_transport = endpoint_transport
         self._verified = dict(verified)
@@ -1502,6 +1505,7 @@ class ComfyHostHooks:
         observed = self.observe(binding=self._binding)
         if not observed.get("ok"):
             return {"ok": False, "reason": f"owner binding revalidation failed: {observed.get('reason')}"}
+        self._generation = token.generation
         context = {
             "token_id": token.token_id,
             "invocation_id": token.invocation_id,
@@ -1539,11 +1543,30 @@ class ComfyHostHooks:
         }
 
     def release(self, *, reason: str) -> dict[str, Any]:
+        """Managed release routes to the host; attached release stays fail-closed.
+
+        ``release_managed_session`` enforces quiescence internally, so no extra
+        argument is passed.  The expected generation is the one last accepted
+        by ``invoke``; with none, release refuses.
+        """
+        closed = {"ok": False, "released": False, "release_requested": False,
+                  "memory_observed_returned": False}
+        if self._host is None:
+            return {**closed, "reason": "no managed host handle"}
+        if self._generation is None:
+            return {**closed, "reason": "no accepted generation for this binding"}
+        result = self._host.release_managed_session(
+            expected_binding=self._binding,
+            expected_generation=self._generation,
+            reason=str(reason),
+        )
+        released = bool(result.get("ok")) and result.get("released") is True
         return {
-            "ok": False,
-            "released": False,
-            "release_requested": False,
-            "reason": "release is fail-closed: managed release routing is not wired in this pass",
+            "ok": released,
+            "released": released,
+            "release_requested": True,
+            "memory_observed_returned": False,
+            "reason": "" if released else str(result.get("reason", "release_pending")),
         }
 
     def _binding_identity(self) -> tuple[Any, ...]:
@@ -1985,8 +2008,12 @@ class CheckoutServerAdapter(VibeComfyBackend):
         binding: Any,
         hc03_profile: Mapping[str, Any],
         endpoint_transport: Any = None,
+        host: Any = None,
     ) -> ComfyHostHooks:
         """Bind an existing selected owner; never start or replace an engine.
+
+        ``host`` is the managed GenericPackHost object (optional). With it,
+        managed release routes through its release_managed_session.
 
         Refuses (ValueError) on any missing or mismatched evidence.  A listener
         URL alone is never ownership evidence.
@@ -2009,6 +2036,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
             endpoint_transport=endpoint_transport,
             verified=verified,
             expected_comfyui_version=None,
+            host=host,
         )
 
     def _restart_owned_session(self) -> dict[str, Any]:

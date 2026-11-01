@@ -143,3 +143,61 @@ def test_invoke_requires_an_admission_token():
 def test_observe_refuses_a_different_binding():
     result = _hooks().observe(binding=_binding(endpoint="http://127.0.0.1:9999"))
     assert result == {"ok": False, "reason": "binding does not match the bound owner"}
+
+
+class _FakeHost:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def release_managed_session(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
+
+def _hooks_with_host(host, generation=7):
+    hooks = ComfyHostHooks(
+        binding=_binding(),
+        hc03_profile=_profile(),
+        endpoint_transport=None,
+        verified=_verified(),
+        expected_comfyui_version=None,
+        host=host,
+    )
+    hooks._generation = generation
+    return hooks
+
+
+def test_release_without_host_is_refused():
+    result = _hooks().release(reason="requested")
+    assert result["released"] is False
+    assert result["reason"] == "no managed host handle"
+    assert result["memory_observed_returned"] is False
+
+
+def test_release_without_accepted_generation_is_refused():
+    host = _FakeHost({"ok": True, "released": True})
+    result = _hooks_with_host(host, generation=None).release(reason="requested")
+    assert result["released"] is False
+    assert result["reason"] == "no accepted generation for this binding"
+    assert host.calls == []
+
+
+def test_release_routes_to_host_with_exact_binding_and_generation():
+    host = _FakeHost({"ok": True, "released": True, "native": {}})
+    hooks = _hooks_with_host(host, generation=7)
+    result = hooks.release(reason="requested")
+    assert host.calls == [{
+        "expected_binding": hooks._binding,
+        "expected_generation": 7,
+        "reason": "requested",
+    }]
+    assert result["released"] is True and result["ok"] is True
+    assert result["memory_observed_returned"] is False
+
+
+def test_release_pending_from_host_is_not_success():
+    host = _FakeHost({"ok": False, "released": False, "release_pending": True})
+    result = _hooks_with_host(host).release(reason="requested")
+    assert result["released"] is False and result["ok"] is False
+    assert result["reason"] == "release_pending"
