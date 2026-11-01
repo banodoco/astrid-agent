@@ -165,6 +165,7 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
         raise ValueError(f"unknown arguments: {', '.join(sorted(unknown))}")
     argv = list(tool["path"])
     flags: list[str] = []
+    trailing_files: list[str] = []
     for spec in tool["args"]:
         if tool["path"] == ("timelines", "render") and spec["dest"] == "wait":
             continue
@@ -191,7 +192,14 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             value = json.dumps(value)
         option, kind = spec["option"], spec["kind"]
         if option is None:
-            argv += [str(v) for v in value] if isinstance(value, list) else [str(value)]
+            values = [str(v) for v in value] if isinstance(value, list) else [str(value)]
+            # A positional file must remain the final argument.  This leaves
+            # generated JSON and policy flags visible to argparse while still
+            # preserving a file argument as the command's terminal input.
+            if spec.get("value") == "file":
+                trailing_files += values
+            else:
+                argv += values
         elif kind == "_StoreTrueAction":
             if value:
                 flags.append(option)
@@ -210,9 +218,11 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             flags += [option, str(value)]
     if tool["path"] == ("timelines", "render"):
         flags.append("--detach")
+    if tool["json"]:
+        flags.append("--json")
     if tool["path"] == ("timelines", "edit") and "--no-sweep" not in flags:
         flags.append("--no-sweep")
-    return argv + flags + (["--json"] if tool["json"] else [])
+    return argv + flags + trailing_files
 
 
 def _astrid_env() -> dict[str, str]:
@@ -566,15 +576,25 @@ def _frontmatter(text: str) -> tuple[dict[str, str], str]:
     return meta, body
 
 
-def build_prompts() -> dict[str, dict[str, Any]]:
+def build_prompts(*, developer: bool = False) -> dict[str, dict[str, Any]]:
+    """Expose pack skills as prompts; developer-only skills only with *developer*.
+
+    Mirrors ``astrid skills sync --developer``: a SKILL.md that declares
+    ``metadata.astrid.audience: developer`` is served only when the server was
+    started with ``--developer``.
+    """
     import astrid
+    from astrid.skills.discovery import DEVELOPER_AUDIENCE, text_audience
 
     packs = Path(astrid.__file__).resolve().parent / "packs"
     prompts: dict[str, dict[str, Any]] = {}
     for path in sorted(packs.rglob("SKILL.md")):
         if any(part in {"tests", "fixtures"} for part in path.parts):
             continue
-        meta, body = _frontmatter(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        if not developer and text_audience(text) == DEVELOPER_AUDIENCE:
+            continue
+        meta, body = _frontmatter(text)
         name = re.sub(r"[^A-Za-z0-9_-]+", "-", meta.get("name") or "").strip("-")
         if not name or name in prompts:
             name = re.sub(r"[^A-Za-z0-9_-]", "-", "-".join(path.relative_to(packs).parts[:-1]))
@@ -627,8 +647,13 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
     return error(-32601, f"method not found: {method}")
 
 
-def main() -> int:
-    state = {"tools": {**build_tools(), **_extra_tools()}, "prompts": build_prompts()}
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m astrid.mcp_server", description="Astrid's stdio MCP server.")
+    parser.add_argument("--developer", action="store_true",
+                        help="Also serve the developer skills (as `astrid skills sync --developer` installs them).")
+    args = parser.parse_args(argv or [])
+    prompts = build_prompts(developer=True) if args.developer else build_prompts()
+    state = {"tools": {**build_tools(), **_extra_tools()}, "prompts": prompts}
     log(f"ready: {len(state['tools'])} tools, {len(state['prompts'])} prompts")
     for line in sys.stdin:
         if not line.strip():
@@ -652,4 +677,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

@@ -32,7 +32,7 @@ from .core import (
 )
 from .custody import operation, stopped_custody
 from .launcher import publish_runtime_runner
-from .service import installer_lock_path, pinokio_owned
+from .service import installer_lock_path, pinokio_lock_paths, pinokio_owned
 
 # Run with the Version's interpreter in isolated mode. Backend.stage installs
 # Runtime from a local source directory non-editably; PEP 610 records that
@@ -154,22 +154,29 @@ def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
     """Preserve C1 preflight; give a running incapable Runtime its contract refusal."""
     from runtime_protocol import platform
 
-    lock_path = installer_lock_path(backend.service.home, backend.service.system)
     held = False
-    if lock_path.exists():
-        try:
-            with lock_path.open("r+b") as stream:
-                try:
-                    platform.lock_file(stream.fileno(), blocking=False)
-                except BlockingIOError:
-                    held = True
-                else:
-                    platform.unlock_file(stream.fileno())
-        except FileNotFoundError:
-            pass
+    # Pinokio's foreground filters XDG_DATA_HOME, while an older updater can
+    # inherit it. Check both aliases before C1 so an old Runtime receives the
+    # exact Stop refusal before any transaction write.
+    for lock_path in pinokio_lock_paths(backend.service.home, backend.service.system):
+        if lock_path.exists():
+            try:
+                with lock_path.open("r+b") as stream:
+                    try:
+                        platform.lock_file(stream.fileno(), blocking=False)
+                    except BlockingIOError:
+                        held = True
+                    else:
+                        platform.unlock_file(stream.fileno())
+            except FileNotFoundError:
+                pass
 
     if held:
         qualify_running(root, backend, data)
+        # C1 can only stop a Runtime that has already proved the current
+        # handoff contract. A lock from the retained/old foreground is instead
+        # decisive: never write or invoke C1 while that owner is still alive.
+        raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.")
     backend.preflight_stop(absolute(data))
 
 

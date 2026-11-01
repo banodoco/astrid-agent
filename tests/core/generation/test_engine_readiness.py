@@ -41,13 +41,14 @@ from astrid.core.generation.engine_contracts import (
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.engine_release import canonical, interpreter_identity
 from astrid.core.generation.engine_runner import _json, _plain, _sha, helper_manifest
+from tests._checkouts import runtime_checkout, vibecomfy_checkout, vibecomfy_git_root
 
 PLATFORM = "linux-x86_64-cu130"
 ENGINE = "vibecomfy-h3"
 CLONE = Path(__file__).resolve().parents[3]
-RUNTIME_SOURCE = Path(os.environ.get("ASTRID_RUNTIME_CHECKOUT", "/home/user/proof/src/astrid-runtime"))
-VIBECOMFY_SOURCE = Path(os.environ.get("ASTRID_VIBECOMFY_CHECKOUT", "/home/user/proof/src/VibeComfy"))
-VIBECOMFY_REVISION = "2967033970cbb5884651c9565265778482d3b44e"
+RUNTIME_SOURCE = runtime_checkout()
+VIBECOMFY_SOURCE = vibecomfy_checkout()
+VIBECOMFY_REVISION = "3bebae39655eb460454885040be4d3aefaf2ef31"
 COMFY_VERSION = "0.36.0"
 SYNTHETIC_DRIVER = "580.95.05"
 SYNTHETIC_VRAM_MIB = 32607
@@ -228,7 +229,7 @@ def installation(tmp_path_factory, request):
     # Both the pinned source and each installed producer use verified local checkouts.
     import vibecomfy
     assert Path(vibecomfy.__file__).resolve() == VIBECOMFY_SOURCE.resolve() / "vibecomfy/__init__.py"
-    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=VIBECOMFY_SOURCE, text=True).strip() == VIBECOMFY_REVISION
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=vibecomfy_git_root(), text=True).strip() == VIBECOMFY_REVISION
     # Real VibeComfy at the canonical pin (objects shared read-only with the source tree).
     _run(["git", "clone", "-q", "--shared", "--no-checkout", str(VIBECOMFY_SOURCE), str(root / "runtime/vibecomfy")], tmp)
     _run(["git", "-c", "advice.detachedHead=false", "checkout", "-q", pin], root / "runtime/vibecomfy")

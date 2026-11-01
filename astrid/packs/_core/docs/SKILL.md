@@ -27,9 +27,10 @@ Choose the route by the requested result. Read only that route's guidance:
 | Reuse a character or other saved subject | [References](../../media/docs/references.md) |
 | Build your own reusable tool, workflow, or visual element | [Pack builder](pack-builder/SKILL.md) |
 | Find Banodoco advice, model settings, or workflow precedents | [Hivemind contract](../../../../docs/reference/hivemind-pack-contract.md) |
+| Develop Astrid itself: its repositories, builds, tests and releases | [Developing Astrid](../../developer/docs/SKILL.md) |
 
 For the exact distinction between managed setup, bring-your-own engines, and
-remote workers, see the [platform and execution matrix](../../../../docs/reference/compute-profiles.md).
+remote workers, see the [platform and execution matrix](../../../../docs/reference/where-things-run.md).
 Linux and macOS can use an existing ComfyUI through `vibecomfy.run` with
 `comfy_url`. H3 (`h3_av`) inference currently requires a RunPod worker.
 For batch timeline edits, narration and beats, or exact-value approval, load

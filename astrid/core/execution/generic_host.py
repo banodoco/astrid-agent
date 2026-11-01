@@ -9554,6 +9554,14 @@ class GenericPackHost:
                 argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                         "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
             if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
+                if child_bridge is None and remotion_lease is None:
+                    # Delegated leaf commands have no child channel. Run the
+                    # admitted Python command in the host worker so strict
+                    # network startup still precedes every pack import.
+                    if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                        raise HostError("private network commands require the admitted Python interpreter")
+                    argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
+                            "--python-command", json.dumps(argv[1:])]
                 argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
             if source_channel is not None:
                 argv = _captured_worker_argv(argv)

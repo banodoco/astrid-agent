@@ -235,7 +235,7 @@ def test_foreground_binds_migration_journal_to_exact_retained_session(tmp_path, 
         platform.lock_file(update_lock.fileno(), blocking=False)
         try:
             with pytest.raises(ExecCalled):
-                foreground._run(root, [], "linux", lock.fileno())
+                foreground._run(root, [], "linux", lock.fileno(), custody_fd=lock.fileno())
         finally:
             platform.unlock_file(update_lock.fileno())
 
@@ -254,10 +254,10 @@ def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path
 
 
 @pytest.mark.parametrize(("step", "selected", "allowed", "data_matches", "hold_update_lock"), [
-    ("switched", "candidate", True, True, True),
+    ("switched", "candidate", False, True, True),
     ("switched", "candidate", False, True, False),
     ("switched", "old", False, True, False),
-    ("rollback_selected", "old", True, True, True),
+    ("rollback_selected", "old", False, True, True),
     ("rollback_selected", "old", False, True, False),
     ("rollback_selected", "candidate", False, True, False),
     ("migrated", "old", False, True, False),
