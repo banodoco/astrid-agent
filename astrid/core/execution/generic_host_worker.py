@@ -104,8 +104,8 @@ def _install_inherited_bridge(fd: str):
     return _install_child_bridge(channel)
 
 
-def _run_child_command(fd: str, encoded: str, *, renderer: bool = False, captured=None) -> int:
-    """Install before Python command code, preserving its argv and entry point."""
+def _run_child_command(fd: str | None, encoded: str, *, renderer: bool = False, captured=None) -> int:
+    """Run Python command code with its host channel and optional captured source."""
     args = json.loads(encoded)
     if not isinstance(args, list) or not args or any(not isinstance(arg, str) for arg in args):
         raise ValueError("invalid private Python command")
@@ -123,8 +123,10 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False, capture
     if renderer:
         from .remotion_host_session import install_host_remotion_client
         bridge = install_host_remotion_client(fd)
-    else:
+    elif fd is not None:
         bridge = _install_inherited_bridge(fd)
+    else:
+        bridge = None
     try:
         from ._child_import_receipt import observe_action_entry
 
@@ -151,7 +153,8 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False, capture
             runpy.run_path(args[0], run_name="__main__")
         return 0
     finally:
-        bridge.close()
+        if bridge is not None:
+            bridge.close()
 
 
 def _json_value(value: Any) -> Any:
@@ -275,6 +278,8 @@ if __name__ == "__main__":
         if len(sys.argv) >= 3 and sys.argv[1] == "--external-source-fd":
             captured = _read_captured_source(int(sys.argv[2]))
             del sys.argv[1:3]
+        if len(sys.argv) == 3 and sys.argv[1] == "--python-command" and captured is None:
+            raise SystemExit(_run_child_command(None, sys.argv[2]))
         if len(sys.argv) == 3 and sys.argv[1] == "--captured-command" and captured is not None:
             raise SystemExit(_run_captured_command(sys.argv[2], *captured))
         if len(sys.argv) == 4 and sys.argv[1] in {"--child-command", "--renderer-command"}:

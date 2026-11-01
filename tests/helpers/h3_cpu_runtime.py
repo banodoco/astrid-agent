@@ -964,7 +964,7 @@ def _probe_vibecomfy_checkout(checkout: Path) -> dict[str, str]:
     }
 
 
-def _object_info_from_checkout(checkout: Path) -> dict[str, Any]:
+def _object_info_from_checkout(checkout: Path, *, model_paths: tuple[str, ...] = ()) -> dict[str, Any]:
     cache_root = checkout.resolve() / "vibecomfy" / "porting" / "cache" / "object_info"
     index = json.loads((cache_root / "index.json").read_text(encoding="utf-8"))
     payloads: dict[str, dict[str, Any]] = {}
@@ -1104,6 +1104,14 @@ def _object_info_from_checkout(checkout: Path) -> dict[str, Any]:
     assert result["CLIPLoader"] == captured_clip_loader
     clip_loader_choices = result["CLIPLoader"]["input"]["required"]["type"][0]
     assert "minimax" in clip_loader_choices
+    if model_paths:
+        from types import SimpleNamespace
+
+        from tests.helpers.h3_attached_engine import AttachedEngine
+
+        AttachedEngine._list_installed_models(
+            result, [SimpleNamespace(destination=path) for path in model_paths],
+        )
     return result
 
 
@@ -1226,6 +1234,7 @@ class ManagedSchemaSession:
         source_digest: str,
         *,
         vibecomfy_checkout: Path,
+        model_paths: tuple[str, ...] = (),
     ) -> None:
         self.root = root.resolve()
         self.session_dir = self.root / "out" / "sessions" / "h3-c11"
@@ -1238,7 +1247,7 @@ class ManagedSchemaSession:
         self.expected_path = self.root / "expected-source.json"
         self.queue_evidence_path = self.root / "queue-evidence.json"
         self.schema_path.write_bytes(
-            _canonical_json(_object_info_from_checkout(vibecomfy_checkout))
+            _canonical_json(_object_info_from_checkout(vibecomfy_checkout, model_paths=model_paths))
         )
         executable_dir = self.root / "bin"
         executable_dir.mkdir(parents=True)
