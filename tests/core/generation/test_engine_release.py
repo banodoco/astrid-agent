@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -67,11 +68,23 @@ def wheel_inputs(tmp_path_factory):
         )
     wheel_dir = work / 'wheels'
     wheel_dir.mkdir()
+    # pip's local-directory wheel builds write build/ and egg-info artifacts
+    # into source trees. Keep the reused source checkouts untouched and build
+    # from disposable copies inside this test's isolated temp directory.
+    build_sources = {}
+    for name, source in local.items():
+        build_source = work / 'sources' / name
+        shutil.copytree(
+            source,
+            build_source,
+            ignore=shutil.ignore_patterns('.git', 'build', '*.egg-info', '__pycache__', '*.py[cod]'),
+        )
+        build_sources[name] = build_source
     env = dict(os.environ, UV_CACHE_DIR=str(work / 'uv-cache'),
                PIP_CACHE_DIR=str(work / 'pip-cache'), PIP_NO_INDEX='1',
                SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD='1.12.0+astrid.2')
     built = subprocess.run([sys.executable, '-m', 'pip', 'wheel', '--no-deps', '--no-build-isolation',
-                            '--wheel-dir', str(wheel_dir), *map(str, local.values())],
+                            '--wheel-dir', str(wheel_dir), *map(str, build_sources.values())],
                            env=env, capture_output=True, text=True, timeout=180)
     assert built.returncode == 0, built.stderr
     wheels = sorted(wheel_dir.glob('*.whl'))
