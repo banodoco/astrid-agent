@@ -340,22 +340,23 @@ def _run_command_orchestrator(
     values: Mapping[str, Any],
 ) -> OrchestratorRunResult:
     command, cwd, env = _expand_command_runtime(orchestrator, request, values)
-    if request.dry_run:
-        planned_commands = (command,)
-        return OrchestratorRunResult(
-            orchestrator_id=orchestrator.id,
-            kind=orchestrator.kind,
-            runtime_kind="command",
-            command=command,
-            planned_commands=planned_commands,
-            cwd=cwd,
-            env=env,
-            returncode=None,
-            dry_run=True,
-            plan=_plan_from_commands(planned_commands, prefix=orchestrator.id),
-        )
-    effective_env = _command_subprocess_env(orchestrator, request, env)
+    effective_env = {}
     try:
+        if request.dry_run:
+            planned_commands = (command,)
+            return OrchestratorRunResult(
+                orchestrator_id=orchestrator.id,
+                kind=orchestrator.kind,
+                runtime_kind="command",
+                command=command,
+                planned_commands=planned_commands,
+                cwd=cwd,
+                env=dict(env),
+                returncode=None,
+                dry_run=True,
+                plan=_plan_from_commands(planned_commands, prefix=orchestrator.id),
+            )
+        effective_env = _command_subprocess_env(orchestrator, request, env)
         run_root = request.run_root
         import_reference = None
         if orchestrator.metadata.get("local_orchestrator") is True:
@@ -409,14 +410,14 @@ def _run_command_orchestrator(
                     try:
                         import_reference = import_receipt.finish()
                         if import_reference["persistence"] == "failed":
-                            logging.getLogger(__name__).warning(
+                            _receipt_warning(
                                 "child import receipt persistence failed launch_id=%s", import_reference["launch_id"])
-                        if error is not None:
-                            error.child_import_receipt = import_reference
                     except BaseException as receipt_error:
-                        logging.getLogger(__name__).warning(
+                        _receipt_warning(
                             "child import receipt unavailable: %s", type(receipt_error).__name__)
                         import_reference = {"observation": "unavailable", "persistence": "failed"}
+                    if error is not None:
+                        error.child_import_receipt = import_reference
         elif run_root is not None and not request.project_was_auto_resolved:
             with open_run_log_capture(run_root) as logs:
                 returncode = run_subprocess_with_capture(
@@ -442,13 +443,22 @@ def _run_command_orchestrator(
             command=command,
             planned_commands=(command,),
             cwd=cwd,
-            env=env,
+            env=dict(env),
             returncode=returncode,
             child_import_receipt=import_reference,
         )
 
     finally:
         effective_env.clear()
+        env.clear()
+
+
+def _receipt_warning(message: str, *args: object) -> None:
+    """Receipt diagnostics cannot replace execution or interrupt cleanup."""
+    try:
+        logging.getLogger(__name__).warning(message, *args)
+    except BaseException:
+        pass
 
 
 def _expand_command_runtime(
