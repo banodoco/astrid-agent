@@ -1,0 +1,3 @@
+setup=0
+collection=0
+focused=0

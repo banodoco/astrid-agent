@@ -1,0 +1,72 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "mkdir -p r07-proof; setup_rc=0; (cd runtime && python -m pip install -e '.[test]') > r07-proof/setup.log 2>&1 || setup_rc=$?; collection_rc=0; focused_rc=0; if [ \"$setup_rc\" -eq 0 ]; then (cd runtime && python -m pytest --collect-only -q tests/test_contract_fixtures.py tests/test_update_jobs.py) > r07-proof/collection.log 2>&1 || collection_rc=$?; (cd runtime && python -m pytest -q tests/test_contract_fixtures.py tests/test_update_jobs.py) > r07-proof/focused.log 2>&1 || focused_rc=$?; else collection_rc=99; focused_rc=99; fi; printf 'setup=%s\\ncollection=%s\\nfocused=%s\\n' \"$setup_rc\" \"$collection_rc\" \"$focused_rc\" > r07-proof/inner-exits.txt; cat r07-proof/setup.log; cat r07-proof/collection.log; cat r07-proof/focused.log; test \"$setup_rc\" -eq 0 && test \"$collection_rc\" -eq 0 && test \"$focused_rc\" -eq 0",
+  "effective_tuple": {
+    "agent": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+    "app": "9d3ccda1e81383082258943207745086da2aabe4",
+    "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime": "bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf"
+  },
+  "event": "push",
+  "inner_exit_code": 0,
+  "inventory": [
+    {
+      "bytes": 11024,
+      "path": "artifacts/r07-proof/collection.log",
+      "sha256": "962d40170ead01ec43040fe83925657c50f87bdef8988815618053299e05914b"
+    },
+    {
+      "bytes": 194,
+      "path": "artifacts/r07-proof/focused.log",
+      "sha256": "6f15fc7b851093c7844ec7c9767a85c8a076a3df0d4210166e4e4d90e12d388a"
+    },
+    {
+      "bytes": 31,
+      "path": "artifacts/r07-proof/inner-exits.txt",
+      "sha256": "7e6ee35985cc467311b00f7bc6cec0b84286a444d26da874f19fd8a88d91642e"
+    },
+    {
+      "bytes": 5347,
+      "path": "artifacts/r07-proof/setup.log",
+      "sha256": "0a820b7726eba1e9ce24e23d450974ceea0f9d0eb4a10555eb3bc6989b433b62"
+    },
+    {
+      "bytes": 16565,
+      "path": "command.log",
+      "sha256": "688c6b833f69a4fb8f62b50cadefd366890017c2731d5f1856406ea6a0160201"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 1224,
+      "path": "requested-inputs.json",
+      "sha256": "5da83fbab7ea393980f2efdffca86ed724cda24f8d4263a8b798b7faaed86ec9"
+    },
+    {
+      "bytes": 423,
+      "path": "tuple.txt",
+      "sha256": "78973d834ddd8acbef3688f52267d741c4ddf0396877979521f72445fa6aa185"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+    "app_ref": "9d3ccda1e81383082258943207745086da2aabe4",
+    "artifact_paths": "r07-proof/setup.log\nr07-proof/collection.log\nr07-proof/focused.log\nr07-proof/inner-exits.txt",
+    "command": "mkdir -p r07-proof; setup_rc=0; (cd runtime && python -m pip install -e '.[test]') > r07-proof/setup.log 2>&1 || setup_rc=$?; collection_rc=0; focused_rc=0; if [ \"$setup_rc\" -eq 0 ]; then (cd runtime && python -m pytest --collect-only -q tests/test_contract_fixtures.py tests/test_update_jobs.py) > r07-proof/collection.log 2>&1 || collection_rc=$?; (cd runtime && python -m pytest -q tests/test_contract_fixtures.py tests/test_update_jobs.py) > r07-proof/focused.log 2>&1 || focused_rc=$?; else collection_rc=99; focused_rc=99; fi; printf 'setup=%s\\ncollection=%s\\nfocused=%s\\n' \"$setup_rc\" \"$collection_rc\" \"$focused_rc\" > r07-proof/inner-exits.txt; cat r07-proof/setup.log; cat r07-proof/collection.log; cat r07-proof/focused.log; test \"$setup_rc\" -eq 0 && test \"$collection_rc\" -eq 0 && test \"$focused_rc\" -eq 0",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime_ref": "bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf",
+    "slot": "1"
+  },
+  "run_attempt": "1",
+  "run_id": "41325998558",
+  "source_head": "3f42efaa12db8414003dac3412089ab093959a61",
+  "source_ref": "refs/heads/venue/M-R1FIX-R-07-R3-3",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-R-07-R3-3",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "3f42efaa12db8414003dac3412089ab093959a61"
+}

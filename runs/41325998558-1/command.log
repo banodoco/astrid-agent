@@ -1,0 +1,175 @@
+Defaulting to user installation because normal site-packages is not writeable
+Obtaining file:///home/runner/work/astrid-agent/astrid-agent/runtime
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Collecting jsonschema>=4.18 (from astrid-runtime==0.1.0)
+  Downloading jsonschema-4.26.0-py3-none-any.whl.metadata (7.6 kB)
+Collecting referencing>=0.30 (from astrid-runtime==0.1.0)
+  Downloading referencing-0.37.0-py3-none-any.whl.metadata (2.8 kB)
+Collecting pytest>=8 (from astrid-runtime==0.1.0)
+  Downloading pytest-9.2.0-py3-none-any.whl.metadata (7.9 kB)
+Collecting pytest-timeout>=2.4 (from astrid-runtime==0.1.0)
+  Downloading pytest_timeout-2.4.0-py3-none-any.whl.metadata (20 kB)
+Collecting pytest-xdist>=3 (from astrid-runtime==0.1.0)
+  Downloading pytest_xdist-3.8.0-py3-none-any.whl.metadata (3.0 kB)
+Requirement already satisfied: PyYAML>=6 in /usr/lib/python3/dist-packages (from astrid-runtime==0.1.0) (6.0.1)
+Collecting setuptools>=70.1 (from astrid-runtime==0.1.0)
+  Using cached setuptools-84.2.1-py3-none-any.whl.metadata (6.6 kB)
+Requirement already satisfied: attrs>=22.2.0 in /usr/lib/python3/dist-packages (from jsonschema>=4.18->astrid-runtime==0.1.0) (23.2.0)
+Collecting jsonschema-specifications>=2023.03.6 (from jsonschema>=4.18->astrid-runtime==0.1.0)
+  Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting rpds-py>=0.25.0 (from jsonschema>=4.18->astrid-runtime==0.1.0)
+  Downloading rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
+Collecting iniconfig>=2 (from pytest>=8->astrid-runtime==0.1.0)
+  Downloading iniconfig-2.3.1-py3-none-any.whl.metadata (2.8 kB)
+Requirement already satisfied: packaging>=24 in /usr/lib/python3/dist-packages (from pytest>=8->astrid-runtime==0.1.0) (24.0)
+Collecting pluggy<2,>=1.6 (from pytest>=8->astrid-runtime==0.1.0)
+  Downloading pluggy-1.7.0-py3-none-any.whl.metadata (5.0 kB)
+Requirement already satisfied: pygments>=2.15 in /usr/lib/python3/dist-packages (from pytest>=8->astrid-runtime==0.1.0) (2.17.2)
+Collecting execnet>=2.1 (from pytest-xdist>=3->astrid-runtime==0.1.0)
+  Downloading execnet-2.1.2-py3-none-any.whl.metadata (2.9 kB)
+Requirement already satisfied: typing-extensions>=4.4.0 in /usr/lib/python3/dist-packages (from referencing>=0.30->astrid-runtime==0.1.0) (4.10.0)
+Downloading jsonschema-4.26.0-py3-none-any.whl (90 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 90.6/90.6 kB 9.8 MB/s eta 0:00:00
+Downloading pytest-9.2.0-py3-none-any.whl (411 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 411.8/411.8 kB 25.8 MB/s eta 0:00:00
+Downloading pytest_timeout-2.4.0-py3-none-any.whl (14 kB)
+Downloading pytest_xdist-3.8.0-py3-none-any.whl (46 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 46.4/46.4 kB 27.2 MB/s eta 0:00:00
+Downloading referencing-0.37.0-py3-none-any.whl (26 kB)
+Using cached setuptools-84.2.1-py3-none-any.whl (876 kB)
+Downloading execnet-2.1.2-py3-none-any.whl (40 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 40.7/40.7 kB 24.5 MB/s eta 0:00:00
+Downloading iniconfig-2.3.1-py3-none-any.whl (7.6 kB)
+Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+Downloading pluggy-1.7.0-py3-none-any.whl (27 kB)
+Downloading rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (371 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 371.3/371.3 kB 126.6 MB/s eta 0:00:00
+Checking if build backend supports build_editable: started
+Checking if build backend supports build_editable: finished with status 'done'
+Building wheels for collected packages: astrid-runtime
+  Building editable for astrid-runtime (pyproject.toml): started
+  Building editable for astrid-runtime (pyproject.toml): finished with status 'done'
+  Created wheel for astrid-runtime: filename=astrid_runtime-0.1.0-0.editable-py3-none-any.whl size=4136 sha256=7ce0c9475651b6e479f0a1e17bbc8cc0992afda47a208b05534b02efe6730c88
+  Stored in directory: /tmp/pip-ephem-wheel-cache-3s7182uj/wheels/77/b9/92/8387f27cb8372eb38081ae345b2b73fd2c62c79df949d12e56
+Successfully built astrid-runtime
+Installing collected packages: setuptools, rpds-py, pluggy, iniconfig, execnet, referencing, pytest, pytest-xdist, pytest-timeout, jsonschema-specifications, jsonschema, astrid-runtime
+Successfully installed astrid-runtime-0.1.0 execnet-2.1.2 iniconfig-2.3.1 jsonschema-4.26.0 jsonschema-specifications-2025.9.1 pluggy-1.7.0 pytest-9.2.0 pytest-timeout-2.4.0 pytest-xdist-3.8.0 referencing-0.37.0 rpds-py-2026.9.1 setuptools-84.2.1
+tests/test_contract_fixtures.py::test_shared_fixtures_are_canonical_json_and_product_neutral
+tests/test_contract_fixtures.py::test_media_fixture_digest_is_sha256_and_range_contract_is_explicit
+tests/test_contract_fixtures.py::test_python_and_typescript_operation_indexes_are_identical
+tests/test_contract_fixtures.py::test_fake_actor_has_no_product_shaped_symbols
+tests/test_update_jobs.py::test_status_reads_authoritative_job_and_c2_journal_without_recovery
+tests/test_update_jobs.py::test_status_reports_terminal_job_result[updated]
+tests/test_update_jobs.py::test_status_reports_terminal_job_result[rolled_back]
+tests/test_update_jobs.py::test_status_reports_terminal_job_result[failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_journal-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_journal-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_journal-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[corrupt_journal-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[corrupt_journal-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[corrupt_journal-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_format-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_format-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_format-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_format-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_format-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_format-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_operation-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_operation-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_operation-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_operation-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_operation-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_operation-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_transaction-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_transaction-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[wrong_transaction-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_transaction-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_transaction-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_transaction-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[empty_transaction-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[empty_transaction-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[empty_transaction-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[malformed_transaction-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[malformed_transaction-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[malformed_transaction-failed]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_journal_transaction-updated]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_journal_transaction-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_terminal_job_without_valid_journal_link[missing_journal_transaction-failed]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_step-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_step-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[pending_step-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[pending_step-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[missing_version-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[missing_version-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_version-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_version-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_release-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_release-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_prior-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_prior-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[missing_discovery-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[missing_discovery-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[old_instance-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[old_instance-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[missing_old_instance-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[missing_old_instance-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[unready-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[unready-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_instance-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_instance-rolled_back]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_identity-updated]
+tests/test_update_jobs.py::test_status_rejects_uncorroborated_success[wrong_identity-rolled_back]
+tests/test_update_jobs.py::test_status_preserves_pretransaction_failure_or_recovery[False-failed]
+tests/test_update_jobs.py::test_status_preserves_pretransaction_failure_or_recovery[False-recovery-needed]
+tests/test_update_jobs.py::test_status_preserves_pretransaction_failure_or_recovery[True-failed]
+tests/test_update_jobs.py::test_status_preserves_pretransaction_failure_or_recovery[True-recovery-needed]
+tests/test_update_jobs.py::test_terminal_failure_with_pending_transaction_stays_recovery_needed[failed]
+tests/test_update_jobs.py::test_terminal_failure_with_pending_transaction_stays_recovery_needed[recovery-needed]
+tests/test_update_jobs.py::test_status_exposes_bounded_job_and_cleanup_metadata
+tests/test_update_jobs.py::test_status_keeps_pending_c2_active_while_installer_lock_is_held
+tests/test_update_jobs.py::test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal
+tests/test_update_jobs.py::test_status_reports_pending_c2_even_without_f1_job
+tests/test_update_jobs.py::test_status_projects_only_allowlisted_selection_reasons[busy]
+tests/test_update_jobs.py::test_status_projects_only_allowlisted_selection_reasons[autostart-off]
+tests/test_update_jobs.py::test_status_omits_noncontract_selection_reason
+tests/test_update_jobs.py::test_status_projects_linux_service_manager_reason_without_admission
+tests/test_update_jobs.py::test_status_preserves_allowlisted_service_manager_refusal
+tests/test_update_jobs.py::test_status_availability_contains_probe_invocation_failures[timeout]
+tests/test_update_jobs.py::test_status_availability_contains_probe_invocation_failures[invocation]
+tests/test_update_jobs.py::test_status_availability_contains_probe_invocation_failures[subprocess]
+tests/test_update_jobs.py::test_status_projects_availability_probe_failures_as_unavailable_without_side_effects[timeout]
+tests/test_update_jobs.py::test_status_projects_availability_probe_failures_as_unavailable_without_side_effects[invocation]
+tests/test_update_jobs.py::test_status_projects_availability_probe_failures_as_unavailable_without_side_effects[subprocess]
+tests/test_update_jobs.py::test_status_projects_availability_probe_failures_as_unavailable_without_side_effects[nonzero]
+tests/test_update_jobs.py::test_status_projects_availability_probe_failures_as_unavailable_without_side_effects[malformed]
+tests/test_update_jobs.py::test_status_projects_availability_probe_failures_as_unavailable_without_side_effects[nonboolean]
+tests/test_update_jobs.py::test_status_projects_busy_while_an_update_request_owns_admission
+tests/test_update_jobs.py::test_helper_preserves_agent_busy_refusal_for_explicit_update
+tests/test_update_jobs.py::test_status_projects_unacknowledged_launching_as_recovery_needed
+tests/test_update_jobs.py::test_reconcile_before_manifest_and_newer_target_checks
+tests/test_update_jobs.py::test_reconcile_terminal_result_prevents_preparation_and_new_launch
+tests/test_update_jobs.py::test_lost_launcher_ack_keeps_durable_job_and_inputs_without_retry
+tests/test_update_jobs.py::test_record_write_failure_cleans_prepared_inputs_and_never_launches
+tests/test_update_jobs.py::test_unconfirmed_legacy_recovery_is_refused_without_a_second_launch
+tests/test_update_jobs.py::test_update_route_h3_returns_confirmed_reconciliation_conflict[recovered-this-request-rolled_back-Recovered your previous version \u2014 run Update again]
+tests/test_update_jobs.py::test_update_route_h3_returns_confirmed_reconciliation_conflict[confirmed-prior-updated-Astrid updated. Reload to continue.]
+tests/test_update_jobs.py::test_update_route_h4_returns_recovery_refusal
+tests/test_update_jobs.py::test_update_route_h5_returns_uncertain_acknowledgement
+tests/test_update_jobs.py::test_update_route_preserves_frozen_accepted_response
+tests/test_update_jobs.py::test_explicit_autostart_off_refuses_before_preparation_or_launch[False]
+tests/test_update_jobs.py::test_explicit_autostart_off_refuses_before_preparation_or_launch[off]
+tests/test_update_jobs.py::test_production_launcher_uses_selected_python_helper_once
+tests/test_update_jobs.py::test_known_helper_launch_failure_is_reported_without_retry
+tests/test_update_jobs.py::test_post_update_terminal_result_line_reads_back_through_status
+
+107/111 tests collected (4 deselected) in 0.54s
+........................................................................ [ 67%]
+...................................                                      [100%]
+107 passed, 4 deselected in 7.51s
