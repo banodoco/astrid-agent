@@ -53,6 +53,7 @@ from astrid.core.pack.definition import (
     PackDefinition,
     PackPermission,
 )
+from astrid.core.pack.imports import PackImportReport, check_pack_imports
 from astrid.core.pack.loader import (
     DEFAULT_PACKS_ROOT,
     _default_stability_for_status,
@@ -113,6 +114,8 @@ __all__ = [
     "ElementKindRegistry",
     "ELEMENT_KIND_REGISTRY",
     "PackDefinition",
+    "PackImportReport",
+    "check_pack_imports",
     "PackValidationError",
     "discover_packs",
     "element_kind_registry_for_pack",
