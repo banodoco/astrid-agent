@@ -160,3 +160,36 @@ def test_frozen_policy_matches_reviewed_release_manifest():
     assert policy["version_record_keys"] == ["env", "profile", "python", "root"]
     assert policy["version_id_prefix"] == "3204bb00-6d53a190-"
     assert policy["python_version"] == "3.11.13"
+
+
+def test_qualification_and_live_admission_use_same_classifier(legacy, monkeypatch):
+    from scripts.verify_installed import legacy_identity_observation
+
+    root, data, health, discovery, contract = legacy
+    old = current(root)
+    calls = []
+    original = legacy_identity.classify
+
+    def spy(*args, **kwargs):
+        result = original(*args, **kwargs)
+        calls.append(result[0])
+        return result
+
+    monkeypatch.setattr(legacy_identity, "classify", spy)
+    # The verifier imports the same classifier; spy on its bound name too.
+    monkeypatch.setattr("scripts.verify_installed.classify", spy)
+    raw = (old.root / "manifest.json").read_bytes()
+    record = json.loads((old.root / "version.json").read_text())
+    assert legacy_identity.admitted(old, health, discovery, program_root=root)
+    assert legacy_identity_observation(health, discovery, record, json.loads(raw), raw,
+                                       old.root / "version.json", contract)[0]
+    assert calls == [True, True]
+    assert gate(root, data)._legacy_identity_admitted
+    update_job._probe_selected_identity(data, old, root)
+    assert calls == [True, True, True, True]
+
+
+def test_missing_shipped_table_fails_closed(legacy, monkeypatch):
+    root, _, health, discovery, _ = legacy
+    monkeypatch.setattr(legacy_identity, "_policy", lambda: None)
+    assert not legacy_identity.admitted(current(root), health, discovery, program_root=root)

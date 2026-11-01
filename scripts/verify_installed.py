@@ -15,6 +15,8 @@ import urllib.parse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from astrid.installer.legacy_identity import classify, _version_provenance_problems
 RELEASES_PATH = ROOT / 'tests' / 'upgrade' / 'releases.json'
 
 
@@ -170,66 +172,6 @@ def installed_runtime_contract(python, root, env, data_root):
     return value
 
 
-def _version_provenance_problems(version, manifest, version_path):
-    problems = []
-    version_root = Path(version.get('root', '')).resolve()
-    record_root = Path(version_path).resolve().parent
-    if version_root != record_root:
-        problems.append('version root does not match selected version record')
-    program_root = Path(version_path).resolve().parent.parent.parent
-    try:
-        selected = (program_root / 'current').read_text(encoding='utf-8').strip()
-    except OSError:
-        selected = None
-    if selected != version_root.name:
-        problems.append('current selection does not match version record')
-    profile = Path(version.get('profile', '')).absolute()
-    python = Path(version.get('python', '')).absolute()
-    if (not profile.is_relative_to(Path(version_root).absolute()) or not profile.is_file()
-            or not profile.resolve().is_relative_to(Path(version_root).resolve())):
-        problems.append('version profile path is not an installed file')
-    if not python.is_relative_to(Path(version_root).absolute()) or not python.is_file():
-        problems.append('version Python path is not declared inside the installed version')
-    env = version.get('env')
-    if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items()):
-        problems.append('version environment provenance is malformed')
-    # The served installer extracts Runtime into <version>/r and records that
-    # checkout in profile.json; it does not persist runtime.lock.json.
-    try:
-        profile_value = read(profile)
-        if not isinstance(profile_value, dict):
-            raise ValueError('profile must be an object')
-        expected_runtime_path = version_root / 'r'
-        runtime_checkout_value = Path(profile_value.get('runtime_checkout', '')).absolute()
-        runtime_checkout = runtime_checkout_value.resolve()
-        if (runtime_checkout_value != expected_runtime_path.absolute() or expected_runtime_path.is_symlink()
-                or not runtime_checkout.is_relative_to(version_root) or not runtime_checkout.is_dir()):
-            problems.append('profile Runtime checkout provenance does not match installed version')
-        expected_environment_path = version_root / 'py'
-        runtime_environment_value = Path(profile_value.get('runtime_environment', '')).absolute()
-        runtime_environment = runtime_environment_value.resolve()
-        if (runtime_environment_value != expected_environment_path.absolute() or expected_environment_path.is_symlink()
-                or not runtime_environment.is_relative_to(version_root) or not runtime_environment.is_dir()):
-            problems.append('profile Runtime environment provenance does not match installed version')
-        for key in ('source_checkout', 'service_declaration'):
-            value = profile_value.get(key)
-            path = Path(value).resolve() if isinstance(value, str) else None
-            wrong_kind = (not path.is_dir() if key == 'source_checkout' else not path.is_file()) if path else True
-            if path is None or not path.is_relative_to(version_root) or wrong_kind:
-                problems.append(f'profile {key} provenance is missing, invalid, or outside installed version')
-    except (OSError, ValueError, TypeError):
-        problems.append('installed profile provenance is missing or malformed')
-    if isinstance(version.get('identity'), dict):
-        try:
-            manager = read(program_root / 'install.json').get('managed_by')
-        except (OSError, ValueError, TypeError):
-            manager = None
-        expected_identity = {'release': manifest.get('release', 0), 'managed_by': manager}
-        if version['identity'] != expected_identity:
-            problems.append('version identity does not match installed manifest/manager provenance')
-    return problems
-
-
 def _reviewed_runtime_schema(mode):
     try:
         releases = json.loads(RELEASES_PATH.read_text(encoding='utf-8'))
@@ -299,13 +241,6 @@ def _reviewed_schema_problems(schema, mode, health, version, manifest, manifest_
 def legacy_identity_observation(health, discovery, version, manifest, manifest_bytes,
                                 version_path, runtime_contract):
     """Allow identity omission only for an exact, release-listed legacy bundle."""
-    supported = None
-    try:
-        releases = json.loads(RELEASES_PATH.read_text(encoding='utf-8'))
-        served = next(row for row in releases['releases'] if row.get('id') == 'served')
-        supported = served.get('supported_legacy_identity_schema')
-    except (OSError, ValueError, KeyError, StopIteration):
-        supported = None
     identity_values = (health.get('identity'), discovery.get('identity'), version.get('identity'))
     identities_absent = all(value is None for value in identity_values)
     health_identity = health.get('identity')
@@ -349,62 +284,8 @@ def legacy_identity_observation(health, discovery, version, manifest, manifest_b
                            'version_env_fields': sorted(version.get('env', {})) if isinstance(version.get('env'), dict) else None,
                            'problems': problems}
 
-    problems = []
-    if not isinstance(supported, dict):
-        problems.append('no supported legacy schema declaration')
-    else:
-        problems.extend(_reviewed_schema_problems(
-            _reviewed_runtime_schema('supported-legacy-schema'), 'supported-legacy-schema',
-            health, version, manifest, manifest_bytes, runtime_contract))
-        checks = {
-            'installed_manifest_sha256': hashlib.sha256(manifest_bytes).hexdigest(),
-            'install_manifest_schema_version': manifest.get('schema_version'),
-            'agent_sha': manifest.get('agent', {}).get('sha'),
-            'runtime_sha': manifest.get('runtime', {}).get('sha'),
-            'schema_digest': manifest.get('runtime', {}).get('schema_digest'),
-            'manifest_release': manifest.get('release', 0),
-            'protocol': runtime_contract.get('protocol'),
-            'workspace_schema_version': runtime_contract.get('workspace_schema_version'),
-        }
-        for key, actual in checks.items():
-            if actual != supported.get(key):
-                problems.append(f'{key} mismatch')
-        if health.get('protocol') != supported.get('protocol'):
-            problems.append('health protocol mismatch')
-        if health.get('schema_digest') != supported.get('schema_digest'):
-            problems.append('health schema digest mismatch')
-        if set(version) != set(supported.get('version_record_keys', [])):
-            problems.append('legacy version record fields mismatch')
-        version_root = Path(version.get('root', '')).resolve()
-        if not version_root.name.startswith(supported.get('version_id_prefix', '\0')):
-            problems.append('version directory provenance mismatch')
-        problems.extend(_version_provenance_problems(version, manifest, version_path))
-        if manifest.get('tools', {}).get('python', {}).get('version') != supported.get('python_version'):
-            problems.append('manifest Python provenance mismatch')
-    instance = health.get('runtime_instance_id')
-    discovered_instance = discovery.get('runtime_instance_id')
-    if health.get('status') != 'ok':
-        problems.append('Runtime health is not ok')
-    if not isinstance(instance, str) or not instance.strip():
-        problems.append('health runtime instance id is missing')
-    if not isinstance(discovered_instance, str) or not discovered_instance.strip() or instance != discovered_instance:
-        problems.append('health/discovery runtime instance ids do not match')
-    return not problems, {'mode': 'supported-legacy-schema', 'release_id': supported.get('id') if supported else None,
-                          'health_protocol': health.get('protocol'), 'health_schema_digest': health.get('schema_digest'),
-                          'health_status': health.get('status'), 'health_runtime_epoch': health.get('runtime_epoch'),
-                          'health_runtime_session_id': health.get('runtime_session_id'),
-                          'health_runtime_instance_id': instance, 'discovery_runtime_instance_id': discovered_instance,
-                          'health_identity': health.get('identity'), 'discovery_identity': discovery.get('identity'),
-                          'version_identity': version.get('identity'), 'version_record_fields': sorted(version),
-                          'version_root': version.get('root'), 'version_python': version.get('python'),
-                          'version_profile': version.get('profile'),
-                          'version_env_fields': sorted(version.get('env', {})) if isinstance(version.get('env'), dict) else None,
-                          'manifest_sha256': hashlib.sha256(manifest_bytes).hexdigest(),
-                          'manifest_agent_sha': manifest.get('agent', {}).get('sha'),
-                          'manifest_runtime_sha': manifest.get('runtime', {}).get('sha'),
-                          'manifest_schema_digest': manifest.get('runtime', {}).get('schema_digest'),
-                          'runtime_contract': {key: runtime_contract.get(key) for key in ('protocol', 'schema_digest', 'workspace_schema_version')},
-                          'problems': problems}
+    return classify(health, discovery, version, manifest, manifest_bytes, version_path, runtime_contract)
+
 
 
 def observe(version_path, data_root):
