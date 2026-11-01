@@ -91,8 +91,8 @@ def ready_entries() -> list[dict[str, Any]]:
 def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
     """Project action entry declarations and their authoritative input ports."""
     if discovery is None:
-        from astrid.sdk.invocation import discover
-        discovery = discover()
+        from astrid.core.pack.discovery import reuse_pack_projection
+        return reuse_pack_projection(_discover_action_entries)
     rows = []
     for capability in discovery.actions:
         definition = getattr(capability, "definition", {})
@@ -129,6 +129,11 @@ def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
     return rows
 
 
+def _discover_action_entries() -> list[dict[str, Any]]:
+    from astrid.sdk.invocation import discover
+    return action_entries(discover())
+
+
 def bundle_path(entry: dict[str, Any]) -> Path:
     path = Path(entry['bundle']).expanduser()
     return path / 'workflow.py' if path.is_dir() else path
@@ -138,7 +143,7 @@ def find_entry(entry_id: str) -> dict[str, Any] | None:
     matches = [entry for entry in user_entries() if entry['id'] == entry_id]
     actions = [entry for entry in action_entries() if entry['id'] == entry_id]
     if actions:
-        ready = [entry for entry in ready_entries() if entry['id'] == entry_id]
+        ready = _ready_entries_for(entry_id)
         from astrid.core.model_catalog.registry import ModelRegistry
         try:
             ModelRegistry.load_default().get(entry_id)
@@ -153,7 +158,7 @@ def find_entry(entry_id: str) -> dict[str, Any] | None:
         raise ValueError(f'ambiguous workflow entry {entry_id!r}')
     if matches:
         return {**matches[0], 'source': 'user-entry'}
-    return next((entry for entry in ready_entries() if entry['id'] == entry_id), None)
+    return next(iter(_ready_entries_for(entry_id)), None)
 
 
 def _input_type(value: Any) -> str:
