@@ -1,6 +1,11 @@
 repos:
   astrid-agent: 722e2a4508c88dde08bc7b3619fc341652dee685
   astrid-runtime: 1a275bb339ae897e52a5be5e1da99e846e402037
+producer_authorities:
+  vibecomfy: 3bebae39655eb4604548850404be3d4aefaf2ef31
+  lifecycle: 96360a2
+cpu:
+  vcpu: 8
 gpu: false
 max_minutes: 60
 setup:
