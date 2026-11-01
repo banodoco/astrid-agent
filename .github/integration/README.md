@@ -67,3 +67,55 @@ python3 scripts/ci/regression_finalizer.py --status /secure/regression-green-sta
 The wrapper reads the fixed, version-controlled review and automatically fetches its hosted rows via the GitHub API. `GH_TOKEN` may supply read access. The downloader requires an independently reviewed exact run, attempt, job, workflow, artifact ID/name and tuple commit. It currently supports **only runs with exactly one job and attempt 1**. GitHub's run-scoped artifact metadata does not identify its job: this restriction is essential to associate the run's artifact with its sole job, and the reviewed workflow must be the intended producer. It rejects reruns, multi-job runs, absent API SHA-256 archive digests, ambiguous artifact lists and unsafe or duplicate archive members. Archive bytes are checked against the GitHub digest, each extracted file is hashed into private `run.json`, and the evaluator checks the byte snapshots again. Broker bytes are checked against the orchestrator's journal before interpretation. Metadata and files controlled by an evidence producer are not trust anchors. No hosted producer in the current C-05 matrix is represented as compliant merely by this contract; C-05 must provide reviewed compliant producers and identity bindings, or a separately authenticated job-to-artifact protocol.
 
 A workflow using `if: always()` cannot expose the local broker journal by itself. The existing reusable GitHub workflow therefore remains deliberately red; the local orchestrator still has to call this entry point from its own unconditional finalization path. Cancellation, machine termination, inability to write the status, or failure before the local wrapper is started requires the orchestrator to publish failure itself. This implementation and its fixtures do not constitute a production result.
+
+## Deployment handoff and required-check adapter
+
+`scripts/ci/regression_deployment.py` is the bounded local bridge for the
+orchestrator's tuple coordinator. It never runs a producer. Its sealed handoff
+has this exact shape (paths are absolute and each sealed file is SHA-256 bound):
+
+```json
+{
+  "version": "c06-tuple-coordinator/v1",
+  "batch_id": "unique-coordinator-batch",
+  "tuple_digest": "<frozen tuple digest>",
+  "tuple": {"path": "/secure/tuple.json", "sha256": "..."},
+  "ledger": {"path": "/secure/ledger.jsonl", "sha256": "..."},
+  "freshness": {"path": "/secure/c07.json", "sha256": "..."},
+  "producer_results": {"path": "/secure/terminal-results.json", "sha256": "..."},
+  "broker_root": "/home/user/merge/podq",
+  "not_before": "2026-10-31T23:36:50Z",
+  "publication": {"sequence": 1}
+}
+```
+
+`producer_results` is a nonempty list of unique
+`{"id":"...","kind":"broker|hosted","state":"success|failure|cancelled|worker-death|skipped|unstartable"}`
+records. Broker rows are compared to the terminal `jobs/<id>/state` and
+`result.json` written by the broker: missing recovery output is worker death,
+`exit_codes` containing `-1` is cancellation, and only a verified released
+zero-exit record is success. Once the reviewed inventory is complete, its
+source IDs must exactly match the handoff. Duplicate, missing, added,
+nonterminal, forged, stale or wrong-tuple inputs are red. Hosted success is
+still independently authenticated by the trusted API downloader in the
+finalizer.
+
+Run the bridge after all coordinator-owned producers become terminal, including
+failure, cancellation and worker death; it invokes the finalizer in a `finally`
+path even when the handoff itself is malformed:
+
+```sh
+python3 scripts/ci/regression_deployment.py --handoff /secure/c06-handoff.json \
+  --status /secure/regression-green-status.json --publish \
+  --publication-state /secure/regression-green-publications.json
+```
+
+`--publish` requires `GH_TOKEN` with Checks write permission. The publisher
+creates the `int/regression-green` Check Run on the frozen Agent SHA, binding
+the check's external ID to batch and tuple digest. Its durable state records a
+monotonic coordinator publication sequence per Agent SHA; a lower sequence or
+a conflicting equal sequence is rejected, so a late result cannot overwrite a
+newer result. A publisher failure changes the local result to red. A missing
+credential, missing tuple, failed status write, or unavailable publisher is not
+a green result. The publisher's state file, handoff and sealed inputs are
+trusted coordinator custody, never evidence-worker output.

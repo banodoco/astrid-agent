@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import re
 
 ROOT = Path(__file__).resolve().parents[2]
 COVERAGE = ROOT / '.github/integration/cp1-coverage.json'
@@ -85,6 +86,7 @@ def main(argv=None):
     for name in ('tuple', 'ledger', 'broker-root', 'hosted-root', 'freshness', 'collection'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--not-before', default=CUTOFF)
+    parser.add_argument('--batch-id')
     # Find the output location even when normal argument parsing fails.
     raw = list(sys.argv[1:] if argv is None else argv)
     status_path = 'regression-green-status.json'
@@ -94,9 +96,19 @@ def main(argv=None):
         elif arg == '--status' and i + 1 < len(raw) and not raw[i + 1].startswith('--'):
             status_path = raw[i + 1]
     status = {'check': 'int/regression-green', 'result': 'fail', 'errors': [], 'retirement': [],
-              'evaluated_at': dt.datetime.now(dt.timezone.utc).isoformat(), 'repo_shas': CP1}
+              'evaluated_at': dt.datetime.now(dt.timezone.utc).isoformat(), 'repo_shas': CP1,
+              'batch_id': None, 'tuple_digest': None, 'target_sha': None}
     try:
         args = parser.parse_args(argv)
+        if args.batch_id is not None and (not isinstance(args.batch_id, str) or
+                                          not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', args.batch_id)):
+            raise ValueError('invalid batch id')
+        tup = read(args.tuple)
+        import regression_green as core
+        core.validate_schema(tup, 'tuple.schema.json')
+        status.update(batch_id=args.batch_id,
+                      tuple_digest=core.digest({k: v for k, v in tup.items() if k != 'digest'}),
+                      target_sha=tup['repos']['agent']['sha'])
         errors, retirement = evaluate(args)
         status.update(errors=errors, retirement=retirement, result='fail' if errors else 'pass')
     except SystemExit as exc:
