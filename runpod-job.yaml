@@ -24,6 +24,8 @@ setup:
   "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "banodoco-timeline-schema
   @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python"
 
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "git+https://github.com/peteromallet/VibeComfy.git@ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+
   "$CUSTODY_PYTHON" -m pip freeze > runpod-evidence/environment.txt
 
   '
