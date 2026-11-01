@@ -36,10 +36,10 @@ dependencies = [
 
 [project.scripts]
 # ``astrid-tools`` is the direct Astrid product gateway.  Keep ``python -m astrid``
-# as the package gateway, while the shorter ``astrid`` command opens the
-# named Astrid OMP agent (see ``astrid.omp_agent``).
+# as the package gateway, while the shorter ``astrid`` command uses the
+# installed console dispatcher (``astrid.console``).
 astrid-tools = "astrid.core.gateway:main"
-astrid = "astrid.omp_agent:main"
+astrid = "astrid.console:main"
 astrid-credential = "astrid.core.util.credential_store:main"
 astrid-with-credential = "astrid.core.util.credential_exec:main"
 astrid-upgrade = "astrid.sdk.upgrade:main"
@@ -154,6 +154,8 @@ astrid = [
     "packs/**/actions/**/*.txt",
     "packs/**/requirements.txt",
     "packs/**/requirements.windows-nvidia.txt",
+    "packs/runpod/requirements.linux-cu130.lock",
+    "packs/comfyui/requirements.linux-cu130.lock",
     "packs/**/rendering/**/*.md",
     "packs/**/AGENTS.md",
     "packs/**/README.md",

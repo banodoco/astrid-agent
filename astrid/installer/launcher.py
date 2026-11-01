@@ -173,7 +173,7 @@ def publish_runtime_runner(root: Path) -> Path:
         f'LABEL={service.LABEL!r}\nSERVICE_SETTINGS=frozenset({sorted(service.SERVICE_SETTINGS)!r})\n'
         f'_EMBEDDED_LAUNCH_PRELUDE={prelude_source!r}\n'
         + "\n".join(inspect.getsource(function) for function in (
-            service.default_program_root, service.installer_lock_path,
+            service.default_program_root, service.installer_lock_path, service.pinokio_lock_paths,
             service.command,
         ))
     )
