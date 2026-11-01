@@ -24,6 +24,34 @@ def test_sdk_carries_stage_and_ordered_refs_and_binds_child_key():
         _child_request(cap, inputs, stage="compose", **kwargs)
 
 
+def test_finalizer_keeps_required_publication_intent_in_host_custody():
+    from pathlib import Path
+
+    import astrid
+    from astrid.core.contracts.binding import assert_provided_inputs_bound, expand_command
+    from astrid.core.execution.executor.actions import action_executor_definition
+    from astrid.core.pack.loader import load_pack_manifest
+    from astrid.packs.h3_av.actions.publication_finalizer.run import build_parser
+
+    pack = load_pack_manifest(Path(astrid.__file__).parent / "packs/h3_av/pack.yaml")
+    definition = action_executor_definition(pack, "publication_finalizer", pack.actions["publication_finalizer"])
+    intent = {"version": 1, "modality": "video", "metadata": {"sealed": True}}
+    values = {"python_exec": "python", "out": "/worker/out", "candidate": "/worker/candidate.media",
+              "verification": "/worker/verification.json", "expected_request_digest": "a" * 64,
+              "generation_intent": intent}
+    binding = expand_command(definition.command, definition.inputs, values, definition.metadata)
+    assert_provided_inputs_bound(binding, definition.inputs, values, definition.metadata)
+    port = next(port for port in definition.inputs if port.name == "generation_intent")
+    assert port.required and port.type == "json"
+    assert binding.host_consumed_inputs == {"generation_intent"}
+    assert "--generation-intent" not in binding.argv
+    assert values["generation_intent"] == intent
+    parsed = build_parser().parse_args(binding.argv[3:])
+    assert parsed.candidate == Path(values["candidate"])
+    assert parsed.verification == Path(values["verification"])
+    assert parsed.expected_request_digest == "a" * 64
+
+
 def test_staged_runtime_transport_preserves_order_and_ref_identity():
     child = {"child_id": "key", "capability_id": "pack.child", "capability_digest": PIN}
     refs = [{"name": "source", "producer_task_id": "task", "association_id": "assoc", "output_port": "video"}]

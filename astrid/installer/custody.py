@@ -20,7 +20,6 @@ import sys
 import threading
 from pathlib import Path
 
-
 def _receive(stream):
     line = stream.readline(65537)
     if not line or len(line) > 65536:
@@ -159,15 +158,17 @@ class Custody:
 @contextlib.contextmanager
 def stopped_custody(root, backend):
     """Acquire, never probe/release, stopped admission; None means running."""
-    from astrid.installer.service import installer_lock_path
+    from astrid.installer.service import pinokio_lock_paths
 
-    path = installer_lock_path(backend.service.home, backend.service.system)
+    paths = pinokio_lock_paths(backend.service.home, backend.service.system)
     process = subprocess.Popen(
-        [sys.executable, "-I", "-B", str(Path(__file__).resolve()), str(path), str(root)],
+        [sys.executable, "-I", "-B", str(Path(__file__).resolve()), str(root), *(str(path) for path in paths)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    custody = Custody(process, root, path)
+    # The foreground path is the identity handed to the Runtime; retain the
+    # legacy updater path as well when XDG differs so neither owner can race it.
+    custody = Custody(process, root, paths[0])
     try:
         if process.stdout is None:
             raise ValueError("The stopped-update lock owner disconnected.")
@@ -188,13 +189,11 @@ def operation(root, backend):
             from astrid.installer.app_update import qualify_running, selection
 
             _old, data, _identity = selection(root, backend, allow_transaction=True)
-            # Recovery retains its existing phase-specific qualification after
-            # stopping the selected owner; fresh updates refuse incapable owners
-            # here before CLI manifest writes, even if Start won the first race.
-            from astrid.installer.core import pending_transaction
-
-            if pending_transaction(root) is None:
-                qualify_running(root, backend, data)
+            # The preflight probe is not admission: Start can win that race.
+            # Requalify without writing, then refuse the still-running owner
+            # for both fresh updates and unfinished recovery transactions.
+            qualify_running(root, backend, data, allow_transaction=True)
+            raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.")
         backend._pinokio_custody = custody
         try:
             yield custody
@@ -202,19 +201,23 @@ def operation(root, backend):
             del backend._pinokio_custody
 
 
-def _serve(path, root):
+def _serve(root, paths):
     # This entry point is also usable with a retained interpreter: it depends
     # only on the pinned Runtime's platform module and Python's standard library.
     from runtime_protocol import platform
 
-    if not path.parent.exists():
-        platform.private_directory(path.parent)
-    with path.open("r+b" if path.exists() else "a+b") as lock:
-        try:
-            platform.lock_file(lock.fileno(), blocking=False)
-        except BlockingIOError:
-            _send(sys.stdout.buffer, {"acquired": False})
-            return
+    with contextlib.ExitStack() as locks:
+        for path in paths:
+            if not path.parent.exists():
+                platform.private_directory(path.parent)
+            lock = locks.enter_context(path.open("r+b" if path.exists() else "a+b"))
+            try:
+                platform.lock_file(lock.fileno(), blocking=False)
+            except BlockingIOError:
+                _send(sys.stdout.buffer, {"acquired": False})
+                return
+            locks.callback(platform.unlock_file, lock.fileno())
+        path = paths[0]
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen(4)
@@ -300,8 +303,7 @@ def _serve(path, root):
             server.join(timeout=1)
             if receipt_path.read_bytes() == receipt:
                 receipt_path.unlink()
-            platform.unlock_file(lock.fileno())
 
 
 if __name__ == "__main__":
-    _serve(Path(sys.argv[1]), Path(sys.argv[2]))
+    _serve(Path(sys.argv[1]), [Path(path) for path in sys.argv[2:]])

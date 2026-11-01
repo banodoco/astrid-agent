@@ -164,7 +164,7 @@ def activation_lock_held(root: Path, version: Version) -&gt; bool:
         platform.unlock_file(lock.fileno())
     return False
 
-def launch_admission(version: Version, data: Path) -&gt; bool:
+def launch_admission(version: Version, data: Path, *, custody: bool = False) -&gt; bool:
     """Validate the selected managed launch; return whether it is activating.
 
     The pending journal selects a version, never a process or stop authority.
@@ -216,20 +216,23 @@ def launch_admission(version: Version, data: Path) -&gt; bool:
         allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
+        context = transaction.get("transaction_context") or {}
+        if isinstance(context, dict) and context.get("pinokio_lifetime_custody") and not custody:
+            raise ValueError("The stopped update requires its authenticated activation lease.")
         if not activation_lock_held(root, version):
             raise ValueError("Choose Update to finish")
         return True
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if str(exc) == "Choose Update to finish":
             raise
-        action = ("Choose Pinokio's Update button to finish it."
-                  if version.managed_by == "pinokio" else
-                  "Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
+        if version.managed_by == "pinokio":
+            raise ValueError("Choose Update to finish") from exc
+        action = ("Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
                   if os.name != "nt" else
                   "Run the install line to finish it: irm https://astrid.haus/install.ps1 | iex")
         raise ValueError("An Astrid update was interrupted; " + action) from exc
 
-launch_admission(Version.load({'root': '/astrid/versions/v1', 'python': '/astrid/versions/v1/py/bin/python', 'profile': '/astrid/versions/v1/profile.json', 'env': {'ASTRID_INSTALL_MANAGED_BY': '', 'ASTRID_INSTALL_RELEASE': '0', 'PATH': '/astrid/tools:/usr/bin:/bin', 'PYTHONUTF8': '1'}, 'identity': {'release': 0, 'managed_by': None}}),Path('/astrid data'))
+launch_admission(Version.load({'root': '/astrid/versions/v1', 'python': '/astrid/versions/v1/py/bin/python', 'profile': '/astrid/versions/v1/profile.json', 'env': {'ASTRID_INSTALL_MANAGED_BY': '', 'ASTRID_INSTALL_RELEASE': '0', 'PATH': '/astrid/tools:/usr/bin:/bin', 'PYTHONUTF8': '1'}, 'identity': {'release': 0, 'managed_by': None}}),Path('/astrid data'),custody=False)
 os.environ.update({'ASTRID_INSTALL_MANAGED_BY': '', 'ASTRID_INSTALL_RELEASE': '0', 'PATH': '/astrid/tools:/usr/bin:/bin', 'PYTHONUTF8': '1'})
 from astrid_runtime.cli import main
 sys.exit(main(['run', '--profile', 'astrid', '--data-root', '/astrid data', '--source-manifest', '/astrid/versions/v1/profile.json']))</string>

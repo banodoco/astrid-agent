@@ -214,6 +214,23 @@ class ComfyTargetClient:
             payload = self.request_json("/object_info", timeout=30, response_limit=MAX_JSON_BYTES)
         if not isinstance(payload, dict):
             raise ValueError("Comfy object_info response is not an object")
+        from astrid.core.generation.engine_readiness import current_comfy_provenance
+
+        provenance = current_comfy_provenance()
+        if provenance is not None:
+            provenance.object_info(payload)
+            # Optional version observations cannot turn a reachable, capable
+            # human target into a blocker. Never infer ownership from stats.
+            try:
+                provenance.system_stats(self.system_stats())
+            except (ValueError, OSError):
+                provenance.system_stats({})
+        return payload
+
+    def system_stats(self) -> dict[str, Any]:
+        payload = self.request_json("/system_stats", timeout=5, response_limit=64 * 1024)
+        if not isinstance(payload, dict):
+            raise ValueError("Comfy system_stats response is not an object")
         return payload
 
     def submit_prompt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
