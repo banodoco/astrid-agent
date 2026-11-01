@@ -1,7 +1,7 @@
 """Read-only preparation for a managed engine install Runtime task.
 
-This module does not admit or execute a task.  The caller must retain the
-binding in the admitted request and recheck it at the worker boundary.
+This module does not admit or execute a task. The tracked install route is
+disabled; preparation and rechecking remain read-only.
 """
 from __future__ import annotations
 
@@ -11,6 +11,14 @@ from dataclasses import asdict, dataclass
 from .engine_platforms import platform_adapter
 from .engine_recipe import load_model_lock, load_recipe
 from .engine_runner import plan_install
+
+
+def tracked_install_route(*_args, **_kwargs):
+    """Refuse tracked installs until the Runtime route is available."""
+    return {
+        'code': 'MANAGED_INSTALL_ROUTE_DISABLED',
+        'message': 'Tracked installs through Runtime are not available in Phase 1.',
+    }
 
 
 @dataclass(frozen=True)

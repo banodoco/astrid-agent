@@ -1,9 +1,28 @@
 """Fake-only checks for read-only A03 preparation; no installer is run."""
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
-from astrid.core.generation.engine_install_task import prepare_install, recheck_install
+from astrid.core.generation.engine_install_task import (
+    prepare_install, recheck_install, tracked_install_route,
+)
+
+
+def test_tracked_install_route_refuses_without_installing(tmp_path, monkeypatch):
+    from astrid.core.generation import engine_runner
+
+    install_engine = Mock()
+    runner = Mock()
+    monkeypatch.setattr(engine_runner, 'install_engine', install_engine)
+    monkeypatch.setattr(engine_runner, '_Runner', runner)
+
+    result = tracked_install_route(root=str(tmp_path / 'engine'))
+
+    assert result['code'] == 'MANAGED_INSTALL_ROUTE_DISABLED'
+    install_engine.assert_not_called()
+    runner.assert_not_called()
+    assert not list(tmp_path.rglob('install.json'))
 
 
 def test_plan_is_read_only_and_retains_unknown_disk_requirement(tmp_path):
