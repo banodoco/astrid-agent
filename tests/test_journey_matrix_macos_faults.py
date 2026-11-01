@@ -1,5 +1,7 @@
 """Inventory contracts only; these tests do not execute installed journeys."""
 
+import json
+
 from scripts import check_journey_evidence, journey_matrix
 
 
@@ -53,3 +55,18 @@ def test_checker_rejects_absent_fault_receipts(tmp_path):
     errors = check_journey_evidence.evaluate_release1_matrix({}, tmp_path)
     for job_id in FAULT_IDS:
         assert f"{job_id}: missing receipt" in errors
+
+
+def test_unintegrated_checker_rejects_fault_leg_even_if_marked_pass(tmp_path):
+    for job_id in FAULT_IDS:
+        row = journey_matrix.release1_job(job_id)
+        destination = tmp_path / job_id
+        destination.mkdir()
+        (destination / "journey-result.json").write_text(json.dumps({
+            "job_id": job_id, "mode": "direct", "scenario": row["leg"], "status": "pass",
+            "service_manager_prerequisite": {},
+        }))
+    errors = check_journey_evidence.evaluate_release1_matrix(
+        {name: "a" * 40 for name in ("app", "agent", "runtime", "pinokio")}, tmp_path)
+    for job_id in FAULT_IDS:
+        assert f"{job_id}: direct receipt did not run the authentic release-0 to release-1 leg" in errors
