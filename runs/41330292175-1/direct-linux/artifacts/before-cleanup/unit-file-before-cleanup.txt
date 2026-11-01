@@ -1,0 +1,35 @@
+[Unit]
+Description=Astrid Runtime
+
+[Service]
+ExecStart="/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/py/bin/python" "-X" "utf8" "-I" "-c" "import json,os,sys\nfrom pathlib import Path\npath=Path('/home/runner/work/_temp/astrid-r1-direct-linux/program/service-env.json')\nsettings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}\nif (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):\n    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')\nos.environ.update(settings)\nfrom astrid_runtime.cli import main\nsys.exit(main(['run', '--profile', 'astrid', '--data-root', '/home/runner/work/_temp/astrid-r1-direct-linux/data', '--source-manifest', '/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/profile.json']))"
+Environment="ASTRID_BUN_EXECUTABLE=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/bun/bun-linux-x64/bun"
+Environment="ASTRID_CAPABILITY_MATRIX_PATH=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/a/config/astrid-beta-capabilities.json"
+Environment="ASTRID_FFMPEG_EXECUTABLE=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/ffmpeg/ffmpeg-7.0.2-amd64-static/ffmpeg"
+Environment="ASTRID_FFPROBE_EXECUTABLE=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/ffmpeg/ffmpeg-7.0.2-amd64-static/ffprobe"
+Environment="ASTRID_HOST_EXECUTION_PROFILE=installed"
+Environment="ASTRID_INSTALL_FFMPEG_SOURCE=download"
+Environment="ASTRID_INSTALL_FFMPEG_VERSION=7.0.2-static"
+Environment="ASTRID_INSTALL_FFPROBE_VERSION=7.0.2-static"
+Environment="ASTRID_INSTALL_OMP_COMMIT=78f0e0960f471c2c62b943272a48c33366f239fe"
+Environment="ASTRID_INSTALL_OMP_SOURCE=fork"
+Environment="ASTRID_INSTALL_OMP_VERSION=18.12.6"
+Environment="ASTRID_NODE_EXECUTABLE=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/node/node-v20.19.4-linux-x64/bin/node"
+Environment="ASTRID_REMOTION_PROJECT_DIR=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/a/remotion"
+Environment="ASTRID_RUNTIME_DATA_ROOT=/home/runner/work/_temp/astrid-r1-direct-linux/data"
+Environment="ASTRID_RUNTIME_DOOR_PORT=17340"
+Environment="ASTRID_SOURCE_PROVENANCE_ROOT=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/a"
+Environment="ASTRID_TIMELINE_SCHEMA_PYTHONPATH=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/a/remotion/node_modules/@banodoco/timeline-schema/python"
+Environment="BUN_INSTALL=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/omp"
+Environment="BUN_INSTALL_BIN=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/omp/bin"
+Environment="PATH=/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/py/bin:/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/omp/bin:/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/bun/bun-linux-x64:/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/node/node-v20.19.4-linux-x64/bin:/home/runner/work/_temp/astrid-r1-direct-linux/program/versions/3204bb00-6d53a190-9a620ae6/tools/ffmpeg/ffmpeg-7.0.2-amd64-static:/usr/bin:/bin:/usr/sbin:/sbin"
+Environment="PYTHONIOENCODING=utf-8"
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=90
+StandardOutput="append:/home/runner/work/_temp/astrid-r1-direct-linux/home/.local/state/astrid-runtime/logs/runtime-service.log"
+StandardError="append:/home/runner/work/_temp/astrid-r1-direct-linux/home/.local/state/astrid-runtime/logs/runtime-service.log"
+
+[Install]
+WantedBy=default.target
