@@ -153,7 +153,9 @@ def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[
 def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
     """Preserve C1 preflight; give a running incapable Runtime its contract refusal."""
     from runtime_protocol import platform
+    from .core import legacy_location_admission
 
+    legacy_location_admission(root)
     lock_path = installer_lock_path(backend.service.home, backend.service.system)
     held = False
     if lock_path.exists():

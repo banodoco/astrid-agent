@@ -510,6 +510,9 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
 
 
 def execute(action: dict, root: Path, *, stdin: TextIO, stdout: TextIO, say=print) -> dict:
+    from .core import legacy_location_admission
+
+    legacy_location_admission(root)
     if action.get("action") not in {"recover", "update"}:
         raise LocalUpdateStepError("validate-request", "The local update action is invalid.")
     if action["action"] == "recover":

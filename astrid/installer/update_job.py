@@ -231,7 +231,9 @@ def fetch_update_inputs(directory: Path, *, manifest_url: str, bootstrap_url: st
 
 def _locked(root: Path, *, blocking: bool = False):
     """Acquire the installer-wide lock used by normal install/repair callers."""
+    from .core import legacy_location_admission
     from .service import installer_lock_path
+    legacy_location_admission(root)
     lock_path = installer_lock_path(Path.home(), sys.platform)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     platform.private_directory(lock_path.parent)
@@ -241,6 +243,12 @@ def _locked(root: Path, *, blocking: bool = False):
     except BlockingIOError:
         stream.close()
         raise _BusyRefusal("The Astrid installer is already running.") from None
+    try:
+        legacy_location_admission(root)
+    except BaseException:
+        platform.unlock_file(stream.fileno())
+        stream.close()
+        raise
     return stream
 
 

@@ -159,8 +159,10 @@ class Custody:
 @contextlib.contextmanager
 def stopped_custody(root, backend):
     """Acquire, never probe/release, stopped admission; None means running."""
+    from astrid.installer.core import legacy_location_admission
     from astrid.installer.service import installer_lock_path
 
+    legacy_location_admission(root)
     path = installer_lock_path(backend.service.home, backend.service.system)
     process = subprocess.Popen(
         [sys.executable, "-I", "-B", str(Path(__file__).resolve()), str(path), str(root)],
@@ -172,6 +174,8 @@ def stopped_custody(root, backend):
         if process.stdout is None:
             raise ValueError("The stopped-update lock owner disconnected.")
         acquired = _receive(process.stdout)
+        if acquired == {"acquired": True}:
+            legacy_location_admission(root)
         yield custody if acquired == {"acquired": True} else None
     finally:
         custody.close()
@@ -180,6 +184,9 @@ def stopped_custody(root, backend):
 @contextlib.contextmanager
 def operation(root, backend):
     """Share one custody admission across CLI manifest work and the adapter."""
+    from astrid.installer.core import legacy_location_admission
+
+    legacy_location_admission(root)
     if hasattr(backend, "_pinokio_custody"):
         yield backend._pinokio_custody
         return

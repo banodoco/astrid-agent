@@ -136,8 +136,14 @@ def test_version_identity_roundtrips_and_legacy_version_uses_manifest(tmp_path, 
     ({"release": "8"}, {}, "nonnegative integer"),
     ({"release": 8}, {"managed_by": "source"}, "Invalid installation manager"),
 ])
-def test_legacy_current_rejects_invalid_canonical_identity_without_writes(tmp_path, manifest, marker, error):
-    root = tmp_path / "program"
+def test_legacy_current_rejects_invalid_canonical_identity_without_writes(tmp_path, monkeypatch, manifest, marker, error):
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    root = default_program_root(home, sys.platform)
     folder = root / "versions/v1"
     value = {"root": str(folder), "python": str(tmp_path / "python"),
              "profile": str(folder / "profile.json"), "env": {"ASTRID_INSTALL_RELEASE": "99"}}

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import sys
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -114,6 +115,77 @@ def version_id(value: str) -> str:
     return value
 
 
+def legacy_location_admission(root: Path) -> None:
+    """Bind an identityless selected version only to the owned default location."""
+    from runtime_protocol import platform
+
+    root = absolute(root)
+    pointer = root / "current"
+    if not pointer.exists():
+        return
+    name = version_id(pointer.read_text(encoding="utf-8").strip())
+    record_path = absolute(root / "versions" / name / "version.json")
+    if not record_path.exists():
+        return
+    if "identity" in read_json(record_path):
+        return
+    home = absolute(Path.home())
+    if sys.platform == "win32":
+        parent = home / "AppData" / "Local"
+        default = parent / "Astrid"
+        lock = parent / "Astrid Installer" / "astrid-install.lock"
+        visible = Path(os.environ.get("LOCALAPPDATA") or parent) / "Astrid"
+    else:
+        parent = home / ".local" / "share"
+        default = parent / "astrid"
+        lock = parent / "astrid-install.lock"
+        visible = (Path(os.environ.get("XDG_DATA_HOME") or parent) / "astrid"
+                   if sys.platform == "linux" else default)
+    paths = [home, *parent.relative_to(home).parents, parent, default, pointer,
+             root / "versions", record_path.parent, record_path,
+             root / "install.json", record_path.parent / "manifest.json",
+             parent / "astrid-install.json", lock]
+    paths = [home / path if not path.is_absolute() else path for path in paths]
+    if sys.platform == "win32":
+        paths.append(lock.parent)
+    try:
+        def owned_path(path):
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                return True  # Optional metadata and the lock may not exist yet.
+            if linked(path):
+                return False
+            if sys.platform == "win32":
+                from runtime_protocol import windows_security
+                with windows_security._handle(path) as (handle, _info):
+                    windows_security._validate_handle(handle, owner_only=True)
+                return True
+            return platform.is_current_user(metadata)
+
+        owned = all(owned_path(path) for path in paths)
+        trusted = root == default and absolute(visible) == default and owned
+    except (OSError, ValueError):
+        trusted = False
+    if trusted:
+        return
+    message = "Unsupported legacy location. Reinstall fresh."
+    directory = platform.log_dir()
+    platform.private_directory(directory)
+    fd, temporary = platform.private_temporary(directory, ".legacy-refusal-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"exit": "unsupported-legacy-location", "message": message,
+                       "program_root": str(root)}, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        platform.durable_replace(temporary, directory / "unsupported-legacy-location.json")
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    raise ValueError(message)
+
+
 @dataclass(frozen=True)
 class Version:
     root: Path
@@ -220,6 +292,7 @@ def update_required(mode: str, manifest: dict, old: Version, *, managed_by: str 
 
 
 def current(root: Path) -> Version | None:
+    legacy_location_admission(root)
     pointer = root / "current"
     if not pointer.exists():
         return None

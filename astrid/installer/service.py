@@ -26,6 +26,7 @@ from .core import (
     current,
     install_identity,
     install_release,
+    legacy_location_admission,
     linked,
     persist_install_identity,
     read_json,
@@ -54,6 +55,7 @@ def _launch_prelude_source() -> str:
         absolute,
         read_json,
         version_id,
+        legacy_location_admission,
         install_release,
         install_identity,
         Version,
@@ -177,6 +179,7 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
         return False  # Source checkouts are outside the managed launch contract.
     root = absolute(version.root.parent.parent)
     path = absolute(root / "update-transaction.json")
+    legacy_location_admission(root)
     try:
         selected = current(root)
         if selected is None or selected.document() != version.document():

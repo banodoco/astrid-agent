@@ -19,6 +19,7 @@ from .core import (
     VerificationError,
     absolute,
     current,
+    legacy_location_admission,
     pending_transaction,
     read_json,
     separate_roots,
@@ -93,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log, uv, process_control=process_control)
+        legacy_location_admission(root)
+        selected = backend.service.recorded()
+        if isinstance(selected.get("program_root"), str) and not selected.get("uninstalled"):
+            legacy_location_admission(absolute(selected["program_root"]))
         marker = read_json(root / "install.json")
         if args.update_job and marker.get("managed_by") is not None:
             raise ValueError("Click-created update jobs require a login-managed Astrid installation.")
@@ -227,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory belongs to another installer.")
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
+                legacy_location_admission(root)
                 pending_update = pending_transaction(root)
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":
