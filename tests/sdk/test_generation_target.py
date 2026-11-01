@@ -89,7 +89,9 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
     assert seen["comfy_url"] == client.target.url
     assert seen["generation_intent"]["modality"] == "image"
     assert seen["generation_intent"]["metadata"]["model"] == "z-image"
-    assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
+    # 8d96186db added the higher-priority Qwen candidate; each candidate
+    # resolves against a fresh target inventory before z-image is selected.
+    assert requests == [("GET", "/system_stats"), ("GET", "/object_info"), ("GET", "/object_info")]
     assert runtime.media.import_file.call_count == 3
     assert not imported[seen["python"]["digest"]].exists()
 
@@ -184,7 +186,9 @@ def test_attached_dry_run_resolves_and_approves_without_destination_or_admission
     plan = GenerationFacade().image(target=client.target.url, prompt="one boat", out=output, dry_run=True)
     assert plan["entry"]["approval"]["status"] == "approved"
     assert plan["target"]["endpoint"] == client.target.url
-    assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
+    # 8d96186db added the higher-priority Qwen candidate; each candidate
+    # resolves against a fresh target inventory before z-image is selected.
+    assert requests == [("GET", "/system_stats"), ("GET", "/object_info"), ("GET", "/object_info")]
     assert not output.exists()
 
 
