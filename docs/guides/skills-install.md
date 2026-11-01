@@ -51,6 +51,10 @@ skills from the view and leaves `developing-astrid` composed. The MCP server
 serves developer skills as prompts only when started with
 `python -m astrid.mcp_server --developer`.
 
+Hermes' `external-dir` mechanism registers the source packs directory itself,
+so every skill there is visible, developer skills included. Use the default
+`symlink` mechanism to keep them opt-in.
+
 ## SkillDescriptor contract
 
 Each pack that wants to be installable contributes one file:
