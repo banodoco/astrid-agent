@@ -107,27 +107,30 @@ def main(argv: list[str] | None = None) -> int:
 
             backend.managed_by = "pinokio"
             pending = read_json(root / "update-transaction.json")
-            # The session holds the lifetime installer lock. The shared update
-            # adapter serializes the journal separately and takes that lock
-            # only for pointer writes, then hands it to the journal-admitted foreground.
+            # A running session holds lifetime admission. A stopped operation
+            # retains its own custody across manifest preparation and activation.
             selection(root, backend, allow_transaction=bool(pending))
-            if pending and pending.get("step") not in TERMINAL_STEPS:
-                recover_app(root, backend)
+            from .custody import operation
+
+            if not pending or pending.get("step") in TERMINAL_STEPS:
+                preflight_pinokio_update(root, backend, absolute(marker["data_root"]))
+            with operation(root, backend):
+                if pending and pending.get("step") not in TERMINAL_STEPS:
+                    recover_app(root, backend)
+                    return 0
+                # Recovery-only invocations return above; fresh operations preflight
+                # once here before downloads or staging. C1 remains stop authority.
+                if not uv.is_absolute() or not uv.is_file():
+                    raise ValueError("Run the install line to provide the pinned user-local uv.")
+                manifest_path = args.manifest or root / "install-manifest.json"
+                if not args.manifest:
+                    download("https://astrid.haus/install-manifest.json", manifest_path)
+                manifest = validate_manifest(read_json(manifest_path))
+                if args.update_app:
+                    update_app(root, backend, manifest)
+                else:
+                    update_pinokio(root, backend, manifest, force=args.update)
                 return 0
-            # Recovery-only invocations return above; fresh operations preflight
-            # once here before downloads or staging. C1 remains stop authority.
-            preflight_pinokio_update(root, backend, absolute(marker["data_root"]))
-            if not uv.is_absolute() or not uv.is_file():
-                raise ValueError("Run the install line to provide the pinned user-local uv.")
-            manifest_path = args.manifest or root / "install-manifest.json"
-            if not args.manifest:
-                download("https://astrid.haus/install-manifest.json", manifest_path)
-            manifest = validate_manifest(read_json(manifest_path))
-            if args.update_app:
-                update_app(root, backend, manifest)
-            else:
-                update_pinokio(root, backend, manifest, force=args.update)
-            return 0
         lock_path = installer_lock_path(Path.home(), sys.platform)
         platform.private_directory(lock_path.parent)
         with lock_path.open("a+b") as lock:
