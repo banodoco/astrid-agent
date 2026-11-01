@@ -34,6 +34,10 @@ class PreparedRunPodGeneration:
     selection_path: str
     endpoint_checkout: Callable[..., Any]
     owner_tick: Callable[[Mapping[str, Any]], None]
+    # Opt-in H3 endpoint route: a retained, already attested local bridge.
+    # The selection still belongs to the same paid owner; no worker is moved.
+    h3_target: Any = None
+    h3_warm_lease_seconds: int | None = None
 
 
 class RunPodGenerationOwner(Protocol):
@@ -45,6 +49,15 @@ class RunPodGenerationOwner(Protocol):
     release dispatches runpod-release:<operation_id>; paid expiry cancels/fences
     the active task before release_prepared_worker(resume=True). Admission is
     never release proof: P1 quiescence + GET404 + list absence are required.
+
+    An owner advertising h3_endpoint_route=True supplies its retained ready pod
+    ComfyTargetClient from validation_target and returns that same endpoint in
+    PreparedRunPodGeneration.h3_target. prepare_h3 receives the exact CPU graph
+    receipt in inputs['_h3_endpoint']; it retains endpoint custody, without
+    activating a pod worker. All H3 executors remain local. Its existing
+    monitor/retain/release own the single paid/warm lease and bridge lifetime.
+    Endpoint preparation acknowledges h3_warm_lease_seconds=1800 on that same
+    owner; H3 itself creates no additional warm holder or release timer.
     """
     def validation_target(self) -> Any: ...
     def prepare(self, *, workflow: Any, inputs: Mapping[str, Any],
@@ -55,6 +68,78 @@ class RunPodGenerationOwner(Protocol):
     def describe(self) -> Mapping[str, Any]: ...
     def release(self, *, wait: bool) -> Any: ...
     def retain(self, task: Mapping[str, Any], monitor: Callable[..., None]) -> None: ...
+
+
+def freeze_h3_endpoint(client: Any) -> dict[str, Any]:
+    """Public identity of the owner's exact RunPod bridge, never credentials.
+
+    H3 endpoint owners opt in with ``h3_endpoint_route = True`` and retain this
+    transport through parent recovery and the existing warm lease. Cold or
+    unattested endpoints are refused before paid preparation.
+    """
+    import hashlib
+    import json
+    from .backends.comfy_target import ComfyTargetClient, validate_attached_url
+    from .engine_contracts import RunPodAttestation
+    from .engine_endpoint import endpoint_to_dict, parse_endpoint
+    from .engine_transport import EngineEndpointTransport
+
+    if not isinstance(client, ComfyTargetClient) or not isinstance(client.endpoint_transport, EngineEndpointTransport):
+        raise ValueError('H3 requires the retained owner\'s attested RunPod endpoint bridge')
+    endpoint = parse_endpoint(endpoint_to_dict(client.endpoint_transport.endpoint))
+    if (client.target.kind != 'pod' or client.target.url != endpoint.url
+            or endpoint.engine != 'vibecomfy-h3' or endpoint.platform != 'linux-x86_64-cu130'
+            or endpoint.state != 'ready' or not isinstance(endpoint.attestation, RunPodAttestation)):
+        raise ValueError('H3 requires the exact ready RunPod endpoint')
+    origin = validate_attached_url(client.endpoint_transport.retained_server_url)
+    encoded = json.dumps(endpoint_to_dict(endpoint), sort_keys=True, separators=(',', ':')).encode()
+    return {'schema': 'astrid.h3-endpoint.v1', 'comfy_url': origin,
+            'endpoint_sha256': 'sha256:' + hashlib.sha256(encoded).hexdigest(),
+            'pod_id': endpoint.attestation.pod_id,
+            'provider_account_ref': endpoint.attestation.provider_account_ref,
+            'owner_id': endpoint.lifecycle_owner.owner_id}
+
+
+def require_h3_graph_readiness(compilation: Mapping[str, Any], client: Any, destination: Any) -> dict[str, Any]:
+    """Validate the compiler's exact members/bindings using live target choices.
+
+    This observes advertised classes and filenames, not remote model bytes or
+    custom-node commits. It never asks for a local model root or installs one.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    from vibecomfy.security.provenance import Provenance
+    from vibecomfy.workflow_bundle import load_bundle
+    from astrid.packs.vibecomfy.local_server_engine import _live_preflight, _approve_live
+    from astrid.packs.vibecomfy.invocation_preflight import (
+        _assert_no_unresolved_placeholders, _assert_no_reachable_blank_media, _assert_reachable_prompt,
+    )
+    from .engine_recipe import load_recipe_model_lock, serialize_model_lock
+
+    members = compilation['workflow']
+    for name in ('workflow.py', 'workflow.vibe.json', 'source.json'):
+        if hashlib.sha256(Path(members[name]['path']).read_bytes()).hexdigest() != members[name]['sha256']:
+            raise ValueError('H3 compiled workflow bytes changed before target readiness')
+    bundle = load_bundle(Path(members['workflow.py']['path']), trust=Provenance.USER_CONFIRMED)
+    bindings = dict(compilation['workflow_inputs'])
+    origin = (client.endpoint_transport.retained_server_url if client.endpoint_transport is not None
+              else client.http_origin)
+    provider = _live_preflight(bundle, bindings, origin, Path(destination), client=client)
+    approval = _approve_live(bundle, bindings, provider)
+    api = approval.to_dict()['api_projection']
+    if not isinstance(api, Mapping) or not api:
+        raise ValueError('H3 concrete compiled graph is empty')
+    _assert_no_unresolved_placeholders(api)
+    _assert_no_reachable_blank_media(bundle.workflow, api)
+    _assert_reachable_prompt(bundle.workflow, api, expected_prompt=bindings.get('prompt'))
+    digest = lambda value: 'sha256:' + hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+    lock = serialize_model_lock(load_recipe_model_lock('vibecomfy-h3', 'linux-x86_64-cu130'))
+    return {'api_sha256': digest(api), 'object_info_sha256': digest(provider.object_info()),
+            'workflow_inputs_sha256': digest(bindings),
+            'model_lock_sha256': 'sha256:' + hashlib.sha256(lock.encode()).hexdigest(),
+            'members': {name: members[name]['sha256'] for name in members}}
 
 
 def runpod_generation_owner(client: Any) -> RunPodGenerationOwner:

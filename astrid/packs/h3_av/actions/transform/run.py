@@ -1655,6 +1655,18 @@ def _execute_verified_pass(
         root / "02-compile",
         materialized_paths=materialized_workflow,
     )
+    endpoint = (managed_client.plan.get("controls", {}).get("h3_endpoint")
+                if managed_client is not None else None)
+    if endpoint is not None:
+        expected = endpoint["preflight"]["graph"]
+        # The CPU parent has no engine network authority. Bind the admission
+        # readiness to the SHA-verified staged graph and exact bindings here;
+        # the local run executor repeats live readiness before any prompt.
+        if ({name: row["sha256"] for name, row in compilation["workflow"].items()} != expected["members"]
+                or _stable_digest(compilation["workflow_inputs"]) != expected["workflow_inputs_sha256"]):
+            raise AstridError("H3 endpoint graph differs from pre-acquisition compilation")
+        provenance["endpoint"] = {**endpoint["target"], "admission_readiness": expected}
+        provenance_path = _write_provenance_preparation(root, preparation, provenance)
     # Canonical workflow Python is executable input.  Carry the explicit
     # consent scalar required by VibeComfy's audited validation gate;
     # execution-request targeting is not itself Python consent.
@@ -1664,11 +1676,11 @@ def _execute_verified_pass(
         inputs={
             **bundle_inputs,
             "python_execution_consent": "confirmed",
-            "workflow_inputs": json.dumps(
+            **({} if endpoint is not None else {"workflow_inputs": json.dumps(
                 compilation["workflow_inputs"],
                 sort_keys=True,
                 separators=(",", ":"),
-            ),
+            )}),
         },
         out=root / "03-validate",
         project=args.project,
@@ -1690,6 +1702,11 @@ def _execute_verified_pass(
     if local_engine is not None:
         run_inputs["comfy_url"] = local_engine.endpoint.url
         run_inputs["comfy_output_dir"] = local_engine.comfy_output_dir
+    if endpoint is not None:
+        # The offline validator retains its structural/security gate. Concrete
+        # model checks above and the run adapter's fresh pre-prompt check use
+        # the selected endpoint's choices, without a local weight-root demand.
+        run_inputs["comfy_url"] = endpoint["target"]["comfy_url"]
     saved_run_path = root / "04-run" / "run-result.json"
     child_execution_request = _execution_request_for_child(execution_request)
     run_client = client
@@ -2536,7 +2553,7 @@ def _parent_digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def _compile_plan(request, bundle: Path, destination: Path) -> dict[str, Any]:
+def _compile_plan(request, bundle: Path, destination: Path, *, endpoint_client=None) -> dict[str, Any]:
     # Reuse the installed H3 implementation, including all branch/eligibility
     # decisions. This is CPU preparation, never a provider/worker admission.
     from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
@@ -2549,7 +2566,42 @@ def _compile_plan(request, bundle: Path, destination: Path) -> dict[str, Any]:
     preparation["input_bundle_sha256"] = bundle_digest(bundle)
     preparation = resolve_preparation_assets(preparation, bundle, destination / "compile-assets")
     compilation = compile_preparation(preparation, out_dir=destination / "compile")
-    return _sealed_plan(compilation)
+    sealed = _sealed_plan(compilation)
+    if endpoint_client is not None:
+        from astrid.core.generation.preflight import require_h3_graph_readiness
+        sealed = {**sealed, "graph": require_h3_graph_readiness(compilation, endpoint_client, destination),
+                  "request_digest": request.digest, "input_bundle_sha256": bundle_digest(bundle)}
+        if "source_video" in compilation["workflow_inputs"]:
+            from astrid.packs.vibecomfy.invocation_preflight import measure_h3_source_av
+            source_id = _authoritative_source_asset_id(request)
+            if source_id is None:
+                raise AstridError("H3 endpoint source video has no authoritative bundle identity")
+            sealed["h3_source_av"] = measure_h3_source_av(paths[source_id]).to_dict()
+    return sealed
+
+
+def preflight_endpoint(inputs: Mapping[str, Any], endpoint_client) -> dict[str, Any]:
+    """Compose or refuse locally before the endpoint owner may acquire/retain.
+
+    The endpoint route currently supports one sampling pass. Worker placement,
+    qualification and caller endpoint overrides cannot enter this local route.
+    """
+    import tempfile
+    from astrid.packs.h3_av.shared.spec import canonical_spec
+
+    if "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE" in environ:
+        raise AstridError("H3 RunPod endpoint route cannot use the T9 substitute")
+    if set(inputs) - {"request", "asset_map", "editorial_approved"}:
+        raise AstridError("unsupported H3 endpoint controls; all executors must stay local")
+    if type(inputs.get("editorial_approved", False)) is not bool:
+        raise AstridError("H3 editorial approval must be an explicit boolean")
+    request = normalize_request(load_request_document(inputs["request"]))
+    if len(canonical_spec(request).sampling_passes()) != 1:
+        raise AstridError("H3 endpoint route requires exactly one sampling pass")
+    with tempfile.TemporaryDirectory(prefix="astrid-h3-endpoint-") as temporary:
+        root = Path(temporary)
+        bundle = build_input_bundle(request, _json_mapping(Path(inputs["asset_map"])), root / "inputs.zip")
+        return _compile_plan(request, bundle, root / "plan", endpoint_client=endpoint_client)
 
 
 def _sealed_plan(compilation: Mapping[str, Any]) -> dict[str, Any]:
@@ -2625,7 +2677,7 @@ def public_controls(inputs: Mapping[str, Any]) -> dict[str, Any]:
             "require_worker_qualification": bool(inputs.get("require_worker_qualification", False))}
 
 
-def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry):
+def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry, h3_endpoint=None):
     """Freeze and import exact request/bundle/source bytes before one admission."""
     import tempfile
     from astrid.core.foundation.hash import executor_definition_digest
@@ -2642,6 +2694,10 @@ def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry)
     if not isinstance(project, str) or not project:
         raise AstridError("H3 Runtime project has no canonical identity")
     controls = public_controls(inputs)
+    if h3_endpoint is not None:
+        if controls["run_execution_request"] is not None or inputs.get("prepared_worker") is not None:
+            raise AstridError("H3 endpoint executors require the default local target")
+        controls["h3_endpoint"] = json.loads(json.dumps(h3_endpoint))
     if set(inputs) - ({"request", "asset_map", "project", "editorial_approved"} | PUBLIC_CONTROLS):
         raise AstridError("unsupported tracked H3 parent controls or caller-supplied roots")
     if type(inputs.get("editorial_approved", False)) is not bool:
@@ -2659,6 +2715,13 @@ def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry)
         bundle = build_input_bundle(request, asset_map, root / "h3-inputs.zip")
         paths, _ = materialize_input_bundle(request, bundle, root / "validated-assets")
         sealed = _compile_plan(request, bundle, root / "plan")
+        if h3_endpoint is not None:
+            from astrid.packs.h3_av.shared.input_bundle import bundle_digest
+            expected = h3_endpoint["preflight"]
+            if (sealed != {key: expected[key] for key in sealed}
+                    or request.digest != expected["request_digest"]
+                    or bundle_digest(bundle) != expected["input_bundle_sha256"]):
+                raise AstridError("H3 endpoint inputs changed after pre-acquisition compilation")
         roots = {
             "request": _import(client, project, _bytes(document), "request.json"),
             "input_bundle": _import(client, project, bundle.read_bytes(), "h3-inputs.zip"),
@@ -2748,6 +2811,11 @@ class ManagedParentClient:
         if stage is None:
             raise AstridError("H3 parent attempted an undeclared stage")
         values = dict(inputs)
+        endpoint = self.plan.get("controls", {}).get("h3_endpoint")
+        if endpoint is not None and stage == "run":
+            if (values.get("comfy_url") != endpoint["target"]["comfy_url"]
+                    or values.get("comfy_output_dir") or kwargs.get("execution_request")):
+                raise AstridError("H3 run endpoint differs from the admitted local endpoint")
         intent = values.pop("generation_intent", None)
         if intent is not None:
             values["generation_intent"] = intent

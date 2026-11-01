@@ -94,6 +94,14 @@ class EngineEndpointTransport:
     def endpoint(self):
         return self._endpoint
 
+    @property
+    def retained_server_url(self):
+        """Observe the owner's existing bridge without starting or rebinding it."""
+        with self._lock:
+            if self._server is None:
+                raise TransportError("retained endpoint bridge is not running")
+            return f"http://127.0.0.1:{self._server.server_port}"
+
     def _client(self, timeout):
         """One HTTPS client for one actual claimed-agent request.
 

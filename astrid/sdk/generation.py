@@ -167,7 +167,7 @@ def _runpod_paid_controls(controls):
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
-def _bind_runpod_preparation(prepared, *, client, owner, recovery_path, capability_id):
+def _bind_runpod_preparation(prepared, *, client, owner, recovery_path, capability_id, h3_endpoint=None):
     from astrid.core.generation.preflight import generation_error
     from .invocation import retain_prepared_owner
     if not prepared.selection_path or not callable(prepared.endpoint_checkout):
@@ -177,10 +177,23 @@ def _bind_runpod_preparation(prepared, *, client, owner, recovery_path, capabili
     if request.get('target', {}).get('kind') != 'runpod' or request.get('remote_activation_required') is not True:
         raise generation_error(ValueError('RunPod preparation omitted its exact activation request'),
                                code='input_rejected')
+    if h3_endpoint is not None:
+        from astrid.core.generation.preflight import freeze_h3_endpoint
+        selected = h3_endpoint['target']
+        if prepared.h3_warm_lease_seconds != 1800:
+            raise generation_error(ValueError('H3 endpoint owner must retain one 1800 second warm lease'),
+                                   code='input_rejected')
+        if (freeze_h3_endpoint(prepared.h3_target) != selected
+                or any(request['target'].get(key) != selected[key]
+                       for key in ('pod_id', 'provider_account_ref'))):
+            raise generation_error(ValueError('H3 prepared endpoint substituted the selected endpoint'),
+                                   code='input_rejected')
     retain_prepared_owner(client, recovery_path=recovery_path, capability_id=capability_id,
                           monitor=prepared.owner_tick, owner=owner,
                           endpoint_checkout=prepared.endpoint_checkout,
-                          execution_request=request if capability_id == 'vibecomfy.run' else None)
+                          execution_request=request if capability_id == 'vibecomfy.run' else None,
+                          h3_target=prepared.h3_target if h3_endpoint is not None else None,
+                          h3_endpoint=h3_endpoint)
     return request
 
 
@@ -1485,22 +1498,53 @@ class GenerationFacade:
                 raise CapabilityValidationError("H3 requires request and asset_map")
             if target == 'runpod':
                 from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
-                paid = _runpod_paid_controls(controls)
                 if client is None:
                     raise CapabilityPreconditionError('RunPod H3 requires a retained host owner client')
                 owner = runpod_generation_owner(client)
+                endpoint_route = getattr(owner, 'h3_endpoint_route', False) is True
+                if resume and endpoint_route:
+                    from .invocation import _prepared_owner_for
+                    retained = _prepared_owner_for(client, recovery_path, 'h3_av.transform')
+                    if retained is None or retained.owner is not owner or retained.h3_endpoint is None:
+                        raise CapabilityPreconditionError('H3 endpoint recovery requires its original retained owner')
+                    retained.verify_h3_endpoint()
+                    return client.invoke_result('h3_av.transform', kind='action', inputs=inputs,
+                        project=project, out=out, project_root=project_root, extra_pack_roots=extra_pack_roots,
+                        banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
+                        dry_run=dry_run, wait=wait, read_managed_outputs=True,
+                        recovery_path=recovery_path, resume=True)
+                paid = _runpod_paid_controls(controls)
                 preview = call_runpod_owner(owner.validate_h3, inputs=inputs)
+                handoff = None
+                preparation_inputs = inputs
+                if endpoint_route:
+                    from astrid.core.generation.preflight import select_generation_target, freeze_h3_endpoint
+                    from astrid.packs.h3_av.actions.transform.run import preflight_endpoint
+                    selected_client = select_generation_target('runpod', runpod_owner=owner, entry_id='h3')
+                    from astrid.core.generation.preflight import generation_error
+                    try:
+                        selected = freeze_h3_endpoint(selected_client)
+                        graph = preflight_endpoint(inputs, selected_client)
+                    except (ValueError, RuntimeError, OSError) as exc:
+                        raise generation_error(exc) from exc
+                    if freeze_h3_endpoint(selected_client) != selected:
+                        raise CapabilityPreconditionError('H3 endpoint changed during graph preflight')
+                    handoff = {'target': selected, 'preflight': graph, 'warm_lease_seconds': 1800}
+                    import copy
+                    preparation_inputs = {**inputs, '_h3_endpoint': copy.deepcopy(handoff)}
+                    preview = {**preview, 'h3_endpoint': handoff}
                 if dry_run:
                     return preview
                 if resume:
                     raise CapabilityValidationError('follow the existing RunPod task through the retained host; do not prepare again')
-                prepared = call_runpod_owner(owner.prepare_h3, inputs=inputs, **paid)
+                prepared = call_runpod_owner(owner.prepare_h3, inputs=preparation_inputs, **paid)
                 if recovery_path is None:
                     import uuid
                     recovery_path = prepared.selection.journal_dir / ('h3-parent-' + uuid.uuid4().hex + '.json')
                 _bind_runpod_preparation(prepared, client=client, owner=owner,
-                    recovery_path=recovery_path, capability_id='h3_av.transform')
-                inputs['prepared_worker'] = str(prepared.selection_path)
+                    recovery_path=recovery_path, capability_id='h3_av.transform', h3_endpoint=handoff)
+                if handoff is None:
+                    inputs['prepared_worker'] = str(prepared.selection_path)
             controls = dict(kind="action", inputs=inputs, project=project, out=out,
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
                 banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
