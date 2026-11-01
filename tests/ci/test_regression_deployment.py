@@ -104,6 +104,22 @@ class DeploymentAdapterTests(unittest.TestCase):
         self.assertEqual(deployment.normalise_producers(deployment.load_handoff(handoff), self.broker),
                          [{'id': 'h-1', 'state': 'skipped'}])
 
+    def test_worker_death_and_cancellation_still_invoke_finalizer(self):
+        cases = [
+            ('dead', {'ok': False, 'exit_codes': [], 'started': None, 'pod_id': None}, 'worker-death'),
+            ('cancelled', {'ok': False, 'exit_codes': [-1]}, 'cancelled'),
+        ]
+        for identifier, result, state in cases:
+            with self.subTest(state=state):
+                self.set_broker(identifier, 'failed', result)
+                handoff = self.handoff([{'id': identifier, 'kind': 'broker', 'state': state}])
+                status = self.p / (identifier + '-status.json')
+                with mock.patch.object(deployment.finalizer, 'main', return_value=1) as invoked:
+                    self.assertEqual(deployment.main(['--handoff', str(handoff), '--status', str(status)]), 1)
+                arguments = invoked.call_args.args[0]
+                completed = Path(arguments[arguments.index('--completed-producers') + 1])
+                self.assertEqual(json.loads(completed.read_text()), [{'id': identifier, 'state': state}])
+
     def test_tampered_or_wrong_tuple_handoff_is_rejected_before_finalization(self):
         handoff = self.handoff()
         self.write('tuple.json', self.tuple | {'name': 'tampered'})
