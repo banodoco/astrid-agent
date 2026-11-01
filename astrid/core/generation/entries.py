@@ -272,10 +272,15 @@ def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list
             continue
         aliases = sorted(set((public, *getattr(spec, 'aliases', ()))) - {name})
         kind = _input_type(spec.type)
-        # An IMAGE-typed LoadImage input with image semantics is a filename
-        # reference at this boundary; the media is staged separately below.
+        node = workflow.nodes.get(str(spec.node_id))
+        # Explicit media semantics declare a string reference that is staged
+        # separately. Bare LoadImage.image widgets expose an upload filename.
+        # Other IMAGE sockets retain their declared type and fail closed.
         if kind == 'image' and spec.media_semantics == 'image':
             kind = 'string'
+        elif (kind == 'image' and getattr(node, 'class_type', None) == 'LoadImage'
+                and spec.field == 'image'):
+            kind = 'file'
         if kind == 'unknown':
             # InputSpec defaults and the bound widget are declared workflow
             # values, so their primitive shape is an authoritative fallback.
