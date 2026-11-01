@@ -20,7 +20,7 @@ from astrid.core._shared.result_manifest import build_manifest, write_manifest
 from astrid.core.execution import generic_host
 from astrid.core.execution.generic_host import RuntimeProtocolClient
 from astrid_runtime_client.generated import ApiError
-from runtime_protocol.errors import ConflictError
+from runtime_protocol.errors import ConflictError, LeaseError
 from runtime_protocol.service import RuntimeService
 from runtime_protocol.store import RealmStore
 from tests.test_generic_host_result_json import host_case  # noqa: F401
@@ -39,6 +39,8 @@ def settlement_case(host_case, tmp_path, monkeypatch):
     case.writes, case.failures, case.beats, case.cancels, case.executions = [], [], [], [], []
     case.release = threading.Event()
     case.renewed = threading.Event()
+    case.heartbeat_inflight, case.committed, case.heartbeat_rejected = (
+        threading.Event(), threading.Event(), threading.Event())
     case.mode = "conflict"
     case.hidden = False
     project = service.create_project({"slug": "bug14", "name": "BUG14"})
@@ -79,8 +81,17 @@ def settlement_case(host_case, tmp_path, monkeypatch):
             return {**task, "version": int(task["attempt"]) + 1}
 
         def heartbeat_attempt(self, attempt_id, *, idempotency_key, **body):
-            with service.store._mutex:
-                response = service.heartbeat_attempt(attempt_id, body, idempotency_key=idempotency_key)
+            if case.mode == "racing_ack" and case.executions and not case.committed.is_set():
+                case.heartbeat_inflight.set()
+                assert case.committed.wait(2)
+                # This heartbeat began while the task was running; Runtime
+                # has now atomically completed that same attempt.
+            try:
+                with service.store._mutex:
+                    response = service.heartbeat_attempt(attempt_id, body, idempotency_key=idempotency_key)
+            except LeaseError as exc:
+                case.heartbeat_rejected.set()
+                raise ApiError(409, "lease_lost", str(exc)) from exc
             case.beats.append(time.monotonic())
             case.renewed.set()
             return response.get("data", response)
@@ -93,12 +104,20 @@ def settlement_case(host_case, tmp_path, monkeypatch):
                 # Ensure the observer is still renewing during settlement.
                 case.renewed.clear()
                 assert case.renewed.wait(2)
+            if case.mode == "racing_ack":
+                assert case.heartbeat_inflight.wait(2)
             try:
                 with service.store._mutex:
                     response = service.settle_attempt(attempt_id, body, idempotency_key=idempotency_key)
             except ConflictError as exc:
                 raise ApiError(409, "conflict", str(exc)) from exc
-            if case.mode in {"lost_ack", "hidden_ack"} and len(case.writes) <= 2:
+            case.committed.set()
+            if case.mode == "racing_ack":
+                assert case.heartbeat_rejected.wait(2)
+                # Let the observer handle the in-flight rejection before the
+                # settlement transport reports its lost ACK to the caller.
+                time.sleep(0.1)
+            if case.mode in {"lost_ack", "hidden_ack", "racing_ack"} and len(case.writes) <= 2:
                 raise OSError("ACK unavailable")
             return response
 
@@ -212,6 +231,16 @@ def test_lost_ack_reads_success_without_duplicate_submission(settlement_case):
     case.mode = "lost_ack"
     _run(case)
     _assert_resolved(case, "completed")
+    assert len(case.writes) == 1 and not case.failures and not case.cancels
+    assert len(case.service.managed_outputs(case.task_id)) == 2
+
+
+def test_inflight_heartbeat_rejection_cannot_abort_committed_lost_ack(settlement_case):
+    case = settlement_case
+    case.mode = "racing_ack"
+    _run(case)
+    _assert_resolved(case, "completed")
+    assert case.heartbeat_rejected.is_set()
     assert len(case.writes) == 1 and not case.failures and not case.cancels
     assert len(case.service.managed_outputs(case.task_id)) == 2
 

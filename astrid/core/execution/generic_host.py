@@ -10804,6 +10804,12 @@ class GenericPackHost:
                 except BaseException as exc:
                     if lease_transport_fault("heartbeat_exception", exc, current):
                         continue
+                    if terminal.get("publication_pending"):
+                        # Settlement may have committed between the task read
+                        # and heartbeat. Its owner must resolve the stale ACK;
+                        # a lifecycle abort would race successful readback.
+                        terminal["reconcile_cancel"] = True
+                        return
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
 
