@@ -4,8 +4,9 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from astrid.core.execution.executor.folder import load_folder_executors
+from astrid.core.execution.executor.actions import action_executor_definition
 from astrid.core.execution.generic_host import CapabilityRecord, GenericPackHost, HostError
+from astrid.core.pack.loader import load_pack_manifest
 
 
 def _command(tmp_path, form):
@@ -41,7 +42,8 @@ def _command(tmp_path, form):
             "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", *args]}},
         }},
     }))
-    (definition,) = load_folder_executors(root)
+    pack = load_pack_manifest(root / "pack.yaml")
+    definition = action_executor_definition(pack, "run", pack.actions["run"])
     record = CapabilityRecord(definition, "fixture", "fixture", root)
     # Marker values prove private environment stripping; these are no account credentials.
     client = SimpleNamespace(endpoint="http://unused.invalid", credential="fixture-worker-marker")
