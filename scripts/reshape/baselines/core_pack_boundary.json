@@ -1,0 +1,5603 @@
+{
+  "schema": 1,
+  "findings": [
+    {
+      "file": "astrid/core/_shared/result_manifest.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/action_cli.py",
+      "kind": "capability_id",
+      "value": "h3_av.transform",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/action_cli.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/action_cli.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/action_cli.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/audit/context.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/auth.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/backup/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_documents.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/cli/domain_documents.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_media.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/cli/domain_media.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/cli/domain_media.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 17
+    },
+    {
+      "file": "astrid/core/cli/domain_media.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/cli/domain_output.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_product.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.references.cli",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_product.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.shots.cli",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_product.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.timeline.cli",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_product.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/cli/domain_product.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/cli/domain_product.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_runs.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_runs.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/cli/domain_runs.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/cli/domain_tasks.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/cli/domain_tasks.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_tasks.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/cli/domain_tasks.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/compute_profile.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/contracts/artifact_types.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/artifact_types.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/artifact_types.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/contracts/die.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/event_log_error.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/identifiers.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/contracts/managed_generation_result.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 13
+    },
+    {
+      "file": "astrid/core/contracts/managed_generation_result.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/project_theme.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/run_status.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/run_status.py",
+      "kind": "pack_name_literal",
+      "value": "training",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/runtime_orchestration.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/contracts/runtime_orchestration.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/contracts/runtime_orchestration.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/contracts/scoped_config.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/scoped_config.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/contracts/vocabulary.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/contracts/vocabulary_errors.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/dev/cross_client.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/dev/journey.py",
+      "kind": "capability_id",
+      "value": "generation.generate_image",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/dev/journey.py",
+      "kind": "capability_id",
+      "value": "pixel.sprites",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/dev/journey.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/dev/journey.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/dev/journey.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/dev/journey.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/dev/journey.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/dev/reference_realm.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/dev/reference_realm.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/element/cli.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/element/metadata.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/element/project_packs.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/element/project_packs.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/element/project_packs.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/element/project_packs.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/element/project_packs.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/element/registry.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/element/registry.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/element/schema.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/engine_cli.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/engine_cli.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/engine_cli.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/env_vars.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/env_vars.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/env_vars.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/env_vars.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/events/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/_child_bridge.py",
+      "kind": "capability_id",
+      "value": "generation.generate_image_openai",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/_child_bridge.py",
+      "kind": "capability_id",
+      "value": "h3_av.transform",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/_child_bridge.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/execution/_child_bridge.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/_child_bridge.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/_child_bridge.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/_child_bridge.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/_child_import_receipt.py",
+      "kind": "capability_id",
+      "value": "h3_av.transform",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/_child_import_receipt.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.h3_av.actions.transform.run",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/_child_import_receipt.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.vibecomfy.actions.validate.run",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/_child_import_receipt.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/_child_import_receipt.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "capability_id",
+      "value": "iteration.collect_runtime_provenance",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "pack_name_literal",
+      "value": "discord_local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 10
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "pack_name_literal",
+      "value": "seedance_local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "pack_name_literal",
+      "value": "training",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "pack_name_literal",
+      "value": "typed_timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "repo_pack_path",
+      "value": "historical: astrid/packs/iteration/pack.yaml",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "repo_pack_path",
+      "value": "historical: astrid/packs/training/pack.yaml",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/capability_ledger.py",
+      "kind": "repo_pack_path",
+      "value": "historical: astrid/packs/typed_timeline/pack.yaml",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/custody_broker.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 27
+    },
+    {
+      "file": "astrid/core/execution/custody_broker.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 42
+    },
+    {
+      "file": "astrid/core/execution/custody_broker.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/execution/executor/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/executor/actions.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/execution/executor/registry.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/executor/runner.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/executor/runner.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/executor/runner.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/executor/schema.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "capability_id",
+      "value": "generation.generate_image_openai",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "capability_id",
+      "value": "h3_av.transform",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "capability_id",
+      "value": "iteration.experiment_review_session",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "capability_id",
+      "value": "wan2gp.generate_video",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.endpoint_checkout",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.production_engine",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.shared.bundle_inputs",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.wan2gp.src.driver",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "comfy_wrap",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "discord_local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 74
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 18
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 60
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 28
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 17
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "seedance_local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "training",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 30
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "video_editing",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/generic_host.py",
+      "kind": "pack_name_literal",
+      "value": "wan2gp",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/execution/generic_host_worker.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/guards.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/guards.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/managed_inputs.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/managed_inputs.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/managed_inputs.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/managed_tool_session.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/execution/managed_tool_session.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/network_policy.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/execution/network_policy.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/orchestrator/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/orchestrator/registry.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/orchestrator/runner.py",
+      "kind": "capability_id",
+      "value": "h3_av.transform",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/orchestrator/runner.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/orchestrator/runner.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/persistent_supervisor.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/process_group.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/provider_route_resolvers.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/reconciler.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/execution/remote_activation_owner.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/execution/remote_activation_owner.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/remotion_frame_owner.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/execution/remotion_host_session.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/target_adapter.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/execution/target_adapter.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/execution/target_adapter.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/thumbnail_backfill.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 18
+    },
+    {
+      "file": "astrid/core/execution/thumbnail_backfill.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/execution/thumbnail_backfill.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/execution/thumbnails.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/execution/thumbnails.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/execution/vibecomfy_engine_adapter.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 11
+    },
+    {
+      "file": "astrid/core/execution/vibecomfy_engine_adapter.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/execution/vibecomfy_engine_adapter.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/execution/worker_qualification.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/experiments/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/experiments/capture.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/experiments/capture.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/experiments/capture.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/experiments/media.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/experiments/normalize.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/experiments/normalize.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/experiments/normalize.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/experiments/normalize.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/experiments/normalize.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/experiments/normalize.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/experiments/schema.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/experiments/state.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/experiments/state.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/extensions/model.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/extensions/registry.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/extensions/scopes.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/extensions/sidecar.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/foundation/hash.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/__init__.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.h3_av.cli",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/dev_operator.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/diagnostics.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 10
+    },
+    {
+      "file": "astrid/core/gateway/diagnostics.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/dispatch.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.shots.conformance",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/dispatch.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.timeline.cli",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/dispatch.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/gateway/dispatch.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/gateway/dispatch.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/doctor_bundle.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/doctor_bundle.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/help.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/help.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/gateway/help.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/help.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/gateway/help.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/_engine_python_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/generation/_engine_release_entry.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/_engine_release_entry.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/_engine_release_entry.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/availability.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 11
+    },
+    {
+      "file": "astrid/core/generation/availability.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/backends/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/base.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/base.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/generation/backends/base.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/backends/base.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/base.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/base.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/codex.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/codex.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/comfy_target.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/backends/comfy_target.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/fal.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 20
+    },
+    {
+      "file": "astrid/core/generation/backends/fal.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/fal.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/generation/backends/fal.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/fal.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/openai.py",
+      "kind": "capability_id",
+      "value": "generation.generate_image_openai",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/openai.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/generation/backends/registry.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/registry.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 15
+    },
+    {
+      "file": "astrid/core/generation/backends/registry.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/generation/backends/registry.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/generation/backends/registry.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.production_engine",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy_local_server.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy_local_server.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy_workflow.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.production_engine",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/vibecomfy_workflow.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/backends/wavespeed.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/wavespeed.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/backends/wavespeed.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/backends/workflow.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.production_engine",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/cli.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/generation/cli.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/cli.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/cli.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "wan2gp",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/runpod/models.lock.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/runpod/pins.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/runpod/recipe.linux-cu130.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/vibecomfy/models.lock.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/vibecomfy/pins.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/vibecomfy/recipe.windows-cu130.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/wan2gp/models.lock.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/wan2gp/pins.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_bootstrap.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/wan2gp/recipe.windows-cu128.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_contracts.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_contracts.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/generation/engine_contracts.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/generation/engine_custody.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_custody.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_endpoint.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_endpoint.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/generation/engine_endpoint.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 11
+    },
+    {
+      "file": "astrid/core/generation/engine_execution.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_execution.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_install_task.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_install_task.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/engine_local_endpoint.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 14
+    },
+    {
+      "file": "astrid/core/generation/engine_local_endpoint.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_platforms.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_readiness.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.installed_session",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_readiness.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.worker_session",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_readiness.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_readiness.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/generation/engine_readiness.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/generation/engine_recipe.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_release.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/generation/engine_release.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_release.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_release.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/runpod/recipe.linux-cu130.json",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/engine_runner.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/generation/engine_runner.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/generation/engine_runner.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/engine_startup.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/generation/engine_startup.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/engine_transport.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/generation/engine_transport.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/entries.py",
+      "kind": "capability_id",
+      "value": "h3_av.transform",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/entries.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.production_engine",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/entries.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/generation/entries.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/entries.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/generation/entries.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/entries.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/features.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/generation/gpu_environment.py",
+      "kind": "capability_id",
+      "value": "wan2gp.generate_video",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/gpu_environment.py",
+      "kind": "pack_name_literal",
+      "value": "comfy_wrap",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/gpu_environment.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/gpu_environment.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 20
+    },
+    {
+      "file": "astrid/core/generation/gpu_environment.py",
+      "kind": "pack_name_literal",
+      "value": "wan2gp",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/generation/interfaces.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/listing.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.direct_image.compiler",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/listing.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/listing.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.production_engine",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/listing.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/listing.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/generation/listing.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/generation/model_downloader.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/generation/model_root.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/generation/preflight.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.prepared_task",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/preflight.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/generation/preflight.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/generation/preflight.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/preflight.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/generation/producer_result.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/generation/producer_result.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/producer_result.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/producer_result.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/generation/storage_policy.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/target_launch.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/generation/targets.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/generation/targets.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/generation/targets.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/generation/verbs.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/generation/vibecomfy_dependency.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/ids.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/integrations/runpod/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/integrations/runpod/storage.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/io/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/media.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/modalities/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/modalities/audio_waveform.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/modalities/audio_waveform.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/modalities/generic_card.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/modalities/image_grid.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/modalities/image_grid.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/model_catalog/registry.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/model_catalog/registry.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/model_catalog/schema.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/model_catalog/schema.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/model_catalog/taxonomy.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 10
+    },
+    {
+      "file": "astrid/core/model_catalog/taxonomy.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/model_catalog/taxonomy.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/model_setup/manifest.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/model_setup/preflight.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/agent_index.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/pack/canonical.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/pack/canonical.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/pack/cli_basic.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/pack/cli_inspect.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/cli_parser.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/definition.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/discovery.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/pack/entrypoint.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/entrypoint.py",
+      "kind": "pack_name_literal",
+      "value": "video_editing",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/loader.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/permissions.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/pack/permissions.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/pack/permissions.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/pack/registry.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/pack/registry.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/pack/source_setup.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/pack/validate.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/pack/validate.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/pack/validate.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "astrid_motion",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "blender",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "chiptune",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "comfy_wrap",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "developer",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "discord_local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "foley",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "iteration",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "moirae",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "seedance_local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "stream_content",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "training",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "typed_timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "understanding",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "video_editing",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "wan2gp",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_first_party.py",
+      "kind": "pack_name_literal",
+      "value": "youtube",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/pack/validate_layout.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/pack/walkers.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/project/guidance.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/project/ownership.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/release_identity.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/release_identity.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/release_identity.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/remote_targets.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 10
+    },
+    {
+      "file": "astrid/core/rendering/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/_effect_registry.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.rendering.renderers.remotion",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/_effect_registry.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/rendering/_effect_registry.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/rendering/_effect_registry.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 10
+    },
+    {
+      "file": "astrid/core/rendering/_local_schema.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/rendering/_local_schema.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/_local_schema.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 15
+    },
+    {
+      "file": "astrid/core/rendering/_registry_origin.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/rendering/_remotion_package.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/artifacts.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/assets.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/rendering/assets.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/rendering/cli.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/cli.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/rendering/cli.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/contracts.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/contracts.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/contracts.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/delivery_audio.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/errors.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/failure_message.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/fixtures/renderer_parity/remotion_backend_wrapper.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/fixtures/renderer_parity/remotion_backend_wrapper.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/node_pin.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/rendering/output_policy.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/output_policy.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/output_policy.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/rendering/profile.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/profile.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/profile.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/provenance.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/publication.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/registry.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/registry.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/rendering/registry.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.rendering.renderers.remotion",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.rendering.renderers.remotion.lock",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.rendering.renderers.remotion.root_preparation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.rendering.renderers.remotion.run",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/rendering/remotion_runtime.py",
+      "kind": "repo_pack_path",
+      "value": "astrid/packs/local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/replay.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/replay.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/replay.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/scaffold.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/scaffold.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 6
+    },
+    {
+      "file": "astrid/core/rendering/scaffold.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/scene_answers.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/scene_answers.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/scene_answers.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/service.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/rendering/service.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/rendering/service.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/rendering/service.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 14
+    },
+    {
+      "file": "astrid/core/rendering/storage.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/storage.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/rendering/storage.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/rendering/transport.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/verified_source.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/rendering/verified_source.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 9
+    },
+    {
+      "file": "astrid/core/rendering/window_inputs.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/runtime/log_capture.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/storyboard/loader.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/storyboard/loader.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/structure.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/structure.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.rendering.",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/structure.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/structure.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/structure.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/theme/_schema.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/timeline/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/arrangement_rules.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/astrid_ns.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/audio_curves.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/authoring_bundle.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/authoring_bundle.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 22
+    },
+    {
+      "file": "astrid/core/timeline/authoring_bundle.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/authoring_bundle.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 13
+    },
+    {
+      "file": "astrid/core/timeline/authoring_diff_format.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 10
+    },
+    {
+      "file": "astrid/core/timeline/authoring_diff_format.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/timeline/authoring_feedback.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 8
+    },
+    {
+      "file": "astrid/core/timeline/authoring_feedback.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/authoring_feedback_residual.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/authoring_revision_diff.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/banodoco_composer.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/banodoco_composer.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/banodoco_composer.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/banodoco_schema.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/timeline/banodoco_schema.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/banodoco_schema.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/banodoco_schema.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/banodoco_schema.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/timeline/clip_fields.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/clip_fields.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/clip_fields.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/clip_names.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/cuts.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/cuts.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/cuts.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/cuts.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/cuts.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 7
+    },
+    {
+      "file": "astrid/core/timeline/duration.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/payloads/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/payloads/_base.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/payloads/asset_registry.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/payloads/config.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/payloads/recovery.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/serialize.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/types.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 26
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/ulid.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/events/schema/ulid.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/expand_shots.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/timeline/expand_shots.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 11
+    },
+    {
+      "file": "astrid/core/timeline/inverses.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 18
+    },
+    {
+      "file": "astrid/core/timeline/kinds.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/model.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/moments.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/moments.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/music_edit.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 12
+    },
+    {
+      "file": "astrid/core/timeline/music_edit.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/onscreen.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/onscreen.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/parent_registry.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/projection.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/projection.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/projection.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 26
+    },
+    {
+      "file": "astrid/core/timeline/resolution.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/resolution.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/timeline/resolution.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/scene_roles.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/scene_roles.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/scene_roles.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 10
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition_migration.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition_migration.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition_migration.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 22
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition_projection.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition_projection.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition_projection.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/shot_composition_projection.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 21
+    },
+    {
+      "file": "astrid/core/timeline/snapshot.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.snapshot_digest",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/snapshot.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.validate",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/snapshot.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/snapshot.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/snapshot.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/snapshot.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/core/timeline/validators/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/timeline/validators/meta.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/validators/pool.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/validators/registry.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/validators/timeline.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/timeline/validators/timeline.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/core/util/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/util/credentials_scope.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 4
+    },
+    {
+      "file": "astrid/core/util/credentials_scope.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/util/credentials_scope.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 3
+    },
+    {
+      "file": "astrid/core/util/generation_helpers.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/util/generation_helpers.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/util/http.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 23
+    },
+    {
+      "file": "astrid/core/util/http.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/util/http.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/util/llm_clients.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 1
+    },
+    {
+      "file": "astrid/core/util/secrets.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/mcp_server.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.vibecomfy.local",
+      "count": 1
+    },
+    {
+      "file": "astrid/mcp_server.py",
+      "kind": "pack_name_literal",
+      "value": "developer",
+      "count": 3
+    },
+    {
+      "file": "astrid/mcp_server.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 3
+    },
+    {
+      "file": "astrid/mcp_server.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/mcp_server.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 4
+    },
+    {
+      "file": "astrid/mcp_server.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/mcp_server.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 11
+    },
+    {
+      "file": "astrid/mcp_server.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 7
+    },
+    {
+      "file": "astrid/omp_agent.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/omp_agent.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/_child_bridge.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/_child_bridge.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/_child_bridge.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/_remote_timeline.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 13
+    },
+    {
+      "file": "astrid/sdk/_timeline_filmstrip_scene.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/_timeline_filmstrip_scene.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/_timeline_filmstrip_scene.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/_timeline_filmstrip_scene.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/actions.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/authoring_bundle.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/authoring_media.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/authoring_media.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/authoring_media.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 33
+    },
+    {
+      "file": "astrid/sdk/authoring_media.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/authoring_remote.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/authoring_remote.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/authoring_render_preview.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.render.managed_timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/authoring_render_preview.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/authoring_render_preview.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/authoring_revision_diff.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/client.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/client.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/documents.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/events.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/exceptions.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 11
+    },
+    {
+      "file": "astrid/sdk/exceptions.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/execution_request.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/execution_request.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_audio",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_image",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_speech",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_video",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "capability_id",
+      "value": "h3_av.transform",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.generation.actions.generate_image.task_adapter",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.h3_av.actions.transform.run",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.asset_manifest",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.production_engine",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 23
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 20
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_name_literal",
+      "value": "runpod",
+      "count": 17
+    },
+    {
+      "file": "astrid/sdk/generation.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/generation_publication.py",
+      "kind": "capability_id",
+      "value": "generation.generate_image",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation_publication.py",
+      "kind": "pack_name_literal",
+      "value": "fal",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/generation_publication.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/host_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/host_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/host_bootstrap.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_audio",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_image",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_image_openai",
+      "count": 10
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_speech",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "capability_id",
+      "value": "generation.generate_video",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "capability_id",
+      "value": "h3_av.transform",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.generation.actions.generate_image.task_adapter",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.h3_av.actions.transform.run",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.render.managed_timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.filmstrip_options",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.inspection_contract",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.speech_projection",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.runpod.prepared_task",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 60
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "h3_av",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 23
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 29
+    },
+    {
+      "file": "astrid/sdk/invocation.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/managed_transcript.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/managed_transcript.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/media_handles.py",
+      "kind": "capability_id",
+      "value": "pixel.snap",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/media_handles.py",
+      "kind": "capability_id",
+      "value": "pixel.sprites",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/media_handles.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.pixel.actions",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/media_handles.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/media_handles.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/media_handles.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 19
+    },
+    {
+      "file": "astrid/sdk/media_handles.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/media_handles.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/media_open.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 9
+    },
+    {
+      "file": "astrid/sdk/media_open.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/media_transcript.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/project_render.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/project_render.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/project_render.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/project_render.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/recovery.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.readable_timing",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.asset_manifest",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.vibecomfy.invocation_preflight",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 13
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 44
+    },
+    {
+      "file": "astrid/sdk/remote.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/render_shot_snapshot.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/rendering.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/rendering.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/rendering.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 9
+    },
+    {
+      "file": "astrid/sdk/rendering.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/results.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/results.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/results.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/shot_grouping.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/storage_ownership.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/storage_ownership.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 9
+    },
+    {
+      "file": "astrid/sdk/storage_ownership.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 10
+    },
+    {
+      "file": "astrid/sdk/storage_root.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/__init__.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_clip_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/_clip_scalar_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/_collections.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/_command_state.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_command_state.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_command_state.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/_commit_errors.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 19
+    },
+    {
+      "file": "astrid/sdk/timeline/_commit_patch.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 26
+    },
+    {
+      "file": "astrid/sdk/timeline/_commit_preview.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_commit_timing_validation.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_commit_timing_validation.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/_commit_wording.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_commit_wording.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 21
+    },
+    {
+      "file": "astrid/sdk/timeline/_common.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_common.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_common.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/_doc_patch.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/_doc_patch_materialize.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_doc_patch_schema.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_media_inputs.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/_pending.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_recording.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_recording.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/_root_inverse.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_root_inverse.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline/_scalar_commands.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_scalar_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_selected_param_authority.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/_split_commands.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_split_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/timeline/_step_undo.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/_timing_evaluators.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/_track_commands.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/_trim_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/timeline/api.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/assembly.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/assembly.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/assembly.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/authoring_commit.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/authoring_commit.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/authoring_commit.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/authoring_commit.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/capture.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.pixel.actions",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.layers.base",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.motion",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.motion.conditions",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/check.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline/checkout.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/checkout.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/timeline/checkout.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/checkout.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 9
+    },
+    {
+      "file": "astrid/sdk/timeline/clash.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/clash.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/commands.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/commands.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 12
+    },
+    {
+      "file": "astrid/sdk/timeline/commit.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/commit.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 35
+    },
+    {
+      "file": "astrid/sdk/timeline/commit.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 21
+    },
+    {
+      "file": "astrid/sdk/timeline/commit_session.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/commit_session.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 13
+    },
+    {
+      "file": "astrid/sdk/timeline/commit_session.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 17
+    },
+    {
+      "file": "astrid/sdk/timeline/commit_session.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 12
+    },
+    {
+      "file": "astrid/sdk/timeline/compiler.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/compiler.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/doc.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/doc.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/edits.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/edits.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 14
+    },
+    {
+      "file": "astrid/sdk/timeline/edits.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline/edits.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/timeline/emitter.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/inverse.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/inverse.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 9
+    },
+    {
+      "file": "astrid/sdk/timeline/journal.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.timeline.cli",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/journal.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline/journal.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/look.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/lookup.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/lookup.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 13
+    },
+    {
+      "file": "astrid/sdk/timeline/media_add.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/media_add.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/media_add.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 15
+    },
+    {
+      "file": "astrid/sdk/timeline/media_add.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/model.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/model.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 11
+    },
+    {
+      "file": "astrid/sdk/timeline/model.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/timeline/model.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/native_auto_placement.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/timeline/native_auto_placement.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_auto_placement.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 14
+    },
+    {
+      "file": "astrid/sdk/timeline/native_checkout.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_checkout.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/native_checkout.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_checkout.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_initialize.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/native_media_admission.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_media_admission.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 14
+    },
+    {
+      "file": "astrid/sdk/timeline/native_occurrence_duplicate.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_occurrence_fork.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_occurrence_media_commands.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_occurrence_media_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 35
+    },
+    {
+      "file": "astrid/sdk/timeline/native_occurrence_shared.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/timeline/native_occurrence_shared.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/native_parent_media_commands.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_parent_media_commands.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_parent_media_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 24
+    },
+    {
+      "file": "astrid/sdk/timeline/native_parent_media_commands.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/native_placement_commands.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_placement_commands.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_placement_commands.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_placement_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 13
+    },
+    {
+      "file": "astrid/sdk/timeline/native_restructure.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_shot_pool_commands.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/native_shot_pool_commands.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_source_inputs.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/native_source_inputs.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_text_binding.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/native_timeline_duplicate.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/native_timeline_duplicate.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/timeline/native_word_anchor.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/native_word_anchor.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/producer.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/producer.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/publish.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/publish.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 9
+    },
+    {
+      "file": "astrid/sdk/timeline/publish.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 16
+    },
+    {
+      "file": "astrid/sdk/timeline/rebase.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/reflow.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/reflow.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/reflow.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 24
+    },
+    {
+      "file": "astrid/sdk/timeline/reflow.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/retry.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 9
+    },
+    {
+      "file": "astrid/sdk/timeline/revisions.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline/selection.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline/selection.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/timeline/store.py",
+      "kind": "dynamic_pack_import",
+      "value": "astrid.packs.timeline.cli",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/store.py",
+      "kind": "pack_name_literal",
+      "value": "chiptune",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/store.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/store.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 10
+    },
+    {
+      "file": "astrid/sdk/timeline/store.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/store.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/timeline/sync.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline/sync.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline/sync.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/sync.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 23
+    },
+    {
+      "file": "astrid/sdk/timeline/transaction.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/units.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/units.py",
+      "kind": "pack_name_literal",
+      "value": "pixel",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/units.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline/validation.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline/validation.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/timeline_address.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline_address.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline_adopt.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline_checkout.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_checkout.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_cuts.py",
+      "kind": "pack_name_literal",
+      "value": "editorial",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline_cuts.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_cuts.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/timeline_duplicate.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 14
+    },
+    {
+      "file": "astrid/sdk/timeline_editing.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_editing.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline_editing.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 18
+    },
+    {
+      "file": "astrid/sdk/timeline_elements.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/timeline_elements.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_elements.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/timeline_export.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 18
+    },
+    {
+      "file": "astrid/sdk/timeline_export.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 12
+    },
+    {
+      "file": "astrid/sdk/timeline_filmstrip.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.render.managed_timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline_filmstrip.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.inspection_contract",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline_filmstrip.py",
+      "kind": "pack_import",
+      "value": "astrid.packs.rendering.actions.timeline_visualize.speech_projection",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_filmstrip.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/timeline_filmstrip.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_filmstrip.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 10
+    },
+    {
+      "file": "astrid/sdk/timeline_filmstrip.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 29
+    },
+    {
+      "file": "astrid/sdk/timeline_import.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 19
+    },
+    {
+      "file": "astrid/sdk/timeline_import.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 41
+    },
+    {
+      "file": "astrid/sdk/timeline_import_prepare.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/timeline_import_prepare.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 34
+    },
+    {
+      "file": "astrid/sdk/timeline_intent.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_intent.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline_media_replacement.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 26
+    },
+    {
+      "file": "astrid/sdk/timeline_media_replacement.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline_restructure.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_restructure.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/timeline_restructure.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline_restructure.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline_sheet.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_sheet.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_sheet.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 9
+    },
+    {
+      "file": "astrid/sdk/timeline_sheet.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/timeline_sheet.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline_structure.py",
+      "kind": "pack_name_literal",
+      "value": "music",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline_structure.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline_transcripts.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/timeline_transcripts.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/timeline_transfer.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_views.py",
+      "kind": "pack_name_literal",
+      "value": "astrid_motion",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/timeline_views.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/timeline_views.py",
+      "kind": "pack_name_literal",
+      "value": "rendering",
+      "count": 3
+    },
+    {
+      "file": "astrid/sdk/timeline_views.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 7
+    },
+    {
+      "file": "astrid/sdk/timeline_views.py",
+      "kind": "pack_name_literal",
+      "value": "understanding",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/verified_speech_authoring.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/visualize_cache.py",
+      "kind": "pack_name_literal",
+      "value": "capture",
+      "count": 5
+    },
+    {
+      "file": "astrid/sdk/visualize_cache.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 1
+    },
+    {
+      "file": "astrid/sdk/workspace_client.py",
+      "kind": "pack_name_literal",
+      "value": "generation",
+      "count": 4
+    },
+    {
+      "file": "astrid/sdk/workspace_client.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 6
+    },
+    {
+      "file": "astrid/sdk/workspace_client.py",
+      "kind": "pack_name_literal",
+      "value": "media",
+      "count": 2
+    },
+    {
+      "file": "astrid/sdk/workspace_client.py",
+      "kind": "pack_name_literal",
+      "value": "timeline",
+      "count": 8
+    },
+    {
+      "file": "astrid/sdk/workspace_client.py",
+      "kind": "pack_name_literal",
+      "value": "vibecomfy",
+      "count": 1
+    },
+    {
+      "file": "astrid/version.py",
+      "kind": "pack_name_literal",
+      "value": "local",
+      "count": 1
+    }
+  ]
+}

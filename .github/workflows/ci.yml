@@ -13,6 +13,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  core-zero-external-packs:
+    name: core with zero external packs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ASTRID_PACKS_PATH: ""
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package test dependencies (no external packs)
+        run: python -m pip install -e '.[dev]'
+
+      - name: Install the pinned Runtime and client
+        run: python scripts/ci_install_runtime.py
+
+      - name: Enforce shrink-only core pack boundary
+        run: python scripts/check_core_pack_boundary.py
+
+      - name: Check core authority and zero-pack boundary
+        run: >-
+          python -m pytest -q
+          tests/stage1/test_core_import_authority.py::test_gateway_import_does_not_load_local_storage_authority
+          tests/stage1/test_core_import_authority.py::test_core_pack_boundary_ratchet_passes
+          tests/stage1/test_core_import_authority.py::test_core_pack_boundary_ratchet_counts_imports_literals_and_duplicates
+
   windows-native-and-installer:
     runs-on: windows-latest
     timeout-minutes: 90
