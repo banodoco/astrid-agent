@@ -304,9 +304,10 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
             env_file: Path | None = None, extra_args: list[str] | None = None,
             lock_fd: int | None = None, custody_fd: int | None = None,
             canonical_environment: bool = True) -> list[str]:
-    # The version document is an admission identity.  Keep it byte-for-byte
-    # stable for existing installs; only the environment sent to Runtime is
-    # normalized for the current data root and launcher.
+    # Stable dictionary ordering keeps the embedded admission document equal
+    # for an in-memory version and the same version reloaded from disk.
+    version = Version(version.root, version.python, version.profile,
+                      dict(sorted(version.env.items())), version.release, version.managed_by)
     runtime_environment = (service_environment(version, data) if canonical_environment
                            else dict(sorted(version.env.items())))
     python = version.python.with_name("pythonw.exe") if windows else version.python
