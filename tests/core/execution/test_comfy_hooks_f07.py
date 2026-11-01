@@ -99,6 +99,20 @@ def test_open_passes_complete_binding_to_owner_hook(monkeypatch):
     assert bridge.observe(binding=expected)["ok"]
 
 
+def test_hook_owner_without_fence_does_not_use_legacy_containment(monkeypatch):
+    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
+
+    backend = CheckoutServerAdapter("http://example.invalid")
+    calls = []
+    monkeypatch.setattr(backend, "cancel", lambda: calls.append("cancel"))
+    monkeypatch.setattr(CheckoutServerAdapter, "open_host_session",
+                        classmethod(lambda cls, **kwargs: backend), raising=False)
+    bridge = _ManagedVibeSessionAdapter.from_host_session(binding=binding())
+    with pytest.raises(AttributeError):
+        bridge.fence(reason="test")
+    assert calls == []
+
+
 def test_warm_reuse_refreshes_context_and_keeps_pid():
     fake = FakeComfy(binding())
     manager, bridge = manager_with(fake)

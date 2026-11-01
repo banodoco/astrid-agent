@@ -818,6 +818,13 @@ class _ManagedVibeSessionAdapter:
             "runtime_instance_id": backend._runtime_instance_id,
         })
 
+    def _legacy_checkout(self) -> bool:
+        # Only adapters constructed directly through the old checkout path
+        # use its containment API. Hook-created owners must implement hooks.
+        from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
+
+        return not hasattr(self, "_hook_binding") and isinstance(self.backend, CheckoutServerAdapter)
+
     def residency_identity(self) -> Any:
         if self.backend is not self._captured_backend:
             return None
@@ -855,6 +862,9 @@ class _ManagedVibeSessionAdapter:
         return {"ok": True, kind: True, "reason": reason, "native": dict(evidence)}
 
     def observe(self, *, binding: SessionBinding) -> dict[str, Any]:
+        if self._legacy_checkout():
+            self.backend._revalidate_host_session()
+            return {"ok": True, "observed": True}
         evidence = self.backend.observe(binding=binding)
         if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
             raise HostError("Comfy session observation was not verified")
@@ -877,9 +887,10 @@ class _ManagedVibeSessionAdapter:
         try:
             if reason == "cpu_residency_eviction" and self.residency_identity() is None:
                 raise HostError("native CPU handoff session identity changed")
-            evidence = self.backend.fence(reason=reason)
+            legacy = self._legacy_checkout()
+            evidence = self.backend.cancel() if legacy else self.backend.fence(reason=reason)
             result = self._native_evidence(
-                evidence, kind="fenced", native_key="fenced", reason=reason
+                evidence, kind="fenced", native_key="cancelled" if legacy else "fenced", reason=reason
             )
             if reason == "cpu_residency_eviction" and result["ok"] is not True:
                 raise HostError("native CPU handoff fencing was not verified")
@@ -890,14 +901,14 @@ class _ManagedVibeSessionAdapter:
             raise
 
     def cancel(self, *, reason: str) -> dict[str, Any]:
-        evidence = self.backend.cancel(reason=reason)
+        evidence = self.backend.cancel() if self._legacy_checkout() else self.backend.cancel(reason=reason)
         return self._native_evidence(
             evidence, kind="cancelled", native_key="cancelled", reason=reason
         )
 
     def cancel_admission(self, *, token: AdmissionToken, reason: str) -> dict[str, Any]:
         # Cancellation before dispatch must not touch the previous warm run.
-        if token != self._invocation_token:
+        if not self._legacy_checkout() and token != self._invocation_token:
             return {"ok": True, "cancelled": True, "reason": reason, "dispatched": False}
         return self.cancel(reason=reason)
 
