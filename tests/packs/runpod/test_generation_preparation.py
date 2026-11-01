@@ -15,6 +15,7 @@ from astrid.packs.runpod.prepared_task import PreparedWorkerError, PreparedWorke
 from astrid.packs.runpod.remote_placement import Claim
 from tests.packs.runpod.test_remote_placement import FakePod, _provider, _wrapper, sources as sources
 from tests.packs.runpod.test_target_selection import case as case
+from tests.packs.runpod.test_prepared_task import _Client, _Runtime, _task
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +147,39 @@ def test_bound_client_hands_normalized_inputs_to_ordinary_prepared_boundary(gene
     with pytest.raises(PreparedWorkerError, match="inputs changed"):
         prepared.bind_client(client, workflow_path=g.request.workflow,
                              workflow_bundle_path=g.request.workflow.parent, workflow_inputs={"seed": 18})
+
+
+@pytest.mark.parametrize("entry", [
+    {"id": "image/fake", "kind": "image"}, {"id": "video/fake", "kind": "video"},
+    {"kind": "workflow"}, {"id": "h3_av", "kind": "video"},
+])
+def test_preparation_no_wait_and_follow_keep_one_claim_and_exact_task(generation, entry, tmp_path):
+    """Exercise the pack handoff; the public A10 follow bridge is a separate dependency."""
+    g = generation
+    prepared = g.preparer.prepare(replace(g.request, entry={"engine": "comfyui", **entry}))
+    execution = prepared.execution_request(None)
+    binding = {"target": execution["target"]}
+    task = _task(execution_binding=binding)
+    settled = _task(state="succeeded", execution_binding=binding)
+    client = _Client([task, settled])
+    runtime = _Runtime(client.events)
+    selection = replace(prepared.selection, composition_factory=lambda **kwargs: runtime)
+    prepared = replace(prepared, selection=selection)
+    bound = prepared.bind_client(client, workflow_path=g.request.workflow,
+                                 workflow_bundle_path=g.request.workflow.parent)
+
+    assert bound.invoke_result(
+        "vibecomfy.run", kind="executor", wait=False,
+        recovery_path=str(tmp_path / "receipt.json"), execution_request=execution,
+    ) is client.first
+    bound.monitor_task(task)
+
+    assert [event[0] for event in client.events] == ["invoke", "show", "activate", "show", "retire"]
+    assert client.events[0][3]["execution_request"] == execution
+    assert client.events[-1] == ("retire", settled)
+    assert g.case.creates == 1
+    assert g.provider.claims == g.provider.releases == 0
+    assert sum("engines install" in command for command in g.pod.job_log) == 1
 
 
 def test_missing_sdk_cancel_bridge_retains_custody_and_reports_stop_unknown(generation):
