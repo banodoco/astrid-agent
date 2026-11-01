@@ -1,0 +1,37 @@
+{
+  "artifact_collection_outcome": "skipped",
+  "command": "set +e\ncd \"$ASTRID_RUNTIME_CHECKOUT\"\nmkdir -p r07-cp3-evidence\npython -m pytest --collect-only -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/collect.log 2>&1\ncollect_code=$?\nprintf '%s\\n' \"$collect_code\" > r07-cp3-evidence/collect.exit\npython -m pytest -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/test.log 2>&1\ntest_code=$?\nprintf '%s\\n' \"$test_code\" > r07-cp3-evidence/test.exit\ncat r07-cp3-evidence/collect.log\ncat r07-cp3-evidence/test.log\nif [ \"$collect_code\" -ne 0 ]; then exit \"$collect_code\"; fi\nexit \"$test_code\"",
+  "effective_tuple": {
+    "agent": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+    "app": "9d3ccda1e81383082258943207745086da2aabe4",
+    "pinokio": null,
+    "runtime": "bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf"
+  },
+  "event": "push",
+  "inner_exit_code": null,
+  "inventory": [
+    {
+      "bytes": 928,
+      "path": "requested-inputs.json",
+      "sha256": "f51c6dd896dfeaebb49ccac592a7db9691de830abe1b638129d73a3926638e6e"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+    "app_ref": "9d3ccda1e81383082258943207745086da2aabe4",
+    "artifact_paths": "r07-cp3-evidence",
+    "command": "set +e\ncd \"$ASTRID_RUNTIME_CHECKOUT\"\nmkdir -p r07-cp3-evidence\npython -m pytest --collect-only -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/collect.log 2>&1\ncollect_code=$?\nprintf '%s\\n' \"$collect_code\" > r07-cp3-evidence/collect.exit\npython -m pytest -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/test.log 2>&1\ntest_code=$?\nprintf '%s\\n' \"$test_code\" > r07-cp3-evidence/test.exit\ncat r07-cp3-evidence/collect.log\ncat r07-cp3-evidence/test.log\nif [ \"$collect_code\" -ne 0 ]; then exit \"$collect_code\"; fi\nexit \"$test_code\"",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9f95c222bdd7e71e4",
+    "runtime_ref": "bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf",
+    "slot": "1"
+  },
+  "run_attempt": "1",
+  "run_id": "41326087609",
+  "source_head": "d2ec0380f98aeaef9f1fbb7e46a42a3c7efd3c11",
+  "source_ref": "refs/heads/venue/M-VENUE-R-07-R3-1",
+  "suite_step_outcome": "skipped",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-VENUE-R-07-R3-1",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "d2ec0380f98aeaef9f1fbb7e46a42a3c7efd3c11"
+}
