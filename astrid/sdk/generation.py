@@ -8,6 +8,7 @@ generation method is actually invoked.
 from __future__ import annotations
 
 import importlib
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
@@ -91,6 +92,26 @@ def _retain_generation_source(path: Path, controls: dict[str, Any]) -> dict[str,
         snapshot = Path(scratch) / path.name
         snapshot.write_bytes(data)
         return _import_generation_member(snapshot, controls)
+
+
+@contextmanager
+def _snapshot_generation_workflow(path: Path):
+    """Read source and canonical companions once for validation and execution."""
+    from tempfile import TemporaryDirectory
+    original = path.expanduser().resolve()
+    if original.is_dir():
+        original = original / 'workflow.py'
+    with TemporaryDirectory(prefix='astrid-workflow-source-') as scratch:
+        snapshot = Path(scratch) / original.name
+        try:
+            snapshot.write_bytes(original.read_bytes())
+            if original.suffix.lower() == '.py':
+                for member in (original.with_suffix('.vibe.json'), original.with_name('source.json')):
+                    if member.exists():
+                        (snapshot.parent / member.name).write_bytes(member.read_bytes())
+        except OSError as exc:
+            raise GenerationInputError(f'workflow could not be read: {original}: {exc}') from exc
+        yield snapshot
 
 
 def _public_input_values(values):
@@ -500,6 +521,54 @@ class GenerationFacade:
         from astrid.core.generation.listing import generation_rows
         return generation_rows(kind)
 
+    @_generation_boundary
+    def targets(self, *, target='auto', engine='comfyui', save=False, inputs=None,
+                project_root=None):
+        """Inspect selection without probing; persist only an explicit save."""
+        from astrid.core.generation import targets
+        from astrid.core.generation.entries import merge_input_values
+        from astrid.core.generation.preflight import readiness_envelope
+        try:
+            if targets.canonical_engine(engine) != 'comfyui':
+                raise ValueError('Phase 1 targets support only comfyui')
+            updates = merge_input_values(inputs if inputs is not None else {})
+            if target == 'runpod':
+                if save:
+                    allowed = {'gpu_types', 'datacenter_id', 'volume', 'image', 'idle_timeout_seconds',
+                               'provider_account_ref', 'credential_ref'}
+                    if updates.keys() - allowed:
+                        raise ValueError('unsupported RunPod preference: ' + ', '.join(sorted(updates.keys() - allowed)))
+                    def write(document):
+                        preferences = document.setdefault('runpod', {})
+                        if not isinstance(preferences, dict):
+                            raise ValueError('runpod preferences must be a table')
+                        for name, value in updates.items():
+                            if value is None:
+                                preferences.pop(name, None)
+                            else:
+                                preferences[name] = value
+                    targets.update_config(write)
+                elif updates:
+                    raise ValueError('provider inputs require --save')
+                payload = readiness_envelope()
+                payload['preferences'] = targets.read_config().get('runpod', {})
+                return payload
+            if updates:
+                raise ValueError('local target input updates are not supported; select an explicit URL')
+            selection = targets.resolve_target(target, repo=project_root)
+            record = selection.record
+            if record is None and target == 'managed':
+                record = targets.TargetRecord(owner='astrid')
+            if save:
+                if not selection.bound:
+                    raise ValueError('select an explicit target before saving discovered defaults')
+                if record is None:
+                    raise ValueError('select an explicit target before saving')
+                targets.save_target(record)
+            return readiness_envelope(target=record)
+        except (ValueError, OSError) as exc:
+            raise GenerationInputError(str(exc)) from exc
+
     def describe(self, entry: str | None = None, *, workflow=None, mode=None):
         from astrid.core.generation.entries import describe_entry, describe_workflow
         if bool(entry) == bool(workflow):
@@ -605,6 +674,8 @@ class GenerationFacade:
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
             if not isinstance(workflow, (str, Path)) or python is not None or companion is not None:
                 raise GenerationInputError('target workflow requires one local workflow path')
+            if inputs is not None and not isinstance(inputs, Mapping):
+                raise GenerationInputError('workflow inputs must be an object')
             if any(value is not None for value in (
                     execution_request, placement, source, source_video, source_video_node,
                     source_video_widget, managed_assets, workflow_inputs, comfy_url,
@@ -612,34 +683,36 @@ class GenerationFacade:
                 raise GenerationInputError('a target workflow cannot replace explicit prepared binding or managed source controls')
             source_controls = {'client': client, 'project': project, 'out': out,
                                'project_root': project_root}
-            retained_source = None
-            if not dry_run:
-                original = Path(workflow).expanduser().resolve()
-                if original.is_dir():
-                    original = original / 'workflow.py'
-                retained_source = _retain_generation_source(original, source_controls)
-                project, out = source_controls['project'], source_controls['out']
-            try:
-                description, values = resolve_workflow_inputs(Path(workflow), inputs or {}, mode=mode)
-            except ValueError as exc:
-                raise GenerationInputError(str(exc)) from exc
-            workflow_entry = {'id': description['id'], 'kind': description['kind'],
-                'modes': [description['mode']], 'bundle': str(Path(workflow).expanduser().resolve()),
-                'binds': {}, 'defaults': {}, 'needs': []}
-            return self._generate_on_target(registry=_load_model_registry(
-                project_root=project_root, extra_pack_roots=extra_pack_roots), model=None,
-                mode=description['mode'], modality=description['kind'], target=target,
-                execution=None, inputs=values, dry_run=dry_run, workflow_entry=workflow_entry,
-                retained_source=retained_source,
-                client=client, project=project, out=out, wait=wait,
-                project_root=project_root, extra_pack_roots=extra_pack_roots,
-                banodoco_config=banodoco_config, active_theme=active_theme,
-                include_missing_roots=include_missing_roots, brief=brief,
-                idempotency_context=idempotency_context, idempotency_key=idempotency_key,
-                recovery_path=recovery_path, resume=resume, read_managed_outputs=read_managed_outputs,
-                timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
-                check_binaries=check_binaries, python_exec=python_exec,
-                verbose=verbose, argv=argv, **controls)
+            with _snapshot_generation_workflow(Path(workflow)) as frozen:
+                retained_source = None
+                if not dry_run:
+                    retained_source = _retain_generation_source(frozen, source_controls)
+                    project, out = source_controls['project'], source_controls['out']
+                try:
+                    description, values = resolve_workflow_inputs(frozen, inputs or {}, mode=mode)
+                except ImportError as exc:
+                    from astrid.core.generation.preflight import generation_error
+                    raise generation_error(exc, code='missing_dependency',
+                        details={'field': 'workflow', 'module': exc.name}) from exc
+                except (ValueError, RuntimeError, OSError) as exc:
+                    raise GenerationInputError(str(exc)) from exc
+                workflow_entry = {'id': description['id'], 'kind': description['kind'],
+                    'modes': [description['mode']], 'bundle': str(frozen),
+                    'binds': {}, 'defaults': {}, 'needs': []}
+                return self._generate_on_target(registry=_load_model_registry(
+                    project_root=project_root, extra_pack_roots=extra_pack_roots), model=None,
+                    mode=description['mode'], modality=description['kind'], target=target,
+                    execution=None, inputs=values, dry_run=dry_run, workflow_entry=workflow_entry,
+                    retained_source=retained_source,
+                    client=client, project=project, out=out, wait=wait,
+                    project_root=project_root, extra_pack_roots=extra_pack_roots,
+                    banodoco_config=banodoco_config, active_theme=active_theme,
+                    include_missing_roots=include_missing_roots, brief=brief,
+                    idempotency_context=idempotency_context, idempotency_key=idempotency_key,
+                    recovery_path=recovery_path, resume=resume, read_managed_outputs=read_managed_outputs,
+                    timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+                    check_binaries=check_binaries, python_exec=python_exec,
+                    verbose=verbose, argv=argv, **controls)
         if inputs is not None:
             raise GenerationInputError('workflow inputs require an explicit target')
         from astrid.core.generation.backends.registry import (
@@ -807,19 +880,30 @@ class GenerationFacade:
                             modality=modality, inputs=inputs, target_client=target_client, backend=backend,
                             retain_source=None if dry_run else retain_source)
                     else:
-                        if not dry_run and source_ref is None:
-                            original_path = workflow_entries.bundle_path(candidate)
-                            retained = original_path.with_name('source.json')
-                            if workflow_entry is None and retained.is_file():
-                                original_path = retained
-                            retain_source(original_path.name, original_path.read_bytes())
-                        workflow, plan, assets = workflow_entries.prepare(
-                            workflow_entries.bundle_path(candidate), target_client=target_client, mode=mode,
-                            binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=inputs)
+                        with _snapshot_generation_workflow(workflow_entries.bundle_path(candidate)) as frozen:
+                            if not dry_run and source_ref is None:
+                                original_path = frozen
+                                retained = frozen.with_name('source.json')
+                                if retained.is_file():
+                                    original_path = retained
+                                retain_source(original_path.name, original_path.read_bytes())
+                            workflow, plan, assets = workflow_entries.prepare(
+                                frozen, target_client=target_client, mode=mode,
+                                binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=inputs)
                         if plan["kind"] != modality:
                             raise ValueError("entry kind does not match workflow output")
                         if plan["unbound"]:
                             raise ValueError("workflow has no binding for requested controls: " + ", ".join(plan["unbound"]))
+                        if workflow_entry is not None:
+                            from vibecomfy.entries import draft_entry
+                            needs = draft_entry(workflow, identifier)['needs']
+                            # A raw audio workflow may run without being saved
+                            # as one of the catalog's named audio modes.
+                            needs = [need for need in needs if need.get('ambiguity') !=
+                                     'audio mode is unknown; choose tts, music, or sfx']
+                            needs.extend(need for need in candidate.get('needs', [])
+                                         if need.get('ambiguity') and need not in needs)
+                            candidate = {**candidate, 'needs': needs}
                         schema = workflow_entries.target_schema(candidate, workflow, target_client)
                 from vibecomfy.workflow_bundle import load_bundle
                 if source == "workflow" and not candidate.get("registry_id"):
@@ -917,6 +1001,13 @@ class GenerationFacade:
                 python=import_member(root / "workflow.py"),
                 companion=import_member(root / "workflow.vibe.json"),
                 source=source_ref,
+                # Carry explicit native bindings through the executor as well
+                # as the sealed graph. The attached runner chooses a fresh
+                # seed when no seed binding is supplied. Media bindings are
+                # supplied separately by the staged asset manifest.
+                workflow_inputs=json.dumps({name: value for name, value in
+                    (plan or {}).get('bindings', {}).items() if name not in assets},
+                    sort_keys=True, allow_nan=False),
                 comfy_url=target_client.target.url if target_client is not None else None,
                 generation_intent={
                     "version": 1, "modality": modality, "partial_success_policy": "reject",
