@@ -4,6 +4,6 @@
   "app_ref": "9d3ccda1e81383082258943207745086da2aabe4",
   "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
   "command": "set +e\ncd \"$ASTRID_RUNTIME_CHECKOUT\"\nmkdir -p r07-cp3-evidence\npython -m pip install -e '.[test]' > r07-cp3-evidence/install.log 2>&1\ninstall_code=$?\nprintf '%s\\n' \"$install_code\" > r07-cp3-evidence/install.exit\npython -m pytest --collect-only -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/collect.log 2>&1\ncollect_code=$?\nprintf '%s\\n' \"$collect_code\" > r07-cp3-evidence/collect.exit\npython -m pytest -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/test.log 2>&1\ntest_code=$?\nprintf '%s\\n' \"$test_code\" > r07-cp3-evidence/test.exit\ncat r07-cp3-evidence/install.log\ncat r07-cp3-evidence/collect.log\ncat r07-cp3-evidence/test.log\nif [ \"$install_code\" -ne 0 ]; then exit \"$install_code\"; fi\nif [ \"$collect_code\" -ne 0 ]; then exit \"$collect_code\"; fi\nexit \"$test_code\"",
-  "artifact_paths": "r07-cp3-evidence",
+  "artifact_paths": "runtime/r07-cp3-evidence",
   "slot": "1"
 }
