@@ -1,0 +1,13 @@
+repository=banodoco/astrid-agent
+ref=refs/heads/venue/M-QUAL-R51-WINDOWS-PREFLIGHT-2
+source_candidate=8506e75f7cd474b6da13316385e871efe11d0e60
+checkout_sha=e558cb7d0d4122422427693fed2ba729294ea031
+workflow_sha=e558cb7d0d4122422427693fed2ba729294ea031
+workflow_ref=banodoco/astrid-agent/.github/workflows/r51-windows-preflight-focused.yml@refs/heads/venue/M-QUAL-R51-WINDOWS-PREFLIGHT-2
+run_id=41350649920
+run_attempt=1
+job=focused-windows
+runner_os=Windows
+runner_arch=X64
+Python 3.11.9
+git version 2.56.0.windows.3

@@ -1,0 +1,21 @@
+pytest -c /dev/null --noconftest -q tests/test_ci_journey.py::test_windows_preflight_handles_absent_tasks_without_hiding_scheduler_errors tests/test_ci_journey.py::test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root
+..                                                                       [100%]
+============================== warnings summary ===============================
+tests\test_ci_journey.py:371
+  D:\a\astrid-agent\astrid-agent\tests\test_ci_journey.py:371: PytestUnknownMarkWarning: Unknown pytest.mark.posix_native - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.posix_native
+
+tests\test_ci_journey.py:411
+  D:\a\astrid-agent\astrid-agent\tests\test_ci_journey.py:411: PytestUnknownMarkWarning: Unknown pytest.mark.posix_native - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.posix_native
+
+C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\cacheprovider.py:475
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\cacheprovider.py:475: PytestCacheWarning: could not create cache path \\.\nul\.pytest_cache\v\cache\nodeids: [WinError 1] Incorrect function: '\\\\.\\nul\\pytest-cache-files-j5lnq58x'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\stepwise.py:51
+  C:\hostedtoolcache\windows\Python\3.11.9\x64\Lib\site-packages\_pytest\stepwise.py:51: PytestCacheWarning: could not create cache path \\.\nul\.pytest_cache\v\cache\stepwise: [WinError 1] Incorrect function: '\\\\.\\nul\\pytest-cache-files-3admlfec'
+    session.config.cache.set(STEPWISE_CACHE_DIR, [])
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2 passed, 4 warnings in 0.18s

@@ -1,0 +1,3 @@
+artifact_id=13101222445
+artifact_url=https://github.com/banodoco/astrid-agent/actions/runs/41350649920/artifacts/13101222445
+artifact_digest=46bd00a217595ef401665f2f42cae7287b667718008b1539ca647edfb24ffe29
