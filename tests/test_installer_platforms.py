@@ -18,6 +18,10 @@ from astrid.installer.backend import Backend
 from astrid.installer.core import Version, read_json, write_json
 
 FIXTURES = Path(__file__).parent / 'fixtures/installer'
+CANONICAL_PROFILE_ENV = {
+    'APPDATA', 'HOME', 'LOCALAPPDATA', 'USERPROFILE', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+    'ASTRID_RUNTIME_DATA_ROOT', 'ASTRID_RUNTIME_DOOR_PORT',
+}
 
 
 def sample(system='linux'):
@@ -80,11 +84,17 @@ def _service_envelope(rendered, system):
     """
     if system == 'darwin':
         value = plistlib.loads(rendered.encode())
+        for key in CANONICAL_PROFILE_ENV:
+            value.get('EnvironmentVariables', {}).pop(key, None)
         arguments = value['ProgramArguments']
         assert len(arguments) == 6 and arguments[4] == '-c'
         arguments[5] = '<installer-launch-prelude>'
         return plistlib.dumps(value).decode()
     if system == 'linux':
+        rendered = ''.join(line for line in rendered.splitlines(keepends=True)
+                           if not (line.startswith('Environment="')
+                                   and line.removeprefix('Environment="').split('=', 1)[0]
+                                   in CANONICAL_PROFILE_ENV))
         prefix, separator, remaining = rendered.partition('"-c" "')
         prelude, boundary, suffix = remaining.partition('"\nEnvironment=')
         assert separator and prelude and boundary
@@ -327,7 +337,7 @@ def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tm
 
 
 @pytest.mark.parametrize('prior_port,requested_port,expected_port', [
-    (None, None, '17340'), ('17391', None, '17391'), ('17391', '17393', '17393'),
+    (None, None, '17340'), ('17391', None, '17391'), ('17391', '17393', '17391'),
 ])
 @pytest.mark.parametrize('managed_by', [None, 'pinokio'])
 def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port, managed_by):

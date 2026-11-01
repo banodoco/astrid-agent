@@ -14,6 +14,7 @@ import pytest
 
 from astrid.installer import foreground, launcher, service
 from astrid.installer.core import Version, current, switch, write_json
+from astrid.installer.environment import canonical_environment
 
 
 @pytest.fixture(autouse=True)
@@ -49,19 +50,18 @@ def _installation(tmp_path: Path, name: str = "v1") -> tuple[Path, Path, Version
     return root, data, version
 
 
-def _clean_environment(version: Version) -> dict[str, str]:
+def _clean_environment(version: Version, data: Path) -> dict[str, str]:
     excluded = {
         "PYTHONPATH",
         "PYTHONHOME",
         "ASTRID_WORKSPACE_ENDPOINT",
         "ASTRID_WORKSPACE_CREDENTIAL",
         "ASTRID_RUNTIME_SOURCE_MANIFEST",
-        "ASTRID_RUNTIME_DATA_ROOT",
         "ASTRID_PACKS_PATH",
         "ASTRID_INSTALLER_OPERATION_ID",
     }
     env = {key: value for key, value in os.environ.items() if key not in excluded}
-    env.update(version.env)
+    env.update(canonical_environment(version.env, data))
     env["ASTRID_INSTALL_MANAGED_BY"] = "pinokio"
     return env
 
@@ -177,7 +177,7 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
     )
     assert seen["file"] == expected[0]
     assert seen["argv"] == expected
-    assert seen["env"] == _clean_environment(selected)
+    assert seen["env"] == _clean_environment(selected, data)
     assert seen["env"]["ASTRID_INSTALL_MANAGED_BY"] == "pinokio"  # type: ignore[index]
     assert seen["env"]["ASTRID_INSTALL_RELEASE"] == "52"  # type: ignore[index]
     for key in (
@@ -186,7 +186,6 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
         "ASTRID_WORKSPACE_ENDPOINT",
         "ASTRID_WORKSPACE_CREDENTIAL",
         "ASTRID_RUNTIME_SOURCE_MANIFEST",
-        "ASTRID_RUNTIME_DATA_ROOT",
         "ASTRID_PACKS_PATH",
         "ASTRID_INSTALLER_OPERATION_ID",
     ):

@@ -32,6 +32,7 @@ from .core import (
     version_id,
     write_json,
 )
+from .environment import canonical_environment
 
 LABEL = "haus.astrid.runtime"
 TASK = "Astrid Runtime"
@@ -251,6 +252,7 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
             lock_fd: int | None = None, custody_fd: int | None = None) -> list[str]:
     version = Version(version.root, version.python, version.profile,
                       dict(sorted(version.env.items())), version.release, version.managed_by)
+    launch_env = canonical_environment(version.env, data)
     python = version.python.with_name("pythonw.exe") if windows else version.python
     arguments = ["run", "--profile", "astrid", "--data-root", str(data),
                  "--source-manifest", str(version.profile), *(extra_args or [])]
@@ -258,7 +260,7 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
     source = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
     script = (source + "\n"
               + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}),custody={custody_fd is not None!r})\n"
-              + f"os.environ.update({version.env!r})\n")
+              + f"os.environ.update({launch_env!r})\n")
     if lock_fd is not None:
         script += f"os.set_inheritable({lock_fd},False)\n"
     if custody_fd is not None:
@@ -351,7 +353,7 @@ def render(system: str, version: Version, data: Path, log: Path, *, user: str = 
            env_file: Path | None = None) -> str:
     log = log.with_name("runtime-service.log")
     argv = command(version, data, windows=system == "win32", log=log, env_file=env_file)
-    service_env = dict(version.env)
+    service_env = canonical_environment(version.env, data)
     if system == "darwin":
         return plistlib.dumps({
             "Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
@@ -1024,7 +1026,7 @@ class Service:
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
             "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
             "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH"}}
-        env.update(version.env)
+        env.update(canonical_environment(version.env, data))
         with self.log.open("a", encoding="utf-8") as stream:
             process = platform.spawn_tree(command(
                 version, data, env_file=self.env_file,

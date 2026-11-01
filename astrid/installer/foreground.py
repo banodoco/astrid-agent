@@ -10,6 +10,7 @@ from typing import Any
 from runtime_protocol import platform
 
 from .core import absolute, current, read_json
+from .environment import canonical_environment
 from .service import LABEL, command, installer_lock_path, launch_admission
 
 
@@ -84,7 +85,7 @@ def _run(root: Path, argv: list[str], system: str, lock_fd: int | None,
         "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
         "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH",
     }}
-    env.update(version.env)
+    env.update(canonical_environment(version.env, data))
     # Use the console interpreter on Windows. pythonw is specific to the
     # hidden Scheduled Task; the same Runtime command/settings run here in
     # the console owner so Ctrl+Break and console-close reach its handlers.

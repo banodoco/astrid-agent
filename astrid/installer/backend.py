@@ -35,6 +35,7 @@ from .core import (
     read_json,
     write_json,
 )
+from .environment import canonical_environment, fresh_runtime_door_port, retained_tools_environment
 from .launcher import install_shim, owned_shim, remove_shim
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
@@ -224,7 +225,10 @@ class Backend:
         if not python.is_file():
             return None  # The bootstrap Runtime can inspect a retained workspace.
         return Version(environment.parent, python, profile,
-                       {"PATH": str(python.parent) + os.pathsep + os.defpath},
+                       canonical_environment(
+                           retained_tools_environment(environment.parent, python), data,
+                           home=self.service.home,
+                       ),
                        managed_by=self.managed_by)
 
     def has_workspace(self, data: Path) -> bool:
@@ -934,11 +938,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                   runtime / "packages" / "python", agent, vibecomfy])
         env = install_tools(manifest, folder / "tools", platform_target(), self.run)
         prior = current(root) or self.existing(data)
-        env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
-                    "ASTRID_RUNTIME_DOOR_PORT": os.environ.get(
-                        "ASTRID_RUNTIME_DOOR_PORT",
-                        prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT)) if prior else str(DEFAULT_DOOR_PORT)),
+        # An update is pinned to its selected Runtime port. Only a fresh
+        # install consults an explicit installer request; otherwise it probes
+        # 17340 and deterministically reserves the first free loopback port.
+        port = (prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))
+                if prior else fresh_runtime_door_port(os.environ.get("ASTRID_RUNTIME_DOOR_PORT")))
+        env.update({"ASTRID_RUNTIME_DOOR_PORT": port,
                     "PATH": str(python.parent) + os.pathsep + env["PATH"]})
+        env = canonical_environment(env, data, home=self.service.home)
         profile = folder / "profile.json"
         version = Version(folder, python, profile, env, **install_identity(folder))
         env = version.env

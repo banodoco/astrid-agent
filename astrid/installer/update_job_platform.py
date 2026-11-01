@@ -62,6 +62,15 @@ def _job_paths(job: dict) -> tuple[Path, Path]:
     return root, log_path
 
 
+def _environment(job: dict) -> dict[str, str]:
+    """Load the selected version's canonical environment for one transient job."""
+    from .core import Version
+    from .environment import canonical_environment
+
+    old = Version.load(job["old_version"])
+    return canonical_environment(old.env, Path(job["data_root"]))
+
+
 def _run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(args, text=True, capture_output=True, check=False,
                           stdin=subprocess.DEVNULL, timeout=30)
@@ -87,13 +96,14 @@ def describe(job: dict, command: list[str], system: str | None = None) -> dict:
     system, command = _system(system), _argv(command)
     _, operation = _job_name(job)
     root, log_path = _job_paths(job)
+    environment = _environment(job)
     if system == "linux":
         uid = os.getuid()
         unit = f"astrid-update-{operation}.service"
         return {"format": "astrid-update-platform/v1", "system": system,
                 "kind": "systemd-user-transient", "name": unit, "unit": unit,
                 "user": str(uid), "operation_id": operation, "program_root": str(root),
-                "log_path": str(log_path), "command": command}
+                "log_path": str(log_path), "command": command, "environment": environment}
     if system == "darwin":
         uid = os.getuid()
         label = f"astrid-update-{operation}"
@@ -101,14 +111,15 @@ def describe(job: dict, command: list[str], system: str | None = None) -> dict:
                 "kind": "launchd-gui-one-shot", "name": label, "label": label,
                 "domain": f"gui/{uid}", "user": str(uid), "operation_id": operation,
                 "log_path": str(log_path), "program_root": str(root),
-                "plist_path": str(_private_path(job, f".{label}.plist")), "command": command}
+                "plist_path": str(_private_path(job, f".{label}.plist")), "command": command,
+                "environment": environment}
     user_sid = _windows_sid()
     task_name = f"astrid-update-{operation}"
     return {"format": "astrid-update-platform/v1", "system": system,
             "kind": "scheduled-task-on-demand", "name": task_name, "task_name": task_name,
             "user": user_sid, "operation_id": operation,
             "log_path": str(log_path), "program_root": str(root),
-            "command": command}
+            "command": command, "environment": environment}
 
 
 def _validate(descriptor: dict, system: str | None = None) -> tuple[str, str]:
@@ -151,6 +162,12 @@ def _validate(descriptor: dict, system: str | None = None) -> tuple[str, str]:
     path_key = {"darwin": "plist_path"}.get(actual)
     if path_key and not Path(descriptor.get(path_key, "")).is_absolute():
         raise ValueError("The update platform descriptor path is invalid.")
+    environment = descriptor.get("environment")
+    if environment is not None and (not isinstance(environment, dict)
+                                    or any(not isinstance(key, str) or not key or "=" in key
+                                           or not isinstance(value, str) or "\x00" in value
+                                           for key, value in environment.items())):
+        raise ValueError("The update platform environment is invalid.")
     return actual, name
 
 
@@ -164,11 +181,11 @@ def _launch_failure(result: subprocess.CompletedProcess) -> UpdateJobLaunchError
     return UpdateJobLaunchError(f"Could not launch update job: {detail}")
 
 
-def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
+def _plist(descriptor: dict, command: list[str], log_path: Path, environment: dict[str, str]) -> bytes:
     root = ET.Element("plist", version="1.0")
     dictionary = ET.SubElement(root, "dict")
     values = [("Label", descriptor["label"]), ("ProgramArguments", command),
-              ("RunAtLoad", True),
+              ("RunAtLoad", True), ("EnvironmentVariables", environment),
               ("StandardOutPath", str(log_path)), ("StandardErrorPath", str(log_path))]
     for key, value in values:
         ET.SubElement(dictionary, "key").text = key
@@ -178,6 +195,11 @@ def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
             array = ET.SubElement(dictionary, "array")
             for item in value:
                 ET.SubElement(array, "string").text = item
+        elif isinstance(value, dict):
+            nested = ET.SubElement(dictionary, "dict")
+            for nested_key, nested_value in sorted(value.items()):
+                ET.SubElement(nested, "key").text = nested_key
+                ET.SubElement(nested, "string").text = nested_value
         else:
             ET.SubElement(dictionary, "string").text = value
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
@@ -190,6 +212,18 @@ def _ps_quote(value: str) -> str:
 def _encoded_ps(script: str) -> list[str]:
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     return ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+
+
+def _windows_worker_script(command: list[str], log: Path, environment: dict[str, str]) -> str:
+    """Return the exact Scheduled Task child wrapper, including its environment."""
+    return ("$ErrorActionPreference = 'Stop'\n"
+            + "".join(f"$env:{key} = {_ps_quote(value)}\n"
+                      for key, value in sorted(environment.items()))
+            + f"$exe = {_ps_quote(command[0])}\n"
+            f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
+            f"$log = {_ps_quote(str(log))}\n"
+            "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
+            "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
 
 
 def _write_private(path: Path, content: bytes) -> None:
@@ -216,6 +250,7 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
         raise ValueError("The update job log path must be absolute.")
     if log != Path(descriptor["log_path"]):
         raise ValueError("The update job log path differs from its durable descriptor.")
+    environment = dict(descriptor.get("environment") or {})
     if actual == "linux":
         if descriptor.get("user") != str(os.getuid()):
             raise ValueError("The systemd update job belongs to another user.")
@@ -224,13 +259,14 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
                 "--property=Restart=no",
                 f"--property=StandardOutput=append:{_systemd_path(log)}",
                 f"--property=StandardError=append:{_systemd_path(log)}",
+                *(f"--setenv={key}={value}" for key, value in sorted(environment.items())),
                 "--", *command]
         result = _run(args)
     elif actual == "darwin":
         if descriptor.get("user") != str(os.getuid()):
             raise ValueError("The launchd update job belongs to another user.")
         plist = Path(descriptor["plist_path"])
-        _write_private(plist, _plist(descriptor, command, log))
+        _write_private(plist, _plist(descriptor, command, log, environment))
         result = _run(["launchctl", "bootstrap", descriptor["domain"], str(plist)])
         if result.returncode:
             plist.unlink(missing_ok=True)
@@ -238,12 +274,7 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
         sid = descriptor.get("user", "")
         if not isinstance(sid, str) or not sid.startswith("S-1-"):
             raise ValueError("The Scheduled Task update job has no current-user SID.")
-        worker_script = ("$ErrorActionPreference = 'Stop'\n"
-                         f"$exe = {_ps_quote(command[0])}\n"
-                         f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
-                         f"$log = {_ps_quote(str(log))}\n"
-                         "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
-                         "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+        worker_script = _windows_worker_script(command, log, environment)
         worker_encoded = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
         powershell_arguments = subprocess.list2cmdline(
             ["-NoProfile", "-NonInteractive", "-EncodedCommand", worker_encoded])
@@ -366,7 +397,8 @@ def is_registered(descriptor: dict, command: list[str], system: str | None = Non
         if (plist_path.is_symlink() or not plist_path.is_file()
                 or not runtime_platform.is_owner_only(plist_path)):
             raise RuntimeError("The launchd update service has no owned command descriptor.")
-        expected_plist = _plist(descriptor, command, Path(descriptor["log_path"]))
+        expected_plist = _plist(descriptor, command, Path(descriptor["log_path"]),
+                                dict(descriptor.get("environment") or {}))
         if plist_path.read_bytes() != expected_plist:
             raise RuntimeError("The launchd update plist does not match its accepted command.")
         # launchctl print exposes the loaded executable and arguments. Require
@@ -421,12 +453,8 @@ def is_registered(descriptor: dict, command: list[str], system: str | None = Non
         observed = __import__("json").loads(output)
     except (TypeError, ValueError) as failure:
         raise RuntimeError("The Scheduled Task update action is ambiguous.") from failure
-    worker_script = ("$ErrorActionPreference = 'Stop'\n"
-                     f"$exe = {_ps_quote(command[0])}\n"
-                     f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
-                     f"$log = {_ps_quote(descriptor['log_path'])}\n"
-                     "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
-                     "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+    worker_script = _windows_worker_script(command, Path(descriptor["log_path"]),
+                                           dict(descriptor.get("environment") or {}))
     encoded = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
     args = subprocess.list2cmdline(["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded])
     actions = observed.get("Actions") if isinstance(observed, dict) else None

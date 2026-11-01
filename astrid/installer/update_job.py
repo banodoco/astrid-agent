@@ -24,6 +24,7 @@ from runtime_protocol import platform
 
 from . import tools
 from .core import TERMINAL_STEPS, current, pending_transaction
+from .environment import canonical_environment
 
 if TYPE_CHECKING:
     from .backend import Backend
@@ -1299,11 +1300,12 @@ def _worker_command_source(old: Version, job: dict) -> str:
             path = absolute(value)
             if path.is_dir():
                 source_paths.append(str(path))
+    environment = canonical_environment(old.env, absolute(job["data_root"]))
     return (
         "import os,sys; "
         f"_log=open({job['log_path']!r},'a',encoding='utf-8',buffering=1); sys.stdout=sys.stderr=_log; "
         f"sys.path[:0]={source_paths!r}; "
-        f"os.environ.update({old.env!r}); "
+        f"os.environ.update({environment!r}); "
         "from astrid.installer.update_job import run_job; "
         f"result=run_job({job['program_root']!r}, {job['operation_id']!r}, {epoch!r}, {nonce!r}); "
         "print(__import__('json').dumps(result))"
@@ -1966,10 +1968,12 @@ def run_job(root: Path, operation_id: str, epoch: int | None = None,
                     raw = _selected_bytes(bootstrap, MAX_BOOTSTRAP_BYTES)
                     if hashlib.sha256(raw).hexdigest() != metadata["bootstrap_sha256"]:
                         raise ValueError("The selected PowerShell bootstrap changed before -File consumption.")
+                environment = {key: value for key, value in os.environ.items()
+                               if key not in {"ASTRID_INSTALL_MANIFEST_URL", "PYTHONPATH", "PYTHONHOME"}}
+                environment.update(canonical_environment(old.env, data_root))
                 result = subprocess.run(command, cwd=str(root), stdin=subprocess.DEVNULL,
                                         stdout=output, stderr=subprocess.STDOUT, check=False,
-                                        env={key: value for key, value in os.environ.items()
-                                             if key not in {"ASTRID_INSTALL_MANIFEST_URL", "PYTHONPATH", "PYTHONHOME"}})
+                                        env=environment)
             finally:
                 if sys.platform == "win32":
                     bootstrap.unlink(missing_ok=True)

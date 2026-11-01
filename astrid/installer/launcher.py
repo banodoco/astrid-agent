@@ -158,7 +158,7 @@ def publish_runtime_runner(root: Path) -> Path:
     """Durably publish current admission before an update can stop or migrate."""
     from runtime_protocol import platform
 
-    from . import custody, foreground, service
+    from . import custody, environment, foreground, service
 
     root = Path(root).absolute()
     runtime_runner = root / "run_runtime.py"
@@ -167,11 +167,23 @@ def publish_runtime_runner(root: Path) -> Path:
     import inspect
 
     prelude_source = service._launch_prelude_source()
+    environment_source = (
+        "from collections.abc import Mapping\n"
+        "from pathlib import PureWindowsPath\n"
+        "from runtime_protocol.door import DEFAULT_DOOR_PORT\n"
+        f"_PORT_RE = re.compile({environment._PORT_RE.pattern!r})\n"
+        f"_FIRST_UNPRIVILEGED_PORT = {environment._FIRST_UNPRIVILEGED_PORT!r}\n"
+        f"_LAST_PORT = {environment._LAST_PORT!r}\n"
+        + inspect.getsource(environment.runtime_door_port)
+        + "\n"
+        + inspect.getsource(environment.canonical_environment)
+    )
     service_source = (
         prelude_source + '\n'
         'from runtime_protocol import platform\n'
         f'LABEL={service.LABEL!r}\nSERVICE_SETTINGS=frozenset({sorted(service.SERVICE_SETTINGS)!r})\n'
         f'_EMBEDDED_LAUNCH_PRELUDE={prelude_source!r}\n'
+        + environment_source + '\n'
         + "\n".join(inspect.getsource(function) for function in (
             service.default_program_root, service.installer_lock_path, service.pinokio_lock_paths,
             service.command,
