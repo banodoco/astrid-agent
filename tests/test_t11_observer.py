@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import importlib.util
 import json
 from pathlib import Path
+import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +26,24 @@ def _observer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _composition_fixture(root: Path) -> tuple[Path, Path]:
+    """Make the smallest npm-shaped package archive and matching install tree."""
+    archive = root / "timeline-composition.tgz"
+    installed = root / "node_modules/@banodoco/timeline-composition"
+    installed.mkdir(parents=True)
+    files = {
+        "index.js": b"export const timeline = true;\n",
+        "package.json": b'{"name":"@banodoco/timeline-composition"}\n',
+    }
+    with tarfile.open(archive, "w:gz") as package:
+        for name, payload in files.items():
+            member = tarfile.TarInfo("package/" + name)
+            member.size = len(payload)
+            package.addfile(member, io.BytesIO(payload))
+            (installed / name).write_bytes(payload)
+    return archive, installed
 
 
 class T11ObserverTests(unittest.TestCase):
@@ -57,43 +78,99 @@ class T11ObserverTests(unittest.TestCase):
             example = root / "example.json"
             example.write_text(json.dumps({"render": {"run_id": "run-t11-focused"}}), encoding="utf-8")
             receipt = root / "observer.json"
-            result = self.observer.main([
-                "--agent-source", str(REPO_ROOT), "--data-root", str(data),
-                "--profile", str(profile), "--example-receipt", str(example), "--receipt", str(receipt),
-                "--agent-sha", PUBLISHED_AGENT_SHA, "--runtime-sha", PUBLISHED_RUNTIME_SHA,
-                "--app-sha", PUBLISHED_APP_SHA, "--pinokio-sha", PUBLISHED_PINOKIO_SHA,
-                "--schema-sha256", "a" * 64, "--composition-archive-sha256", "b" * 64,
-            ])
+            archive, _ = _composition_fixture(root)
+            # This test worktree has the R2 harness commit on top of the
+            # published Agent.  The real harness fetches the published SHA;
+            # preserve that exactness condition while testing the refusal body.
+            with mock.patch.object(self.observer, "_git_head", return_value=PUBLISHED_AGENT_SHA):
+                result = self.observer.main([
+                    "--agent-source", str(REPO_ROOT), "--data-root", str(data),
+                    "--profile", str(profile), "--example-receipt", str(example), "--receipt", str(receipt),
+                    "--agent-sha", PUBLISHED_AGENT_SHA, "--runtime-sha", PUBLISHED_RUNTIME_SHA,
+                    "--app-sha", PUBLISHED_APP_SHA, "--pinokio-sha", PUBLISHED_PINOKIO_SHA,
+                    "--schema-sha256", "a" * 64,
+                    "--composition-archive-sha256", self.observer.sha256_file(archive),
+                    "--composition-archive", str(archive),
+                ])
             self.assertEqual(result, self.observer.EXIT_OBSERVATION_UNAVAILABLE)
             observed = json.loads(receipt.read_text(encoding="utf-8"))
             self.assertEqual(observed["status"], "refused-no-product-seam")
             self.assertFalse(observed["qualification"])
             self.assertEqual(observed["render_run_identity"]["run_id"], "run-t11-focused")
+            self.assertEqual(observed["composition_input_identity"]["status"],
+                             "unobserved-no-installed-package")
 
-    def test_direct_event_contract_rejects_ambiguity(self):
+    def test_direct_event_contract_rejects_missing_ambiguous_and_mismatched_observations(self):
         process = {"pid": 71, "start_ticks": 123, "boot_id": "boot"}
+        archive_digest = "b" * 64
+        inputs_digest = "d" * 64
         events = [
             {
                 "event": "timeline_schema_consumed", "run_id": "run-1",
                 "observed_at_monotonic_ns": 100, "process": process,
-                "schema": {"canonical_json_sha256": "a" * 64},
+                "schema": {"canonical_json_sha256": "a" * 64, "reader_origin_sha256": "e" * 64},
             },
             {
                 "event": "composition_executed", "run_id": "run-1",
                 "observed_at_monotonic_ns": 101, "process": process,
-                "composition": {"archive_sha256": "b" * 64, "loaded_bundle_sha256": "c" * 64},
+                "composition": {
+                    "archive_sha256": archive_digest,
+                    "resolved_input_inventory_sha256": inputs_digest,
+                    "loaded_bundle_sha256": "c" * 64,
+                },
             },
         ]
         outcome = self.observer.validate_direct_events(
             events, run_id="run-1", schema_sha256="a" * 64,
-            composition_archive_sha256="b" * 64, known_processes=[process],
+            composition_archive_sha256=archive_digest,
+            composition_input_inventory_sha256=inputs_digest, known_processes=[process],
         )
         self.assertEqual(outcome, {"schema_consumption": "observed", "composition_execution": "observed"})
-        with self.assertRaises(self.observer.ObservationContractError):
-            self.observer.validate_direct_events(
-                events + [events[0]], run_id="run-1", schema_sha256="a" * 64,
-                composition_archive_sha256="b" * 64, known_processes=[process],
-            )
+        for bad_events in (
+            [],
+            events + [events[0]],
+            [{**events[0], "run_id": "wrong-run"}, events[1]],
+            [events[0], {**events[1], "composition": {**events[1]["composition"],
+                                                        "resolved_input_inventory_sha256": "f" * 64}}],
+        ):
+            with self.subTest(events=bad_events), self.assertRaises(self.observer.ObservationContractError):
+                self.observer.validate_direct_events(
+                    bad_events, run_id="run-1", schema_sha256="a" * 64,
+                    composition_archive_sha256=archive_digest,
+                    composition_input_inventory_sha256=inputs_digest, known_processes=[process],
+                )
+
+    def test_mismatched_archive_digest_writes_an_unqualified_contract_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / "data"
+            data.mkdir()
+            profile = root / "profile.json"
+            profile.write_text("{}\n", encoding="utf-8")
+            example = root / "example.json"
+            example.write_text("{}\n", encoding="utf-8")
+            archive, _ = _composition_fixture(root)
+            receipt = root / "observer.json"
+            with mock.patch.object(self.observer, "_git_head", return_value=PUBLISHED_AGENT_SHA):
+                result = self.observer.main([
+                    "--agent-source", str(REPO_ROOT), "--data-root", str(data),
+                    "--profile", str(profile), "--example-receipt", str(example), "--receipt", str(receipt),
+                    "--agent-sha", PUBLISHED_AGENT_SHA, "--runtime-sha", PUBLISHED_RUNTIME_SHA,
+                    "--app-sha", PUBLISHED_APP_SHA, "--pinokio-sha", PUBLISHED_PINOKIO_SHA,
+                    "--schema-sha256", "a" * 64, "--composition-archive-sha256", "0" * 64,
+                    "--composition-archive", str(archive),
+                ])
+            self.assertEqual(result, self.observer.EXIT_CONTRACT_FAILURE)
+            observed = json.loads(receipt.read_text(encoding="utf-8"))
+            self.assertEqual(observed["status"], "observer-failed")
+            self.assertFalse(observed["qualification"])
+
+    def test_composition_inventory_refuses_changed_installed_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive, installed = _composition_fixture(Path(temporary))
+            (installed / "index.js").write_text("tampered\n", encoding="utf-8")
+            with self.assertRaises(self.observer.ObservationContractError):
+                self.observer.verify_composition_inputs(archive, installed)
 
 
 if __name__ == "__main__":

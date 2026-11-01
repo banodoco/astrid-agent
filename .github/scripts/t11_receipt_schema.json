@@ -4,8 +4,8 @@
   "type": "object",
   "required": ["status", "qualification", "phase", "observations"],
   "properties": {
-    "status": {"enum": ["not-qualified", "qualified"]},
-    "qualification": {"type": "boolean"},
+    "status": {"const": "not-qualified"},
+    "qualification": {"const": false},
     "phase": {"type": "string", "minLength": 1},
     "observations": {
       "type": "object",
@@ -32,7 +32,21 @@
                 "schema_consumption": {"type": "object", "required": ["status"]},
                 "composition_execution": {"type": "object", "required": ["status"]}
               }
-            }
+            },
+            "composition_input_identity": {
+              "type": "object",
+              "required": ["archive_sha256", "resolved_input_inventory_sha256", "equal"],
+              "properties": {"equal": {"const": true}}
+            },
+            "render_run_identity": {
+              "type": "object",
+              "required": ["status", "run_id"]
+            },
+            "process_run_correlation": {
+              "type": "object",
+              "required": ["status", "run_id"]
+            },
+            "direct_event_evidence": {"$ref": "#/$defs/directEvents"}
           }
         }
       }
@@ -48,6 +62,58 @@
         "runtime": {"$ref": "#/$defs/sha"},
         "app": {"$ref": "#/$defs/sha"},
         "pinokio": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "process": {
+      "type": "object",
+      "required": ["pid", "start_ticks", "boot_id"],
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "start_ticks": {"type": "integer", "minimum": 0},
+        "boot_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "directEvents": {
+      "type": "object",
+      "required": ["schema_event", "composition_event"],
+      "properties": {
+        "schema_event": {
+          "type": "object",
+          "required": ["event", "run_id", "observed_at_monotonic_ns", "process", "schema"],
+          "properties": {
+            "event": {"const": "timeline_schema_consumed"},
+            "run_id": {"type": "string", "minLength": 1},
+            "observed_at_monotonic_ns": {"type": "integer", "minimum": 0},
+            "process": {"$ref": "#/$defs/process"},
+            "schema": {
+              "type": "object",
+              "required": ["canonical_json_sha256", "reader_origin_sha256"],
+              "properties": {
+                "canonical_json_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "reader_origin_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
+          }
+        },
+        "composition_event": {
+          "type": "object",
+          "required": ["event", "run_id", "observed_at_monotonic_ns", "process", "composition"],
+          "properties": {
+            "event": {"const": "composition_executed"},
+            "run_id": {"type": "string", "minLength": 1},
+            "observed_at_monotonic_ns": {"type": "integer", "minimum": 0},
+            "process": {"$ref": "#/$defs/process"},
+            "composition": {
+              "type": "object",
+              "required": ["archive_sha256", "resolved_input_inventory_sha256", "loaded_bundle_sha256"],
+              "properties": {
+                "archive_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "resolved_input_inventory_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "loaded_bundle_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -74,8 +140,23 @@
                         "properties": {"status": {"const": "observed"}}
                       }
                     }
+                  },
+                  "composition_input_identity": {
+                    "properties": {"equal": {"const": true}}
+                  },
+                  "render_run_identity": {
+                    "properties": {"status": {"const": "observed"}}
+                  },
+                  "process_run_correlation": {
+                    "properties": {"status": {"const": "observed"}}
                   }
-                }
+                },
+                "required": [
+                  "composition_input_identity",
+                  "render_run_identity",
+                  "process_run_correlation",
+                  "direct_event_evidence"
+                ]
               }
             }
           }

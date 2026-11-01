@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 from typing import Any, Iterable, Mapping
 
 
@@ -39,6 +40,96 @@ def sha256_bytes(value: bytes) -> str:
 
 def sha256_file(path: Path) -> str:
     return sha256_bytes(path.read_bytes())
+
+
+def _inventory_digest(entries: Iterable[Mapping[str, Any]]) -> str:
+    """Hash a deterministic package-file inventory, never a package version."""
+    encoded = json.dumps(list(entries), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256_bytes(encoded)
+
+
+def _regular_file_record(path: Path, relative: str) -> dict[str, Any]:
+    stat = path.lstat()
+    if path.is_symlink() or not path.is_file():
+        raise ObservationContractError("Composition package contains a non-regular file")
+    return {"path": relative, "size": stat.st_size, "sha256": sha256_file(path)}
+
+
+def composition_archive_inventory(archive: Path) -> dict[str, Any]:
+    """Return the exact regular-file inventory recorded in a Composition tgz.
+
+    npm packages use a ``package/`` archive prefix.  Links and special entries
+    are refused so their target cannot become an unrecorded executable input.
+    """
+    records: list[dict[str, Any]] = []
+    try:
+        with tarfile.open(archive, "r:gz") as package:
+            for member in sorted(package.getmembers(), key=lambda item: item.name):
+                if member.isdir():
+                    continue
+                if not member.isfile() or not member.name.startswith("package/"):
+                    raise ObservationContractError("Composition archive has an unsupported member")
+                relative = member.name.removeprefix("package/")
+                if not relative or relative.startswith("/") or ".." in Path(relative).parts:
+                    raise ObservationContractError("Composition archive member has an unsafe path")
+                handle = package.extractfile(member)
+                if handle is None:
+                    raise ObservationContractError("Composition archive member is unreadable")
+                payload = handle.read()
+                records.append({"path": relative, "size": len(payload), "sha256": sha256_bytes(payload)})
+    except (OSError, tarfile.TarError) as exc:
+        raise ObservationContractError("Composition archive cannot be inventoried") from exc
+    if not records:
+        raise ObservationContractError("Composition archive has no regular files")
+    return {
+        "archive_sha256": sha256_file(archive),
+        "file_count": len(records),
+        "inventory_sha256": _inventory_digest(records),
+        "files": records,
+    }
+
+
+def composition_installed_inventory(root: Path) -> dict[str, Any]:
+    """Return the exact installed package tree; npm metadata belongs outside it."""
+    package = root.resolve(strict=True)
+    if package.is_symlink() or not package.is_dir():
+        raise ObservationContractError("installed Composition package is not a real directory")
+    records: list[dict[str, Any]] = []
+    try:
+        paths = sorted(package.rglob("*"), key=lambda item: item.relative_to(package).as_posix())
+    except OSError as exc:
+        raise ObservationContractError("installed Composition package cannot be inventoried") from exc
+    for path in paths:
+        relative = path.relative_to(package).as_posix()
+        if path.is_symlink():
+            raise ObservationContractError("installed Composition package contains a symlink")
+        if path.is_dir():
+            continue
+        records.append(_regular_file_record(path, relative))
+    if not records:
+        raise ObservationContractError("installed Composition package has no regular files")
+    return {
+        "path": str(package),
+        "file_count": len(records),
+        "inventory_sha256": _inventory_digest(records),
+        "files": records,
+    }
+
+
+def verify_composition_inputs(archive: Path, installed_package: Path) -> dict[str, Any]:
+    """Require the installed inputs to be exactly the tuple-recorded archive."""
+    recorded = composition_archive_inventory(archive)
+    installed = composition_installed_inventory(installed_package)
+    if recorded["files"] != installed["files"]:
+        raise ObservationContractError("installed Composition inputs differ from the recorded archive")
+    return {
+        "archive_sha256": recorded["archive_sha256"],
+        "archive_inventory_sha256": recorded["inventory_sha256"],
+        "resolved_package_path": installed["path"],
+        "resolved_input_inventory_sha256": installed["inventory_sha256"],
+        "file_count": recorded["file_count"],
+        "equal": True,
+    }
 
 
 def _line_number(text: str, marker: str) -> int:
@@ -164,10 +255,10 @@ def _option_value(argv: list[str], option: str) -> str | None:
 
 
 def capture_pack_host_identity(
-    *, agent_source: Path, data_root: Path, proc_root: Path = PROC_ROOT,
+    *, installed_source_root: Path, data_root: Path, proc_root: Path = PROC_ROOT,
 ) -> dict[str, Any]:
     """Snapshot only a uniquely bound host; zero/multiple candidates are not proof."""
-    expected_source = str(agent_source.resolve(strict=True))
+    expected_source = str(installed_source_root.resolve(strict=True))
     expected_data = str(data_root.resolve(strict=True))
     candidates: list[dict[str, Any]] = []
     try:
@@ -240,7 +331,8 @@ def _read_run_identity(path: Path) -> str | None:
 
 def validate_direct_events(
     events: Iterable[Mapping[str, Any]], *, run_id: str, schema_sha256: str,
-    composition_archive_sha256: str, known_processes: Iterable[Mapping[str, Any]],
+    composition_archive_sha256: str, composition_input_inventory_sha256: str,
+    known_processes: Iterable[Mapping[str, Any]],
 ) -> dict[str, str]:
     """Validate future product-emitted events; reject gaps and ambiguity.
 
@@ -268,9 +360,14 @@ def validate_direct_events(
         raise ObservationContractError("both direct consumption events are required")
     schema = seen["timeline_schema_consumed"].get("schema")
     composition = seen["composition_executed"].get("composition")
-    if not isinstance(schema, Mapping) or schema.get("canonical_json_sha256") != schema_sha256:
+    if (not isinstance(schema, Mapping)
+            or schema.get("canonical_json_sha256") != schema_sha256
+            or not isinstance(schema.get("reader_origin_sha256"), str)
+            or not SHA256_RE.fullmatch(schema["reader_origin_sha256"])):
         raise ObservationContractError("schema event does not name the verified document")
-    if not isinstance(composition, Mapping) or composition.get("archive_sha256") != composition_archive_sha256:
+    if (not isinstance(composition, Mapping)
+            or composition.get("archive_sha256") != composition_archive_sha256
+            or composition.get("resolved_input_inventory_sha256") != composition_input_inventory_sha256):
         raise ObservationContractError("composition event does not name the recorded archive")
     if not isinstance(composition.get("loaded_bundle_sha256"), str) or not SHA256_RE.fullmatch(
         composition["loaded_bundle_sha256"]
@@ -320,6 +417,7 @@ def _parse_digest(value: str, name: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent-source", required=True, type=Path)
+    parser.add_argument("--installed-source-root", type=Path)
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--profile", required=True, type=Path)
     parser.add_argument("--example-receipt", required=True, type=Path)
@@ -330,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pinokio-sha", required=True)
     parser.add_argument("--schema-sha256", required=True)
     parser.add_argument("--composition-archive-sha256", required=True)
+    parser.add_argument("--composition-archive", required=True, type=Path)
+    parser.add_argument("--installed-composition-package", type=Path)
     args = parser.parse_args(argv)
     receipt: dict[str, Any] = {
         "schema_version": 1,
@@ -348,9 +448,32 @@ def main(argv: list[str] | None = None) -> int:
         source = args.agent_source.resolve(strict=True)
         if _git_head(source) != tuple_identity["agent_sha"]:
             raise ObservationContractError("selected Agent source differs from requested tuple")
+        installed_source_root = (args.installed_source_root.resolve(strict=True)
+                                 if args.installed_source_root is not None else None)
         profile_sha = sha256_file(args.profile.resolve(strict=True))
+        composition_archive = args.composition_archive.resolve(strict=True)
+        if sha256_file(composition_archive) != archive_sha:
+            raise ObservationContractError("Composition archive differs from the requested tuple digest")
+        composition_inputs: dict[str, Any]
+        if args.installed_composition_package is None:
+            composition_inputs = {
+                "status": "unobserved-no-installed-package",
+                "archive_sha256": archive_sha,
+                "reason": "this observer invocation has no installed Composition package root",
+            }
+        else:
+            composition_inputs = verify_composition_inputs(
+                composition_archive, args.installed_composition_package,
+            )
         seam = inspect_missing_product_seam(source)
-        host = capture_pack_host_identity(agent_source=source, data_root=args.data_root)
+        host = (capture_pack_host_identity(
+            installed_source_root=installed_source_root, data_root=args.data_root,
+        ) if installed_source_root is not None else {
+            "status": "unobserved",
+            "reason": "no installed source root was available to this refusal invocation",
+            "candidates": [],
+            "correlated_run_id": None,
+        })
         run_id = _read_run_identity(args.example_receipt)
         receipt = {
             "schema_version": 1,
@@ -362,9 +485,32 @@ def main(argv: list[str] | None = None) -> int:
                 "composition_archive_sha256": archive_sha,
                 "source_profile_sha256": profile_sha,
             },
+            "composition_input_identity": composition_inputs,
             "render_run_identity": {"status": "recorded" if run_id else "unobserved", "run_id": run_id},
             "host_process_identity": host,
+            "process_run_correlation": {
+                "status": "unobserved",
+                "run_id": run_id,
+                "reason": (
+                    "the current product does not emit a same-render-run event from the "
+                    "schema consumer or frame worker with a stable process-start identity"
+                ),
+            },
             "same_process_observation": seam["missing_seams"],
+            "direct_event_contract": {
+                "status": "unavailable-no-product-endpoint",
+                "required_events": {
+                    "timeline_schema_consumed": [
+                        "run_id", "observed_at_monotonic_ns", "process(pid,start_ticks,boot_id)",
+                        "schema.canonical_json_sha256", "schema.reader_origin_sha256",
+                    ],
+                    "composition_executed": [
+                        "run_id", "observed_at_monotonic_ns", "process(pid,start_ticks,boot_id)",
+                        "composition.archive_sha256", "composition.resolved_input_inventory_sha256",
+                        "composition.loaded_bundle_sha256",
+                    ],
+                },
+            },
             "source_evidence": {
                 "schema_probe": seam["schema_probe"],
                 "host_worker_launch": seam["host_worker_launch"],

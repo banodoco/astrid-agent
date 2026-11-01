@@ -46,7 +46,8 @@ def main():
                'TMPDIR': str(root)}
         urls = {'agent': 'https://github.com/banodoco/astrid-agent.git',
                 'runtime': 'https://github.com/banodoco/astrid-runtime.git',
-                'app': 'https://github.com/banodoco/astrid-app.git'}
+                'app': 'https://github.com/banodoco/astrid-app.git',
+                'pinokio': 'https://github.com/banodoco/astrid-pinokio.git'}
         receipt['phase'] = 'published-sources'
         for name, url in urls.items():
             dest = sources / name
@@ -72,11 +73,11 @@ def main():
             path = (base / dependency[5:]).resolve(strict=True)
             if not path.is_relative_to(base.resolve()):
                 raise ValueError('Composition archive escapes tuple source')
-            return path.read_bytes()
+            return path
         agent_archive, app_archive = archive(agent / 'remotion'), archive(app)
-        if agent_archive != app_archive:
+        if agent_archive.read_bytes() != app_archive.read_bytes():
             raise ValueError('Agent and App recorded Composition archives differ')
-        obs['recorded_composition_archive_sha256'] = digest(agent_archive)
+        obs['recorded_composition_archive_sha256'] = digest(agent_archive.read_bytes())
         obs['schema_consumption'] = 'unobserved'
         obs['composition_execution'] = 'unobserved'
         manifest_bytes = (app / 'public/install-manifest.json').read_bytes()
@@ -109,6 +110,16 @@ def main():
         profile_path = data / 'runtime/source-profiles/astrid.json'
         profile_bytes = profile_path.read_bytes()
         profile = json.loads(profile_bytes)
+        required_profile_roots = ('runtime_checkout', 'source_checkout', 'runtime_environment', 'service_declaration')
+        installed_roots = {}
+        for name in required_profile_roots:
+            root_path = Path(profile[name]).resolve(strict=True)
+            installed_roots[name] = root_path.is_relative_to(program.resolve())
+        if not all(installed_roots.values()):
+            raise ValueError('installed source profile root escapes the selected program root')
+        installed_schema = Path(profile['source_checkout']) / schema_name
+        if digest(installed_schema.read_bytes()) != obs['verified_tuple_timeline_schema_sha256']:
+            raise ValueError('installed Timeline schema differs from the verified tuple schema')
         declaration_path = Path(profile['service_declaration'])
         declaration = json.loads(declaration_path.read_text())
         hosts = [s for s in declaration['services'] if s['name'] == 'pack-host']
@@ -119,9 +130,18 @@ def main():
                     'ASTRID_WORKSPACE_DISCOVERY': str(data / 'runtime/discovery.json')}
         if any(host['env'].get(k) != v for k, v in expected.items()):
             raise ValueError('pack-host declaration does not bind the clean data root')
+        remotion_project = Path(host['env'].get('ASTRID_REMOTION_PROJECT_DIR', '')).resolve(strict=True)
+        if not remotion_project.is_relative_to(program.resolve()):
+            raise ValueError('pack-host Remotion project escapes the selected program root')
+        installed_composition = remotion_project / 'node_modules/@banodoco/timeline-composition'
+        if not installed_composition.is_dir() or installed_composition.is_symlink():
+            raise ValueError('selected installed Remotion project has no regular Composition package root')
         obs['source_profile_sha256'] = digest(profile_bytes)
         obs['service_declaration_sha256'] = digest(declaration_path.read_bytes())
         obs['profile_data_root_declaration_matches'] = True
+        obs['installed_profile_roots_within_program'] = installed_roots
+        obs['installed_timeline_schema_sha256'] = digest(installed_schema.read_bytes())
+        obs['installed_remotion_project_within_program'] = True
         receipt['phase'] = 'installed-example-render'
         example_receipt = root / 't11-example-render-receipt.json'
         example_output = work / 't11-example-render.mp4'
@@ -151,12 +171,15 @@ def main():
         observed = subprocess.run(
             [sys.executable, '-I', str(observer),
              '--agent-source', str(agent), '--data-root', str(data),
+             '--installed-source-root', profile['source_checkout'],
              '--profile', str(profile_path), '--example-receipt', str(example_receipt),
              '--receipt', str(observer_receipt),
              '--agent-sha', shas['agent'], '--runtime-sha', shas['runtime'],
              '--app-sha', shas['app'], '--pinokio-sha', shas['pinokio'],
              '--schema-sha256', obs['verified_tuple_timeline_schema_sha256'],
-             '--composition-archive-sha256', obs['recorded_composition_archive_sha256']],
+             '--composition-archive-sha256', obs['recorded_composition_archive_sha256'],
+             '--composition-archive', str(agent_archive),
+             '--installed-composition-package', str(installed_composition)],
             cwd=work, env=env, check=False,
         )
         if not observer_receipt.is_file():

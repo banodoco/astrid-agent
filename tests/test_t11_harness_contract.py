@@ -59,11 +59,33 @@ class T11HarnessContractTests(unittest.TestCase):
         with self.assertRaises(jsonschema.ValidationError):
             self.validator.validate(receipt)
 
+    def test_static_equality_shape_cannot_promote_a_qualified_receipt(self):
+        receipt = _refusal_receipt()
+        receipt["status"] = "qualified"
+        receipt["qualification"] = True
+        observed = receipt["observations"]
+        observed["schema_consumption"] = "observed"
+        observed["composition_execution"] = "observed"
+        observer = observed["same_process_observer"]
+        observer["status"] = "observed"
+        observer["qualification"] = True
+        observer["same_process_observation"] = {
+            "schema_consumption": {"status": "observed"},
+            "composition_execution": {"status": "observed"},
+        }
+        # A static archive/schema assertion has no live direct-event evidence,
+        # process/run correlation, or loaded-bundle identity.
+        with self.assertRaises(jsonschema.ValidationError):
+            self.validator.validate(receipt)
+
     def test_harness_requires_the_observer_and_all_four_tuple_members(self):
         source = HARNESS_PATH.read_text(encoding="utf-8")
         self.assertIn("'pinokio'", source)
+        self.assertIn("astrid-pinokio.git", source)
         self.assertIn("t11_example_render.py", source)
         self.assertIn("t11_observer.py", source)
+        self.assertIn("installed_profile_roots_within_program", source)
+        self.assertIn("installed-composition-package", source)
         self.assertIn("same-process observer did not fail closed", source)
         self.assertIn("return 2", source)
 
