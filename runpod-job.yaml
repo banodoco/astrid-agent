@@ -20,7 +20,7 @@ run:
   \ \"$ROOT/package/artifact-manifest.json\" ]; then cp \"$ROOT/package/artifact-manifest.json\" \"$OUT/bound-artifact-manifest.json\"\
   ; fi\n  (cd \"$OUT\" && find . -type f ! -name hashes.sha256 -print0 | sort -z | xargs -0 -r sha256sum > hashes.sha256)\
   \ || echo hashing_failed >> \"$OUT/finalization-errors.txt\"\n}\ntrap finalize EXIT\nprintf 'started_at=%s\\n' \"$(date\
-  \ -u +%FT%TZ)\" > \"$OUT/stages.txt\"\nprintf '%s\\n' 'G-01-Q-RUNNER-R10' 'lane/M-QUAL/G-01-Q-RUNNER-R10-runpod' > \"$OUT/request-identity.txt\"\
+  \ -u +%FT%TZ)\" > \"$OUT/stages.txt\"\nprintf '%s\\n' 'G-01-Q-RUNNER-R10' 'lane/M-QUAL/G-01-Q-RUNNER-R10-runpod' 'relay-fix-effective=2026-11-01T16:10:00Z' > \"$OUT/request-identity.txt\"\
   \nprintf '%s\\n' 'agent=af5ae8afdb9829beb2bba4f811dbe97765bd72b2' 'runtime=47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' 'app=a55bec9ff384b5bbfee5535962880084ab2adb1b'\
   \ 'pinokio=89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4' 'vibecomfy=2967033970cbb5884651c9565265778482d3b44e' 'lifecycle=96360a27a53c4608f780f7b370f747a2aa3c7ca8'\
   \ 'manifest_sha256=ced136903a7319e78a0be7db0cc1709c0663eaf7d567c040fe1812a916693874' 'agent_requirements_runtime_lock_sha256=24d50415609ae656520e7bc0f87a73acc22ea1524c5f94c6dc19b9faa19cc3e2'\
