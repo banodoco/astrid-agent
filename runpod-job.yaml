@@ -1,0 +1,16 @@
+repos:
+  astrid-agent: 9127648fd823580012cdb59b6b9e9f70f0d425e3
+  astrid-runtime: 3b12fface79a3be029f3b6623765a7f3e1e5e24f
+cpu:
+  vcpu: 8
+max_minutes: 40
+setup:
+  - 'python3 -m pip install -e ".[dev]" -e ../astrid-runtime'
+  - 'mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"'
+run:
+  - 'export TMPDIR="$PWD/runpod-tmp" ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)" PYTHONDONTWRITEBYTECODE=1; set -o pipefail; python3 -m pytest -p no:cacheprovider -q tests/core/execution/test_execution_custody_composition_i_ag_03b.py tests/test_generic_host_result_json.py tests/test_generic_host_child_output.py tests/core/test_orchestrator_runner_errors.py tests/sdk/test_invocation_custody_composition_i_ag_03b.py tests/sdk/test_workspace_client_custody_composition_i_ag_03b.py tests/sdk/test_child_bridge_d18.py tests/sdk/test_delegated_publication_policy_g31.py tests/core/gateway/test_doctor_bundle.py::test_doctor_custody_union_handles_unavailable_runtime tests/core/execution/test_child_import_receipt.py::test_actual_local_h3_launcher_observes_child_without_inventing_runtime_identity --junitxml=runpod-evidence/independent.xml 2>&1 | tee runpod-evidence/independent.txt'
+  - 'export TMPDIR="$PWD/runpod-tmp" ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)" PYTHONDONTWRITEBYTECODE=1; set -o pipefail; python3 -m pytest -p no:cacheprovider -o addopts= -q tests/integrations/test_execution_custody_runtime_i_ag_03b.py tests/integrations/test_h3_delegated_child_claim_135.py --junitxml=runpod-evidence/runtime.xml 2>&1 | tee runpod-evidence/runtime.txt'
+  - 'export TMPDIR="$PWD/runpod-tmp" ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)" PYTHONDONTWRITEBYTECODE=1; set -o pipefail; python3 -m pytest -p no:cacheprovider -q tests/core/execution/test_fail_closed_g28.py::test_fault_reaches_terminal_state_and_receipt tests/core/execution/test_fail_closed_g28.py::test_hung_command_is_stopped_and_reaped_by_unchanged_absolute_deadline tests/test_generic_host.py::test_runtime_protocol_client_uses_a_fresh_idempotency_key_for_each_heartbeat --junitxml=runpod-evidence/lifetime.xml 2>&1 | tee runpod-evidence/lifetime.txt'
+  - 'git rev-parse HEAD > runpod-evidence/agent-head.txt; git -C ../astrid-runtime rev-parse HEAD > runpod-evidence/runtime-head.txt; python3 --version > runpod-evidence/python.txt; python3 -m pytest --version > runpod-evidence/pytest.txt; uname -a > runpod-evidence/platform.txt; sha256sum runtime.lock.json astrid_runtime_client/generated.py astrid_runtime_client/contract_metadata.py > runpod-evidence/generated-sha256.txt'
+artifacts:
+  - 'runpod-evidence/**'
