@@ -251,3 +251,63 @@ def test_wrong_provider_volume_blocks_before_create(case, monkeypatch):
         asyncio.run(case.owner.select(case.grant))
     assert case.creates == 0
     assert not case.owner.path.exists()
+
+
+def test_default_idle_and_explicit_optional_volume(tmp_path):
+    from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
+    raw = {"provider_account_ref": "account-a", "gpu_types": ["gpu"],
+           "image": "worker@sha256:" + "a" * 64, "volume": None}
+    preferences = RunPodPreferences.from_mapping(raw)
+    assert preferences.idle_timeout_seconds == DEFAULT_IDLE_SECONDS == 1800
+    assert RunPodPreferences.from_mapping(preferences.as_mapping()) == preferences
+    path = tmp_path / "config.toml"
+    save_runpod_preferences(raw, path=path)
+    assert read_runpod_preferences(path=path) == preferences
+    assert "volume" not in path.read_text()
+
+
+def test_initial_intent_directory_is_flushed_before_create(case, monkeypatch):
+    from astrid.packs.runpod import worker_preparation
+    flushed = []
+    real = worker_preparation.platform.fsync_directory
+
+    def fsync(path):
+        flushed.append(path)
+        return real(path)
+
+    monkeypatch.setattr(worker_preparation.platform, "fsync_directory", fsync)
+    case.before_create = lambda: pytest.fail("intent directory was not flushed") if case.owner.path.parent not in flushed else None
+    asyncio.run(case.owner.select(case.grant))
+    assert case.creates == 1
+
+
+def test_symlink_account_lock_refused_before_create(case):
+    case.owner.path.parent.mkdir(parents=True)
+    other = case.owner.path.parent / "foreign-lock"
+    other.write_text("foreign")
+    case.owner.path.with_name(".claim.json.owner.lock").symlink_to(other)
+    with pytest.raises(AcquisitionUnresolvedError, match="opened safely"):
+        asyncio.run(case.owner.select(case.grant))
+    assert case.creates == 0 and not case.owner.path.exists()
+    assert other.read_text() == "foreign"
+
+
+def test_failed_intent_flush_keeps_custody_and_never_rents(case, monkeypatch):
+    from astrid.packs.runpod import worker_preparation
+
+    def failed_flush(path):
+        raise OSError("simulated directory flush failure")
+
+    monkeypatch.setattr(worker_preparation.platform, "fsync_directory", failed_flush)
+    with pytest.raises(OSError):
+        asyncio.run(case.owner.select(case.grant))
+    assert case.creates == 0
+    assert json.loads(case.owner.path.read_text())["state"] == "allocation_ready"
+
+
+def test_no_volume_legacy_worker_route_refuses_before_renting(case):
+    preferences = RunPodPreferences.from_mapping({**case.raw, "volume": None})
+    case.owner.preferences = preferences
+    with pytest.raises(PaidSelectionError, match="retained lease owner"):
+        asyncio.run(case.owner.select(replace(case.grant, offer_digest=case.offer.digest(preferences))))
+    assert case.creates == case.configs == 0 and not case.owner.path.exists()

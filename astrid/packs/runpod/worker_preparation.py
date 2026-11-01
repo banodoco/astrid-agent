@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -39,7 +40,7 @@ class RunPodTargetContract:
     pod_id: str
     gpu_type: str
     worker_image: str
-    network_volume_id: str
+    network_volume_id: str | None
     network_volume_name: str | None
     network_volume_size_gb: int
     expected_pod_name: str | None = None
@@ -54,8 +55,8 @@ class RunPodTargetObservation:
     actual_status: str | None
     gpu_type: str
     worker_image: str
-    network_volume_id: str
-    network_volume_name: str
+    network_volume_id: str | None
+    network_volume_name: str | None
     network_volume_size_gb: int
     datacenter_id: str | None
     observed_at: str
@@ -96,14 +97,13 @@ def create_target_record_exclusive(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    # A partial or unflushed intent must block admission, rather than
+    # disappear and make an uncertain acquisition look like a first run.
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    platform.fsync_directory(path.parent)
 
 
 def replace_target_record(path: Path, value: dict[str, Any], *, operation_id: str) -> None:
@@ -131,8 +131,13 @@ def target_owner(handle_path: Path):
     path = handle_path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(f".{path.name}.owner.lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError:
+        raise AcquisitionUnresolvedError("RunPod account lock cannot be opened safely") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise AcquisitionUnresolvedError("RunPod account lock must be a regular file")
         try:
             platform.lock_file(fd, blocking=False)
         except BlockingIOError as exc:
@@ -248,9 +253,9 @@ def inspect_target_records(
     """Validate exact inventory identity; attachment checks also require readiness."""
     if not contract.pod_id.strip():
         raise ValueError("pod_id must be nonempty")
-    if not contract.network_volume_id.strip():
+    if contract.network_volume_id is not None and not contract.network_volume_id.strip():
         raise ValueError("network volume identity must be pinned by ID")
-    if contract.network_volume_size_gb <= 0:
+    if contract.network_volume_id is not None and contract.network_volume_size_gb <= 0:
         raise ValueError("network volume size must be positive")
 
     pod_matches = [
@@ -308,19 +313,22 @@ def inspect_target_records(
             f"pod {contract.pod_id!r} image mismatch: expected {contract.worker_image!r}, observed {image!r}"
         )
 
-    attached_volume_id = _required_text(
-        pod, "networkVolumeId", context=f"pod {contract.pod_id}"
-    )
-    if attached_volume_id != contract.network_volume_id:
+    attached_volume_id = _text(pod.get("networkVolumeId"))
+    if (attached_volume_id != contract.network_volume_id
+            or (contract.network_volume_id is None and pod.get("networkVolumeId") not in (None, ""))):
         raise TargetObservationError(
             f"pod {contract.pod_id!r} volume mismatch: expected {contract.network_volume_id!r}, "
             f"observed {attached_volume_id!r}"
         )
 
     volume = inspect_volume_records(contract, volumes=volumes)
-    volume_name = _required_text(volume, "name", context=f"volume {contract.network_volume_id}")
-    size = _positive_integer(volume.get("size"))
+    volume_name = _text(volume.get("name"))
+    size = volume["size"]
     datacenter_id = _text(volume.get("dataCenterId"))
+    if contract.network_volume_id is None:
+        datacenter_id = _text(pod.get("dataCenterId")) or _text(machine.get("dataCenterId"))
+        if contract.datacenter_id is not None and datacenter_id != contract.datacenter_id:
+            raise TargetObservationError("no-volume pod datacenter could not be confirmed")
 
     return RunPodTargetObservation(
         pod_id=contract.pod_id,
@@ -343,6 +351,10 @@ def inspect_volume_records(
     volumes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Prove the pinned volume's account identity and immutable sizing."""
+    if contract.network_volume_id is None:
+        if contract.network_volume_name is not None or contract.network_volume_size_gb != 0:
+            raise TargetObservationError("no-volume target has inconsistent volume identity")
+        return {"id": None, "name": None, "size": 0, "dataCenterId": contract.datacenter_id}
     if not contract.network_volume_id.strip():
         raise ValueError("network volume identity must be pinned by ID")
     if contract.network_volume_size_gb <= 0:
@@ -430,7 +442,7 @@ def _target_contract(
         expected_pod_name=expected_name,
         gpu_type=config.gpu_type_candidates[0],
         worker_image=config.worker_image,
-        network_volume_id=str(volume.get("id") or ""),
+        network_volume_id=_text(volume.get("id")),
         network_volume_name=_text(volume.get("name")),
         network_volume_size_gb=int(volume["size"]),
         datacenter_id=_text(volume.get("dataCenterId")),
@@ -493,7 +505,7 @@ def observe_target(
         raise TargetObservationError("RunPod account pod inventory returned an invalid response")
 
     try:
-        volumes = get_network_volumes(api_key)
+        volumes = get_network_volumes(api_key) if contract.network_volume_id is not None else []
     except Exception as exc:
         raise TargetObservationError(
             f"could not confirm network volume {contract.network_volume_id!r}: {exc}"
@@ -527,7 +539,8 @@ async def _release_inventory(
         raise TargetObservationError("RunPod account pod inventory is malformed or ambiguous")
 
     try:
-        volumes = await asyncio.to_thread(get_network_volumes, config.api_key)
+        volumes = (await asyncio.to_thread(get_network_volumes, config.api_key)
+                   if contract.network_volume_id is not None else [])
     except Exception:
         raise TargetObservationError(
             "could not confirm the persistent release volume"
@@ -566,7 +579,12 @@ def _release_contract_from_record(attempt: Mapping[str, Any]) -> RunPodTargetCon
         attempt.get("storage_name")
     )
     volume_size = _positive_integer(attempt.get("network_volume_size_gb"))
-    if not all((pod_id, gpu_type, worker_image, volume_id, volume_name, volume_size)):
+    ephemeral = (attempt.get("storage_mode") == "ephemeral"
+                 and attempt.get("network_volume_id") is None
+                 and attempt.get("network_volume_name") is None
+                 and type(attempt.get("network_volume_size_gb")) is int
+                 and attempt.get("network_volume_size_gb") == 0)
+    if not all((pod_id, gpu_type, worker_image)) or (not ephemeral and not all((volume_id, volume_name, volume_size))):
         raise TargetObservationError(
             "release record is missing exact pod, GPU, image or persistent-volume identity"
         )
@@ -577,7 +595,7 @@ def _release_contract_from_record(attempt: Mapping[str, Any]) -> RunPodTargetCon
         worker_image=worker_image,
         network_volume_id=volume_id,
         network_volume_name=volume_name,
-        network_volume_size_gb=volume_size,
+        network_volume_size_gb=0 if ephemeral else volume_size,
         datacenter_id=_text(attempt.get("network_volume_datacenter_id")),
     )
 
@@ -599,6 +617,24 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
     """Accept only durable exact-task drain and process-stop evidence."""
     if attempt.get("state") == "cleanup_complete":
         _validate_absence_receipt(attempt)
+    if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.lease-drain.v1":
+        lease = attempt.get("lease")
+        if (not isinstance(lease, Mapping) or lease.get("schema") != "astrid.runpod.lease.v1"
+                or lease.get("state") != "releasing"
+                or attempt.get("worker_activation") != "not_started"
+                or attempt.get("state") not in {"release_pending", "cleanup_pending", "cleanup_complete"}
+                or any(attempt.get(key) is not None for key in
+                       ("managed_worker", "managed_session", "ordinary_preparation", "warm_session", "task_id", "activation_id"))
+                or value.get("state") != "drained" or value.get("admission_closed") is not True
+                or set(value) != {"schema", "state", "admission_closed", "operation_id", "pod_id",
+                                  "provider_account_ref", "owner_epoch", "generation", "invocation_id"}
+                or type(value.get("generation")) is not int
+                or any(not value.get(key) or value[key] != attempt.get(key)
+                       for key in ("operation_id", "pod_id", "provider_account_ref"))
+                or any(value.get(key) != lease.get(key) for key in
+                       ("owner_epoch", "generation", "invocation_id"))):
+            raise TargetObservationError("release lacks this lease's exact host drain and bridge fence")
+        return dict(value)
     if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.unactivated-quiescence.v1":
         if (attempt.get("schema_version") != "astrid.runpod.allocation-attempt.v1"
                 or attempt.get("acquisition_mode") != "allocate"
@@ -711,6 +747,20 @@ def _validate_absence_receipt(attempt: Mapping[str, Any]) -> None:
         raise TargetObservationError("completed release lacks independent exact GET404 and account-list absence")
 
 
+def _validate_completed_release(attempt: Mapping[str, Any]) -> None:
+    _release_contract_from_record(attempt)
+    _validate_release_quiescence(attempt.get("release_quiescence"), attempt)
+    cleanup = attempt.get("cleanup")
+    if (attempt.get("state") != "cleanup_complete" or not isinstance(cleanup, Mapping)
+            or cleanup.get("pod_id") != attempt.get("pod_id")
+            or cleanup.get("backup_volume_id") != attempt.get("network_volume_id")
+            or cleanup.get("backup_volume_preserved") is not True
+            or cleanup.get("status") not in {"already_gone", "terminated"}
+            or attempt.get("cleanup_status") != "complete"
+            or attempt.get("reconciliation_required") is not False):
+        raise TargetObservationError("completed release lacks its exact provider cleanup receipt")
+
+
 async def _confirm_release_absence(config: Any, contract: RunPodTargetContract,
                                    attempt: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     # Lifecycle's DELETE-404 fast path and its list-only reconciliation cannot
@@ -786,15 +836,7 @@ async def _release_exact_target_after_quiescence(
     if not callable(quiesce_worker):
         raise TypeError("quiesce_worker must be the prepared-worker drain owner")
     if state == "cleanup_complete" and resume:
-        _validate_release_quiescence(attempt.get("release_quiescence"), attempt)
-        cleanup = attempt.get("cleanup")
-        if (not isinstance(cleanup, Mapping) or cleanup.get("pod_id") != attempt.get("pod_id")
-                or cleanup.get("backup_volume_id") != attempt.get("network_volume_id")
-                or cleanup.get("backup_volume_preserved") is not True
-                or cleanup.get("status") not in {"already_gone", "terminated"}
-                or attempt.get("cleanup_status") != "complete"
-                or attempt.get("reconciliation_required") is not False):
-            raise TargetObservationError("completed release lacks its exact provider cleanup receipt")
+        _validate_completed_release(attempt)
         return attempt
     if state == "claimed" and resume:
         raise AcquisitionUnresolvedError("a claimed target has no interrupted release to resume")
@@ -922,7 +964,7 @@ async def _release_exact_target_after_quiescence(
     cleanup = {
         "pod_id": contract.pod_id,
         "status": cleanup_status,
-        "backup_volume_id": str(volume.get("id")),
+        "backup_volume_id": volume.get("id"),
         "backup_volume_preserved": True,
         "confirmed_at": utc_now_iso(),
         "absence": absence,

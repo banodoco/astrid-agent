@@ -8,7 +8,8 @@ armed; on expiry the holder's own stop runs, under the holder's own lock and
 only if no lease arrived meanwhile.  Packs write no timers.
 
 This is idle retention only.  Task lease expiry and billable lifetime are
-separate policies, and RunPod pods are not held here.
+separate policies. A retained RunPod owner uses this idle policy and keeps
+its independent paid deadline.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from typing import Any, Callable, Hashable, Mapping
 from astrid.core.env_vars import ASTRID_WARM_IDLE_SECONDS
 
 # A GPU/model holder keeps its weights this long after its last task.
-DEFAULT_IDLE_SECONDS = 600.0
+DEFAULT_IDLE_SECONDS = 1800.0
 
 
 def idle_seconds(default: float, *, requested: float | None = None,
@@ -100,6 +101,10 @@ class WarmHolds:
             hold = self._holds.get(key)
             if hold is None:
                 hold = self._holds[key] = _Hold(key, stop, lock)
+            elif hold.lock is not lock:
+                raise ValueError("warm holder key belongs to another owner lock")
+            else:
+                hold.stop = stop
             hold.leases += 1
             visible = hold.holding is not None
             self._disarm(hold)

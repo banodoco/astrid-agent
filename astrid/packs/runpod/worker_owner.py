@@ -26,13 +26,14 @@ from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core.execution.platform_helpers import owned_by_current_user
-from astrid.core.execution.warm_hold import WarmHolds, _start_timer, idle_seconds
+from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS, WarmHolds, _start_timer, idle_seconds
 
 from .worker_preparation import (
     AcquisitionUnresolvedError,
     _checkpoint_release_progress,
     _release_exact_target_after_quiescence,
     _validate_absence_receipt,
+    _validate_completed_release,
     replace_target_record,
     target_owner,
 )
@@ -59,12 +60,12 @@ class RunPodWorkerOwnerError(RuntimeError):
 def runpod_idle_seconds(*, requested: float | None = None,
                        environ: Mapping[str, str] | None = None,
                        service_environ: Mapping[str, str] | None = None) -> float:
-    """Request, caller environment, service environment, then ten minutes."""
+    """Request, caller environment, service environment, then thirty minutes."""
     if isinstance(requested, bool):
         raise RunPodWorkerOwnerError("RunPod idle seconds must be finite and nonnegative")
     if requested is not None and (not math.isfinite(requested) or requested < 0):
         raise RunPodWorkerOwnerError("RunPod idle seconds must be finite and nonnegative")
-    default = idle_seconds(600.0, environ=service_environ or {})
+    default = idle_seconds(DEFAULT_IDLE_SECONDS, environ=service_environ or {})
     try:
         value = idle_seconds(default, requested=requested, environ=environ)
     except ValueError as exc:
@@ -72,6 +73,309 @@ def runpod_idle_seconds(*, requested: float | None = None,
     if not math.isfinite(value) or value < 0:
         raise RunPodWorkerOwnerError("RunPod idle seconds must be finite and nonnegative")
     return value
+
+
+@dataclass(frozen=True)
+class RunPodLease:
+    """One invocation's use of the retained account owner."""
+
+    operation_id: str
+    owner_epoch: str
+    generation: int
+    invocation_id: str
+    claim: Mapping[str, Any]
+
+
+class RunPodLeaseOwner:
+    """Small attached-engine lease owned by the existing long-lived host.
+
+    Construct once in that host, never in a per-invocation CLI. The account
+    lock stays held until close; clients receive invocation leases, not lock
+    or stop authority. A replacement host reconciles and terminates saved
+    custody before admitting work. No extra daemon or provider implementation
+    lives here. ``quiesce`` must fence/drain the exact local invocation and
+    close its bridge, returning the lease-drain receipt checked by P1.
+    """
+
+    def __init__(self, selection: Any, *, holds: WarmHolds,
+                 quiesce: Callable[[Mapping[str, Any]], Any],
+                 environ: Mapping[str, str] | None = None,
+                 service_environ: Mapping[str, str] | None = None,
+                 clock: Callable[[], float] = time.time, timer: Any = _start_timer) -> None:
+        if selection.compatibility is None or not callable(quiesce):
+            raise RunPodWorkerOwnerError("lease owner requires pinned compatibility and an exact host drain")
+        self.selection, self.holds, self.quiesce = selection, holds, quiesce
+        self.clock, self.timer = clock, timer
+        self.environ, self.service_environ = environ, service_environ
+        self.epoch = secrets.token_hex(16)
+        self.lock = threading.RLock()
+        self.deadline_timer = self.warm_lease = self.key = None
+        self.closed, self.started = False, False
+        self._release_inflight = False
+        selection._read()  # Refuse unsafe paths before opening custody.
+        self.account = target_owner(selection.path)
+        self.account.__enter__()
+
+    def _read(self) -> dict[str, Any] | None:
+        if self.closed:
+            raise RunPodWorkerOwnerError("lease owner is closed")
+        record = self.selection._read()
+        if record is not None:
+            operation = record.get("operation_id")
+            lease = record.get("lease")
+            if (not isinstance(operation, str) or not re.fullmatch(r"[0-9a-f]{32}", operation)
+                    or record.get("request_name") != "astrid-product-" + operation
+                    or record.get("provider_account_ref") != self.selection.preferences.provider_account_ref
+                    or record.get("acquisition_mode") != "allocate" or record.get("release_authorized") is not True
+                    or record.get("worker_activation") != "not_started"
+                    or not isinstance(lease, dict) or lease.get("schema") != "astrid.runpod.lease.v1"
+                    or lease.get("state") not in {"preparing", "active", "idle", "releasing"}
+                    or not isinstance(lease.get("owner_epoch"), str) or not lease["owner_epoch"]
+                    or type(lease.get("generation")) is not int or lease["generation"] < 1
+                    or not isinstance(lease.get("invocation_id"), str) or not lease["invocation_id"]
+                    or any(record.get(field) is not None for field in
+                           ("managed_worker", "managed_session", "ordinary_preparation", "warm_session", "task_id", "activation_id"))):
+                raise RunPodWorkerOwnerError("journal is not this account's small lease custody")
+            for key in ("started_at", "idle_seconds"):
+                if type(lease.get(key)) not in (int, float) or not math.isfinite(lease[key]) or lease[key] < 0:
+                    raise RunPodWorkerOwnerError("lease has invalid retention bounds")
+            if lease["state"] in {"active", "idle"}:
+                if type(lease.get("paid_expires_at")) not in (int, float) or not math.isfinite(lease["paid_expires_at"]):
+                    raise RunPodWorkerOwnerError("lease has invalid paid expiry")
+                if lease["state"] == "idle" and (
+                    type(lease.get("idle_expires_at")) not in (int, float)
+                    or not math.isfinite(lease["idle_expires_at"])
+                    or lease["idle_expires_at"] > lease["paid_expires_at"]
+                ):
+                    raise RunPodWorkerOwnerError("lease has invalid idle expiry")
+        return record
+
+    def _save(self, record: Mapping[str, Any], lease: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
+        value = {**record, "lease": dict(lease), **changes}
+        replace_target_record(self.selection.path, value, operation_id=record["operation_id"])
+        return value
+
+    def _cancel(self) -> None:
+        if self.deadline_timer is not None:
+            self.deadline_timer.cancel()
+            self.deadline_timer = None
+        if self.warm_lease is not None:
+            self.holds.release(self.warm_lease, holding=None, idle_seconds=0)
+            self.warm_lease = None
+        if self.key is not None:
+            lease = self.holds.lease(self.key, stop=lambda: None, lock=self.lock)
+            self.holds.release(lease, holding=None, idle_seconds=0)
+
+    def _arm(self, record: Mapping[str, Any]) -> None:
+        self._cancel()
+        lease = record["lease"]
+        self.key = (str(self.selection.path), record["operation_id"], self.epoch)
+        generation = lease["generation"]
+        operation = record["operation_id"]
+        self.warm_lease = self.holds.lease(
+            self.key, lock=self.lock,
+            stop=lambda: self.timer(0, lambda: self._expire("idle", generation, operation)))
+        if lease["state"] == "idle":
+            self.holds.release(self.warm_lease, holding="RunPod " + record["pod_id"],
+                               on_idle="terminate exact owned pod; verify absence",
+                               idle_seconds=max(0, lease["idle_expires_at"] - self.clock()))
+            self.warm_lease = None
+        self.deadline_timer = self.timer(max(0, lease["paid_expires_at"] - self.clock()),
+                                        lambda: self._expire("paid_deadline", generation, operation))
+
+    def _expire(self, reason: str, generation: int, operation: str) -> None:
+        try:
+            with self.lock:
+                record = self._read()
+                if record is None or record["operation_id"] != operation or record["state"] == "cleanup_complete":
+                    return
+                lease = record["lease"]
+                if lease["owner_epoch"] != self.epoch or lease["generation"] != generation:
+                    return
+                if (self.clock() < lease["paid_expires_at"]
+                        and (lease["state"] != "idle" or self.clock() < lease["idle_expires_at"])):
+                    return
+            self.release(reason=reason, _expected_operation=operation)
+        except Exception as exc:
+            with self.lock:
+                self.last_error_type = type(exc).__name__
+                if not self.closed and self.deadline_timer is None:
+                    self.deadline_timer = self.timer(1, lambda: self._expire(reason, generation, operation))
+
+    def recover(self) -> None:
+        """Startup barrier: reconcile, then terminate the prior host's lease."""
+        with self.lock:
+            if self._release_inflight:
+                raise AcquisitionUnresolvedError("lease release is already in progress")
+            record = self._read()
+            if record is None or record["state"] == "cleanup_complete":
+                if record is not None:
+                    _validate_completed_release(record)
+                self.started = True
+                return
+        self.release(reason="restart", _expected_operation=record["operation_id"])
+
+    def _retry_recovery(self, operation: str) -> None:
+        with self.lock:
+            if self.closed:
+                return
+        try:
+            self.release(reason="recovery", _expected_operation=operation)
+        except Exception as exc:
+            self.last_error_type = type(exc).__name__
+
+    def acquire(self, consent: Any, *, requested_idle_seconds: float | None = None) -> RunPodLease:
+        from .target_selection import _utc
+        if not self.started:
+            self.recover()
+        with self.lock:
+            if self._release_inflight or not self.started:
+                raise AcquisitionUnresolvedError("lease release is already in progress")
+            record = self._read()
+            previous = record["lease"] if record is not None else None
+            if record is not None and record["state"] == "cleanup_complete":
+                # The same journal is reused only after exact release is proved.
+                _validate_completed_release(record)
+                previous = None
+            if previous is not None and (
+                record["state"] != "claimed" or previous["state"] != "idle"
+                or previous["owner_epoch"] != self.epoch
+                or self.clock() >= previous["idle_expires_at"]
+                or self.clock() >= previous["paid_expires_at"]
+            ):
+                raise RunPodWorkerOwnerError("active, expired or unresolved lease prevents admission")
+            idle = runpod_idle_seconds(requested=requested_idle_seconds, environ=self.environ,
+                                       service_environ=self.service_environ)
+            if idle > consent.idle_seconds:
+                raise RunPodWorkerOwnerError("selected idle exceeds disclosed paid idle")
+            lease = {"schema": "astrid.runpod.lease.v1", "state": "preparing",
+                     "owner_epoch": self.epoch, "generation": 1 if previous is None else previous["generation"] + 1,
+                     "invocation_id": consent.invocation_id, "idle_seconds": idle,
+                     "started_at": self.clock() if previous is None else previous["started_at"]}
+            # Only P1's already-owned account lock is bypassed here, as in R02.
+            acquired = False
+            try:
+                claimed = dict(_run_sync(self.selection._select(consent, lease=lease, lock_held=True)))
+                acquired = True
+                lease.update(state="active", paid_expires_at=_utc(claimed["paid_limits"]["expires_at"]).timestamp(),
+                             hourly_usd=claimed["paid_limits"]["hourly_usd"],
+                             estimated_cost_usd=(0 if previous is None else previous.get("estimated_cost_usd", 0)
+                                 + max(0, self.clock() - previous.get("accounted_at", previous["started_at"]))
+                                 * previous["hourly_usd"] / 3600),
+                             accounted_at=lease["started_at"] if previous is None else self.clock())
+                claimed = self._save(claimed, lease)
+            except BaseException:
+                current = self.selection._read()
+                if current is not None and (acquired or current.get("state") != "claimed"
+                                           or current.get("lease", {}).get("state") == "preparing"):
+                    self.started = False
+                    self._cancel()
+                    operation = current["operation_id"]
+                    self.deadline_timer = self.timer(1, lambda: self._retry_recovery(operation))
+                raise
+            self._arm(claimed)
+            return RunPodLease(claimed["operation_id"], self.epoch, lease["generation"],
+                               consent.invocation_id, claimed)
+
+    def settle(self, invocation: RunPodLease) -> None:
+        """Called by the host after that exact invocation has settled."""
+        with self.lock:
+            record = self._read()
+            if record is None:
+                raise RunPodWorkerOwnerError("lease custody is missing")
+            lease = dict(record["lease"])
+            if (invocation.operation_id != record["operation_id"] or invocation.owner_epoch != self.epoch
+                    or lease["owner_epoch"] != self.epoch or invocation.generation != lease["generation"]
+                    or invocation.invocation_id != lease["invocation_id"]):
+                raise RunPodWorkerOwnerError("invocation lease belongs to another holder")
+            if lease["state"] in {"idle", "releasing"}:
+                return  # Release owns the terminal transition; never re-arm it.
+            if record["state"] != "claimed" or lease["state"] != "active":
+                raise RunPodWorkerOwnerError("release already fences this invocation")
+            lease.update(state="idle", idle_expires_at=min(self.clock() + lease["idle_seconds"],
+                                                          lease["paid_expires_at"]))
+            record = self._save(record, lease)
+            self._arm(record)
+
+    def release(self, *, reason: str = "explicit", _expected_operation: str | None = None) -> Mapping[str, Any] | None:
+        with self.lock:
+            if _expected_operation is not None:
+                current = self._read()
+                if current is None or current["operation_id"] != _expected_operation:
+                    return current
+            if self._release_inflight:
+                raise AcquisitionUnresolvedError("lease release is already in progress")
+            self._release_inflight = True
+        try:
+            return self._release(reason=reason)
+        except Exception as exc:
+            with self.lock:
+                self.last_error_type = type(exc).__name__
+                if not self.closed:
+                    if self.deadline_timer is not None:
+                        self.deadline_timer.cancel()
+                    record = self.selection._read()
+                    if record is not None:
+                        operation = record["operation_id"]
+                        self.deadline_timer = self.timer(1, lambda: self._retry_recovery(operation))
+            raise
+        finally:
+            with self.lock:
+                self._release_inflight = False
+
+    def _release(self, *, reason: str) -> Mapping[str, Any] | None:
+        from .target_selection import RunPodOffer
+        from .worker_preparation import reconcile_target
+        with self.lock:
+            record = self._read()
+            if record is None:
+                return None
+            if record["state"] == "cleanup_complete":
+                _validate_completed_release(record)
+                return record
+            self.started = False
+            self._cancel()
+            limits = record["paid_limits"]
+            config = self.selection.config_factory(RunPodOffer(
+                record["provider_account_ref"], record["gpu_type"], limits["hourly_usd"], "lease-release"))
+            if not record.get("pod_id"):
+                # Never create here, including zero exact-name matches.
+                volume = {"id": record.get("network_volume_id"), "name": record.get("network_volume_name"),
+                          "size": record.get("network_volume_size_gb"),
+                          "dataCenterId": record.get("network_volume_datacenter_id")}
+                try:
+                    _run_sync(reconcile_target.__wrapped__(config, handle_path=self.selection.path,
+                              attempt=record, volume=volume, ready_timeout_seconds=1))
+                except Exception:
+                    record = self._read()
+                    if record is None or not record.get("pod_id"):
+                        raise AcquisitionUnresolvedError("original create remains unresolved; no replacement is permitted") from None
+                record = self._read()
+            lease = {**record["lease"], "state": "releasing", "release_reason": reason}
+            record = self._save(record, lease, state="cleanup_pending", reconciliation_required=True)
+        # Keep the account lock, but let a completing host invocation call
+        # settle while quiescence waits for it. Durable releasing state and
+        # _release_inflight fence admission and competing release dispatch.
+        result = _run_sync(_release_exact_target_after_quiescence.__wrapped__(
+            config, handle_path=self.selection.path, attempt=record,
+            quiesce_worker=self.quiesce, resume=True))
+        with self.lock:
+            lease = dict(result["lease"])
+            elapsed = max(0, self.clock() - lease.get("accounted_at", lease["started_at"]))
+            result = self._save(result, lease, estimated_cost_usd=lease.get("estimated_cost_usd", 0)
+                                + elapsed * lease.get("hourly_usd", limits["hourly_usd"]) / 3600)
+            self.started = True
+            return result
+
+    def close(self) -> None:
+        """Host shutdown; saved custody is cleaned before the next admission."""
+        with self.lock:
+            if self._release_inflight:
+                raise RunPodWorkerOwnerError("wait for the in-progress exact release before closing its owner")
+            if not self.closed:
+                self._cancel()
+                self.closed = True
+                self.account.__exit__(None, None, None)
 
 
 class RunPodWarmSessionOwner:

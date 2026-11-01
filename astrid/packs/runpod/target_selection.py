@@ -13,18 +13,21 @@ import json
 import math
 import re
 import uuid
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from astrid.core.generation.targets import read_config, update_config
+from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
 from astrid.sdk.storage_root import resolve_runtime_data_root
 
 from .worker_preparation import (
     AcquisitionUnresolvedError, RunPodTargetContract, TargetObservationError,
     acquire_target, create_target_record_exclusive, observe_exact_target, read_exact_pod,
     inspect_volume_records, reconcile_target, replace_target_record, resolve_existing_volume, target_owner,
+    _validate_completed_release, write_target_record,
 )
 
 
@@ -68,12 +71,12 @@ class RunPodPreferences:
     provider_account_ref: str
     gpu_types: tuple[str, ...]
     image: str
-    volume_id: str
-    volume_name: str
+    volume_id: str | None
+    volume_name: str | None
     volume_size_gb: int
     mount_path: str
     datacenter_id: str | None = None
-    idle_timeout_seconds: int = 600
+    idle_timeout_seconds: int = int(DEFAULT_IDLE_SECONDS)
     credential_ref: str | None = None
 
     @classmethod
@@ -92,16 +95,19 @@ class RunPodPreferences:
         if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image):
             raise PaidSelectionError("RunPod worker image must be pinned by sha256 digest")
         volume = raw.get("volume")
+        if volume is None:
+            volume = {"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"}
         if not isinstance(volume, Mapping) or set(volume) != {"id", "name", "size_gb", "mount_path"}:
             raise PaidSelectionError("RunPod needs one exact existing volume and mount")
         size = volume.get("size_gb")
-        if type(size) is not int or size <= 0:
+        ephemeral = volume == {"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"}
+        if type(size) is not int or (size <= 0 and not ephemeral):
             raise PaidSelectionError("existing volume size must be a positive integer")
         mount = volume.get("mount_path")
         if (not isinstance(mount, str) or not mount.startswith("/")
                 or ".." in PurePosixPath(mount).parts or str(PurePosixPath(mount)) != mount):
             raise PaidSelectionError("volume mount must be a canonical absolute pod path")
-        idle = raw.get("idle_timeout_seconds", 600)
+        idle = raw.get("idle_timeout_seconds", int(DEFAULT_IDLE_SECONDS))
         if type(idle) is not int or idle < 0:
             raise PaidSelectionError("idle timeout must be a nonnegative integer")
         credential_ref = raw.get("credential_ref")
@@ -112,7 +118,8 @@ class RunPodPreferences:
             raise PaidSelectionError("credential_ref must name an environment credential, never its bytes")
         return cls(
             _label(raw.get("provider_account_ref"), "provider account"), gpus, image,
-            _label(volume.get("id"), "volume id"), _label(volume.get("name"), "volume name"),
+            None if ephemeral else _label(volume.get("id"), "volume id"),
+            None if ephemeral else _label(volume.get("name"), "volume name"),
             size, mount,
             _label(raw["datacenter_id"], "datacenter") if raw.get("datacenter_id") is not None else None,
             idle, credential_ref,
@@ -122,8 +129,9 @@ class RunPodPreferences:
         return {
             "provider_account_ref": self.provider_account_ref, "gpu_types": list(self.gpu_types),
             "image": self.image, "idle_timeout_seconds": self.idle_timeout_seconds,
-            "volume": {"id": self.volume_id, "name": self.volume_name,
-                       "size_gb": self.volume_size_gb, "mount_path": self.mount_path},
+            **({"volume": {"id": self.volume_id, "name": self.volume_name,
+                           "size_gb": self.volume_size_gb, "mount_path": self.mount_path}}
+               if self.volume_id is not None else {}),
             **({"datacenter_id": self.datacenter_id} if self.datacenter_id is not None else {}),
             **({"credential_ref": self.credential_ref} if self.credential_ref is not None else {}),
         }
@@ -198,11 +206,35 @@ class PaidRunConsent:
         return min(deadline, now + timedelta(seconds=cap / offer.hourly_usd * 3600))
 
 
+@dataclass(frozen=True)
+class RunPodLeaseCompatibility:
+    """Pinned requirements for one reusable installed engine snapshot.
+
+    Account/GPU/image/storage are additionally bound by the claim itself.
+    A4/A5 must verify the installation against these requirements before use.
+    """
+
+    recipe_digest: str
+    model_lock_digest: str
+    runtime_commit: str
+    vibecomfy_commit: str
+
+    def as_mapping(self) -> dict[str, str]:
+        value = asdict(self)
+        if (any(not isinstance(value[key], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value[key])
+                for key in ("recipe_digest", "model_lock_digest"))
+                or any(not isinstance(value[key], str) or not re.fullmatch(r"[0-9a-f]{40}", value[key])
+                       for key in ("runtime_commit", "vibecomfy_commit"))):
+            raise PaidSelectionError("lease compatibility requires exact recipe/model digests and source commits")
+        return value
+
+
 class RunPodSelectionOwner:
     def __init__(
         self, preferences: RunPodPreferences, *, account_ref: str, config_factory: Callable[[RunPodOffer], Any],
         observe_offer: Callable[[], RunPodOffer], observed_hourly_usd: Callable[[str], float],
         data_root: Path | None = None, clock: Callable[[], datetime] | None = None,
+        compatibility: RunPodLeaseCompatibility | None = None,
     ) -> None:
         if account_ref != preferences.provider_account_ref:
             raise PaidSelectionError("authenticated account differs from selected preferences")
@@ -210,6 +242,7 @@ class RunPodSelectionOwner:
         self.observe_offer, self.observed_hourly_usd = observe_offer, observed_hourly_usd
         self.path = canonical_claim_path(account_ref, data_root=data_root)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.compatibility = compatibility.as_mapping() if compatibility is not None else None
 
     def _read(self) -> dict[str, Any] | None:
         # Legacy sibling handles cannot quietly become a second product owner.
@@ -243,9 +276,19 @@ class RunPodSelectionOwner:
                 or record.get("request_name") != f"astrid-product-{operation}"
                 or any(record.get(key) != value for key, value in expected.items())):
             raise AcquisitionUnresolvedError("journal does not prove this product's exact account/pod/image/volume custody")
+        if record.get("lease_compatibility") != self.compatibility:
+            raise AcquisitionUnresolvedError("retained lease has incompatible recipe/model/source requirements")
+        if "lease" in record and self.compatibility is None:
+            raise AcquisitionUnresolvedError("retained lease requires its original owner")
 
     async def select(self, consent: PaidRunConsent, *, dry_run: bool = False) -> Mapping[str, Any]:
+        return await self._select(consent, dry_run=dry_run)
+
+    async def _select(self, consent: PaidRunConsent, *, dry_run: bool = False,
+                      lease: Mapping[str, Any] | None = None, lock_held: bool = False) -> Mapping[str, Any]:
         p, now = self.preferences, self.clock()
+        if not dry_run and lease is None and (self.compatibility is not None or p.volume_id is None):
+            raise PaidSelectionError("this target requires admission through the retained lease owner")
         try:
             offer = self.observe_offer()
         except Exception:
@@ -264,18 +307,26 @@ class RunPodSelectionOwner:
                 or config.volume_mount_path != p.mount_path):
             raise PaidSelectionError("provider configuration differs from the consented GPU/image/mount")
         self._read()  # Reject legacy/symlink custody before creating a lock file.
-        with target_owner(self.path):
+        with nullcontext() if lock_held else target_owner(self.path):
             record = self._read()
+            completed_operation = None
+            if record is not None and record.get("state") == "cleanup_complete" and lease is not None:
+                _validate_completed_release(record)
+                completed_operation = record["operation_id"]
+                record = None
             try:
-                observed_volume = await resolve_existing_volume(config.api_key, p.volume_id)
+                observed_volume = (await resolve_existing_volume(config.api_key, p.volume_id)
+                                   if p.volume_id is not None else None)
                 inspect_volume_records(RunPodTargetContract(
                     "unclaimed", offer.gpu_type, p.image, p.volume_id, p.volume_name,
                     p.volume_size_gb, datacenter_id=p.datacenter_id,
-                ), volumes=[observed_volume])
+                ), volumes=[observed_volume] if observed_volume is not None else [])
             except Exception:
                 raise AcquisitionUnresolvedError("existing account volume cannot be confirmed before claim or reuse") from None
             if record is not None:
                 self._owned(record, offer)
+                if "lease" in record and lease is None:
+                    raise AcquisitionUnresolvedError("retained lease requires admission through its owner")
                 if record.get("state") not in {
                     "claimed", "allocation_ready", "allocation_pending", "allocation_unknown", "allocated_unverified",
                 }:
@@ -302,8 +353,21 @@ class RunPodSelectionOwner:
                     "network_volume_datacenter_id": p.datacenter_id,
                     "handle_path": str(self.path), "transport": "https",
                     "reconciliation_required": True,
+                    "paid_limits": {"invocation_id": consent.invocation_id, "offer_digest": consent.offer_digest,
+                                    "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
+                                    "deadline": consent.deadline, "expires_at": expires.isoformat(),
+                                    "authorized_at": now.isoformat(), "idle_seconds": consent.idle_seconds},
+                    "storage_mode": "network_volume" if p.volume_id is not None else "ephemeral",
+                    **({"lease_compatibility": self.compatibility} if self.compatibility is not None else {}),
+                    **({"lease": dict(lease)} if lease is not None else {}),
                 }
-                create_target_record_exclusive(self.path, record)
+                if completed_operation is None:
+                    create_target_record_exclusive(self.path, record)
+                else:
+                    # The enclosing account lock excludes another claimant.
+                    # Publish the next intent in the same journal, after the
+                    # previous exact release receipt has been validated.
+                    write_target_record(self.path, record)
             volume = {"id": p.volume_id, "name": p.volume_name, "size": p.volume_size_gb,
                       "dataCenterId": p.datacenter_id}
             limits = {"invocation_id": consent.invocation_id, "offer_digest": consent.offer_digest,
@@ -343,7 +407,8 @@ class RunPodSelectionOwner:
                 acquired_record, observation = dict(acquired.attempt), acquired.observation
             try:
                 status, exact = await asyncio.to_thread(read_exact_pod, config.api_key, observation.pod_id)
-                if (status != 200 or exact is None or exact.get("volumeMountPath") != p.mount_path
+                if (status != 200 or exact is None
+                        or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
                         or exact.get("networkVolumeId") != p.volume_id):
                     raise PaidSelectionError("provider did not confirm the exact volume mount")
                 if _number(self.observed_hourly_usd(observation.pod_id), "actual hourly USD rate") != offer.hourly_usd:
