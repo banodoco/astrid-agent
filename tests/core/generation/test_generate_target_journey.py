@@ -202,9 +202,12 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
             assert len(data) == asset["size"] == source.stat().st_size
             expected = json.loads(comfy.expected_path.read_text())
             expected["basename"] = Path(asset["member"]).name
+            workflow_inputs = json.loads(spec["spec"]["inputs"]["workflow_inputs"])
+            expected["generated_seconds"] = workflow_inputs["duration"]
             comfy.expected_path.write_text(json.dumps(expected), encoding="utf-8")
             (tmp_path / "h3-compiled-source-binding.json").write_text(json.dumps({
                 "task_id": result["task_id"], "managed_assets": binding, "source": asset,
+                "generated_seconds": expected["generated_seconds"],
             }, indent=2), encoding="utf-8")
         return result
 
