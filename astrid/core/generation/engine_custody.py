@@ -698,6 +698,11 @@ class _Supervisor:
                     self.check(channel, deadline)
                     if operation == "run":
                         result = self.run(value["payload"], deadline, channel)
+                    elif operation == "attempt-barrier":
+                        if (value["payload"] != {} or self.unresolved
+                                or any(owned is not self.engine for owned in self.commands)):
+                            raise CustodyUnresolved("installer command custody remains unresolved")
+                        result = {"quiescent": True}
                     elif operation in {"probe", "start", "health"}:
                         result = self.service(operation, value["payload"], deadline, channel)
                     else:

@@ -6,6 +6,8 @@ path translation and accepts only a pinned model identity from engine_contracts.
 from __future__ import annotations
 
 import errno
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import math
@@ -36,6 +38,17 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _RANGE_SIZE = 64 << 20
 _READ_SIZE = 1 << 20
+_cancel_event = ContextVar('engine_model_download_cancel', default=None)
+
+
+@contextmanager
+def _cancellable_download(event):
+    """Scope cooperative cancellation to this download's calling context."""
+    token = _cancel_event.set(event)
+    try:
+        yield
+    finally:
+        _cancel_event.reset(token)
 
 
 def _safe_relative(value: str) -> PurePosixPath:
@@ -136,6 +149,9 @@ def _matches(path: Path, model: ModelSpec, *, deadline: Deadline) -> bool:
 
 
 def _check_deadline(deadline: Deadline) -> float:
+    event = _cancel_event.get()
+    if event is not None and event.is_set():
+        raise DeadlineExceeded("model download cancelled")
     remaining = deadline - time.monotonic()
     if not math.isfinite(remaining) or remaining <= 0:
         raise DeadlineExceeded("model download deadline exceeded")
