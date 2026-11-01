@@ -39,7 +39,7 @@ REQUIRED_COMMANDS = (
 DEFAULTS = {
     "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
     "agent": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
-    "vibecomfy": "3bebae39655eb460454885040be4d3aefaf2ef31",
+    "vibecomfy": "2967033970cbb5884651c9565265778482d3b44e",
     "app": "a55bec9ff384b5bbfee5535962880084ab2adb1b",
     "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
 }
