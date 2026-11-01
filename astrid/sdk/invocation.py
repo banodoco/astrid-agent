@@ -67,6 +67,7 @@ class _RetainedPreparedOwner:
         self.retained = False
         self.activated = False
         self.retired = False
+        self.binding_attempt = None
         self._lock = threading.RLock()
 
     def __call__(self, task):
@@ -95,7 +96,35 @@ class _RetainedPreparedOwner:
             if (not isinstance(binding, Mapping)
                     or binding.get('effective_target', binding.get('target')) != self.execution_request['target']):
                 raise CapabilityInvocationError('prepared owner binding differs from the exact RunPod target')
-            identity += (json.dumps(binding, sort_keys=True),)
+            if isinstance(binding.get('binding_id'), str):
+                # Runtime retains the admission binding while its one attempt
+                # progresses prepared -> claimed -> released. Pin immutable
+                # selection and the first exact credential-verified attempt.
+                if binding.get('status') not in {'prepared', 'claimed', 'released', 'stale'}:
+                    raise CapabilityInvocationError('prepared owner binding phase is invalid')
+                dynamic = {'attempt_id', 'lease_id', 'fence', 'executor_id', 'status', 'updated_at',
+                           'actual_target', 'verification', 'executor_incarnation'}
+                attempt_id = binding.get('attempt_id')
+                if attempt_id is not None:
+                    verification = binding.get('verification')
+                    if (binding.get('actual_target') != self.execution_request['target']
+                            or not isinstance(verification, Mapping)
+                            or verification.get('verified') is not True
+                            or verification.get('method') != 'credential_claim'
+                            or not binding.get('lease_id') or not binding.get('executor_id')
+                            or type(binding.get('fence')) is not int or binding['fence'] <= 0):
+                        raise CapabilityInvocationError('prepared owner attempt placement is unverified')
+                    attempt = json.dumps({key: binding.get(key) for key in dynamic - {'status', 'updated_at'}},
+                                         sort_keys=True)
+                    if self.binding_attempt is not None and self.binding_attempt != attempt:
+                        raise CapabilityInvocationError('prepared owner attempt or execution binding changed')
+                    self.binding_attempt = attempt
+                elif self.binding_attempt is not None:
+                    raise CapabilityInvocationError('prepared owner lost its exact attempt binding')
+                identity += (json.dumps({key: value for key, value in binding.items() if key not in dynamic},
+                                        sort_keys=True),)
+            else:
+                identity += (json.dumps(binding, sort_keys=True),)
         # H3's parent runs on the default target. Its pack monitor verifies
         # the delegated run child's exact binding once that child appears.
         if self.identity is not None and self.identity != identity:

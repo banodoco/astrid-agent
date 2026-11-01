@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.core.execution.warm_hold import WarmHolds
+from astrid.core.execution import warm_hold
 from astrid.packs.runpod import worker_owner, worker_preparation
 from astrid.packs.runpod.worker_owner import RunPodWarmSessionOwner, RunPodWorkerOwnerError, runpod_idle_seconds
 from tests.packs.runpod.test_worker_release import release_case as release_case
@@ -57,7 +58,7 @@ def warm_case(release_case, monkeypatch):
     record["paid_limits"] = {
         "invocation_id": "run-consent-1", "hourly_usd": 1, "max_usd": 1,
         "authorized_at": utc(clock()), "deadline": utc(clock() + 1000),
-        "expires_at": utc(clock() + 1000), "idle_seconds": 600,
+        "expires_at": utc(clock() + 1000), "idle_seconds": warm_hold.DEFAULT_IDLE_SECONDS,
     }
     worker_preparation.write_target_record(case.path, record)
     case.pods[0]["name"] = record["name"]
@@ -79,15 +80,20 @@ def warm_case(release_case, monkeypatch):
 
 
 @pytest.mark.parametrize("requested,env,service,expected", [
-    (None, {}, {}, 600), (0, {"ASTRID_WARM_IDLE_SECONDS": "5"}, {}, 0),
+    (None, {}, {}, warm_hold.DEFAULT_IDLE_SECONDS), (0, {"ASTRID_WARM_IDLE_SECONDS": "5"}, {}, 0),
     (7, {"ASTRID_WARM_IDLE_SECONDS": "5"}, {"ASTRID_WARM_IDLE_SECONDS": "3"}, 7),
     (None, {"ASTRID_WARM_IDLE_SECONDS": "5"}, {"ASTRID_WARM_IDLE_SECONDS": "3"}, 5),
     (None, {}, {"ASTRID_WARM_IDLE_SECONDS": "3"}, 3),
     (None, {"ASTRID_WARM_IDLE_SECONDS": "nan"}, {"ASTRID_WARM_IDLE_SECONDS": "3"}, 3),
-    (None, {"ASTRID_WARM_IDLE_SECONDS": "-1"}, {}, 600),
+    (None, {"ASTRID_WARM_IDLE_SECONDS": "-1"}, {}, warm_hold.DEFAULT_IDLE_SECONDS),
 ])
 def test_idle_precedence_and_zero(requested, env, service, expected):
     assert runpod_idle_seconds(requested=requested, environ=env, service_environ=service) == expected
+
+
+def test_runpod_default_retention_is_thirty_minutes():
+    assert warm_hold.DEFAULT_IDLE_SECONDS == 1800
+    assert runpod_idle_seconds(environ={}, service_environ={}) == 1800
 
 
 @pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), True])

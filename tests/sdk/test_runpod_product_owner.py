@@ -206,6 +206,7 @@ def test_paid_expiry_cancels_exact_runtime_task_before_release_attempt(product, 
             "lifecycle": {"mode": "leave_running"}}, "idempotency_key": "expiry-task"},
         enforce_readiness=True)
     task_id, run_id = admitted["task"]["id"], admitted["run"]["id"]
+    queued_task = service._task_resource(service.task(task_id))
     if active:
         target = _claim_target(product.claim)
         binding = deployment_binding_from_task(service._task_resource(service.task(task_id)))
@@ -234,6 +235,13 @@ def test_paid_expiry_cancels_exact_runtime_task_before_release_attempt(product, 
             realm_id=service.realm["id"], actor_id="owner", client_name="expiry-test",
             client_version="stage1", protocol_version=PROTOCOL) as client:
         owner = runpod_generation_owner(client)
+        from astrid.sdk.invocation import retain_prepared_owner
+        ticks = []
+        retained = retain_prepared_owner(client, recovery_path=product.tmp / "expiry-receipt.json",
+            capability_id="vibecomfy.run", monitor=lambda task: ticks.append(task["state"]), owner=owner,
+            execution_request=queued_task["execution_request"])
+        retained(queued_task)
+        retained(client.tasks.show(task_id).data)
         request = {**product.claim, "task_id": task_id, "run_id": run_id,
                    "idempotency_key": "runpod-release:" + product.claim["operation_id"]}
         # No selection was published in this test. That blocks the provider
@@ -242,6 +250,7 @@ def test_paid_expiry_cancels_exact_runtime_task_before_release_attempt(product, 
             owner._expire(request)
         assert raised.value.to_envelope()["issues"][0]["code"] == "missing_dependency"
         task = client.tasks.show(task_id).data
+        retained(task)
         if active:
             assert task["state"] == "failed" and task["result"]["disposition"] == "lost"
             assert task["result"]["remote_stop_confirmed"] is False
@@ -251,6 +260,7 @@ def test_paid_expiry_cancels_exact_runtime_task_before_release_attempt(product, 
             assert task["result"]["attempted"] is False
             assert task["result"]["cancel"]["requested"] is True
         assert not task["result"].get("outputs")
+        assert ticks == ["queued", task["state"]]
         if active:
             with pytest.raises((AuthorizationError, ConflictError)):
                 service.heartbeat_attempt(attempt["attempt_id"],

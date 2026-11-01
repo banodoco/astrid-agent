@@ -224,7 +224,8 @@ def test_https_production_composition_selects_claim_token_and_cleanup_needs_no_s
     monkeypatch.setenv("ASTRID_ENV_FILE", str(tmp_path / "no-credentials.env"))
     monkeypatch.setenv("RUNPOD_HTTPS_TOKEN_FILE", str(tmp_path / "missing-ambient.token"))
     monkeypatch.setattr(CredentialsScope, "resolve_local", staticmethod(lambda *_a, **_kw: SimpleNamespace(value="test-key")))
-    reference = SimpleNamespace(task_id="task1", runtime_instance_id="runtime1", runtime_epoch=1)
+    reference = SimpleNamespace(task_id="task1", runtime_instance_id="runtime1", runtime_epoch=1,
+                                session_ref="vibecomfy-h3")
     monkeypatch.setattr(prepared_task, "_reference_for_task", lambda *_a: reference)
     lookups = []
     async def get_pod(pod_id, config, **_kwargs):
