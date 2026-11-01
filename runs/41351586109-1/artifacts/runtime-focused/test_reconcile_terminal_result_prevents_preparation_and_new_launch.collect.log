@@ -1,0 +1,3 @@
+tests/test_update_jobs.py::test_reconcile_terminal_result_prevents_preparation_and_new_launch
+
+1 test collected in 0.11s

@@ -1,0 +1,7 @@
+tests/test_update_jobs.py::test_unconfirmed_terminal_reconciliation_is_observe_only[missing]
+tests/test_update_jobs.py::test_unconfirmed_terminal_reconciliation_is_observe_only[held]
+tests/test_update_jobs.py::test_unconfirmed_terminal_reconciliation_is_observe_only[wrong-operation]
+tests/test_update_jobs.py::test_unconfirmed_terminal_reconciliation_is_observe_only[wrong-transaction]
+tests/test_update_jobs.py::test_unconfirmed_terminal_reconciliation_is_observe_only[wrong-outcome]
+
+5 tests collected in 0.11s

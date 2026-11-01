@@ -1,0 +1,6 @@
+tests/test_update_jobs.py::test_update_route_malformed_acceptance_is_uncertain[None]
+tests/test_update_jobs.py::test_update_route_malformed_acceptance_is_uncertain[result1]
+tests/test_update_jobs.py::test_update_route_malformed_acceptance_is_uncertain[result2]
+tests/test_update_jobs.py::test_update_route_malformed_acceptance_is_uncertain[result3]
+
+4 tests collected in 0.11s

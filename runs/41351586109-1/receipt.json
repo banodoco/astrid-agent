@@ -1,0 +1,357 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "set +e\nif python -m pip install -e 'runtime/.[test]'; then\n  setup_exit=0\nelse\n  setup_exit=$?\nfi\nmkdir -p runtime-focused\nprintf '%s\\n' \"$setup_exit\" > runtime-focused/setup.exit\nselectors=(\n  test_reconcile_before_manifest_and_newer_target_checks\n  test_unknown_reconciliation_never_prepares_or_launches\n  test_unconfirmed_terminal_reconciliation_is_observe_only\n  test_reconcile_helper_failure_preserves_uncertainty\n  test_unacknowledged_continuation_reply_is_observe_only\n  test_reconcile_terminal_result_prevents_preparation_and_new_launch\n  test_update_route_h3_returns_confirmed_reconciliation_conflict\n  test_update_route_h4_returns_recovery_refusal\n  test_update_route_h5_returns_uncertain_acknowledgement\n  test_authenticated_continuation_keeps_operation_and_journal\n  test_update_route_malformed_acceptance_is_uncertain\n  test_status_reads_authoritative_job_and_c2_journal_without_recovery\n  test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal\n  test_status_projects_unacknowledged_launching_as_recovery_needed\n  test_production_daemon_door_advertises_and_executes_selected_updater\n)\nfor name in \"${selectors[@]}\"; do\n  marker=()\n  if [ \"$name\" = test_production_daemon_door_advertises_and_executes_selected_updater ]; then marker=(-m integration); fi\n  if pytest -q \"${marker[@]}\" --collect-only \"runtime/tests/test_update_jobs.py::$name\" > \"runtime-focused/$name.collect.log\" 2>&1; then\n    collect_exit=0\n  else\n    collect_exit=$?\n  fi\n  printf '%s\\n' \"$collect_exit\" > \"runtime-focused/$name.collect.exit\"\n  if pytest -q \"${marker[@]}\" \"runtime/tests/test_update_jobs.py::$name\" > \"runtime-focused/$name.log\" 2>&1; then\n    test_exit=0\n  else\n    test_exit=$?\n  fi\n  printf '%s\\n' \"$test_exit\" > \"runtime-focused/$name.exit\"\ndone",
+  "effective_tuple": {
+    "agent": "f44acb319644b74d0167ef1b103329bce1776895",
+    "app": "d3e8f92e465f78931561db0fb5b54979a5bdd560",
+    "pinokio": "c5b42701641889ecb916c60cde09a717f83d62ff",
+    "runtime": "dc56ddd184e3c203f0970c524daaf3358cd6ae3f"
+  },
+  "event": "push",
+  "inner_exit_code": 0,
+  "inventory": [
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/setup.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_authenticated_continuation_keeps_operation_and_journal.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 114,
+      "path": "artifacts/runtime-focused/test_authenticated_continuation_keeps_operation_and_journal.collect.log",
+      "sha256": "ee4f81c7a4ae1fdc0e7aa24c6f5c726bccea75bdb750544a4cff8c6c6b7cef0f"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_authenticated_continuation_keeps_operation_and_journal.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_authenticated_continuation_keeps_operation_and_journal.log",
+      "sha256": "69ecfaf567d422eefd466e0fe6d916331525411012bbb3614286aa68e60a291c"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_production_daemon_door_advertises_and_executes_selected_updater.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 123,
+      "path": "artifacts/runtime-focused/test_production_daemon_door_advertises_and_executes_selected_updater.collect.log",
+      "sha256": "39e0f4db3efbec14e7b989c184b0c80ea6783a96639de6e143e8ff925269139e"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_production_daemon_door_advertises_and_executes_selected_updater.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 6504,
+      "path": "artifacts/runtime-focused/test_production_daemon_door_advertises_and_executes_selected_updater.log",
+      "sha256": "5dd3a7076f65e67ab7486768a046b33cf791946860d0dfd0899a42898634ff5b"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_reconcile_before_manifest_and_newer_target_checks.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 109,
+      "path": "artifacts/runtime-focused/test_reconcile_before_manifest_and_newer_target_checks.collect.log",
+      "sha256": "fe31a8a6a42f9552ebfe294f15f715eb665c713086c4cb67607ca1fd9dba446d"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_reconcile_before_manifest_and_newer_target_checks.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_reconcile_before_manifest_and_newer_target_checks.log",
+      "sha256": "c91dad03511eb111dba9f317cdb7962c64ec389c7d259de488e167c78aac1b31"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_reconcile_helper_failure_preserves_uncertainty.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 479,
+      "path": "artifacts/runtime-focused/test_reconcile_helper_failure_preserves_uncertainty.collect.log",
+      "sha256": "fb060ac23ec5fa7b0210deb96dedff2f4d141dc58f9e0d7ce10badfd8b813239"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_reconcile_helper_failure_preserves_uncertainty.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_reconcile_helper_failure_preserves_uncertainty.log",
+      "sha256": "2ae8f2817e9958cc181e54334e64cdb0f822408aefd258f49af7ed61b53a91ca"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_reconcile_terminal_result_prevents_preparation_and_new_launch.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 121,
+      "path": "artifacts/runtime-focused/test_reconcile_terminal_result_prevents_preparation_and_new_launch.collect.log",
+      "sha256": "efe478fd03e73b5181e61354354015a2dfd565481c6e2c5cdd75487e6c0d8880"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_reconcile_terminal_result_prevents_preparation_and_new_launch.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_reconcile_terminal_result_prevents_preparation_and_new_launch.log",
+      "sha256": "c91dad03511eb111dba9f317cdb7962c64ec389c7d259de488e167c78aac1b31"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 123,
+      "path": "artifacts/runtime-focused/test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal.collect.log",
+      "sha256": "d3ea26a414a9026e7aa973f6091bb446ef5deb0cc2a3ef01f028e62db0711ce7"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal.log",
+      "sha256": "c91dad03511eb111dba9f317cdb7962c64ec389c7d259de488e167c78aac1b31"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_status_projects_unacknowledged_launching_as_recovery_needed.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 119,
+      "path": "artifacts/runtime-focused/test_status_projects_unacknowledged_launching_as_recovery_needed.collect.log",
+      "sha256": "e9cdb819b7152a88d61f3c42aecdbedb6f1629e8d2dd5a7a8710fff72da41755"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_status_projects_unacknowledged_launching_as_recovery_needed.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_status_projects_unacknowledged_launching_as_recovery_needed.log",
+      "sha256": "c91dad03511eb111dba9f317cdb7962c64ec389c7d259de488e167c78aac1b31"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_status_reads_authoritative_job_and_c2_journal_without_recovery.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 122,
+      "path": "artifacts/runtime-focused/test_status_reads_authoritative_job_and_c2_journal_without_recovery.collect.log",
+      "sha256": "3e8fba657c1abe66092aafc132b24107105a0ea0f8330bf831cc901a8fbed9e4"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_status_reads_authoritative_job_and_c2_journal_without_recovery.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_status_reads_authoritative_job_and_c2_journal_without_recovery.log",
+      "sha256": "8989a153a4f265bdf8bf8abfcbf7ce96cf91c69ee66d543244ebf0fc2c9d041d"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_unacknowledged_continuation_reply_is_observe_only.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 390,
+      "path": "artifacts/runtime-focused/test_unacknowledged_continuation_reply_is_observe_only.collect.log",
+      "sha256": "db376e8246f781ac74d0da4d50ca9dec3b308ef23e4688f659bf06610fb898af"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_unacknowledged_continuation_reply_is_observe_only.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_unacknowledged_continuation_reply_is_observe_only.log",
+      "sha256": "452fada82e1df58d7f89fa99128aea691c519ad7daf4915a4bece62bd06ecbdf"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_unconfirmed_terminal_reconciliation_is_observe_only.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 514,
+      "path": "artifacts/runtime-focused/test_unconfirmed_terminal_reconciliation_is_observe_only.collect.log",
+      "sha256": "2b6ce25a0a54b983c150d99294dbb76655491274b3b51b9068f676a6f2d861fb"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_unconfirmed_terminal_reconciliation_is_observe_only.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_unconfirmed_terminal_reconciliation_is_observe_only.log",
+      "sha256": "2ae8f2817e9958cc181e54334e64cdb0f822408aefd258f49af7ed61b53a91ca"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_unknown_reconciliation_never_prepares_or_launches.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 476,
+      "path": "artifacts/runtime-focused/test_unknown_reconciliation_never_prepares_or_launches.collect.log",
+      "sha256": "533e6808c5f24f43ac9d5cb5da37a7e13a01ef02ab518ef67251933e7f22fb66"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_unknown_reconciliation_never_prepares_or_launches.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_unknown_reconciliation_never_prepares_or_launches.log",
+      "sha256": "2ae8f2817e9958cc181e54334e64cdb0f822408aefd258f49af7ed61b53a91ca"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_update_route_h3_returns_confirmed_reconciliation_conflict.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 361,
+      "path": "artifacts/runtime-focused/test_update_route_h3_returns_confirmed_reconciliation_conflict.collect.log",
+      "sha256": "52cf4bd2bd5f75a8732e1487e062caa17361fb69e97411cdda4fcce0c10d1165"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_update_route_h3_returns_confirmed_reconciliation_conflict.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_update_route_h3_returns_confirmed_reconciliation_conflict.log",
+      "sha256": "cd777e8b5e68b0e2ee4c383976c36afb9749023142dfe04781e971df6d87bdad"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_update_route_h4_returns_recovery_refusal.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 100,
+      "path": "artifacts/runtime-focused/test_update_route_h4_returns_recovery_refusal.collect.log",
+      "sha256": "a48cf2fde0e0cc9da426a36fc751aeaa0f399faea00430b5bbc9f0efa99662bc"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_update_route_h4_returns_recovery_refusal.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_update_route_h4_returns_recovery_refusal.log",
+      "sha256": "21a96a691c92fe45e75034007f207c9a0cf98e14fff2d1e56a2a0ba5eff07377"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_update_route_h5_returns_uncertain_acknowledgement.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 109,
+      "path": "artifacts/runtime-focused/test_update_route_h5_returns_uncertain_acknowledgement.collect.log",
+      "sha256": "bd9e4f43b7ddaa4f2e1649ff4c6d9da00b7263ef1426806fd51222c25fd8c708"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_update_route_h5_returns_uncertain_acknowledgement.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_update_route_h5_returns_uncertain_acknowledgement.log",
+      "sha256": "33b662fdd3508192388779035d895f2d57122672755940fd2356172dbe21537b"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_update_route_malformed_acceptance_is_uncertain.collect.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 377,
+      "path": "artifacts/runtime-focused/test_update_route_malformed_acceptance_is_uncertain.collect.log",
+      "sha256": "a4d2fd1bb2fd1292951b231be7ee3abbd4603238c74fc4e046e6d1ddbe8293fd"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/runtime-focused/test_update_route_malformed_acceptance_is_uncertain.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 98,
+      "path": "artifacts/runtime-focused/test_update_route_malformed_acceptance_is_uncertain.log",
+      "sha256": "664181d1404d583262d5b2c4913e91075f203ab40e5c69358d98cb76493602a0"
+    },
+    {
+      "bytes": 5349,
+      "path": "command.log",
+      "sha256": "3b8328a85778dacf1936b44c6fe7817fd874a465aea4ac5f8094c588e4a479be"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 2146,
+      "path": "requested-inputs.json",
+      "sha256": "d82fa1d56b24d1e98556e6eda47aa7533326465a8869eb5ce8ae900c7dc18a6e"
+    },
+    {
+      "bytes": 431,
+      "path": "tuple.txt",
+      "sha256": "ac109eaa0a2d8edba1127cbffad0a7077af17952066234c5357fe3c2c1a768dd"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "f44acb319644b74d0167ef1b103329bce1776895",
+    "app_ref": "d3e8f92e465f78931561db0fb5b54979a5bdd560",
+    "artifact_paths": "runtime-focused/**",
+    "command": "set +e\nif python -m pip install -e 'runtime/.[test]'; then\n  setup_exit=0\nelse\n  setup_exit=$?\nfi\nmkdir -p runtime-focused\nprintf '%s\\n' \"$setup_exit\" > runtime-focused/setup.exit\nselectors=(\n  test_reconcile_before_manifest_and_newer_target_checks\n  test_unknown_reconciliation_never_prepares_or_launches\n  test_unconfirmed_terminal_reconciliation_is_observe_only\n  test_reconcile_helper_failure_preserves_uncertainty\n  test_unacknowledged_continuation_reply_is_observe_only\n  test_reconcile_terminal_result_prevents_preparation_and_new_launch\n  test_update_route_h3_returns_confirmed_reconciliation_conflict\n  test_update_route_h4_returns_recovery_refusal\n  test_update_route_h5_returns_uncertain_acknowledgement\n  test_authenticated_continuation_keeps_operation_and_journal\n  test_update_route_malformed_acceptance_is_uncertain\n  test_status_reads_authoritative_job_and_c2_journal_without_recovery\n  test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal\n  test_status_projects_unacknowledged_launching_as_recovery_needed\n  test_production_daemon_door_advertises_and_executes_selected_updater\n)\nfor name in \"${selectors[@]}\"; do\n  marker=()\n  if [ \"$name\" = test_production_daemon_door_advertises_and_executes_selected_updater ]; then marker=(-m integration); fi\n  if pytest -q \"${marker[@]}\" --collect-only \"runtime/tests/test_update_jobs.py::$name\" > \"runtime-focused/$name.collect.log\" 2>&1; then\n    collect_exit=0\n  else\n    collect_exit=$?\n  fi\n  printf '%s\\n' \"$collect_exit\" > \"runtime-focused/$name.collect.exit\"\n  if pytest -q \"${marker[@]}\" \"runtime/tests/test_update_jobs.py::$name\" > \"runtime-focused/$name.log\" 2>&1; then\n    test_exit=0\n  else\n    test_exit=$?\n  fi\n  printf '%s\\n' \"$test_exit\" > \"runtime-focused/$name.exit\"\ndone",
+    "pinokio_ref": "c5b42701641889ecb916c60cde09a717f83d62ff",
+    "runtime_ref": "dc56ddd184e3c203f0970c524daaf3358cd6ae3f",
+    "slot": "1"
+  },
+  "run_attempt": "1",
+  "run_id": "41351586109",
+  "source_head": "5a0e336424ae24d586e0c232adeabfef7e1694c0",
+  "source_ref": "refs/heads/venue/M-R1FIX-R15-R31-RUNTIME-2",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-R15-R31-RUNTIME-2",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "5a0e336424ae24d586e0c232adeabfef7e1694c0"
+}
