@@ -78,6 +78,7 @@ def _managed_h3_comfy(root, runtime_client, monkeypatch):
     session = ManagedSchemaSession(
         root / "managed-comfy", identity["revision"], identity["content_digest"],
         vibecomfy_checkout=checkout,
+        model_paths=model_paths,
     )
     try:
         # These are the established CPU fixture's synthetic readiness facts,
