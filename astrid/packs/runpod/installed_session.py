@@ -47,8 +47,11 @@ def _json(raw):
 class InstalledVibeComfySessionTransport:
     """Shared file validation; subclasses supply actual observation boundaries."""
 
-    def __init__(self, *, platform=PLATFORM):
+    def __init__(self, *, platform=PLATFORM, engine=ENGINE):
+        if engine not in {ENGINE, "comfyui"}:
+            raise ManagedSessionError("unsupported installed engine")
         self.platform = platform
+        self.engine = engine
 
     def read_installed(self, runtime_root):
         """Observe receipt/config identity before freezing a deployment reference.
@@ -62,7 +65,7 @@ class InstalledVibeComfySessionTransport:
             root = str(PurePosixPath(_path(runtime_root, "installed runtime root")).parent)
             if runtime_root != root + "/runtime":
                 raise ManagedSessionError("installed runtime root differs from canonical layout")
-            recipe = engine_recipe.load_recipe(ENGINE, self.platform)
+            recipe = engine_recipe.load_recipe(self.engine, self.platform)
             adapter = LinuxPlatformAdapter(self.platform)
             plan = engine_runner.plan_install(recipe, root=root, placement="local")
             # Self-start executes the canonical local installer on the pod.
@@ -71,7 +74,7 @@ class InstalledVibeComfySessionTransport:
             receipt = engine_runner._parse_receipt(_json(receipt_bytes), plan)
             if receipt.status != "installed":
                 raise ManagedSessionError("canonical installed receipt is required")
-            registry = runtime_root + "/out/sessions/" + ENGINE
+            registry = runtime_root + "/out/sessions/" + self.engine
             files = {name: self._read(root, registry + "/" + name, deadline) for name in _NAMES}
             config, marker = _json(files["config.json"]), _json(files["launch.json"])
             launch = adapter.start_request(recipe, root, deadline=deadline)
@@ -119,7 +122,7 @@ class InstalledVibeComfySessionTransport:
                 raise ManagedSessionError("installed receipt changed during observation")
             _check(deadline)
             return {
-                "session_ref": ENGINE, "runtime_root": runtime_root,
+                "session_ref": self.engine, "runtime_root": runtime_root,
                 "python_executable": adapter.venv_python(root + "/" + next(
                     e.relative_path for e in recipe.environments if e.name == recipe.primary_environment)),
                 "vibecomfy_root": root + "/" + source.relative_path,
@@ -136,7 +139,7 @@ class InstalledVibeComfySessionTransport:
             raise ManagedSessionError("installed session evidence could not be verified") from exc
 
     def status(self, selection):
-        if selection.session_ref != ENGINE:
+        if selection.session_ref != self.engine:
             raise ManagedSessionError("installed attachment selected a different session")
         value = self.read_installed(selection.runtime_root)
         self._verify_live(selection, value)
@@ -188,7 +191,7 @@ class LocalInstalledVibeComfySessionTransport(InstalledVibeComfySessionTransport
     def _verify_live(self, selection, value):
         from vibecomfy.runtime import session as runtime
 
-        registry = Path(selection.runtime_root, "out/sessions", ENGINE)
+        registry = Path(selection.runtime_root, "out/sessions", self.engine)
         if (Path(runtime.find_repo_root()) != Path(selection.vibecomfy_root)
                 or runtime.current_source_revision() != value["source_revision"]
                 or runtime.current_source_content_digest() != value["source_content_digest"]):

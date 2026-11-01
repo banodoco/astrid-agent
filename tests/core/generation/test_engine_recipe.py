@@ -59,7 +59,7 @@ def test_unknown_fields_are_rejected_in_recipe_index(monkeypatch, tmp_path):
         recipes.load_recipe_index()
 
 
-def test_comfyui_linux_recipe_is_package_owned_and_keeps_h3_entry_unchanged():
+def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
     platform = "linux-x86_64-cu130"
     index = recipes.load_recipe_index()
     entries = {(entry.engine, entry.platform): entry for entry in index.entries}
@@ -70,7 +70,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_keeps_h3_entry_unchanged():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "5c40a1e657050437d5c9d23dc15638daca1d34746accf6fa51177e8904500a3c"
+    assert h3_entry.recipe.sha256 == "5e4a94ef08fb83299ba0b7f7cf67bd443f6ac09e4b97d72eff01ebe485832fef"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
@@ -100,6 +100,40 @@ def test_comfyui_linux_recipe_is_package_owned_and_keeps_h3_entry_unchanged():
         "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
         "vae/qwen_image_2.1_vae_bf16.safetensors",
     ]
+
+
+def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
+    plain = recipes.load_recipe("comfyui", "linux-x86_64-cu130")
+    packaged = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    pins = recipes.load_pin_set(plain.pins)
+    assert plain.pins == packaged.pins
+    for recipe in (plain, packaged):
+        bindings = [source for source in recipe.sources if source.name == "vibecomfy"]
+        assert len(bindings) == 1
+        assert bindings[0].relative_path == "runtime/vibecomfy"
+        assert bindings[0].pin == pins["vibecomfy"]
+        assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
+        assert bindings[0].pin.revision == "2967033970cbb5884651c9565265778482d3b44e"
+        assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
+            "423cbd20511becb1f16122ab518e92e58bfa03d9")
+    declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
+                       for path in (recipes._ROOT / "packs").rglob("*.json"))
+    assert declarations == 3
+
+
+def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
+    recipe = recipes.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    pins = recipes.load_pin_set(recipe.pins)
+    bindings = [source for source in recipe.sources if source.name == "vibecomfy"]
+    assert len(bindings) == 1
+    assert bindings[0].relative_path == "runtime/vibecomfy"
+    assert bindings[0].pin == pins["vibecomfy-h3"]
+    assert {s.name: (s.pin.repository, s.pin.revision) for s in recipe.sources} == {
+        "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
+        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "2967033970cbb5884651c9565265778482d3b44e"),
+        "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
+        "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
+    }
 
 
 def test_unknown_engine_and_known_unsupported_platform_are_distinct():

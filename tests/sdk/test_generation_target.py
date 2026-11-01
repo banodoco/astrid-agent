@@ -29,19 +29,25 @@ def terminal_result(root):
     )
 
 
-def storage_client():
+def storage_client(*, store_root=None):
     imported = {}
     snapshots = {}
+    retained_paths = {}
 
     def import_file(*, project, path):
         assert project == "demo"
         digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         imported[digest] = path
         snapshots[digest] = path.read_bytes()
+        if store_root is not None:
+            retained = store_root / digest.removeprefix('sha256:') / path.name
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            retained.write_bytes(snapshots[digest])
+            retained_paths[digest] = retained
         return SimpleNamespace(ok=True, data={"object_id": digest, "filename": path.name})
 
     return SimpleNamespace(media=SimpleNamespace(import_file=Mock(side_effect=import_file),
-                                                 snapshots=snapshots)), imported
+                                                 snapshots=snapshots, retained_paths=retained_paths)), imported
 
 
 def attached_without_managed(monkeypatch):
@@ -236,7 +242,7 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
     seen = {}
-    runtime, imported = storage_client()
+    runtime, imported = storage_client(store_root=tmp_path / 'runtime-media')
 
     def invoke_workflow(self, **kwargs):
         from vibecomfy.security.provenance import Provenance
@@ -255,6 +261,10 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
         from vibecomfy.registry.ready import repo_ready_template_discovery, resolve_ready_template
         original = resolve_ready_template('image/z_image_turbo', repo_ready_template_discovery()).path
         source = kwargs['source']
+        # A01 cleans the import snapshot before admission. The retained source
+        # remains a readable file in Runtime media, as A04's check requires.
+        assert runtime.media.retained_paths[kwargs["source"]["digest"]].is_file()
+        assert runtime.media.retained_paths[source['digest']].read_bytes() == original.read_bytes()
         assert runtime.media.snapshots[source['digest']] == original.read_bytes()
         assert source['filename'] == original.name
         assert source['sha256'] == source['digest'].removeprefix('sha256:')
@@ -285,7 +295,9 @@ def test_workflow_source_is_ingested_before_conversion_and_survives_cleanup(netw
     from vibecomfy.registry.ready import workflow_from_ready
     from vibecomfy.workflow_bundle import load_bundle
 
-    client, _ = install_target(network, target_info())
+    # Raw workflows retain their authored picker values. Unlike catalog role
+    # binding, this source-retention case needs that exact VAE on the target.
+    client, _ = install_target(network, target_info(vaes=('ae.safetensors',)))
     attached_without_managed(monkeypatch)
     original = b' \r\n' + json.dumps(load_bundle(workflow_from_ready('image/z_image_turbo')).materialize_ui(),
                                     indent=3, ensure_ascii=False).encode() + b'\r\n  '
@@ -388,6 +400,9 @@ def test_auto_probes_attached_before_managed_readiness(monkeypatch):
     with pytest.raises(AstridError) as raised:
         GenerationFacade().image(target="auto", prompt="one boat", project="demo")
     assert raised.value.code == "engine_not_found"
+    import shlex
+    assert "--target http://127.0.0.1:8188" in shlex.join(
+        raised.value.to_envelope()['fixes'][1]['argv'])
     assert raised.value.fix.startswith('astrid engines install vibecomfy-h3 ')
     assert raised.value.to_envelope()['fixes'][1]['argv'] == [
         'astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
@@ -395,16 +410,19 @@ def test_auto_probes_attached_before_managed_readiness(monkeypatch):
 
 
 def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
+    from astrid.core.generation import targets
+
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
-    original = ComfyTargetClient.__init__
+    original = targets.resolve_target
 
-    def default_to_fake(self, target, **kwargs):
-        if target.url == "http://127.0.0.1:8188":
-            target = ComfyTarget(client.target.url, target.kind, target.facts)
-        original(self, target, **kwargs)
+    def default_to_fake(target, **kwargs):
+        selection = original(target, **kwargs)
+        if selection.record and selection.record.endpoint == "http://127.0.0.1:8188":
+            selection = replace(selection, record=replace(selection.record, endpoint=client.target.url))
+        return selection
 
-    monkeypatch.setattr(ComfyTargetClient, "__init__", default_to_fake)
+    monkeypatch.setattr(targets, "resolve_target", default_to_fake)
     plan = GenerationFacade().image(target="auto", prompt="one boat", dry_run=True)
     assert plan["target"]["endpoint"] == client.target.url
     assert requests[0] == ("GET", "/system_stats")
@@ -425,7 +443,6 @@ def test_managed_retains_install_readiness_and_workflow_owner(monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize("target,code", [
-    ("runpod", "missing_dependency"),
     ("https://example.com:8188", "input_rejected"),
 ])
 def test_unsupported_target_is_coded_before_admission(monkeypatch, target, code):
@@ -434,6 +451,18 @@ def test_unsupported_target_is_coded_before_admission(monkeypatch, target, code)
         GenerationFacade().image(target=target, prompt="one boat")
     assert raised.value.code == code
     assert "--target" in raised.value.fix
+
+
+def test_runpod_requires_fresh_paid_authority_before_admission(monkeypatch):
+    import astrid.sdk as sdk
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([]))
+    monkeypatch.setattr(GenerationFacade, 'workflow', Mock(side_effect=AssertionError('unconsented RunPod admission')))
+    with pytest.raises(AstridError) as raised:
+        GenerationFacade().image(target='runpod', prompt='one boat')
+    envelope = raised.value.to_envelope()
+    assert envelope['status'] == 'blocked' and envelope['task_id'] is None
+    assert envelope['issues'][0]['code'] == 'input_rejected'
+    assert envelope['issues'][0]['details']['field'] == 'consent'
 
 
 def test_explicit_unready_target_names_working_recovery(monkeypatch):

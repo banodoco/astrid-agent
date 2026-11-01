@@ -572,7 +572,12 @@ class _Supervisor:
 
     def source_identity(self, deadline, channel):
         """Use VibeComfy's exact effective-source hash convention, with owned git."""
-        source = next(s for s in self.recipe.sources if s.name == "vibecomfy")
+        source = next((s for s in self.recipe.sources if s.name == "vibecomfy"), None)
+        if source is None:
+            raise RecipeValidationError(
+                f"{self.recipe.engine} recipe must bind a VibeComfy source at source_bindings",
+                step_id="source:vibecomfy",
+            )
         root = Path(self.root, source.relative_path)
         env = {k: None for k in os.environ if k.startswith("GIT_")}
         def git(argv):
