@@ -394,17 +394,30 @@ if TYPE_CHECKING:
 def _bind_target_model_roles(workflow: Any, spec: BackendSpec, roles: Mapping[str, str]) -> None:
     """Bind declared public picker inputs without reusing stale asset provenance."""
     replacements: dict[str, str] = {}
+    pending: list[tuple[str, str]] = []
+    targets: set[tuple[str, str]] = set()
     for role, declaration in spec.model_roles.items():
-        public_input = workflow.inputs.get(declaration.binding)
-        node = workflow.nodes.get(public_input.node_id) if public_input is not None else None
-        if (node is None or node.class_type != declaration.node_class
-                or public_input.field != declaration.input):
-            raise ValueError(f"catalog role {role!r} does not match its pinned template input")
-        previous = public_input.value
         selected = roles[role]
-        workflow.set_input(declaration.binding, selected)
-        if isinstance(previous, str) and previous != selected:
-            replacements[previous] = selected
+        for binding in (declaration, *declaration.additional_bindings):
+            public_input = workflow.inputs.get(binding.binding)
+            node = workflow.nodes.get(public_input.node_id) if public_input is not None else None
+            if (node is None or node.class_type != binding.node_class
+                    or public_input.field != binding.input
+                    or (public_input.field not in node.inputs and public_input.field not in node.widgets
+                        and not workflow._is_valid_missing_target(public_input))):
+                raise ValueError(f"catalog role {role!r} does not match its pinned template input")
+            target = (public_input.node_id, public_input.field)
+            if target in targets:
+                raise ValueError(f"catalog role {role!r} repeats a pinned template input")
+            targets.add(target)
+            previous = public_input.value
+            if isinstance(previous, str) and previous != selected:
+                if previous in replacements and replacements[previous] != selected:
+                    raise ValueError(f"catalog role {role!r} has conflicting superseded filenames")
+                replacements[previous] = selected
+            pending.append((binding.binding, selected))
+    for binding, selected in pending:
+        workflow.set_input(binding, selected)
     if not replacements:
         return
     # Changing a picker does not establish byte/hash/download provenance for

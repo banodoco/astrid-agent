@@ -47,6 +47,15 @@ class Price:
 
 
 @dataclass(frozen=True)
+class ModelBinding:
+    """A public picker and its expected workflow node field."""
+
+    node_class: str
+    input: str
+    binding: str
+
+
+@dataclass(frozen=True)
 class ModelRole:
     """Exact target filenames for a loader field bound by a public input.
 
@@ -57,6 +66,7 @@ class ModelRole:
     input: str
     names: tuple[str, ...]
     binding: str
+    additional_bindings: tuple[ModelBinding, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -455,18 +465,35 @@ def _validate_backend_spec(
         role_path = f"{path}.model_roles[{name!r}]"
         if not isinstance(name, str) or not name.strip() or not isinstance(declaration, dict):
             raise ValueError(f"{role_path}: invalid role declaration")
-        if set(declaration) != {"node_class", "input", "names", "binding"}:
+        required = {"node_class", "input", "names", "binding"}
+        if not required <= set(declaration) or set(declaration) - required - {"additional_bindings"}:
             raise ValueError(f"{role_path}: requires node_class, input, names and binding")
         node_class = _require_str(declaration, "node_class", role_path)
         input_name = _require_str(declaration, "input", role_path)
         binding = _require_str(declaration, "binding", role_path)
+        extras = declaration.get("additional_bindings", [])
+        if not isinstance(extras, list):
+            raise ValueError(f"{role_path}.additional_bindings: must be a list")
+        additional_bindings = []
+        for index, extra in enumerate(extras):
+            extra_path = f"{role_path}.additional_bindings[{index}]"
+            if not isinstance(extra, dict) or set(extra) != {"node_class", "input", "binding"}:
+                raise ValueError(f"{extra_path}: requires node_class, input and binding")
+            additional_bindings.append(ModelBinding(
+                _require_str(extra, "node_class", extra_path),
+                _require_str(extra, "input", extra_path),
+                _require_str(extra, "binding", extra_path),
+            ))
+        bindings = [binding, *(extra.binding for extra in additional_bindings)]
+        if len(set(bindings)) != len(bindings):
+            raise ValueError(f"{role_path}: public bindings must be distinct")
         names = declaration["names"]
         if (not isinstance(names, list) or not names
                 or any(not isinstance(value, str) or not value for value in names)
                 or len(set(names)) != len(names)):
             raise ValueError(f"{role_path}.names: requires distinct non-empty exact filenames")
         # Preserve filename characters exactly, including backslashes.
-        model_roles[name] = ModelRole(node_class, input_name, tuple(names), binding)
+        model_roles[name] = ModelRole(node_class, input_name, tuple(names), binding, tuple(additional_bindings))
 
     return BackendSpec(
         template=str(template),

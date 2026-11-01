@@ -239,6 +239,71 @@ def test_role_binding_preserves_unrelated_authored_requirements():
     assert all(item.get("name") != "ae.safetensors" for item in workflow.metadata["model_assets"])
 
 
+def _multi_picker_case():
+    from vibecomfy.workflow import VibeInput, VibeNode, VibeWorkflow, WorkflowRequirements, WorkflowSource
+
+    role = {"node_class": "CheckpointLoaderSimple", "input": "ckpt_name", "binding": "checkpoint",
+            "names": ["target.safetensors"], "additional_bindings": [
+                {"node_class": "AudioLoader", "input": "ckpt_name", "binding": "audio"},
+                {"node_class": "TextLoader", "input": "checkpoint", "binding": "text"},
+            ]}
+    raw = {"schema_version": 2, "models": [{"id": "example", "modality": "image", "modes": {
+        "t2i": {"supports": ["prompt"], "requires": ["prompt"], "backends": {
+            "local": {"template": "image/example", "model_roles": {"checkpoint": role}}}}}}]}
+    spec = validate_registry(raw)[0].modes["t2i"].backends["local"]
+    unrelated = {"name": "unrelated.safetensors", "sha256": "a" * 64}
+    old = ["old-one.safetensors", "old-two.safetensors", "old-three.safetensors"]
+    nodes = {str(i): VibeNode(str(i), cls, inputs={field: value}) for i, (cls, field, value) in enumerate([
+        ("CheckpointLoaderSimple", "ckpt_name", old[0]),
+        ("AudioLoader", "ckpt_name", old[1]),
+        ("TextLoader", "checkpoint", old[2]),
+    ])}
+    inputs = {name: VibeInput(name, str(i), field, old[i]) for i, (name, field) in enumerate([
+        ("checkpoint", "ckpt_name"), ("audio", "ckpt_name"), ("text", "checkpoint")])}
+    assets = [{"name": name, "sha256": "b" * 64} for name in old] + [unrelated]
+    workflow = VibeWorkflow("example", WorkflowSource("example"), nodes=nodes, inputs=inputs,
+                            requirements=WorkflowRequirements(models=copy.deepcopy(assets)),
+                            metadata={"model_assets": copy.deepcopy(assets)})
+    return raw, spec, workflow, unrelated
+
+
+def test_role_binds_all_declared_pickers_and_preserves_unrelated_provenance():
+    _, spec, workflow, unrelated = _multi_picker_case()
+    _bind_target_model_roles(workflow, spec, {"checkpoint": "target.safetensors"})
+    assert [item.value for item in workflow.inputs.values()] == ["target.safetensors"] * 3
+    assert [node.inputs[next(iter(node.inputs))] for node in workflow.nodes.values()] == ["target.safetensors"] * 3
+    assert workflow.requirements.models == ["target.safetensors"] * 3 + [unrelated]
+    assert workflow.metadata["model_assets"] == [unrelated]
+
+
+@pytest.mark.parametrize("mismatch", ["missing", "class", "field", "missing_field"])
+def test_multi_picker_validation_precedes_all_mutation(mismatch):
+    _, spec, workflow, _ = _multi_picker_case()
+    if mismatch == "missing":
+        del workflow.inputs["text"]
+    elif mismatch == "class":
+        workflow.nodes["2"].class_type = "UnexpectedLoader"
+    elif mismatch == "field":
+        workflow.inputs["text"].field = "wrong"
+    else:
+        workflow.nodes["2"].inputs.clear()
+    before = copy.deepcopy(workflow)
+    with pytest.raises(ValueError, match="pinned template input"):
+        _bind_target_model_roles(workflow, spec, {"checkpoint": "target.safetensors"})
+    assert workflow == before
+
+
+def test_multi_picker_schema_rejects_duplicate_and_incomplete_bindings():
+    raw, _, _, _ = _multi_picker_case()
+    role = raw["models"][0]["modes"]["t2i"]["backends"]["local"]["model_roles"]["checkpoint"]
+    role["additional_bindings"][0]["binding"] = "checkpoint"
+    with pytest.raises(ValueError, match="distinct"):
+        validate_registry(raw)
+    del role["additional_bindings"][0]["input"]
+    with pytest.raises(ValueError, match="requires node_class, input and binding"):
+        validate_registry(raw)
+
+
 def test_model_role_schema_preserves_exact_names_and_rejects_duplicates():
     raw = {"schema_version": 2, "models": [{"id": "example", "modality": "image", "modes": {"t2i": {"supports": ["prompt"], "requires": ["prompt"], "backends": {"local": {"template": "image/example", "model_roles": {"vae": {"node_class": "VAELoader", "input": "vae_name", "binding": "vae", "names": [EXACT_VAE]}}}}}}}]}
     assert validate_registry(raw)[0].modes["t2i"].backends["local"].model_roles["vae"].names == (EXACT_VAE,)
