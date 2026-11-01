@@ -105,3 +105,14 @@ def test_single_declared_output_passes_the_cardinality_check(tmp_path):
             {"node_id": "9", "output_type": "SaveImage"}]}, client=_FakeRuntime(), dry_run=True)
     except Exception as exc:  # noqa: BLE001 - only the cardinality refusal is forbidden here
         assert "Phase 1 supports exactly one" not in str(exc)
+
+
+def test_companion_less_workflow_is_not_refused_by_the_cardinality_check(tmp_path):
+    from astrid.sdk.generation import GenerationFacade
+
+    workflow = tmp_path / "workflow.py"
+    workflow.write_text("# plain source, no sealed companion\n", encoding="utf-8")
+    try:
+        GenerationFacade().workflow(workflow=workflow, client=_FakeRuntime(), dry_run=True)
+    except Exception as exc:  # noqa: BLE001 - only the cardinality refusal is forbidden here
+        assert "Phase 1 supports exactly one" not in str(exc)

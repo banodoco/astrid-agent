@@ -92,9 +92,15 @@ def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
         original = Path(workflow).expanduser().resolve()
         if original.is_dir():
             original = original / "workflow.py"
-        declared = _declared_output_count(original.with_suffix(".vibe.json"))
+        sealed = original.with_suffix(".vibe.json")
+        if not sealed.exists():
+            # Companion-less workflows (for example audio or raw-target) are not
+            # VibeComfy-declared and pass unchanged; any extra output still fails
+            # loudly at host harvest.
+            return
+        declared = _declared_output_count(sealed)
     else:
-        declared = None
+        return
     if declared != 1:
         shown = "an undeterminable number of" if declared is None else str(declared)
         raise generation_error(
