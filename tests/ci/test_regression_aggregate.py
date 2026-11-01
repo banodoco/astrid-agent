@@ -66,6 +66,9 @@ class AggregateTests(unittest.TestCase):
                     write(host / 'manifest.json', manifest)
                     (host / 'junit.xml').write_bytes(xml)
                     write(host / 'run.json', {'id': n+1, 'run_attempt': 1, 'job_id': n+100, 'repository': tup['repos'][repo]['url'], 'head_sha': aggregate.CP1[repo], 'status': 'completed', 'conclusion': 'success', 'job_conclusion': 'success', 'workflow_path': source['workflow_path'], 'run_started_at': '2026-10-31T23:37:00Z', 'updated_at': '2026-10-31T23:39:00Z', 'artifact': {'id': n+200, 'name': source_id, 'run_id': n+1, 'run_attempt': 1, 'job_id': n+100}})
+                    run = json.loads((host / 'run.json').read_text())
+                    run['files'] = [{'path': f.name, 'bytes': f.stat().st_size, 'sha256': local.sha(f)} for f in (host / 'manifest.json', host / 'junit.xml')]
+                    write(host / 'run.json', run)
                 lanes.append(lane)
             (p / 'broker/pods.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
             review = p / 'review.json'

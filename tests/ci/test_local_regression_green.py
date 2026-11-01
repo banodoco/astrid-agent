@@ -47,8 +47,16 @@ class LocalEvidenceTests(unittest.TestCase):
         self.write('hosted/artifact-1/manifest.json', manifest)
         (self.p / 'hosted/artifact-1/junit.xml').write_bytes(self.xml)
         self.write('hosted/artifact-1/run.json', {'id': 1, 'run_attempt': 1, 'job_id': 2, 'repository': self.tuple['repos']['agent']['url'], 'head_sha': self.shas['agent'], 'status': 'completed', 'conclusion': 'success', 'job_conclusion': 'success', 'workflow_path': '.github/workflows/ci.yml', 'run_started_at': '2026-10-31T23:01:00Z', 'updated_at': '2026-10-31T23:04:00Z', 'artifact': {'id': 3, 'name': 'artifact-1', 'run_id': 1, 'run_attempt': 1, 'job_id': 2}})
+        self.authenticate_hosted()
         self.save_inventory()
         self.write('coverage.json', {'lanes': [{k: lane[k] for k in ('repo', 'lane', 'platform')} for lane in self.lanes]})
+
+    def authenticate_hosted(self):
+        base = self.p / 'hosted/artifact-1'
+        run_path = base / 'run.json'
+        run = json.loads(run_path.read_text())
+        run['files'] = [{'path': p.name, 'bytes': p.stat().st_size, 'sha256': local.sha(p)} for p in (base / 'manifest.json', base / 'junit.xml')]
+        run_path.write_text(json.dumps(run))
 
     def manifest(self, lane):
         return {k: lane[k] for k in ('repo', 'lane', 'platform')} | {'tuple_digest': self.identity, 'repo_shas': self.shas, 'junit_sha256': hashlib.sha256(self.xml).hexdigest(), 'created_at': '2026-10-31T23:02:00Z', 'result': 'success', 'test_exit_code': 0}

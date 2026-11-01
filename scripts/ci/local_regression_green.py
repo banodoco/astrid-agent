@@ -19,7 +19,6 @@ import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -198,10 +197,6 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                         snapshots[safe_path(relative[0])] = (entry['sha256'], raw)
                         files[path.name] = path
                     manifest_file, junit_file = files['manifest.json'], files['junit.xml']
-                    if key not in selected:
-                        manifest = core.read_json(manifest_file)
-                        core.require(manifest.get('checkouts') == {r: shas[r] for r in repos}, 'wrong effective checkouts')
-                        core.require(manifest.get('pod_id') == pod and manifest.get('job_id') == source_id, 'wrong broker result identity')
                 elif kind == 'hosted':
                     core.require(key[2] in ('linux', 'macos', 'windows'), 'invalid hosted platform')
                     base = hosted / source_id
@@ -216,30 +211,24 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                     started = fresh(run['run_started_at'], cutoff, now)
                     ended = fresh(run['updated_at'], cutoff, now)
                     core.require(started <= ended and key[0] in source['checkouts'], 'invalid hosted times or checkouts')
-                    if key not in selected:
-                        manifest = core.read_json(manifest_file)
-                        core.require(manifest.get('run_id') == run['id'] and manifest.get('run_attempt') == run['run_attempt'] and manifest.get('job_id') == run['job_id'], 'hosted identity mismatch')
-                        core.require(manifest.get('checkouts') == {r: shas[r] for r in source['checkouts']}, 'wrong hosted checkouts')
                     snapshots = {}
-                    if key in selected:
-                        entries = run['files']  # Authenticated downloader's file inventory, not artifact claims.
-                        core.require(isinstance(entries, list) and entries, 'missing hosted file inventory')
-                        for entry in entries:
-                            rel = safe_path(entry['path'])
-                            path = base / rel
-                            core.require(rel not in snapshots and path.resolve().is_relative_to(base.resolve()) and path.is_file(), 'invalid or duplicate hosted file')
-                            snapshots[rel] = (entry['sha256'], checked_bytes(path, entry['bytes'], entry['sha256']))
+                    entries = run['files']  # Trusted downloader's byte inventory.
+                    core.require(isinstance(entries, list) and entries, 'missing hosted file inventory')
+                    for entry in entries:
+                        rel = safe_path(entry['path'])
+                        path = base / rel
+                        core.require(rel not in snapshots and path.resolve().is_relative_to(base.resolve()) and path.is_file(), 'invalid or duplicate hosted file')
+                        snapshots[rel] = (entry['sha256'], checked_bytes(path, entry['bytes'], entry['sha256']))
                 else:
                     raise ValueError(f'unknown source kind: {kind}')
+                core.require('manifest.json' in snapshots and 'junit.xml' in snapshots, 'missing authenticated manifest or junit')
+                manifest = strict_json(snapshots['manifest.json'][1])
+                core.require(manifest.get('checkouts') == {r: shas[r] for r in source['checkouts']}, 'wrong authenticated checkouts')
+                if kind == 'hosted':
+                    core.require(manifest.get('run_id') == run['id'] and manifest.get('run_attempt') == run['run_attempt'] and manifest.get('job_id') == run['job_id'], 'authenticated hosted identity mismatch')
+                else:
+                    core.require(manifest.get('pod_id') == pod and manifest.get('job_id') == source_id, 'authenticated broker identity mismatch')
                 if key in selected:
-                    core.require('manifest.json' in snapshots and 'junit.xml' in snapshots, 'missing authenticated manifest or junit')
-                    # Use only the checked snapshot for all later interpretations.
-                    manifest = strict_json(snapshots['manifest.json'][1])
-                    core.require(manifest.get('checkouts') == {r: shas[r] for r in source['checkouts']}, 'wrong authenticated checkouts')
-                    if kind == 'hosted':
-                        core.require(manifest.get('run_id') == run['id'] and manifest.get('run_attempt') == run['run_attempt'] and manifest.get('job_id') == run['job_id'], 'authenticated hosted identity mismatch')
-                    else:
-                        core.require(manifest.get('pod_id') == pod and manifest.get('job_id') == source_id, 'authenticated broker identity mismatch')
                     attempt = source.get('run_attempt') if kind == 'hosted' else source.get('attempt')
                     if kind == 'broker':
                         core.require(result.get('attempt') == attempt, 'broker attempt mismatch')
@@ -255,7 +244,7 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                         pending.append((feature, entries))
                 code = manifest.get('test_exit_code')
                 core.require(type(code) is int and code in (0, 1) and manifest.get('result') == ('success' if code == 0 else 'failure'), 'test command failed to run or was skipped')
-                xml = ET.fromstring(snapshots['junit.xml'][1] if key in selected else junit_file.read_bytes())
+                xml = ET.fromstring(snapshots['junit.xml'][1])
                 core.require(key not in selected or (manifest.get('test_exit_code') == 0 and not xml.findall('.//testcase/skipped')), 'feature job failed or skipped')
                 has_failures = bool(xml.findall('.//testcase/failure') or xml.findall('.//testcase/error'))
                 core.require(has_failures == (code == 1), 'test outcome conflicts with JUnit')
@@ -264,12 +253,8 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                 target = Path(tmp) / core.digest(list(key))
                 core.require(not target.exists(), f'duplicate lane {key}')
                 target.mkdir()
-                if key in selected:
-                    (target / 'manifest.json').write_bytes(snapshots['manifest.json'][1])
-                    (target / 'junit.xml').write_bytes(snapshots['junit.xml'][1])
-                else:
-                    shutil.copyfile(manifest_file, target / 'manifest.json')
-                    shutil.copyfile(junit_file, target / 'junit.xml')
+                (target / 'manifest.json').write_bytes(snapshots['manifest.json'][1])
+                (target / 'junit.xml').write_bytes(snapshots['junit.xml'][1])
             errors, retirement = core.evaluate(tuple_path, inventory_path, ledger_path, tmp, freshness_path)
             if errors or features is None:
                 return errors, retirement
