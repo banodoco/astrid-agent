@@ -108,3 +108,8 @@ hooks lane and remains unimplemented here.
 - engine_birth_id = comfy_process_birth_id.
 - launch_generation = the same process birth value on both the managed and the attached paths, matching the wan2gp and generic_host builders. It is NEVER launch_token, which is a credential.
 - execution_identity = the residency digest. The attached path refuses when the hc03 profile has none. The managed path takes it from the attested engine environment, or refuses.
+
+## Updates from the shared hooks lane (recorded per M-GPU, 2026-11-01T15:26Z)
+- Managed release signature: open_host_session(..., *, host=None). With a host, managed release routes to host.release_managed_session(require_quiescent=True). Without a host, it fails closed.
+- source_digest = source_content_digest.
+- Reference implementation of the shared hooks: lane/M-GPU/p1-f07-comfy-hooks at bd1561f4 (stacked on de43cadf). Radagast owns it.
