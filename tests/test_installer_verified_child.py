@@ -124,9 +124,13 @@ def test_ordinary_installed_host_admits_and_claims_h3_prepare(tmp_path, monkeypa
         **{name: {"sha": _pin(root), "repo": str(root)}
            for name, root in (("agent", agent), ("runtime", runtime), ("vibecomfy", vibe))},
         "tools": {"uv": {"version": uv_version}, "python": {"version": f"{sys.version_info.major}.{sys.version_info.minor}"}}}
+    staged_source_hashes = {}
 
     def bounded_acquisition(argv, **kwargs):
         if argv[0] == uv and str(argv[1]) == "venv":
+            from astrid.installer.tools import source_tree_sha256
+            for name, staged in (("agent", "a"), ("runtime", "r"), ("vibecomfy", "v")):
+                staged_source_hashes[name] = source_tree_sha256(Path(argv[-1]).parent / staged)
             # A small test-owned prefix reuses this interpreter; no Python download.
             return real_run([uv, "venv", "--python", sys.executable, argv[-1]], **kwargs)
         if argv[0] == uv and "--require-hashes" in argv:
@@ -160,8 +164,7 @@ def test_ordinary_installed_host_admits_and_claims_h3_prepare(tmp_path, monkeypa
     monkeypatch.setattr(backend_module, "binary", lambda *_args: tmp_path / "unused-npm")
     monkeypatch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
     version = backend.stage(manifest, program, data)
-    for name, staged in (("agent", "a"), ("runtime", "r"), ("vibecomfy", "v")):
-        assert _pin(version.root / staged) == manifest[name]["sha"]
+    assert read_json(version.root / "manifest.json") == manifest
     smoke = json.loads(_run([version.python, "-I", "-c", '''
 import importlib, importlib.metadata, json, pathlib, sysconfig
 root = pathlib.Path(sysconfig.get_path('purelib')).resolve()
@@ -174,7 +177,8 @@ print(json.dumps({'origins': origins, 'versions': {name: importlib.metadata.vers
     for name in ('astrid', 'astrid-runtime', 'astrid-runtime-client', 'vibecomfy')}}))
 ''']))
     print(json.dumps({"staged_sources": {name: manifest[name]["sha"]
-        for name in ("agent", "runtime", "vibecomfy")}, "installed_smoke": smoke}), flush=True)
+        for name in ("agent", "runtime", "vibecomfy")}, "staged_tree_hashes": staged_source_hashes,
+        "installed_smoke": smoke}), flush=True)
     profile = read_json(version.profile)
     assert profile["worker_profile"] == str(version.root / "worker-profile.json")
     worker = read_json(Path(profile["worker_profile"]))
