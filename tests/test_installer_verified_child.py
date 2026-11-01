@@ -211,7 +211,7 @@ print(json.dumps({'origins': origins, 'versions': {name: importlib.metadata.vers
         started = True
         backend.start(version, data)
         ready_path = data / "runtime/worker-astrid-ready.json"
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + host_service["ready"]["timeout_seconds"]
         while not ready_path.is_file() and time.monotonic() < deadline:
             time.sleep(0.1)
         assert ready_path.is_file(), "Verified host did not become ready; inspect test-owned Runtime/service logs."

@@ -120,13 +120,16 @@ def main(argv: list[str] | None = None) -> int:
 def run_verified_pack_host(support_root: Path, discovery: dict[str, Any]) -> int:
     """Activate and observe Runtime's host; Runtime retains process ownership."""
     import threading
-    from astrid_runtime.cli import _credential, _start_local_worker
+    from astrid_runtime.cli import _credential
     from astrid_runtime.paths import RuntimePaths
     from astrid_runtime_client import WorkspaceClient
 
     paths = RuntimePaths.current(data_root=support_root.parent)
-    receipt = _start_local_worker(paths, profile_id="astrid",
-                                  expected_workspace_uuid=discovery["active_realm"])
+    # The verified launch inventories the installed interpreter and product
+    # before spawning. Match the declared service readiness budget rather than
+    # the CLI helper's shorter transport timeout.
+    launcher = WorkspaceClient(discovery["endpoint"], _credential(paths), timeout=300)
+    receipt = launcher.start_local_worker("astrid", discovery["active_realm"])
     client = WorkspaceClient(discovery["endpoint"], _credential(paths))
     stopped = threading.Event()
 
