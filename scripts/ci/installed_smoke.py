@@ -284,6 +284,27 @@ def _check_identity_mapping(value: object, expected: Mapping[str, str], errors: 
             errors.append(f"{label} {name} identity is stale")
 
 
+def _check_runner_checkouts(value: object, expected: Mapping[str, str], errors: list[str]) -> None:
+    """Validate checkout provenance without confusing it with the product.
+
+    A merge-suite runs this script from the lane commit, so that Agent checkout
+    necessarily differs from the Agent revision installed by the manifest. The
+    runtime, App, and Pinokio checkouts are direct tuple inputs and must still
+    match exactly. Recording both prevents a lane revision being mistaken for
+    the published product identity.
+    """
+    names = {"agent", "runtime", "app", "pinokio"}
+    if not isinstance(value, Mapping) or set(value) != names:
+        errors.append("runner checkout identities have missing or unexpected fields")
+        return
+    for name in names:
+        observed = value.get(name)
+        if not isinstance(observed, str) or SHA.fullmatch(observed) is None:
+            errors.append(f"runner checkout {name} identity is missing")
+        elif name != "agent" and observed != expected.get(name):
+            errors.append(f"runner checkout {name} identity is stale")
+
+
 def evaluate_receipt(receipt: object, evidence_root: Path, expected: Mapping[str, str]) -> list[str]:
     """Return every reason the receipt is red; absence is never a pass."""
     errors: list[str] = []
@@ -292,6 +313,7 @@ def evaluate_receipt(receipt: object, evidence_root: Path, expected: Mapping[str
     if receipt.get("format") != FORMAT:
         errors.append("receipt format is missing or wrong")
     _check_identity_mapping(receipt.get("identities"), expected, errors, "receipt")
+    _check_runner_checkouts(receipt.get("runner_checkouts"), expected, errors)
     expected_tuple_digest = _sha256_bytes(_canonical(dict(expected)))
     if receipt.get("tuple_sha256") != expected_tuple_digest:
         errors.append("receipt tuple digest is missing or stale")
@@ -369,9 +391,13 @@ def _run(args: argparse.Namespace) -> int:
     identities = {name: _identity(getattr(args, name), f"{name} identity") for name in REQUIRED_IDENTITIES}
     checkouts = {"agent": args.agent_checkout.resolve(), "runtime": args.runtime_checkout.resolve(),
                  "app": args.app_checkout.resolve(), "pinokio": args.pinokio_checkout.resolve()}
+    runner_checkouts: dict[str, str] = {}
     for name, checkout in checkouts.items():
         observed = _git_head(checkout, name)
-        if observed != identities[name]:
+        runner_checkouts[name] = observed
+        # The Agent checkout supplies this lane's evaluator. The actual Agent
+        # product source is fetched by Backend.source from the manifest SHA.
+        if name != "agent" and observed != identities[name]:
             raise SmokeError(f"{name} checkout does not match the requested identity")
     template = _json(args.app_checkout / "public" / "install-manifest.json", "App install-manifest")
     manifest = build_manifest(template, identities, product_version=_product_version(args.agent_checkout))
@@ -380,6 +406,7 @@ def _run(args: argparse.Namespace) -> int:
     receipt: dict[str, Any] = {
         "format": FORMAT,
         "identities": identities,
+        "runner_checkouts": runner_checkouts,
         "tuple_sha256": _sha256_bytes(_canonical(identities)),
         "environment": {"PYTHONPATH": "unset"},
         "artifacts": {"requested_manifest": _artifact(output, manifest_path)},

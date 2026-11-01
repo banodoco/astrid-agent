@@ -66,6 +66,12 @@ class InstalledSmokeReceiptTests(unittest.TestCase):
         return {
             "format": smoke.FORMAT,
             "identities": dict(IDENTITIES),
+            "runner_checkouts": {
+                "agent": "c" * 40,
+                "runtime": IDENTITIES["runtime"],
+                "app": IDENTITIES["app"],
+                "pinokio": IDENTITIES["pinokio"],
+            },
             "tuple_sha256": hashlib.sha256(
                 json.dumps(IDENTITIES, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),
