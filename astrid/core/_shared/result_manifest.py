@@ -795,9 +795,11 @@ def _collect_manifest_files(
         seen_ordinals.add(ordinal)
 
         role = entry.get("role", "result")
-        if role not in ("result", "auxiliary"):
+        if role not in ("result", "auxiliary") and not (
+            role == "manifest" and entry.get("name", entry.get("port")) == "result_manifest"
+        ):
             raise HarvestError(
-                f"output {raw_path!r} role must be 'result' or 'auxiliary'"
+                f"output {raw_path!r} role must be 'result', 'auxiliary', or result_manifest 'manifest'"
             )
         if resolved == manifest_path.resolve() and role == "result":
             raise HarvestError(
