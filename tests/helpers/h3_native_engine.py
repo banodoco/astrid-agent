@@ -52,8 +52,8 @@ def prepare_outer_service(recipe, root: Path, started: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
-        locked.append({"name": model.name, "repository": None, "revision": None,
-                       "path": None, "url": "https://example.invalid/" + model.name,
+        locked.append({"name": model.name, "repository": model.repository,
+                       "revision": model.revision, "path": model.path, "url": None,
                        "destination": model.destination, "bytes": len(data), "sha256": digest})
         results.append(DownloadResult(model.name, str(path), "skipped", len(data), digest, True, 0))
     binding = _synthetic_model_root_binding(

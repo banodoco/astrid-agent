@@ -53,6 +53,30 @@ def test_generation_assets_use_recipe_lock_revisions():
     }
 
 
+def test_ref2va_model_uses_authoritative_locked_source_and_digest():
+    from astrid.core.generation.engine_recipe import load_recipe_model_lock
+
+    lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    model = next(row for row in lock.models if row.destination == (
+        "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+    ))
+    assert (model.repository, model.revision, model.path) == (
+        "Comfy-Org/MiniMax-H3",
+        "e5eb578a89295337b8ff433a035929ce0279e0b6",
+        "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    )
+    assert model.sha256 == "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779"
+
+    workflow = _locked_model_workflow()
+    model_asset = next(
+        row for row in workflow.metadata["model_assets"]
+        if f'{row["subdir"]}/{row["name"]}' == model.destination
+    )
+    assert model_asset["url"] == (
+        f"https://huggingface.co/{model.repository}/resolve/{model.revision}/{model.path}"
+    )
+
+
 @pytest.mark.parametrize("invalid", [
     {"revision": None}, {"revision": "main"}, {"repository": None},
     {"path": None}, {"url": "https://huggingface.co/owner/repo/resolve/main/model"},
