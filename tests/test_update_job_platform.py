@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from runtime_protocol import platform as runtime_platform
 
-from astrid.installer import update_job
+from astrid.installer import service, update_job
 from astrid.installer import update_job_platform as platform
 from astrid.installer.core import Version, write_json
 
@@ -72,6 +72,51 @@ def test_linux_launch_exact_transient_argv_and_log_redirection(tmp_path, monkeyp
                       "--property=StandardOutput=append:" + escaped_log,
                       "--property=StandardError=append:" + escaped_log,
                       "--", *command]]
+
+
+def test_platform_jobs_receive_the_installer_environment(tmp_path, monkeypatch):
+    for name in ("HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "LOCALAPPDATA", "USERPROFILE"):
+        monkeypatch.delenv(name, raising=False)
+    home = tmp_path / "installer home"
+    workspace = tmp_path / "workspace"
+    version = Version(tmp_path / "version", tmp_path / "installer/bin/python", tmp_path / "profile",
+                      {**service.installer_environment(home), "ASTRID_RUNTIME_DOOR_PORT": "17340",
+                       "PATH": "/installer/bin"})
+    environment = service.service_environment(version, workspace)
+    record, command = job(tmp_path), ["/installer/bin/python", "-m", "worker"]
+    record["environment"] = environment
+    calls = []
+    monkeypatch.setattr(platform, "_run", lambda args: calls.append(args) or completed(args, stdout="S-1-5-21-12345"))
+
+    linux = platform.describe(record, command, system="linux")
+    platform.launch(linux, command, record["log_path"], system="linux")
+    assert {argument.removeprefix("--setenv=") for argument in calls[-1] if argument.startswith("--setenv=")} == {
+        f"{key}={value}" for key, value in environment.items()
+    }
+
+    mac = platform.describe(record, command, system="darwin")
+    platform.launch(mac, command, record["log_path"], system="darwin")
+    items = list(ET.parse(mac["plist_path"]).getroot().find("dict"))
+    plist = {items[index].text: items[index + 1] for index in range(0, len(items), 2)}
+    values = list(plist["EnvironmentVariables"])
+    assert {values[index].text: values[index + 1].text or "" for index in range(0, len(values), 2)} == environment
+
+    windows = platform.describe(record, command, system="win32")
+    platform.launch(windows, command, record["log_path"], system="win32")
+    task = base64.b64decode(calls[-1][-1]).decode("utf-16le")
+    encoded = __import__("re").search(r"-EncodedCommand ([A-Za-z0-9+/=]+)", task).group(1)
+    worker = base64.b64decode(encoded).decode("utf-16le")
+    for key, value in environment.items():
+        assert f"SetEnvironmentVariable('{key}', '{value}', 'Process')" in worker
+
+
+def test_legacy_update_job_keeps_its_worker_environment(tmp_path):
+    record, old = job(tmp_path), Version(tmp_path / "old", tmp_path / "python", tmp_path / "profile",
+                                         {"ASTRID_TEST_VALUE": "legacy", "PATH": "/old/bin"})
+    record["data_root"] = str(tmp_path / "workspace")
+
+    assert update_job._worker_environment(old, record) == old.env
+    assert update_job._platform_job(record, old) == record
 
 
 def test_linux_query_distinguishes_active_inactive_unknown_and_cleanup(tmp_path, monkeypatch):

@@ -24,6 +24,7 @@ from runtime_protocol import platform
 
 from . import tools
 from .core import TERMINAL_STEPS, current, pending_transaction
+from .service import service_environment
 
 if TYPE_CHECKING:
     from .backend import Backend
@@ -566,6 +567,10 @@ def _validate_request(request: dict, root: Path) -> dict:
         "job_name": job_name, "log_path": str(log_path), "program_root": str(root),
         "data_root": str(data_root), "old_instance_id": old_instance_id,
         "old_identity": dict(old_identity), "old_version": old.document(),
+        # Its presence marks the shared service-environment contract.  Older
+        # accepted jobs have no such field and must retain their exact wrapper
+        # bytes and native descriptor during recovery.
+        "environment": service_environment(old, data_root),
         "target_release": normalized["release"], "metadata": normalized,
         "bootstrap_proof": {"format": BOOTSTRAP_PROOF_FORMAT,
                             "operation_id": operation_id, "program_root": str(root),
@@ -623,7 +628,7 @@ def _validate_reconcile_job(root: Path, job: dict, request: dict, api=None) -> t
         if (job.get("worker_command_sha256") is not None
                 and job["worker_command_sha256"] != _worker_binding_digest(old, job)):
             _busy("The accepted update worker command changed after acceptance.")
-        expected = api.describe(job, expected_command)
+        expected = api.describe(_platform_job(job, old), expected_command)
     except _BusyRefusal:
         raise
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as failure:
@@ -1071,7 +1076,7 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
         if not _journal_is_accepted_preexisting(job, journal):
             _busy("The unresolved update journal is new, missing, or unrelated to its accepted snapshot.")
         old = _validate_prebootstrap(root, job, data_root)
-        expected = api.describe(job, _expected_worker_command(old, job))
+        expected = api.describe(_platform_job(job, old), _expected_worker_command(old, job))
         if job.get("platform") is not None and job["platform"] != expected:
             _busy("The unresolved update native descriptor does not match its accepted command.")
         expected_command = _expected_worker_command(old, job)
@@ -1303,7 +1308,7 @@ def _worker_command_source(old: Version, job: dict) -> str:
         "import os,sys; "
         f"_log=open({job['log_path']!r},'a',encoding='utf-8',buffering=1); sys.stdout=sys.stderr=_log; "
         f"sys.path[:0]={source_paths!r}; "
-        f"os.environ.update({old.env!r}); "
+        f"os.environ.update({_worker_environment(old, job)!r}); "
         "from astrid.installer.update_job import run_job; "
         f"result=run_job({job['program_root']!r}, {job['operation_id']!r}, {epoch!r}, {nonce!r}); "
         "print(__import__('json').dumps(result))"
@@ -1333,6 +1338,25 @@ def _worker_binding_digest(old: Version, job: dict) -> str:
     # Windows argv names a private script. Bind its intended contents too,
     # including before that script exists in the descriptorless case.
     return _worker_command_digest([*_expected_worker_command(old, job), _worker_command_source(old, job)])
+
+
+def _worker_environment(old: Version, job: dict) -> dict[str, str]:
+    """Return the durable environment without rewriting legacy update wrappers."""
+    recorded = job.get("environment")
+    if recorded is None:
+        return old.env
+    data_root = absolute(job["data_root"])
+    expected = service_environment(old, data_root)
+    if recorded != expected:
+        raise ValueError("The accepted update environment changed after acceptance.")
+    return expected
+
+
+def _platform_job(job: dict, old: Version) -> dict:
+    """Bind a native update launcher to the selected service environment."""
+    if job.get("environment") is None:
+        return job  # Release-0/1 descriptors retain their exact legacy form.
+    return {**job, "environment": _worker_environment(old, job)}
 
 
 def _worker_command(old: Version, job: dict, *, inactive_reconciliation: bool = False) -> list[str]:
@@ -1439,7 +1463,7 @@ def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
         command = _worker_command(old, job)
         if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
             raise ValueError("The accepted worker command changed after acceptance.")
-        descriptor = api.describe(job, command)
+        descriptor = api.describe(_platform_job(job, old), command)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
         return _write_job(root, operation_id, state="failed",
                           message="Failed: the operating system update job could not be prepared.",

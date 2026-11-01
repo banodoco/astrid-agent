@@ -1,6 +1,7 @@
 """Service contracts and native command boundaries, exercised without OS services."""
 import io
 import json
+import os
 import plistlib
 import socket
 import subprocess
@@ -81,6 +82,9 @@ def _service_envelope(rendered, system):
     """
     if system == 'darwin':
         value = plistlib.loads(rendered.encode())
+        for key in ('HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'LOCALAPPDATA', 'USERPROFILE',
+                    'ASTRID_RUNTIME_DATA_ROOT', 'ASTRID_RUNTIME_DOOR_PORT'):
+            value['EnvironmentVariables'].pop(key, None)
         arguments = value['ProgramArguments']
         assert len(arguments) == 6 and arguments[4] == '-c'
         arguments[5] = '<installer-launch-prelude>'
@@ -89,7 +93,11 @@ def _service_envelope(rendered, system):
         prefix, separator, remaining = rendered.partition('"-c" "')
         prelude, boundary, suffix = remaining.partition('"\nEnvironment=')
         assert separator and prelude and boundary
-        return prefix + '"-c" "<installer-launch-prelude>"\nEnvironment=' + suffix
+        suffix = "".join(line for line in ("Environment=" + suffix).splitlines(keepends=True)
+                           if not any(line.startswith(f'Environment="{key}=') for key in (
+                               'HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'LOCALAPPDATA', 'USERPROFILE',
+                               'ASTRID_RUNTIME_DATA_ROOT', 'ASTRID_RUNTIME_DOOR_PORT')))
+        return prefix + '"-c" "<installer-launch-prelude>"\n' + suffix
     prefix, separator, remaining = rendered.partition(' -c "')
     prelude, boundary, suffix = remaining.partition('"</Arguments>')
     assert separator and prelude and boundary
@@ -122,25 +130,49 @@ def test_launchd_is_foreground_keepalive_with_explicit_environment():
     assert value['EnvironmentVariables']['PATH'] == version.env['PATH']
 
 
-def test_service_definitions_carry_the_same_home_and_runtime_door_port():
-    home, port = '/installer home', '17341'
+def test_service_definitions_carry_the_same_home_and_runtime_door_port(monkeypatch):
+    for name in ('HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'LOCALAPPDATA', 'USERPROFILE'):
+        monkeypatch.delenv(name, raising=False)
+    home, port = Path('/installer home'), '17341'
     for system in ('darwin', 'linux', 'win32'):
         version, data, log = sample(system)
+        expected = {**service.installer_environment(home),
+                    'ASTRID_RUNTIME_DATA_ROOT': str(data),
+                    'ASTRID_RUNTIME_DOOR_PORT': port, 'PATH': version.env['PATH']}
         version = Version(version.root, version.python, version.profile,
-                          {**version.env, 'HOME': home, 'ASTRID_RUNTIME_DOOR_PORT': port})
+                          {**version.env, **expected})
         rendered = service.render(system, version, data, log, user='S-1-5-21-1234')
         if system == 'darwin':
             environment = plistlib.loads(rendered.encode())['EnvironmentVariables']
-            assert environment['HOME'] == home
-            assert environment['ASTRID_RUNTIME_DOOR_PORT'] == port
+            assert {key: environment[key] for key in expected} == expected
         elif system == 'linux':
-            assert f'Environment="HOME={home}"' in rendered
-            assert f'Environment="ASTRID_RUNTIME_DOOR_PORT={port}"' in rendered
+            for key, value in expected.items():
+                assert f'Environment="{key}={value}"' in rendered
         else:
             arguments = ET.fromstring(rendered).findtext(
                 './/{http://schemas.microsoft.com/windows/2004/02/mit/task}Arguments')
-            assert f"'HOME': '{home}'" in arguments
-            assert f"'ASTRID_RUNTIME_DOOR_PORT': '{port}'" in arguments
+            for key, value in expected.items():
+                assert f'{key!r}: {value!r}' in arguments
+
+
+def test_existing_profile_builds_the_same_canonical_service_environment(tmp_path, monkeypatch):
+    for name in ('HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'LOCALAPPDATA', 'USERPROFILE'):
+        monkeypatch.delenv(name, raising=False)
+    backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv')
+    home, data, environment = tmp_path / 'installer home', tmp_path / 'workspace', tmp_path / 'retained' / 'py'
+    backend.service.home = home
+    python = service.venv_python(environment)
+    python.parent.mkdir(parents=True)
+    python.touch()
+    profile = data / 'runtime' / 'source-profiles' / 'astrid.json'
+    write_json(profile, {'runtime_environment': str(environment)})
+
+    version = backend.existing(data)
+
+    assert version is not None
+    expected = service.service_environment(
+        {'PATH': str(python.parent) + os.pathsep + os.defpath}, data, home=home)
+    assert version.env == {**expected, 'ASTRID_INSTALL_RELEASE': '0', 'ASTRID_INSTALL_MANAGED_BY': ''}
 
 
 def test_launchd_operations_use_runtime_posix_user_identity(tmp_path, monkeypatch):
@@ -348,12 +380,13 @@ def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tm
     assert json.loads(services_path.read_text(encoding='utf-8')) == {'version': 1, 'services': []}
 
 
-@pytest.mark.parametrize('prior_port,requested_port,expected_port,occupy_default', [
-    (None, None, None, False), ('17391', None, '17391', False), ('17391', '17393', '17393', False),
-    (None, None, None, True),
+@pytest.mark.parametrize('prior_port,requested_port,expected_port,occupy_default,expect_failure', [
+    (None, None, '17340', False, False), ('17391', None, '17391', False, False),
+    ('17391', '17393', '17391', False, False), (None, '17393', '17393', True, False),
+    (None, None, None, True, True),
 ])
 @pytest.mark.parametrize('managed_by', [None, 'pinokio'])
-def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port, occupy_default, managed_by):
+def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port, occupy_default, expect_failure, managed_by):
     backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv', managed_by=managed_by)
     write_json(backend.root / 'install.json', {'owner': service.LABEL, 'managed_by': managed_by})
     backend.uv.touch()
@@ -425,20 +458,19 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     if occupied is not None:
         occupied.bind(('127.0.0.1', 17340))
     try:
+        if expect_failure:
+            monkeypatch.setattr('astrid.installer.backend.describe_port_holder',
+                                lambda *_args: 'port 17340 is already served by another Astrid Runtime')
+            with pytest.raises(ValueError, match='port 17340.*ASTRID_RUNTIME_DOOR_PORT.*ASTRID_APP_DIRECT_DOOR_PORT'):
+                backend.stage(manifest, tmp_path / 'program', tmp_path / 'workspace')
+            return
         version = backend.stage(manifest, tmp_path / 'program', tmp_path / 'workspace')
     finally:
         if occupied is not None:
             occupied.close()
 
     selected_port = version.env['ASTRID_RUNTIME_DOOR_PORT']
-    if expected_port is not None:
-        assert selected_port == expected_port
-    else:
-        assert int(selected_port) > 0
-    if occupy_default:
-        assert selected_port != '17340'
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(('127.0.0.1', int(selected_port)))
+    assert selected_port == expected_port
     assert version.release == 23 and version.managed_by == managed_by
     assert version.env['ASTRID_INSTALL_RELEASE'] == '23'
     assert version.env['ASTRID_INSTALL_MANAGED_BY'] == (managed_by or '')
@@ -459,10 +491,11 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     assert Path(service_call[6]) == Path(profile['source_checkout'])
     assert any('service_declaration' in argv[5] for argv in calls if len(argv) > 5 and argv[3:5] == ['-I', '-c'])
     assert any('source_checkout_digest' in argv[5] for argv in calls if len(argv) > 5 and argv[3:5] == ['-I', '-c'])
-    if occupy_default:
+    if prior_port is None and requested_port == '17393':
         from astrid.installer.core import switch
 
         switch(tmp_path / 'program', version)
+        monkeypatch.setenv('ASTRID_RUNTIME_DOOR_PORT', '17399')
         update = backend.stage({**manifest, 'release': 24}, tmp_path / 'program', tmp_path / 'workspace')
         assert update.env['ASTRID_RUNTIME_DOOR_PORT'] == selected_port
 
