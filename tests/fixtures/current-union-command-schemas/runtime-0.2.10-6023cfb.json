@@ -1,0 +1,1330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astrid.local/schemas/timeline/edit-command.schema.json",
+  "title": "EditCommand",
+  "description": "M0 canonical command schema, schema_version 1. Agent semantic source; Runtime byte-identical pinned projection. Slim provider ABI 1 is a separate Runtime contract. This artifact does not define Runtime request/closure/port/record envelopes.",
+  "$ref": "#/$defs/EditCommand",
+  "$defs": {
+    "JSON": {
+      "description": "Only finite JSON enters validation; transport rejects duplicate keys and non-finite numeric tokens before schema validation.",
+      "anyOf": [
+        {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JSON"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JSON"
+          }
+        }
+      ]
+    },
+    "ID": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ScopedId": {
+      "type": "string",
+      "pattern": "^(?:(?:parent|shot:[^/]+|occurrence:[^/]+)/(?:clip|track|asset):[^/]+|shot:(?:(?!::)[^/])+|occurrence:[^/]+(?:/shot)?|cut:[^/:]+)$"
+    },
+    "EntityRef": {
+      "type": "string",
+      "pattern": "^(?:parent|(?:(?:parent|shot:[^/]+|occurrence:[^/]+)/(?:clip|track|asset):[^/]+|shot:(?:(?!::)[^/])+|occurrence:[^/]+(?:/shot)?|cut:[^/:]+)|parent/shot-group:[A-Za-z0-9_-]+|occurrence:[^/]+/(?:source|registry))$"
+    },
+    "PropertyPath": {
+      "type": "string",
+      "pattern": "^(?:(?:[A-Za-z_][\\w-]*|\\[(?:(?:0|[1-9][0-9]*)|\"(?:[^\"\\\\\\x00-\\x1f]|\\\\(?:[\"\\\\/bfnrt]|u[0-9A-Fa-f]{4}))*\")\\])(?:\\.[A-Za-z_][\\w-]*|\\[(?:(?:0|[1-9][0-9]*)|\"(?:[^\"\\\\\\x00-\\x1f]|\\\\(?:[\"\\\\/bfnrt]|u[0-9A-Fa-f]{4}))*\")\\])*)?$",
+      "description": "R4 token path; empty is the whole entity. Parse JSON bracket atoms before overlap comparison. No entity array-position selectors."
+    },
+    "TargetKey": {
+      "type": "string",
+      "pattern": "^(?:(?:(?:parent|(?:(?:parent|shot:[^/]+|occurrence:[^/]+)/(?:clip|track|asset):[^/]+|shot:(?:(?!::)[^/])+|occurrence:[^/]+(?:/shot)?|cut:[^/:]+)|parent/shot-group:[A-Za-z0-9_-]+|occurrence:[^/]+/(?:source|registry)))::)?(?:(?:[A-Za-z_][\\w-]*|\\[(?:(?:0|[1-9][0-9]*)|\"(?:[^\"\\\\\\x00-\\x1f]|\\\\(?:[\"\\\\/bfnrt]|u[0-9A-Fa-f]{4}))*\")\\])(?:\\.[A-Za-z_][\\w-]*|\\[(?:(?:0|[1-9][0-9]*)|\"(?:[^\"\\\\\\x00-\\x1f]|\\\\(?:[\"\\\\/bfnrt]|u[0-9A-Fa-f]{4}))*\")\\])*)?$",
+      "description": "R4 id::path or bare path (including empty); bare form requires exactly one resolved target. Provider parses and checks identity/path ambiguity, including :: inside a quoted property token."
+    },
+    "AnchorIdentity": {
+      "type": "string",
+      "pattern": "^(?:(?:(?:parent|shot:[^/]+|occurrence:[^/]+)/(?:clip|track|asset):[^/]+|shot:(?:(?!::)[^/])+|occurrence:[^/]+(?:/shot)?|cut:[^/:]+)|word:[^:]+:[0-9]+|beat:[0-9]+|cut:[^/:]+:(?:start|end))$",
+      "description": "R4 string binding values. Legacy word/beat indices are meaningful only against verified immutable source reads; not stable identities across republication. Exact source-word provenance is captured in reads/dependencies."
+    },
+    "AgentState": {
+      "type": "object",
+      "oneOf": [
+        {
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "const": "absent"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "required": [
+            "state",
+            "value"
+          ],
+          "properties": {
+            "state": {
+              "const": "present"
+            },
+            "value": {
+              "$ref": "#/$defs/JSON"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "AgentRead": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/TokenPath"
+        },
+        "state": {
+          "$ref": "#/$defs/AgentState"
+        }
+      },
+      "required": [
+        "ref",
+        "path",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "AgentSelection": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "query_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "policy": {
+          "enum": [
+            "guard-membership",
+            "include-concurrent"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "query_version",
+        "owner",
+        "members",
+        "order",
+        "boundaries",
+        "policy"
+      ],
+      "additionalProperties": false
+    },
+    "Intent": {
+      "type": "object",
+      "properties": {
+        "ripple": {
+          "enum": [
+            "none",
+            "selected",
+            "include-concurrent"
+          ]
+        },
+        "anchor": {
+          "enum": [
+            "follow",
+            "fixed"
+          ]
+        },
+        "ownership": {
+          "enum": [
+            "shared",
+            "occurrence"
+          ]
+        },
+        "position": {
+          "enum": [
+            "absolute",
+            "relative"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "AgentWrite": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/TokenPath"
+        },
+        "before": {
+          "$ref": "#/$defs/AgentState"
+        },
+        "after": {
+          "$ref": "#/$defs/AgentState"
+        }
+      },
+      "required": [
+        "ref",
+        "path",
+        "before",
+        "after"
+      ],
+      "additionalProperties": false
+    },
+    "AgentDerivedWrite": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/TokenPath"
+        },
+        "before": {
+          "$ref": "#/$defs/AgentState"
+        },
+        "after": {
+          "$ref": "#/$defs/AgentState"
+        },
+        "cause": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ref",
+        "path",
+        "before",
+        "after",
+        "cause"
+      ],
+      "additionalProperties": false
+    },
+    "AgentBinding": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy": {
+          "enum": [
+            "follow",
+            "fixed"
+          ]
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "key",
+        "ref",
+        "policy",
+        "dependencies"
+      ],
+      "additionalProperties": false
+    },
+    "AgentCreatedID": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ID"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "ref",
+        "kind",
+        "owner"
+      ],
+      "additionalProperties": false
+    },
+    "AgentDependency": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "entity",
+            "media",
+            "transcript",
+            "source",
+            "time-map",
+            "authority"
+          ]
+        },
+        "pin": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JSON"
+          }
+        },
+        "policy": {
+          "enum": [
+            "exact",
+            "follow-identity"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "pin",
+        "policy"
+      ],
+      "additionalProperties": false
+    },
+    "InverseArgs": {
+      "type": "object",
+      "properties": {
+        "publications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ID"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "publications"
+      ],
+      "additionalProperties": false
+    },
+    "RestoreArgs": {
+      "type": "object",
+      "properties": {
+        "revision_id": {
+          "$ref": "#/$defs/ID"
+        },
+        "content_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "required": [
+        "revision_id",
+        "content_digest"
+      ],
+      "additionalProperties": false
+    },
+    "ClipDeleteArgs": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "ClipMoveArgs": {
+      "type": "object",
+      "properties": {
+        "on": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Absolute timeline seconds. Fixed start, keep authored duration, non-ripple; quantize once using pinned rational fps."
+        }
+      },
+      "required": [
+        "on"
+      ],
+      "additionalProperties": false
+    },
+    "TrackSetArgs": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "clear": {
+          "type": "array",
+          "items": {
+            "const": "label"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "values",
+        "clear"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "values": {
+              "minProperties": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "clear": {
+              "minItems": 1
+            }
+          }
+        }
+      ],
+      "description": "Set raw track.label or explicitly remove it. Null is not a label. Unmentioned fields survive."
+    },
+    "ClipSetParamsArgs": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JSON"
+          }
+        },
+        "clear": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "schema_source": {
+          "$ref": "#/$defs/DocumentPin"
+        }
+      },
+      "required": [
+        "values",
+        "clear"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "values": {
+              "minProperties": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "clear": {
+              "minItems": 1
+            }
+          }
+        }
+      ],
+      "description": "Patch raw clip.params by literal top-level JSON keys in stored units, never dotted paths or expressions. Null is a value; clear removes presence. Set/clear overlap is refused by the handler. Preserve unmentioned keys."
+    },
+    "ClipAddArgs": {
+      "type": "object",
+      "required": [
+        "row"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "row": {
+          "type": "object",
+          "required": [
+            "id",
+            "clipType",
+            "track",
+            "at",
+            "hold"
+          ],
+          "description": "Complete literal parent clip row, preserved exactly, including unknown JSON. Preallocated ID; existing active output track. at and hold are seconds without creation-time rounding. Media, source windows and following anchors are unsupported in v1.",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^(?!.*::)[^/]+$"
+            },
+            "clipType": {
+              "type": "string",
+              "minLength": 1
+            },
+            "track": {
+              "type": "string",
+              "pattern": "^(?!.*::)[^/]+$"
+            },
+            "at": {
+              "type": "number",
+              "minimum": 0
+            },
+            "hold": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "EditCommand": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "type": "integer"
+        },
+        "op": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Pinned operation implementation version as a string; never a tool release version or null."
+        },
+        "select": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JSON"
+          },
+          "description": "The registered operation schema closes its own keys. Unknown extension values are opaque finite JSON; no global clear sentinel."
+        },
+        "resolved": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScopedId"
+          },
+          "uniqueItems": true
+        },
+        "expect": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/TargetKey"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/AgentState"
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AnchorIdentity"
+          }
+        },
+        "created": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScopedId"
+          },
+          "uniqueItems": true
+        },
+        "authorship": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/TargetKey"
+          },
+          "additionalProperties": {
+            "enum": [
+              "direct",
+              "consequence"
+            ]
+          }
+        },
+        "reads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentRead"
+          }
+        },
+        "selections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentSelection"
+          }
+        },
+        "intent": {
+          "$ref": "#/$defs/Intent"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "group_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "op",
+        "version",
+        "select",
+        "args"
+      ],
+      "additionalProperties": false,
+      "description": "Client recorder fields are claims only. Provider verifies/reconstructs all observations; authorship is write classification, never authenticated actor identity. Unknown operations pass the envelope only and require installed registered schemas/handlers.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "clip.delete"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "args": {
+                "$ref": "#/$defs/ClipDeleteArgs"
+              },
+              "intent": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "track.set"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^(?!.*::)(?:parent|occurrence:[^/]+)/track:[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/TrackSetArgs"
+              },
+              "intent": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "clip.set-params"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^(?!.*::)(?:parent|occurrence:[^/]+)/clip:[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/ClipSetParamsArgs"
+              },
+              "intent": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "timeline.inverse"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "null"
+              },
+              "args": {
+                "$ref": "#/$defs/InverseArgs"
+              },
+              "intent": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "timeline.restore"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "null"
+              },
+              "args": {
+                "$ref": "#/$defs/RestoreArgs"
+              },
+              "intent": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "clip.move"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^(?:parent|occurrence:[^/]+)/clip:[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/ClipMoveArgs"
+              },
+              "intent": {
+                "type": "object",
+                "properties": {
+                  "ripple": {
+                    "const": "none"
+                  },
+                  "anchor": {
+                    "const": "fixed"
+                  },
+                  "position": {
+                    "const": "absolute"
+                  },
+                  "ownership": {
+                    "const": "occurrence"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "clip.add"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "const": "parent"
+              },
+              "args": {
+                "$ref": "#/$defs/ClipAddArgs"
+              },
+              "intent": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "occurrence.add-media"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^occurrence:(?!.*::)[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/OccurrenceAddMediaArgs"
+              },
+              "intent": {
+                "type": "object",
+                "properties": {
+                  "ownership": {
+                    "const": "occurrence"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "occurrence.swap-media"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^occurrence:(?!.*::)[^/]+/clip:(?!.*::)[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/OccurrenceSwapMediaArgs"
+              },
+              "intent": {
+                "type": "object",
+                "properties": {
+                  "ownership": {
+                    "const": "occurrence"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "placement.move"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^(?!.*::)(?:parent|occurrence:[^/]+)/clip:[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/ClipMoveArgs"
+              },
+              "intent": {
+                "type": "object",
+                "properties": {
+                  "ripple": {
+                    "const": "none"
+                  },
+                  "anchor": {
+                    "const": "fixed"
+                  },
+                  "position": {
+                    "const": "absolute"
+                  },
+                  "ownership": {
+                    "const": "occurrence"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "track.create"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/TrackCreateArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "clip.set"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^(?!.*::)(?:parent|occurrence:[^/]+)/clip:[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/ClipSetArgs"
+              },
+              "intent": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "clip.trim"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^(?!.*::)parent/clip:[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/ClipTrimArgs"
+              },
+              "intent": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "const": "clip.split"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "properties": {
+              "version": {
+                "const": "1"
+              },
+              "select": {
+                "type": "string",
+                "pattern": "^(?!.*::)parent/clip:[^/]+$"
+              },
+              "args": {
+                "$ref": "#/$defs/ClipSplitArgs"
+              },
+              "intent": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CommandBatch": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/EditCommand"
+      },
+      "allOf": [
+        {
+          "if": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "op"
+              ],
+              "properties": {
+                "op": {
+                  "const": "timeline.restore"
+                }
+              }
+            }
+          },
+          "then": {
+            "maxItems": 1
+          }
+        }
+      ],
+      "description": "Runtime CommitRequest.commands references this array. Restore must be the sole command; nested restore is also forbidden by provider semantic validation."
+    },
+    "TokenPath": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Normalized property tokens, not entity collection positions. Empty array means the whole entity. Numeric array tokens use canonical decimal strings; provider validates pinned parent-container types before traversal."
+    },
+    "MediaSelection": {
+      "description": "Exact five-field selection from Runtime ABI 1 selected_media; metadata is supplied by the scoped provider port, never command arguments.",
+      "type": "object",
+      "properties": {
+        "asset": {
+          "$ref": "#/$defs/ID"
+        },
+        "generation_id": {
+          "$ref": "#/$defs/ID"
+        },
+        "variant_id": {
+          "$ref": "#/$defs/ID"
+        },
+        "object_id": {
+          "$ref": "#/$defs/Digest"
+        },
+        "catalog_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "required": [
+        "asset",
+        "generation_id",
+        "variant_id",
+        "object_id",
+        "catalog_digest"
+      ],
+      "additionalProperties": false
+    },
+    "OccurrenceAddMediaArgs": {
+      "type": "object",
+      "required": [
+        "row",
+        "media"
+      ],
+      "properties": {
+        "row": {
+          "$ref": "#/$defs/ClipAddArgs/properties/row"
+        },
+        "media": {
+          "$ref": "#/$defs/MediaSelection"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OccurrenceSwapMediaArgs": {
+      "type": "object",
+      "required": [
+        "old_media",
+        "media"
+      ],
+      "properties": {
+        "old_media": {
+          "$ref": "#/$defs/MediaSelection"
+        },
+        "media": {
+          "$ref": "#/$defs/MediaSelection"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TrackCreateArgs": {
+      "type": "object",
+      "required": [
+        "row"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "row": {
+          "type": "object",
+          "required": [
+            "id",
+            "kind"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^(?!.*::)[^/]+$"
+            },
+            "kind": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "ClipSetArgs": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "type": "object",
+          "properties": {
+            "hold": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Positive finite source seconds; timeline duration is hold/speed."
+            }
+          },
+          "additionalProperties": false
+        },
+        "clear": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "hold",
+              "asset",
+              "transition"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "values",
+        "clear"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "values": {
+              "minProperties": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "clear": {
+              "minItems": 1
+            }
+          }
+        }
+      ],
+      "description": "Bounded raw clip fields. Set hold in source seconds; explicitly remove hold, asset or incoming transition. Clear removes presence, never sets null/empty. Asset assignment requires occurrence.swap-media; transition authoring is outside v1."
+    },
+    "ClipTrimArgs": {
+      "type": "object",
+      "properties": {
+        "in_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "out_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "description": "Source seconds on literal parent media. Omitted/null endpoints retain existing from/to, defaulting to zero/file duration. Keep at and asset; write from/to/hold using main trim precedence and clear for/until. Requires authored registry duration; no media fetch."
+    },
+    "ClipSplitArgs": {
+      "type": "object",
+      "required": [
+        "on",
+        "right_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "on": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Absolute timeline seconds strictly inside the clip. Preserve half-open frame geometry and literal film end."
+        },
+        "right_id": {
+          "type": "string",
+          "pattern": "^(?!.*::)[^/]+$",
+          "description": "Caller-allocated right clip ID, retained on replay and redo."
+        }
+      }
+    },
+    "DocumentPin": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "document_id",
+        "version",
+        "content_digest"
+      ],
+      "additionalProperties": false,
+      "description": "Exact original admitted project-pack Document pin for selected parameter validation."
+    }
+  }
+}

@@ -232,7 +232,8 @@ def test_publish_resets_the_base_so_nothing_is_left_to_publish(draft, monkeypatc
         head["base_parent"] = {"revision_id": "rev-1"}
         return head
 
-    monkeypatch.setattr(_store, "publish_bundle", fake_publish)
+    monkeypatch.setattr(draft, "_commit_document", lambda document, message, **kw:
+        fake_publish(document, kw.get("idempotency_key"), client=kw.get("client")))
     monkeypatch.setattr(_store, "fetch_bundle", fake_fetch)
     monkeypatch.setattr(draft, "_publish_narration", lambda key, client=None: {})
     receipt = draft.publish("move the rocket")
@@ -254,7 +255,8 @@ def test_a_failed_head_reread_after_publish_keeps_the_old_base_and_says_so(draft
     def broken_fetch(project, timeline, revision_id=None, client=None):
         raise RuntimeError("runtime unreachable")
 
-    monkeypatch.setattr(_store, "publish_bundle", fake_publish)
+    monkeypatch.setattr(draft, "_commit_document", lambda document, message, **kw:
+        fake_publish(document, kw.get("idempotency_key"), client=kw.get("client")))
     monkeypatch.setattr(_store, "fetch_bundle", broken_fetch)
     monkeypatch.setattr(draft, "_publish_narration", lambda key, client=None: {})
     receipt = draft.publish("move the rocket")  # the publish itself does not fail

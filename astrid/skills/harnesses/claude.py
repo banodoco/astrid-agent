@@ -31,7 +31,7 @@ class ClaudeAdapter(HarnessAdapter):
         if descriptor.pack_id == "_core":
             # Preserve the existing manual symlink path.
             return self.skills_dir / "astrid"
-        return self.skills_dir / f"astrid-{descriptor.pack_id}"
+        return self.skills_dir / f"astrid-{descriptor.skill_id}"
 
     def plan(self, action: Action, descriptors: Iterable[SkillDescriptor], **opts) -> list[PlannedStep]:
         steps: list[PlannedStep] = []
