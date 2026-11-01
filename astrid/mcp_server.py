@@ -37,7 +37,7 @@ from typing import Any
 from astrid.core.cli.domain_product import family_parsers
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
-EXCLUDED = {("preferences", "checkin"), ("preferences", "edit"), ("tasks", "follow")}
+EXCLUDED = {("preferences", "checkin"), ("preferences", "edit")}
 TIMEOUT = float(os.environ.get("ASTRID_MCP_TIMEOUT", "900"))
 
 
@@ -75,6 +75,8 @@ def _schema(action: argparse.Action) -> dict[str, Any]:
         item = {"type": "integer"}
     elif action.type is float:
         item = {"type": "number"}
+    elif getattr(action.type, "__name__", "") == "_positive_float":
+        item = {"type": "number", "exclusiveMinimum": 0}
     if action.choices is not None:
         item["enum"] = [c for c in action.choices]
     if isinstance(action, argparse._AppendAction) or action.nargs in ("*", "+") or isinstance(action.nargs, int) and action.nargs > 1:
@@ -508,7 +510,14 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"document": document,
               "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
              ["document", "idempotency_key"], kind="timeline_document", command="publish"),
-    ]), **_generation_tools()}
+    ]), **_generation_tools(), **_engine_install_tools()}
+
+
+def _engine_install_tools():
+    from astrid.core.engine_cli import _parser
+
+    tools = _tools_for_parsers({'engines': _parser()})
+    return {'engines_install': tools['engines_install']}
 
 
 def _generation_tools():
