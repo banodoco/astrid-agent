@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -42,7 +43,8 @@ def runtime(monkeypatch, tmp_path):
     image = io.BytesIO()
     Image.new('RGB', (dims['width'], dims['height']), (128, 32, 16)).save(image, format='PNG')
     state = SimpleNamespace(image=image.getvalue(), calls=[], objects={}, reads=[],
-                            closed=False, admissions=0, rows=[], corrupt=None)
+                            closed=False, admissions=0, rows=[], corrupt=None,
+                            invocations=[], prompt_requests=[], retained_paths={}, import_paths={})
 
     class Response(io.BytesIO):
         status = 200
@@ -50,6 +52,8 @@ def runtime(monkeypatch, tmp_path):
     def opener(request, timeout):
         path = urlsplit(request.full_url).path
         state.calls.append(path)
+        if path == '/prompt':
+            state.prompt_requests.append((request.get_method(), json.loads(request.data)))
         if path == '/view':
             return Response(state.image)
         payload = {'/object_info': object_info,
@@ -82,6 +86,8 @@ def runtime(monkeypatch, tmp_path):
         retained = tmp_path / 'runtime' / sha(data) / path.name
         retained.parent.mkdir(parents=True, exist_ok=True)
         retained.write_bytes(data)
+        state.retained_paths[digest] = retained
+        state.import_paths[digest] = path
         return SimpleNamespace(ok=True, data={'object_id': digest, 'filename': path.name})
 
     def read_bytes(digest):
@@ -96,6 +102,7 @@ def runtime(monkeypatch, tmp_path):
         from vibecomfy.workflow_bundle import load_bundle
 
         assert capability == 'vibecomfy.run'
+        state.invocations.append((capability, deepcopy(kwargs['inputs'])))
         state.admissions += 1
         assert kwargs['project'] == 'gpu-shakedown'
         source = kwargs['inputs']['python']
@@ -165,10 +172,12 @@ def runtime(monkeypatch, tmp_path):
         yield state
 
 
-def argv(out=None, *, target='managed'):
+def argv(out=None, *, target='managed', negative_prompt=None):
     args = ['generate', 'image', '--entry', 'qwen-image-2.1-turbo', '--mode', 't2i',
             '--target', target, '--width', '512', '--height', '512', '--seed', '19',
             '--project', 'gpu-shakedown', '--consent', 'user_env', '--json', PROMPT]
+    if negative_prompt is not None:
+        args += ['--negative-prompt', negative_prompt]
     if out is not None:
         args += ['--out', str(out)]
     return args
@@ -190,6 +199,67 @@ def test_exact_cli_delivers_verified_caller_local_image(runtime, tmp_path, monke
     assert expected.is_file()
     assert sha(expected.read_bytes()) == runtime.rows[0]['digest'].removeprefix('sha256:')
     with Image.open(expected) as image:
+        assert image.size == (512, 512)
+    assert runtime.task['state'] == 'COMPLETED'
+    assert runtime.rows[0]['generation_id']
+    assert runtime.reads == [runtime.manifest_ref, runtime.rows[0]['object_id']]
+    assert runtime.admissions == 1 and runtime.closed
+    assert '/view' in runtime.calls
+
+
+def test_qwen_cli_records_selected_id_and_submitted_inputs(runtime, tmp_path, capsys):
+    from vibecomfy.registry.ready import repo_ready_template_discovery, resolve_ready_template
+
+    out = tmp_path / 'qwen.png'
+    assert console.main(argv(out, negative_prompt='D0 no lettering')) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert len(runtime.invocations) == 1
+    capability, submitted = runtime.invocations[0]
+    assert capability == 'vibecomfy.run'
+    assert submitted['generation_intent']['modality'] == 'image'
+    assert submitted['generation_intent']['metadata'] == {
+        'model': 'qwen-image-2.1-turbo', 'mode': 't2i'}
+    assert submitted['comfy_url'] == 'http://127.0.0.1:8188'
+    assert json.loads(submitted['workflow_inputs']) == {
+        'prompt': PROMPT, 'negative_prompt': 'D0 no lettering',
+        'seed': 19, 'width': 512, 'height': 512}
+    assert 'managed_assets' not in submitted
+
+    # Observe the HTTP request body, after production selection and preparation.
+    assert len(runtime.prompt_requests) == 1
+    method, body = runtime.prompt_requests[0]
+    assert method == 'POST'
+    api = body['prompt']
+    assert api['5']['class_type'] == 'TextEncodeQwenImage21'
+    assert api['5']['inputs']['prompt'] == PROMPT
+    assert api['5']['inputs']['negative_prompt'] == 'D0 no lettering'
+    assert api['8']['class_type'] == 'RandomNoise'
+    assert api['8']['inputs']['noise_seed'] == 19
+    assert api['4']['class_type'] == 'EmptyLatentImage'
+    assert (api['4']['inputs']['width'], api['4']['inputs']['height']) == (512, 512)
+    assert any(node['class_type'] == 'SaveImage' for node in api.values())
+
+    # All three descriptors retain exact CAS bytes after producer scratch cleanup.
+    for member in ('source', 'python', 'companion'):
+        descriptor = submitted[member]
+        retained = runtime.retained_paths[descriptor['digest']]
+        data = retained.read_bytes()
+        assert retained.name == descriptor['filename']
+        assert descriptor['digest'] == 'sha256:' + sha(data)
+        assert descriptor['sha256'] == sha(data)
+        assert descriptor['bytes'] == len(data)
+        assert runtime.objects[descriptor['digest']] == data
+        assert not runtime.import_paths[descriptor['digest']].exists()
+    original = resolve_ready_template('image/qwen_image_2_1_turbo',
+                                      repo_ready_template_discovery()).path
+    source = submitted['source']
+    assert source['filename'] == original.name
+    assert runtime.retained_paths[source['digest']].read_bytes() == original.read_bytes()
+
+    assert payload['image_paths'] == [str(out)]
+    assert payload['run_dir'] == str(out.parent)
+    assert sha(out.read_bytes()) == runtime.rows[0]['digest'].removeprefix('sha256:')
+    with Image.open(out) as image:
         assert image.size == (512, 512)
     assert runtime.task['state'] == 'COMPLETED'
     assert runtime.rows[0]['generation_id']
