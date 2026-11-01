@@ -110,6 +110,6 @@ hooks lane and remains unimplemented here.
 - execution_identity = the residency digest. The attached path refuses when the hc03 profile has none. The managed path takes it from the attested engine environment, or refuses.
 
 ## Updates from the shared hooks lane (recorded per M-GPU, 2026-11-01T15:26Z)
-- Managed release signature: open_host_session(..., *, host=None). With a host, managed release routes to host.release_managed_session(require_quiescent=True). Without a host, it fails closed.
+- Managed release signature: open_host_session(..., *, host=None). With a host, managed release routes to host.release_managed_session(expected_binding=..., expected_generation=..., reason=...) WITHOUT a require_quiescent argument: that method has no such parameter (verified against generic_host.py at de43cadfe and a8f0b67fa). Quiescence is enforced inside the host by manager.release(require_quiescent=True). Passing require_quiescent to the host raises TypeError. Without a host, release fails closed.
 - source_digest = source_content_digest.
 - Reference implementation of the shared hooks: lane/M-GPU/p1-f07-comfy-hooks at bd1561f4 (stacked on de43cadf). Radagast owns it.
