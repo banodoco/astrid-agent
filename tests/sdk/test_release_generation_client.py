@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from astrid.core.generation import preflight
 from astrid.sdk.client import AstridClient
+
+
+_FAKES = {}
 
 
 class _FakeComfy:
@@ -66,9 +71,11 @@ class _FakeComfy:
 
     def __enter__(self):
         self.thread.start()
+        _FAKES[self.url] = self
         return self
 
     def __exit__(self, *exc):
+        _FAKES.pop(self.url, None)
         self.server.shutdown()
         self.server.server_close()
 
@@ -81,6 +88,25 @@ def _registered(monkeypatch, url):
     monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: {
         "owner": "astrid", "endpoint": url, "root": "/opt/astrid/engines/comfyui",
     } if url else None)
+    from astrid.core.generation import engine_custody, engine_recipe
+    original = engine_recipe.load_recipe
+    if url and urlsplit(url).hostname == "127.0.0.1":
+        recipe = original("comfyui", "linux-x86_64-cu130")
+        monkeypatch.setattr(engine_recipe, "load_recipe", lambda *args: replace(
+            recipe, start=replace(recipe.start, port=urlsplit(url).port)))
+        def rpc(self, operation, payload, deadline, *, start):
+            assert operation == "release" and payload == {} and start is False
+            fake = _FAKES[url]
+            if fake.running or fake.pending:
+                return {"status": "busy"}
+            before = fake.vram_free
+            unloaded = not fake.free_fails
+            if unloaded:
+                fake.vram_free = 22_000_000_000
+            return {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
+                    "vram_total_bytes": 24_000_000_000, "vram_free_before_bytes": before,
+                    "vram_free_after_bytes": fake.vram_free}
+        monkeypatch.setattr(engine_custody.LinuxEngineServiceClient, "_request", rpc)
 
 
 def test_attached_target_is_refused():
@@ -110,7 +136,7 @@ def test_idle_engine_is_released_through_the_owner_unload_path(monkeypatch):
         _registered(monkeypatch, fake.url)
         result = _client().release_generation(engine="comfyui", target="managed")
         posts = list(fake.posts)
-    assert posts == ["/queue", "/api/free"]
+    assert posts == []  # SDK does not send HTTP; the custody RPC owns it.
     assert result["ok"] is True and result["released"] is True
     assert result["queue_idle"] is True
     assert result["models_unloaded"] is True

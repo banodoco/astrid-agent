@@ -318,6 +318,9 @@ class LinuxEngineServiceClient:
         return CommandResult(**self._request("run", {"argv": list(request.argv), "cwd": request.cwd,
                              "env": dict(request.env), "max_output_bytes": request.max_output_bytes}, request.deadline))
 
+    def release_owned(self, *, deadline):
+        return self._request("release", {}, deadline, start=False)
+
     def stop_owned(self, *, deadline):
         self._request("stop", {}, deadline, start=False)
         # Successful explicit stop includes retirement of the ephemeral marker.
@@ -459,12 +462,47 @@ def _listener_owned(process, port):
     return len(inodes) == 1 and inodes <= held
 
 
-def _get_json(port, path, limit, deadline, check):
+def _verify_connected_child(channel, owned, port, deadline, check):
+    """Prove the connected peer socket belongs to the retained child before sending bytes."""
+    local_port = channel.getsockname()[1]
+    local = f"0100007F:{port:04X}"
+    remote = f"0100007F:{local_port:04X}"
+    while True:
+        check()
+        if not owned.live() or not _listener_owned(owned.process, port):
+            raise EndpointOwnershipError("engine listener ownership changed")
+        inodes = set()
+        for row in Path("/proc/net/tcp").read_text().splitlines()[1:]:
+            fields = row.split()
+            if fields[1] == local and fields[2] == remote and fields[3] == "01":
+                inodes.add(fields[9])
+        held = set()
+        for entry in Path(f"/proc/{owned.process.pid}/fd").iterdir():
+            try:
+                target = os.readlink(entry)
+            except FileNotFoundError:
+                continue
+            if target.startswith("socket:["):
+                held.add(target[8:-1])
+        if len(inodes) == 1 and inodes <= held and owned.live():
+            return
+        time.sleep(min(0.01, _remaining(deadline)))
+
+
+def _get_json(port, path, limit, deadline, check, *, owned=None, payload=None):
     """Bound the whole HTTP exchange, including slow headers and body reads."""
     with socket.socket() as channel:
         channel.settimeout(min(1.0, _remaining(deadline)))
         channel.connect(("127.0.0.1", port))
-        channel.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n".encode("ascii"))
+        if owned is not None:
+            _verify_connected_child(channel, owned, port, deadline, check)
+        body = b"" if payload is None else _json(payload).encode()
+        method = "GET" if payload is None else "POST"
+        headers = f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n"
+        if payload is not None:
+            headers += f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+        check()
+        channel.sendall(headers.encode("ascii") + b"\r\n" + body)
         data = bytearray()
         def receive():
             while True:
@@ -755,6 +793,39 @@ class _Supervisor:
             return self.health(channel, deadline)
         return self.facts("owned")
 
+    def release(self, payload, deadline, channel):
+        if payload != {} or self.unresolved or self.engine is None:
+            raise EndpointOwnershipError("live engine custody is required")
+        engine = self.engine
+        check = lambda: self.check(channel, deadline)
+        def request(path, payload=None):
+            return _get_json(self.recipe.start.port, path, 1024 * 1024, deadline, check,
+                             owned=engine, payload=payload)
+        def vram(stats):
+            devices = stats.get("devices")
+            if not isinstance(devices, list) or not devices or not isinstance(devices[0], dict):
+                raise ValueError("managed ComfyUI reported no device VRAM")
+            total, free = devices[0].get("vram_total"), devices[0].get("vram_free")
+            if type(total) is not int or type(free) is not int:
+                raise ValueError("managed ComfyUI reported malformed VRAM")
+            return total, free
+        total, before = vram(request("/system_stats"))
+        queue = request("/queue")
+        running, pending = queue.get("queue_running"), queue.get("queue_pending")
+        if not isinstance(running, list) or not isinstance(pending, list):
+            raise ValueError("managed ComfyUI queue state is malformed")
+        if running or pending:
+            return {"status": "busy"}
+        try:
+            free = request("/api/free", {"unload_models": True, "free_memory": True})
+            unloaded = free.get("models_unloaded") is True
+        except (OSError, ValueError):
+            unloaded = False
+        _, after = vram(request("/system_stats"))
+        return {"status": "completed" if unloaded else "failed", "models_unloaded": unloaded,
+                "vram_total_bytes": total, "vram_free_before_bytes": before,
+                "vram_free_after_bytes": after}
+
     def stop(self, deadline=None):
         deadline = self.cleanup_deadline(deadline)
         for owned in list(self.commands):
@@ -793,6 +864,8 @@ class _Supervisor:
                     self.check(channel, deadline)
                     if operation == "run":
                         result = self.run(value["payload"], deadline, channel)
+                    elif operation == "release":
+                        result = self.release(value["payload"], deadline, channel)
                     elif operation in {"probe", "start", "health"}:
                         result = self.service(operation, value["payload"], deadline, channel)
                     else:
