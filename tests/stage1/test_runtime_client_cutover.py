@@ -576,7 +576,7 @@ def test_serve_is_not_a_public_dispatch_command(capsys):
     assert "serve" not in dispatch._top_level_commands()
     assert dispatch._top_level_commands() == frozenset({
         "projects", "documents", "preferences", "timelines", "media", "tasks", "runs",
-        "dev", "doctor", "backup",
+        "dev", "doctor", "backup", "skills", "generate",
     })
 
 

@@ -203,7 +203,7 @@ def test_gateway_console_script_is_astrid_tools_and_module_entry_is_unchanged() 
     metadata = Path(__file__).parents[1] / "pyproject.toml"
     text = metadata.read_text(encoding="utf-8")
     assert 'astrid-tools = "astrid.core.gateway:main"' in text
-    assert 'astrid = "astrid.omp_agent:main"' in text
+    assert 'astrid = "astrid.console:main"' in text
     module_main = (metadata.parent / "astrid" / "__main__.py").read_text(encoding="utf-8")
     assert "from .core.gateway import main" in module_main
 
@@ -533,3 +533,33 @@ def test_onboard_forwards_help_without_an_interactive_terminal(monkeypatch, help
     monkeypatch.setattr(omp_agent, "replace_process", lambda argv: calls.append(argv))
     assert omp_agent.main(["--onboard", help_flag]) == 1
     assert calls == [["/selected/omp", "onboard", help_flag]]
+
+
+@pytest.mark.parametrize("args", [[], ["--help"], ["--version"], ["help"],
+                                  ["projects", "list", "--json"], ["agent", "--mode=acp"]])
+def test_console_delegates_other_arguments_unchanged(monkeypatch, args):
+    from astrid import console
+    seen = []
+    monkeypatch.setattr(omp_agent, "main", lambda argv: seen.append(argv) or 37)
+    assert console.main(args) == 37
+    assert seen == [args]
+
+
+def test_console_normalizes_implicit_argv(monkeypatch):
+    from astrid import console
+    import sys
+    seen = []
+    monkeypatch.setattr(sys, "argv", ["astrid", "help", "--topic"])
+    monkeypatch.setattr(omp_agent, "main", lambda argv: seen.append(argv) or 23)
+    assert console.main() == 23
+    assert seen == [["help", "--topic"]]
+
+
+def test_console_engine_dispatch(monkeypatch):
+    from astrid import console
+    from astrid.core import engine_cli
+    seen = []
+    monkeypatch.setattr(engine_cli, "main", lambda argv: seen.append(argv) or 19)
+    monkeypatch.setattr(omp_agent, "main", lambda argv: pytest.fail("OMP route"))
+    assert console.main(["engines", "status", "--help"]) == 19
+    assert seen == [["status", "--help"]]

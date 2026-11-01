@@ -28,6 +28,7 @@ import yaml
 
 from astrid.core.execution._child_bridge import ChildBridgeError, HostChildBridge, _child_wire_id, _snapshot, resource
 from astrid.core.execution.generic_host import GenericPackHost, HostError, RuntimeProtocolClient, _DiscoveryCollection, _prepare_review_resume_input
+from astrid.core.execution import generic_host as generic_host_module
 from astrid.sdk._child_bridge import ChildBridge, _BridgeRejected
 from astrid.sdk.execution_request import normalize_execution_request
 from astrid_runtime_client import ApiError, WorkspaceClient
@@ -996,6 +997,7 @@ def world(tmp_path, monkeypatch):
             if path == "/v1/health":
                 data = service.health()
                 data["runtime_instance_id"] = "offline-fixture"
+                data["identity"] = None  # Canonical HTTP health without an owning daemon.
             elif path == "/v1/objects" and method == "POST":
                 data = service.ingest_object(body, media_type=headers["Content-Type"], original_name=headers.get("X-Filename"),
                                              idempotency_key=key, identity=identity, upload_binding=json.loads(headers["X-Output-Binding"]))
@@ -1064,7 +1066,7 @@ def world(tmp_path, monkeypatch):
         sys.modules.pop(spec.name, None)
 
 
-def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=False, input_ports=None, argv_override=None, delegating=True, root_object_ids=(), child_file_output=False, network_policy=None, prelude="", module_prelude="", parent_outputs=None, parent_inputs=None, parent_command_fields=None, parent_input_values=None, child_limits=None, child_code_override=None, parent_execution_inputs=None):
+def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=False, input_ports=None, argv_override=None, delegating=True, root_object_ids=(), child_file_output=False, network_policy=None, prelude="", module_prelude="", parent_outputs=None, parent_inputs=None, parent_command_fields=None, parent_input_values=None, child_limits=None, child_code_override=None, parent_execution_inputs=None, staged=False):
     root = world.root
     (root / "actions").mkdir(exist_ok=True)
     inputs = input_ports if input_ports is not None else [{"name": "value", "type": "file" if derived else "string", "required": True}]
@@ -1113,6 +1115,9 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
     world.service.register_executor({"executor_id": "worker", "capabilities": [PARENT, CHILD], "max_concurrency": 2}, idempotency_key="fixture-register")
     policy = {"capabilities": [{"capability_id": CHILD, "capability_digest": host.capabilities[CHILD].capability_digest}],
               "targets": [{"kind": "default"}], "input_object_ids": list(root_object_ids), "limits": {"max_children": 4, **(child_limits or {})}}
+    if staged:
+        policy["stages"] = [{"name": "generate", **policy["capabilities"][0],
+                             "target": {"kind": "default"}, "inputs": []}]
     body = {"project": world.project, "capability_id": PARENT, "capability_digest": host.capabilities[PARENT].capability_digest,
                                "input_object_ids": list(root_object_ids), "spec": {"inputs": parent_input_values or {}}, "child_delegation": policy, "idempotency_key": "parent"}
     if not delegating:
@@ -1205,6 +1210,179 @@ def test_real_sdk_parent_routes_and_independent_child_progress(world, form, deri
     assert SECRET not in json.dumps(result)
     assert delegated[0]["task"].get("child_delegation") is None
     assert not any(call[1] == "/v1/tasks" and call[0] == "POST" for call in world.calls)
+
+
+def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_child_attempt(world, tmp_path, monkeypatch):
+    """The parent SDK bridge admits a real validator task served by another host slot."""
+    # This in-process service fixture has no authenticated HTTP health identity.
+    # Read its actual epoch directly instead of using the HTTP Health decoder.
+    monkeypatch.setattr(world.client, "health", lambda **_kwargs: world.service.health())
+    from astrid.core.execution._child_import_receipt import _birth
+    monkeypatch.setattr(generic_host_module, "process_birth_identity", lambda pid=None: _birth(pid or os.getpid()))
+    # The sandbox cannot perform Darwin's post-exit descendant census. This
+    # fixture verifies the owned leader is waited and reaped; it does not alter
+    # production custody behavior.
+    monkeypatch.setattr(
+        generic_host_module, "_terminate_process_group",
+        lambda process, **_kwargs: process.wait(timeout=3),
+    )
+    pack_root = tmp_path / "vibecomfy"
+    pack_root.mkdir()
+    shipped = yaml.safe_load((Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/PACK.yaml").read_text())
+    validate = copy.deepcopy(shipped["actions"]["validate"])
+    validate.pop("resources", None)
+    # This fixture dispatches the UI route only. Omitted optional canonical
+    # files must stay omitted instead of the SDK treating '' as an object ID.
+    for port in validate["inputs"]:
+        if port["name"] in {"python", "companion", "source"}:
+            port.pop("default", None)
+    workflow_bytes = b'{"nodes":[],"links":[]}'
+    workflow_id = digest(workflow_bytes)
+    world.service.ingest(world.project, workflow_bytes, media_type="application/json",
+                         original_name="workflow.json", idempotency_key="receipt-workflow")
+    descriptor = {"object_id": workflow_id, "digest": workflow_id, "filename": "workflow.json"}
+    parent_code = (
+        "from astrid.core.execution.executor import registry as er\n"
+        "from astrid.core.execution.orchestrator import registry as ore\n"
+        "from astrid.core.pack import discovery as pd\n"
+        "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
+        "from astrid import invoke\n"
+        "result = invoke('vibecomfy.validate', kind='action', "
+        f"extra_pack_roots=({str(pack_root)!r},), inputs={{'workflow': {descriptor!r}}}, "
+        "child_key='nested-validator', wait=True, timeout_seconds=4, poll_seconds=0.01)\n"
+        "assert not result.ok, result.error\n"
+        "assert result.kernel_task_id\n"
+    )
+    pack = {
+        "schema_version": 3,
+        "id": "vibecomfy",
+        "name": "Nested validator receipt fixture",
+        "version": "0.1.0",
+        "actions": {
+            "parent": {
+                "description": "Submit the validator through the real child bridge.",
+                "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c",
+                    "exec(__import__('base64').b64decode(" + repr(base64.b64encode(parent_code.encode()).decode()) + "))"]}},
+                "inputs": [],
+                "outputs": {},
+            },
+            "validate": validate,
+        },
+    }
+    (pack_root / "pack.yaml").write_text(yaml.safe_dump(pack, sort_keys=False), encoding="utf-8")
+    attempt_root = tmp_path / "attempts"
+    host = GenericPackHost(
+        pack_roots=[pack_root], client=world.client, executor_id="worker", max_concurrency=2,
+        attempt_root=attempt_root,
+    )
+    host.discover()
+    assert {"vibecomfy.parent", "vibecomfy.validate"} <= set(host.capabilities)
+    for record in host.capabilities.values():
+        world.service.register_capability({"capability_id": record.id, "definition_digest": record.capability_digest})
+    world.service.register_executor(
+        {"executor_id": "worker", "capabilities": ["vibecomfy.parent", "vibecomfy.validate"], "max_concurrency": 2},
+        idempotency_key="nested-validator-register",
+    )
+    policy = {
+        "capabilities": [{"capability_id": "vibecomfy.validate",
+                           "capability_digest": host.capabilities["vibecomfy.validate"].capability_digest}],
+        "targets": [{"kind": "default"}], "input_object_ids": [workflow_id],
+        "limits": {"max_children": 2},
+    }
+    world.service.create_task({
+        "project": world.project,
+        "capability_id": "vibecomfy.parent",
+        "capability_digest": host.capabilities["vibecomfy.parent"].capability_digest,
+        "input_object_ids": [workflow_id], "spec": {"inputs": {}}, "child_delegation": policy,
+        "idempotency_key": "nested-validator-parent",
+    }, enforce_readiness=True)
+    parent_claim = world.service.claim_next(
+        {"executor_id": "worker", "capability_ids": ["vibecomfy.parent"], "runtime_epoch": 1},
+        idempotency_key="claim-nested-validator-parent", identity=world.identity,
+    )
+    assert parent_claim
+    world.client._attempt_runtime_epochs[parent_claim["attempt_id"]] = parent_claim["runtime_epoch"]
+    parent_task = world.service.task(parent_claim["task_id"])["task"]
+    parent_task.update(
+        runtime_epoch=parent_claim["runtime_epoch"], fence=parent_claim["fence"],
+        project_id=world.project, spec=parent_claim["spec"],
+        input_object_ids=parent_claim["input_object_ids"],
+        execution_binding=parent_claim.get("execution_binding"),
+        lease_id=parent_claim["lease_id"], executor_id="worker",
+    )
+    support = tmp_path / "support"
+    support.mkdir()
+    child_ready = threading.Event()
+
+    def serve_validator():
+        worker = GenericPackHost(
+            pack_roots=[pack_root], client=world.client, executor_id="worker", max_concurrency=2,
+            attempt_root=attempt_root,
+        )
+        worker.evidence_status_path = support / "evidence-status.json"
+        worker.discover()
+        child_ready.set()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with world.lock:
+                body = {"executor_id": "worker", "capability_ids": ["vibecomfy.validate"], "runtime_epoch": 1}
+                row = world.service.store.conn.execute(
+                    "SELECT id FROM tasks WHERE capability=? AND status='queued' LIMIT 1", ("vibecomfy.validate",)).fetchone()
+                if row is not None:
+                    target = world.service.store.effective_execution_target(row["id"])
+                    if target is not None:
+                        body["target"] = target
+                claim = world.service.claim_next(body,
+                    idempotency_key="claim-nested-validator-" + str(time.monotonic_ns()), identity=world.identity)
+            if claim:
+                world.client._attempt_runtime_epochs[claim["attempt_id"]] = claim["runtime_epoch"]
+                task = world.service.task(claim["task_id"])["task"]
+                task.update(
+                    runtime_epoch=claim["runtime_epoch"], fence=claim["fence"], project_id=world.project,
+                    spec=claim["spec"], input_object_ids=claim["input_object_ids"],
+                    execution_binding=claim.get("execution_binding"), lease_id=claim["lease_id"],
+                    executor_id="worker",
+                )
+                try:
+                    worker.run_task(task, lease_token=claim["lease_id"],
+                                    attempt_id=claim["attempt_id"], fence=claim["fence"])
+                except Exception:
+                    current = world.service.task(claim["task_id"])["task"]
+                    if current.get("status") != "failed":
+                        raise
+                return world.service.task(claim["task_id"])["task"]
+            time.sleep(0.01)
+        raise AssertionError("parent did not dispatch nested validator task")
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        child_future = pool.submit(serve_validator)
+        assert child_ready.wait(timeout=3)
+        try:
+            with pytest.raises(ChildBridgeError, match="required child did not settle"):
+                host.run_task(parent_task, lease_token=parent_claim["lease_id"],
+                              attempt_id=parent_claim["attempt_id"], fence=parent_claim["fence"])
+        except BaseException:
+            child_future.result(timeout=12)  # Surface a fixture worker failure.
+            raise
+        child_result = child_future.result(timeout=12)
+
+    assert world.service.task(parent_claim["task_id"])["task"]["status"] == "failed"
+    assert child_result["status"] == "failed"  # empty workflow reaches the validator and fails structurally
+    receipts = list((support / "child-import-receipts").glob("*.json"))
+    assert len(receipts) == 1
+    stored = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert stored["capability_id"] == "vibecomfy.validate"
+    assert stored["binding"]["task_id"] == child_result.get("task_id", child_result.get("id"))
+    assert stored["binding"]["attempt_id"] == child_result["attempt_id"]
+    assert stored["binding"]["parent_task_id"] == parent_claim["task_id"]
+    assert stored["binding"]["parent_attempt_id"] == parent_claim["attempt_id"]
+    assert stored["observation"] == "recorded"
+    assert any(row["phase"] == "action_entry" for row in stored["observations"])
+    reference = child_result["result"]["error"]["diagnostic"]["child_import_receipt"]
+    assert reference["sha256"] == hashlib.sha256(receipts[0].read_bytes()).hexdigest()
+    assert set(reference) == {"schema_version", "launch_id", "sha256", "observation", "persistence"}
 
 
 def test_exact_replay_and_changed_input_rejection(world):
@@ -1347,6 +1525,128 @@ def test_successful_managed_outputs_have_verified_public_projection(world):
     assert rows[0]["object_id"] == digest(data)
     assert not {"lease_id", "provenance", "producer", "authority", "runtime_epoch"} & rows[0].keys()
     b.finish()
+
+
+def _staged_producer_readback(world, monkeypatch, producer_fields):
+    """Real staged admission/settlement; override only the readback under test."""
+    setup(world, staged=True)
+    b = bridge(world)
+    child = b.dispatch({**request(world), "stage": "generate", "input_refs": []})
+    claim = world.service.claim_next({"executor_id": "worker", "capability_ids": [CHILD],
+        "runtime_epoch": 1, "target": {"kind": "default"}},
+        idempotency_key="claim-staged-output", identity=world.identity)
+    assert claim is not None and claim["task_id"] == child["task_id"]
+    data = b"staged-producer-bytes"
+    world.service.settle_attempt(claim["attempt_id"], {
+        **{k: claim[k] for k in ("lease_id", "fence", "runtime_epoch")},
+        "outputs": [{"name": "answer", "kind": "object", "filename": "answer.txt",
+            "media_type": "text/plain", "digest": digest(data), "size": len(data),
+            "data_base64": base64.b64encode(data).decode(), **copy.deepcopy(producer_fields)}]},
+        idempotency_key="settle-staged-output", identity=world.identity)
+    row = copy.deepcopy(world.service.managed_outputs(child["task_id"])[0])
+    settled = copy.deepcopy(world.service.task(child["task_id"])["task"]["result"]["outputs"][0])
+    # Runtime omits an empty producer in the normalized settlement. Expose the
+    # supplied empty mapping too, so the bridge proves both contract spellings.
+    settled.update(copy.deepcopy(producer_fields))
+    original_task = world.client.task
+    def task(task_id):
+        value = copy.deepcopy(resource(original_task(task_id)))
+        if task_id == child["task_id"]:
+            value.get("task", value)["result"]["outputs"] = [copy.deepcopy(settled)]
+        return value
+    monkeypatch.setattr(world.client, "task", task)
+    monkeypatch.setattr(world.client, "child_outputs", lambda task_id: [copy.deepcopy(row)])
+    monkeypatch.setattr(world.client, "child_output", lambda association_id: copy.deepcopy(row))
+    reads = []
+    original_get_object = world.client.get_object
+    monkeypatch.setattr(world.client, "get_object", lambda oid: reads.append(oid) or original_get_object(oid))
+    return SimpleNamespace(bridge=b, child=child, row=row, settled=settled, data=data, reads=reads,
+        frame={"v": 1, "request_id": 2, "op": "outputs", "child_key": "child", "task_id": child["task_id"]})
+
+
+@pytest.mark.parametrize("producer_fields", [
+    pytest.param({}, id="omitted"),
+    pytest.param({"producer": {}}, id="empty"),
+    pytest.param({"producer": {"capability_id": CHILD}}, id="declared-capability"),
+    pytest.param({"producer": {"output_port": "answer", "producer_output_id": "output-1",
+        "metadata": {"steps": [1, {"seed": 7}], "retained": None}}}, id="declared-nested"),
+    pytest.param({"producer": {"capability_id": CHILD, "output_port": "answer",
+        "producer_output_id": "output-1", "metadata": {"steps": [1, {"seed": 7}]}}},
+        id="declared-capability-and-nested"),
+])
+def test_staged_producer_accepts_only_verified_capability_enrichment(world, monkeypatch, producer_fields):
+    f = _staged_producer_readback(world, monkeypatch, producer_fields)
+    declared = copy.deepcopy(f.settled)
+    association = copy.deepcopy(f.row)
+    assert f.row["producer"] == {"capability_id": CHILD, **producer_fields.get("producer", {})}
+    rows = f.bridge.dispatch(f.frame)
+    assert len(rows) == 1 and rows[0]["association_id"] == f.row["association_id"]
+    assert rows[0]["object_id"] == digest(f.data)
+    public_producer = {key: producer_fields["producer"][key] for key in ("output_port", "producer_output_id")
+                       if key in producer_fields.get("producer", {})}
+    assert rows[0].get("producer", {}) == public_producer
+    assert "capability_id" not in rows[0].get("producer", {})
+    assert f.bridge.dispatch({**f.frame, "request_id": 3}) == rows
+    f.bridge.finish()
+    assert f.settled == declared and f.row == association
+    assert f.reads and set(f.reads) == {digest(f.data)[7:]}
+
+
+@pytest.mark.parametrize("capability", [None, "", "foreign.capability", CHILD + ".changed"])
+def test_staged_producer_rejects_incorrect_runtime_capability(world, monkeypatch, capability):
+    f = _staged_producer_readback(world, monkeypatch, {})
+    f.row["producer"]["capability_id"] = capability
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
+
+
+@pytest.mark.parametrize("producer_fields", [{}, {"producer": {}}], ids=["absent-producer", "empty-producer"])
+def test_staged_producer_rejects_missing_runtime_capability(world, monkeypatch, producer_fields):
+    f = _staged_producer_readback(world, monkeypatch, {})
+    f.row.pop("producer")
+    f.row.update(copy.deepcopy(producer_fields))
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
+
+
+@pytest.mark.parametrize("echoed", [False, True])
+def test_staged_producer_rejects_wrong_declared_capability_even_when_echoed(world, monkeypatch, echoed):
+    f = _staged_producer_readback(world, monkeypatch, {})
+    f.settled["producer"] = {"capability_id": "foreign.capability"}
+    if echoed:
+        f.row["producer"]["capability_id"] = "foreign.capability"
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
+
+
+@pytest.mark.parametrize("mutation", ["field-change", "field-removal", "nested-change", "nested-removal", "extra-field"])
+def test_staged_producer_rejects_declared_field_tampering_and_extra_keys(world, monkeypatch, mutation):
+    f = _staged_producer_readback(world, monkeypatch, {"producer": {
+        "output_port": "answer", "producer_output_id": "output-1",
+        "metadata": {"steps": [1, {"seed": 7}], "retained": None}}})
+    producer = f.row["producer"]
+    if mutation == "field-change": producer["producer_output_id"] = "output-2"
+    elif mutation == "field-removal": producer.pop("producer_output_id")
+    elif mutation == "nested-change": producer["metadata"]["steps"][1]["seed"] = 8
+    elif mutation == "nested-removal": producer["metadata"].pop("retained")
+    else: producer["runtime_extra"] = "unapproved"
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
+
+
+@pytest.mark.parametrize("boundary", ["settlement", "association", "both"])
+@pytest.mark.parametrize("malformed", [None, [], ["producer"], "producer", 1, False])
+def test_staged_producer_rejects_malformed_mapping(world, monkeypatch, boundary, malformed):
+    f = _staged_producer_readback(world, monkeypatch, {})
+    if boundary in {"settlement", "both"}: f.settled["producer"] = copy.deepcopy(malformed)
+    if boundary in {"association", "both"}: f.row["producer"] = copy.deepcopy(malformed)
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
 
 
 def test_wait_poll_does_not_block_second_admission_or_heartbeat(world):
@@ -4916,3 +5216,68 @@ def test_host_bridge_outer_send_diagnostic_preserves_revoke_close(
         finally:
             sdk.close()
             b.revoke()
+
+
+def _lease_evidence():
+    return {
+        "schema_version": 1, "category": "heartbeat_exception",
+        "observed_at_utc": "2026-10-30T18:44:22+00:00",
+        "last_successful_heartbeat_at_utc": None,
+        "last_successful_heartbeat_expiry": "2026-10-30T18:45:22+00:00",
+        "observed": {"state": "running", "attempt_id": "attempt-1", "fence": "12",
+                     "lease_expires_at": "2026-10-30T18:45:22+00:00"},
+        "exception_type": "RuntimeError", "runtime_code": "lease_lost", "request_id": "req:123",
+    }
+
+
+def test_public_task_projects_only_bounded_lease_evidence():
+    from astrid.core.execution._child_bridge import _public_task
+    diagnostic = _lease_evidence()
+    source = {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+              "result": {"payload": {"input": "PAYLOAD_SENTINEL"}, "outputs": ["PRIVATE_PATH"],
+                         "error": {"message": "MESSAGE_SENTINEL", "diagnostic": {
+                             **diagnostic, "runtime_message": "MESSAGE_SENTINEL",
+                             "request": {"prompt": "PROMPT_SENTINEL"},
+                             "observed": {**diagnostic["observed"], "input": "INPUT_SENTINEL"}}}}}
+    public = _public_task(source)
+    assert public == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+                      "result": {"payload": {}, "outputs": [], "error": {"diagnostic": diagnostic}}}
+    for sentinel in ("PAYLOAD_SENTINEL", "PRIVATE_PATH", "MESSAGE_SENTINEL", "PROMPT_SENTINEL", "INPUT_SENTINEL"):
+        assert sentinel not in json.dumps(public)
+    no_diagnostic = copy.deepcopy(source)
+    del no_diagnostic["result"]["error"]["diagnostic"]
+    assert _public_task(no_diagnostic) == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+                                           "result": {"payload": {}, "outputs": []}}
+    completed = copy.deepcopy(source)
+    completed["state"] = "completed"
+    completed["result"]["payload"] = {"action_result": {"ok": True}}
+    assert _public_task(completed) == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "completed",
+        "result": {"payload": {"action_result": {"ok": True}}, "outputs": []}}
+
+
+@pytest.mark.parametrize("diagnostic", [
+    None, [], {}, {"schema_version": True, "category": "lease_expired"},
+    {"schema_version": 2, "category": "lease_expired"},
+    {"schema_version": 1, "category": "observing"},
+    {**_lease_evidence(), "observed_at_utc": "2026-10-30T18:44:22+01:00"},
+    {**_lease_evidence(), "observed_at_utc": "not-a-time"},
+    {**_lease_evidence(), "last_successful_heartbeat_expiry": []},
+    {**_lease_evidence(), "exception_type": "Runtime Error"},
+    {**_lease_evidence(), "runtime_code": "x" * 65},
+    {**_lease_evidence(), "request_id": "x" * 97},
+    {**_lease_evidence(), "observed": []},
+    {**_lease_evidence(), "observed": {"fence": 1}},
+    {**_lease_evidence(), "observed": {"attempt_id": "../private/path"}},
+    {**_lease_evidence(), "observed": {"lease_expires_at": "2026-10-30"}},
+    {**_lease_evidence(), "unrecognized": "x" * 4097},
+    {**_lease_evidence(), "unrecognized": ["x"] * 129},
+    {**_lease_evidence(), "unrecognized": {"nested": {"nested": {"nested": {"nested":
+        {"nested": {"nested": {"nested": {"nested": {"nested": "too deep"}}}}}}}}}},
+    {**_lease_evidence(), "unrecognized": "\ud800"},
+])
+def test_public_task_omits_invalid_lease_evidence(diagnostic):
+    from astrid.core.execution._child_bridge import _public_task
+    task = {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+            "result": {"error": {"diagnostic": diagnostic, "message": "MESSAGE_SENTINEL"}}}
+    assert _public_task(task) == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+                                  "result": {"payload": {}, "outputs": []}}

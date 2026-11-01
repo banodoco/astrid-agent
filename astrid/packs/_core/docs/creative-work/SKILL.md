@@ -21,6 +21,13 @@ reinstall.
 Packs own execution guidance; this skill does not duplicate their procedures or
 create a new runtime pack.
 
+Before choosing a generator, run `astrid generate list --json` to inspect the
+available models, targets, readiness, and fixes. Narrow the list with `--kind`
+when the requested media kind is known, then follow the selected pack's guide.
+Attached readiness checks the target's exact catalog model roles, with model
+bytes and execution unverified. Cloud rows report key presence only. The
+`z-image-turbo` inventory alias follows the `z-image` registry declaration.
+
 By default, publish edits and point the user to the editor link (see the
 rendering skill); render only when the user asks. When the user asks for a video
 preview for feedback on reference frames, storyboards, timing, or an ongoing

@@ -4,46 +4,30 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.core.contracts.errors import AstridError, _redact_credential_data, _redact_credentials
+from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('fal.fal_foley')
 import argparse
-import base64
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.core.generation.backends.fal import FalBackend
+from astrid.core.model_catalog.registry import ModelRegistry
 from astrid.core.util.http import (
-    FAL_QUEUE_URL,
     HttpClient,
     default_client,
     fal_submit_and_poll,
 )
+from astrid.core.util.generation_helpers import (
+    load_provider_key,
+    write_journal_atomic,
+)
 
 FAL_MODEL_ID = "fal-ai/hunyuan-video-foley"
-
-
-def _data_uri_for_video(path: Path) -> str:
-    suffix = path.suffix.lower().lstrip(".")
-    mime = {
-        "mp4": "video/mp4",
-        "mov": "video/quicktime",
-        "webm": "video/webm",
-        "m4v": "video/x-m4v",
-        "gif": "image/gif",
-    }.get(suffix, "video/mp4")
-    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
-
-
-def _submit(client: HttpClient, payload: dict[str, Any], api_key: str) -> dict[str, Any]:
-    """Submit a Foley job via HttpClient."""
-    url = f"{FAL_QUEUE_URL}/{FAL_MODEL_ID}"
-    headers = {"authorization": f"Key {api_key}"}
-    return client.post_json(url, payload, headers=headers, timeout=180)
 
 
 def _save_audio(
@@ -55,11 +39,16 @@ def _save_audio(
     if not audio and isinstance(result.get("video"), dict):
         audio = result["video"]
     if not audio or not audio.get("url"):
-        raise SystemExit(f"fal foley result had no audio url: {str(result)[:400]}")
+        raise AstridError(
+            f"fal foley result had no audio url: {_redact_credentials(str(_redact_credential_data(result)))[:400]}",
+            code="FAL_FOLEY_MISSING_AUDIO_URL",
+            field="audio.url",
+            fix="Retry the Foley request; if it recurs, inspect the fal response and report the missing audio URL.",
+        )
     url = audio["url"]
-    raw = client.get_bytes(url, timeout=300)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(raw)
+    dest, raw = FalBackend.download(
+        client, url, dest, 300, fallback_suffix=".wav", infer_suffix=False,
+    )
     return {
         "path": str(dest),
         "source_url": url,
@@ -108,37 +97,25 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload_preview, indent=2))
         return 0
 
-    api_key = CredentialsScope.get_local("fal", env_file=args.env_file)
-    payload = {
-        "video_url": _data_uri_for_video(clip),
-        "text_prompt": args.prompt,
-    }
-
+    api_key = load_provider_key("fal", env_file=args.env_file)
     client = default_client()
-    client.register_secret(api_key)
-
-    # Use the shared fal_submit_and_poll helper instead of custom submit + poll.
-    result = fal_submit_and_poll(
-        client,
-        FAL_MODEL_ID,
-        payload,
-        api_key,
-        max_wait_sec=args.max_wait_sec,
+    result = FalBackend(client=client).submit(
+        ModelRegistry.load_default().get("hunyuan-video-foley"),
+        "sfx",
+        {"video_ref": str(clip), "prompt": args.prompt, "timeout_seconds": args.max_wait_sec},
+        api_key=api_key,
+        submitter=fal_submit_and_poll,
     )
     saved = _save_audio(client, result, out)
 
     sidecar = out.with_suffix(out.suffix + ".fal.json")
-    sidecar.write_text(
-        json.dumps(
-            {
-                **payload_preview,
-                "request_id": result.get("request_id"),
-                "saved": saved,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    write_journal_atomic(
+        sidecar,
+        {
+            **payload_preview,
+            "request_id": result.get("request_id"),
+            "saved": saved,
+        },
     )
 
     manifest = build_manifest(
@@ -184,4 +161,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_pack_main("fal.fal_foley", main))

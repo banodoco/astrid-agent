@@ -309,6 +309,7 @@ jobs:
           # M4-4a proves the paired stopped-path commits are ancestors of the
           # frozen candidate rather than trusting a caller-supplied label.
           fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       - name: Check out frozen Runtime candidate
         uses: actions/checkout@v4

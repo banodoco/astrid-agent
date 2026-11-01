@@ -152,7 +152,7 @@ def test_paired_lanpaint_bundle_reaches_composition_with_both_streams(tmp_path: 
         (video, "red", 880, 2),
     ):
         subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=8", "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000", "-t", str(duration), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(output)],
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=1024x576:r=24", "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000", "-t", str(duration), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(output)],
             check=True,
         )
     subprocess.run(

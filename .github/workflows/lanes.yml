@@ -107,14 +107,16 @@ jobs:
             echo "- Pinokio: $(git -C astrid-pinokio rev-parse HEAD)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Restore pip cache (C-08)
+        id: c08-agent-lanes-2
+        uses: actions/cache/restore@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements/*.lock
 
       - name: Set up pinned uv
         uses: astral-sh/setup-uv@v6
@@ -176,6 +178,13 @@ jobs:
       - name: Integration tests (shard)
         run: python -m pytest -q -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
 
+      - name: Save pip cache on main or int branches (C-08)
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-lanes-2.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+
   opt-in:
     name: opt-in
     runs-on: ubuntu-latest
@@ -207,14 +216,16 @@ jobs:
             echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Restore pip cache (C-08)
+        id: c08-agent-lanes-1
+        uses: actions/cache/restore@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements/*.lock
 
       # The HyperFrames CLI needs Node 22 (tests/fixtures/renderer_packs/hyperframes/render.py finds it in the tool cache);
       # the step after this one puts the product's pinned Node first on PATH again.
@@ -274,6 +285,13 @@ jobs:
   # The tests that need Astrid installed as a wheel (not editable, not the checkout): the wheel the release job builds,
   # installed into its own venv, with the Runtime and the Remotion project provisioned. pytest runs from that venv with
   # --import-mode=importlib so the checkout is not put on sys.path ahead of site-packages.
+      - name: Save pip cache on main or int branches (C-08)
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-lanes-1.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+
   installed:
     name: installed wheel
     runs-on: ubuntu-latest
