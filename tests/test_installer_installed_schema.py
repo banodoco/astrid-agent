@@ -173,9 +173,24 @@ def _installed_script(state, version, script, *args):
     ))
 
 
-def test_stage_binds_installed_reader_validator_and_service_to_verified_schema(staged_installer):
+def test_stage_binds_installed_reader_validator_and_service_to_verified_schema(staged_installer, monkeypatch):
     state = staged_installer
+    calls = []
+    secure = state.backend._secure_installed_timeline_inputs
+    verify = state.backend._verify_installed_timeline_schema
+
+    def secure_inputs(root):
+        calls.append(("secure", root))
+        secure(root)
+
+    def verify_inputs(python, root, env):
+        calls.append(("verify", root))
+        verify(python, root, env)
+
+    monkeypatch.setattr(state.backend, "_secure_installed_timeline_inputs", secure_inputs)
+    monkeypatch.setattr(state.backend, "_verify_installed_timeline_schema", verify_inputs)
     version = state.backend.stage(state.manifest, state.root, state.data)
+    assert calls == [("secure", state.product_root), ("verify", state.product_root)]
     installed_schema = state.product_root / SCHEMA
     assert version.env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] == str(installed_schema)
     assert hashlib.sha256(installed_schema.read_bytes()).hexdigest() == SCHEMA_SHA256
