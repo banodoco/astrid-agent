@@ -8,6 +8,8 @@ increasing sequence prevents a late batch from replacing a newer tuple result
 on the same Agent commit.
 """
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -98,8 +100,21 @@ def _state(path):
     return value
 
 
-def publish(status_path, tuple_path, batch_id, sequence, state_path, token=None,
-            send=request):
+@contextmanager
+def publication_lock(state_path):
+    """Serialize read/compare/publish/write for one coordinator journal."""
+    lock_path = Path(str(state_path) + '.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a+', encoding='utf-8') as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _publish_locked(status_path, tuple_path, batch_id, sequence, state_path, token=None,
+                    send=request):
     """Create one terminal Check Run, rejecting stale/conflicting publications.
 
     ``state_path`` must be durable coordinator-owned storage.  It records only
@@ -140,6 +155,18 @@ def publish(status_path, tuple_path, batch_id, sequence, state_path, token=None,
     state['targets'][target] = record
     write_json(state_path, state)
     return record
+
+
+def publish(status_path, tuple_path, batch_id, sequence, state_path, token=None,
+            send=request):
+    """Create one terminal Check Run, rejecting stale/conflicting publications.
+
+    ``state_path`` must be durable coordinator-owned storage.  It records only
+    identities and the Check Run ID, never the token or evidence bytes.
+    """
+    with publication_lock(state_path):
+        return _publish_locked(status_path, tuple_path, batch_id, sequence, state_path,
+                               token=token, send=send)
 
 
 def main(argv=None):
