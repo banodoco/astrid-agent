@@ -305,6 +305,11 @@ def validate_evidence_reference(
     """
     reference = dict(_require_mapping(value, field))
     digest = reference.get("sha256")
+    if digest is None:
+        identity = reference.get("digest", reference.get("object_id"))
+        if isinstance(identity, str):
+            digest = identity.removeprefix("sha256:")
+            reference["sha256"] = digest
     if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
         raise ManagedGenerationResultError(f"{field}.sha256 must be 64 lowercase hexadecimal characters")
     size = reference.get("bytes")
@@ -402,7 +407,7 @@ def validate_managed_generation_result(
             f"attempt_id {attempt_id!r} does not match expected attempt_id {expected_attempt_id!r}"
         )
 
-    inputs = _require_mapping(payload["inputs"], "inputs")
+    inputs = dict(_require_mapping(payload["inputs"], "inputs"))
     created = _require_text(payload["created"], "created")
     try:
         timestamp = datetime.fromisoformat(created.replace("Z", "+00:00"))
@@ -412,7 +417,9 @@ def validate_managed_generation_result(
         raise ManagedGenerationResultError("created must be a UTC timestamp") from exc
     for key in ("source", "effective_settings"):
         if key in inputs:
-            validate_evidence_reference(inputs[key], field=f"inputs.{key}", staging_root=staging_root)
+            inputs[key] = validate_evidence_reference(
+                inputs[key], field=f"inputs.{key}", staging_root=staging_root,
+            )
     warnings = payload["warnings"]
     if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
         raise ManagedGenerationResultError("warnings must be a list of strings")

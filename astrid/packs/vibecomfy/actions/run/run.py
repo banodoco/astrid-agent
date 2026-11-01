@@ -354,17 +354,20 @@ def _materialize_managed_generation_result(
             declared = result.inputs[key]
             if (declared["sha256"], declared["bytes"]) != (source_snapshot["sha256"], source_snapshot["bytes"]):
                 raise AstridValueError("producer source identity differs from submitted bytes")
-        reference = source_snapshot if key == "source" and source_snapshot else result.inputs.get(key)
+        reference = result.inputs.get(key)
+        if key == "source" and reference is None:
+            reference = source_snapshot
         if reference is None:
             rebased_payload["warnings"].append(f"{key} bytes were not reported by the producer")
             continue
+        from_snapshot = reference is source_snapshot
         reference = validate_evidence_reference(
             reference, field=f"inputs.{key}",
-            staging_root=output_root if reference is source_snapshot else producer_root,
+            staging_root=output_root if from_snapshot else producer_root,
         )
         local_path = reference.pop("path", None)
         if local_path is not None:
-            source_root = output_root if key == "source" and source_snapshot else producer_root
+            source_root = output_root if from_snapshot else producer_root
             source = source_root / local_path
             destination = outputs_root / _friendly_output_name(
                 f"evidence-{key}-{reference['filename']}", key, taken,
@@ -812,7 +815,9 @@ def _run_and_settle(
             envelope = getattr(error, "managed_generation_result_path", None)
             envelope = Path(envelope) if envelope else output_root / "managed-generation-result.json"
             if not envelope.exists():
-                cancelled = isinstance(error, (KeyboardInterrupt, SystemExit)) or type(error).__name__ == "HostCancelled"
+                cancelled = (isinstance(error, KeyboardInterrupt)
+                             or isinstance(error, SystemExit) and error.code in (130, 143)
+                             or type(error).__name__ == "HostCancelled")
                 status = "cancelled" if cancelled else "failed"
                 receipt = {
                     "schema_version": 1, "kind": "managed-generation-result.v1",

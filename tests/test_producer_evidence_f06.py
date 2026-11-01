@@ -106,6 +106,43 @@ def test_contract_accepts_local_and_portable_source_and_settings_references(tmp_
     assert "path" not in portable_validated.inputs["effective_settings"]
 
 
+@pytest.mark.parametrize("identity", ["digest", "object_id"])
+def test_existing_cas_source_ref_projects_its_digest_as_sha256(tmp_path, identity):
+    payload = _managed_payload(tmp_path)
+    original = payload["inputs"]["source"]
+    payload["inputs"]["source"] = {
+        identity: "sha256:" + original["sha256"],
+        "bytes": original["bytes"], "filename": original["filename"],
+    }
+    result = validate_managed_generation_result(payload, staging_root=tmp_path)
+    assert result.inputs["source"][identity] == "sha256:" + original["sha256"]
+    assert result.inputs["source"]["sha256"] == original["sha256"]
+
+
+@pytest.mark.parametrize("portable", [False, True])
+def test_materializer_preserves_producer_source_ref_when_snapshot_matches(tmp_path, portable):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer)
+    source = payload["inputs"]["source"]
+    source.update(filename="original-name.json", digest="sha256:" + source["sha256"], marker="preserved")
+    if portable:
+        source.pop("path")
+    spool = tmp_path / "spool"
+    snapshot = _evidence_reference(spool, "snapshot/source.json", "source.json", b"\x00source\xff")
+    manifest = run._materialize_managed_generation_result(
+        spool, _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "source.json", source_snapshot=snapshot,
+    )
+    retained = manifest["managed_generation_result"]["inputs"]["source"]
+    assert retained["filename"] == "original-name.json"
+    assert retained["digest"] == source["digest"]
+    assert retained["marker"] == "preserved"
+    assert retained["object_id"] == source["digest"]
+    assert "path" not in retained
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -209,15 +246,16 @@ def test_materializer_retains_verified_partial_media_on_terminal_failure(tmp_pat
     assert manifest["managed_generation_result"]["outcomes"]["publication"]["status"] == "not_started"
 
 
-@pytest.mark.parametrize("error_type,status", [(RuntimeError, "failed"), (KeyboardInterrupt, "cancelled")])
-def test_run_failure_retains_original_source_before_conversion_and_preserves_error(tmp_path, monkeypatch, error_type, status):
+@pytest.mark.parametrize("error,status", [(RuntimeError("producer stopped"), "failed"),
+                                           (KeyboardInterrupt(), "cancelled"),
+                                           (SystemExit(1), "failed"), (SystemExit(143), "cancelled")])
+def test_run_failure_retains_original_source_before_conversion_and_preserves_error(tmp_path, monkeypatch, error, status):
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     from astrid.core.generation.backends import registry
 
     workflow = tmp_path / "submitted.json"
     original = b'{ "exact": true }\r\n'
     workflow.write_bytes(original)
-    error = error_type("producer stopped")
 
     def execute(*args, **kwargs):
         workflow.write_bytes(b"converted bytes")
@@ -228,7 +266,7 @@ def test_run_failure_retains_original_source_before_conversion_and_preserves_err
                                  placement=SimpleNamespace(resolve=lambda placement: "local"))
     monkeypatch.setattr(registry, "resolve_workflow_descriptor", lambda *args, **kwargs: descriptor)
     spool = tmp_path / "spool"
-    with pytest.raises(error_type) as raised:
+    with pytest.raises(type(error)) as raised:
         run._run_and_settle(workflow, spool, task_identity="task-1", attempt_identity="attempt-1", registry=object())
     assert raised.value is error
     manifest = json.loads((spool / "manifest.json").read_text())
@@ -239,6 +277,27 @@ def test_run_failure_retains_original_source_before_conversion_and_preserves_err
     assert (spool / source_output["path"]).read_bytes() == original
     if status == "cancelled":
         assert managed["evidence"]["transport"]["cancel"]["stop_observed"] is None
+
+
+def test_native_interruption_does_not_invent_cancel_request(tmp_path, monkeypatch):
+    from astrid.core.generation import producer_result
+
+    receipt = tmp_path / "native" / "attempt.json"
+    receipt.parent.mkdir()
+    receipt.write_text(json.dumps({"runtime_evidence": {"terminal": {"phase": "interrupted"}}}))
+    record = SimpleNamespace(to_dict=lambda: {"input_binding": {}})
+    monkeypatch.setattr(producer_result, "_projection", lambda runtime: record)
+    monkeypatch.setattr(producer_result, "stage_executed_settings", lambda record, root:
+                        _evidence_reference(root, "settings.json", "settings.json", b"{}"))
+    error = RuntimeError("interrupted")
+    producer_result._native_failure_result(
+        error, receipt, tmp_path, task_id="task-1", attempt_id="attempt-1",
+        source=None, workflow_path=None, transport=None,
+    )
+    payload = json.loads(error.managed_generation_result_path.read_bytes())
+    assert payload["outcomes"]["execution"]["status"] == "interrupted"
+    assert payload["evidence"]["transport"]["cancel"]["requested"] is None
+    assert payload["evidence"]["transport"]["cancel"]["observed_stop"] is None
 
 
 def test_model_identity_never_upgrades_an_observed_or_mismatched_digest(tmp_path):

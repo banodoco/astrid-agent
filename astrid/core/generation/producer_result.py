@@ -248,7 +248,7 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
     terminal = runtime.get('terminal') or attempt.get('terminal') or {}
     interrupted = isinstance(error, KeyboardInterrupt) or terminal.get('phase') == 'interrupted'
     cancelled = (isinstance(error, asyncio.CancelledError)
-                 or isinstance(error, SystemExit) and error.code in {130, 143}
+                 or isinstance(error, SystemExit) and error.code in (130, 143)
                  or terminal.get('phase') == 'cancelled')
     status = 'interrupted' if interrupted else 'cancelled' if cancelled else 'failed'
     outputs, warnings = [], []
@@ -356,7 +356,9 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
                             'receipt_path': str(receipt), 'terminal': terminal}
     if cancelled or interrupted:
         if owner.get('cancel') is None:
-            owner['cancel'] = {'requested': True, 'observed_stop': None,
+            requested = (isinstance(error, asyncio.CancelledError)
+                         or isinstance(error, SystemExit) and error.code in (130, 143))
+            owner['cancel'] = {'requested': True if requested else None, 'observed_stop': None,
                                'native': terminal}
     settings = stage_executed_settings(record, destination)
     payload['inputs']['effective_settings'] = _executed_settings_input(

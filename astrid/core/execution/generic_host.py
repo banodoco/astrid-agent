@@ -8316,6 +8316,26 @@ class GenericPackHost:
         # repository lookups. Producer evidence remains in its own namespace.
         producer = payload["evidence"]["producer"]
         transport = payload["evidence"]["transport"]
+        # The bundle loader uses a fixed sibling basename. Restore the
+        # admitted source identity only after checking it against the bytes
+        # retained by the producer.
+        spec = _admitted_spec_envelope(task.get("spec", {}))
+        inputs = spec.get("inputs")
+        admitted_source = inputs.get("source") if isinstance(inputs, Mapping) else None
+        if isinstance(admitted_source, Mapping) and all(
+            key in admitted_source for key in ("bytes", "filename")
+        ) and any(key in admitted_source for key in ("sha256", "digest", "object_id")):
+            from astrid.core.contracts.managed_generation_result import validate_evidence_reference
+
+            admitted_source = validate_evidence_reference(
+                admitted_source, field="task.inputs.source", staging_root=output_root,
+            )
+            actual_source = payload["inputs"].get("source")
+            if actual_source is not None and (
+                actual_source.get("sha256"), actual_source.get("bytes")
+            ) != (admitted_source["sha256"], admitted_source["bytes"]):
+                raise HostError("producer source identity differs from admitted source")
+            payload["inputs"]["source"] = {**(actual_source or {}), **admitted_source}
         installed = self.boot_manifest_provenance()
         if installed is not None:
             manifest_path = self.boot_manifest_path
