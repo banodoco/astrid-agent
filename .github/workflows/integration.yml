@@ -1,0 +1,359 @@
+name: CP2 exact-tuple G3 integration
+
+on:
+  push:
+    branches:
+      - main
+      - release-1
+      - int/r1
+    paths:
+      - .github/workflows/integration.yml
+      - .github/workflows/tuple.json
+  workflow_dispatch:
+
+concurrency:
+  group: c05g-r3-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tuple:
+    name: Bind and validate the CP2 tuple
+    runs-on: ubuntu-latest
+    outputs:
+      runtime_sha: ${{ steps.bind.outputs.runtime_sha }}
+      agent_sha: ${{ steps.bind.outputs.agent_sha }}
+      app_sha: ${{ steps.bind.outputs.app_sha }}
+      pinokio_sha: ${{ steps.bind.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ steps.bind.outputs.vibecomfy_sha }}
+      tuple_digest: ${{ steps.bind.outputs.tuple_digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ github.sha }}
+          path: coordinator
+          persist-credentials: false
+      - name: Record effective coordinator checkout
+        shell: bash
+        env:
+          EXPECTED: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual=$(git -C coordinator rev-parse HEAD)
+          printf 'Coordinator workflow revision: %s\n' "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$actual" = "$EXPECTED"
+      - name: Validate canonical tuple and expose exact inputs
+        id: bind
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("coordinator/.github/workflows/tuple.json")
+          value = json.loads(path.read_text(encoding="utf-8"))
+          required = {"version", "name", "repos", "generated", "toolchain", "created_at", "digest"}
+          missing = required - value.keys()
+          if missing or value["version"] != 1:
+              raise SystemExit(f"invalid tuple envelope; missing={sorted(missing)}")
+          expected = value.pop("digest")
+          canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+          actual = hashlib.sha256(canonical).hexdigest()
+          if expected != actual:
+              raise SystemExit(f"tuple digest mismatch: expected {expected}, calculated {actual}")
+          names = ("runtime", "agent", "app", "pinokio", "vibecomfy")
+          for name in names:
+              repo = value["repos"].get(name, {})
+              if not isinstance(repo.get("url"), str) or not re.fullmatch(r"[0-9a-f]{40}", repo.get("sha", "")):
+                  raise SystemExit(f"tuple {name} is not an immutable repository identity")
+          for name, revision in value["workflow_revisions"].items():
+              if not re.fullmatch(r"[0-9a-f]{40}", revision):
+                  raise SystemExit(f"workflow revision for {name} is not immutable")
+          value["digest"] = expected
+          Path("effective-tuple.json").write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as out:
+              for name in names:
+                  out.write(f"{name}_sha={value['repos'][name]['sha']}\n")
+              out.write(f"tuple_digest={expected}\n")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write(f"CP2 tuple digest: `{expected}`\n\n```json\n")
+              summary.write(json.dumps(value, indent=2))
+              summary.write("\n```\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c05g-r3-effective-tuple-${{ steps.bind.outputs.tuple_digest }}
+          path: effective-tuple.json
+          if-no-files-found: error
+          retention-days: 14
+
+  source-and-lock-preflight:
+    name: Assert source, lock, manifest, and checkout identities
+    needs: tuple
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.tuple.outputs.agent_sha }}
+          path: agent
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ needs.tuple.outputs.runtime_sha }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ${{ needs.tuple.outputs.app_sha }}
+          path: app
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ needs.tuple.outputs.pinokio_sha }}
+          path: pinokio
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: AstridPseudon/vibecomfy-proof
+          ref: ${{ needs.tuple.outputs.vibecomfy_sha }}
+          path: vibecomfy
+          persist-credentials: false
+      - name: Assert effective source and generated identities
+        shell: bash
+        env:
+          RUNTIME_SHA: ${{ needs.tuple.outputs.runtime_sha }}
+          AGENT_SHA: ${{ needs.tuple.outputs.agent_sha }}
+          APP_SHA: ${{ needs.tuple.outputs.app_sha }}
+          PINOKIO_SHA: ${{ needs.tuple.outputs.pinokio_sha }}
+          VIBECOMFY_SHA: ${{ needs.tuple.outputs.vibecomfy_sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          expected = {
+              "runtime": os.environ["RUNTIME_SHA"],
+              "agent": os.environ["AGENT_SHA"],
+              "app": os.environ["APP_SHA"],
+              "pinokio": os.environ["PINOKIO_SHA"],
+              "vibecomfy": os.environ["VIBECOMFY_SHA"],
+          }
+          import subprocess
+          actual = {
+              name: subprocess.check_output(["git", "-C", name, "rev-parse", "HEAD"], text=True).strip()
+              for name in expected
+          }
+          if actual != expected:
+              raise SystemExit(f"checkout identity mismatch: expected={expected} actual={actual}")
+          agent_lock = json.loads(Path("agent/runtime.lock.json").read_text(encoding="utf-8"))
+          app_lock = json.loads(Path("app/runtime.lock.json").read_text(encoding="utf-8"))
+          vendor_lock = json.loads(Path("app/config/astrid-cli-surface/vendor.lock.json").read_text(encoding="utf-8"))
+          manifest_path = Path("app/public/install-manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if agent_lock.get("source_commit") != expected["runtime"]:
+              raise SystemExit("Agent runtime.lock.json does not name the selected Runtime")
+          if app_lock.get("source_commit") != expected["runtime"]:
+              raise SystemExit("App runtime.lock.json does not name the selected Runtime")
+          if manifest.get("agent", {}).get("sha") != expected["agent"]:
+              raise SystemExit("App install manifest does not name the selected Agent")
+          if manifest.get("runtime", {}).get("sha") != expected["runtime"]:
+              raise SystemExit("App install manifest does not name the selected Runtime")
+          manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a", encoding="utf-8") as out:
+              out.write("## Effective source and declared identities\n\n")
+              for name in ("runtime", "agent", "app", "pinokio", "vibecomfy"):
+                  out.write(f"- {name}: `{actual[name]}`\n")
+              out.write(f"- agent runtime.lock.json source_commit: `{agent_lock['source_commit']}`\n")
+              out.write(f"- app runtime.lock.json source_commit: `{app_lock['source_commit']}`\n")
+              out.write(f"- app vendor lock source_commit: `{vendor_lock.get('source_commit', 'absent')}`\n")
+              out.write(f"- app install-manifest.json SHA-256: `{manifest_sha256}`\n")
+              out.write(f"- manifest Agent: `{manifest['agent']['sha']}`\n")
+              out.write(f"- manifest Runtime: `{manifest['runtime']['sha']}`\n")
+              out.write("- installed identities: pending C-07 hosted receipt; no source-lock value is treated as installed evidence.\n")
+          PY
+
+  agent-ci:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-agent/.github/workflows/g3-ci.yml@003eede5d8e69e4a778534a1fb4562680e21122c
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  agent-chat:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-agent/.github/workflows/g3-chat.yml@003eede5d8e69e4a778534a1fb4562680e21122c
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  agent-lanes:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-agent/.github/workflows/g3-lanes.yml@003eede5d8e69e4a778534a1fb4562680e21122c
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  runtime-ci:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-runtime/.github/workflows/g3-ci.yml@7eb8c133ca56c35c3f8c45b81e63aa4f5793b163
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  runtime-integration:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-runtime/.github/workflows/g3-nightly.yml@7eb8c133ca56c35c3f8c45b81e63aa4f5793b163
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  app-test:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-app/.github/workflows/g3-test.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  app-e2e:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-app/.github/workflows/g3-e2e.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  app-lanes:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-app/.github/workflows/g3-lanes.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  app-direct-journey:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-app/.github/workflows/g3-direct-journey.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  app-dockerfile-check:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-app/.github/workflows/g3-dockerfile-check.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  app-installer-windows:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-app/.github/workflows/g3-installer-windows.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  pinokio-ci:
+    needs: [tuple, source-and-lock-preflight]
+    uses: banodoco/astrid-pinokio/.github/workflows/g3-ci.yml@e7bd4e3a31f74b6f43e035480acfd3c523eec19e
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+
+  aggregate:
+    name: Exact-tuple hosted aggregate (not C-06)
+    if: ${{ always() }}
+    needs:
+      - tuple
+      - source-and-lock-preflight
+      - agent-ci
+      - agent-chat
+      - agent-lanes
+      - runtime-ci
+      - runtime-integration
+      - app-test
+      - app-e2e
+      - app-lanes
+      - app-direct-journey
+      - app-dockerfile-check
+      - app-installer-windows
+      - pinokio-ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail closed on every missing, skipped, cancelled, or failed producer
+        shell: bash
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+
+          results = json.loads(os.environ["RESULTS"])
+          for name, value in sorted(results.items()):
+              print(f"{name}: {value['result']}")
+          not_successful = [name for name, value in results.items() if value["result"] != "success"]
+          if not_successful:
+              raise SystemExit("C-05 exact-tuple producers did not all succeed: " + ", ".join(sorted(not_successful)))
+          print("All C-05 producers completed successfully. This is not a C-06 regression-green verdict.")
+          PY

@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "name": "int/r1 CP2 C-05g-R3",
+  "repos": {
+    "runtime": {
+      "url": "https://github.com/banodoco/astrid-runtime",
+      "ref": "int/r1",
+      "sha": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+    },
+    "agent": {
+      "url": "https://github.com/banodoco/astrid-agent",
+      "ref": "int/r1",
+      "sha": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2"
+    },
+    "app": {
+      "url": "https://github.com/banodoco/astrid-app",
+      "ref": "int/r1",
+      "sha": "a55bec9ff384b5bbfee5535962880084ab2adb1b"
+    },
+    "pinokio": {
+      "url": "https://github.com/banodoco/astrid-pinokio",
+      "ref": "int/r1",
+      "sha": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4"
+    },
+    "vibecomfy": {
+      "url": "https://github.com/AstridPseudon/vibecomfy-proof",
+      "ref": "cp2",
+      "sha": "3bebae39655eb460454885040be4d3aefaf2ef31"
+    }
+  },
+  "generated": {
+    "agent_runtime_lock_source_commit": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+    "app_runtime_lock_source_commit": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+    "app_agent_vendor_lock_source_commit": "5dec5dc6a4eb6683cd8a9a7e7f2048fbb18d9681",
+    "app_install_manifest_sha256": "ced136903a7319e78a0be7db0cc1709c0663eaf7d567c040fe1812a916693874",
+    "app_install_manifest_agent_sha": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+    "app_install_manifest_runtime_sha": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+  },
+  "toolchain": {
+    "python": "3.11",
+    "node": "20.19.4",
+    "uv": "0.11.32"
+  },
+  "workflow_revisions": {
+    "agent": "003eede5d8e69e4a778534a1fb4562680e21122c",
+    "runtime": "7eb8c133ca56c35c3f8c45b81e63aa4f5793b163",
+    "app": "26e0a5ef5045be4d5224eae2521ddbdade9b72fd",
+    "pinokio": "e7bd4e3a31f74b6f43e035480acfd3c523eec19e"
+  },
+  "created_at": "2026-11-01T14:26:27Z",
+  "digest": "c5415729389f21fb7a6fe9d9bebc72019e12437fc87982104a8aacd35a2fb0f3"
+}
