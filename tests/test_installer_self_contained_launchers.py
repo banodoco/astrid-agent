@@ -18,7 +18,7 @@ import pytest
 
 from astrid.installer import launcher
 from astrid.installer.core import current, write_json
-from astrid.installer.service import LABEL, command
+from astrid.installer.service import LABEL, command, launch_environment
 
 RELEASE0_AGENT = "3204bb00135bec8ee2d2d3fb21eed5abfceca649"
 RELEASE0_MANIFEST = Path(__file__).parent / "fixtures" / "release0" / "served" / "install-manifest.json"
@@ -74,6 +74,46 @@ def test_generated_launch_preludes_have_no_installed_agent_imports(tmp_path: Pat
         assert "import astrid." not in source
     assert "from astrid_runtime.cli import main" in service_source
     assert "from astrid_runtime.cli import main" in foreground_source
+
+
+@pytest.mark.parametrize("pinned_path", [True, False])
+def test_generated_foreground_launch_environment_matches_service_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_path: bool,
+) -> None:
+    root, data, _marker = _legacy_installation(tmp_path, Path(sys.executable))
+    selected = current(root)
+    assert selected is not None
+    selected.env.update({
+        "HOME": str(tmp_path / "selected-home"),
+        "ASTRID_NPX_EXECUTABLE": str(tmp_path / "tools" / "npx"),
+    })
+    if pinned_path:
+        selected.env["PATH"] = str(tmp_path / "tools" / "bin")
+        selected.env["ASTRID_RUNTIME_DOOR_PORT"] = "17399"
+    monkeypatch.setenv("HOME", str(tmp_path / "ambient-home"))
+    monkeypatch.setenv("PATH", "ambient-path")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example")
+    monkeypatch.setenv("ASTRID_NPX_EXECUTABLE", "ambient-npx")
+    monkeypatch.setenv("UNRELATED_SECRET", "do-not-inherit")
+
+    runner = launcher.publish_runtime_runner(root)
+    module = ast.parse(runner.read_text(encoding="utf-8"))
+    module.body.pop()  # Load definitions without invoking the launch entry point.
+    namespace: dict = {}
+    exec(compile(module, str(runner), "exec"), namespace)
+    generated_version = namespace["Version"].load(selected.document())
+    actual = namespace["launch_environment"](generated_version, data)
+
+    assert actual == launch_environment(selected, data)
+    assert actual["HOME"] == str(tmp_path / "selected-home")
+    assert actual["XDG_DATA_HOME"] == str(tmp_path / "selected-home" / ".local" / "share")
+    assert actual["ASTRID_RUNTIME_DATA_ROOT"] == str(data)
+    assert actual["ASTRID_NPX_EXECUTABLE"] == str(tmp_path / "tools" / "npx")
+    assert actual["PATH"] == (str(tmp_path / "tools" / "bin") if pinned_path
+                              else str(selected.python.parent) + os.pathsep + os.defpath)
+    assert actual["ASTRID_RUNTIME_DOOR_PORT"] == ("17399" if pinned_path else "17340")
+    assert actual["HTTP_PROXY"] == "http://proxy.example"
+    assert "UNRELATED_SECRET" not in actual
 
 
 def _release0_environment(environment: Path) -> tuple[Path, Path]:

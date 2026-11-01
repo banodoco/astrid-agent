@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +22,7 @@ from astrid.installer.core import (
     switch,
     write_json,
 )
+from astrid.installer.custody import stopped_custody
 from astrid.installer.service import activation_lock_held
 from tests.test_installer_self_contained_launchers import (
     LEGACY_VERSION,
@@ -107,6 +110,38 @@ def _journal(root: Path, data: Path, old: Version, candidate: Version, step: str
     }
 
 
+def _recover_with_stopped_custody(
+    root: Path, data: Path, tmp_path: Path, backend, stopped: list[Version],
+    select_old, marker: Path,
+) -> None:
+    """Mirror recovery's post-stop custody and selected-version ticket handoff."""
+    backend.service = SimpleNamespace(home=tmp_path / "home", system=sys.platform)
+    environment = _runtime_environment(tmp_path)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("XDG_DATA_HOME", environment["XDG_DATA_HOME"])
+        with locked(root / ".app-update.lock"), contextlib.ExitStack() as authority:
+            def stop_recovery(version: Version, _data: Path) -> None:
+                stopped.append(version)
+                custody = authority.enter_context(stopped_custody(root, backend))
+                assert custody is not None
+                backend._pinokio_custody = custody
+
+            def activate_old(version: Version, workspace: Path, _realm: dict) -> None:
+                assert current(root) == version
+                assert activation_lock_held(root, version)
+                ticket = backend._pinokio_custody.arm(version, workspace)
+                assert ticket["binding"]["version"] == version.document()
+                assert ticket["binding"]["step"] == "rollback_selected"
+                environment["ASTRID_INSTALL_CUSTODY"] = json.dumps(ticket)
+                _start_release0_runtime(root, marker, environment)
+
+            recover_transaction(
+                root, data, backend, stop=stop_recovery, switch_old=select_old,
+                activate_old=activate_old, restore_workspace=False,
+                say=lambda _message: None,
+            )
+
+
 @pytest.mark.posix_native
 def test_rollback_selects_and_starts_authentic_release0_runtime(tmp_path: Path) -> None:
     """A failed candidate uses the immutable release-0 package after rollback."""
@@ -133,23 +168,10 @@ def test_rollback_selects_and_starts_authentic_release0_runtime(tmp_path: Path) 
         selected.append(version)
         switch(root, version)
 
-    def activate_old(version: Version, _data: Path, _realm: dict) -> None:
-        assert current(root) == version
-        assert activation_lock_held(root, version)
-        _start_release0_runtime(root, marker, _runtime_environment(tmp_path))
-
-    # Pinokio recovery owns this lock until the selected old Runtime starts.
-    with locked(root / ".app-update.lock"):
-        recover_transaction(
-            root,
-            data,
-            SimpleNamespace(),
-            stop=lambda version, _data: stopped.append(version),
-            switch_old=select_old,
-            activate_old=activate_old,
-            restore_workspace=False,
-            say=lambda _message: None,
-        )
+    # Pinokio recovery owns the operation lock and acquires custody after stop.
+    _recover_with_stopped_custody(
+        root, data, tmp_path, SimpleNamespace(), stopped, select_old, marker,
+    )
 
     recovered = json.loads((root / "update-transaction.json").read_text(encoding="utf-8"))
     assert stopped == [candidate]
@@ -228,24 +250,10 @@ def test_pre_stop_interruption_recovers_and_starts_authentic_release0_runtime(
         selected.append(version)
         assert current(root) == version
 
-    def activate_old(version: Version, _data: Path, _realm: dict) -> None:
-        assert current(root) == version
-        assert activation_lock_held(root, version)
-        _start_release0_runtime(root, marker, _runtime_environment(tmp_path))
-
-    # A restarted Pinokio recovery reacquires its own operation lock before
-    # rolling back and activating the retained release-0 Runtime.
-    with locked(root / ".app-update.lock"):
-        recover_transaction(
-            root,
-            data,
-            backend,
-            stop=lambda version, _data: stopped.append(version),
-            switch_old=select_old,
-            activate_old=activate_old,
-            restore_workspace=False,
-            say=lambda _message: None,
-        )
+    # A restarted recovery reacquires the operation lock and stopped custody.
+    _recover_with_stopped_custody(
+        root, data, tmp_path, backend, stopped, select_old, marker,
+    )
 
     recovered = json.loads((root / "update-transaction.json").read_text(encoding="utf-8"))
     assert stopped == [old]

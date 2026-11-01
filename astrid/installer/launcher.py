@@ -170,10 +170,13 @@ def publish_runtime_runner(root: Path) -> Path:
     service_source = (
         prelude_source + '\n'
         'from runtime_protocol import platform\n'
+        'from runtime_protocol.door import DEFAULT_DOOR_PORT\n'
         f'LABEL={service.LABEL!r}\nSERVICE_SETTINGS=frozenset({sorted(service.SERVICE_SETTINGS)!r})\n'
+        f'_LAUNCH_ENVIRONMENT_ALLOWLIST=frozenset({sorted(service._LAUNCH_ENVIRONMENT_ALLOWLIST)!r})\n'
         f'_EMBEDDED_LAUNCH_PRELUDE={prelude_source!r}\n'
         + "\n".join(inspect.getsource(function) for function in (
             service.default_program_root, service.installer_lock_path, service.pinokio_lock_paths,
+            service.installer_environment, service.service_environment, service.launch_environment,
             service.command,
         ))
     )
