@@ -6,10 +6,12 @@ existing attested EngineEndpointTransport, not a mock /view replacement.
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 import pytest
 from aiohttp import web
 
 from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+from astrid.core.generation.backends import comfy_target
 from astrid.core.generation.engine_transport import EngineEndpointTransport
 from astrid.core.generation.engine_contracts import TransportError
 from tests.core.generation.test_engine_endpoint_transport import (
@@ -183,6 +185,76 @@ def test_local_request_compatibility_uses_guarded_prompt_submission(comfy, netwo
 def test_json_response_limit_is_enforced(comfy, network):
     with pytest.raises(ValueError, match="too large"):
         attached(network).request_json("/queue", response_limit=8)
+
+
+def test_json_timeout_cannot_exceed_the_relay_deadline(comfy, network):
+    client = attached(network)
+    client._opener = lambda *_args, **_kwargs: pytest.fail("over-deadline request reached upstream")
+    with pytest.raises(ValueError, match="at most 15 seconds"):
+        client.request_json("/queue", timeout=comfy_target.HTTP_TRANSFER_SECONDS + 0.1)
+    assert network["upstream"] == []
+
+
+def test_multipart_upload_overhead_must_fit_agent_request_limit(tmp_path, network, monkeypatch):
+    source = tmp_path / "source.png"
+    source.write_bytes(b"image")
+    monkeypatch.setattr(comfy_target, "MAX_ENGINE_BODY_BYTES", 128)
+    client = attached(network)
+    client._opener = lambda *_args, **_kwargs: pytest.fail("oversized multipart reached upstream")
+    with pytest.raises(ValueError, match="multipart media upload exceeds"):
+        client.upload_media(source, task_id="x" * 200)
+    assert network["upstream"] == []
+
+
+def test_upload_and_output_use_the_shared_relay_deadline(tmp_path, network):
+    import io
+
+    source = tmp_path / "source.png"
+    source.write_bytes(b"image")
+    output = tmp_path / "result.png"
+    client = attached(network)
+    timeouts = []
+    requests = []
+
+    def opener(request, timeout):
+        timeouts.append(timeout)
+        requests.append(request)
+        response = (b'{"name":"source.png","subfolder":"astrid/task-1","type":"input"}'
+                    if request.full_url.endswith("/upload/image") else b"output")
+        return io.BytesIO(response)
+
+    client._opener = opener
+    client.upload_media(source, task_id="task-1")
+    client.download_output(DESCRIPTOR, output)
+    assert timeouts == [comfy_target.HTTP_TRANSFER_SECONDS] * 2
+    assert all(timeout == 15 for timeout in timeouts)
+    assert len(requests[0].data) <= comfy_target.MAX_ENGINE_BODY_BYTES
+    assert output.read_bytes() == b"output"
+
+
+def test_response_reads_use_remaining_transfer_deadline(monkeypatch):
+    class Socket:
+        timeouts = []
+
+        def settimeout(self, timeout):
+            self.timeouts.append(timeout)
+
+    class Response:
+        def __init__(self):
+            self.fp = SimpleNamespace(raw=SimpleNamespace(_sock=Socket()))
+            self.reads = 0
+
+        def read(self, _size):
+            self.reads += 1
+            return b"x"
+
+    response = Response()
+    times = iter((0.0, 0.5, 1.1))
+    monkeypatch.setattr(comfy_target.time, "monotonic", lambda: next(times))
+    with pytest.raises(TimeoutError, match="response deadline"):
+        ComfyTargetClient._read_bounded(response, 10, 1.0)
+    assert response.fp.raw._sock.timeouts == [1.0, 0.5]
+    assert response.reads == 2
 
 
 def test_malformed_get_response_is_not_a_control_acknowledgement(comfy, network):

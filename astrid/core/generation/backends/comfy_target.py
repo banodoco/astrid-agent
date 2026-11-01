@@ -33,6 +33,8 @@ MAX_JSON_BYTES = 32 * 1024 * 1024
 MAX_DESCRIPTOR_INFO_BYTES = 64 * 1024
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ENGINE_BODY_BYTES = 1024 * 1024 * 1024
+HTTP_TRANSFER_SECONDS = 15
 _CHUNK_BYTES = 1024 * 1024
 
 
@@ -131,8 +133,10 @@ class ComfyTargetClient:
     def _read_bounded(response, limit: int, deadline: float) -> bytes:
         blocks, size = [], 0
         while True:
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise TimeoutError("Comfy response deadline exceeded")
+            _set_response_read_timeout(response, remaining)
             block = response.read(min(64 * 1024, limit + 1 - size))
             if not block:
                 return b"".join(blocks)
@@ -144,8 +148,8 @@ class ComfyTargetClient:
     def _json(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
               acknowledge_empty=True):
         timeout = float(timeout)
-        if not math.isfinite(timeout) or not 0 < timeout <= 30:
-            raise ValueError("Comfy request timeout must be finite and at most 30 seconds")
+        if not math.isfinite(timeout) or not 0 < timeout <= HTTP_TRANSFER_SECONDS:
+            raise ValueError("Comfy request timeout must be finite and at most 15 seconds")
         if not isinstance(response_limit, int) or not 0 < response_limit <= MAX_JSON_BYTES:
             raise ValueError("invalid Comfy response bound")
         body = None if payload is None else json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -211,9 +215,9 @@ class ComfyTargetClient:
     def object_info(self) -> dict[str, Any]:
         """Capture schema through this target's existing attested transport."""
         if self.endpoint_transport is not None:
-            payload = self.endpoint_transport.object_info(deadline=time.monotonic() + 30)
+            payload = self.endpoint_transport.object_info(deadline=time.monotonic() + HTTP_TRANSFER_SECONDS)
         else:
-            payload = self.request_json("/object_info", timeout=30, response_limit=MAX_JSON_BYTES)
+            payload = self.request_json("/object_info", timeout=HTTP_TRANSFER_SECONDS, response_limit=MAX_JSON_BYTES)
         if not isinstance(payload, dict):
             raise ValueError("Comfy object_info response is not an object")
         from astrid.core.generation.engine_readiness import current_comfy_provenance
@@ -248,7 +252,7 @@ class ComfyTargetClient:
                 raise TransportError("prompt already attempted; do not resubmit; reconcile the original attempt")
             self._prompt_attempted = True
         try:
-            result = self._json("/prompt", body, timeout=30, acknowledge_empty=False)
+            result = self._json("/prompt", body, timeout=HTTP_TRANSFER_SECONDS, acknowledge_empty=False)
             if not isinstance(result, dict):
                 raise ValueError("Comfy prompt acceptance is not an object")
             self.witness_prompt(result.get("prompt_id"))
@@ -269,7 +273,7 @@ class ComfyTargetClient:
 
     def history(self, prompt_id: str) -> dict[str, Any]:
         prompt_id = self._prompt_id(prompt_id)
-        result = self._json("/history/" + urllib_parse.quote(prompt_id, safe=""), timeout=30,
+        result = self._json("/history/" + urllib_parse.quote(prompt_id, safe=""), timeout=HTTP_TRANSFER_SECONDS,
                             response_limit=MAX_JSON_BYTES, acknowledge_empty=False)
         if not isinstance(result, dict):
             raise ValueError("Comfy history response is not an object")
@@ -322,17 +326,20 @@ class ComfyTargetClient:
                 self.endpoint_transport.put(frozen, str(root / subfolder / filename))
             return f"{subfolder}/{filename}"
         boundary = uuid.uuid4().hex
-        body = bytearray()
+        fields = []
         for name, value in (("subfolder", subfolder), ("type", "input")):
-            body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
-        body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode())
-        body.extend(data)
-        body.extend(f"\r\n--{boundary}--\r\n".encode())
-        request = urllib_request.Request(self.http_origin + "/upload/image", data=bytes(body),
+            fields.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+        fields.append(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode())
+        ending = f"\r\n--{boundary}--\r\n".encode()
+        body_size = sum(map(len, fields)) + len(data) + len(ending)
+        if body_size > MAX_ENGINE_BODY_BYTES:
+            raise ValueError("multipart media upload exceeds the engine request body limit")
+        body = b"".join((*fields, data, ending))
+        request = urllib_request.Request(self.http_origin + "/upload/image", data=body,
                                         headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
                                                  "Accept-Encoding": "identity"})
-        deadline = time.monotonic() + 30
-        with self._opener(request, timeout=30) as response:
+        deadline = time.monotonic() + HTTP_TRANSFER_SECONDS
+        with self._opener(request, timeout=HTTP_TRANSFER_SECONDS) as response:
             if not 200 <= getattr(response, "status", 200) < 300:
                 raise ValueError("Comfy upload returned a non-2xx status")
             result = json.loads(self._read_bounded(response, 64 * 1024, deadline))
@@ -383,8 +390,8 @@ class ComfyTargetClient:
                 query = urllib_parse.urlencode({"filename": filename, "subfolder": subfolder, "type": output_type})
                 request = urllib_request.Request(self.http_origin + "/view?" + query,
                                                  headers={"Accept-Encoding": "identity"}, method="GET")
-                deadline = time.monotonic() + 30
-                with self._opener(request, timeout=30) as response, temporary_path.open("wb") as temporary:
+                deadline = time.monotonic() + HTTP_TRANSFER_SECONDS
+                with self._opener(request, timeout=HTTP_TRANSFER_SECONDS) as response, temporary_path.open("wb") as temporary:
                     if getattr(response, "status", 200) != 200:
                         raise ValueError("checkout_server /view returned a non-200 status")
                     headers = getattr(response, "headers", {})
@@ -397,8 +404,10 @@ class ComfyTargetClient:
                             raise ValueError("Comfy output length is invalid or too large")
                         declared_length = int(declared_length)
                     while True:
-                        if time.monotonic() >= deadline:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
                             raise TimeoutError("Comfy output deadline exceeded")
+                        _set_response_read_timeout(response, remaining)
                         block = response.read(_CHUNK_BYTES)
                         if not block:
                             break
@@ -421,6 +430,19 @@ class ComfyTargetClient:
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
+
+
+def _set_response_read_timeout(response: Any, timeout: float) -> None:
+    """Make each blocking urllib read respect the operation's remaining time."""
+    stream = response
+    for _ in range(4):
+        sock = getattr(getattr(stream, "raw", None), "_sock", None)
+        if sock is not None:
+            sock.settimeout(timeout)
+            return
+        stream = getattr(stream, "fp", None)
+        if stream is None:
+            return
 
 
 def _digest_hex(value: str) -> str:
