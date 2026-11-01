@@ -1,0 +1,16 @@
+{
+  "status": "absent",
+  "exit_code": 0,
+  "stdout": "{\"error\":{\"fully_qualified_error_id\":\"CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask\",\"category\":\"ObjectNotFound\",\"message\":\"No MSFT_ScheduledTask objects found with property \\u0027TaskName\\u0027 equal to \\u0027Astrid Runtime\\u0027.  Verify the value of the property and retry.\",\"hresult\":-2146233087,\"type\":\"Microsoft.PowerShell.Cmdletization.Cim.CimJobException\"},\"status\":\"absent\"}\r\n",
+  "stderr": "",
+  "observation": {
+    "error": {
+      "fully_qualified_error_id": "CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask",
+      "category": "ObjectNotFound",
+      "message": "No MSFT_ScheduledTask objects found with property 'TaskName' equal to 'Astrid Runtime'.  Verify the value of the property and retry.",
+      "hresult": -2146233087,
+      "type": "Microsoft.PowerShell.Cmdletization.Cim.CimJobException"
+    },
+    "status": "absent"
+  }
+}

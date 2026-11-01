@@ -1,0 +1,10 @@
+Running service-manager-prerequisite.log
+Running runtime-owner-processes.json
+Running sentinel-birth.txt
+Running sentinel-birth.txt
+Running sentinel-birth.txt
+Running manager-state-before-cleanup.log
+Running sentinel-birth.txt
+Running runtime-owner-processes.json
+Running manager-state-after-cleanup.log
+Journey failed: release0-bootstrap.log: exit 1; see D:\a\_temp\astrid-r1-direct-windows\evidence\release0-to-release1\release0\release0-bootstrap.log
