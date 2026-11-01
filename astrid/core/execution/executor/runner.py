@@ -183,8 +183,10 @@ class ExecutorRunResult:
 class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunResult, ExecutorDefinition]):
     """Executor binding of the shared :class:`CapabilityRunner` skeleton."""
 
-    def __init__(self, *, admission: Mapping[str, Any] | None = None) -> None:
+    def __init__(self, *, admission: Mapping[str, Any] | None = None,
+                 captured_source: Mapping[str, bytes] | None = None) -> None:
         self._admission = admission
+        self._captured_source = captured_source
 
     def load_default_registry(self) -> ExecutorRegistry:
         return load_default_registry()
@@ -242,7 +244,8 @@ class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunR
         return _prepare_dry_run_request(request)
 
     def run_inner(self, request: ExecutorRunRequest, definition: ExecutorDefinition) -> ExecutorRunResult:
-        return _run_executor_inner(request, definition, _admission=self._admission)
+        return _run_executor_inner(request, definition, _admission=self._admission,
+                                   _captured_source=self._captured_source)
 
     def finalize_project(
         self,
@@ -268,13 +271,15 @@ _EXECUTOR_RUNNER = ExecutorCapabilityRunner()
 
 
 def run_executor(request: ExecutorRunRequest, registry: ExecutorRegistry | None = None,
-                 *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
-    runner = ExecutorCapabilityRunner(admission=_admission) if _admission is not None else _EXECUTOR_RUNNER
+                 *, _admission: Mapping[str, Any] | None = None,
+                 _captured_source: Mapping[str, bytes] | None = None) -> ExecutorRunResult:
+    runner = ExecutorCapabilityRunner(admission=_admission, captured_source=_captured_source) if _admission is not None else _EXECUTOR_RUNNER
     return runner.run(request, registry)
 
 
 def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinition,
-                        *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
+                        *, _admission: Mapping[str, Any] | None = None,
+                        _captured_source: Mapping[str, bytes] | None = None) -> ExecutorRunResult:
     _validate_scoped_configs_at_dispatch(executor)
     invocation = executor.metadata.get("action_invocation")
     python_action = isinstance(invocation, Mapping) and invocation.get("kind") == "python"
@@ -315,7 +320,8 @@ def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinitio
         )
 
     if python_action:
-        return _run_python_action(executor, request, values, _admission=_admission)
+        return _run_python_action(executor, request, values, _admission=_admission,
+                                  _captured_source=_captured_source)
     if executor.kind == "built_in" and "pipeline_step" in executor.metadata:
         return _run_builtin_executor(executor, request)
     return _run_external_executor(executor, request, values)
@@ -335,55 +341,76 @@ def _action_input_values(executor: ExecutorDefinition, request: ExecutorRunReque
 class _PackSourceLoader(importlib.abc.Loader):
     """Compile admitted Python source directly; never consult pack bytecode."""
 
-    def __init__(self, source: Path | None, directory: Path) -> None:
+    def __init__(self, source: Path | None, directory: Path, data: bytes | None = None) -> None:
+        self.data = data
         self.source = source
         self.directory = directory
 
     def create_module(self, spec):
         return None
 
+    def get_code(self, fullname):
+        if self.source is None:
+            return compile("", str(self.directory), "exec")
+        data = self.source.read_bytes() if self.data is None else self.data
+        return compile(data, str(self.source), "exec")
+
     def exec_module(self, module) -> None:
         if self.source is not None:
             module.__file__ = str(self.source)
-            exec(compile(self.source.read_bytes(), str(self.source), "exec"), module.__dict__)
+            exec(self.get_code(module.__name__), module.__dict__)
 
 
 class _PackSourceFinder(importlib.abc.MetaPathFinder):
     """Own only one opaque pack prefix, including package initializers."""
 
-    def __init__(self, prefix: str, root: Path, path_names: Mapping[str, str]) -> None:
+    def __init__(self, prefix: str, root: Path, path_names: Mapping[str, str],
+                 contents: Mapping[str, bytes] | None = None, *, include_prefix: bool = False) -> None:
+        self.include_prefix = include_prefix
         self.prefix, self.root, self.path_names = prefix, root, path_names
+        self.contents = contents
 
     def find_spec(self, fullname, path=None, target=None):
         if fullname != self.prefix and not fullname.startswith(self.prefix + "."):
             return None
-        parts = fullname.split(".")[1:]
+        parts = fullname.split(".") if self.include_prefix else fullname.split(".")[1:]
         if any(not part.isidentifier() or keyword.iskeyword(part) for part in parts):
             raise ExecutorRunnerError("invalid private action module name")
         base = self.root.joinpath(*(self.path_names.get(part, part) for part in parts))
-        directory = base.resolve()
+        directory = base if self.contents is not None else base.resolve()
+        relative = base.relative_to(self.root).as_posix()
+        relative = "" if relative == "." else relative + "/"
         source = None
-        package = directory.is_dir()
+        package = (any(name.startswith(relative) for name in self.contents)
+                   if self.contents is not None else directory.is_dir())
         if package:
             initializer = base / "__init__.py"
-            if initializer.exists():
-                source = initializer.resolve()
+            if (relative + "__init__.py" in self.contents if self.contents is not None else initializer.exists()):
+                source = initializer if self.contents is not None else initializer.resolve()
         else:
-            source = Path(str(base) + ".py").resolve()
-            if not source.is_file():
+            source = Path(str(base) + ".py")
+            if self.contents is None:
+                source = source.resolve()
+            if (source.relative_to(self.root).as_posix() not in self.contents
+                    if self.contents is not None else not source.is_file()):
                 # Do not let the default finder pick up cached/native modules.
                 raise ModuleNotFoundError(f"no admitted Python source for {fullname!r}")
         if not directory.is_relative_to(self.root) or (source is not None and not source.is_relative_to(self.root)):
             raise ExecutorRunnerError("private action import escapes admitted pack root")
-        loader = _PackSourceLoader(source, directory)
+        data = self.contents[source.relative_to(self.root).as_posix()] if self.contents is not None and source else None
+        loader = _PackSourceLoader(source, directory, data)
         spec = importlib.util.spec_from_loader(fullname, loader, is_package=package)
+        if source is not None and spec is not None:
+            spec.origin = str(source)
+            spec.has_location = True
         if package:
             spec.submodule_search_locations = [str(directory)]
         return spec
 
 
 def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest,
-                       values: Mapping[str, Any], *, _admission: Mapping[str, Any] | None) -> ExecutorRunResult:
+                       values: Mapping[str, Any], *, _admission: Mapping[str, Any] | None,
+                       _captured_source: Mapping[str, bytes] | None = None) -> ExecutorRunResult:
     from astrid.core.execution.generic_host import _verify_action_admission, _verify_admitted_source
     from astrid.sdk.actions import validate_action_output_definition
 
@@ -416,7 +443,7 @@ def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest
         if name != part:
             path_names[name] = part
         module_parts.append(name)
-    finder = _PackSourceFinder(prefix, root, path_names)
+    finder = _PackSourceFinder(prefix, root, path_names, _captured_source)
     sys.meta_path.insert(0, finder)
     try:
         module = import_module(prefix + "." + ".".join(module_parts))

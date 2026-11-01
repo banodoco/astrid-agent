@@ -37,6 +37,98 @@ def _runner_fixture():
     return fixture
 
 
+def test_packaged_vibecomfy_checkout_supports_generate_list_json(tmp_path):
+    import sysconfig
+    import runtime_protocol
+    from astrid.core.generation.engine_recipe import load_recipe
+
+    repo = Path(__file__).resolve().parents[3]
+    recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
+    source = next(s for s in recipe.sources if s.name == 'vibecomfy')
+    assert source.pin.repository == 'https://github.com/banodoco/VibeComfy.git'
+    assert source.pin.revision == '2967033970cbb5884651c9565265778482d3b44e'
+    source_checkout = Path(os.environ['ASTRID_VIBECOMFY_CHECKOUT'])
+    packaged = tmp_path / 'packaged-vibecomfy'
+    for argv in (
+        ['git', 'clone', '-q', '--shared', '--no-checkout', str(source_checkout), str(packaged)],
+        ['git', '-C', str(packaged), 'checkout', '-q', '--detach', source.pin.revision],
+    ):
+        subprocess.run(argv, check=True, capture_output=True, text=True, timeout=30)
+
+    runtime = Path(runtime_protocol.__file__).resolve().parent.parent
+    # -I -S excludes ambient PYTHONPATH, user site, and editable .pth hooks.
+    # Only this selected checkout supplies VibeComfy; the shared site supplies
+    # third-party dependencies without executing its startup hooks.
+    sites = [p for p in sys.path if Path(p).name in {'site-packages', 'dist-packages'}]
+    roots = list(dict.fromkeys([str(repo), str(runtime), str(runtime / 'packages/python'),
+                                str(packaged), sysconfig.get_path('purelib'), *sites]))
+    program = r'''
+import json,runpy,sys
+from pathlib import Path
+sys.dont_write_bytecode=True
+sys.path[:0]=json.loads(sys.argv[1])
+selected=Path(sys.argv[2]).resolve()
+assert [Path(p).resolve() for p in sys.path if p and (Path(p)/'vibecomfy/__init__.py').is_file()]==[selected]
+from astrid.core.generation.vibecomfy_dependency import configured_vibecomfy_checkout
+assert configured_vibecomfy_checkout()==selected
+import vibecomfy.entries
+assert Path(vibecomfy.entries.__file__).resolve().is_relative_to(selected)
+from astrid.core.generation import listing
+listing._targets=lambda: []  # No live endpoint is needed for inventory.
+sys.argv=['astrid','generate','list','--json']
+try:
+    runpy.run_module('astrid',run_name='__main__')
+finally:
+    for name,module in tuple(sys.modules.items()):
+        if name=='vibecomfy' or name.startswith('vibecomfy.'):
+            assert Path(module.__file__).resolve().is_relative_to(selected), name
+'''
+    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'XDG_STATE_HOME', 'XDG_DATA_HOME')
+           if key in os.environ}
+    env['ASTRID_VIBECOMFY_CHECKOUT'] = str(packaged)
+    result = subprocess.run([sys.executable, '-I', '-S', '-c', program, json.dumps(roots), str(packaged)],
+                            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    rows = json.loads(result.stdout)
+    assert isinstance(rows, list) and rows
+    templates = [row for row in rows if row['source'] == 'ready-template']
+    assert any(row['id'] == 'audio/ace_step_1_5_t2a_song' for row in templates)
+    assert all(Path(row['template']).is_relative_to(packaged) for row in templates)
+
+
+@pytest.fixture(autouse=True)
+def ample_disk(monkeypatch):
+    monkeypatch.setattr(engine_cli, '_disk_anchor', lambda root: ('/', 1, 1, 10**15))
+
+
+@pytest.mark.parametrize(('free', 'status'), [(10**15, 'ok'), (1, 'blocked')])
+def test_install_disk_check_is_read_only_on_refusal(tmp_path, monkeypatch, capsys, free, status):
+    root = tmp_path / 'new' / 'engine'
+    from astrid.core.generation import engine_runner
+    monkeypatch.setattr(engine_cli, '_disk_anchor', engine_runner._disk_anchor)
+    monkeypatch.setattr(engine_runner.os, 'fstatvfs', lambda fd: SimpleNamespace(f_bavail=free, f_frsize=1))
+    seen = []
+    monkeypatch.setattr(engine_cli, 'install_engine', lambda *a, **kw: seen.append('install') or InstallResult('installed'))
+    def backend(**kwargs):
+        seen.append('backend')
+        return object(), object()
+    monkeypatch.setattr('astrid.core.generation.engine_local_endpoint.record_engine_root', lambda *a: None)
+    rc, out, err = invoke(['install', 'vibecomfy-h3', '--root', str(root)], capsys, backend_factory=backend)
+    if status == 'blocked':
+        error = json.loads(err)['error']
+        assert rc == 1 and not out and not seen and not root.exists()
+        assert error['code'] == 'ENGINE_INSTALL_INSUFFICIENT_DISK'
+        assert error['free_bytes'] == free and error['required_bytes'] > free
+        assert '--root' in error['message']
+    else:
+        assert rc == 0 and seen == ['backend', 'install'] and not err
+    rc, out, err = invoke(['install', 'vibecomfy-h3', '--root', str(root), '--dry-run'], capsys)
+    disk = json.loads(out)['disk_check']
+    assert rc == 0 and not err and disk == {'required_bytes': disk['required_bytes'], 'free_bytes': free,
+                                           'status': status, 'basis': 'locked_model_bytes'}
+    assert disk['required_bytes'] > 0 and not root.exists()
+
+
 def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
     import builtins
     import socket

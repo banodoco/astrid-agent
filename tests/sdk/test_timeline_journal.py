@@ -176,7 +176,8 @@ def test_publish_records_the_message_as_reason_and_the_new_head_as_evidence(draf
         head["base_parent"] = {"revision_id": "rev-1"}
         return head
 
-    monkeypatch.setattr(_store, "publish_bundle", fake_publish)
+    monkeypatch.setattr(draft, "_commit_document", lambda document, message, **kw:
+        fake_publish(document, kw.get("idempotency_key"), client=kw.get("client")))
     monkeypatch.setattr(_store, "fetch_bundle", fake_fetch)
     monkeypatch.setattr(draft, "_publish_narration", lambda key, client=None: {})
     draft.publish("move the rocket")

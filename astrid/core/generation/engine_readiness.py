@@ -597,14 +597,14 @@ def probe_hardware(deadline, *, executable=None):
     return {"driver": fields[0], "vram_bytes": int(fields[1]) * 1024 * 1024}
 
 
-def canonical_status(*, root, deadline):
+def canonical_status(*, root, deadline, engine=ENGINE):
     """The canonical ``astrid engines status`` operation (same default backend)."""
     from .engine_execution import create_local_backend
     from .engine_runner import engine_status
 
-    context, _ = create_local_backend(engine=ENGINE, platform=PLATFORM, placement="local",
+    context, _ = create_local_backend(engine=engine, platform=PLATFORM, placement="local",
                                       root=root, deadline=deadline)
-    return engine_status(ENGINE, platform=PLATFORM, placement="local", root=root,
+    return engine_status(engine, platform=PLATFORM, placement="local", root=root,
                          context=context, deadline=deadline)
 
 
@@ -614,7 +614,7 @@ def _owned_health(root, recipe, adapter, owner_id, deadline):
     from .engine_recipe import recipe_digest
     from .engine_runner import _sha, helper_manifest
 
-    client = LinuxEngineServiceClient(root=root, engine=ENGINE, platform=PLATFORM,
+    client = LinuxEngineServiceClient(root=root, engine=recipe.engine, platform=PLATFORM,
                                       recipe_sha256=recipe_digest(recipe),
                                       helper_sha256=_sha(helper_manifest(recipe)))
     request = adapter.start_request(recipe, root, deadline=deadline)
@@ -679,7 +679,7 @@ def _model_root_binding(root, recipe, deadline):
     return verified.as_dict()
 
 
-def produce_readiness(*, root, release_root, deadline, status=None, hardware=None):
+def produce_readiness(*, root, release_root, deadline, status=None, hardware=None, engine=ENGINE):
     """Return the ordinary HC03 base profile for the installed engine at ``root``.
 
     ``status`` and ``hardware`` are explicit seams; production uses the
@@ -692,18 +692,20 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
     from astrid.packs.runpod.worker_session import ManagedSessionError, ManagedSessionSelection
 
     _check(deadline)
+    if engine not in {ENGINE, "comfyui"}:
+        raise ReadinessError("unsupported installed engine")
     try:
         root = _root(root, PLATFORM)
     except EngineError:
         raise ReadinessError("install root must be an absolute normalized path") from None
     runtime_lock = _verified_release(release_root)
-    recipe = engine_recipe.load_recipe(ENGINE, PLATFORM)
+    recipe = engine_recipe.load_recipe(engine, PLATFORM)
     adapter = LinuxPlatformAdapter(PLATFORM)
     plan = plan_install(recipe, root=root, placement="local")
     runtime_root = root + "/runtime"
-    registry = runtime_root + "/out/sessions/" + ENGINE
+    registry = runtime_root + "/out/sessions/" + engine
     receipt_path = root + "/.astrid-engine/install.json"
-    transport = LocalInstalledVibeComfySessionTransport(platform=PLATFORM)
+    transport = LocalInstalledVibeComfySessionTransport(platform=PLATFORM, engine=engine)
     try:
         # 1. Canonical receipt + installer registry; then the same A2 session live.
         installed = transport.read_installed(runtime_root)
@@ -724,7 +726,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
         bind_vibecomfy_checkout(installed["vibecomfy_root"])
         comfy_root = next(root + "/" + s.relative_path for s in recipe.sources if s.name == "comfyui")
         selection = ManagedSessionSelection(
-            account_ref="target-local", pod_id="target-local", session_ref=ENGINE,
+            account_ref="target-local", pod_id="target-local", session_ref=engine,
             python_executable=installed["python_executable"], runtime_root=runtime_root,
             vibecomfy_root=installed["vibecomfy_root"], comfy_root=comfy_root,
             model_root=root + "/models", output_root=installed["output_root"],
@@ -736,7 +738,8 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
             raise ReadinessError("installed session changed during live verification")
 
         # 2. Canonical installed status re-verifies sources, locks, models, ownership, health.
-        current = (status or canonical_status)(root=root, deadline=deadline)
+        current = (status(root=root, deadline=deadline) if status is not None
+                   else canonical_status(root=root, deadline=deadline, engine=engine))
         lock = engine_recipe.load_model_lock(recipe.models_lock)
         expected_models = tuple((m.name, root + "/models/" + m.destination, m.bytes, m.sha256)
                                 for m in lock.models)
@@ -806,7 +809,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
     facts = _normalized_facts({
         "interpreter": interpreter,
         "runtime_lock": runtime_lock,
-        "engine_lock": _digest({"engine": ENGINE, "platform": PLATFORM,
+        "engine_lock": _digest({"engine": engine, "platform": PLATFORM,
                                 "recipe_sha256": receipt.recipe_sha256,
                                 "requirements_locks": dict(sorted(receipt.requirements_locks.items())),
                                 "source_commits": dict(sorted(receipt.source_commits.items()))}),
@@ -848,11 +851,11 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
     }
 
 
-def run_readiness(*, root, release_root, profile_path, deadline, status=None, hardware=None):
+def run_readiness(*, root, release_root, profile_path, deadline, status=None, hardware=None, engine=ENGINE):
     """Produce, privately publish and read back the base profile; return its locator."""
     check_profile_location(profile_path, deadline=deadline)
     profile = produce_readiness(root=root, release_root=release_root, deadline=deadline,
-                                status=status, hardware=hardware)
+                                status=status, hardware=hardware, engine=engine)
     data = _profile_bytes(profile)
     digest = write_profile(profile_path, data, deadline=deadline)
     return ReadinessResult(profile_path, digest, len(data), profile)
@@ -866,6 +869,8 @@ class _Parser(argparse.ArgumentParser):
 def main(argv=None, *, release_root=None):
     parser = _Parser(prog="run.py readiness", description=__doc__.splitlines()[0])
     parser.add_argument("--root", required=True, help="canonical install root")
+    parser.add_argument("--engine", choices=(ENGINE, "comfyui"), default=ENGINE,
+                        help="recipe owning the installed receipt and supervisor")
     parser.add_argument("--release", required=True, help="this verified retained release root")
     parser.add_argument("--profile", required=True, help="private <state>/engine-readiness.json")
     parser.add_argument("--seconds", type=float, default=1800.0, help="bounded deadline (<=7200)")
@@ -877,7 +882,7 @@ def main(argv=None, *, release_root=None):
             raise ReadinessError("readiness release argument differs from the running release")
         deadline = time.monotonic() + _seconds(args.seconds)
         result = run_readiness(root=args.root, release_root=release_root,
-                               profile_path=args.profile, deadline=deadline)
+                               profile_path=args.profile, deadline=deadline, engine=args.engine)
     except ReadinessError as exc:
         print(json.dumps({"error": {"code": "readiness_refused", "reason": str(exc)}},
                          sort_keys=True), file=sys.stderr)

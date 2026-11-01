@@ -3,13 +3,13 @@
   "engine": "vibecomfy",
   "platform": "windows-x86_64-cu130",
   "pins": {
-    "path": "packs/vibecomfy/pins.json",
-    "sha256": "7aca02677d65905d2c9a4e3adf88c95cabc6542ba59e0a9ae74308ac71de3602"
+    "path": "packs/runpod/pins.json",
+    "sha256": "0b52fa5c71413b32bd10561d0f7cabdb6b2d037d90eaeacdb88801682663ea3b"
   },
   "source_bindings": [
     {
       "name": "comfyui",
-      "pin": "comfyui",
+      "pin": "comfyui-plain",
       "relative_path": "runtime/ComfyUI"
     },
     {

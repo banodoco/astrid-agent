@@ -177,6 +177,20 @@ def test_constructor_has_no_effects(tmp_path):
     assert not root.exists()
 
 
+def test_missing_vibecomfy_source_is_a_coded_recipe_error_before_git(tmp_path, monkeypatch):
+    recipe = load_recipe("comfyui", PLATFORM)
+    recipe = replace(recipe, sources=tuple(s for s in recipe.sources if s.name != "vibecomfy"))
+    supervisor = custody._Supervisor(_identity(tmp_path, recipe), recipe, "test-owner")
+    monkeypatch.setattr(supervisor, "run", lambda *args: pytest.fail("missing source reached git"))
+
+    with pytest.raises(RecipeValidationError, match="comfyui recipe must bind a VibeComfy source") as error:
+        supervisor.source_identity(time.monotonic() + 5, None)
+
+    assert error.value.code == "invalid_recipe"
+    assert error.value.step_id == "source:vibecomfy"
+    assert supervisor.engine is None and not tmp_path.joinpath("runtime").exists()
+
+
 def test_real_default_supervisor_runs_finite_command_and_stops(tmp_path):
     # No injected recipe or server bootstrap here: production startup and
     # installed helper/recipe digest checks execute in a real supervisor.
@@ -1138,12 +1152,16 @@ def test_installed_consumer_refuses_changed_evidence_without_legacy_control(inst
     assert _alive(receipt.comfy_pid)
 
 
-def test_installed_consumer_capacity_replacement_refuses_before_controls(installed_consumer, monkeypatch):
+@pytest.mark.parametrize("engine", ["vibecomfy-h3", "comfyui"])
+def test_installed_consumer_capacity_replacement_refuses_before_controls(installed_consumer, monkeypatch, engine):
     from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
     from types import SimpleNamespace
 
     owner, transport, reference, readiness, registry = installed_consumer
+    registry = registry.parent / engine
+    registry.mkdir(exist_ok=True)
     adapter = object.__new__(CheckoutServerAdapter)
+    adapter._endpoint_transport = None
     adapter._host_session = {"session_dir": str(registry)}
     def forbidden(*args, **kwargs):
         pytest.fail("capacity replacement reached engine/CLI control")

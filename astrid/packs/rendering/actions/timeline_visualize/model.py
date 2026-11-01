@@ -327,14 +327,6 @@ def _registry_entries(registry: Mapping[str, Any]) -> dict[str, Any]:
     raise ValueError("snapshot.registry.assets must be an object or array")
 
 
-def _expected_hash(entry: Mapping[str, Any]) -> str | None:
-    for key in ("content_sha256", "sha256", "hash"):
-        value = entry.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
 def _media_integrity(
     registry: Mapping[str, Any], *, project_ref: str,
     runtime_client: Any | None = None,

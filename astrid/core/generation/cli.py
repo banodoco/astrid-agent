@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -448,7 +449,12 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
     try:
-        return _main(argv)
+        scope = nullcontext()
+        if '--dry-run' in argv:
+            from astrid.core.pack.discovery import pack_discovery_scope
+            scope = pack_discovery_scope()
+        with scope:
+            return _main(argv)
     except (RuntimeError, ValueError, OSError, ImportError) as exc:
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:

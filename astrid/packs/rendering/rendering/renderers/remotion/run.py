@@ -22,21 +22,20 @@ import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from types import ModuleType
-from typing import Any, Mapping, Sequence
+from tempfile import TemporaryDirectory, gettempdir
+from typing import Any, Callable, Mapping, Sequence
 
 from astrid.core import timeline
 from astrid.core.element.registry import load_default_registry
 from astrid.core.element.schema import ElementDefinition
 from astrid.core.foundation.atomic_io import write_json_atomic
-from astrid.core.foundation.paths import REPO_ROOT, WORKSPACE_ROOT, load_checkout_script
+from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering import assets as _rendering_assets
 from astrid.core.rendering import remotion_runtime
 from astrid.core.rendering.artifacts import validate_render_result
 from astrid.core.rendering.assets import (
     AssetMaterializer,
-    InvocationAssetServer,
+    InvocationAssetServer as InvocationAssetServer,
 )
 from astrid.core.rendering.contracts import (
     SCHEMA_VERSION,
@@ -58,6 +57,10 @@ from astrid.core.rendering.remotion_runtime import (
     RemotionRuntimeTools,
 )
 from astrid.core.rendering.storage import h264_encoder_bitrates, remotion_frame_format
+from astrid.packs.rendering.rendering.renderers.remotion.root_preparation import _prepared_remotion_root
+from astrid.packs.rendering.rendering.renderers.remotion.normal_audio import (
+    prepare_normal_audio_sources as prepare_normal_audio_sources,
+)
 from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.packs.rendering.rendering.renderers.remotion import lock as remotion_lock
 from astrid.packs.rendering.rendering.renderers.remotion.progress import RemotionProgressRelay
@@ -74,16 +77,17 @@ from astrid.packs.rendering.shared.rendering_backend import (
     _remotion_mux_profile,
     _remotion_scaled_dimensions,
     _render_provenance_payload,
-    _resolved_theme_for_render,
     _review_output_profile,
+    _resolved_theme_for_render as _resolved_theme_for_render,
     _serialize_timeline,
     _timeline_alpha,
 )
-
-# Release wheels intentionally exclude authoring scripts.  A provisioned
-# server-owned Remotion bundle carries its generated registry outputs.
-# Loaded by file: another pack's top-level ``scripts`` package must not shadow it.
-gen_effect_registry: ModuleType | None = load_checkout_script("gen_effect_registry")
+try:
+    import astrid.core.rendering._effect_registry as gen_effect_registry
+except ModuleNotFoundError as exc:
+    if exc.name != 'astrid.core.rendering._effect_registry':
+        raise
+    gen_effect_registry = None
 
 
 _RangeHTTPRequestHandler = _rendering_assets.RangeHTTPRequestHandler
@@ -271,13 +275,6 @@ def _validate_project_dir(project_dir: Path) -> RemotionRuntimeTools:
     )
 
 
-def _timeline_composition_src(project_dir: Path) -> Path | None:
-    composition_src = (
-        project_dir / "node_modules" / "@banodoco" / "timeline-composition" / "typescript" / "src"
-    )
-    return composition_src if composition_src.is_dir() else None
-
-
 def _resize_frame_outputs(
     output_dir: Path,
     resolution: tuple[int, int] | None,
@@ -308,14 +305,10 @@ def _resize_frame_outputs(
 
 
 def _registry_output_paths(project_dir: Path) -> list[Path]:
-    composition_src = _timeline_composition_src(project_dir)
-    package_src = composition_src or (
-        WORKSPACE_ROOT / "packages" / "timeline-composition" / "typescript" / "src"
-    )
-    paths = [
-        package_src / f"{kind}.generated.ts" for kind in ("effects", "animations", "transitions")
+    return [
+        project_dir / "src" / f"{kind}.generated.ts"
+        for kind in ("effects", "animations", "transitions")
     ]
-    return paths
 
 
 def _registry_outputs_exist(project_dir: Path) -> bool:
@@ -398,6 +391,22 @@ def _write_registry_state(project_dir: Path, state: dict[str, Any]) -> None:
     )
 
 
+def _write_selected_element_registries(project_dir: Path, registry: Any) -> dict[str, Any]:
+    """Rebundle selected source while retaining the existing global lock."""
+    if not remotion_lock.remotion_render_lock_held():
+        raise RuntimeError("project element registry generation requires the render lock")
+    if gen_effect_registry is None:
+        raise RuntimeError("project element registry generator is unavailable")
+    state = gen_effect_registry.compute_generated_registry_state(registry=registry)
+    for kind in ("effects", "animations", "transitions"):
+        output = project_dir / "src" / f"{kind}.generated.ts"
+        content = gen_effect_registry.generate_element_registry(kind, registry=registry)
+        if not gen_effect_registry._write_generated_registry(output, content):
+            raise RuntimeError(f"cannot write selected project element registry: {output}")
+    _write_registry_state(project_dir, state)
+    return state
+
+
 def _regenerate_element_registries(
     project_dir: Path,
     theme_path: Path | None,
@@ -415,7 +424,28 @@ def _regenerate_element_registries_locked(
 ) -> None:
     """Regenerate shared registries while the caller owns the Remotion lock."""
 
+    from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH
+    if ASTRID_REMOTION_VALIDATION_LAUNCH in os.environ:
+        from astrid.core.rendering.remotion_runtime import _validated_runtime
+        from astrid.core.element.registry import clear_default_registry_cache
+        validated = _validated_runtime(project_dir)
+        registry = validated['registry']
+        if registry['mode'] == 'source_settled':
+            clear_default_registry_cache()
+            # Validation rechecked the complete corpus and output bindings.
+            # Recomputing here would run Git under the caller's ambient env.
+            expected = registry['expected_state']
+            if (_read_registry_state(project_dir) != expected
+                    or _registry_output_content_hashes(project_dir) != expected['content_hashes']):
+                raise RuntimeError('launch-bound registry drift refuses regeneration')
+        # Launch-bound consumers never rewrite settled outputs.
+        return
+
+    installed = os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed'
     if gen_effect_registry is None:
+        if installed:
+            from astrid.core.rendering.remotion_runtime import RemotionValidationError
+            raise RemotionValidationError('installed registry generator carrier is unavailable')
         if not _registry_outputs_exist(project_dir):
             raise RuntimeError("installed Remotion bundle is missing generated element registries")
         state = _read_registry_state(project_dir)
@@ -434,16 +464,19 @@ def _regenerate_element_registries_locked(
 
     generator = REPO_ROOT / "scripts" / "gen_effect_registry.py"
     cmd = [sys.executable, "-X", "utf8", str(generator)]
+    cwd = REPO_ROOT
+    if installed:
+        from astrid.core.rendering import _registry_origin
+        cmd = _registry_origin.installed_argv(sys.executable, remotion_runtime.__file__, generate=True)
+        cwd = Path(gettempdir()).resolve()
     env: dict[str, str] = {}
-    composition_src = _timeline_composition_src(project_dir)
-    if composition_src is not None:
-        env["ASTRID_TIMELINE_COMPOSITION_SRC"] = str(composition_src)
+    env["ASTRID_REMOTION_PROJECT_DIR"] = str(project_dir.resolve())
     child_lock_env = remotion_lock.remotion_render_lock_child_env()
     lock_token = child_lock_env[remotion_lock.REMOTION_LOCK_TOKEN_ENV]
     env[remotion_lock.REMOTION_LOCK_PATH_ENV] = child_lock_env[remotion_lock.REMOTION_LOCK_PATH_ENV]
     completed = subprocess.run(
         cmd,
-        cwd=str(REPO_ROOT),
+        cwd=str(cwd),
         env=build_child_subprocess_env(
             explicit_env=env,
             secret_values={remotion_lock.REMOTION_LOCK_TOKEN_ENV: lock_token},
@@ -614,7 +647,7 @@ def _resolve_timeline_element_references(
     if not isinstance(clips, list):
         return {"animations": [], "transitions": []}
     resolved: dict[str, list[dict[str, Any]]] = {"animations": [], "transitions": []}
-    seen: set[tuple[str, str, str | None]] = set()
+    seen: set[tuple[str, str, str | None, str | None]] = set()
     for clip in clips:
         if not isinstance(clip, Mapping):
             continue
@@ -625,7 +658,8 @@ def _resolve_timeline_element_references(
             if not isinstance(owner, str) or not owner:
                 raise ValueError("elementRef.packId must be a nonempty string")
             try:
-                registry.get(str(ref.get("kind")), str(ref.get("id")), pack_id=owner)
+                registry.get(str(ref.get("kind")), str(ref.get("id")), pack_id=owner,
+                             revision=ref.get("revision"))
             except (KeyError, ValueError) as exc:
                 raise ValueError(f"timeline uses unregistered owned element {dict(ref)!r}") from exc
         for slot_name, kind in (
@@ -641,17 +675,20 @@ def _resolve_timeline_element_references(
                     and ref.get("id") == element_id
                     and str(ref.get("kind")) == kind[:-1] else None
                 )
-                key = (kind, element_id, owner)
+                revision = ref.get("revision") if owner is not None else None
+                key = (kind, element_id, owner, revision)
                 if key in seen:
                     for item in resolved[kind]:
-                        if item.get("element_id") == element_id and (owner is None or item.get("source_pack_id") == owner):
+                        if item.get("element_id") == element_id and (owner is None or (
+                            item.get("source_pack_id") == owner and item.get("revision") == revision
+                        )):
                             if clip_id and clip_id not in item["clip_ids"]:
                                 item["clip_ids"].append(clip_id)
                             break
                     continue
                 seen.add(key)
                 try:
-                    element = registry.get(kind, element_id, pack_id=owner) if owner is not None else registry.get(kind, element_id)
+                    element = registry.get(kind, element_id, pack_id=owner, revision=revision) if owner is not None else registry.get(kind, element_id)
                 except (KeyError, ValueError) as exc:
                     raise ValueError(
                         f"timeline uses unregistered {kind[:-1]} {element_id!r}"
@@ -660,6 +697,7 @@ def _resolve_timeline_element_references(
                     {
                         "element_id": element_id,
                         "source_pack_id": _source_pack_id(element),
+                        **({"revision": revision} if revision else {}),
                         "source": element.source,
                         "element_root": str(element.root),
                         "clip_ids": [clip_id] if clip_id else [],
@@ -732,13 +770,15 @@ def _stage_effect_assets_for_timeline(
     render_hash: str,
     composition_clip_types: frozenset[str] = frozenset(),
     asset_registry: Mapping[str, Any] | None = None,
+    registry: Any | None = None,
 ) -> dict[str, Any]:
     # Resolve one immutable element registry for this render. Effects and
     # animation/transition references must agree even if the filesystem pack
     # inventory changes between support probing and execution; loading the
     # registry twice here also made the combined render path needlessly
     # discover every local pack twice.
-    registry = load_default_registry(project_root=REPO_ROOT)
+    if registry is None:
+        registry = load_default_registry(project_root=REPO_ROOT)
     effects, aliases = _effect_registry_for_assets(theme_path, registry=registry)
     resolved_elements = _resolve_timeline_element_references(
         timeline_data,
@@ -767,23 +807,32 @@ def _stage_effect_assets_for_timeline(
             "timeline uses unregistered effect clip type(s): " + ", ".join(unknown_clip_types)
         )
 
-    used_effects: dict[tuple[str, str], ElementDefinition] = {}
-    clip_effects: dict[int, tuple[str, str]] = {}
-    clip_ids_by_effect: dict[tuple[str, str], list[str]] = {}
+    used_effects: dict[tuple[str, str, str], ElementDefinition] = {}
+    clip_effects: dict[int, tuple[str, str, str]] = {}
+    clip_ids_by_effect: dict[tuple[str, str, str], list[str]] = {}
     for index, clip in enumerate(clips):
         if not isinstance(clip, dict):
             continue
         effect_id = _effect_id_for_clip(clip, effects, aliases)
         ref = clip.get("elementRef")
-        if isinstance(ref, Mapping) and ref.get("kind") == "effect":
+        pinned_kind = ref.get("kind") if isinstance(ref, Mapping) else None
+        if pinned_kind in {"animation", "transition"}:
+            element = registry.get(pinned_kind, ref["id"], pack_id=ref.get("packId"),
+                                   revision=ref.get("revision"))
+            if not element.metadata.get("render_revision"):
+                continue
+            effect_id = element.id
+        elif pinned_kind == "effect":
             effect_id = ref.get("id")
         if effect_id is None:
             continue
         try:
-            element = registry.get("effects", effect_id, pack_id=ref.get("packId")) if isinstance(ref, Mapping) and "packId" in ref else registry.get("effects", effect_id)
+            if pinned_kind not in {"animation", "transition"}:
+                element = registry.get("effects", effect_id, pack_id=ref.get("packId"),
+                                       revision=ref.get("revision")) if isinstance(ref, Mapping) and "packId" in ref else registry.get("effects", effect_id)
         except (KeyError, ValueError) as exc:
             raise ValueError(f"timeline uses unregistered effect {effect_id!r}") from exc
-        key = (_source_pack_id(element), element.id)
+        key = (_source_pack_id(element), element.id, element.metadata.get("render_revision", ""))
         used_effects[key] = element
         clip_effects[index] = key
         clip_id = clip.get("id")
@@ -794,13 +843,15 @@ def _stage_effect_assets_for_timeline(
         return {"root": None, "effects": [], **resolved_elements}
 
     public_root = project_dir / "public" / "astrid-effects" / render_hash
-    staged_by_effect: dict[tuple[str, str], dict[str, str]] = {}
+    staged_by_effect: dict[tuple[str, str, str], dict[str, str]] = {}
     for key, element in sorted(used_effects.items()):
         staged_assets: dict[str, str] = {}
         for asset in element.assets:
             source = (element.root / asset.path).resolve()
             # Different owners of the same ID must never share asset targets.
             relative_target = Path(key[0]) / element.id / asset.path
+            if key[2]:
+                relative_target = Path(element.metadata["render_key"]) / asset.path
             target = public_root / relative_target
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
@@ -811,16 +862,25 @@ def _stage_effect_assets_for_timeline(
         clip = clips[index]
         if isinstance(clip, dict):
             staged_assets = dict(staged_by_effect[key])
-            if key == ("local", "end-spanning-layer"):
+            if key[:2] == ("local", "end-spanning-layer"):
                 staged_assets.update(_resolve_end_spanning_card_assets(clip, asset_registry))
             if staged_assets:
                 _inject_clip_asset_params(clip, staged_assets)
+            element = used_effects[key]
+            if element.kind != "effects":
+                _bind_pinned_element_slots(clip, element, staged_assets)
+    for kind, items in resolved_elements.items():
+        for item in items:
+            key = (item["source_pack_id"], item["element_id"], item.get("revision", ""))
+            if key in staged_by_effect:
+                item["staged_assets"] = staged_by_effect[key]
     return {
         "root": str(public_root),
         "effects": [
             {
                 "effect_id": key[1],
                 "source_pack_id": key[0],
+                **({"revision": key[2]} if key[2] else {}),
                 "source": element.source,
                 "element_root": str(element.root),
                 "clip_ids": sorted(clip_ids_by_effect.get(key, ())),
@@ -828,9 +888,37 @@ def _stage_effect_assets_for_timeline(
                 "staged_assets": dict(sorted(staged_by_effect[key].items())),
             }
             for key, element in sorted(used_effects.items())
+            if element.kind == "effects"
         ],
         **resolved_elements,
     }
+
+
+def _bind_pinned_element_slots(
+    clip: dict[str, Any], element: ElementDefinition, assets: dict[str, str],
+) -> None:
+    """Select revision aliases for the non-effect registry's explicit slots."""
+    slots = ("entrance", "exit", "continuous", "animations") if element.kind == "animations" else ("transition",)
+
+    def bind(value: Any) -> Any:
+        if isinstance(value, list):
+            return [bind(item) for item in value]
+        if isinstance(value, str):
+            if value == element.id:
+                alias = element.metadata["render_key"]
+                return {"id": alias, "params": {"__astridAssets": assets}} if assets else alias
+            return value
+        if isinstance(value, Mapping):
+            field = next((key for key in ("id", "type", "kind") if key in value), None)
+            if field is not None and value[field] == element.id:
+                value = {**value, field: element.metadata["render_key"]}
+                if assets:
+                    value["params"] = {**value.get("params", {}), "__astridAssets": assets}
+        return value
+
+    for slot in slots:
+        if slot in clip:
+            clip[slot] = bind(clip[slot])
 
 
 def _assert_outside_public(path: Path, project_dir: Path) -> None:
@@ -878,15 +966,40 @@ def _available_remotion_port() -> int:
         return int(probe.getsockname()[1])
 
 
+def _composition_duration_from_request(request: RenderRequest) -> int | None:
+    key = "astrid_composition_duration_frames"
+    if key not in request.metadata:
+        return None
+    value = request.metadata[key]
+    if (not isinstance(value, str) or len(value) > 16
+            or re.fullmatch(r"[1-9][0-9]*", value) is None
+            or int(value) > 9007199254740991):
+        raise ValueError("composition duration must be a positive safe integer")
+    return int(value)
+
+
 def _native_window_argument(
     window: FrameWindow | None,
     timeline_data: Mapping[str, Any],
     profile: RenderProfile,
+    *,
+    composition_duration_frames: int | None = None,
 ) -> str | None:
     """Select absolute frames of the untouched composition, with half-open input."""
+    metadata = timeline_data.get("metadata")
+    if composition_duration_frames is not None:
+        if (type(composition_duration_frames) is not int
+                or not 1 <= composition_duration_frames <= 9007199254740991):
+            raise ValueError("composition duration must be a positive safe integer")
+        layer = metadata.get("astrid_layer") if isinstance(metadata, Mapping) else None
+        if (window is None or not isinstance(layer, Mapping)
+                or type(layer.get("z")) is not int or layer["z"] < 0
+                or type(layer.get("alpha")) is not bool or layer["alpha"] != (layer["z"] > 0)):
+            raise ValueError("composition duration requires a native isolated layer window")
+        if isinstance(metadata, Mapping) and "source_window_start_seconds" in metadata:
+            raise ValueError("composition duration conflicts with an existing render clock")
     if window is None:
         return None
-    metadata = timeline_data.get("metadata")
     if (isinstance(metadata, Mapping)
             and "source_window_start_seconds" in metadata
             and type(metadata.get("duration_seconds")) in (int, float)):
@@ -897,9 +1010,28 @@ def _native_window_argument(
         raise ValueError("Remotion native windows require unit speed")
     if window.fps_rational != profile.fps_rational:
         raise ValueError("Remotion window FPS must exactly match the canonical composition FPS")
-    total = timeline.timeline_render_duration_frames(
-        timeline_data, profile.fps_rational[0] / profile.fps_rational[1]
-    )
+    fps = profile.fps_rational[0] / profile.fps_rational[1]
+    if composition_duration_frames is not None:
+        total = timeline.timeline_duration_frames(timeline_data, fps)
+        app = timeline_data.get("app")
+        if isinstance(app, Mapping) and "astrid_render_clock" in app:
+            clock = app["astrid_render_clock"]
+            # The service validated this clock against the original render
+            # view before filtering. Only admit the bounded pre-tail case:
+            # the existing tail placement must remain outside the output.
+            if (not isinstance(clock, Mapping)
+                    or type(clock.get("authored_duration_frames")) is not int
+                    or not total <= clock["authored_duration_frames"] < composition_duration_frames
+                    or type(clock.get("render_duration_frames")) is not int
+                    or clock["render_duration_frames"] != composition_duration_frames
+                    or window.end_frame > total):
+                raise ValueError("composition duration conflicts with an existing render clock")
+        if composition_duration_frames < total:
+            raise ValueError("composition duration is shorter than the isolated clip extent")
+        # This is the service's invocation fact, not authored/source authority.
+        total = composition_duration_frames
+    else:
+        total = timeline.timeline_render_duration_frames(timeline_data, fps)
     if window.end_frame > total:
         raise ValueError("Remotion window extends beyond the full composition")
     return f"--frames={window.start_frame}-{window.end_frame - 1}"
@@ -928,6 +1060,7 @@ def _execute_remotion(
     frame_session: PersistentRemotionFrameSession | None = None,
     frame_session_identity: str | None = None,
     window: FrameWindow | None = None,
+    composition_duration_frames: int | None = None,
 ) -> _ExecutionDetails:
     """Render one private video and return the data needed for provenance."""
 
@@ -957,6 +1090,7 @@ def _execute_remotion(
                 frame_session=frame_session,
                 frame_session_identity=frame_session_identity,
                 window=window,
+                composition_duration_frames=composition_duration_frames,
             )
 
     # Direct backend callers may pass the final output as the staging path.
@@ -997,6 +1131,7 @@ def _execute_remotion(
                 frame_session=frame_session,
                 frame_session_identity=frame_session_identity,
                 window=window,
+                composition_duration_frames=composition_duration_frames,
             )
         os.replace(isolated_stage, final_path)
         return details
@@ -1026,324 +1161,206 @@ def _execute_remotion_locked(
     frame_resolution: tuple[int, int] | None = None,
     frame_session: PersistentRemotionFrameSession | None = None,
     frame_session_identity: str | None = None,
+    on_scene_props: Callable[[Mapping[str, Any], Sequence[int]], None] | None = None,
     window: FrameWindow | None = None,
+    composition_duration_frames: int | None = None,
 ) -> _ExecutionDetails:
     """Execute one render while the caller owns the non-recursive outer lock."""
 
-    if window is not None and frame_numbers is not None:
-        raise ValueError("native render windows cannot be combined with frame_numbers")
-    window_argument = None
-    if window is not None:
-        window_argument = _native_window_argument(
-            window,
-            _serialize_timeline(timeline_path),
-            _canonical_profile(timeline_path, _load_registry_mapping(assets_path), theme_path),
-        )
-    runtime_tools = _validate_project_dir(project_dir)
-    _regenerate_element_registries(project_dir, theme_path)
-    # Render admission: the catalog and the active composition's generated
-    # EFFECT_REGISTRY must agree.  A catalog effect that the registry cannot
-    # mount would otherwise pass validation and silently drop to the base
-    # plate; fail closed here with an actionable diagnostic.
-    timeline_data = _serialize_timeline(timeline_path)
-    _validate_renderer_effect_registry(project_dir, timeline_data)
-    registry_state = _effective_registry_state(theme_path)
-    _require_free_space(provenance_out_path.parent, min_free_gb)
-    remotion_port = _available_remotion_port()
-    remotion_origin = f"http://localhost:{remotion_port}"
-    props_path = (provenance_out_path.parent / ".remotion-props.json").resolve()
-    render_hash = _render_asset_stage_hash(
-        timeline_path,
-        assets_path,
-        provenance_out_path,
-    )
-    staged_public_root = project_dir / "public" / "astrid-effects" / render_hash
-    with ExitStack() as asset_lifecycle:
+    with _prepared_remotion_root(
+        timeline_path, assets_path, staged_video,
+        provenance_out_path=provenance_out_path,
+        project_dir=project_dir, composition_id=composition_id,
+        theme_path=theme_path, min_free_gb=min_free_gb, review=review,
+        materialized_root=materialized_root, staging_parent=staging_parent,
+        materialized_objects=materialized_objects,
+        composition_clip_types=composition_clip_types,
+        encode_aac_at_stitch=encode_aac_at_stitch,
+        frame_numbers=frame_numbers, frame_output_dir=frame_output_dir,
+        on_scene_props=on_scene_props, window=window,
+        composition_duration_frames=composition_duration_frames,
+    ) as (
+        merged_props, props_path, runtime_tools, theme_for_props,
+        registry_state, stage_summary, remotion_temp_root, remotion_port,
+        render_hash, staged_public_root, window_argument, alpha,
+        frame_output_dir, pcm_aac_mp4, cli_video,
+    ):
+        frame_mode = frame_numbers is not None
+        remotion_env_additions: dict[str, str] = {
+            # Keep Remotion's pre-encode files on the admitted attempt
+            # filesystem and let the lifecycle remove them on every exit.
+            "TMPDIR": str(remotion_temp_root),
+            "TMP": str(remotion_temp_root),
+            "TEMP": str(remotion_temp_root),
+        }
+        if pcm_aac_mp4:
+            remotion_env_additions["ASTRID_REMOTION_PCM_AAC_OUTPUT"] = str(cli_video)
+        # No machine-RAM heuristic. Unallocated renders use ordinary
+        # disk fallback, which the admission envelope fully reserves.
+        allocation = os.environ.get("ASTRID_REMOTION_STREAM_MEMORY_BUDGET_BYTES", "0")
         try:
-            temp_parent = (staging_parent or provenance_out_path.parent).resolve()
-            temp_parent.mkdir(parents=True, exist_ok=True)
-            remotion_temp_root = Path(
-                asset_lifecycle.enter_context(
-                    TemporaryDirectory(prefix=".remotion-runtime-", dir=str(temp_parent))
-                )
-            )
-            _assert_outside_public(remotion_temp_root, project_dir)
-            materializer = asset_lifecycle.enter_context(
-                AssetMaterializer(
-                    assets_path,
-                    materialized_objects=materialized_objects,
-                    materialized_root=materialized_root,
-                    allow_derived_files=materialized_root is not None,
-                    reuse_materialized_paths=materialized_root is not None,
-                    staging_parent=staging_parent,
-                )
-            )
-            asset_server = None
-            if materializer.needs_server:
-                try:
-                    asset_server = asset_lifecycle.enter_context(
-                        InvocationAssetServer(
-                            materializer.serving_root,
-                            allowed_origin=remotion_origin,
-                        )
-                    )
-                except OSError as exc:
-                    raise RuntimeError(
-                        f"Permission denied (1100): local HTTP asset server blocked: {exc}"
-                    ) from exc
-            resolved_registry = materializer.resolved_registry(asset_server)
-            # ``theme_path`` is either the host's absolute materialized
-            # document or None, which selects the intentional built-in style.
-            theme_for_props = _resolved_theme_for_render(timeline_path, theme_path)
-            merged_props = {
-                "timeline": _serialize_timeline(
-                    timeline_path,
-                    default_theme=str(theme_for_props.get("id") or "banodoco-default"),
-                ),
-                "assets": resolved_registry,
-                "theme": theme_for_props,
-                "review": review,
-            }
-            # Batch 4 (layer stack): the service stamps
-            # ``metadata.astrid_layer.alpha = z > 0`` onto the materialized
-            # timeline of z-layer segments.  When the stamp says alpha, emit
-            # TRANSPARENT output (PNG frames -> ProRes 4444/yuva444p12le in
-            # MOV -- remotion 4.0.509 muxes NO alpha plane for vp9/webm, so
-            # ProRes 4444 is the alpha path); the unstamped path keeps
-            # today's jpeg/h264/MP4 contract exactly.
-            alpha = _timeline_alpha(merged_props["timeline"])
-            # Remotion 4.0.509 otherwise compresses the mix to raw ADTS AAC
-            # before copying it into MP4, losing encoder priming metadata.
-            # Keep this correction explicit and scoped to opaque MP4 capture.
-            # PCM requires a .mov/.mkv CLI name; the Astrid config hook writes
-            # MP4 bytes to this invocation-private .mov, then we stage them at
-            # the original path without changing the published output profile.
-            frame_mode = frame_numbers is not None
-            if frame_mode:
-                if not frame_numbers or any(
-                    type(frame) is not int or frame < 0 for frame in frame_numbers
-                ):
-                    raise ValueError("frame capture requires non-negative integer frames")
-                if frame_output_dir is None:
-                    raise ValueError("frame capture requires an output directory")
-                frame_output_dir = frame_output_dir.resolve()
-                frame_output_dir.mkdir(parents=True, exist_ok=True)
-            pcm_aac_mp4 = (
-                encode_aac_at_stitch
-                and not frame_mode
-                and not alpha
-                and staged_video.suffix.lower() == ".mp4"
-            )
-            cli_video = (
-                frame_output_dir if frame_mode else
-                remotion_temp_root / "capture.mov" if pcm_aac_mp4 else staged_video
-            )
-            if alpha:
-                # Theme background neutralization: the DOM
-                # TimelineComposition paints ``theme.visual.color.bg`` as an
-                # opaque AbsoluteFill (node_modules/@banodoco/...:272), so a
-                # stamped top layer would still emit opaque corners even with
-                # the threejs <color> skip.  Making the serialized theme's bg
-                # transparent keeps BOTH compositions from painting anything
-                # opaque.  This mutates only the per-run props copy; the
-                # resolved theme dict is built fresh for this render.
-                theme_color = merged_props["theme"].setdefault("visual", {}).setdefault("color", {})
-                theme_color["bg"] = "transparent"
-            stage_summary = _stage_effect_assets_for_timeline(
-                merged_props["timeline"],
-                project_dir=project_dir,
-                theme_path=theme_path,
-                render_hash=render_hash,
-                composition_clip_types=composition_clip_types,
-                asset_registry=resolved_registry,
-            )
-            staged_video.parent.mkdir(parents=True, exist_ok=True)
-            props_path.write_text(json.dumps(merged_props), encoding="utf-8")
-            remotion_env_additions: dict[str, str] = {
-                # Keep Remotion's pre-encode files on the admitted attempt
-                # filesystem and let the lifecycle remove them on every exit.
-                "TMPDIR": str(remotion_temp_root),
-                "TMP": str(remotion_temp_root),
-                "TEMP": str(remotion_temp_root),
-            }
-            if pcm_aac_mp4:
-                remotion_env_additions["ASTRID_REMOTION_PCM_AAC_OUTPUT"] = str(cli_video)
-            # No machine-RAM heuristic. Unallocated renders use ordinary
-            # disk fallback, which the admission envelope fully reserves.
-            allocation = os.environ.get("ASTRID_REMOTION_STREAM_MEMORY_BUDGET_BYTES", "0")
-            try:
-                allocation_bytes = int(allocation)
-            except ValueError:
-                raise ValueError("invalid owner streaming memory allocation") from None
-            if allocation_bytes < 0:
-                raise ValueError("invalid owner streaming memory allocation")
-            if not alpha and not frame_mode and allocation_bytes > 0:
-                remotion_env_additions["ASTRID_REMOTION_STREAM_FRAMES"] = "1"
-                remotion_env_additions["ASTRID_REMOTION_STREAM_MEMORY_BUDGET_BYTES"] = str(allocation_bytes)
-            schema_pythonpath = os.environ.get(TIMELINE_SCHEMA_PYTHONPATH_ENV)
-            if schema_pythonpath:
-                # The renderer receives only the validated server-owned schema
-                # root.  Ambient PYTHONPATH entries can point at editable
-                # worktrees and must never be inherited by the render child.
-                remotion_env_additions["PYTHONPATH"] = schema_pythonpath
-            composition_src = _timeline_composition_src(project_dir)
-            if composition_src is not None:
-                remotion_env_additions["ASTRID_TIMELINE_COMPOSITION_SRC"] = str(composition_src)
-            remotion_args = [
-                str(runtime_tools.node_executable),
-                str(runtime_tools.remotion_cli),
-                "render",
-                composition_id,
-                "--props",
-                str(props_path),
-                "--output",
-                str(cli_video),
-                "--allow-html-in-canvas",
-                f"--port={remotion_port}",
-                # Remotion otherwise starts multiple Chromium workers, each
-                # requesting the full managed registry at once.  The media
-                # server is invocation-scoped and intentionally lightweight;
-                # one worker keeps the request burst bounded for large
-                # timelines while preserving the same renderer and output.
-                "--concurrency=1",
-                # The generated package registry is part of the renderer
-                # source closure. Remotion's filesystem cache is keyed by
-                # the entry/config bundle rather than generated registry
-                # contents, so reusing it can silently omit a newly admitted
-                # effect (for example the canonical end-spanning layer).
-                # Disable only this bundle cache; media and frame caches stay
-                # invocation-scoped and bounded by the existing lifecycle.
-                "--bundle-cache=false",
+            allocation_bytes = int(allocation)
+        except ValueError:
+            raise ValueError("invalid owner streaming memory allocation") from None
+        if allocation_bytes < 0:
+            raise ValueError("invalid owner streaming memory allocation")
+        if not alpha and not frame_mode and allocation_bytes > 0:
+            remotion_env_additions["ASTRID_REMOTION_STREAM_FRAMES"] = "1"
+            remotion_env_additions["ASTRID_REMOTION_STREAM_MEMORY_BUDGET_BYTES"] = str(allocation_bytes)
+        schema_pythonpath = os.environ.get(TIMELINE_SCHEMA_PYTHONPATH_ENV)
+        if schema_pythonpath:
+            # The renderer receives only the validated server-owned schema
+            # root.  Ambient PYTHONPATH entries can point at editable
+            # worktrees and must never be inherited by the render child.
+            remotion_env_additions["PYTHONPATH"] = schema_pythonpath
+        remotion_env_additions["ASTRID_REMOTION_PROJECT_DIR"] = str(project_dir.resolve())
+        if stage_summary.get("project_pack_roots"):
+            from astrid.core.rendering.project_elements import PACK_ROOTS_ENV, REGISTRY_ROOT_ENV
+
+            remotion_env_additions[PACK_ROOTS_ENV] = json.dumps(stage_summary["project_pack_roots"])
+            remotion_env_additions[REGISTRY_ROOT_ENV] = stage_summary["project_registry_root"]
+        remotion_args = [
+            str(runtime_tools.node_executable),
+            str(runtime_tools.remotion_cli),
+            "render",
+            composition_id,
+            "--props",
+            str(props_path),
+            "--output",
+            str(cli_video),
+            "--allow-html-in-canvas",
+            f"--port={remotion_port}",
+            # Remotion otherwise starts multiple Chromium workers, each
+            # requesting the full managed registry at once.  The media
+            # server is invocation-scoped and intentionally lightweight;
+            # one worker keeps the request burst bounded for large
+            # timelines while preserving the same renderer and output.
+            "--concurrency=1",
+            # The generated package registry is part of the renderer
+            # source closure. Remotion's filesystem cache is keyed by
+            # the entry/config bundle rather than generated registry
+            # contents, so reusing it can silently omit a newly admitted
+            # effect (for example the canonical end-spanning layer).
+            # Disable only this bundle cache; media and frame caches stay
+            # invocation-scoped and bounded by the existing lifecycle.
+            "--bundle-cache=false",
+        ]
+        if window_argument is not None:
+            remotion_args.append(window_argument)
+        if frame_mode:
+            remotion_args += [
+                "--sequence",
+                "--image-format=png",
+                "--image-sequence-pattern=frame-[frame].[ext]",
+                "--frames=" + ",".join(str(frame) for frame in frame_numbers),
             ]
-            if window_argument is not None:
-                remotion_args.append(window_argument)
-            if frame_mode:
+        elif alpha:
+            # ProRes 4444 is the only engine-native alpha mux in remotion
+            # 4.0.509: vp9/webm emits plain yuv420p (probed, dead path).
+            # The CLI pixel-format is yuva444p10le; the muxed artifact is
+            # probed as yuva444p12le (see _remotion_mux_profile).
+            remotion_args += [
+                "--enforce-audio-track",
+                "--image-format=png",
+                "--pixel-format=yuva444p10le",
+                "--codec=prores",
+                "--prores-profile=4444",
+            ]
+        else:
+            # Opaque video needs no alpha plane. JPEG95 keeps screenshot
+            # detail while avoiding a full lossless PNG cache when
+            # Remotion's memory gate selects disk-backed encoding.
+            remotion_args += [
+                f"--image-format={remotion_frame_format()}",
+                "--jpeg-quality=95",
+            ]
+            remotion_args.append("--enforce-audio-track")
+            profile = _canonical_profile(
+                timeline_path,
+                _load_registry_mapping(assets_path),
+                theme_path,
+            )
+            if render_scale is not None:
+                width, height = _remotion_scaled_dimensions(profile, render_scale)
+                profile = replace(profile, width=width, height=height)
+            max_rate_bps, buffer_size_bps = h264_encoder_bitrates(
+                width=profile.width,
+                height=profile.height,
+                fps_rational=profile.fps_rational,
+            )
+            remotion_args += [
+                "--crf=18",
+                f"--max-rate={max_rate_bps // 1000}K",
+                f"--buffer-size={buffer_size_bps // 1000}K",
+                "--audio-bitrate=320K",
+            ]
+            if pcm_aac_mp4:
+                # A MOV filename otherwise makes the CLI infer ProRes.
                 remotion_args += [
-                    "--sequence",
-                    "--image-format=png",
-                    "--image-sequence-pattern=frame-[frame].[ext]",
-                    "--frames=" + ",".join(str(frame) for frame in frame_numbers),
+                    "--codec=h264",
+                    "--audio-codec=pcm-16",
+                    "--sample-rate=48000",
                 ]
-            elif alpha:
-                # ProRes 4444 is the only engine-native alpha mux in remotion
-                # 4.0.509: vp9/webm emits plain yuv420p (probed, dead path).
-                # The CLI pixel-format is yuva444p10le; the muxed artifact is
-                # probed as yuva444p12le (see _remotion_mux_profile).
-                remotion_args += [
-                    "--enforce-audio-track",
-                    "--image-format=png",
-                    "--pixel-format=yuva444p10le",
-                    "--codec=prores",
-                    "--prores-profile=4444",
-                ]
-            else:
-                # Opaque video needs no alpha plane. JPEG95 keeps screenshot
-                # detail while avoiding a full lossless PNG cache when
-                # Remotion's memory gate selects disk-backed encoding.
-                remotion_args += [
-                    f"--image-format={remotion_frame_format()}",
-                    "--jpeg-quality=95",
-                ]
-                remotion_args.append("--enforce-audio-track")
-                profile = _canonical_profile(
-                    timeline_path,
-                    _load_registry_mapping(assets_path),
-                    theme_path,
-                )
-                if render_scale is not None:
-                    width, height = _remotion_scaled_dimensions(profile, render_scale)
-                    profile = replace(profile, width=width, height=height)
-                max_rate_bps, buffer_size_bps = h264_encoder_bitrates(
-                    width=profile.width,
-                    height=profile.height,
-                    fps_rational=profile.fps_rational,
-                )
-                remotion_args += [
-                    "--crf=18",
-                    f"--max-rate={max_rate_bps // 1000}K",
-                    f"--buffer-size={buffer_size_bps // 1000}K",
-                    "--audio-bitrate=320K",
-                ]
-                if pcm_aac_mp4:
-                    # A MOV filename otherwise makes the CLI infer ProRes.
-                    remotion_args += [
-                        "--codec=h264",
-                        "--audio-codec=pcm-16",
-                        "--sample-rate=48000",
-                    ]
-            if render_scale is not None and render_scale != 1:
-                remotion_args.append(f"--scale={render_scale:.15g}")
-            diagnostic_acceptance = any(clip.get('app', {}).get('liveScene', {}).get('__l1bTrace') is True for clip in merged_props['timeline'].get('clips', []))
-            diagnostic_trace = diagnostic_acceptance or any('<!-- astrid-l1b-diagnostic -->' in str(clip.get('app', {}).get('liveScene', {}).get('html', '')) for clip in merged_props['timeline'].get('clips', []))
-            diagnostic_root = project_dir.parent / '.otto' / 'l1b-fixtures'
-            diagnostic_label = 'acceptance' if diagnostic_acceptance else 'trace'
-            if diagnostic_trace:
-                remotion_args.append('--log=verbose')
-                (diagnostic_root / f'render-{diagnostic_label}-command.json').write_text(json.dumps({'args': remotion_args, 'cwd': str(project_dir)}))
-            if frame_mode and frame_session is not None:
-                frame_session.render(
-                    project_dir=project_dir,
-                    composition_id=composition_id,
-                    node_executable=runtime_tools.node_executable,
-                    remotion_cli=runtime_tools.remotion_cli,
-                    props_path=props_path,
-                    output_dir=frame_output_dir,
-                    frames=frame_numbers,
-                    resolution=frame_resolution,
-                    port=remotion_port,
-                    environment=remotion_env_additions,
-                    identity=frame_session_identity or render_hash,
-                )
-                frame_session.retain_staged_public_root(staged_public_root)
-            else:
-                progress_path = os.environ.get("ASTRID_PROGRESS_PATH") if os.environ.get("ASTRID_INTERNAL_INVOCATION") == "1" else None
-                if progress_path:
-                    log_path = remotion_temp_root / "frame-progress.log"
-                    with log_path.open("w") as stdout_log, RemotionProgressRelay(log_path, progress_path=progress_path):
-                        completed = subprocess.run(
-                            remotion_args, cwd=str(project_dir),
-                            env=build_child_subprocess_env(explicit_env=remotion_env_additions),
-                            stdout=stdout_log, stderr=subprocess.PIPE, check=False, text=True)
-                else:
+        if render_scale is not None and render_scale != 1:
+            remotion_args.append(f"--scale={render_scale:.15g}")
+        diagnostic_acceptance = any(clip.get('app', {}).get('liveScene', {}).get('__l1bTrace') is True for clip in merged_props['timeline'].get('clips', []))
+        diagnostic_trace = diagnostic_acceptance or any('<!-- astrid-l1b-diagnostic -->' in str(clip.get('app', {}).get('liveScene', {}).get('html', '')) for clip in merged_props['timeline'].get('clips', []))
+        diagnostic_root = project_dir.parent / '.otto' / 'l1b-fixtures'
+        diagnostic_label = 'acceptance' if diagnostic_acceptance else 'trace'
+        if diagnostic_trace:
+            remotion_args.append('--log=verbose')
+            (diagnostic_root / f'render-{diagnostic_label}-command.json').write_text(json.dumps({'args': remotion_args, 'cwd': str(project_dir)}))
+        if frame_mode and frame_session is not None:
+            frame_session.render(
+                project_dir=project_dir,
+                composition_id=composition_id,
+                node_executable=runtime_tools.node_executable,
+                remotion_cli=runtime_tools.remotion_cli,
+                props_path=props_path,
+                output_dir=frame_output_dir,
+                frames=frame_numbers,
+                resolution=frame_resolution,
+                port=remotion_port,
+                # The host-validated projectDir already names the project; the
+                # admitted environment has no project-directory entry.
+                environment={key: value for key, value in remotion_env_additions.items()
+                             if key != "ASTRID_REMOTION_PROJECT_DIR"},
+                identity=frame_session_identity or render_hash,
+            )
+            frame_session.retain_staged_public_root(staged_public_root)
+        else:
+            progress_path = os.environ.get("ASTRID_PROGRESS_PATH") if os.environ.get("ASTRID_INTERNAL_INVOCATION") == "1" else None
+            if progress_path:
+                log_path = remotion_temp_root / "frame-progress.log"
+                with log_path.open("w") as stdout_log, RemotionProgressRelay(log_path, progress_path=progress_path):
                     completed = subprocess.run(
                         remotion_args, cwd=str(project_dir),
                         env=build_child_subprocess_env(explicit_env=remotion_env_additions),
-                        capture_output=True, check=False, text=True)
-                if diagnostic_trace:
-                    diagnostic_stdout = completed.stdout
-                    if diagnostic_stdout is None and progress_path:
-                        with log_path.open("rb") as log:
-                            log.seek(max(0, log_path.stat().st_size - 65536))
-                            diagnostic_stdout = log.read().decode("utf-8", "replace")
-                    (diagnostic_root / f'render-{diagnostic_label}-stdout.log').write_text(diagnostic_stdout or "")
-                    (diagnostic_root / f'render-{diagnostic_label}-stderr.log').write_text(completed.stderr)
-                if completed.returncode != 0:
-                    stderr_tail = _stderr_tail(completed.stderr)
-                    message = f"Remotion render failed with exit code {completed.returncode}"
-                    if stderr_tail:
-                        message = f"{message}\n{stderr_tail}"
-                    raise RuntimeError(message)
-            if frame_mode:
-                _resize_frame_outputs(frame_output_dir, frame_resolution)
-                produced = sorted(frame_output_dir.glob("frame-*.png"))
-                if not produced:
-                    raise RuntimeError("Remotion frame capture did not produce PNG frames")
-                return _ExecutionDetails(
-                    active_theme=theme_for_props,
-                    registry_state=registry_state,
-                    stage_summary=stage_summary,
-                    runtime={
-                        "node_executable": str(runtime_tools.node_executable),
-                        "node_version": runtime_tools.node_version,
-                        "remotion_cli": str(runtime_tools.remotion_cli),
-                        "mode": "image_sequence",
-                        "findings": getattr(frame_session, "findings", []),
-                    },
-                )
-            if not cli_video.is_file() or cli_video.stat().st_size <= 0:
-                raise RuntimeError("Remotion render did not produce a non-empty video")
-            if pcm_aac_mp4:
-                os.replace(cli_video, staged_video)
+                        stdout=stdout_log, stderr=subprocess.PIPE, check=False, text=True)
+            else:
+                completed = subprocess.run(
+                    remotion_args, cwd=str(project_dir),
+                    env=build_child_subprocess_env(explicit_env=remotion_env_additions),
+                    capture_output=True, check=False, text=True)
+            if diagnostic_trace:
+                diagnostic_stdout = completed.stdout
+                if diagnostic_stdout is None and progress_path:
+                    with log_path.open("rb") as log:
+                        log.seek(max(0, log_path.stat().st_size - 65536))
+                        diagnostic_stdout = log.read().decode("utf-8", "replace")
+                (diagnostic_root / f'render-{diagnostic_label}-stdout.log').write_text(diagnostic_stdout or "")
+                (diagnostic_root / f'render-{diagnostic_label}-stderr.log').write_text(completed.stderr)
+            if completed.returncode != 0:
+                stderr_tail = _stderr_tail(completed.stderr)
+                message = f"Remotion render failed with exit code {completed.returncode}"
+                if stderr_tail:
+                    message = f"{message}\n{stderr_tail}"
+                raise RuntimeError(message)
+        if frame_mode:
+            _resize_frame_outputs(frame_output_dir, frame_resolution)
+            produced = sorted(frame_output_dir.glob("frame-*.png"))
+            if not produced:
+                raise RuntimeError("Remotion frame capture did not produce PNG frames")
             return _ExecutionDetails(
                 active_theme=theme_for_props,
                 registry_state=registry_state,
@@ -1352,14 +1369,24 @@ def _execute_remotion_locked(
                     "node_executable": str(runtime_tools.node_executable),
                     "node_version": runtime_tools.node_version,
                     "remotion_cli": str(runtime_tools.remotion_cli),
+                    "mode": "image_sequence",
+                    "findings": getattr(frame_session, "findings", []),
                 },
             )
-        finally:
-            props_path.unlink(missing_ok=True)
-            # The external owner has finished consuming the staged request
-            # before it replies. Always remove invocation-scoped media after
-            # the response; retaining it would leak one public root per task.
-            shutil.rmtree(staged_public_root, ignore_errors=True)
+        if not cli_video.is_file() or cli_video.stat().st_size <= 0:
+            raise RuntimeError("Remotion render did not produce a non-empty video")
+        if pcm_aac_mp4:
+            os.replace(cli_video, staged_video)
+        return _ExecutionDetails(
+            active_theme=theme_for_props,
+            registry_state=registry_state,
+            stage_summary=stage_summary,
+            runtime={
+                "node_executable": str(runtime_tools.node_executable),
+                "node_version": runtime_tools.node_version,
+                "remotion_cli": str(runtime_tools.remotion_cli),
+            },
+        )
 
 
 def capture_remotion_frames(
@@ -1377,12 +1404,16 @@ def capture_remotion_frames(
     frame_resolution: tuple[int, int] | None = None,
     frame_session: PersistentRemotionFrameSession | None = None,
     frame_session_identity: str | None = None,
+    on_scene_props: Callable[[Mapping[str, Any], Sequence[int]], None] | None = None,
 ) -> dict[int, Path]:
     """Capture selected composition frames through the trusted Remotion path.
 
     This is deliberately a batch API: the caller supplies the exact frame set
     and Remotion renders one image sequence, avoiding a full video and keeping
     all media/effect/font staging on the existing renderer authority path.
+    The optional internal callback synchronously observes final serialized Root
+    props and those same frames before capture, while staged assets remain live.
+    It must treat the props as read-only; its exceptions abort capture.
     """
     numbers = tuple(sorted(set(frame_numbers)))
     if not numbers:
@@ -1411,6 +1442,7 @@ def capture_remotion_frames(
                 frame_resolution=frame_resolution,
                 frame_session=frame_session,
                 frame_session_identity=frame_session_identity,
+                **({"on_scene_props": on_scene_props} if on_scene_props is not None else {}),
             )
     finally:
         marker.unlink(missing_ok=True)
@@ -1549,29 +1581,60 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
                 and clip.get("clipType", "media") not in _BUILTIN_MEDIA_CLIP_TYPES
             }
         )
-        if dynamic_clip_types:
+        from astrid.core.rendering.project_elements import (
+            require_project_snapshots,
+            selections,
+            stage_project_elements,
+        )
+
+        with ExitStack() as selected_lifecycle:
+            registry_options = {}
             try:
-                effects, aliases = _effect_registry_for_assets(settings.theme_path)
-            except Exception as exc:  # noqa: BLE001 - support report normalizes registry failures
-                reasons.append(f"Remotion element registry cannot be resolved: {exc}")
-            else:
-                unknown_clip_types = [
-                    clip_type
-                    for clip_type in dynamic_clip_types
-                    if clip_type not in effects and clip_type not in aliases
-                ]
-                if unknown_clip_types:
-                    reasons.append(
-                        "timeline uses unregistered Remotion clip types: "
-                        + ", ".join(unknown_clip_types)
+                require_project_snapshots(timeline_data)
+            except ValueError as exc:
+                return SupportReport(
+                    schema_version=SCHEMA_VERSION, supported=False, reasons=[*reasons, str(exc)],
+                    features=features, alternatives=[], backend=BACKEND_ID,
+                    backend_version=BACKEND_VERSION,
+                )
+            if selections(timeline_data):
+                try:
+                    temporary = selected_lifecycle.enter_context(TemporaryDirectory(prefix="project-elements-support-"))
+                    selected_registry, _ = stage_project_elements(
+                        timeline_data, Path(temporary), registry=load_default_registry(project_root=REPO_ROOT),
                     )
-        try:
-            _resolve_timeline_element_references(
-                timeline_data,
-                theme_path=settings.theme_path,
-            )
-        except Exception as exc:  # noqa: BLE001 - support report normalizes render failures
-            reasons.append(str(exc))
+                    registry_options["registry"] = selected_registry
+                except ValueError as exc:
+                    reasons.append(f"Project element snapshot cannot be staged: {exc}")
+                    return SupportReport(
+                        schema_version=SCHEMA_VERSION, supported=False, reasons=reasons,
+                        features=features, alternatives=[], backend=BACKEND_ID,
+                        backend_version=BACKEND_VERSION,
+                    )
+            if dynamic_clip_types:
+                try:
+                    effects, aliases = _effect_registry_for_assets(settings.theme_path, **registry_options)
+                except Exception as exc:  # noqa: BLE001 - support report normalizes registry failures
+                    reasons.append(f"Remotion element registry cannot be resolved: {exc}")
+                else:
+                    unknown_clip_types = [
+                        clip_type
+                        for clip_type in dynamic_clip_types
+                        if clip_type not in effects and clip_type not in aliases
+                    ]
+                    if unknown_clip_types:
+                        reasons.append(
+                            "timeline uses unregistered Remotion clip types: "
+                            + ", ".join(unknown_clip_types)
+                        )
+            try:
+                _resolve_timeline_element_references(
+                    timeline_data,
+                    theme_path=settings.theme_path,
+                    **registry_options,
+                )
+            except Exception as exc:  # noqa: BLE001 - support report normalizes render failures
+                reasons.append(str(exc))
         try:
             canonical = _canonical_profile(timeline_path, assets_data, settings.theme_path)
         except Exception as exc:  # noqa: BLE001 - support report normalizes profile failures
@@ -1581,7 +1644,10 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
             # has none) and always muxes at the 90 kHz timescale; support must
             # describe the same contract render() implements.
             try:
-                _native_window_argument(request.window, timeline_data, canonical)
+                _native_window_argument(
+                    request.window, timeline_data, canonical,
+                    composition_duration_frames=_composition_duration_from_request(request),
+                )
             except ValueError as exc:
                 reasons.append(str(exc))
             features["audio_ownership"] = AudioOwnership.RENDERED.value
@@ -1714,6 +1780,7 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
                 staging_parent=workspace,
                 materialized_objects=request.materialized_objects,
                 window=request.window,
+                composition_duration_frames=_composition_duration_from_request(request),
                 encode_aac_at_stitch=True,
             )
             os.replace(staged_video, output_path)

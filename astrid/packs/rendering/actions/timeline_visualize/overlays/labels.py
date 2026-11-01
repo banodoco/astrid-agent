@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 MIN_OPACITY = 0.05
@@ -10,6 +11,33 @@ ROLE_COLOURS = {"picture": "#38bdf8", "background": "#a3a3a3", "content": "#facc
 DEFAULT_COLOUR = "#e5e7eb"
 BACKING = "#0b1220"
 DEFAULT_CANVAS = (1920, 1080)
+
+
+@dataclass(frozen=True)
+class SceneLabel:
+    address: str
+    z: int
+    role: str
+    opacity: float | None
+    bounds: tuple[float, float, float, float] | None
+    bounds_source: str
+    visible: bool | str
+
+
+def labels_for_scene(answer: Mapping[str, Any], addresses: Mapping[str, str]) -> list[SceneLabel]:
+    """Format public rows and owner-provided addresses without evaluating visibility."""
+    labels = []
+    for z, layer in enumerate(reversed(answer["layers"])):
+        if layer["visible"] is False:
+            continue
+        bounds = layer["bounds"]
+        rect = bounds.get("rect") if bounds["status"] == "known" else None
+        box = None if rect is None else (rect["x"], rect["y"],
+                                         rect["x"] + rect["width"], rect["y"] + rect["height"])
+        labels.append(SceneLabel(addresses[layer["clipId"]], z, layer["role"], layer["opacity"],
+                                 box, "unknown" if box is None else "full" if layer["fullFrame"] else "declared",
+                                 layer["visible"]))
+    return labels
 
 
 def canvas_of(config: Mapping[str, Any]) -> dict[str, int]:
@@ -49,9 +77,11 @@ def draw_labels(image, layers: Sequence[Any], *, canvas: Mapping[str, int],
     draw = ImageDraw.Draw(out)
     sx = float(tile_size[0]) / float(canvas["width"])
     sy = float(tile_size[1]) / float(canvas["height"])
-    shown = sorted((item for item in layers if item.opacity >= MIN_OPACITY), key=lambda item: item.z)
-    boxed_all = [item for item in shown if item.bounds_source != "full" and item.bounds is not None]
-    legend = [item for item in shown if item.bounds_source == "full" or item.bounds is None]
+    shown = sorted((item for item in layers if item.opacity is None or item.opacity >= MIN_OPACITY),
+                   key=lambda item: item.z)
+    boxed_all = [item for item in shown if item.bounds_source != "full" and item.bounds is not None
+                 and item.opacity is not None and getattr(item, "visible", True) is True]
+    legend = [item for item in shown if item not in boxed_all]
     boxed = boxed_all[:max_labels]
     size = 11
     for item in boxed:
@@ -62,7 +92,9 @@ def draw_labels(image, layers: Sequence[Any], *, canvas: Mapping[str, int],
         tx = max(0, min(rect[0], float(tile_size[0]) - 4))
         ty = rect[1] - size - 6 if rect[1] - size - 6 >= 0 else rect[1] + 2
         _backed_text(draw, (tx, ty), item.address, size, colour, text_width, draw_text)
-    lines = [(item.address + f" ({item.role})" + ("" if item.bounds is not None else " bounds unknown"),
+    lines = [(item.address + f" ({item.role})" + ("" if item.bounds is not None else " bounds unknown")
+              + (" opacity unknown" if item.opacity is None else "")
+              + (" visibility unknown" if getattr(item, "visible", True) == "unknown" else ""),
               ROLE_COLOURS.get(item.role, DEFAULT_COLOUR)) for item in legend]
     hidden = len(boxed_all) - len(boxed)
     if hidden > 0:
@@ -72,8 +104,12 @@ def draw_labels(image, layers: Sequence[Any], *, canvas: Mapping[str, int],
     return out
 
 
-def overlay_labels_frame(image, config: Mapping[str, Any], frame: int, fps: float):
+def overlay_labels_frame(image, config: Mapping[str, Any], frame: int, fps: float, *,
+                         capture=None, source_identity: str = ""):
     """Draw the visible addresses for one exact decoded frame on a display copy."""
+    if capture is not None:
+        layers, canvas = capture.labels(frame, source_identity=source_identity)
+        return draw_labels(image, layers, canvas=canvas, tile_size=image.size)
     canvas = canvas_of(config)
     return draw_labels(image, labels_for(config, frame, fps, canvas), canvas=canvas, tile_size=image.size)
 

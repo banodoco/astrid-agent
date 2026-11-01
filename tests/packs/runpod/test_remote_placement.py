@@ -215,6 +215,49 @@ def _provider(sources, volume=None):
     return FakeProvider(f"{rp.BOOTSTRAP_ROOT}/{digest}/ok", volume)
 
 
+def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp_path, sources):
+    provider = _provider(sources)
+    claim = provider.claim(rp.ClaimSpec())
+    wrapper = _wrapper(provider, sources)
+    state = wrapper.prepare_claimed(claim, out=tmp_path / "prepare", deadline_seconds=120)
+    assert state.claim is claim
+    assert provider.claims == 1
+    assert provider.releases == 0
+    assert [step["step"] for step in state.steps] == ["bootstrap", "install"]
+    assert all("h3_av.transform" not in command for command in claim.ops.job_log)
+    assert not any("/01-prepare/" in path for path in claim.ops.files)
+
+
+def test_ordinary_connector_uses_only_the_verified_claim_and_existing_https_ops(monkeypatch):
+    from tests.packs.runpod.test_worker_preparation import _claim_handle
+
+    record = _claim_handle(
+        operation_id="a" * 32, request_name="astrid-product-" + "a" * 32,
+        name="astrid-product-" + "a" * 32, transport="https", target_identity_verified=True,
+        volume_mount_path="/workspace", https_token_file="/fake/agent.token",
+    )
+    reads = []
+    monkeypatch.setattr(rp, "_read_token", lambda value: reads.append(value) or "fake-only")
+    claim = rp.connect_claimed_for_preparation(record)
+    assert reads == [record]
+    assert isinstance(claim.ops, rp._HttpsOps)
+    assert claim.pod_id == record["pod_id"]
+    assert claim.identity["provider_account_ref"] == record["provider_account_ref"]
+    assert claim.handle == record
+    with pytest.raises(RemotePlacementError, match="journal-created"):
+        rp.connect_claimed_for_preparation({**record, "request_name": "another-broker"})
+    assert reads == [record]
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("inf"), float("nan")])
+def test_prepare_claimed_refuses_missing_paid_lifetime_without_provider_use(tmp_path, seconds):
+    provider = FakeProvider("unused")
+    wrapper = _wrapper(provider, None)
+    with pytest.raises(RemotePlacementError, match="remaining paid lifetime"):
+        wrapper.prepare_claimed(None, out=tmp_path / "prepare", deadline_seconds=seconds)
+    assert provider.claims == provider.releases == 0
+
+
 def test_happy_path_runs_all_seven_steps(tmp_path, sources, inputs):
     provider = _provider(sources)
     seen = {}

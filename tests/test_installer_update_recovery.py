@@ -86,6 +86,8 @@ def _setup(base, *, previous_schema=True):
     RealmStore.initialize(realm, realm_id="realm-1").close()
     if previous_schema:
         with sqlite3.connect(realm / "realm.sqlite3") as connection:
+            from tests.installer_schema_fixtures import remove_round1b_schema_objects
+            remove_round1b_schema_objects(connection)
             connection.execute("ALTER TABLE timelines DROP COLUMN name")
             connection.execute("DROP TABLE user_app_state")  # added by schema v31
             connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
@@ -113,6 +115,7 @@ class _Backend(Backend):
         self.say = print
         self.managed_by = None
         self.process_control = None
+        self._foreground_stop_retired = False
         from astrid.installer.service import Service
 
         self.service = Service(self.root, self.log, self.run, home=base / "home", system="linux")
@@ -452,7 +455,7 @@ def test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup(tmp_path,
     result = _run(tmp_path, "runtime:" + state)
     assert result.returncode == -signal.SIGKILL, result.stderr
     journal = read_json(tmp_path / "data/runtime/upgrade-journal.json")
-    assert journal["state"] == ("stopped" if state == "migration-committed" else state)
+    assert journal["state"] == ("backup_verified" if state == "migration-committed" else state)
     transaction = read_json(tmp_path / "program/update-transaction.json")
     assert transaction["backup"]["root"]
     assert transaction["realm"]["realm_id"] == journal["realm_id"]
@@ -855,6 +858,8 @@ def _runtime(base, kill_at):
         def connect(self, **_kwargs): return SimpleNamespace(doctor=lambda: {"ok": True})
 
     def start(*_args):
+        from tests.installer_schema_fixtures import register_timeline_provider
+        register_timeline_provider(realm)
         discovery = publish()
         return SimpleNamespace(endpoint=discovery["endpoint"], pid=os.getpid(), runtime_instance_id="test-instance")
 
@@ -950,6 +955,18 @@ def _installer(base, kill_at, mode):
     platform.durable_replace = durable_replace_and_kill
     Path.unlink = unlink_and_kill
     backend = _Backend(base, kill_at)
+    if (base / "authenticated").is_file():
+        # These synthetic versions share one interpreter, but this matrix
+        # exercises authenticated backup/restore across distinct installations.
+        # Keep the real schema observation and distinguish only the fixture's
+        # policy input. Current-schema no-touch dispatch has its own real test.
+        actual_inspect = core.inspect_schema
+
+        def distinct_installations(backend, version, realm, **kwargs):
+            return {**actual_inspect(backend, version, realm, **kwargs),
+                    "fixture_installation": version.root.name}
+
+        core.inspect_schema = distinct_installations
     # Service manager effects are the one OS boundary patched in this proof;
     # ordinary update staging/registration/candidate start are deterministic
     # fixture boundaries. Recovery C1, restore, and the old Runtime launch/status

@@ -240,6 +240,11 @@ class RunPodManagedVibeComfySessionOwner:
         self.transport = transport
         self.session_config_type = session_config_type
 
+    def bind_preparation(self, *, claim_handle_path: Any, reference: Any, staging: Mapping[str, Any]) -> None:
+        bind = getattr(self.transport, "bind_preparation", None)
+        if callable(bind):
+            bind(claim_handle_path=claim_handle_path, reference=reference, staging=staging)
+
     def _session_config(self, values: dict[str, Any]) -> Any:
         config_type = self.session_config_type
         if config_type is None:
@@ -295,6 +300,10 @@ class RunPodManagedVibeComfySessionOwner:
             observed = read_installed(runtime_root)
             config = observed["config"]
             digest = observed["config_digest"]
+            if observed.get("vibecomfy_root") != vibecomfy:
+                select_source = getattr(self.transport, "select_prepared_source", None)
+                if callable(select_source):
+                    vibecomfy = select_source(vibecomfy, observed.get("vibecomfy_root"))
             if (config.get("runtime_root") != runtime_root
                     or config.get("base_directory") != comfy
                     or config.get("models_root") != model
@@ -459,7 +468,9 @@ def create_managed_session_owner(pod: Any, *, session_ref: str,
     if session_ref == "vibecomfy-h3":
         from .installed_session import RunPodInstalledVibeComfySessionTransport
 
-        transport = RunPodInstalledVibeComfySessionTransport(pod)
+        transport = RunPodInstalledVibeComfySessionTransport(
+            pod, preparation_transport=preparation_transport,
+        )
     else:
         transport = RunPodVibeComfySessionTransport(pod, preparation_transport=preparation_transport)
     return RunPodManagedVibeComfySessionOwner(transport)
