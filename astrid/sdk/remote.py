@@ -568,12 +568,21 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                 before, name=canonical_name, slug=slug, output=default_output,
             )]
             initialized = execute(before, commands).bundle
-            authored_config = copy.deepcopy(dict(config)) if config is not None else {"tracks": []}
-            # Runtime owns the canonical bootstrap tracks. Preserve them when
-            # the caller has no track preference; an explicit tracks array,
-            # including [], remains authoritative.
+            authored_config = copy.deepcopy(dict(config)) if config is not None else {}
+            # Runtime owns the canonical bootstrap tracks. The public CLI's
+            # two-field canvas config carries [] as its default/no-preference
+            # projection, while an SDK caller's raw {"tracks": []} remains a
+            # genuinely empty request. Nonempty supplied tracks stay authoritative.
             bootstrap_config = initialized["parent"].get("config")
-            if "tracks" not in authored_config and isinstance(bootstrap_config, Mapping):
+            authored_tracks = authored_config.get("tracks")
+            cli_default_tracks = (
+                authored_tracks == []
+                and set(authored_config) == {"tracks", "theme_overrides"}
+            )
+            if (
+                ("tracks" not in authored_config or cli_default_tracks)
+                and isinstance(bootstrap_config, Mapping)
+            ):
                 if "tracks" in bootstrap_config:
                     authored_config["tracks"] = copy.deepcopy(bootstrap_config["tracks"])
             canvas = authored_config.get("theme_overrides")
@@ -607,7 +616,8 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                 })
             initialization_command_end = len(commands)
             # Creation guards the pristine timeline atomically. Apply only the
-            # caller's config differences, preserving explicit empty choices.
+            # caller's config differences, preserving explicit SDK-empty and
+            # nonempty track choices.
             initial_config = initialized["parent"]["config"]
             if not equal(initial_config, authored_config):
                 # Field patches preserve Runtime's clip/registry mirror
