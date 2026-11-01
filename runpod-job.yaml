@@ -25,7 +25,7 @@ setup:
     node --version | tee /workspace/out/native/node-version.txt
     npm --prefix remotion ci --ignore-scripts --no-audit --no-fund
     (cd remotion && npx remotion browser ensure) 2>&1 | tee /workspace/out/native/browser-ensure.txt
-    find "${XDG_CACHE_HOME:-$HOME/.cache}" -type f \( -name chrome -o -name chrome-headless-shell \) -perm -u+x -print | sort > /workspace/out/native/browser-candidates.txt
+    find /workspace/astrid-agent/remotion/node_modules/.remotion -type f \( -name chrome -o -name chrome-headless-shell -o -name headless_shell \) -perm -u+x -print | sort > /workspace/out/native/browser-candidates.txt
 run:
   - |
     set +e
