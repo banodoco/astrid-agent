@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,15 @@ class _Backend:
         realm = self.data / "runtime" / "realms" / "realm-1"
         realm.mkdir(parents=True, exist_ok=True)
         return {"realm_id": "realm-1", "realm_root": str(realm)}
+
+    def update_workspace(self, candidate, data):
+        assert candidate.root.name == "candidate"
+        return self.workspace(candidate, data)
+
+    def run(self, argv, **_kwargs):
+        assert "inspect_canonical_schema" in argv[5]
+        assert Path(argv[0]).is_relative_to(self.root / "versions" / "candidate")
+        return json.dumps({"identity": {"version": 29}, "target": 33})
 
     def stage(self, _manifest, root, _data):
         folder = root / "versions" / "candidate"

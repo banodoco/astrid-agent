@@ -315,7 +315,12 @@ def test_windows_failed_update_restores_private_support_and_can_retry(
     backend.publish_launch_admission = Mock()
 
     def restore_realm(argv, **_kwargs):
+        if "_read_catalog" in str(argv[5]):
+            assert Path(argv[0]) in (failed.python, retry.python)
+            assert Path(argv[-1]) == data
+            return json.dumps(identity)
         if "inspect_canonical_schema" in str(argv[5]):
+            assert Path(argv[0]) in (failed.python, retry.python)
             return json.dumps({"identity": {"version": 29}, "target": 33})
         # Only the offline realm restore subprocess is faked. Support rollback
         # and the transaction below use the real installer implementations.

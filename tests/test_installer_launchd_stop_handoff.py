@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import plistlib
+import sqlite3
 import subprocess
 import sys
 import importlib
@@ -295,7 +296,22 @@ def test_fresh_recovery_bootouts_stopped_job_once_and_is_repeatable(tmp_path, mo
 @pytest.mark.parametrize("failure_point", ["backup", "candidate_verify"])
 def test_downstream_update_failure_runs_real_c1_rollback_and_keeps_old_selected(
         tmp_path, monkeypatch, failure_point):
-    backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    backend, data, paths, realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    if failure_point == "backup":
+        # Supply a canonical v29 realm so target inspection selects the backup path.
+        from tests.installer_schema_fixtures import remove_round1b_schema_objects
+
+        with sqlite3.connect(realm / "realm.sqlite3") as connection:
+            remove_round1b_schema_objects(connection)
+            connection.execute("ALTER TABLE timelines DROP COLUMN name")
+            connection.execute("DROP TABLE user_app_state")
+            connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
+    from runtime_protocol.store import SCHEMA_VERSION
+    from runtime_protocol.upgrade import inspect_canonical_schema
+
+    assert inspect_canonical_schema(realm, expected_realm_id="realm-1")["version"] == (
+        29 if failure_point == "backup" else SCHEMA_VERSION
+    )
     old, candidate = _version(backend, "old", 17), _version(backend, "candidate", 18)
     core.switch(backend.root, old)
     _publish_owner(paths)

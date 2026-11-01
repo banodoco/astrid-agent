@@ -425,16 +425,17 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
             return json.dumps({"prefix": str(py), "purelib": str(purelib), "origins": origins})
         if any("source_checkout_digest" in part for part in args):
             return "fresh-source-digest"
+        if len(args) > 5 and "_read_catalog" in args[5]:
+            assert Path(args[0]) == venv_python(materialized[0][1].parent / "py")
+            assert Path(args[-1]) == data
+            return json.dumps({"realm_id": "retained-realm", "realm_root": str(data / "realm")})
+        if len(args) > 5 and "inspect_canonical_schema" in args[5]:
+            assert Path(args[0]) == venv_python(materialized[0][1].parent / "py")
+            assert args[-2:] == [str(data / "realm"), "retained-realm"]
+            return json.dumps({"identity": {"version": 29 if schema_changed else 33}, "target": 33})
         return ""
 
     monkeypatch.setattr("astrid.installer.backend.source", source)
-    monkeypatch.setattr(
-        core, "inspect_schema",
-        lambda _backend, version, _realm, require_current=False: {
-            "identity": {"version": 29 if schema_changed and version.root == old_root else 31},
-            "target": 31,
-        },
-    )
     monkeypatch.setattr("astrid.installer.backend.install_tools", lambda _m, dest, *_args: (
         dest.mkdir(parents=True) or {
             "PATH": str(dest), "ASTRID_NODE_EXECUTABLE": str(dest / "node"),
