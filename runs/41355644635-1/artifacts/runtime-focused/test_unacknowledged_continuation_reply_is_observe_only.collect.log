@@ -1,0 +1,6 @@
+tests/test_update_jobs.py::test_unacknowledged_continuation_reply_is_observe_only[None]
+tests/test_update_jobs.py::test_unacknowledged_continuation_reply_is_observe_only[unknown]
+tests/test_update_jobs.py::test_unacknowledged_continuation_reply_is_observe_only[launching]
+tests/test_update_jobs.py::test_unacknowledged_continuation_reply_is_observe_only[failed]
+
+4 tests collected in 0.16s
