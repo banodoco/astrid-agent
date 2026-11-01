@@ -19,7 +19,8 @@ def test_installed_managed_engine_does_not_require_legacy_comfy_cli(monkeypatch)
             url='http://127.0.0.1:8188',
             health=SimpleNamespace(object_info_sha256='a' * 64, checked_at='2026-11-01T00:00:00Z')))
     monkeypatch.setattr(engine_local_endpoint, 'local_engine_endpoint', verified)
-    monkeypatch.setattr(preflight, '_module_available', lambda name: name == 'vibecomfy')
+    monkeypatch.setattr(preflight, '_module_available',
+                        lambda name: pytest.fail(f'Agent environment probed for {name}'))
     monkeypatch.setattr(preflight, '_comfyui_runtime_available',
                         lambda: pytest.fail('installed engine fell back to the legacy CLI'))
     client = preflight.select_generation_target('managed')
@@ -61,3 +62,18 @@ def test_explicit_attached_url_never_adopts_registered_engine(monkeypatch):
     client = preflight.select_generation_target('http://127.0.0.1:8188')
     assert client.target.kind == 'attached'
     assert client.generation_target.owner == 'human'
+
+
+def test_missing_managed_engine_does_not_adopt_agent_venv(monkeypatch):
+    monkeypatch.setattr(engine_local_endpoint, 'recorded_engine_root', lambda engine: None)
+    monkeypatch.setattr(preflight, '_module_available', lambda name: True)
+    monkeypatch.setattr(preflight, '_comfyui_runtime_available',
+                        lambda: pytest.fail('managed target probed legacy local runtime'))
+    client = preflight.select_generation_target('managed')
+    with pytest.raises(preflight.GenerationReadinessError) as caught:
+        preflight.require_generation_target_readiness(
+            ModelRegistry.load_default().get('z-image'), 't2i', client)
+    issue = caught.value.to_envelope()['issues'][0]
+    assert issue['code'] == 'engine_not_found'
+    assert issue['details']['engine_code'] == 'COMFY_TARGET_NOT_READY'
+    assert 'ComfyUI' in issue['message'] and 'vibecomfy' not in issue['message'].lower()

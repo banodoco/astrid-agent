@@ -23,6 +23,8 @@ def test_fresh_wheel_cli(tmp_path: Path) -> None:
         pytest.skip("wheel build toolchain is absent")
     runtime = locate_runtime()
     assert runtime is not None, "installed smoke needs the CI Runtime checkout (ASTRID_RUNTIME_CHECKOUT)"
+    vibe = Path(os.environ.get("ASTRID_VIBECOMFY_CHECKOUT", ROOT.parent / "vibecomfy"))
+    assert (vibe / "pyproject.toml").is_file(), "installed smoke needs the VibeComfy checkout (ASTRID_VIBECOMFY_CHECKOUT)"
 
     def space() -> None:
         assert shutil.disk_usage(tmp_path).free >= 2 * 1024**3, "less than 2 GiB free"
@@ -61,8 +63,15 @@ def test_fresh_wheel_cli(tmp_path: Path) -> None:
     assert len(wheels) == 2
     installed = run([str(python), "-m", "pip", "install", *(str(p) for p in wheels)], env=clean_env)
     assert installed.returncode == 0, installed.stdout + installed.stderr
+    # Install the real VibeComfy library without its engine, as the installer does.
+    vibe_source = tmp_path / "vibecomfy"
+    shutil.copytree(vibe, vibe_source, ignore=shutil.ignore_patterns(
+        ".git", "__pycache__", "*.pyc", ".venv", "node_modules", "build", "dist"))
+    installed_vibe = run([str(python), "-m", "pip", "install", "--no-deps", str(vibe_source)], env=clean_env)
+    assert installed_vibe.returncode == 0, installed_vibe.stdout + installed_vibe.stderr
     space()
-    probe = run([str(python), "-I", "-c", "import astrid,sys; from pathlib import Path; "
+    probe = run([str(python), "-I", "-c", "import astrid,vibecomfy,sys; from pathlib import Path; "
+                 "assert Path(vibecomfy.__file__).is_relative_to(Path(sys.prefix)); "
                  "assert Path(astrid.__file__).is_relative_to(Path(sys.prefix)); "
                  "assert all(not Path(p or '.').resolve().is_relative_to(Path(sys.argv[1])) for p in sys.path)", str(ROOT)], env=clean_env)
     assert probe.returncode == 0, probe.stdout + probe.stderr
@@ -88,3 +97,5 @@ def test_fresh_wheel_cli(tmp_path: Path) -> None:
     assert envelope["status"] == "blocked"
     assert envelope["issues"][0]["code"] == "engine_not_found"
     assert envelope["issues"][0]["details"]["engine_code"] == "COMFY_TARGET_NOT_READY"
+    assert "ComfyUI" in envelope["issues"][0]["message"]
+    assert "vibecomfy" not in envelope["issues"][0]["message"].lower()

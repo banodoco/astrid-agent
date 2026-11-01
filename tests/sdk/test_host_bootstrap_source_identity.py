@@ -162,11 +162,12 @@ def test_installed_capability_matrix_uses_only_a_regular_pinned_resource(tmp_pat
         host_bootstrap._capability_matrix_path(source)
 
 
-def test_capability_matrix_default_stays_relative_to_source_profile(tmp_path, monkeypatch):
+def test_capability_matrix_default_uses_packaged_resource(tmp_path, monkeypatch):
     monkeypatch.delenv("ASTRID_CAPABILITY_MATRIX_PATH", raising=False)
     monkeypatch.delenv("ASTRID_SOURCE_PROVENANCE_ROOT", raising=False)
     source = tmp_path / "checkout"
-    assert host_bootstrap._capability_matrix_path(source) == source / "config" / "astrid-beta-capabilities.json"
+    from astrid.core.product_resources import product_resource
+    assert host_bootstrap._capability_matrix_path(source) == product_resource("astrid-beta-capabilities.json")
 
 
 def test_selected_python_matches_its_live_process_executable(tmp_path) -> None:

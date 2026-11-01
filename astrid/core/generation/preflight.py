@@ -332,7 +332,7 @@ def _module_available(module_name: str) -> bool:
 
 
 def _comfyui_runtime_available() -> bool:
-    """Return whether the managed ComfyUI runtime can be started locally."""
+    """Discover a legacy local ComfyUI in the current Python environment or PATH."""
 
     if _module_available("comfy.cmd.main"):
         return True
@@ -383,6 +383,7 @@ def check_local_generation_readiness(
     *,
     python_executable: str | None = None,
     require_managed_runtime: bool = True,
+    legacy_local: bool = True,
 ) -> LocalGenerationReadiness:
     """Check deterministic prerequisites for a selected local model path.
 
@@ -408,7 +409,7 @@ def check_local_generation_readiness(
             ),
         )
 
-    if not _module_available("vibecomfy"):
+    if legacy_local and not _module_available("vibecomfy"):
         return LocalGenerationReadiness(
             ready=False,
             reason=(
@@ -423,7 +424,7 @@ def check_local_generation_readiness(
             ),
         )
 
-    if require_managed_runtime and not _comfyui_runtime_available():
+    if require_managed_runtime and (not legacy_local or not _comfyui_runtime_available()):
         install = _managed_install_fix()
         attach = ['astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
         import shlex
@@ -434,8 +435,10 @@ def check_local_generation_readiness(
         return LocalGenerationReadiness(
             ready=False,
             reason=(
-                "local generation requires a ComfyUI runtime ('comfy.cmd.main' "
-                "or the 'comfyui' CLI); neither is installed or discoverable"
+                ("local generation requires a ComfyUI runtime; no managed engine is installed or registered"
+                 if not legacy_local else
+                 "legacy local generation requires a ComfyUI runtime ('comfy.cmd.main' "
+                 "or the 'comfyui' CLI); neither is installed or discoverable")
             ),
             recovery_command=guidance,
             fixes=(
@@ -579,11 +582,11 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
 
 
 def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> None:
-    """Reuse package prerequisites while leaving server ownership to its owner."""
+    """Require a selected engine without probing the Agent Python environment."""
     from astrid.core.contracts.errors import AstridError
 
     readiness = check_local_generation_readiness(
-        entry, mode, require_managed_runtime=client is None,
+        entry, mode, require_managed_runtime=client is None, legacy_local=False,
     )
     if not readiness.ready:
         error = AstridError(
