@@ -1,4 +1,4 @@
-# CP3 R4 exact-head proof: re-pinned to published Runtime 1e6d899e; selector inventory and relay-safe steps retained.
+# CP3 R5 exact-head proof: retain the R4 tuple and inventory; correct hosted aiohttp setup and selector argument passing.
 repos:
   astrid-agent: c90394d30911e5d5cea5f5cf1a0e9fc68de679da
   astrid-runtime: 1e6d899efa77a2d6ec247c38250f9748330bb587
@@ -20,6 +20,7 @@ setup:
     python3 -m venv /workspace/venv
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r /workspace/astrid-agent/requirements/proof.lock -r /workspace/astrid-agent/requirements/build.lock
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps --no-build-isolation /workspace/astrid-agent /workspace/astrid-runtime /workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check 'aiohttp==3.14.5'
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps 'runpod-lifecycle @ git+https://github.com/banodoco/runpod-lifecycle.git@96360a27a53c4608f780f7b370f747a2aa3c7ca8'
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps 'banodoco-timeline-schema @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python'
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps 'git+https://github.com/banodoco/VibeComfy.git@2967033970cbb5884651c9565265778482d3b44e'
@@ -141,7 +142,8 @@ run:
       'tests/packs/timeline/test_verbs_working_copy.py::test_publish_conflict_names_the_writer_and_offers_discard_first[authoring-parent-revision-38cecaa5ffffffffffffffffffffffff-someone published 38cecaa5 after your checkout (rev-0)]' > /workspace/out/correction-selection.txt
     sha256sum /workspace/out/correction-selection.txt | tee /workspace/out/correction-selection.sha256
     test "$(awk '{print $1}' /workspace/out/correction-selection.sha256)" = a98ebe2902c865f09b0c9e0fcbcd8b2e3c3da5da929b5ccba9b69dd6e37b3b7e
-    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/correction.xml $(tr '\n' ' ' < /workspace/out/correction-selection.txt) 2>&1 | tee /workspace/out/correction.log
+    mapfile -t correction_selectors < /workspace/out/correction-selection.txt
+    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/correction.xml "${correction_selectors[@]}" 2>&1 | tee /workspace/out/correction.log
     rc=${PIPESTATUS[0]}
     printf 'correction=%s\n' "$rc" > /workspace/out/correction.exit
     exit 0
