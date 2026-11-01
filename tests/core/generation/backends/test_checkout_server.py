@@ -28,6 +28,14 @@ from astrid.core.generation.model_root import canonical_model_inventory_digest
 RUNTIME_A = "c3d4e5f6-a7b8-49cd-8e01-23456789abcd"
 
 
+def _approved_projection():
+    from vibecomfy.testing.canonical import canonical_digest
+    from vibecomfy.workflow_bundle import ApprovedProjectionRecord
+
+    api = {"1": {"class_type": "SaveImage", "inputs": {}}}
+    return ApprovedProjectionRecord("revision-1", None, {}, api, {}, canonical_digest(api))
+
+
 class _Workflow:
     def __init__(self) -> None:
         self.metadata: dict[str, object] = {"unbound_inputs": {}}
@@ -278,7 +286,9 @@ def test_remote_output_custody_downloads_metadata_descriptors_atomically(
         json.dumps(
             {
                 "comfy_outputs": {"9": {"images": [
-                    {"filename": "remote.png", "subfolder": "", "type": "output"}
+                    {"filename": "remote.png", "subfolder": "", "type": "output",
+                     "metadata": {"kind": "image", "width": 512, "height": 512},
+                     "future": "ignored for routing"}
                 ]}}}
         ),
         encoding="utf-8",
@@ -318,7 +328,7 @@ def test_remote_output_custody_downloads_metadata_descriptors_atomically(
         [{"filename": "../escape.png", "subfolder": "", "type": "output"}],
         [{"filename": "ok.png", "subfolder": "../escape", "type": "output"}],
         [{"filename": "ok.png", "subfolder": "", "type": "input"}],
-        [{"filename": "ok.png", "subfolder": "", "type": "output", "extra": "x"}],
+        [{"filename": "ok.png", "subfolder": "", "type": "output", "extra": "x" * 65536}],
     ],
 )
 def test_remote_output_custody_rejects_empty_or_malformed_descriptors(
@@ -748,7 +758,7 @@ def test_run_compiled_workflow_uses_bundle_and_private_output_custody(
 
     def compile(**kwargs: object) -> object:
         compile_observations.append((dict(kwargs), os.environ.get("VIBECOMFY_MODELS_ROOT")))
-        return object()
+        return _approved_projection()
 
     bundle.compile.side_effect = compile
     monkeypatch.setenv("VIBECOMFY_MODELS_ROOT", "prior-model-root")
@@ -850,7 +860,7 @@ def test_run_compiled_workflow_augments_workflow_config_with_host_identity(
     bundle.workflow = workflow
     bundle.workflow_identity = workflow.id
     bundle.require_canonical_authority.return_value = None
-    bundle.compile.return_value = object()
+    bundle.compile.return_value = _approved_projection()
     monkeypatch.setattr(workflow_bundle, "load_bundle", lambda _: bundle)
     metadata_path = tmp_path / "run-metadata.json"
     metadata_path.write_text(
@@ -912,7 +922,7 @@ def test_run_compiled_workflow_rejects_conflicting_environment_output_before_war
     bundle.workflow = workflow
     bundle.workflow_identity = workflow.id
     bundle.require_canonical_authority.return_value = None
-    bundle.compile.return_value = object()
+    bundle.compile.return_value = _approved_projection()
     monkeypatch.setattr(workflow_bundle, "load_bundle", lambda _: bundle)
     adapter.warm_session = Mock()  # type: ignore[method-assign]
     monkeypatch.setenv(
@@ -959,7 +969,7 @@ def test_run_compiled_workflow_accepts_canonical_bundle_loader_result(
     bundle.workflow = workflow
     bundle.workflow_identity = workflow.id
     bundle.require_canonical_authority.return_value = None
-    bundle.compile.return_value = object()
+    bundle.compile.return_value = _approved_projection()
     metadata_path = tmp_path / "run-metadata.json"
     metadata_path.write_text(
         json.dumps(
