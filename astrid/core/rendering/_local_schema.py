@@ -8,6 +8,7 @@ import stat
 from pathlib import Path
 
 from astrid.core.execution.platform_helpers import owned_by_current_user
+from astrid.core.product_resources import product_resource
 
 SCHEMA_RELATIVE_PATH = Path("astrid/core/timeline/schema/timeline-config.schema.json")
 READER_INPUTS = (
@@ -25,7 +26,9 @@ def verified_schema_path(source_root: Path, configured: str) -> Path:
     expected = root / SCHEMA_RELATIVE_PATH
     if configured != str(expected):
         raise ValueError("local timeline schema origin differs from selected Agent source")
-    for leaf in (expected, root / "runtime.lock.json", *(root / p for p in READER_INPUTS)):
+    lock_path = product_resource("runtime.lock.json", installed=root / "runtime.lock.json",
+                                 source=root / "runtime.lock.json")
+    for leaf in (expected, lock_path, *(root / p for p in READER_INPUTS)):
         if leaf.resolve(strict=True) != leaf:
             raise ValueError("local timeline schema source is aliased")
         for path in (leaf, *leaf.parents):
@@ -39,7 +42,7 @@ def verified_schema_path(source_root: Path, configured: str) -> Path:
         facts = leaf.stat()
         if not stat.S_ISREG(facts.st_mode):
             raise ValueError(f"local timeline schema input is not a regular file: {leaf.name}")
-    lock = json.loads((root / "runtime.lock.json").read_text(encoding="utf-8"))
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
     files = lock.get("files") if isinstance(lock, dict) else None
     pin = files.get(SCHEMA_RELATIVE_PATH.as_posix()) if isinstance(files, dict) else None
     if (not isinstance(pin, dict)

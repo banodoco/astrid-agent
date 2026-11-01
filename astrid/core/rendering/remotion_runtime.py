@@ -404,9 +404,12 @@ def _runtime_inputs(project_dir: Path, environment: Mapping[str, str], python: s
     if (project / "src").is_dir():
         roots.append(project / "src")
     roots.extend(Path(p) for p in closure.get("package_roots", []))
+    from astrid.core.product_resources import product_resource
+    lock_path = product_resource("runtime.lock.json", installed=REPO_ROOT / "runtime.lock.json",
+                                 source=REPO_ROOT / "runtime.lock.json")
     paths = [node, Path(python), cli, project / "package.json", project / "package-lock.json", Path(__file__),
              Path(_remotion_package.__file__), Path(_local_schema.__file__),
-             REPO_ROOT / "runtime.lock.json", schema,
+             lock_path, schema,
              *(REPO_ROOT / p for p in _local_schema.READER_INPUTS)]
     paths.extend(p for p in project.iterdir() if p.is_file() and p.suffix in {".ts", ".js", ".mjs", ".cjs", ".json"})
     cfg = Path(python).parent.parent / "pyvenv.cfg"

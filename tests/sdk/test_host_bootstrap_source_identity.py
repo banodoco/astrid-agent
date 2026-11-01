@@ -1120,3 +1120,17 @@ def test_bootstrap_refuses_worker_credential_outside_the_pack_host_contract(
 
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="least-privilege pack-host contract"):
         host_bootstrap.ensure_pack_host(value, reconfigure_action="reconfigure")
+
+
+def test_execution_profile_defaults_to_installed_for_wheel_and_installer(monkeypatch, tmp_path):
+    monkeypatch.delenv("ASTRID_HOST_EXECUTION_PROFILE", raising=False)
+    monkeypatch.delenv("ASTRID_INSTALL_RELEASE", raising=False)
+    monkeypatch.delenv("ASTRID_INSTALL_MANAGED_BY", raising=False)
+    monkeypatch.setattr(host_bootstrap, "__file__", str(tmp_path / "astrid/sdk/host_bootstrap.py"))
+    assert host_bootstrap._execution_profile() == "installed"
+    (tmp_path / ".git").mkdir()
+    assert host_bootstrap._execution_profile() == "source"
+    monkeypatch.setenv("ASTRID_INSTALL_RELEASE", "0")
+    assert host_bootstrap._execution_profile() == "installed"
+    monkeypatch.setenv("ASTRID_HOST_EXECUTION_PROFILE", "source")
+    assert host_bootstrap._execution_profile() == "source"

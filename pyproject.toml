@@ -118,6 +118,7 @@ astrid = [
     # Python modules are discovered above; these patterns deliberately name
     # data formats rather than copying documentation, skills, tests, caches,
     # or build/planning material into the wheel.
+    "resources/*.json",
     "core/**/*.json",
     "core/**/*.sql",
     "core/**/*.yaml",
