@@ -127,8 +127,20 @@
             "--json": {
               "required": false
             },
+            "--kind": {
+              "required": false
+            },
+            "--model": {
+              "required": false
+            },
             "--project": {
               "required": true
+            },
+            "--tag": {
+              "required": false
+            },
+            "--target": {
+              "required": false
             }
           },
           "positionals": [],
@@ -1297,6 +1309,49 @@
           "positionals": [],
           "verbs": {}
         },
+        "defaults": {
+          "flags": {},
+          "positionals": [],
+          "verbs": {
+            "reset": {
+              "flags": {
+                "--json": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "slot"
+              ],
+              "verbs": {}
+            },
+            "set": {
+              "flags": {
+                "--json": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "slot",
+                "entry"
+              ],
+              "verbs": {}
+            },
+            "show": {
+              "flags": {
+                "--json": {
+                  "required": false
+                },
+                "--target": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "slot"
+              ],
+              "verbs": {}
+            }
+          }
+        },
         "edit": {
           "flags": {
             "--json": {
@@ -1353,6 +1408,9 @@
             },
             "--name": {
               "required": true
+            },
+            "--select": {
+              "required": false
             },
             "--settings": {
               "required": false
@@ -1860,7 +1918,7 @@
               "required": false
             },
             "--project": {
-              "required": true
+              "required": false
             },
             "--slug": {
               "required": false
@@ -2303,7 +2361,7 @@
               "required": false
             },
             "--project": {
-              "required": true
+              "required": false
             }
           },
           "positionals": [
@@ -2448,6 +2506,9 @@
         },
         "list": {
           "flags": {
+            "--all-projects": {
+              "required": false
+            },
             "--include-archived": {
               "required": false
             },
@@ -2455,6 +2516,9 @@
               "required": false
             },
             "--project": {
+              "required": false
+            },
+            "--recent": {
               "required": false
             }
           },
@@ -3472,6 +3536,7 @@
     "backup",
     "dev",
     "doctor",
+    "generate",
     "skills"
   ]
 }
