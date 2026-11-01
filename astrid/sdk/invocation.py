@@ -86,13 +86,20 @@ class _RetainedPreparedOwner:
             raise CapabilityInvocationError('prepared owner requires exact task/run/capability identity')
         if self.locator is not None and self.locator != identity:
             raise CapabilityInvocationError('prepared owner observed a foreign task/run/capability')
-        binding = task.get('execution_binding')
-        identity += (json.dumps(binding, sort_keys=True),)
+        if self.execution_request is not None:
+            if task.get('execution_request') != self.execution_request:
+                raise CapabilityInvocationError('prepared owner request differs from admitted RunPod task')
+            binding = task.get('execution_binding')
+            if binding is None and str(task.get('state') or '').casefold() in {'queued', 'pending', 'admitted'}:
+                return  # The retained host will observe the same task's first binding.
+            if (not isinstance(binding, Mapping)
+                    or binding.get('effective_target', binding.get('target')) != self.execution_request['target']):
+                raise CapabilityInvocationError('prepared owner binding differs from the exact RunPod target')
+            identity += (json.dumps(binding, sort_keys=True),)
+        # H3's parent runs on the default target. Its pack monitor verifies
+        # the delegated run child's exact binding once that child appears.
         if self.identity is not None and self.identity != identity:
             raise CapabilityInvocationError('prepared owner task or execution binding changed')
-        if self.execution_request is not None:
-            if task.get('execution_request') != self.execution_request or not isinstance(binding, Mapping):
-                raise CapabilityInvocationError('prepared owner request differs from admitted RunPod task')
         self.identity = identity
         if self.execution_request is not None:
             terminal = str(task.get('state') or task.get('status') or '').casefold() in {

@@ -318,6 +318,7 @@ def test_same_host_h3_follow_retains_one_monitor_while_run_child_appears(tmp_pat
         capability_type='executor', native_kind='command', task_id='parent-a', run_id='run-a',
         initial_task=parent, initial_ok=True, wait=False, owner_tick=tick, discover_managed_outputs=False)
     assert result.ok and child['ensure_count'] == 0
+    parent['execution_binding'] = {'effective_target': {'kind': 'default'}}
     child['present'] = True
     owner.retained['parent-a'](parent)
     owner.retained['parent-a'](parent)
@@ -326,6 +327,33 @@ def test_same_host_h3_follow_retains_one_monitor_while_run_child_appears(tmp_pat
         capability_type='executor', native_kind='command', task_id='parent-a', run_id='run-a', wait=True)
     assert followed.ok and child['ensure_count'] == 1
     assert client._generation_task_owners['parent-a'] is tick
+
+
+def test_queued_task_waits_for_its_first_exact_binding_without_readmission(route):
+    request = route.owner.selection.execution_request(None)
+    tick = invocation.retain_prepared_owner(route.client, recovery_path=route.tmp / 'queued.json',
+        capability_id='vibecomfy.run', monitor=route.owner.monitor, owner=route.owner,
+        execution_request=request, endpoint_checkout=route.owner.checkout)
+    task = {'task_id': 'queued-a', 'run_id': 'run-a', 'capability_id': 'vibecomfy.run',
+            'execution_request': request, 'state': 'queued', 'execution_binding': None}
+    admitted = invocation._observe_task_invocation(route.client, capability_id='vibecomfy.run',
+        capability_type='executor', native_kind='command', task_id='queued-a', run_id='run-a',
+        initial_task=task, initial_ok=True, wait=False, owner_tick=tick, discover_managed_outputs=False)
+    assert admitted.ok and not route.owner.activated
+    task['execution_binding'] = {'effective_target': deepcopy(request['target']), 'activation_id': 'activation-a'}
+    route.owner.retained['queued-a'](task)
+    route.owner.retained['queued-a'](task)
+    assert len(route.owner.activated) == 1 and route.calls == []
+
+
+def test_foreign_first_binding_is_rejected_before_activation(route):
+    request = route.owner.selection.execution_request(None)
+    tick = invocation.retain_prepared_owner(route.client, recovery_path=route.tmp / 'foreign.json',
+        capability_id='vibecomfy.run', monitor=route.owner.monitor, owner=route.owner, execution_request=request)
+    with pytest.raises(RuntimeError, match='exact RunPod target'):
+        tick({'task_id': 'foreign-a', 'run_id': 'run-a', 'capability_id': 'vibecomfy.run', 'state': 'queued',
+              'execution_request': request, 'execution_binding': {'target': {'kind': 'runpod', 'pod_id': 'other'}}})
+    assert not route.owner.activated
 
 
 def test_h3_no_wait_uses_prepared_child_and_preserves_parent_default(tmp_path, monkeypatch):

@@ -1374,6 +1374,7 @@ class GenerationFacade:
             verbose=verbose,
             argv=argv,
             **({'wait': False} if not wait else {}),
+            **({'recovery_path': recovery_path} if recovery_path is not None else {}),
         )
         if dry_run or not wait:
             return result
