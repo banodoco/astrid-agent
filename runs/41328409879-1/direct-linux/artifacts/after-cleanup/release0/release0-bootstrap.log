@@ -1,0 +1,6 @@
+Getting Astrid ready. The first time takes a few minutes.
+Using your workspace at /home/runner/work/_temp/astrid-r1-direct-linux/data.
+Installing Astrid.
+Starting Astrid at sign-in.
+Open https://astrid.haus
+Add ~/.local/bin to your PATH to run astrid from anywhere: export PATH="$HOME/.local/bin:$PATH"

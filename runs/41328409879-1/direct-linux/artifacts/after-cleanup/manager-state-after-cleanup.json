@@ -1,0 +1,15 @@
+{
+  "command": [
+    "systemctl",
+    "--user",
+    "show",
+    "astrid.service",
+    "--property=LoadState,FragmentPath,ActiveState,SubState"
+  ],
+  "phase": "after-cleanup",
+  "platform": "linux",
+  "returncode": 0,
+  "stderr": "",
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nFragmentPath=\n",
+  "unit_file": "/home/runner/work/_temp/astrid-r1-direct-linux/home/.config/systemd/user/astrid.service"
+}

@@ -1,0 +1,2 @@
+Journey cleanup failed: RuntimeError: final-uninstall.log: exit 1; see /home/runner/work/_temp/astrid-r1-direct-linux/evidence/release0-to-release1/final-uninstall.log
+Journey failed: [Errno 2] No such file or directory: '/home/runner/.config/systemd/user/astrid.service'
