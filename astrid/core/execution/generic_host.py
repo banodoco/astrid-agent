@@ -9160,7 +9160,7 @@ class GenericPackHost:
                 import_finished = True
                 try:
                     import_reference = import_receipt.finish()
-                except BaseException as exc:
+                except BaseException:
                     import_reference = {"observation": "unavailable", "persistence": "failed"}
             return SimpleNamespace(
                 outputs=outputs,

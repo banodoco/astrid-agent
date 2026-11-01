@@ -131,6 +131,7 @@ def test_success_abort_race_has_one_completion_decision(host_case, monkeypatch, 
     receipt = json.loads((case.root / "result.json").read_text())
     assert receipt["status"] == "timeout"
     assert receipt["publication"]["status"] == ("settled" if success_first else "not_settled")
+    assert "completion_diagnostic" not in receipt
     assert receipt["outputs"]["artifacts"] == []
 
 
@@ -690,6 +691,9 @@ def test_finalizer_baseexceptions_cannot_skip_credentials_or_resettle(host_case,
     monkeypatch.setattr(case.host, "_run_command_definition", action)
     monkeypatch.setattr(case.host, "_start_network_broker", lambda *a, **kw: SimpleNamespace(
         stop=abort("broker") if fault == "broker" else lambda: events.append("broker")))
+    # This test owns a cleanup-only broker double; network attestation has
+    # separate coverage and is not part of this injected finalizer boundary.
+    monkeypatch.setattr(case.host, "_network_evidence", lambda *a, **kw: None)
     if fault in {"cancel_and_fence", "fence"}:
         monkeypatch.setattr(case.host.managed_tool_session, "cancel", abort("cancel"))
         monkeypatch.setattr(case.host.managed_tool_session, "fence", abort("fence"))
