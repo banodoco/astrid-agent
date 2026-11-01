@@ -13,9 +13,9 @@ def test_receipt_readback_preserves_terminal_state_and_host_evidence(tmp_path, s
     parent = {"id": "parent", "attempt_id": "attempt", "state": state, "result": host_result}
     child = {"id": "child", "attempt_id": "child-attempt", "state": "succeeded", "result": host_result}
     service = SimpleNamespace(store=SimpleNamespace(
-        _mutex=RLock(), get_task=lambda task: parent,
+        _mutex=RLock(), get_task=lambda task: {"task": parent if task == "parent" else child, "run": {}},
         delegated_children=lambda task, attempt: [child],
-    ), _task_resource=lambda row: {**row, "task_id": row["id"]})
+    ), _task_resource=lambda envelope: {**envelope["task"], "task_id": envelope["task"]["id"]})
     helper = object.__new__(VerifiedH3Host)
     helper.root = tmp_path
     helper.daemon = SimpleNamespace(service=service)

@@ -199,11 +199,11 @@ class VerifiedH3Host:
         while True:
             service = self.daemon.service
             with service.store._mutex:
-                parent = service.store.get_task(self.qualification["task_id"])
-                family = [parent, *service.store.delegated_children(parent["id"], parent["attempt_id"])]
+                parent = service._task_resource(service.store.get_task(self.qualification["task_id"]))
+                children = service.store.delegated_children(parent["task_id"], parent["attempt_id"])
                 # Runtime retains the host's result/process evidence even
                 # after the host deletes its ephemeral result.json spool.
-                rows = [service._task_resource(row) for row in family]
+                rows = [parent, *[service._task_resource(service.store.get_task(row["id"])) for row in children]]
                 rows = [{**row, "status": row["state"]} for row in rows]
             if rows[0]["status"] in {"succeeded", "failed", "cancelled"} or time.monotonic() >= deadline:
                 (self.root / "h3-terminal-receipts.json").write_text(json.dumps(rows, indent=2))
