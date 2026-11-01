@@ -7,6 +7,7 @@ name: Release-1 direct lifecycle receipts
     - lane/M-QUAL/direct-journey
     paths:
     - .github/workflows/journey-direct.yml
+    - scripts/journey_version_jumps.py
 permissions:
   contents: read
 concurrency:

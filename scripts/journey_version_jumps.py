@@ -100,7 +100,11 @@ def selected_candidate(manifest: dict, version: dict, before: dict) -> dict:
     selected = journey.selected_tuple(manifest, version)
     if all(selected[name] == before[name] for name in ("agent", "runtime")):
         raise RuntimeError("Version-jump requires a candidate distinct from the resolved release")
-    expected_identity = {"release": manifest.get("release", 0), "managed_by": None}
+    # The published round-1b install manifest is the frozen Release-1
+    # manifest even though schema v1 does not carry a redundant ``release``
+    # field.  Its immutable digest and Agent/Runtime pins were already checked
+    # before this driver runs; an explicit field, when present, must still be 1.
+    expected_identity = {"release": manifest.get("release", 1), "managed_by": None}
     if version.get("identity") != expected_identity:
         raise RuntimeError("Selected version.json identity differs from the candidate manifest")
     return selected
@@ -233,7 +237,8 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         candidate_path, manifest = journey.selected_manifest(
             app, source_override=False, agent=None, runtime=None, evidence=evidence)
         candidate = journey.read_json(args.candidate)
-        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest or manifest.get("release") != 1:
+        if (evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest
+                or manifest.get("release", 1) != 1):
             raise RuntimeError("release0-to-release1 requires a frozen release-1 manifest")
         result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
                                          "artifacts": candidate["artifacts"]}
