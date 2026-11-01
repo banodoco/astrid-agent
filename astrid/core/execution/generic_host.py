@@ -5080,10 +5080,11 @@ class RuntimeProtocolClient:
             "result": dict(result),
             "runtime_epoch": epoch,
         }
-        return self.generated.settle_attempt(
-            attempt_id,
-            settlement,
-            idempotency_key=f"settle-{attempt_id}-{fence}",
+        return self._terminal_evidence_mutation(
+            task_id, result if "manifest_ref" in result else None,
+            lambda: self.generated.settle_attempt(
+                attempt_id, settlement, idempotency_key=f"settle-{attempt_id}-{fence}",
+            ),
         )
 
     def fail(
@@ -7782,6 +7783,124 @@ class GenericPackHost:
         )
         self._pending_provider_grants[task_id] = token
         return token
+
+    def _prepare_producer_evidence(self, output_root: Path, task: Mapping[str, Any]) -> None:
+        """Add host-observed identity to the existing producer result object."""
+        receipt_path = output_root / "manifest.json"
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            return
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict) or "managed_generation_result" not in receipt:
+            return
+        payload = receipt["managed_generation_result"]
+        if not isinstance(payload, dict) or payload.get("kind") != "managed-generation-result.v1":
+            raise HostError("managed producer receipt is invalid")
+        validate_result_manifest(receipt, staging_root=output_root)
+        original_payload = payload
+        payload = json.loads(json.dumps(payload))
+        manifests = [row for row in receipt["outputs"] if row.get("name") == "result_manifest"]
+        if len(manifests) != 1:
+            raise HostError("managed producer receipt requires one result_manifest")
+        original = json.loads((output_root / manifests[0]["path"]).read_text(encoding="utf-8"))
+        if original != original_payload:
+            raise HostError("embedded producer result differs from durable manifest")
+        # These are observations from the installed host, never development
+        # repository lookups. Producer evidence remains in its own namespace.
+        producer = payload["evidence"]["producer"]
+        transport = payload["evidence"]["transport"]
+        installed = self.boot_manifest_provenance()
+        if installed is not None:
+            manifest_path = self.boot_manifest_path
+            data = manifest_path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            destination = output_root / "outputs" / "installed-product-manifest.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() and destination.read_bytes() != data:
+                raise HostError("installed manifest evidence destination collides")
+            destination.write_bytes(data)
+            build = producer.setdefault("build", {})
+            if build is None:
+                build = producer["build"] = {}
+            build["installed_product"] = {
+                "object_id": f"sha256:{digest}", "sha256": digest,
+                "bytes": len(data), "filename": destination.name, "stamp": installed,
+            }
+            if not any(row.get("content_hash") == f"sha256:{digest}" for row in receipt["outputs"]):
+                receipt["outputs"].append({
+                    "path": destination.relative_to(output_root).as_posix(),
+                    "name": "vibecomfy_run", "output_port": "vibecomfy_run",
+                    "ordinal": max(row["ordinal"] for row in receipt["outputs"]) + 1,
+                    "role": "auxiliary", "is_primary": False, "media_type": "application/json",
+                    "content_hash": f"sha256:{digest}", "bytes": len(data),
+                })
+        request = task.get("execution_request")
+        if isinstance(request, Mapping) and isinstance(request.get("target"), Mapping):
+            transport["target"] = dict(request["target"])
+        if isinstance(task.get("execution_binding"), Mapping):
+            transport["execution_binding"] = dict(task["execution_binding"])
+        from astrid.core.contracts.managed_generation_result import redact_evidence
+
+        payload["evidence"] = redact_evidence(payload["evidence"])
+        receipt["managed_generation_result"] = payload
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for row in receipt["outputs"]:
+            if row.get("name") != "result_manifest":
+                continue
+            path = output_root / row["path"]
+            if path.is_symlink() or not path.resolve().is_relative_to(output_root.resolve()):
+                raise HostError("managed result manifest escapes output custody")
+            original = json.loads(path.read_text(encoding="utf-8"))
+            # Apart from the host observations above, the durable object and
+            # embedded projection must agree before either is rewritten.
+            if (original.get("task_id") != payload.get("task_id")
+                    or original.get("attempt_id") != payload.get("attempt_id")
+                    or original.get("outputs") != payload.get("outputs")
+                    or original.get("inputs") != payload.get("inputs")):
+                raise HostError("embedded producer result differs from durable manifest")
+            path.write_text(encoded, encoding="utf-8")
+            row["content_hash"] = "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            row["bytes"] = len(encoded.encode("utf-8"))
+            row.pop("sha256", None)
+        receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+
+    def _validate_producer_evidence(
+        self, descriptors: Sequence[Mapping[str, Any]], *, output_root: Path,
+        task_id: str, attempt_id: str,
+    ) -> None:
+        """Check the durable producer receipt before any terminal publication.
+
+        Universal spool receipts may embed a neutral envelope, but the actual
+        result_manifest object is authoritative. Validate its correlation and
+        every local output/ref, including on the successful harvest path.
+        """
+        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+
+        for descriptor in descriptors:
+            if descriptor.get("name") != "result_manifest":
+                continue
+            path = Path(str(descriptor.get("path", "")))
+            if descriptor.get("media_type") != "application/json" and path.suffix != ".json":
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping) or payload.get("kind") != "managed-generation-result.v1":
+                continue
+            validated = validate_managed_generation_result(
+                payload, staging_root=output_root,
+                expected_task_id=task_id, expected_attempt_id=attempt_id,
+            )
+            for output in validated.outputs:
+                matches = [row for row in descriptors
+                           if Path(str(row.get("path", ""))).resolve() == (output_root / output.path).resolve()
+                           and row.get("bytes") == output.bytes
+                           and row.get("content_hash") == f"sha256:{output.sha256}"
+                           and row.get("ordinal") == output.ordinal
+                           and row.get("output_port", row.get("name")) == output.output_port]
+                if len(matches) != 1:
+                    raise HostError("managed producer output differs from harvested publication")
+            for key in ("source", "effective_settings"):
+                reference = validated.inputs.get(key)
+                if reference is not None and "path" in reference:
+                    raise HostError("managed producer input ref must be portable before publication")
 
     def _typed_outputs(
         self,
@@ -10540,6 +10659,7 @@ class GenericPackHost:
                         record, values, output_root=Path(output_root)
                     )
                 manifest_path = Path(output_root) / "manifest.json"
+                self._prepare_producer_evidence(Path(output_root), task_data)
                 # A result manifest is mandatory for a successful run, but a
                 # failure before the producer writes one is still publishable
                 # as a terminal result with no outputs. Do not guess output
@@ -10564,6 +10684,9 @@ class GenericPackHost:
                             manifest_value, staging_root=output_root,
                             expected_task_id=task_id, expected_attempt_id=attempt_id,
                         )
+                self._validate_producer_evidence(
+                    harvested, output_root=Path(output_root), task_id=task_id, attempt_id=attempt_id,
+                )
                 typed = self._typed_outputs(record, harvested, root)
                 task_epoch = task_data.get("runtime_epoch")
                 upload_started = bool(typed)
@@ -11205,6 +11328,7 @@ class GenericPackHost:
                     evidence_failure_message = str(exc)
                 raise HostError(str(exc)) from exc
             try:
+                self._prepare_producer_evidence(output_root, task_data)
                 harvested = harvest_staged_outputs(
                     output_root,
                     definition=record.definition,
@@ -11214,6 +11338,9 @@ class GenericPackHost:
                 )
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
+            self._validate_producer_evidence(
+                harvested, output_root=output_root, task_id=task_id, attempt_id=attempt_id,
+            )
             typed_outputs = self._typed_outputs(
                 record,
                 harvested,
@@ -11314,6 +11441,13 @@ class GenericPackHost:
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
             }
+            producer_manifest = next((row for row in outputs
+                                      if row.get("output_port", row.get("name")) == "result_manifest"
+                                      and row.get("role") == "manifest"), None)
+            if producer_manifest is not None:
+                payload["manifest_ref"] = {
+                    "object_id": producer_manifest["digest"], "size": producer_manifest["size"],
+                }
             if capability_id == "h3_av.transform" and child_bridge is not None:
                 action_result = payload.get("action_result")
                 if not isinstance(action_result, Mapping):
@@ -11405,6 +11539,11 @@ class GenericPackHost:
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
             _terminal["stage"] = "settlement"
+            if "manifest_ref" in payload:
+                _terminal.update(
+                    evidence_pending=True, publication_pending=True,
+                    pending_outputs=outputs, pending_result=payload, pending_status="succeeded",
+                )
             settlement = completion_call(self.client.settle,
                 task_id,
                 lease_token,
@@ -11415,6 +11554,8 @@ class GenericPackHost:
                 fence=fence,
             )
             settled = True
+            _terminal.pop("evidence_pending", None)
+            _terminal.pop("publication_pending", None)
             _terminal.update(settled=True, settlement=settlement, effect=effect)
             if capability_id == "vibecomfy.run" and self._vibecomfy_current_warmth_hint:
                 # The hint becomes reusable only after the Runtime settlement
@@ -11429,6 +11570,11 @@ class GenericPackHost:
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
         except BaseException as exc:
             _terminal.setdefault("error", exc)
+            if _terminal.get("publication_pending"):
+                # The successful fenced publication may have committed while
+                # its response/readback was unavailable. Keep the exact spool
+                # for idempotent reconciliation instead of publishing failure.
+                raise
             if isinstance(exc, CommandCleanupUnresolved):
                 command_cleanup_error = exc
             original_error = exc.execution_error if isinstance(exc, CommandCleanupUnresolved) else exc
