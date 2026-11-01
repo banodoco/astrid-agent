@@ -2393,6 +2393,19 @@ runpy.run_module(config['module'], run_name='__main__', alter_sys=True)
 """
 
 
+def _isolated_worker_import_roots() -> tuple[str, ...]:
+    """Return the host-owned imports needed by an isolated host worker."""
+    if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") == "installed":
+        return ()
+    roots = []
+    for name in ("astrid", "runtime_protocol", "astrid_runtime_client"):
+        module = sys.modules.get(name)
+        if module is not None and module.__file__:
+            roots.append(str(Path(module.__file__).resolve().parent.parent))
+    roots.extend(_dependency_pythonpath())
+    return tuple(dict.fromkeys(roots))
+
+
 def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str], *, broker_required: bool) -> list[str]:
     """Host-selected strict startup, independent of action environment flags."""
     arguments = list(argv[1:])
@@ -2408,15 +2421,22 @@ def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str]
     if len(arguments) < 2 or arguments[0] != "-m" or arguments[1] != "astrid.core.execution.generic_host_worker":
         raise HostError("strict network startup requires the host Python worker")
     policy_path = Path(__file__).with_name("network_policy.py").resolve()
+    captured = "--external-source-fd" in arguments
+    imports = [path for path in env.get("PYTHONPATH", "").split(os.pathsep) if path]
+    # Strict workers run with -I, so they cannot recover the host's admitted
+    # Runtime import roots from ambient PYTHONPATH.  Include only roots of
+    # modules already loaded by this host (plus declared dependencies), never
+    # a caller-supplied import path.
+    imports.extend(_isolated_worker_import_roots())
     config = {
         "hook": str(attempt / ".astrid-network-hook" / "sitecustomize.py"),
         "hook_sha256": hashlib.sha256(_STRICT_NETWORK_HOOK_SOURCE.encode()).hexdigest(),
         "policy": str(policy_path),
         "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
-        "imports": [path for path in env.get("PYTHONPATH", "").split(os.pathsep) if path],
+        "imports": list(dict.fromkeys(imports)),
         "module": arguments[1],
         "broker_required": broker_required,
-        "captured": "--external-source-fd" in arguments,
+        "captured": captured,
     }
     return [argv[0], *flags, "-I", "-S", "-c", _STRICT_NETWORK_STARTUP,
             json.dumps(config, sort_keys=True), *arguments[2:]]
@@ -2426,14 +2446,7 @@ def _captured_worker_argv(argv: list[str]) -> list[str]:
     """Use the existing worker without startup imports from a mutable pack cwd."""
     if "-I" in argv:
         return argv
-    roots = []
-    if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") != "installed":
-        for name in ("astrid", "runtime_protocol", "astrid_runtime_client"):
-            module = sys.modules.get(name)
-            if module is not None and module.__file__:
-                roots.append(str(Path(module.__file__).resolve().parent.parent))
-        roots.extend(_dependency_pythonpath())
-    startup = ("import sys,runpy;sys.path[:0]=" + repr(list(dict.fromkeys(roots)))
+    startup = ("import sys,runpy;sys.path[:0]=" + repr(list(_isolated_worker_import_roots()))
                + ";sys.argv=['astrid.core.execution.generic_host_worker',*sys.argv[1:]];"
                + "runpy.run_module('astrid.core.execution.generic_host_worker',run_name='__main__')")
     module_index = argv.index("astrid.core.execution.generic_host_worker")
@@ -8981,8 +8994,12 @@ class GenericPackHost:
                 hook_root.mkdir(parents=True, exist_ok=True)
                 (hook_root / "sitecustomize.py").write_bytes(
                     (
+                        # Provider commands use the strict launcher even
+                        # though their Runtime channel is retained.  Its
+                        # startup verifier pins this exact hook before the
+                        # isolated worker imports the pack.
                         _STRICT_NETWORK_HOOK_SOURCE
-                        if not allow_runtime_connection
+                        if not allow_runtime_connection or network_broker is not None
                         else "from astrid.core.execution.network_policy import install_from_environment\ninstall_from_environment()\n"
                     ).encode("utf-8")
                 )
@@ -9597,7 +9614,14 @@ class GenericPackHost:
                     inherited_fds += (remotion_lease.inherited_fd(),)
                     argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                             "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
-                if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
+                # A host-owned provider broker always needs the strict startup
+                # path.  The ordinary sitecustomize route is bypassed by the
+                # isolated captured-worker argv, which used to leave
+                # Runtime-connected provider commands with a routed request
+                # but no authenticated broker handshake/evidence.
+                if network_broker is not None or (
+                    not allow_runtime_connection and _network_policy(record) is not None
+                ):
                     if child_bridge is None and remotion_lease is None:
                         # Delegated leaf commands have no child channel. Run the
                         # admitted Python command in the host worker so strict

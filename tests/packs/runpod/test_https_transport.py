@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import io
 import zipfile
 import json
@@ -11,14 +12,17 @@ from pathlib import Path
 
 import pytest
 
-from runpod_lifecycle.config import RunPodConfig
-from runpod_lifecycle.https import HttpsPodTransport, read_token_file
-from runpod_lifecycle.pod import Pod
-from runpod_lifecycle.pod_agent import AgentServer
-from astrid.packs.runpod import h3_release as builder
-from astrid.packs.runpod.worker_staging import RunPodPreparationTransport
-from astrid.packs.runpod.worker_process import RunPodWorkerProcessTransport
-from scripts import claim_runpod_5090_backup as claim
+_HTTPS_LIFECYCLE_AVAILABLE = importlib.util.find_spec("runpod_lifecycle.https") is not None
+
+if _HTTPS_LIFECYCLE_AVAILABLE:
+    from runpod_lifecycle.config import RunPodConfig
+    from runpod_lifecycle.https import HttpsPodTransport, read_token_file
+    from runpod_lifecycle.pod import Pod
+    from runpod_lifecycle.pod_agent import AgentServer
+    from astrid.packs.runpod import h3_release as builder
+    from astrid.packs.runpod.worker_staging import RunPodPreparationTransport
+    from astrid.packs.runpod.worker_process import RunPodWorkerProcessTransport
+    from scripts import claim_runpod_5090_backup as claim
 
 TOKEN = "local-test-only-" + "x" * 40
 
