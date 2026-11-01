@@ -210,3 +210,223 @@ def test_external_cancellation_acknowledgement_is_not_terminal_proof(claim_world
     assert receipt["publication"]["status"] == "unconfirmed"
     assert receipt["completion_diagnostic"] == {"status": "unconfirmed"}
     assert not host._handoff_observation_known
+
+
+def test_native_render_uses_exact_verified_inputs_and_proves_cleanup(tmp_path, monkeypatch, real_runtime):
+    """Run one supported Remotion task from its exact admitted Runtime objects.
+
+    This is deliberately an integration proof, not a direct renderer call: it
+    mutates the caller-side files after admission and requires the host to use
+    the immutable Runtime media/timeline objects, settle that exact lease once,
+    and leave neither a renderer task lease nor a retained native process.
+    """
+    from tests.integrations import test_generic_host_remotion_render as native
+
+    problems = native.remotion_install_problems()
+    assert not problems, "a supported native Remotion backend is required: " + "; ".join(problems)
+    node = native.shutil.which("node")
+    assert node is not None
+    node_version = native.subprocess.run([node, "--version"], check=True, text=True,
+                                         capture_output=True).stdout.strip()
+    assert node_version == "v20.19.4"
+
+    with native._execution_env():
+        for name in list(native.os.environ):
+            if name.startswith(("DYLD_", "LD_")) or name in native._REMOTION_UNSUPPORTED_OVERRIDES:
+                monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("ASTRID_NODE_EXECUTABLE", str(native.Path(node).resolve()))
+        monkeypatch.setenv("ASTRID_TIMELINE_SCHEMA_PYTHONPATH", str(native.SCHEMA_ROOT))
+        monkeypatch.setenv("ASTRID_REMOTION_PROJECT_DIR", str(native.REMOTION.resolve()))
+        environment = dict(native.os.environ)
+        launch = native._prepare_render_validation(
+            native.ROOT,
+            environment,
+            tmp_path / "support",
+            native.sys.executable,
+            (native.ROOT / "astrid" / "packs" / "rendering",),
+        )
+        assert launch is not None
+        for name in (
+            native.ASTRID_REMOTION_VALIDATION_PATH,
+            native.ASTRID_REMOTION_VALIDATION_SHA256,
+            native.ASTRID_REMOTION_VALIDATION_LAUNCH,
+            native.ASTRID_REMOTION_VALIDATION_ROLE,
+        ):
+            monkeypatch.setenv(name, environment[name])
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        timeline_path, assets_path = native._make_media(workspace)
+        original_timeline = timeline_path.read_bytes()
+        original_registry = json.loads(assets_path.read_text(encoding="utf-8"))
+        original_media = {
+            filename: (workspace / "media" / filename).read_bytes()
+            for filename in ("black.mp4", "silence.m4a")
+        }
+        daemon = real_runtime()
+        host = None
+        try:
+            generated = native.WorkspaceClient(daemon.endpoint, daemon.token)
+            generated.handshake(
+                "native-custody-exact-inputs",
+                "0.1.0",
+                [
+                    "projects:read", "projects:write", "objects:read", "objects:write",
+                    "tasks:read", "tasks:write",
+                ],
+            )
+            project = generated.create_project(
+                "Native custody exact inputs",
+                slug="native-custody-exact-inputs",
+                idempotency_key="native-custody-project",
+            )
+            project_id = str(project["project_id"])
+
+            registry = copy.deepcopy(original_registry)
+            input_object_ids = []
+            admitted_media = {}
+            for key, filename in (("black", "black.mp4"), ("silence", "silence.m4a")):
+                imported = generated.ingest_project_object(
+                    project_id,
+                    original_media[filename],
+                    media_type=registry["assets"][key]["type"],
+                    idempotency_key=f"native-custody-{key}",
+                    filename=filename,
+                )
+                object_id = imported.get("object_id") if isinstance(imported, dict) else imported.object_id
+                digest = imported.get("digest") if isinstance(imported, dict) else imported.digest
+                assert isinstance(object_id, str) and isinstance(digest, str)
+                input_object_ids.append(object_id)
+                admitted_media[key] = {"object_id": object_id, "digest": digest, "filename": filename}
+                registry["assets"][key]["media_id"] = object_id
+                registry["assets"][key]["content_sha256"] = digest.removeprefix("sha256:")
+                assert generated.get_object(digest).data == original_media[filename]
+
+            assets_path.write_text(json.dumps(registry), encoding="utf-8")
+            managed = {}
+            for name, path in (("timeline", timeline_path), ("assets_registry", assets_path)):
+                imported = generated.ingest_project_object(
+                    project_id,
+                    path.read_bytes(),
+                    media_type="application/json",
+                    idempotency_key=f"native-custody-{name}",
+                    filename=path.name,
+                )
+                object_id = imported.get("object_id") if isinstance(imported, dict) else imported.object_id
+                digest = imported.get("digest") if isinstance(imported, dict) else imported.digest
+                assert isinstance(object_id, str) and isinstance(digest, str)
+                input_object_ids.append(object_id)
+                managed[name] = {"object_id": object_id, "digest": digest}
+
+            host_client = native.RuntimeProtocolClient(daemon.endpoint, daemon.worker_token)
+            host = native.GenericPackHost(
+                pack_roots=[native.ROOT / "astrid" / "packs" / "rendering"],
+                client=host_client,
+                executor_id="astrid-pack-host",
+                attempt_root=tmp_path / "attempt",
+            )
+            record = next(item for item in host.discover() if item.id == "rendering.render")
+            host.preflight(record.id)
+            assert host.capabilities[record.id].ready is True
+            assert host.register()["registration"].executor_id == "astrid-pack-host"
+
+            spec = {
+                "inputs": {
+                    "timeline": managed["timeline"],
+                    "assets_registry": managed["assets_registry"],
+                    "selector": "rendering.remotion",
+                    "backend_config": {
+                        "rendering.remotion": {
+                            "project_dir": str(native.REMOTION),
+                            "composition_id": "TimelineComposition",
+                        }
+                    },
+                    "output_name": "native-custody.mp4",
+                }
+            }
+            task = generated.admit_task(
+                capability_id=record.id,
+                capability_digest=record.capability_digest,
+                input_object_ids=input_object_ids,
+                idempotency_key="native-custody-task",
+                project_id=project_id,
+                spec=spec,
+            )
+            admitted = host_client.task(task.task_id)
+            assert list(admitted.input_object_ids) == input_object_ids
+            assert admitted.spec["inputs"] == spec["inputs"]
+            assert admitted.spec["inputs"]["timeline"] == managed["timeline"]
+            assert admitted.spec["inputs"]["assets_registry"] == managed["assets_registry"]
+            assert set(input_object_ids) == {
+                admitted_media["black"]["object_id"], admitted_media["silence"]["object_id"],
+                managed["timeline"]["object_id"], managed["assets_registry"]["object_id"],
+            }
+
+            claim = host_client.claim_next(
+                executor_id="astrid-pack-host",
+                capability_ids=[record.id],
+                idempotency_key="native-custody-claim",
+            )
+            assert claim is not None and claim["task_id"] == task.task_id
+            # Mutating every local source after admission must not change the
+            # render: native execution is authorized by the pinned Runtime
+            # objects above, not these caller-side paths.
+            timeline_path.write_text('{"tampered": true}', encoding="utf-8")
+            assets_path.write_text('{"assets": {}}', encoding="utf-8")
+            for filename in original_media:
+                (workspace / "media" / filename).write_bytes(b"tampered-local-media")
+
+            settlement_calls = []
+            settle_attempt = host_client.generated.settle_attempt
+
+            def observe_settlement(attempt_id, settlement, **kwargs):
+                settlement_calls.append((attempt_id, copy.deepcopy(settlement), dict(kwargs)))
+                return settle_attempt(attempt_id, settlement, **kwargs)
+
+            monkeypatch.setattr(host_client.generated, "settle_attempt", observe_settlement)
+            claimed_task = host_client.task(task.task_id)
+            settled = host.run_task(
+                {
+                    "task": {
+                        "run_id": claimed_task.run_id,
+                        "runtime_epoch": getattr(claimed_task, "runtime_epoch", None) or claim["runtime_epoch"],
+                        "id": task.task_id,
+                        "capability": record.id,
+                        "spec": claim.spec,
+                        "input_object_ids": claim.input_object_ids,
+                        "project_id": claim.project_id,
+                        "attempt_id": claim["attempt_id"],
+                        "fence": claim["fence"],
+                    }
+                },
+                lease_token=claim["lease_id"],
+                attempt_id=claim["attempt_id"],
+                fence=int(claim["fence"]),
+            )
+            assert settled.state == "succeeded"
+            assert generated.get_task(task.task_id).state == "succeeded"
+            assert len(settlement_calls) == 1
+            settled_attempt, settlement, options = settlement_calls[0]
+            assert settled_attempt == claim["attempt_id"]
+            assert settlement["attempt_id"] == claim["attempt_id"]
+            assert settlement["fence"] == int(claim["fence"])
+            assert options["idempotency_key"] == f"settle-{claim['attempt_id']}-{claim['fence']}"
+
+            output = tmp_path / "attempt" / "outputs" / "native-custody.mp4"
+            provenance = output.with_suffix(".mp4.provenance.json")
+            assert output.is_file() and output.stat().st_size > 0
+            assert provenance.is_file() and provenance.stat().st_size > 0
+            receipt = json.loads((tmp_path / "attempt" / "result.json").read_text(encoding="utf-8"))
+            assert receipt["status"] == "succeeded"
+            assert receipt["publication"]["status"] == "settled"
+            assert host._handoff_active_attempts == host._handoff_pending_settlements == 0
+            assert not host._active_processes
+            assert host._remotion_host_session is not None
+            assert not host._remotion_host_session._leases
+            host.shutdown()
+            assert not host._active_processes and not host._host_lifetime_processes
+            assert not host._unresolved_task_scopes
+        finally:
+            if host is not None and not host._shutdown.is_set():
+                host.shutdown()
+            daemon.stop()
