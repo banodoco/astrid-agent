@@ -415,10 +415,13 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
                M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
                M4_6_ENABLED="false", M4_6_CANDIDATE="", GITHUB_OUTPUT=str(output))
 
-    def matrix(direct_only):
+    def config(direct_only, **overrides):
         output.write_text("", encoding="utf-8")
-        proc = subprocess.run([sys.executable, "-c", program], cwd=tmp_path,
-                              env=dict(env, DIRECT_ONLY=direct_only), text=True, capture_output=True)
+        return subprocess.run([sys.executable, "-c", program], cwd=tmp_path,
+                              env=dict(env, DIRECT_ONLY=direct_only, **overrides), text=True, capture_output=True)
+
+    def matrix(direct_only, **overrides):
+        proc = config(direct_only, **overrides)
         assert proc.returncode == 0, proc.stderr
         values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
         return json.loads(values["matrix"])["include"]
@@ -445,3 +448,12 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
+
+    backend_rows = matrix("false", M4_4A_BACKEND_ONLY="true")
+    assert {row["job_id"] for row in backend_rows} == {
+        "pinokio-backend-linux", "pinokio-backend-macos", "pinokio-backend-windows"
+    }
+    for override in ({"M4_4A_BACKEND_ONLY": "true"}, {"M4_5_ONLY": "true"}):
+        proc = config("true", **override)
+        assert proc.returncode != 0
+        assert "direct_only cannot be combined" in proc.stderr
