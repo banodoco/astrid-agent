@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 import hashlib
-import http.client
 import json
 import os
 from pathlib import Path
@@ -38,6 +37,7 @@ from astrid.sdk.execution_request import normalize_execution_request
 from runpod_lifecycle.pod_agent import AgentServer
 # Reuse the delivered session owner's real native CPU engine, not a fake adapter.
 from tests.core.generation.test_engine_custody import installed_consumer, session, native_scratch
+from tests.core.generation.test_engine_endpoint_transport import EgressProxy, PROXY_ENV
 from tests._checkouts import runtime_checkout, vibecomfy_checkout
 
 pytestmark = pytest.mark.integration
@@ -170,16 +170,15 @@ def prepared_endpoint(installed_consumer, session, tmp_path, monkeypatch):
     server.RequestHandlerClass = RecordedHandler
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    def connection(self, timeout):
-        # Physical dial mapping only. Original hostname, TLS verification,
-        # origin check, safe bearer open and server authentication remain real.
-        result = http.client.HTTPSConnection(self._origin.hostname, timeout=timeout,
-                    context=ssl.create_default_context(cafile=str(cert)))
-        import socket
-        result._create_connection = lambda address, budget, *a: socket.create_connection(
-            ("127.0.0.1", server.server_port), budget)
-        return result
-    monkeypatch.setattr(EngineEndpointTransport, "_connection", connection)
+    # Exercise the supported HTTPS proxy and CA configuration, preserving the
+    # claimed hostname and real TLS and bearer authentication end to end.
+    proxy = EgressProxy(server.server_port)
+    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+    proxy_thread.start()
+    for name in PROXY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", proxy.url)
+    monkeypatch.setenv("SSL_CERT_FILE", str(cert))
     def read(path, *, deadline):
         return _run_sync(transport.read_endpoint_file(path, deadline=deadline))
     kwargs = dict(engine="vibecomfy-h3", platform=recipe.platform, endpoint_id="vibecomfy-h3",
@@ -191,6 +190,9 @@ def prepared_endpoint(installed_consumer, session, tmp_path, monkeypatch):
             claim_path=claim_path, claim=claim, calls=calls, pod=pod, staging=staging,
             registry=registry, owner=owner, recipe=recipe)
     finally:
+        proxy.shutdown()
+        proxy.server_close()
+        proxy_thread.join(5)
         server.shutdown()
         server.server_close()
         thread.join(5)
@@ -387,6 +389,7 @@ try:
 except Exception as error:
  observed['outcome']='refused'
  observed['error_type']=type(error).__name__
+ observed['error_message']=str(error)
 Path(configuration['host_observation']).write_text(json.dumps(observed))
 '''
 
@@ -423,7 +426,14 @@ def test_installed_host_argv_env_and_separate_action_main_refusal(installed_agen
     # Candidate checkout roots are excluded. Runtime/VibeComfy are the declared
     # read-only dependencies; lifecycle uses this candidate's own source.
     environment = {key: value for key, value in os.environ.items() if not key.startswith("ASTRID_")}
-    environment.update({"PYTHONPATH": os.pathsep.join((str(installed_agent),
+    # The host forwards approved site-packages roots to action children, not
+    # arbitrary checkout roots. Expose the pinned Runtime there as an installed
+    # dependency while keeping the candidate wheel as the product authority.
+    dependencies = tmp_path / "dependencies" / "site-packages"
+    dependencies.mkdir(parents=True)
+    for package in ("runtime_protocol", "astrid_runtime"):
+        (dependencies / package).symlink_to(runtime_checkout() / package, target_is_directory=True)
+    environment.update({"PYTHONPATH": os.pathsep.join((str(installed_agent), str(dependencies),
         str(Path(__file__).resolve().parents[4] / "lifecycle/src"), str(runtime_checkout()),
         str(vibecomfy_checkout()))),
         "PYTHONDONTWRITEBYTECODE": "1", "ASTRID_RUNTIME_CHECKOUT": str(runtime_checkout()),
@@ -438,6 +448,7 @@ def test_installed_host_argv_env_and_separate_action_main_refusal(installed_agen
     assert observed["reserved_absent_for_other_action"]
     assert observed["policy"] == {"allowed_protocols": ["dns", "tcp"],
         "allowed_destinations": ["127.0.0.1", "pod123-8000.proxy.runpod.net:443"], "allow_redirects": False}
+    assert Path(configuration["child_observation"]).exists(), json.dumps(observed)
     child = json.loads(Path(configuration["child_observation"]).read_bytes())
     assert child["pid"] != observed["host_pid"] and child["guard_active"] and child["external_denied"]
     assert Path(observed["host_origin"]).is_relative_to(installed_agent)

@@ -25,7 +25,7 @@ REPO = agent_checkout()
 BASES = {
     'astrid': 'e9340851c165a157a2dbdd4764cc446e44e3b69f',
     'astrid-runtime': '470f6f4f49de3318e0e57cda19ca6dd666cd5cc4',
-    'runpod-lifecycle': '29dae06e0ce8f350aac6586b178db6bebeae44b1',
+    'runpod-lifecycle': '96360a27a53c4608f780f7b370f747a2aa3c7ca8',
     'runpod': '0786b3d51855a66176fea1e7443b92e7ef2d01b5',
 }
 
