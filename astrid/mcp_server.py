@@ -162,6 +162,7 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
         raise ValueError(f"unknown arguments: {', '.join(sorted(unknown))}")
     argv = list(tool["path"])
     flags: list[str] = []
+    trailing_files: list[str] = []
     for spec in tool["args"]:
         if tool["path"] == ("timelines", "render") and spec["dest"] == "wait":
             continue
@@ -188,7 +189,14 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             value = json.dumps(value)
         option, kind = spec["option"], spec["kind"]
         if option is None:
-            argv += [str(v) for v in value] if isinstance(value, list) else [str(value)]
+            values = [str(v) for v in value] if isinstance(value, list) else [str(value)]
+            # A positional file must remain the final argument.  This leaves
+            # generated JSON and policy flags visible to argparse while still
+            # preserving a file argument as the command's terminal input.
+            if spec.get("value") == "file":
+                trailing_files += values
+            else:
+                argv += values
         elif kind == "_StoreTrueAction":
             if value:
                 flags.append(option)
@@ -207,9 +215,11 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             flags += [option, str(value)]
     if tool["path"] == ("timelines", "render"):
         flags.append("--detach")
+    if tool["json"]:
+        flags.append("--json")
     if tool["path"] == ("timelines", "edit") and "--no-sweep" not in flags:
         flags.append("--no-sweep")
-    return argv + flags + (["--json"] if tool["json"] else [])
+    return argv + flags + trailing_files
 
 
 def _astrid_env() -> dict[str, str]:
