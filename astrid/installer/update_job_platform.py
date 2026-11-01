@@ -62,6 +62,18 @@ def _job_paths(job: dict) -> tuple[Path, Path]:
     return root, log_path
 
 
+def _environment(value: dict) -> dict[str, str] | None:
+    environment = value.get("environment")
+    if environment is None:
+        return None
+    if (not isinstance(environment, dict)
+            or any(not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key)
+                   or not isinstance(item, str) or "\x00" in item
+                   for key, item in environment.items())):
+        raise ValueError("The update job environment is invalid.")
+    return dict(sorted(environment.items()))
+
+
 def _run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(args, text=True, capture_output=True, check=False,
                           stdin=subprocess.DEVNULL, timeout=30)
@@ -87,28 +99,32 @@ def describe(job: dict, command: list[str], system: str | None = None) -> dict:
     system, command = _system(system), _argv(command)
     _, operation = _job_name(job)
     root, log_path = _job_paths(job)
+    environment = _environment(job)
     if system == "linux":
         uid = os.getuid()
         unit = f"astrid-update-{operation}.service"
-        return {"format": "astrid-update-platform/v1", "system": system,
-                "kind": "systemd-user-transient", "name": unit, "unit": unit,
-                "user": str(uid), "operation_id": operation, "program_root": str(root),
-                "log_path": str(log_path), "command": command}
+        descriptor = {"format": "astrid-update-platform/v1", "system": system,
+                      "kind": "systemd-user-transient", "name": unit, "unit": unit,
+                      "user": str(uid), "operation_id": operation, "program_root": str(root),
+                      "log_path": str(log_path), "command": command}
+        return {**descriptor, **({"environment": environment} if environment is not None else {})}
     if system == "darwin":
         uid = os.getuid()
         label = f"astrid-update-{operation}"
-        return {"format": "astrid-update-platform/v1", "system": system,
-                "kind": "launchd-gui-one-shot", "name": label, "label": label,
-                "domain": f"gui/{uid}", "user": str(uid), "operation_id": operation,
-                "log_path": str(log_path), "program_root": str(root),
-                "plist_path": str(_private_path(job, f".{label}.plist")), "command": command}
+        descriptor = {"format": "astrid-update-platform/v1", "system": system,
+                      "kind": "launchd-gui-one-shot", "name": label, "label": label,
+                      "domain": f"gui/{uid}", "user": str(uid), "operation_id": operation,
+                      "log_path": str(log_path), "program_root": str(root),
+                      "plist_path": str(_private_path(job, f".{label}.plist")), "command": command}
+        return {**descriptor, **({"environment": environment} if environment is not None else {})}
     user_sid = _windows_sid()
     task_name = f"astrid-update-{operation}"
-    return {"format": "astrid-update-platform/v1", "system": system,
-            "kind": "scheduled-task-on-demand", "name": task_name, "task_name": task_name,
-            "user": user_sid, "operation_id": operation,
-            "log_path": str(log_path), "program_root": str(root),
-            "command": command}
+    descriptor = {"format": "astrid-update-platform/v1", "system": system,
+                  "kind": "scheduled-task-on-demand", "name": task_name, "task_name": task_name,
+                  "user": user_sid, "operation_id": operation,
+                  "log_path": str(log_path), "program_root": str(root),
+                  "command": command}
+    return {**descriptor, **({"environment": environment} if environment is not None else {})}
 
 
 def _validate(descriptor: dict, system: str | None = None) -> tuple[str, str]:
@@ -134,6 +150,7 @@ def _validate(descriptor: dict, system: str | None = None) -> tuple[str, str]:
     root, log = Path(descriptor.get("program_root", "")), Path(descriptor.get("log_path", ""))
     if not root.is_absolute() or not log.is_absolute() or not log.is_relative_to(root):
         raise ValueError("The update platform log path is invalid.")
+    _environment(descriptor)
     if actual in {"linux", "darwin"} and descriptor.get("user") != str(os.getuid()):
         raise ValueError("The update platform object belongs to another user.")
     if actual == "darwin":
@@ -170,6 +187,8 @@ def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
     values = [("Label", descriptor["label"]), ("ProgramArguments", command),
               ("RunAtLoad", True),
               ("StandardOutPath", str(log_path)), ("StandardErrorPath", str(log_path))]
+    if descriptor.get("environment") is not None:
+        values.append(("EnvironmentVariables", descriptor["environment"]))
     for key, value in values:
         ET.SubElement(dictionary, "key").text = key
         if isinstance(value, bool):
@@ -178,6 +197,11 @@ def _plist(descriptor: dict, command: list[str], log_path: Path) -> bytes:
             array = ET.SubElement(dictionary, "array")
             for item in value:
                 ET.SubElement(array, "string").text = item
+        elif isinstance(value, dict):
+            environment = ET.SubElement(dictionary, "dict")
+            for name, item in sorted(value.items()):
+                ET.SubElement(environment, "key").text = name
+                ET.SubElement(environment, "string").text = item
         else:
             ET.SubElement(dictionary, "string").text = value
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
@@ -216,6 +240,7 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
         raise ValueError("The update job log path must be absolute.")
     if log != Path(descriptor["log_path"]):
         raise ValueError("The update job log path differs from its durable descriptor.")
+    environment = _environment(descriptor) or {}
     if actual == "linux":
         if descriptor.get("user") != str(os.getuid()):
             raise ValueError("The systemd update job belongs to another user.")
@@ -224,6 +249,7 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
                 "--property=Restart=no",
                 f"--property=StandardOutput=append:{_systemd_path(log)}",
                 f"--property=StandardError=append:{_systemd_path(log)}",
+                *(f"--setenv={key}={value}" for key, value in environment.items()),
                 "--", *command]
         result = _run(args)
     elif actual == "darwin":
@@ -242,7 +268,10 @@ def launch(descriptor: dict, command: list[str], log_path: str | os.PathLike,
                          f"$exe = {_ps_quote(command[0])}\n"
                          f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
                          f"$log = {_ps_quote(str(log))}\n"
-                         "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
+                         + "".join("[Environment]::SetEnvironmentVariable("
+                                   f"{_ps_quote(key)}, {_ps_quote(value)}, 'Process')\n"
+                                   for key, value in environment.items())
+                         + "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
                          "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
         worker_encoded = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
         powershell_arguments = subprocess.list2cmdline(

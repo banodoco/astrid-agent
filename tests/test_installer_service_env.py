@@ -1,6 +1,7 @@
 """The login owner reads its settings without depending on a shell profile."""
 
 import json
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -73,6 +74,27 @@ def test_windows_stop_validation_accepts_exact_canonical_task_action(tmp_path, m
     manager.validate_stop_target(
         version, tmp_path / "data", owner_pid=None,
     )
+
+
+def test_windows_stop_validation_accepts_retained_pre_service_environment_action(tmp_path, monkeypatch):
+    from astrid.installer.core import switch
+
+    root = tmp_path / "program"
+    manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="win32")
+    version = Version(root / "versions" / "retained", tmp_path / "python.exe",
+                      tmp_path / "profile.json", {"PATH": "C:\\old-tools"})
+    version.root.mkdir(parents=True)
+    write_json(version.root / "version.json", version.document())
+    switch(root, version)
+    write_json(manager.selection, {
+        "owner": LABEL, "program_root": str(root), "data_root": str(tmp_path / "data"),
+    })
+    argv = command(version, tmp_path / "data", windows=True, log=manager.log,
+                   canonical_environment=False)
+    actions = [{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}]
+    monkeypatch.setattr(manager, "powershell", lambda _script: json.dumps(actions))
+
+    manager.validate_stop_target(version, tmp_path / "data", owner_pid=None)
 
 
 @pytest.mark.parametrize("mutation", ["executable", "profile", "argument"])

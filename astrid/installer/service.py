@@ -18,6 +18,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from runtime_protocol import platform
+from runtime_protocol.door import DEFAULT_DOOR_PORT
 
 from ..core.execution.platform_helpers import owned_by_current_user
 from .core import (
@@ -90,6 +91,59 @@ def default_program_root(home: Path, system: str) -> Path:
     if system == "linux":
         return Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share") / "astrid"
     return home / ".local" / "share" / "astrid"
+
+
+_LAUNCH_ENVIRONMENT_ALLOWLIST = frozenset({
+    "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PWD", "SHELL", "TMPDIR", "USER",
+    "USERNAME", "VIRTUAL_ENV", "PYENV_VERSION", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY", "WAYLAND_DISPLAY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+})
+
+
+def installer_environment(home: Path) -> dict[str, str]:
+    """Return profile-root variables derived from the selected installer home."""
+    return {
+        "HOME": str(home),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "LOCALAPPDATA": str(home / "AppData" / "Local"),
+        "USERPROFILE": str(home),
+    }
+
+
+def service_environment(version: Version | dict[str, str], data: Path, *, home: Path | None = None) -> dict[str, str]:
+    """Canonical Runtime environment for every managed service or update worker.
+
+    ``Version.env`` is the durable source of pinned tools and selected Runtime
+    settings.  Never fill its identity-bearing values from the manager's
+    ambient environment: login services, Pinokio, foreground launches, and
+    transient update jobs must all address the same installation.
+    """
+    source = version.env if isinstance(version, Version) else version
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in source.items()):
+        raise ValueError("The Runtime environment is invalid.")
+    selected_home = Path(source.get("HOME") or home or Path.home())
+    environment = dict(source)
+    environment = {**installer_environment(selected_home), **environment}
+    environment["ASTRID_RUNTIME_DATA_ROOT"] = str(data)
+    environment.setdefault("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))
+    if not environment.get("PATH"):
+        if isinstance(version, Version):
+            environment["PATH"] = str(version.python.parent) + os.pathsep + os.defpath
+        else:
+            environment["PATH"] = os.defpath
+    return dict(sorted(environment.items()))
+
+
+def launch_environment(version: Version, data: Path, *, home: Path | None = None) -> dict[str, str]:
+    """Return a filtered parent environment overlaid with the service contract."""
+    inherited = {
+        key: value for key, value in os.environ.items()
+        if key in _LAUNCH_ENVIRONMENT_ALLOWLIST and isinstance(value, str) and "\x00" not in value
+    }
+    inherited.update(service_environment(version, data, home=home))
+    return inherited
 
 
 def install_selection(home: Path, system: str) -> Path:
@@ -248,9 +302,13 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
 
 def command(version: Version, data: Path, *, windows: bool = False, log: Path | None = None,
             env_file: Path | None = None, extra_args: list[str] | None = None,
-            lock_fd: int | None = None, custody_fd: int | None = None) -> list[str]:
-    version = Version(version.root, version.python, version.profile,
-                      dict(sorted(version.env.items())), version.release, version.managed_by)
+            lock_fd: int | None = None, custody_fd: int | None = None,
+            canonical_environment: bool = True) -> list[str]:
+    # The version document is an admission identity.  Keep it byte-for-byte
+    # stable for existing installs; only the environment sent to Runtime is
+    # normalized for the current data root and launcher.
+    runtime_environment = (service_environment(version, data) if canonical_environment
+                           else dict(sorted(version.env.items())))
     python = version.python.with_name("pythonw.exe") if windows else version.python
     arguments = ["run", "--profile", "astrid", "--data-root", str(data),
                  "--source-manifest", str(version.profile), *(extra_args or [])]
@@ -258,7 +316,7 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
     source = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
     script = (source + "\n"
               + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}),custody={custody_fd is not None!r})\n"
-              + f"os.environ.update({version.env!r})\n")
+              + f"os.environ.update({runtime_environment!r})\n")
     if lock_fd is not None:
         script += f"os.set_inheritable({lock_fd},False)\n"
     if custody_fd is not None:
@@ -351,7 +409,7 @@ def render(system: str, version: Version, data: Path, log: Path, *, user: str = 
            env_file: Path | None = None) -> str:
     log = log.with_name("runtime-service.log")
     argv = command(version, data, windows=system == "win32", log=log, env_file=env_file)
-    service_env = dict(version.env)
+    service_env = service_environment(version, data)
     if system == "darwin":
         return plistlib.dumps({
             "Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
@@ -623,8 +681,10 @@ class Service:
         allowed = []
         for candidate in candidates:
             for env_file in (None, self.env_file):
-                argv = command(candidate, data, windows=True, log=self.log, env_file=env_file)
-                allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
+                for canonical_environment in (True, False):
+                    argv = command(candidate, data, windows=True, log=self.log, env_file=env_file,
+                                   canonical_environment=canonical_environment)
+                    allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
         if actions not in allowed:
             raise ValueError("The scheduled task does not match the selected installation.")
         return None
@@ -1020,11 +1080,7 @@ class Service:
 
     def start_foreground(self, version: Version, data: Path) -> None:
         """Detach one Runtime process without crash recovery or boot startup."""
-        env = {k: v for k, v in os.environ.items() if k not in {
-            "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
-            "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
-            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH"}}
-        env.update(version.env)
+        env = launch_environment(version, data, home=self.home)
         with self.log.open("a", encoding="utf-8") as stream:
             process = platform.spawn_tree(command(
                 version, data, env_file=self.env_file,

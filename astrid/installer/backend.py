@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from runtime_protocol import platform
-from runtime_protocol.door import DEFAULT_DOOR_PORT
+from runtime_protocol.door import DEFAULT_DOOR_PORT, DEFAULT_HOSTED_ORIGIN, describe_port_holder
 
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from .core import (
@@ -36,7 +37,7 @@ from .core import (
     write_json,
 )
 from .launcher import install_shim, owned_shim, remove_shim
-from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
+from .service import LABEL, Service, bootstrap_root, service_environment, platform_target, venv_python
 from .support import reveal_bundle
 from .tools import binary, install_tools, source
 
@@ -72,6 +73,19 @@ def _last_service_log(log: Path, *, tail: int = 8192) -> str | None:
         return value or None
     except OSError:
         return None
+
+
+def _preflight_default_door_port() -> None:
+    """Refuse a fresh fixed-port install before it publishes a service."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", DEFAULT_DOOR_PORT))
+        except OSError as exc:
+            holder = describe_port_holder(DEFAULT_DOOR_PORT, DEFAULT_HOSTED_ORIGIN)
+            raise ValueError(
+                f"{holder}; stop it or set ASTRID_RUNTIME_DOOR_PORT and "
+                "ASTRID_APP_DIRECT_DOOR_PORT before installing."
+            ) from exc
 
 
 def _classify_services(services, ready_file: Path) -> tuple[str, dict | None, dict | None]:
@@ -224,7 +238,8 @@ class Backend:
         if not python.is_file():
             return None  # The bootstrap Runtime can inspect a retained workspace.
         return Version(environment.parent, python, profile,
-                       {"PATH": str(python.parent) + os.pathsep + os.defpath},
+                       service_environment({"PATH": str(python.parent) + os.pathsep + os.defpath}, data,
+                                           home=self.service.home),
                        managed_by=self.managed_by)
 
     def has_workspace(self, data: Path) -> bool:
@@ -961,11 +976,19 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                   runtime / "packages" / "python", agent, vibecomfy])
         env = install_tools(manifest, folder / "tools", platform_target(), self.run)
         prior = current(root) or self.existing(data)
-        env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
-                    "ASTRID_RUNTIME_DOOR_PORT": os.environ.get(
-                        "ASTRID_RUNTIME_DOOR_PORT",
-                        prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT)) if prior else str(DEFAULT_DOOR_PORT)),
-                    "PATH": str(python.parent) + os.pathsep + env["PATH"]})
+        if prior is None:
+            door_port = os.environ.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))
+            if door_port == str(DEFAULT_DOOR_PORT):
+                _preflight_default_door_port()
+        else:
+            # An update continues addressing the existing App/Runtime pair.
+            # An ambient shell override must not silently split that pair.
+            door_port = prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))
+        env = service_environment(
+            {**env, "PATH": str(python.parent) + os.pathsep + env["PATH"],
+             "ASTRID_RUNTIME_DOOR_PORT": door_port},
+            data, home=self.service.home,
+        )
         profile = folder / "profile.json"
         version = Version(folder, python, profile, env, **install_identity(folder))
         env = version.env
