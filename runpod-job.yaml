@@ -1,0 +1,65 @@
+repos:
+  astrid-agent: 478b2a54c4762d5b06b9e26c36cc551e4cfad2a9
+  astrid-runtime: 1e6d899efa77a2d6ec247c38250f9748330bb587
+cpu:
+  vcpu: 8
+gpu: false
+max_minutes: 45
+setup:
+  - |
+      set -euo pipefail
+      mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"
+      export TMPDIR="$PWD/runpod-tmp"
+      python3 -m venv "$TMPDIR/venv"
+      PYTHON="$TMPDIR/venv/bin/python"
+      "$PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+      "$PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation . ../astrid-runtime ../astrid-runtime/packages/python
+      "$PYTHON" -m pip freeze > runpod-evidence/environment.txt
+run:
+  - |
+      set -uo pipefail
+      mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"
+      export TMPDIR="$PWD/runpod-tmp" PYTHONDONTWRITEBYTECODE=1
+      export ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)"
+      export PYTHONPATH="$PWD:$ASTRID_RUNTIME_CHECKOUT:$ASTRID_RUNTIME_CHECKOUT/packages/python"
+      PYTHON="$TMPDIR/venv/bin/python"
+      finish() {
+        code=$?
+        if [ "$code" -eq 0 ]; then verdict=PASS; else verdict=FAIL; fi
+        printf 'VERDICT=%s\n' "$verdict" > runpod-evidence/VERDICT
+        printf '%s\n' "$code" > runpod-evidence/payload-exit.txt
+        sha256sum runpod-evidence/* > runpod-evidence/SHA256SUMS 2>/dev/null || true
+        exit "$code"
+      }
+      trap finish EXIT
+      test "$(git rev-parse HEAD)" = 478b2a54c4762d5b06b9e26c36cc551e4cfad2a9
+      test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 1e6d899efa77a2d6ec247c38250f9748330bb587
+      git rev-parse HEAD > runpod-evidence/agent-head.txt
+      git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
+      git diff --check
+      git diff --name-only 020877f12ea490308a9e5f9564c8f4a4bf77ede1 HEAD > runpod-evidence/changed-paths.txt
+      sha256sum runpod-evidence/changed-paths.txt > runpod-evidence/changed-paths.sha256
+      "$PYTHON" --version > runpod-evidence/python.txt
+      "$PYTHON" -m pytest --version > runpod-evidence/pytest.txt
+      uname -a > runpod-evidence/platform.txt
+      selectors="tests/test_installer_platforms.py tests/test_installer_service_env.py tests/test_update_job_platform.py tests/test_installer_update_reconcile.py tests/test_installer_update_continuation.py tests/test_installer_update_continuation_worker.py"
+      "$PYTHON" -m pytest -p no:cacheprovider -o addopts= --collect-only -q $selectors 2>&1 | tee runpod-evidence/collection.log
+      collection_exit=${PIPESTATUS[0]}
+      printf '%s\n' "$collection_exit" > runpod-evidence/collection.exit
+      failures=0
+      if [ "$collection_exit" -ne 0 ]; then failures=1; fi
+      run_group() {
+        name=$1
+        shift
+        "$PYTHON" -m pytest -p no:cacheprovider -o addopts= -q --junitxml="runpod-evidence/$name.xml" "$@" 2>&1 | tee "runpod-evidence/$name.log"
+        group_exit=${PIPESTATUS[0]}
+        printf '%s\n' "$group_exit" > "runpod-evidence/$name.exit"
+        if [ "$group_exit" -ne 0 ]; then failures=1; fi
+      }
+      run_group installer-platforms tests/test_installer_platforms.py
+      run_group service-env tests/test_installer_service_env.py
+      run_group update-job-platform tests/test_update_job_platform.py
+      run_group update-compat tests/test_installer_update_reconcile.py tests/test_installer_update_continuation.py tests/test_installer_update_continuation_worker.py
+      if [ "$failures" -ne 0 ]; then exit 1; fi
+artifacts:
+  - runpod-evidence/**
