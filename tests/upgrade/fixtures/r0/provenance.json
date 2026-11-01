@@ -1,0 +1,67 @@
+{
+  "source_url": "https://astrid.haus/install-manifest.json",
+  "fetched_at_utc": "2026-11-01T18:11:44.158599505Z",
+  "fetch_started_at_utc": "2026-11-01T18:11:43.498615844Z",
+  "http_status": 200,
+  "effective_url": "https://astrid.haus/install-manifest.json",
+  "response_headers": {
+    "date": "Sun, 01 Nov 2026 18:11:44 GMT",
+    "etag": null,
+    "last-modified": null,
+    "cache-control": "public, max-age=60, must-revalidate",
+    "age": null,
+    "content-type": "application/json; charset=utf-8",
+    "content-length": "4689",
+    "server": "railway-hikari",
+    "x-content-type-options": "nosniff",
+    "x-railway-request-id": "FLBtocQDQjKHLQvsWVMv1w",
+    "x-hikari-trace": "iad1.dh1s",
+    "x-railway-edge": "iad1",
+    "vary": "accept-encoding"
+  },
+  "byte_count": 4689,
+  "sha256": "fe12781e4da60d441595c08f84cb8d0390d840ab7c71227b8c4eff791553795e",
+  "manifest_identity": {
+    "schema_version": 1,
+    "manifest_release": 0,
+    "agent_sha": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+    "runtime_sha": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+    "runtime_schema_digest": "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b",
+    "python_version": "3.11.13"
+  },
+  "source_commit_pins": {
+    "agent": {
+      "repository": "banodoco/astrid-agent",
+      "sha": "3204bb00135bec8ee2d2d3fb21eed5abfceca649"
+    },
+    "runtime": {
+      "repository": "banodoco/astrid-runtime",
+      "sha": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"
+    },
+    "oh_my_pi": {
+      "repository": "https://github.com/peteromallet/oh-my-pi",
+      "sha": "78f0e0960f471c2c62b943272a48c33366f239fe"
+    }
+  },
+  "served_tuple_source": "tests/upgrade/releases.json at base 020877f12ea490308a9e5f9564c8f4a4bf77ede1, release id served",
+  "served_tuple_identity": {
+    "id": "served-runtime-6d53-identityless-v31",
+    "app_manifest_commit": "d174f667aa04a7c43e6b0f767abb168b6022a6ab",
+    "installed_manifest_sha256": "4610f44b4dfe39d932753115668779390ed2287d15e2bd8c9568e62bbb6d60ff",
+    "install_manifest_schema_version": 1,
+    "agent_sha": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+    "runtime_sha": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+    "protocol": "workspace.v1",
+    "schema_digest": "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b",
+    "workspace_schema_version": 31,
+    "version_record_keys": [
+      "env",
+      "profile",
+      "python",
+      "root"
+    ],
+    "manifest_release": 0,
+    "python_version": "3.11.13",
+    "version_id_prefix": "3204bb00-6d53a190-"
+  }
+}
