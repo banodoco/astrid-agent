@@ -129,8 +129,24 @@ def staged_installer(tmp_path, monkeypatch, release_wheel):
             return ""  # Dependency acquisition is outside this wheel proof.
         assert "--no-deps" in argv
         python = argv[argv.index("--python") + 1]
-        _run([python, "-I", "-m", "pip", "install", "--no-index", "--no-deps",
-              release_wheel], cwd=outside)
+        diagnostic = subprocess.run(
+            [python, "-I", "-m", "pip", "install", "--no-index", "--no-deps",
+             "--ignore-installed", release_wheel],
+            cwd=outside, capture_output=True, text=True, timeout=180, check=False,
+        )
+        pip_output = diagnostic.stdout + diagnostic.stderr
+        assert diagnostic.returncode == 0, pip_output
+        origins = json.loads(_run([python, "-I", "-c", r'''
+import importlib, json
+names = ("astrid", "astrid_runtime_client")
+print(json.dumps({name: importlib.import_module(name).__file__ for name in names}))
+'''], cwd=outside))
+        escaped = {name: origin for name, origin in origins.items()
+                   if not Path(origin).is_relative_to(state.product_root)}
+        assert not escaped, (
+            f"real wheel imports escaped child site-packages: {escaped}\n"
+            f"child pip output:\n{pip_output}"
+        )
         if state.damage_at == "wheel":
             _damage(state.product_root / SCHEMA, state.damage, outside)
         return ""
