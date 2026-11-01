@@ -120,6 +120,11 @@ def test_workflow_inputs_cross_real_runtime_and_preserve_exact_source(
         assert code == 0, captured.out + captured.err
         assert len(results) == 1 and results[0].state == 'succeeded'
         assert client.media.read_bytes(digest) == data
+        receipt = json.loads((tmp_path / 'attempt' / 'outputs' / 'managed-generation' /
+                              'managed-generation-result.json').read_text())
+        assert receipt['inputs']['source']['object_id'] == digest
+        assert receipt['inputs']['values']['prompt'] == 'A01 input prompt'
+        assert receipt['inputs']['values']['seed'] == 19
         assert len(admitted) == 1
         assert admitted[0]['inputs']['source']['digest'] == digest
         assert any(node['class_type'] == 'CLIPTextEncode' and
