@@ -1,0 +1,164 @@
+name: Merge Linux suite
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_ref:
+        description: Agent ref
+        required: true
+        type: string
+      runtime_ref:
+        description: Runtime ref
+        required: true
+        type: string
+      app_ref:
+        description: App ref
+        required: true
+        type: string
+      pinokio_ref:
+        description: Pinokio ref
+        required: true
+        type: string
+      command:
+        description: Bash command to execute from the workspace root
+        required: true
+        type: string
+      artifact_paths:
+        description: Newline-separated workspace-relative artifact paths or globs
+        required: true
+        type: string
+      slot:
+        description: Suite slot (requests in the same slot queue)
+        required: true
+        default: '1'
+        type: choice
+        options: ['1', '2', '3', '4', '5', '6']
+  workflow_call:
+    inputs:
+      agent_ref:
+        required: true
+        type: string
+      runtime_ref:
+        required: true
+        type: string
+      app_ref:
+        required: true
+        type: string
+      pinokio_ref:
+        required: true
+        type: string
+      command:
+        required: true
+        type: string
+      artifact_paths:
+        required: true
+        type: string
+      slot:
+        required: false
+        default: '1'
+        type: string
+    secrets:
+      repository_token:
+        required: false
+
+# Map all inputs, including invalid reusable-workflow inputs, onto six groups.
+# queue:max preserves up to 100 waiting requests per slot; it is not a global
+# load balancer. Slots are repository-scoped for reusable workflow callers.
+concurrency:
+  group: merge-linux-suite-${{ (inputs.slot == '2' && '2') || (inputs.slot == '3' && '3') || (inputs.slot == '4' && '4') || (inputs.slot == '5' && '5') || (inputs.slot == '6' && '6') || '1' }}
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      ASTRID_AGENT_CHECKOUT: ${{ github.workspace }}/agent
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      ASTRID_APP_CHECKOUT: ${{ github.workspace }}/app
+      ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/pinokio
+    steps:
+      - name: Initialize evidence and validate slot
+        env:
+          SLOT: ${{ inputs.slot }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/merge-suite-evidence"
+          printf 'EVIDENCE_DIR=%s/merge-suite-evidence\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          case "$SLOT" in 1|2|3|4|5|6) ;; *) echo 'slot must be 1 through 6' >&2; exit 1 ;; esac
+      - name: Check out Agent
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ inputs.agent_ref }}
+          path: agent
+          token: ${{ secrets.repository_token || github.token }}
+          persist-credentials: false
+      - name: Check out Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ inputs.runtime_ref }}
+          path: runtime
+          token: ${{ secrets.repository_token || github.token }}
+          persist-credentials: false
+      - name: Check out App
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ${{ inputs.app_ref }}
+          path: app
+          token: ${{ secrets.repository_token || github.token }}
+          persist-credentials: false
+      - name: Check out Pinokio
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ inputs.pinokio_ref }}
+          path: pinokio
+          token: ${{ secrets.repository_token || github.token }}
+          persist-credentials: false
+      - name: Record effective checkout identities
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+        run: |
+          for repo in agent runtime app pinokio; do
+            printf '%s %s\n' "$repo" "$(git -C "$repo" rev-parse HEAD)"
+          done | tee "$EVIDENCE_DIR/tuple.txt" >> "$GITHUB_STEP_SUMMARY"
+          printf 'workflow_repository %s\nworkflow_ref %s\nworkflow_sha %s\nrun_id %s\nrun_attempt %s\n' "$WORKFLOW_REPOSITORY" "$WORKFLOW_REF" "$WORKFLOW_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$EVIDENCE_DIR/tuple.txt"
+      - name: Run requested command
+        id: suite
+        env:
+          SUITE_COMMAND: ${{ inputs.command }}
+        run: |
+          set +e
+          bash --noprofile --norc -eo pipefail -c "$SUITE_COMMAND"
+          code=$?
+          set -e
+          printf '%s\n' "$code" > "$EVIDENCE_DIR/exit-code.txt"
+          printf 'exit_code=%s\n' "$code" >> "$GITHUB_OUTPUT"
+      - name: Upload suite artifacts
+        if: ${{ always() && steps.suite.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge-suite-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ inputs.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload tuple and exit code
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge-suite-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/merge-suite-evidence/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Propagate command exit code
+        if: ${{ always() && steps.suite.outputs.exit_code != '' }}
+        env:
+          EXIT_CODE: ${{ steps.suite.outputs.exit_code }}
+        run: exit "$EXIT_CODE"
