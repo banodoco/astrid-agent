@@ -96,12 +96,33 @@ def test_c0_digest_gate_retains_approved_media_and_pending_proof():
     }
 
 
+def test_generation_mcp_selectors_preserve_paid_and_release_controls():
+    from astrid import mcp_server
+    from astrid.core.generation.cli import _parser
+
+    tools = mcp_server._generation_tools()
+    assert {"generate_list", "generate_targets", "generate_describe", "generate_launch",
+            "generate_image", "generate_video", "generate_workflow", "generate_release"} <= set(tools)
+    argv = mcp_server.argv_for(tools["generate_image"], {
+        "entry": "z-image", "mode": "t2i", "target": "runpod", "consent": ["paid"],
+        "max_usd": 2.0, "deadline": "2099-01-01T00:00:00Z", "no_wait": True,
+    })
+    parsed = _parser().parse_args(argv[1:])
+    assert (parsed.entry, parsed.target, parsed.consent, parsed.max_usd, parsed.deadline,
+            parsed.no_wait) == ("z-image", "runpod", ["paid"], 2.0, "2099-01-01T00:00:00Z", True)
+    release = mcp_server.argv_for(tools["generate_release"], {
+        "engine": "comfyui", "target": "runpod", "no_wait": True,
+    })
+    parsed = _parser().parse_args(release[1:])
+    assert (parsed.engine, parsed.target, parsed.no_wait) == ("comfyui", "runpod", True)
+
+
 def _snapshot(root):
     return {str(path.relative_to(root)): path.read_bytes() if path.is_file() else None
             for path in root.rglob("*")}
 
 
-def _package_probe(tmp_path, source):
+def _package_probe(tmp_path, source, *, saved_target=False):
     profile = os.environ.get("ASTRID_HOST_EXECUTION_PROFILE", "source")
     assert profile in {"source", "installed"}
     if profile == "installed":
@@ -111,6 +132,10 @@ def _package_probe(tmp_path, source):
         package_root = REPO
     cwd = tmp_path / "unrelated"
     cwd.mkdir()
+    if saved_target:
+        config = Path.home() / ".vibecomfy/config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text('[comfyui]\nowner = "human"\nurl = "http://127.0.0.1:8199"\n')
     # Retain the interpreter's provisioned dependencies. The explicitly chosen
     # package root is first; the child asserts its actual imported origin.
     env = {key: value for key, value in os.environ.items()
@@ -133,7 +158,7 @@ def _package_probe(tmp_path, source):
     return result
 
 
-_READ_ONLY_PREAMBLE = """
+_READ_ONLY_PREAMBLE = r"""
 import io, json, socket
 from contextlib import redirect_stdout, nullcontext
 from types import SimpleNamespace
@@ -149,9 +174,11 @@ socket.socket.connect = forbidden
 socket.create_connection = forbidden
 source_setup.provision = forbidden
 cli._open_client = forbidden
-# Listing normally probes loopback ComfyUI. Supply an empty offline capture
-# through its existing target-inventory seam; metadata remains real.
+# Use the existing listing seams for a tiny offline catalog and empty target
+# capture. The installed gateway, parser and readiness projection remain real.
 listing._targets = lambda: []
+listing.catalog_rows = lambda: [dict(id='a08-offline-image', kind='image', mode='t2i',
+    backend='', template='', source='fixture', availability='fixture-only', reason='offline fixture')]
 def command(argv):
     output = io.StringIO()
     with redirect_stdout(output):
@@ -161,21 +188,23 @@ def command(argv):
 """
 
 
-def test_generation_package_probe(tmp_path):
+@pytest.mark.parametrize("saved_target", [False, True])
+def test_generation_package_probe(tmp_path, saved_target):
     result = _package_probe(tmp_path, _READ_ONLY_PREAMBLE + """
-from astrid.skills.discovery import list_skills, PACKS_DIR
+from importlib import resources
 listing = command(['list'])
 targets = command(['targets'])
-descriptors = {item.pack_id: item for item in list_skills(PACKS_DIR)}
-assert {'_core', 'generation', 'vibecomfy'} <= set(descriptors)
+assert listing[0]['id'] == 'a08-offline-image'
+root = resources.files('astrid')
 for name in ('_core', 'generation', 'vibecomfy'):
-    descriptor = descriptors[name]
-    assert descriptor.skill_dir.is_relative_to(Path(astrid.__file__).parent)
-    assert (descriptor.skill_dir / 'SKILL.md').read_text(encoding='utf-8').strip()
-print(json.dumps({'origin': astrid.__file__, 'skills': sorted(descriptors),
+    assert root.joinpath('packs', name, 'docs', 'SKILL.md').read_text(encoding='utf-8').strip()
+print(json.dumps({'origin': astrid.__file__, 'skills': ['_core', 'generation', 'vibecomfy'],
                   'listing': listing, 'targets': targets}))
-""")
+""", saved_target=saved_target)
     assert {"_core", "generation", "vibecomfy"} <= set(result["skills"])
+    if saved_target:
+        assert result["targets"]["target"]["owner"] == "human"
+        assert result["targets"]["target"]["endpoint"] == "http://127.0.0.1:8199"
 
 
 def test_runpod_package_fake_owner(tmp_path):
@@ -194,7 +223,7 @@ description = command(['describe', '--target', 'runpod'])
 release = command(['release', '--engine', 'comfyui', '--target', 'runpod', '--no-wait'])
 assert events == ['describe', ['release', False]]
 print(json.dumps({'origin': astrid.__file__, 'description': description, 'release': release}))
-""")
+""", saved_target=True)
     assert result["description"]["placement"] == "runpod"
     assert result["release"]["state"] == "cleanup_pending"
     assert result["release"]["idempotency_key"] == "runpod-release:operation-a"

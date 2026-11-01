@@ -97,8 +97,9 @@ tests/test_installed_generation_journey.py::test_runpod_package_fake_owner
 ```
 
 The first checks imported package origin, shipped skills and non-writing CLI
-metadata from an unrelated directory, using an empty fake target inventory in
-place of loopback probes. The second uses the real gateway/SDK and
+metadata from an unrelated directory, using a small fake catalog and empty
+target inventory in place of broad discovery and loopback probes. The real
+CLI parser and readiness projection run. The second uses the real gateway/SDK and
 a fake RunPod host owner for describe/release admission. A10 and pack fake tests
 cover image/video/workflow/H3, consent, follow and release recovery. The
 first-run tests use the existing installer transaction and local Git fixture,
