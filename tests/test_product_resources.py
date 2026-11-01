@@ -49,3 +49,7 @@ def test_generic_host_selects_matrix_only_for_its_own_installed_packs(tmp_path, 
         SimpleNamespace(pack_roots=[root / "astrid/packs"])) == matrix
     assert generic_host.GenericPackHost._default_matrix_path(
         SimpleNamespace(pack_roots=[tmp_path / "other"])) is None
+    matrix.unlink()
+    with pytest.raises(generic_host.HostError, match="reinstall or update"):
+        generic_host.GenericPackHost._default_matrix_path(
+            SimpleNamespace(pack_roots=[root / "astrid/packs"]))

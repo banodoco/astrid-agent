@@ -6820,8 +6820,8 @@ class GenericPackHost:
             return product_resource("astrid-beta-capabilities.json",
                                     package_root=checkout / "astrid/resources",
                                     source=checkout / "config/astrid-beta-capabilities.json")
-        except FileNotFoundError:
-            return None
+        except FileNotFoundError as exc:
+            raise HostError("Astrid capability matrix is missing; reinstall or update Astrid") from exc
 
     @staticmethod
     def _load_matrix(path: Path | None) -> dict[str, dict[str, Any]]:
