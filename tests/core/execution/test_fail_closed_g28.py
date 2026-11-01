@@ -270,7 +270,9 @@ def test_cancel_completion_error_propagates_and_retains_pending_evidence(case, m
     cleanup = case.host.last_cleanup_receipt
     assert cleanup["intended_disposition"] == ("caller_owned" if caller_owned else "retained")
     assert case.root.exists()
-    assert receipt(case)["publication"]["status"] == "not_settled"
+    assert receipt(case)["publication"]["status"] == "unconfirmed"
+    assert receipt(case)["completion_diagnostic"]["status"] == "unconfirmed"
+    assert not case.host._handoff_observation_known
 
 
 @pytest.mark.parametrize("loss", ["task_read", "queued", "successor", "fence", "heartbeat", "expired", "resource_expired",
