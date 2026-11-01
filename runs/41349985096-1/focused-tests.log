@@ -1,0 +1,9 @@
+pytest -c /dev/null --no-conftest -q tests/test_ci_journey.py::test_windows_preflight_handles_absent_tasks_without_hiding_scheduler_errors tests/test_ci_journey.py::test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root
+ImportError while loading conftest 'D:\a\astrid-agent\astrid-agent\tests\conftest.py'.
+tests\conftest.py:22: in <module>
+    from astrid.core.pack import source_setup
+astrid\core\pack\__init__.py:44: in <module>
+    from astrid.core.pack.canonical import (
+astrid\core\pack\canonical.py:20: in <module>
+    import jsonschema
+E   ModuleNotFoundError: No module named 'jsonschema'
