@@ -121,6 +121,8 @@ def _entry_support(entry_id: str) -> tuple[str, set[str], list[dict[str, Any]]]:
     # find_entry is the shared ambiguity authority for workflow/action entries.
     workflow = entries.find_entry(entry_id)
     if workflow is not None:
+        if workflow.get("action"):
+            raise ValueError(f"entry {entry_id!r} is an action, not a local workflow; hosted runs are a one-off choice")
         kind = workflow.get("kind")
         modes = set(workflow.get("modes", []))
         details = entries.describe_entry(entry_id)
@@ -200,7 +202,7 @@ def _show_defaults(args):
     from astrid.core.generation import defaults
     from astrid.core.generation.listing import _local_readiness
     from astrid.core.model_catalog.registry import ModelRegistry
-    from astrid.core.generation.preflight import select_generation_target
+    from astrid.core.generation.preflight import generation_error, readiness_envelope, select_generation_target
 
     try:
         configured, _version = defaults.load(args.client)
@@ -222,6 +224,7 @@ def _show_defaults(args):
                                        configured=configured, entries=inventory)
             builtin = list(defaults.BUILTINS.get(key, ()))
             candidates = []
+            observations = {}
             for candidate in rows:
                 entry_id = candidate["entry"]
                 entry = candidate.get("candidate")
@@ -230,29 +233,36 @@ def _show_defaults(args):
                               {"ready": False, "reason": f"entry {entry_id!r} is not available on this machine",
                                "fix": "Import the local generation entry again."})
                 ready = ready_info.get("ready") is True
-                fixes = []
-                if not ready and candidate.get("origin") == "user":
-                    fixes.append({"argv": ["astrid", "preferences", "defaults", "reset", key],
-                                  "scope": "read_only"})
                 candidates.append({"entry": entry_id, "origin": candidate["origin"], "ready": ready})
-                if candidate["origin"] == "user":
-                    readiness = {"entry": entry_id, "target": getattr(target_record, "url", None),
-                                 "status": "ready" if ready else "blocked",
-                                 "issues": [] if ready else [{"code": "missing_dependency",
-                                                              "message": ready_info.get("reason", "entry is not ready"),
-                                                              "fix": ready_info.get("fix", "")}],
-                                 "fixes": fixes}
-            chosen = candidates[0] if candidates else None
+                observations[entry_id] = (entry, ready_info)
+            chosen = (candidates[0] if candidates and candidates[0]["origin"] == "user" else
+                      next((candidate for candidate in candidates if candidate["ready"]), None))
             source = chosen["origin"] if chosen else "none"
+            # A saved choice remains selected even when blocked. If no automatic
+            # candidate is ready, explain the first attempted candidate's failure.
+            observed = chosen or (candidates[0] if candidates else None)
+            if observed:
+                entry, info = observations[observed["entry"]]
+                description = {"id": observed["entry"], "kind": kind, "mode": mode}
+                record = getattr(target, "generation_target", None)
+                if observed["ready"]:
+                    readiness = readiness_envelope(entry=description, target=record)
+                else:
+                    fixes = ([{"argv": ["astrid", "preferences", "defaults", "reset", key],
+                               "scope": "read_only"}] if observed["origin"] == "user" else [])
+                    readiness = generation_error(
+                        ValueError(info.get("reason") or "entry is not ready"),
+                        code="input_rejected" if entry is None else "missing_dependency",
+                        entry=description, target=record,
+                        details={"default_source": observed["origin"], "fix": info.get("fix", "")},
+                        fixes=fixes).readiness
+            else:
+                readiness = {"entry": None, "target": None, "status": "none", "issues": [], "fixes": []}
             slots.append({"slot": key, "kind": kind, "mode": mode,
                           "configured": configured["slots"].get(key), "builtin": builtin,
                           "selected": chosen["entry"] if chosen else None,
                           "source": source, "candidates": candidates,
-                          "readiness": readiness if configured["slots"].get(key) else
-                          {"entry": chosen["entry"] if chosen else None,
-                           "status": "ready" if chosen and chosen["ready"] else "blocked" if chosen else "none",
-                           "issues": [], "fixes": []}})
-            readiness = None
+                          "readiness": readiness})
         data = {"target": getattr(getattr(target, "target", None), "url", None),
                 "library": _library_names(target), "slots": slots}
         return _default_render(DomainResult.success(data), args.json)

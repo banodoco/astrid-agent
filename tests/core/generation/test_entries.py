@@ -52,26 +52,226 @@ def test_gateway_workflow_dispatch(monkeypatch):
 
 
 def test_explicit_entry_plan_is_visible(loopback_comfy, tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import defaults
     from vibecomfy.entries import import_as_entry
     from vibecomfy.registry.ready import workflow_from_ready
     from vibecomfy.workflow_bundle import load_bundle
     source = tmp_path / "ui.json"
     source.write_text(json.dumps(load_bundle(workflow_from_ready("image/z_image_turbo")).materialize_ui()))
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path / "entries"))
+    fake_client = SimpleNamespace(_remote=SimpleNamespace(_transport=SimpleNamespace(
+        get_user_app_state=lambda _key: SimpleNamespace(content={
+            "schema": defaults.SCHEMA, "slots": {"image/t2i": "z-image"}}, version=1))))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(fake_client))
     import_as_entry(source, "mine")
     assert cli.main(["image", "hello", "--entry", "mine", "--target", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["entry"]["id"] == "mine" and plan["entry"]["reason"] == "explicitly selected workflow entry"
     assert plan["entry"]["bindings"]["prompt"] == "hello"
+    assert plan["selected"] == "mine" and plan["default_source"] == "explicit"
 
 
 def test_default_plan_selects_highest_ranked_ready_entry(loopback_comfy, monkeypatch, capsys):
     monkeypatch.setattr(entries, "user_entries", lambda: [])
+    from types import SimpleNamespace
+    fake_client = SimpleNamespace(_remote=SimpleNamespace(_transport=SimpleNamespace(
+        get_user_app_state=lambda key: SimpleNamespace(content=None, version=0))))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(fake_client))
     assert cli.main(["image", "hello", "--target", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["entry"]["id"] == "z-image"
     assert "highest-ranked ready" in plan["entry"]["reason"]
     assert plan["target"]["endpoint"] == loopback_comfy.url
+    assert plan["selected"] == plan["entry"]["id"]
+    assert plan["default_source"] in {"builtin", "fallback"}
+
+
+def test_defaults_storage_uses_runtime_cas_and_refuses_unknown_schema():
+    from types import SimpleNamespace
+    from astrid.core.generation import defaults
+
+    class Transport:
+        def __init__(self, content=None, version=0, conflict=False):
+            self.content, self.version, self.conflict, self.writes = content, version, conflict, []
+        def get_user_app_state(self, key):
+            assert key == defaults.APP_STATE_KEY
+            return SimpleNamespace(content=self.content, version=self.version)
+        def update_user_app_state(self, key, content, *, expected_version, idempotency_key):
+            assert expected_version == self.version and idempotency_key
+            if self.conflict:
+                raise RuntimeError("version_conflict")
+            self.writes.append(content)
+            self.content, self.version = content, self.version + 1
+            return SimpleNamespace(content=content, version=self.version)
+
+    transport = Transport()
+    client = SimpleNamespace(_remote=SimpleNamespace(_transport=transport))
+    assert defaults.save(client, "image/t2i", "mine")["slots"] == {"image/t2i": "mine"}
+    assert transport.version == 1
+
+    conflict = Transport({"schema": defaults.SCHEMA, "slots": {}}, version=4, conflict=True)
+    with pytest.raises(RuntimeError, match="version_conflict"):
+        defaults.save(SimpleNamespace(_remote=SimpleNamespace(_transport=conflict)), "image/t2i", "mine")
+    assert conflict.content == {"schema": defaults.SCHEMA, "slots": {}} and conflict.writes == []
+
+    newer = Transport({"schema": "astrid.generation-defaults/v99", "slots": {"x": "y"}}, version=9)
+    with pytest.raises(defaults.DefaultsSchemaError):
+        defaults.save(SimpleNamespace(_remote=SimpleNamespace(_transport=newer)), "image/t2i", "mine")
+    assert newer.version == 9 and newer.writes == []
+
+    empty = Transport({}, version=1)
+    with pytest.raises(defaults.DefaultsSchemaError):
+        defaults.save(SimpleNamespace(_remote=SimpleNamespace(_transport=empty)), "image/t2i", "mine")
+    assert empty.content == {} and empty.writes == []
+
+
+def test_default_candidates_user_choice_beats_builtin_and_keeps_target():
+    from astrid.core.generation import defaults
+    target = SimpleNamespace(generation_target=SimpleNamespace(as_dict=lambda: {"endpoint": "http://127.0.0.1:8188"}))
+    rows = [
+        {"id": "qwen-image-2.1-turbo", "kind": "image", "mode": "t2i", "backend": "local"},
+        {"id": "mine", "kind": "image", "mode": "t2i", "backend": "local"},
+    ]
+    ordered = defaults.candidates(target, kind="image", mode="t2i",
+        configured={"schema": defaults.SCHEMA, "slots": {"image/t2i": "mine"}}, entries=rows)
+    assert [(row["entry"], row["origin"]) for row in ordered] == [("mine", "user")]
+    assert ordered[0]["target"] == {"endpoint": "http://127.0.0.1:8188"}
+
+
+def test_default_candidates_match_kind_mode_and_local_backend():
+    from astrid.core.generation import defaults
+    rows = [
+        {"id": "ltx-2.3", "kind": "video", "mode": "t2v", "backend": "local"},
+        {"id": "ltx-2.3", "kind": "video", "mode": "i2v", "backend": "local"},
+        {"id": "ltx-2.3", "kind": "video", "mode": "t2v", "backend": "cloud"},
+    ]
+    row = defaults.candidates(None, kind="video", mode="t2v", entries=rows)[0]
+    assert row["candidate"] == rows[0]
+
+
+def test_action_entry_cannot_be_saved_as_a_local_default(monkeypatch):
+    from astrid.core.cli.domain_preferences import _validate_default_entry
+    monkeypatch.setattr(entries, "find_entry", lambda _: {
+        "id": "hosted-action", "kind": "image", "modes": ["t2i"], "action": "remote.run"})
+    with pytest.raises(ValueError, match="not a local workflow"):
+        _validate_default_entry("image", "hosted-action")
+
+
+def test_run_output_exposes_selected_entry_and_source(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core.generation import delivery
+    selected = SimpleNamespace(to_dict=lambda: {"ok": True}, selected="z-image", default_source="explicit")
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(
+        image=lambda **_kwargs: selected))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(object()))
+    monkeypatch.setattr(delivery, "deliver_generation", lambda result, **_kwargs: {
+        **result.to_dict(), "image_paths": ["/caller/output.png"]})
+    assert cli.main(["image", "hello", "--entry", "z-image", "--target", "http://127.0.0.1:8188", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selected"] == "z-image" and payload["default_source"] == "explicit"
+    assert payload["image_paths"] == ["/caller/output.png"]
+
+
+def test_show_listing_and_generate_resolve_the_same_candidate_for_one_target(loopback_comfy, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from astrid.core.generation import defaults
+    from astrid.core.generation import listing as listing_module
+    from astrid.core.generation import preflight
+    from astrid.core.cli import domain_preferences
+    from astrid.core.model_catalog.registry import ModelRegistry
+    from astrid.core.generation.backends.comfy_target import ComfyTarget
+
+    monkeypatch.setattr(entries, "user_entries", lambda: [])
+    fake_client = SimpleNamespace(_remote=SimpleNamespace(_transport=SimpleNamespace(
+        get_user_app_state=lambda _key: SimpleNamespace(content=None, version=0))))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(fake_client))
+    assert cli.main(["image", "hello", "--target", loopback_comfy.url, "--dry-run"]) == 0
+    generated = json.loads(capsys.readouterr().out)
+
+    registry = ModelRegistry.load_default()
+    rows = [{"id": identifier, "kind": "image", "mode": "t2i", "backend": "local",
+             "template": registry.get(identifier).modes["t2i"].backends["local"].template,
+             "source": "catalog", "availability": "available", "reason": ""}
+            for identifier in ("qwen-image-2.1-turbo", "z-image")]
+    monkeypatch.setattr(listing_module, "catalog_rows", lambda: rows)
+    target = SimpleNamespace(target=ComfyTarget(loopback_comfy.url, "attached"),
+                             object_info=lambda: loopback_comfy.schema,
+                             generation_target=None)
+    listed = listing_module.generation_rows("image", target=target,
+        configured={"schema": defaults.SCHEMA, "slots": {}})
+    assert {row["target"] for row in listed} == {loopback_comfy.url}
+    assert {row["selected"] for row in listed} == {generated["selected"]}
+    assert {row["default_source"] for row in listed} == {generated["default_source"]}
+    monkeypatch.setattr(preflight, "select_generation_target", lambda _target: target)
+    monkeypatch.setattr(domain_preferences, "_generation_inventory", lambda: rows)
+    monkeypatch.setattr(domain_preferences, "_default_render", lambda result, _json: result.data)
+    show = domain_preferences._show_defaults(SimpleNamespace(
+        client=fake_client, target=loopback_comfy.url, slot="image/t2i", json=True))
+    slot = show["slots"][0]
+    assert show["target"] == generated["target"]["endpoint"] == loopback_comfy.url
+    assert slot["selected"] == generated["selected"] == "z-image"
+    assert slot["source"] == generated["default_source"] == "fallback"
+    assert slot["readiness"]["status"] == "ready"
+
+
+@pytest.mark.parametrize("saved", [None, "qwen-image-2.1-turbo", "deleted-entry"])
+def test_show_reports_blocked_candidate_issue(monkeypatch, saved):
+    from astrid.core.cli import domain_preferences
+    from astrid.core.generation import defaults, listing as listing_module, preflight
+
+    rows = [{"id": "qwen-image-2.1-turbo", "kind": "image", "mode": "t2i",
+             "backend": "local", "template": "qwen", "source": "catalog"}]
+    target = SimpleNamespace(target=SimpleNamespace(url="http://127.0.0.1:8188"),
+                             object_info=lambda: {}, generation_target=None)
+    monkeypatch.setattr(defaults, "load", lambda _: (
+        {"schema": defaults.SCHEMA, "slots": {"image/t2i": saved} if saved else {}}, 0))
+    monkeypatch.setattr(preflight, "select_generation_target", lambda _: target)
+    monkeypatch.setattr(domain_preferences, "_generation_inventory", lambda: rows)
+    monkeypatch.setattr(domain_preferences, "_default_render", lambda result, _: result.data)
+    monkeypatch.setattr(listing_module, "_local_readiness", lambda *args: {
+        "ready": False, "reason": "required models missing", "fix": "provide models"})
+    slot = domain_preferences._show_defaults(SimpleNamespace(
+        client=object(), target="auto", slot="image/t2i", json=True))["slots"][0]
+    assert slot["readiness"]["status"] == "blocked"
+    assert slot["readiness"]["issues"]
+    assert slot["readiness"]["issues"][0]["details"]["default_source"] == ("user" if saved else "builtin")
+    if saved:
+        assert slot["selected"] == saved and slot["source"] == "user"
+        assert "reset" in slot["readiness"]["fixes"][0]["argv"]
+
+
+def test_builtin_ids_exist_with_their_declared_kind_and_mode():
+    from astrid.core.generation.defaults import BUILTINS
+    from astrid.core.model_catalog.registry import ModelRegistry
+    registry = ModelRegistry.load_default()
+    for slot, identifiers in BUILTINS.items():
+        kind, mode = slot.split("/", 1)
+        for identifier in identifiers:
+            entry = registry.get(identifier)
+            assert entry.modality == kind
+            assert mode in entry.modes
+            assert entry.modes[mode].backends.get("local") is not None
+
+
+@pytest.mark.parametrize("saved", ["qwen-image-2.1-turbo", "deleted-entry", "hosted-action"])
+def test_saved_unready_or_deleted_default_blocks_without_fallback(loopback_comfy, monkeypatch, capsys, saved):
+    from astrid.core.generation import defaults
+    from types import SimpleNamespace
+    monkeypatch.setattr(entries, "user_entries", lambda: [])
+    fake_client = SimpleNamespace(_remote=SimpleNamespace(_transport=object()))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext(fake_client))
+    monkeypatch.setattr(defaults, "load", lambda _client: (
+        {"schema": defaults.SCHEMA, "slots": {"image/t2i": saved}}, 3))
+    if saved == "hosted-action":
+        monkeypatch.setattr(entries, "find_entry", lambda _: {
+            "id": saved, "kind": "image", "modes": ["t2i"], "action": "remote.run"})
+    assert cli.main(["image", "hello", "--target", loopback_comfy.url, "--dry-run", "--json"]) == 2
+    error = json.loads(capsys.readouterr().out)
+    assert error["status"] == "blocked"
+    assert error["issues"][0]["details"]["default_source"] == "user"
+    assert error["entry"]["id"] == saved
+    assert error["issues"][0]["code"] == ("missing_dependency" if saved == "qwen-image-2.1-turbo" else "input_rejected")
+    assert "reset" in " ".join(error["fixes"][0]["argv"])
 
 
 def test_workflow_audio_runs_with_inferred_kind_without_forcing_audio_mode(monkeypatch, capsys, tmp_path):
@@ -175,7 +375,9 @@ def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, c
     project = client.projects.create(slug='g30', name='G30', idempotency_key='g30-project')
     assert project.ok
     dependency_root = str(Path(vibecomfy.__file__).resolve().parents[1])
-    monkeypatch.setattr(host_module, '_dependency_pythonpath', lambda: (dependency_root,))
+    from os import environ
+    runtime_root = Path(environ['ASTRID_RUNTIME_CHECKOUT'])
+    monkeypatch.setattr(host_module, '_dependency_pythonpath', lambda: (dependency_root, str(runtime_root)))
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(client))
     invoke_result = client.invoke_result
     def bounded(*args, **kwargs):
@@ -196,7 +398,8 @@ def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, c
                 host.shutdown()
             results = settled.result(timeout=15)
         captured = capsys.readouterr()
-        assert code == 0, captured.out + captured.err
+        assert code == 0, (captured.out + captured.err
+            + f"\nloopback calls={loopback_comfy.calls!r}\nhost outcomes={results!r}")
         assert len(results) == 1 and results[0].state == 'succeeded'
         assert any(n['class_type'] == 'CLIPTextEncode' and n['inputs'].get('text') == 'entry test prompt'
                    for n in loopback_comfy.prompts[0].values())

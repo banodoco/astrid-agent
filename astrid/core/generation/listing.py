@@ -200,9 +200,17 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
             "model_roles": plan["roles"], "model_bytes": plan["model_bytes"]}
 
 
-def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
+def generation_rows(kind: str | None = None, *, target: Any | None = None,
+                    configured: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     rows = [row for row in catalog_rows() if kind is None or row["kind"] == kind]
-    targets = _targets() if any(row["backend"] == "local" for row in rows) else []
+    if target is not None:
+        try:
+            schema = target.object_info()
+        except Exception:
+            schema = None
+        target_rows = [(target.target, schema)]
+    else:
+        target_rows = _targets() if any(row["backend"] == "local" for row in rows) else []
     registry = ModelRegistry.load_default() if any(row["backend"] == "local" for row in rows) else None
     output = []
     for row in rows:
@@ -217,8 +225,8 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
                            "models_present": []})
         elif row["backend"] == "local":
             assert registry is not None
-            for target, schema in targets or [(None, None)]:
-                output.append({**base, **_local_readiness(row, registry, target, schema)})
+            for resolved_target, schema in target_rows or [(None, None)]:
+                output.append({**base, **_local_readiness(row, registry, resolved_target, schema)})
         elif row["backend"] in {"cloud", "wavespeed"}:
             key_name = "FAL_KEY" if row["backend"] == "cloud" else "WAVESPEED_API_KEY"
             # os._Environ.__contains__ can fetch a value via __getitem__.
@@ -231,7 +239,30 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
             output.append({**base, "target": "codex", "ready": reason is None, "readiness_scope": "installation_presence", "reason": reason or "binary and auth file present", "fix": "Install and sign in to Codex." if reason else "", "models_present": []})
         else:
             output.append({**base, "target": row["backend"] or "action", "ready": False, "reason": "readiness not established", "fix": "Inspect the capability's requirements before invocation.", "models_present": []})
-    return sorted(output, key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["target"], row["template"]))
+    output.sort(key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["target"], row["template"]))
+    if target is not None:
+        from astrid.core.generation.defaults import BUILTINS, candidates
+        for kind_mode in sorted({(row["kind"], row["mode"]) for row in output
+                                 if row.get("backend") == "local" and row.get("mode")}):
+            slot_kind, slot_mode = kind_mode
+            ordered = candidates(target, kind=slot_kind, mode=slot_mode,
+                                 configured=configured, entries=output)
+            configured_id = (configured or {}).get("slots", {}).get(f"{slot_kind}/{slot_mode}")
+            ready_ids = {row["id"] for row in output if row.get("kind") == slot_kind
+                         and row.get("mode") == slot_mode and row.get("backend") == "local"
+                         and row.get("ready") is True}
+            selected = (configured_id if configured_id else
+                        next((candidate["entry"] for candidate in ordered
+                              if candidate["entry"] in ready_ids and candidate["origin"] == "builtin"), None)
+                        or next((candidate["entry"] for candidate in ordered
+                                 if candidate["entry"] in ready_ids and candidate["origin"] == "fallback"), None))
+            source = next((candidate["origin"] for candidate in ordered
+                           if candidate["entry"] == selected), "none")
+            for row in output:
+                if row.get("kind") == slot_kind and row.get("mode") == slot_mode and row.get("backend") == "local":
+                    row.update(configured=configured_id, builtin=list(BUILTINS.get(
+                        f"{slot_kind}/{slot_mode}", ())), selected=selected, default_source=source)
+    return output
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -242,9 +273,19 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="list generation capabilities")
     listing.add_argument("--kind", choices=("image", "video", "audio", "generation", "fixture"))
+    listing.add_argument("--target", help="Resolve readiness and defaults against one selected local target.")
     listing.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    rows = generation_rows(args.kind)
+    if args.target is None:
+        rows = generation_rows(args.kind)
+    else:
+        from astrid.sdk.client import AstridClient
+        from astrid.core.generation import defaults
+        from astrid.core.generation.preflight import select_generation_target
+        with AstridClient.open_from_launcher(start_pack_host=False) as client:
+            configured, _ = defaults.load(client)
+            target = select_generation_target(args.target)
+            rows = generation_rows(args.kind, target=target, configured=configured)
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, sort_keys=True))
     else:

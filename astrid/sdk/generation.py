@@ -564,9 +564,18 @@ class GenerationFacade:
 
     sdk_module_name: str = "astrid.sdk"
 
-    def list(self, *, kind=None):
+    def list(self, *, kind=None, target=None, client=None):
         from astrid.core.generation.listing import generation_rows
-        return generation_rows(kind)
+        configured = None
+        selected = None
+        if target is not None:
+            from astrid.core.generation import defaults
+            from astrid.core.generation.preflight import select_generation_target
+            if client is None:
+                raise CapabilityPreconditionError("Runtime is required to resolve generation defaults")
+            configured, _ = defaults.load(client)
+            selected = select_generation_target(target)
+        return generation_rows(kind, target=selected, configured=configured)
 
     @_generation_boundary
     def launch(self, *, target='auto', engine='comfyui', consent=(), timeout=10.0,
@@ -874,6 +883,7 @@ class GenerationFacade:
             select_generation_target,
             validate_generation_request,
             generation_error, readiness_envelope, compare_versions,
+            GenerationReadinessError,
         )
 
         paid = _runpod_paid_controls(controls) if target == 'runpod' else None
@@ -901,15 +911,96 @@ class GenerationFacade:
         from astrid.core.generation import entries as workflow_entries
         from astrid.packs.vibecomfy.production_engine import ProductionEngineError
 
-        # Catalog priority is explicit, stable and per modality/mode. Unknown
-        # catalog entries and user entries remain eligible in lexical order.
-        preferred = {
-            ("image", "t2i"): ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512"),
-            ("image", "edit"): ("qwen-image-2.1-turbo-edit", "z-image", "qwen-image-2512"),
-        }.get((modality, mode), ())
+        from astrid.core.generation import defaults
+        slot = f"{modality}/{mode}"
+        default_source = None
+        configured = {"schema": defaults.SCHEMA, "slots": {}}
+        saved_default = None
+        missing_saved = None
+        if model is None and workflow_entry is None and target == 'runpod':
+            raise generation_error(ValueError("saved and built-in generation defaults are local-only; choose --entry for a one-off hosted route"),
+                code="input_rejected", details={"field": "target"})
+        if model is None and workflow_entry is None and target != 'runpod':
+            runtime_client = controls.get('client')
+            if runtime_client is None:
+                raise generation_error(
+                    ValueError("Runtime is unavailable; implicit generation defaults require a read-only Runtime connection"),
+                    code="missing_dependency", details={"field": "runtime"},
+                    fixes=[{"argv": ["astrid", "status"], "scope": "read_only", "details": {}}],
+                )
+            try:
+                configured, _version = defaults.load(runtime_client)
+            except Exception as exc:
+                raise generation_error(exc, code="missing_dependency", details={"field": "generation.defaults"}) from exc
+            saved_default = configured["slots"].get(slot)
+            if saved_default:
+                default_source = "user"
+                try:
+                    manifest = workflow_entries.find_entry(saved_default)
+                except (KeyError, ValueError):
+                    manifest = None
+                if manifest is not None and manifest.get("action"):
+                    raise generation_error(
+                        ValueError(f"saved default entry {saved_default!r} is not a local workflow"),
+                        code="input_rejected", entry={"id": saved_default, "kind": modality, "mode": mode},
+                        details={"default_source": "user"},
+                        fixes=[{"argv": ["astrid", "preferences", "defaults", "reset", slot],
+                                "scope": "read_only", "details": {}}],
+                    )
+                try:
+                    catalog_entry = registry.get(saved_default)
+                except KeyError:
+                    catalog_entry = None
+                if manifest is None and catalog_entry is None:
+                    missing_saved = saved_default
+            else:
+                default_source = "builtin"
+        # Resolve the target once, then use the same ordered candidate source
+        # as the defaults view and generation listing. If a saved or built-in
+        # choice cannot reach that target, preserve its provenance in the
+        # frozen readiness envelope.
+        runpod_owner = None
+        if target == 'runpod':
+            from astrid.core.generation.preflight import runpod_generation_owner
+            runpod_owner = runpod_generation_owner(controls.get('client'))
+        try:
+            target_client = select_generation_target(target, repo=controls.get("project_root"),
+                **({'runpod_owner': runpod_owner} if runpod_owner is not None else {}))
+        except AstridError as exc:
+            if default_source:
+                fixes = ([{"argv": ["astrid", "preferences", "defaults", "reset", slot],
+                           "scope": "read_only", "details": {}}] if default_source == "user" else [])
+                raise generation_error(ValueError(str(exc)), code=getattr(exc, "code", None),
+                    entry={"id": saved_default, "kind": modality, "mode": mode} if saved_default else None,
+                    details={"default_source": default_source}, fixes=fixes) from exc
+            raise
+        if missing_saved:
+            raise generation_error(
+                ValueError(f"saved default entry {missing_saved!r} is not available on this machine"),
+                entry={"id": missing_saved, "kind": modality, "mode": mode},
+                target=getattr(target_client, "generation_target", None),
+                code="input_rejected", details={"default_source": "user", "entry": missing_saved},
+                fixes=[{"argv": ["astrid", "preferences", "defaults", "reset", slot],
+                        "scope": "read_only", "details": {}}],
+            )
+        inventory = []
+        for entry in registry.list_all(include_closed=True):
+            spec = entry.modes.get(mode)
+            if spec and spec.backends.get("local"):
+                inventory.append({"id": entry.id, "kind": entry.modality, "mode": mode, "backend": "local"})
+        inventory += [{"id": entry["id"], "kind": entry["kind"], "mode": supported,
+                       "backend": "local", "entry": entry}
+                      for entry in [*workflow_entries.user_entries(), *workflow_entries.ready_entries()]
+                      for supported in entry.get("modes", [])]
+        ordered = defaults.candidates(target_client, kind=modality, mode=mode,
+                                      configured=configured, entries=inventory)
+        order = {item["entry"]: index for index, item in enumerate(ordered)}
+        if saved_default:
+            model = saved_default
+
         def rank(candidate: Any) -> tuple[int, str]:
             identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
-            return (preferred.index(identifier) if identifier in preferred else len(preferred), identifier)
+            return (order.get(identifier, len(order)), identifier)
 
         if workflow_entry is not None:
             candidates = [("workflow", workflow_entry)]
@@ -952,23 +1043,43 @@ class GenerationFacade:
                     require_entry_available(candidate, mode)
             except AstridError as exc:
                 if not automatic or exc.code != 'generation_route_unqualified':
+                    if default_source == "user":
+                        raise generation_error(exc, details={"default_source": "user"}, fixes=[
+                            {"argv": ["astrid", "preferences", "defaults", "reset", slot],
+                             "scope": "read_only", "details": {}}]) from exc
                     raise
                 filtered.append((identifier, exc))
                 continue
             qualified.append((source, candidate))
         if automatic and filtered and not qualified:
-            raise AstridError(
+            error = AstridError(
                 'No qualified generation candidate remains; filtered routes: '
                 + '; '.join(f'{identifier}: {exc}' for identifier, exc in filtered),
                 code='generation_route_unqualified', recovery_command=filtered[0][1].fix)
+            if default_source:
+                raise generation_error(error, details={"default_source": default_source}) from error
+            raise error
         candidates = qualified
-        runpod_owner = None
-        if target == 'runpod':
-            from astrid.core.generation.preflight import runpod_generation_owner
-            runpod_owner = runpod_generation_owner(controls.get('client'))
-        target_client = select_generation_target(target, repo=controls.get("project_root"),
-            **({'runpod_owner': runpod_owner} if runpod_owner is not None else {}))
         backend = VibeComfyBackend(target_client=target_client)
+
+        def block_saved_default(error: Exception, identifier: str) -> None:
+            from copy import deepcopy
+            previous = getattr(error, "readiness", None)
+            if isinstance(previous, dict) and previous.get("issues"):
+                issues = deepcopy(previous["issues"])
+                issues[0].setdefault("details", {})["default_source"] = "user"
+            else:
+                normalized = generation_error(error, code="missing_dependency" if "missing" in str(error).lower() else "input_rejected")
+                issues = deepcopy(normalized.readiness["issues"])
+                issues[0].setdefault("details", {})["default_source"] = "user"
+            record = getattr(target_client, "generation_target", None)
+            blocked = readiness_envelope(
+                entry={"id": identifier, "kind": modality, "mode": mode}, target=record,
+                issues=issues,
+                fixes=[{"argv": ["astrid", "preferences", "defaults", "reset", slot],
+                        "scope": "read_only", "details": {}}],
+            )
+            raise GenerationReadinessError(blocked) from error
 
         def import_member(path: Path) -> dict[str, Any]:
             return _import_generation_member(path, controls)
@@ -1051,6 +1162,8 @@ class GenerationFacade:
                     bundle.require_canonical_authority("generate on target")
                     approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
             except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError, ProductionEngineError) as exc:
+                if default_source == "user":
+                    block_saved_default(exc, identifier)
                 if (model is not None or workflow_entry is not None
                         or getattr(exc, "code", None) in {"COMFY_TARGET_NOT_READY", "engine_not_found"}):
                     # Package/runtime prerequisites apply to every local
@@ -1067,12 +1180,15 @@ class GenerationFacade:
             selected = (identifier, workflow, bundle, plan, schema, approval, assets)
             break
         if selected is None:
-            raise AstridError(
+            error = AstridError(
                 f"No ready local {modality} model supports mode {mode!r} on the selected target"
                 + (": " + "; ".join(failures) if failures else ""),
                 code="COMFY_TARGET_NO_MODEL", field="model",
                 fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
+            if default_source:
+                raise generation_error(error, details={"default_source": default_source}) from error
+            raise error
         entry_id, workflow, bundle, plan, schema, approval, assets = selected
         target_record = getattr(target_client, 'generation_target', None)
         from astrid.core.generation.targets import TargetRecord
@@ -1106,11 +1222,25 @@ class GenerationFacade:
                                       issues=compare_versions(recorded, observed))
         if dry_run:
             preview = dict(plan or {"model": entry_id, "mode": mode})
-            preview.update(model=entry_id, mode=mode, reason=("explicitly selected workflow entry" if model is not None or workflow_entry is not None else "highest-ranked ready local entry for the requested kind and mode on the selected target"))
+            if model is not None and default_source is None or workflow_entry is not None:
+                default_source = "explicit"
+            elif default_source != "user":
+                default_source = next((item["origin"] for item in ordered if item["entry"] == entry_id), "fallback")
+            preview.update(model=entry_id, mode=mode, selected=entry_id, default_source=default_source,
+                reason=("explicitly selected workflow entry" if default_source == "explicit" else
+                        "configured user default" if default_source == "user" else
+                        "highest-ranked ready local entry for the requested kind and mode on the selected target"))
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
             readiness['entry'].update(preview)
+            readiness.update(selected=entry_id, default_source=default_source)
             return readiness
+
+        selected_source = default_source
+        if model is not None and selected_source is None or workflow_entry is not None:
+            selected_source = "explicit"
+        elif selected_source != "user":
+            selected_source = next((item["origin"] for item in ordered if item["entry"] == entry_id), "fallback")
 
         from vibecomfy.workflow_bundle import emit_bundle
         if source_ref is None:
@@ -1163,8 +1293,17 @@ class GenerationFacade:
                 **asset_arguments, **controls,
             )
         if controls.get('wait') is False:
+            from dataclasses import replace
+            if hasattr(result, "raw_result") and isinstance(result.raw_result, Mapping):
+                result = replace(result, raw_result={**result.raw_result, "selected": entry_id,
+                                                     "default_source": selected_source})
             return result
-        return _reconstruct_generation_result(result)
+        result = _reconstruct_generation_result(result)
+        # Keep selection provenance available to SDK callers as well as the
+        # CLI serializer without changing the shared GenerationResult DTO.
+        result.selected = entry_id
+        result.default_source = selected_source
+        return result
 
     @staticmethod
     def _resolve_public_entry(*, entry: str, model: str | None,

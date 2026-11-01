@@ -128,6 +128,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     sub = parser.add_subparsers(dest="modality", required=True)
     command = sub.add_parser('list', help='List generation entries and readiness.')
     command.add_argument('--kind', choices=('image', 'video', 'audio', 'generation', 'fixture'))
+    command.add_argument('--target', help='Resolve defaults and readiness against one selected target.')
     command.add_argument('--json', action='store_true')
     for modality in ("image", "video"):
         command = sub.add_parser(modality, help=f"Generate {'an image' if modality == 'image' else 'a video'}.",
@@ -412,13 +413,22 @@ def _main(argv: list[str]) -> int:
         kwargs.pop("width")
         kwargs.pop("height")
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
+    generation_result = None
     try:
         generate = getattr(_generate_facade(), parsed.modality)
         if parsed.dry_run:
-            result = generate(**kwargs)
+            if not (parsed.entry or parsed.model):
+                # Implicit defaults are Runtime user state, even for a dry-run.
+                # Opening the selected Runtime here is read-only; explicit
+                # entry dry-runs remain offline.
+                with _open_client() as client:
+                    result = generate(client=client, **kwargs)
+            else:
+                result = generate(**kwargs)
         else:
             with _open_client() as client:
                 result = generate(client=client, **kwargs)
+                generation_result = result
                 if not parsed.no_wait:
                     from .delivery import deliver_generation
                     result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
@@ -437,6 +447,16 @@ def _main(argv: list[str]) -> int:
             'code': 'generation_failed', 'message': 'Generation did not succeed.'},
             task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
+    if isinstance(payload, dict) and not parsed.dry_run:
+        provenance = generation_result if generation_result is not None else result
+        selected = getattr(provenance, "selected", None)
+        default_source = getattr(provenance, "default_source", None)
+        raw = getattr(provenance, "raw_result", None)
+        if isinstance(raw, dict):
+            selected = selected or raw.get("selected")
+            default_source = default_source or raw.get("default_source")
+        if selected is not None:
+            payload.update(selected=selected, default_source=default_source)
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
     elif parsed.no_wait:
