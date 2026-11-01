@@ -368,7 +368,13 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
                 (group,) = publication["publications"]
                 assert group["missing_selectors"] == []
                 (variant,) = group["variants"]
-                output = next(row for row in managed[child["task_id"]] if row["output_port"] == port)
+                # Auxiliary evidence shares the action's output port. Match
+                # the complete published selector and require uniqueness.
+                (output,) = [row for row in managed[child["task_id"]]
+                             if row["output_port"] == port
+                             and row["group_key"] == group["group_key"]
+                             and row["variant_key"] == variant["variant_key"]
+                             and row["ordinal"] == variant["ordinal"]]
                 assert variant["object_id"] == output["object_id"]
                 binding = output["provenance"]["delegated_publication"]
                 assert binding["parent_task_id"] == task_id
