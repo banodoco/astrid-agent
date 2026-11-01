@@ -299,7 +299,7 @@ def evaluate_windows_task_host_receipt(candidate, manifest, row, receipt_path,
         errors.append("windows-task-host: managed processes remained after shutdown")
     if collection is not None and collection.get("errors") != []:
         errors.append("windows-task-host: final collection was incomplete")
-    if binding is not None and not binding or binding is not None and not all(binding.values()):
+    if binding is not None and (not binding or not all(binding.values())):
         errors.append("windows-task-host: installed profile binding did not pass")
     return errors
 
