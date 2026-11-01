@@ -1,0 +1,190 @@
+# CP3 R7 exact-head proof: repair MCP argv ordering and supply authoritative producer checkouts.
+repos:
+  astrid-agent: 352b8db6a48559b1142296ae9c7ad9388fb5db12
+  astrid-runtime: 1e6d899efa77a2d6ec247c38250f9748330bb587
+producer_authorities:
+  vibecomfy: 2967033970cbb5884651c9565265778482d3b44e
+  lifecycle: 96360a27a53c4608f780f7b370f747a2aa3c7ca8
+cpu:
+  vcpu: 8
+gpu: false
+fresh: true
+max_minutes: 120
+needs:
+  python: '3.12'
+setup:
+  - |
+    set -euo pipefail
+    mkdir -p /workspace/out /workspace/tmp /workspace/cache/pip /workspace/producers
+    export TMPDIR=/workspace/tmp PIP_CACHE_DIR=/workspace/cache/pip
+    git clone https://github.com/banodoco/VibeComfy.git /workspace/producers/VibeComfy
+    git -C /workspace/producers/VibeComfy checkout --detach 2967033970cbb5884651c9565265778482d3b44e
+    git clone https://github.com/banodoco/runpod-lifecycle.git /workspace/producers/runpod-lifecycle
+    git -C /workspace/producers/runpod-lifecycle checkout --detach 96360a27a53c4608f780f7b370f747a2aa3c7ca8
+    python3 -m venv /workspace/venv
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r /workspace/astrid-agent/requirements/proof.lock -r /workspace/astrid-agent/requirements/build.lock
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps --no-build-isolation /workspace/astrid-agent /workspace/astrid-runtime /workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check 'aiohttp==3.14.5'
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps --no-build-isolation -e /workspace/producers/VibeComfy -e /workspace/producers/runpod-lifecycle
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps 'banodoco-timeline-schema @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python'
+run:
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    (
+      set -euo pipefail
+      echo "agent_head=$(git rev-parse HEAD)"
+      echo "agent_parents=$(git show -s --format='%P' HEAD)"
+      lock_sha=$(/workspace/venv/bin/python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')
+      echo "runtime_lock_source_commit=$lock_sha"
+      echo "runtime_checked_out_head=$(git -C /workspace/astrid-runtime rev-parse HEAD)"
+      echo "vibecomfy_checked_out_head=$(git -C /workspace/producers/VibeComfy rev-parse HEAD)"
+      echo "runpod_lifecycle_checked_out_head=$(git -C /workspace/producers/runpod-lifecycle rev-parse HEAD)"
+      test "$(git rev-parse HEAD)" = 352b8db6a48559b1142296ae9c7ad9388fb5db12
+      test "$lock_sha" = 1e6d899efa77a2d6ec247c38250f9748330bb587
+      test "$(git -C /workspace/astrid-runtime rev-parse HEAD)" = 1e6d899efa77a2d6ec247c38250f9748330bb587
+      test "$(git -C /workspace/producers/VibeComfy rev-parse HEAD)" = 2967033970cbb5884651c9565265778482d3b44e
+      test "$(git -C /workspace/producers/runpod-lifecycle rev-parse HEAD)" = 96360a27a53c4608f780f7b370f747a2aa3c7ca8
+      git diff --check
+      git -C /workspace/astrid-runtime diff --check
+      /workspace/venv/bin/python scripts/vendor_lock.py check runtime.lock.json --producer /workspace/astrid-runtime
+      /workspace/venv/bin/python -c 'import hashlib,json; from pathlib import Path; lock=json.loads(Path("runtime.lock.json").read_text()); paths=["runtime.lock.json","artifacts.json",*sorted(lock["files"])]; [print(f"{hashlib.sha256(Path(path).read_bytes()).hexdigest()}  {path}") for path in paths]'
+    ) 2>&1 | tee /workspace/out/preflight-identity.txt
+    rc=${PIPESTATUS[0]}
+    printf 'preflight_identity=%s\n' "$rc" > /workspace/out/preflight-identity.exit
+    exit 0
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/engine-mcp.xml \
+      tests/core/generation/test_engine_readiness.py \
+      tests/core/generation/test_engine_release.py \
+      tests/core/generation/test_engine_endpoint_records.py \
+      tests/core/generation/test_engine_endpoint_transport.py \
+      tests/core/generation/test_engine_local_endpoint.py \
+      tests/core/generation/test_engine_cli.py \
+      tests/core/generation/test_engine_recipe.py \
+      tests/core/generation/test_engine_runner.py \
+      tests/core/execution/test_generic_host_handoff.py \
+      tests/sdk/test_generation_target.py \
+      tests/test_mcp_server.py \
+      tests/test_mcp_generation_parity.py 2>&1 | tee /workspace/out/engine-mcp.log
+    rc=${PIPESTATUS[0]}
+    printf 'engine_mcp=%s\n' "$rc" > /workspace/out/engine-mcp.exit
+    exit 0
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pytest -q -o addopts= -m integration --junitxml=/workspace/out/endpoint-handoff-integration.xml tests/core/execution/test_workflow_endpoint_handoff.py 2>&1 | tee /workspace/out/endpoint-handoff-integration.log
+    rc=${PIPESTATUS[0]}
+    printf 'endpoint_handoff_integration=%s\n' "$rc" > /workspace/out/endpoint-handoff-integration.exit
+    exit 0
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/runpod-cp3.xml \
+      tests/test_runpod_managed_worker_session.py \
+      tests/sdk/test_runpod_front_door.py \
+      tests/packs/runpod/test_h3_release.py \
+      tests/packs/runpod/test_https_transport.py \
+      tests/packs/runpod/test_worker_release.py \
+      tests/packs/runpod/test_worker_preparation.py \
+      tests/packs/runpod/test_exact_release.py \
+      tests/packs/runpod/test_generation_preparation.py \
+      tests/packs/runpod/test_installed_preparation.py \
+      tests/packs/runpod/test_original_supervisor_release.py \
+      tests/packs/runpod/test_prepared_binding_contract.py \
+      tests/packs/runpod/test_prepared_task.py \
+      tests/packs/runpod/test_release_contract_cp3.py \
+      tests/packs/runpod/test_remote_placement.py \
+      tests/packs/runpod/test_warm_session.py \
+      tests/packs/runpod/test_target_selection.py 2>&1 | tee /workspace/out/runpod-cp3.log
+    rc=${PIPESTATUS[0]}
+    printf 'runpod_cp3=%s\n' "$rc" > /workspace/out/runpod-cp3.exit
+    exit 0
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/target-selection.xml tests/packs/runpod/test_target_selection.py 2>&1 | tee /workspace/out/target-selection.log
+    rc=${PIPESTATUS[0]}
+    printf 'target_selection=%s\n' "$rc" > /workspace/out/target-selection.exit
+    exit 0
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/graph-roots.xml tests/sdk/test_timeline_commit_graph_roots.py tests/editing_conformance/test_recorded_graph_roots.py 2>&1 | tee /workspace/out/graph-roots.log
+    rc=${PIPESTATUS[0]}
+    printf 'graph_roots=%s\n' "$rc" > /workspace/out/graph-roots.exit
+    exit 0
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    printf '%s\n' \
+      'tests/v10/test_timelines_create.py::test_remote_create_empty_creates_shell_then_empty_head' \
+      'tests/v10/test_domain_cli_projects_timelines.py::test_first_run_timeline_journey_uses_selection_recent_history_and_project_list' \
+      'tests/test_skills.py::test_timeline_main_skill_code_blocks_run_with_scratch_runtime' \
+      'tests/sdk/test_timeline_import_prepare.py::test_prepare_import_builds_fresh_children_and_target_transcript_ids' \
+      'tests/v10/test_domain_cli_projects_timelines.py::test_timelines_visualize_routes_public_sdk_and_normalizes_formats' \
+      'tests/v10/test_domain_cli_projects_timelines.py::test_timelines_visualize_forwards_filmstrip_options' \
+      'tests/v10/test_domain_cli_projects_timelines.py::test_projects_list_default_matches_explicit_json' \
+      'tests/sdk/test_timeline_restructure.py::test_split_stores_chapters_as_shots_and_music_and_crossers_on_the_film' \
+      'tests/sdk/test_timeline_restructure.py::test_restructure_refuses_what_would_change_the_render' \
+      'tests/sdk/test_timeline_restructure.py::test_split_routes_a_new_clip_by_placement_and_a_wall_crosser_to_the_film' \
+      'tests/packs/timeline/test_verbs_working_copy.py::test_show_as_sheet_prints_the_working_copy_sheet_with_a_banner' \
+      'tests/packs/timeline/test_verbs_working_copy.py::test_publish_conflict_names_the_writer_and_offers_discard_first[astrid.editor.timeline.5fb2249e000000000000000000000000-the editor published 5fb2249e after your checkout (rev-0)]' \
+      'tests/packs/timeline/test_verbs_working_copy.py::test_publish_conflict_names_the_writer_and_offers_discard_first[authoring-parent-revision-38cecaa5ffffffffffffffffffffffff-someone published 38cecaa5 after your checkout (rev-0)]' > /workspace/out/correction-selection.txt
+    sha256sum /workspace/out/correction-selection.txt | tee /workspace/out/correction-selection.sha256
+    test "$(awk '{print $1}' /workspace/out/correction-selection.sha256)" = a98ebe2902c865f09b0c9e0fcbcd8b2e3c3da5da929b5ccba9b69dd6e37b3b7e
+    mapfile -t correction_selectors < /workspace/out/correction-selection.txt
+    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/correction.xml "${correction_selectors[@]}" 2>&1 | tee /workspace/out/correction.log
+    rc=${PIPESTATUS[0]}
+    printf 'correction=%s\n' "$rc" > /workspace/out/correction.exit
+    exit 0
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/installed-schema.xml tests/test_installer_installed_schema.py tests/test_vendor_lock.py tests/sdk/test_installed_runtime_source_identity.py 2>&1 | tee /workspace/out/installed-schema.log
+    rc=${PIPESTATUS[0]}
+    printf 'installed_schema=%s\n' "$rc" > /workspace/out/installed-schema.exit
+    exit 0
+  - |
+    set +e
+    set -o pipefail
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pytest -q -o addopts= --junitxml=/workspace/out/vendor-lock-runtime-identity.xml tests/test_vendor_lock.py tests/sdk/test_installed_runtime_source_identity.py tests/v10/test_runtime_lock_wheels.py 2>&1 | tee /workspace/out/vendor-lock-runtime-identity.log
+    rc=${PIPESTATUS[0]}
+    printf 'vendor_lock_runtime_identity=%s\n' "$rc" > /workspace/out/vendor-lock-runtime-identity.exit
+    exit 0
+  - |
+    set +e
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_VIBECOMFY_CHECKOUT=/workspace/producers/VibeComfy ASTRID_RUNPOD_LIFECYCLE_CHECKOUT=/workspace/producers/runpod-lifecycle PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python
+    cat /workspace/out/preflight-identity.exit /workspace/out/engine-mcp.exit /workspace/out/endpoint-handoff-integration.exit /workspace/out/runpod-cp3.exit /workspace/out/target-selection.exit /workspace/out/graph-roots.exit /workspace/out/correction.exit /workspace/out/installed-schema.exit /workspace/out/vendor-lock-runtime-identity.exit > /workspace/out/inner-exit-codes.txt
+    if awk -F= '$2 != 0 {bad=1} END {exit bad}' /workspace/out/inner-exit-codes.txt; then
+      printf 'VERDICT=ACCEPTED\n' > /workspace/out/SUMMARY.txt
+      printf '0\n' > /workspace/out/payload-exit.txt
+    else
+      printf 'VERDICT=FAILED\n' > /workspace/out/SUMMARY.txt
+      printf '1\n' > /workspace/out/payload-exit.txt
+    fi
+    find /workspace/out -type f -print0 | sort -z | xargs -0 sha256sum > /workspace/out/SHA256SUMS
+    exit 0
+artifacts:
+  - /workspace/out
