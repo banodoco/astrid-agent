@@ -18,6 +18,10 @@ from . import uninstall as uninstall_fn
 from .harnesses import ADAPTERS
 
 HARNESS_CHOICES = ("claude", "codex", "hermes", "all")
+_DEVELOPER_HELP = (
+    "Also install the developer skills (developing-astrid, fast-iteration, releasing) "
+    "and keep them on later syncs; undo with `skills uninstall --developer`."
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--skill", action="append", default=[])
     install_parser.add_argument("--all-skills", action="store_true")
     install_parser.add_argument("--all", action="store_true", help="Install every available pack.")
+    install_parser.add_argument("--developer", action="store_true", help=_DEVELOPER_HELP)
     add_choice_arg(install_parser, "--harness", values=HARNESS_CHOICES, action="append", help="One or more harnesses (default: all).")
     add_choice_arg(install_parser, "--mechanism", values=("symlink", "external-dir"), default="symlink", help="Hermes-only mechanism (default: symlink).")
     install_parser.add_argument("--force", action="store_true", help="Overwrite existing non-symlink targets.")
@@ -62,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser.add_argument("--skill", action="append", default=[])
     uninstall_parser.add_argument("--all-skills", action="store_true")
     uninstall_parser.add_argument("--all", action="store_true")
+    uninstall_parser.add_argument(
+        "--developer", action="store_true",
+        help="Unlink the developer skills; developing-astrid stays in the default view.",
+    )
     add_choice_arg(uninstall_parser, "--harness", values=HARNESS_CHOICES, action="append")
     uninstall_parser.add_argument("--dry-run", action="store_true")
     uninstall_parser.add_argument("--json", action="store_true")
@@ -80,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also link every main skill and extra (alias: --all).",
     )
     sync_parser.add_argument("--all", action="store_true", dest="deep", help="Alias for --deep.")
+    sync_parser.add_argument("--developer", action="store_true", help=_DEVELOPER_HELP)
     sync_parser.add_argument(
         "--check",
         action="store_true",
@@ -131,6 +141,13 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _resolve_packs(args: argparse.Namespace) -> list[str] | None:
+    if getattr(args, "developer", False):
+        if args.pack or getattr(args, "all", False):
+            raise AstridError(
+                "--developer selects the developer skills; do not combine it with a pack or --all",
+                recovery_command="run `skills install --developer` or `skills uninstall --developer` alone",
+            )
+        return None
     if getattr(args, "all", False):
         return None
     if not args.pack:
@@ -155,6 +172,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
         force=args.force,
         dry_run=args.dry_run,
         skill_names=args.skill, all_skills=args.all_skills,
+        developer=args.developer,
     )
     return _emit_report(report, args)
 
@@ -162,7 +180,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
 def _cmd_uninstall(args: argparse.Namespace) -> int:
     pack_ids = _resolve_packs(args)
     harness_names = _resolve_harness_arg(args)
-    report = uninstall_fn(pack_ids=pack_ids, harness_names=harness_names, dry_run=args.dry_run, skill_names=args.skill, all_skills=args.all_skills)
+    report = uninstall_fn(pack_ids=pack_ids, harness_names=harness_names, dry_run=args.dry_run, skill_names=args.skill, all_skills=args.all_skills, developer=args.developer)
     return _emit_report(report, args)
 
 
@@ -171,6 +189,11 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         report = check_fn(deep=args.deep)
         return _emit_check_report(report, args)
     pack = getattr(args, "pack", None)
+    if args.developer and pack:
+        raise AstridError(
+            "--developer syncs every skill plus the developer skills; do not combine it with a pack",
+            recovery_command="run `skills sync --developer` without a pack",
+        )
     skill_names = getattr(args, "skill", [])
     if skill_names and not pack:
         raise AstridError(
@@ -190,6 +213,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         force=args.force,
         deep=args.deep,
         dry_run=args.dry_run,
+        developer=args.developer,
     )
     rc = _emit_report(report, args)
     broken = report.get("broken_links", [])
