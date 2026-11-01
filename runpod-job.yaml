@@ -1,6 +1,6 @@
-# CP3 R5 exact-head proof: retain the R4 tuple and inventory; correct hosted aiohttp setup and selector argument passing.
+# CP3 R6 exact-head proof: retain the R5 inventory and request fixes for the changed Agent test-only candidate.
 repos:
-  astrid-agent: c90394d30911e5d5cea5f5cf1a0e9fc68de679da
+  astrid-agent: 767b3ec1d16c7758f3a48b4feee6c59558ea83fd
   astrid-runtime: 1e6d899efa77a2d6ec247c38250f9748330bb587
 producer_authorities:
   vibecomfy: 2967033970cbb5884651c9565265778482d3b44e
@@ -37,7 +37,7 @@ run:
       lock_sha=$(/workspace/venv/bin/python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')
       echo "runtime_lock_source_commit=$lock_sha"
       echo "runtime_checked_out_head=$(git -C /workspace/astrid-runtime rev-parse HEAD)"
-      test "$(git rev-parse HEAD)" = c90394d30911e5d5cea5f5cf1a0e9fc68de679da
+      test "$(git rev-parse HEAD)" = 767b3ec1d16c7758f3a48b4feee6c59558ea83fd
       test "$lock_sha" = 1e6d899efa77a2d6ec247c38250f9748330bb587
       test "$(git -C /workspace/astrid-runtime rev-parse HEAD)" = 1e6d899efa77a2d6ec247c38250f9748330bb587
       git diff --check
