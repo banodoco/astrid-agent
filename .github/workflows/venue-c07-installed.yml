@@ -116,7 +116,50 @@ jobs:
             if [ "$rc" -ne 0 ] && [ "$overall" -eq 0 ]; then overall="$rc"; fi
             return 0
           }
-          run_stage composition_identity bash -c 'set -e; cd product; test "$(sha256sum remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz | cut -c1-64)" = cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f; test "$(sha256sum remotion/package.json | cut -c1-64)" = bcd09a781367b9d6d3582366e6be5c36844d13045288f0785986c582b6b85c9d; test "$(sha256sum remotion/package-lock.json | cut -c1-64)" = 7d0c50e072d8fe2f2f8e725ce749642acef29b900a123e42de3df96760916011; test "$(sha256sum artifacts.json | cut -c1-64)" = 74b0e2645bcab62e3047d21b4c7016db6fe17e3077867a9789b6ca41baac416d; test "$(sha256sum runtime.lock.json | cut -c1-64)" = 0e887754b5b6daa3ddb326ca3d8bc7c5c51e299f406b1dbf588ba6e8ddd4d972'
+          if [ "$overall" -eq 0 ]; then
+            set +e
+            python3 - <<'PY' 2>&1 | tee -a "$RUN_DIR/logs/command.log"
+          import hashlib, json, os
+          from pathlib import Path
+
+          root = Path("product")
+          artifact = root / "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz"
+          package_path = root / "remotion/package.json"
+          lock_path = root / "remotion/package-lock.json"
+          runtime_lock_path = root / "runtime.lock.json"
+          package = json.loads(package_path.read_text())
+          lock = json.loads(lock_path.read_text())
+          runtime_lock = json.loads(runtime_lock_path.read_text())
+          expected_sri = "sha512-BYZ/Zq5C00/ZDCunhPcBoS2l3LhdEIWlCsu/8ZWM3P0Mp46otQKVGeHrrwFjpc12KwDiQYD6OgTLKylsJAlGBA=="
+          dep = package.get("dependencies", {}).get("@banodoco/timeline-composition")
+          entry = lock.get("packages", {}).get("node_modules/@banodoco/timeline-composition", {})
+          digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+          assert digest == "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f", digest
+          assert dep == "file:artifacts/banodoco-timeline-composition-0.0.17.tgz", dep
+          assert entry.get("version") == "0.0.17", entry
+          assert entry.get("resolved") == dep, entry
+          assert entry.get("integrity") == expected_sri, entry
+          assert runtime_lock.get("source_commit") == os.environ["INPUT_RUNTIME_REF"], runtime_lock.get("source_commit")
+          identities = {
+              "composition_name": "@banodoco/timeline-composition",
+              "composition_version": entry["version"],
+              "composition_resolved": entry["resolved"],
+              "composition_integrity": entry["integrity"],
+              "composition_artifact_sha256": digest,
+              "package_json_sha256": hashlib.sha256(package_path.read_bytes()).hexdigest(),
+              "package_lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+              "artifacts_json_sha256": hashlib.sha256((root / "artifacts.json").read_bytes()).hexdigest(),
+              "runtime_lock_sha256": hashlib.sha256(runtime_lock_path.read_bytes()).hexdigest(),
+              "runtime_source_commit": runtime_lock["source_commit"],
+          }
+          (Path(os.environ["RUN_DIR"]) / "composition-identities.json").write_text(json.dumps(identities, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(identities, sort_keys=True))
+          PY
+            rc=${PIPESTATUS[0]}
+            set -e
+            printf 'composition_identity=%s\n' "$rc" | tee -a "$RUN_DIR/inner-exits.txt"
+            if [ "$rc" -ne 0 ] && [ "$overall" -eq 0 ]; then overall="$rc"; fi
+          else printf 'composition_identity=skipped\n' >> "$RUN_DIR/inner-exits.txt"; fi
           run_stage apt_install bash -c 'sudo apt-get update && sudo apt-get install -y ffmpeg'
           if [ "$overall" -eq 0 ]; then
             run_stage build_wheel bash -c 'set -e; cd product; python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock; python -m build --wheel --no-isolation --outdir dist; count=$(find dist -maxdepth 1 -type f -name "*.whl" | wc -l); test "$count" -eq 1; wheel=$(find dist -maxdepth 1 -type f -name "*.whl"); sha256sum "$wheel" > "$RUN_DIR/wheel.sha256"'
@@ -154,6 +197,7 @@ jobs:
           cp "$RUN_DIR/logs/command.log" "$RUN_DIR/artifacts/command.log"
           cp "$RUN_DIR/selector.junit.xml" "$RUN_DIR/artifacts/selector.junit.xml" 2>/dev/null || true
           cp "$RUN_DIR/effective-identities.txt" "$RUN_DIR/artifacts/effective-identities.txt"
+          cp "$RUN_DIR/composition-identities.json" "$RUN_DIR/artifacts/composition-identities.json" 2>/dev/null || true
           cp "$RUN_DIR/wheel.sha256" "$RUN_DIR/artifacts/wheel.sha256" 2>/dev/null || true
           cp "$RUN_DIR/pytest-exit.txt" "$RUN_DIR/artifacts/pytest-exit.txt"
           cp "$RUN_DIR/overall-exit.txt" "$RUN_DIR/artifacts/overall-exit.txt"
@@ -259,17 +303,19 @@ jobs:
           PY
           find "$RUN_DIR" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$RUN_DIR/SHA256SUMS"
           (cd "$RUN_DIR" && sha256sum -c SHA256SUMS)
-          git init -q -b results "$RUN_DIR/result-repo"
-          cd "$RUN_DIR/result-repo"
+          RESULTS_REPO="$RUNNER_TEMP/venue-c07-results-repo"
+          rm -rf "$RESULTS_REPO"
+          git init -q -b results "$RESULTS_REPO"
+          cd "$RESULTS_REPO"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add origin "https://github.com/banodoco/astrid-agent.git"
-          if git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags origin refs/heads/venue-results/M-VENUE-C-07-1:refs/remotes/origin/results; then
+          if git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" ls-remote --heads origin refs/heads/venue-results/M-VENUE-C-07-1 | grep -q 'refs/heads/venue-results/M-VENUE-C-07-1$'; then
+            git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags origin refs/heads/venue-results/M-VENUE-C-07-1:refs/remotes/origin/results
             git reset --hard -q refs/remotes/origin/results
           fi
           mkdir -p "runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           cp -a "$RUN_DIR/". "runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/"
-          rm -rf "runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/result-repo"
           git add "runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           git commit -m "Add C-07 installed run $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin HEAD:refs/heads/venue-results/M-VENUE-C-07-1
