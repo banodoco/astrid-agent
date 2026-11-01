@@ -430,9 +430,11 @@ def test_cached_output_facts_are_reverified_before_terminal_result(host_case, mo
     receipt = _read_result(case, "failed")
     assert receipt["error"]["code"] == "publication_failed"
     assert receipt["outputs"]["artifacts"] == []
-    assert receipt["publication"] == {"status": "not_settled", "receipt": None, "effect": None}
+    assert receipt["publication"] == {"status": "unconfirmed", "receipt": None, "effect": None}
     assert any("terminal output unavailable" in warning for warning in receipt["warnings"])
-    assert len(case.runtime.failures) == 1
+    # An arbitrary exception is not evidence that Runtime rejected the write.
+    assert receipt["completion_diagnostic"] == {"status": "unconfirmed"}
+    assert not case.runtime.failures
 
 
 def _terminal_state(case):
@@ -512,6 +514,81 @@ def test_host_uses_shared_mapper_before_writing_under_completion_lock(host_case,
     assert mapped[0]["raw_result"] == {}
     assert mapped[1]["raw_result"] == terminal["payload"]
     assert _read_result(case, "failed") == mapped[1]
+
+
+@pytest.mark.parametrize("minimal", [False, True])
+@pytest.mark.parametrize("transition", ["reserve", "acknowledge_success", "acknowledge_failure", "unknown"])
+def test_publication_uses_completion_snapshot_at_atomic_write(host_case, monkeypatch, minimal, transition):
+    case = host_case
+    terminal = _terminal_state(case)
+    terminal["completion_state"] = "open" if transition == "reserve" else "in_flight"
+    serialized, resume = threading.Event(), threading.Event()
+    serialize = generic_host.serialize_terminal_result
+    errors = []
+    gate_write = False
+    completion_lock = terminal["completion_lock"]
+
+    class PublicationBarrier:
+        def __enter__(self):
+            nonlocal gate_write
+            if threading.current_thread() is writer and gate_write:
+                gate_write = False
+                serialized.set()
+                assert resume.wait(5)
+            return completion_lock.__enter__()
+
+        def __exit__(self, *exc):
+            return completion_lock.__exit__(*exc)
+
+    terminal["completion_lock"] = PublicationBarrier()
+
+    def map_result(result, **facts):
+        nonlocal gate_write
+        receipt = serialize(result, **facts)
+        # Pause only the selected minimal or rich write, after the mapper has
+        # taken its snapshot but before the writer acquires completion_lock.
+        if bool(result.raw_result) != minimal:
+            gate_write = True
+        return receipt
+
+    def publish():
+        try:
+            case.host._write_task_result(terminal, _minimal=minimal)
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(generic_host, "serialize_terminal_result", map_result)
+    writer = threading.Thread(target=publish)
+    writer.start()
+    try:
+        assert serialized.wait(5)
+        with terminal["completion_lock"]:
+            if transition == "reserve":
+                terminal["completion_state"] = "in_flight"
+            elif transition == "unknown":
+                terminal["completion_state"] = "unknown"
+            else:
+                terminal["completion_state"] = "acknowledged"
+                if transition == "acknowledge_success":
+                    terminal.update(settled=True, settlement={"accepted": True}, effect={"type": "fixture"})
+    finally:
+        resume.set()
+        writer.join(5)
+    assert not writer.is_alive() and errors == []
+    receipt = _read_result(case, "failed")
+    assert receipt["error"]["code"] == "provider_failed"
+    if transition in {"reserve", "unknown"}:
+        assert receipt["publication"] == {"status": "unconfirmed", "receipt": None, "effect": None}
+        assert receipt["completion_diagnostic"] == {"status": "unconfirmed"}
+    else:
+        success = transition == "acknowledge_success"
+        assert receipt["publication"] == {
+            "status": "settled" if success else "not_settled",
+            "receipt": {"accepted": True} if success else None,
+            "effect": {"type": "fixture"} if success else None,
+        }
+        assert "completion_diagnostic" not in receipt
+    assert case.runtime.failures == case.runtime.settlements == []
 
 
 @pytest.mark.parametrize("forced_receipt_written", [False, True])

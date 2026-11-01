@@ -253,6 +253,7 @@ class WorkspaceClient:
                 "update_document", "ingest_object", "ingest_project_object", "ingest_project_object_stream",
                 "get_preferences", "update_preferences",
                 "import_project_media", "get_project_media_import",
+                "get_project_media_selection", "get_project_verified_media",
                 "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
                 "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
                 "cancel_task", "retry_task", "cancel_run", "retry_run", "get_run",

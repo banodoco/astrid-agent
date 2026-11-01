@@ -277,38 +277,39 @@ def _run_python_orchestrator_subprocess(
     root.mkdir(parents=True, exist_ok=True)
     request_path = root / ".astrid-python-orchestrator.request"
     result_path = root / ".astrid-python-orchestrator.result"
-    request_path.write_bytes(
-        pickle.dumps(
-            {
-                "module": runtime.module,
-                "function": runtime.function,
-                "request": request,
-                "orchestrator": orchestrator,
-                "result_path": str(result_path),
-            },
-            protocol=pickle.HIGHEST_PROTOCOL,
-        )
-    )
-    package_parent = str(Path(__file__).resolve().parents[4])
-    existing_pythonpath = os.environ.get("PYTHONPATH")
-    pythonpath = (
-        package_parent
-        if not existing_pythonpath
-        else os.pathsep.join((package_parent, existing_pythonpath))
-    )
-    env = build_child_subprocess_env(
-        parent=os.environ,
-        explicit_env={
-            "ASTRID_INTERNAL_INVOCATION": "1",
-            "PYTHONPATH": pythonpath,
-        },
-        passthrough=orchestrator.isolation.env_passthrough,
-        declared_passthrough=orchestrator.isolation.env_passthrough,
-    )
-    argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.python_runtime_worker", str(request_path)]
+    env = {}
     source_channel = None
-    launch_options: dict[str, Any] = {}
     try:
+        request_path.write_bytes(
+            pickle.dumps(
+                {
+                    "module": runtime.module,
+                    "function": runtime.function,
+                    "request": request,
+                    "orchestrator": orchestrator,
+                    "result_path": str(result_path),
+                },
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        )
+        package_parent = str(Path(__file__).resolve().parents[4])
+        existing_pythonpath = os.environ.get("PYTHONPATH")
+        pythonpath = (
+            package_parent
+            if not existing_pythonpath
+            else os.pathsep.join((package_parent, existing_pythonpath))
+        )
+        env = build_child_subprocess_env(
+            parent=os.environ,
+            explicit_env={
+                "ASTRID_INTERNAL_INVOCATION": "1",
+                "PYTHONPATH": pythonpath,
+            },
+            passthrough=orchestrator.isolation.env_passthrough,
+            declared_passthrough=orchestrator.isolation.env_passthrough,
+        )
+        argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.python_runtime_worker", str(request_path)]
+        launch_options: dict[str, Any] = {}
         if _captured_source is not None:
             from runtime_protocol.verified_host_launch import canonical
 
@@ -371,15 +372,26 @@ def _run_python_orchestrator_subprocess(
             ) from exc
         return _normalize_python_result(orchestrator, request, raw_result)
     finally:
+        primary_error = sys.exc_info()[1]
+        cleanup_error = None
         if source_channel is not None:
-            source_channel.close()
-        request_path.unlink(missing_ok=True)
-        result_path.unlink(missing_ok=True)
+            try:
+                source_channel.close()
+            except BaseException as exc:
+                cleanup_error = exc
+        for path in (request_path, result_path):
+            try:
+                path.unlink(missing_ok=True)
+            except BaseException as exc:
+                cleanup_error = cleanup_error or exc
+        env.clear()
         if request.run_root in (None, ""):
             try:
                 root.rmdir()
             except OSError:
                 pass
+        if cleanup_error is not None and primary_error is None:
+            raise cleanup_error
 
 
 def _run_command_orchestrator(
@@ -388,105 +400,125 @@ def _run_command_orchestrator(
     values: Mapping[str, Any],
 ) -> OrchestratorRunResult:
     command, cwd, env = _expand_command_runtime(orchestrator, request, values)
-    if request.dry_run:
-        planned_commands = (command,)
+    effective_env = {}
+    try:
+        if request.dry_run:
+            planned_commands = (command,)
+            return OrchestratorRunResult(
+                orchestrator_id=orchestrator.id,
+                kind=orchestrator.kind,
+                runtime_kind="command",
+                command=command,
+                planned_commands=planned_commands,
+                cwd=cwd,
+                env=dict(env),
+                returncode=None,
+                dry_run=True,
+                plan=_plan_from_commands(planned_commands, prefix=orchestrator.id),
+            )
+        effective_env = _command_subprocess_env(orchestrator, request, env)
+        run_root = request.run_root
+        import_reference = None
+        if orchestrator.metadata.get("local_orchestrator") is True:
+            from astrid.core.execution.process_group import popen_owned_process, terminate_tree, verify_tree_absent
+            import_receipt = None
+            inherited_fds = ()
+            process = None
+            try:
+                if orchestrator.id == "h3_av.transform":
+                    from types import SimpleNamespace
+                    from astrid.core.execution._child_import_receipt import ChildImportReceipt
+                    from astrid.sdk.storage_root import resolve_runtime_data_root
+
+                    # This parent is local, not a registered Runtime host. Do not
+                    # invent Runtime task/attempt, closure or incarnation identity.
+                    support_status = None
+                    try:
+                        support = resolve_runtime_data_root()
+                        if support.is_dir():
+                            support_status = support / "evidence-status.json"
+                    except Exception:
+                        pass
+                    context = SimpleNamespace(
+                        evidence_status_path=support_status, executor_id="unavailable",
+                        source_epoch="unavailable", runtime_state={},
+                        pack_roots=((orchestrator.metadata["pack_root"],)
+                                    if isinstance(orchestrator.metadata.get("pack_root"), str) else ()),
+                        _child_import_host_context={"execution_profile": "local_orchestrator"},
+                    )
+                    import_receipt = ChildImportReceipt(context, orchestrator.id)
+                    inherited_fds = import_receipt.prepare(effective_env)
+                process = popen_owned_process(list(command), cwd=cwd, env=effective_env,
+                                              **({"pass_fds": inherited_fds} if inherited_fds else {}))
+                if import_receipt is not None:
+                    import_receipt.launched(process)
+                returncode = process.wait()
+                verify_tree_absent(process)
+            except BaseException as error:
+                process = process or getattr(error, "process", None)
+                if process is not None:
+                    error.process = process
+                    error.custody = getattr(process, "_astrid_custody", None)
+                    try:
+                        terminate_tree(process)
+                    except BaseException as cleanup_error:
+                        raise error from cleanup_error
+                raise
+            finally:
+                error = sys.exc_info()[1]
+                if import_receipt is not None:
+                    try:
+                        import_reference = import_receipt.finish()
+                        if import_reference["persistence"] == "failed":
+                            _receipt_warning(
+                                "child import receipt persistence failed launch_id=%s", import_reference["launch_id"])
+                    except BaseException as receipt_error:
+                        _receipt_warning(
+                            "child import receipt unavailable: %s", type(receipt_error).__name__)
+                        import_reference = {"observation": "unavailable", "persistence": "failed"}
+                    if error is not None:
+                        error.child_import_receipt = import_reference
+        elif run_root is not None and not request.project_was_auto_resolved:
+            with open_run_log_capture(run_root) as logs:
+                returncode = run_subprocess_with_capture(
+                    list(command),
+                    cwd=cwd,
+                    env=effective_env,
+                    stdout_log=logs.stdout,
+                    stderr_log=logs.stderr,
+                )
+        else:
+            completed = subprocess.run(
+                list(command),
+                stdin=subprocess.DEVNULL,
+                cwd=cwd,
+                env=effective_env,
+                check=False,
+            )
+            returncode = completed.returncode
         return OrchestratorRunResult(
             orchestrator_id=orchestrator.id,
             kind=orchestrator.kind,
             runtime_kind="command",
             command=command,
-            planned_commands=planned_commands,
+            planned_commands=(command,),
             cwd=cwd,
-            env=env,
-            returncode=None,
-            dry_run=True,
-            plan=_plan_from_commands(planned_commands, prefix=orchestrator.id),
+            env=dict(env),
+            returncode=returncode,
+            child_import_receipt=import_reference,
         )
-    effective_env = _command_subprocess_env(orchestrator, request, env)
-    run_root = request.run_root
-    import_reference = None
-    if orchestrator.metadata.get("local_orchestrator") is True:
-        from astrid.core.execution.process_group import popen_owned_process, terminate_tree, verify_tree_absent
-        import_receipt = None
-        inherited_fds = ()
-        if orchestrator.id == "h3_av.transform":
-            from types import SimpleNamespace
-            from astrid.core.execution._child_import_receipt import ChildImportReceipt
-            from astrid.sdk.storage_root import resolve_runtime_data_root
 
-            # This parent is local, not a registered Runtime host. Do not
-            # invent Runtime task/attempt, closure or incarnation identity.
-            support_status = None
-            try:
-                support = resolve_runtime_data_root()
-                if support.is_dir():
-                    support_status = support / "evidence-status.json"
-            except Exception:
-                pass
-            context = SimpleNamespace(
-                evidence_status_path=support_status, executor_id="unavailable",
-                source_epoch="unavailable", runtime_state={},
-                pack_roots=((orchestrator.metadata["pack_root"],)
-                            if isinstance(orchestrator.metadata.get("pack_root"), str) else ()),
-                _child_import_host_context={"execution_profile": "local_orchestrator"},
-            )
-            import_receipt = ChildImportReceipt(context, orchestrator.id)
-            inherited_fds = import_receipt.prepare(effective_env)
-        process = None
-        try:
-            process = popen_owned_process(list(command), cwd=cwd, env=effective_env,
-                                          **({"pass_fds": inherited_fds} if inherited_fds else {}))
-            if import_receipt is not None:
-                import_receipt.launched(process)
-            returncode = process.wait()
-            verify_tree_absent(process)
-        except BaseException as error:
-            if process is not None:
-                error.process = process
-                error.custody = getattr(process, "_astrid_custody", None)
-                try:
-                    terminate_tree(process)
-                except BaseException as cleanup_error:
-                    raise error from cleanup_error
-            raise
-        finally:
-            if import_receipt is not None:
-                import_reference = import_receipt.finish()
-                if import_reference["persistence"] == "failed":
-                    logging.getLogger(__name__).warning(
-                        "child import receipt persistence failed launch_id=%s", import_reference["launch_id"])
-                error = sys.exc_info()[1]
-                if error is not None:
-                    error.child_import_receipt = import_reference
-    elif run_root is not None and not request.project_was_auto_resolved:
-        with open_run_log_capture(run_root) as logs:
-            returncode = run_subprocess_with_capture(
-                list(command),
-                cwd=cwd,
-                env=effective_env,
-                stdout_log=logs.stdout,
-                stderr_log=logs.stderr,
-            )
-    else:
-        completed = subprocess.run(
-            list(command),
-            stdin=subprocess.DEVNULL,
-            cwd=cwd,
-            env=effective_env,
-            check=False,
-        )
-        returncode = completed.returncode
-    return OrchestratorRunResult(
-        orchestrator_id=orchestrator.id,
-        kind=orchestrator.kind,
-        runtime_kind="command",
-        command=command,
-        planned_commands=(command,),
-        cwd=cwd,
-        env=env,
-        returncode=returncode,
-        child_import_receipt=import_reference,
-    )
+    finally:
+        effective_env.clear()
+        env.clear()
+
+
+def _receipt_warning(message: str, *args: object) -> None:
+    """Receipt diagnostics cannot replace execution or interrupt cleanup."""
+    try:
+        logging.getLogger(__name__).warning(message, *args)
+    except BaseException:
+        pass
 
 
 def _expand_command_runtime(

@@ -154,7 +154,12 @@ def _run_child_command(fd: str | None, encoded: str, *, renderer: bool = False, 
         return 0
     finally:
         if bridge is not None:
-            bridge.close()
+            error = sys.exc_info()[1]
+            try:
+                bridge.close()
+            except BaseException:
+                if error is None:
+                    raise
 
 
 def _json_value(value: Any) -> Any:
@@ -229,47 +234,61 @@ def run(payload_path: str | Path, *, captured=None) -> int:
         roots = ()
     if roots and expected_source and _source_digest_for_roots(roots) != expected_source:
         raise ValueError("admitted capability source digest changed")
-    remotion_fd = payload.get("remotion_host_fd")
-    if remotion_fd is not None:
-        if kind != "executor" or capability_id != "rendering.timeline_visualize" or type(remotion_fd) is not int:
-            raise ValueError("invalid inherited renderer lease")
-        from .remotion_host_session import install_host_remotion_client
-        install_host_remotion_client(remotion_fd)
-    if kind == "executor":
-        from astrid.core.execution.executor.registry import ExecutorRegistry
-        from astrid.core.execution.executor.runner import run_executor
+    remotion_client = None
+    try:
+        remotion_fd = payload.get("remotion_host_fd")
+        if remotion_fd is not None:
+            if kind != "executor" or capability_id != "rendering.timeline_visualize" or type(remotion_fd) is not int:
+                raise ValueError("invalid inherited renderer lease")
+            from .remotion_host_session import install_host_remotion_client
+            remotion_client = install_host_remotion_client(remotion_fd)
+        if kind == "executor":
+            from astrid.core.execution.executor.registry import ExecutorRegistry
+            from astrid.core.execution.executor.runner import run_executor
 
-        from astrid.core.execution.executor.schema import validate_executor_definition
+            from astrid.core.execution.executor.schema import validate_executor_definition
 
-        registry = ExecutorRegistry([validate_executor_definition(definition_payload)])
-        result = run_executor(_request_object(request_payload, kind=kind, capability_id=capability_id), registry, _admission=admission,
-                              _captured_source=captured[1] if captured is not None else None)
-    else:
-        from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
-        from astrid.core.execution.orchestrator.schema import validate_orchestrator_definition
-        from astrid.core.execution.orchestrator.runner import run_orchestrator
+            registry = ExecutorRegistry([validate_executor_definition(definition_payload)])
+            result = run_executor(
+                _request_object(request_payload, kind=kind, capability_id=capability_id),
+                registry,
+                _admission=admission,
+                _captured_source=captured[1] if captured is not None else None,
+            )
+        else:
+            from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
+            from astrid.core.execution.orchestrator.schema import validate_orchestrator_definition
+            from astrid.core.execution.orchestrator.runner import run_orchestrator
 
-        result = run_orchestrator(
-            _request_object(request_payload, kind=kind, capability_id=capability_id),
-            OrchestratorRegistry([validate_orchestrator_definition(definition_payload)]),
-            _captured_source=captured,
+            result = run_orchestrator(
+                _request_object(request_payload, kind=kind, capability_id=capability_id),
+                OrchestratorRegistry([validate_orchestrator_definition(definition_payload)]),
+                _captured_source=captured,
+            )
+
+        result_path = Path(str(payload["result_path"]))
+        result_path.write_text(
+            json.dumps(
+                {
+                    "ok": bool(getattr(result, "ok", False)),
+                    "returncode": getattr(result, "returncode", None),
+                    "outputs": _json_value(getattr(result, "outputs", {}) or {}),
+                    "payload": _json_value(getattr(result, "payload", {}) or {}),
+                    "error": _json_value(getattr(result, "error", None)),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
         )
-
-    result_path = Path(str(payload["result_path"]))
-    result_path.write_text(
-        json.dumps(
-            {
-                "ok": bool(getattr(result, "ok", False)),
-                "returncode": getattr(result, "returncode", None),
-                "outputs": _json_value(getattr(result, "outputs", {}) or {}),
-                "payload": _json_value(getattr(result, "payload", {}) or {}),
-                "error": _json_value(getattr(result, "error", None)),
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return 0 if bool(getattr(result, "ok", False)) else 1
+        return 0 if bool(getattr(result, "ok", False)) else 1
+    finally:
+        if remotion_client is not None:
+            error = sys.exc_info()[1]
+            try:
+                remotion_client.close()
+            except BaseException:
+                if error is None:
+                    raise
 
 
 if __name__ == "__main__":
