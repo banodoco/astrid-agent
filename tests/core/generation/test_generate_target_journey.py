@@ -182,6 +182,31 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
         client=worker_client,
     )
     verified_host = VerifiedH3Host(tmp_path, daemon, [H3_PACK, PACK])
+    claim_child = verified_host._claim
+
+    def observe_compiled_source(*args, **kwargs):
+        result = claim_child(*args, **kwargs)
+        spec = result["spec"]
+        if spec.get("delegated_stage") == "run":
+            (binding,) = [row for row in spec["delegated_inputs"] if row["name"] == "managed_assets"]
+            archive_bytes = client.media.read_bytes(binding["object_id"])
+            assert "sha256:" + hashlib.sha256(archive_bytes).hexdigest() == binding["object_id"]
+            with zipfile.ZipFile(io.BytesIO(archive_bytes)) as bundle:
+                (asset,) = json.loads(bundle.read("manifest.json"))["assets"]
+                assert asset["binding"] == "source_video"
+                data = bundle.read(asset["member"])
+            assert "sha256:" + asset["sha256"] == source_digest
+            assert hashlib.sha256(data).hexdigest() == asset["sha256"]
+            assert len(data) == asset["size"] == source.stat().st_size
+            expected = json.loads(comfy.expected_path.read_text())
+            expected["basename"] = Path(asset["member"]).name
+            comfy.expected_path.write_text(json.dumps(expected), encoding="utf-8")
+            (tmp_path / "h3-compiled-source-binding.json").write_text(json.dumps({
+                "task_id": result["task_id"], "managed_assets": binding, "source": asset,
+            }, indent=2), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(verified_host, "_claim", observe_compiled_source)
     monkeypatch.setattr(sdk.AstridClient, "open_from_launcher", lambda **_kwargs: nullcontext(client))
     invoke_result = client.invoke_result
 
