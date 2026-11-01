@@ -109,11 +109,22 @@ def archive_fixture(wheel_inputs):
     return archive, manifest, sha, root
 
 
-def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fixture):
+def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fixture, wheel_inputs):
     archive, manifest, sha, root = archive_fixture
     assert archive.name == 'sha256-' + sha + '.zip'
     assert manifest['fixture'] is True and manifest['complete'] is False
     assert manifest['python'] == release.interpreter_identity()
+    _, wheels, _ = wheel_inputs
+    agent_wheel = next(wheel for wheel in wheels if wheel.name.startswith('astrid-'))
+    with zipfile.ZipFile(agent_wheel) as wheel:
+        packaged_locks = {
+            name for name in wheel.namelist()
+            if name.startswith('astrid/') and name.endswith('.lock')
+        }
+    assert packaged_locks == {
+        'astrid/packs/runpod/requirements.linux-cu130.lock',
+        'astrid/packs/comfyui/requirements.linux-cu130.lock',
+    }
     recipe = json.loads((REPO / 'astrid/packs/runpod/recipe.linux-cu130.json').read_text())
     for env in recipe['environments']:
         if env['requirements']['mode'] != 'packaged':
