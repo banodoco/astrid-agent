@@ -719,7 +719,9 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
     }
     skill_bin = tmp_path / "skill-bin"
     skill_bin.mkdir()
-    (skill_bin / "python3").symlink_to(sys.executable)
+    shim = skill_bin / "python3"
+    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    shim.chmod(0o755)
     env["PATH"] = f"{skill_bin}{os.pathsep}{env['PATH']}"
     project = daemon.service.create_project({"slug": "skill-demo", "name": "Skill demo"})["id"]
     monkeypatch.setenv("ASTRID_TIMELINE_EVAL_ENDPOINT", daemon.endpoint)
