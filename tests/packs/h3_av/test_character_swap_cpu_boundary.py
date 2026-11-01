@@ -215,7 +215,8 @@ def test_installed_cpu_renderer_uses_real_provisioned_outputs():
     assert not (project / "node_modules/@banodoco/timeline-composition/typescript/src").exists()
     assert run.gen_effect_registry.HOST_SRC == project / "src"
     assert set(run.gen_effect_registry.OUTPUTS.values()) == set(paths)
-    assert not (project / run._REGISTRY_STATE_PATH).exists()
+    state_path = project / run._REGISTRY_STATE_PATH
+    assert state_path.is_file() and state_path.stat().st_size > 0
     argv = _registry_origin.installed_argv(sys.executable, run.remotion_runtime.__file__, generate=True)
     operation = argv[argv.index("-c") + 1]
     assert argv[argv.index("-c") + 2] == str(helper._INSTALLED_EXECUTION_ROOT)
