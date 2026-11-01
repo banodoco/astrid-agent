@@ -10,6 +10,7 @@ import pytest
 
 from scripts import ci_journey as journey
 from scripts import journey_matrix, journey_release2
+from scripts import journey_matrix as matrix
 
 
 def test_macos_fault_inventory_preserves_existing_journeys():
@@ -53,6 +54,45 @@ def test_macos_fault_inventory_binds_shared_helper_and_preservation(leg, steps, 
         "sentinel_identity_and_survival", "launchd_ownership_health_and_one_runtime",
         "per_step_command_and_inner_exit", "scenario_tuple_runner_and_evidence_file_hashes",
     } <= set(row["required_evidence"])
+
+
+@pytest.mark.parametrize(
+    ("leg", "steps", "specific_evidence"),
+    (
+        ("interrupted-update", ("baseline", "interrupt", "recover", "verify"),
+         {"interruption_and_same_operation_terminal_journal", "installed_identity_after_recovery"}),
+        ("rollback", ("baseline", "fail_candidate", "verify"),
+         {"authenticated_selected_release0_predecessor_identity",
+          "candidate_failure_and_rollback_transaction_journal", "restored_predecessor_identity"}),
+    ),
+)
+def test_windows_direct_fault_inventory(leg, steps, specific_evidence):
+    job_id = f"direct-windows-{leg}"
+    rows = [row for row in matrix.RELEASE1_MATRIX if row["job_id"] == job_id]
+    assert len(rows) == 1
+    row = matrix.validate_job(job_id, "direct")
+    assert {key: row[key] for key in ("scenario_id", "os", "runner", "shell", "manager", "leg", "scenario")} == {
+        "scenario_id": job_id, "os": "windows", "runner": "windows-2022",
+        "shell": "powershell.exe", "manager": "task-scheduler", "leg": leg, "scenario": leg,
+    }
+    assert row["executor"] == "failure_mode_executor.execute_installed_fault"
+    assert row["steps"] == steps
+    assert set(row["required_evidence"]) >= specific_evidence | {
+        "release0_fixture_and_installed_identity", "populated_data_before_and_after",
+        "sentinel_identity_and_survival", "task_scheduler_ownership_health_and_one_runtime",
+        "keep_data_and_task_scheduler_process_cleanup", "per_step_command_and_inner_exit",
+        "scenario_tuple_runner_and_evidence_file_hashes",
+    }
+
+
+def test_existing_release1_and_release2_inventory_remains_available():
+    for os_name in ("macos", "linux", "windows"):
+        assert matrix.release1_job(f"direct-{os_name}")["leg"] == "release0-to-release1"
+        for mode in ("pinokio-backend", "pinokio-fully-local"):
+            assert matrix.release1_job(f"{mode}-{os_name}")["mode"] == mode
+        assert {row["mode"] for row in matrix.M4_5_MATRIX if row["os"] == os_name} == {
+            "direct", "pinokio-backend", "pinokio-fully-local",
+        }
 
 
 def app_checkout(tmp_path):
