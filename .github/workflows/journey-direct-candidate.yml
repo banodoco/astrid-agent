@@ -113,10 +113,19 @@ jobs:
           --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
           --shell '${{ matrix.shell }}' --release0-fixture "$pwd/agent/tests/fixtures/release0" --allow-release0-to-release1
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    - name: Retain the matrix receipt even after a lifecycle failure
+    - name: Create bounded redacted evidence and list its contents
+      id: evidence_export
       if: always()
+      run: |
+        python agent/scripts/export_journey_evidence.py `
+          --source "$env:RUNNER_TEMP/astrid-r1-${{ matrix.job_id }}/evidence" `
+          --destination "$env:RUNNER_TEMP/astrid-r1-${{ matrix.job_id }}-export" `
+          --runtime-checkout "$pwd/runtime"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Retain redacted evidence after lifecycle failure
+      if: always() && steps.evidence_export.outcome == 'success'
       uses: actions/upload-artifact@v4
       with:
         name: journey-receipt-${{ matrix.job_id }}
-        path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}
-        if-no-files-found: warn
+        path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}-export
+        if-no-files-found: error
