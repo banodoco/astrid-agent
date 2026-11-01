@@ -1,0 +1,52 @@
+repos:
+  astrid-agent: 722e2a4508c88dde08bc7b3619fc341652dee685
+  astrid-runtime: 1a275bb339ae897e52a5be5e1da99e846e402037
+gpu: false
+max_minutes: 60
+setup:
+  - |
+    set -euo pipefail
+    cd /workspace/astrid-agent
+    mkdir -p /workspace/out/native /workspace/tmp /workspace/cache/pip
+    export TMPDIR=/workspace/tmp PIP_CACHE_DIR=/workspace/cache/pip
+    python3 -m venv /workspace/venv
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps --no-build-isolation . ../astrid-runtime ../astrid-runtime/packages/python
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps 'banodoco-timeline-schema @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python'
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-deps 'git+https://github.com/peteromallet/VibeComfy.git@ac0ee1b80991f2414dae27d264af4b5e2890a7'
+    curl --fail --location --silent --show-error https://nodejs.org/dist/v20.19.4/node-v20.19.4-linux-x64.tar.xz -o /workspace/tmp/node.tar.xz
+    tar -xJf /workspace/tmp/node.tar.xz -C /workspace/tmp
+    export PATH=/workspace/tmp/node-v20.19.4-linux-x64/bin:$PATH
+    node --version | tee /workspace/out/native/node-version.txt
+    npm --prefix remotion ci --ignore-scripts --no-audit --no-fund
+    (cd remotion && npx remotion browser ensure) 2>&1 | tee /workspace/out/native/browser-ensure.txt
+    find "${XDG_CACHE_HOME:-$HOME/.cache}" -type f \( -name chrome -o -name chrome-headless-shell \) -perm -u+x -print | sort > /workspace/out/native/browser-candidates.txt
+run:
+  - |
+    set +e
+    cd /workspace/astrid-agent
+    export TMPDIR=/workspace/tmp PYTHONDONTWRITEBYTECODE=1 ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python PATH=/workspace/tmp/node-v20.19.4-linux-x64/bin:$PATH
+    browser=$(head -n 1 /workspace/out/native/browser-candidates.txt)
+    if [ -z "$browser" ]; then
+      printf '%s\n' 'browser executable not found after remotion ensure' > /workspace/out/native/browser-launch.stderr
+      printf '%s\n' 125 > /workspace/out/native/browser-launch.exit
+    else
+      ldd "$browser" > /workspace/out/native/browser-loader.txt 2>&1
+      "$browser" --headless --no-sandbox --disable-gpu --dump-dom about:blank > /workspace/out/native/browser-launch.stdout 2> /workspace/out/native/browser-launch.stderr
+      rc=$?
+      printf '%s\n' "$rc" > /workspace/out/native/browser-launch.exit
+    fi
+    /workspace/venv/bin/python -m pytest -p no:cacheprovider -o addopts= -q --basetemp=/workspace/tmp/pytest-native --junitxml=/workspace/out/native/generic-host-remotion.xml tests/integrations/test_generic_host_remotion_render.py::test_generic_host_remotion_register_claim_execute_settle_and_cas > /workspace/out/native/generic-host-remotion.txt 2>&1
+    rc=$?
+    printf '%s\n' "$rc" > /workspace/out/native/generic-host-remotion.exit
+    /workspace/venv/bin/python -m pytest -p no:cacheprovider -o addopts= -q --basetemp=/workspace/tmp/pytest-protected --junitxml=/workspace/out/native/protected-existing.xml tests/core/rendering/test_remotion_host_regressions.py::test_captured_orchestrator_uses_platform_descriptor_launch tests/core/rendering/test_remotion_host_regressions.py::test_native_platform_launch_inherits_source_descriptor tests/packs/rendering/test_verified_source.py tests/sdk/test_workspace_client_custody_composition_i_ag_03b.py::test_verified_media_and_filtered_object_operations_coexist tests/core/gateway/test_doctor_bundle.py::test_doctor_custody_union_handles_unavailable_runtime > /workspace/out/native/protected-existing.txt 2>&1
+    rc=$?
+    printf '%s\n' "$rc" > /workspace/out/native/protected-existing.exit
+    /workspace/venv/bin/python -m pytest --collect-only -q -o addopts= tests/integrations/test_execution_custody_runtime_i_ag_03b.py > /workspace/out/native/missing-native-selector.txt 2>&1
+    rc=$?
+    printf '%s\n' "$rc" > /workspace/out/native/missing-native-selector.exit
+    find /workspace/out -type f -print0 | sort -z | xargs -0 sha256sum > /workspace/out/SHA256SUMS
+    exit 0
+artifacts:
+  - /workspace/out/native
+  - /workspace/out/SHA256SUMS
