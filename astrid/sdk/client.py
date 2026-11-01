@@ -8,6 +8,7 @@ local application. Runtime discovery and credentials are resolved by
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
@@ -243,6 +244,33 @@ def _validate_handshake(
             "handshake.capabilities",
             "runtime handshake did not advertise targeted execution binding support",
         )
+
+
+_RELEASE_TIMEOUT_SECONDS = 10.0
+
+
+def _loopback_json(endpoint: str, path: str) -> Any:
+    """GET one JSON document from the loopback managed ComfyUI endpoint only."""
+    from urllib import request as urllib_request
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(endpoint)
+    if parts.scheme != "http" or parts.hostname != "127.0.0.1" or parts.path not in ("", "/"):
+        raise ValueError("managed release endpoint must be the loopback ComfyUI origin")
+    with urllib_request.urlopen(endpoint.rstrip("/") + path, timeout=_RELEASE_TIMEOUT_SECONDS) as response:
+        return json.loads(response.read(1 << 20).decode("utf-8"))
+
+
+def _device_vram(stats: Any) -> tuple[int, int]:
+    """Return (vram_total, vram_free) bytes from /system_stats, or refuse."""
+    devices = stats.get("devices") if isinstance(stats, Mapping) else None
+    if not isinstance(devices, list) or not devices or not isinstance(devices[0], Mapping):
+        raise ValueError("managed ComfyUI reported no device VRAM")
+    total = devices[0].get("vram_total")
+    free = devices[0].get("vram_free")
+    if isinstance(total, bool) or isinstance(free, bool) or not isinstance(total, int) or not isinstance(free, int):
+        raise ValueError("managed ComfyUI reported malformed VRAM")
+    return total, free
 
 
 class AstridClient:
@@ -667,6 +695,84 @@ class AstridClient:
         from astrid.sdk.authoring_remote import TargetBoundAuthoringBundle
 
         return TargetBoundAuthoringBundle(self._remote._transport, target)
+
+    def release_generation(self, *, engine: str, target: str, wait: bool = False) -> dict[str, Any]:
+        """Release the managed ComfyUI engine's loaded state; claim only what is proven.
+
+        Attached or unmanaged targets are refused. The managed engine must be
+        registered and its queue idle. Release then reuses the owner's native
+        unload path (CheckoutServerAdapter.release) on the verified loopback
+        endpoint. Only proven facts are claimed: queue state, the explicit free
+        completion, and VRAM before and after. Process exit is never claimed.
+        """
+        from astrid.core.generation.preflight import _registered_managed_engine, generation_error
+
+        if engine != "comfyui":
+            raise generation_error(ValueError("release supports only comfyui"),
+                                   details={"field": "engine"}, code="unsupported_engine")
+        if target != "managed":
+            raise generation_error(
+                ValueError("release refuses attached or unmanaged targets; only the managed engine can be released"),
+                code="release_refused", details={"field": "target"},
+                fixes=[{"argv": ["astrid", "generate", "targets", "--target", target],
+                        "scope": "read_only", "details": {}}],
+            )
+        registered = _registered_managed_engine()
+        if registered is None:
+            raise generation_error(
+                ValueError("no managed ComfyUI engine is installed or registered"),
+                code="missing_dependency", details={"field": "target"},
+                fixes=[{"argv": ["astrid", "generate", "targets", "--target", "managed"],
+                        "scope": "read_only", "details": {}}],
+            )
+        endpoint = registered["endpoint"]
+        vram_total_before, vram_free_before = _device_vram(_loopback_json(endpoint, "/system_stats"))
+        queue = _loopback_json(endpoint, "/queue")
+        running = queue.get("queue_running") if isinstance(queue, Mapping) else None
+        pending = queue.get("queue_pending") if isinstance(queue, Mapping) else None
+        if not isinstance(running, list) or not isinstance(pending, list):
+            raise generation_error(ValueError("managed ComfyUI queue state is malformed"),
+                                   code="release_refused", details={"field": "target"})
+        if running or pending:
+            raise generation_error(
+                ValueError("managed engine is busy; release is refused until its queue is idle"),
+                code="release_pending", details={"field": "target"},
+            )
+        from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
+
+        def owner_still_registered() -> None:
+            # Owner verification immediately before the destructive control calls.
+            if _registered_managed_engine() is None:
+                raise ValueError("managed engine owner is no longer registered")
+
+        # The native engine release is the same seam CheckoutServerAdapter.release
+        # uses; completion is required here because no host session is bound.
+        adapter = CheckoutServerAdapter(endpoint)
+        outcome = adapter._engine.release(
+            None, reason="requested", preflight=owner_still_registered, require_completion=True,
+        )
+        results = outcome.get("results") if isinstance(outcome, Mapping) else None
+        free = results.get("free") if isinstance(results, Mapping) else None
+        models_unloaded = isinstance(free, Mapping) and free.get("models_unloaded") is True
+        _, vram_free_after = _device_vram(_loopback_json(endpoint, "/system_stats"))
+        released = outcome.get("released") is True and outcome.get("ok") is True and models_unloaded
+        return {
+            "ok": released,
+            "released": released,
+            "release_requested": True,
+            "engine": "comfyui",
+            "target": "managed",
+            "owner": registered["owner"],
+            "endpoint": endpoint,
+            "queue_idle": True,
+            "models_unloaded": models_unloaded,
+            "process_exited": False,
+            "memory_observed_returned": vram_free_after > vram_free_before,
+            "vram_total_bytes": vram_total_before,
+            "vram_free_before_bytes": vram_free_before,
+            "vram_free_after_bytes": vram_free_after,
+            "reason": "" if released else str(outcome.get("error", "release did not prove model unload")),
+        }
 
     def __enter__(self) -> Self:
         return self
