@@ -219,12 +219,26 @@ def test_pod_corrupt_chunks_do_not_publish(comfy, endpoint, local_tls, network, 
     {**DESCRIPTOR, "subfolder": "../input"},
     {**DESCRIPTOR, "type": "input"},
     {**DESCRIPTOR, "filename": "C:\\result.png"},
-    {**DESCRIPTOR, "unknown": "unsafe"},
+    {**DESCRIPTOR, "metadata": {"bad": float("nan")}},
+    {**DESCRIPTOR, "future": "x" * 65536},
+    {**DESCRIPTOR, "future": {1: "not a JSON key"}},
 ])
 def test_unsafe_output_descriptor_is_rejected_before_http(descriptor, comfy, network, tmp_path):
     with pytest.raises(ValueError):
         attached(network).download_output(descriptor, tmp_path / "result.png")
     assert network["upstream"] == []
+
+
+def test_live_save_image_descriptor_downloads_with_informational_fields(comfy, network, tmp_path):
+    descriptor = {"filename": "Qwen_image_2.1_astrid_600d5a93f03747788ff193e8b4370ab3_00001_.png",
+                  "subfolder": "", "type": "output",
+                  "metadata": {"kind": "image", "width": 512, "height": 512},
+                  "future": {"fullpath": "../../ignored", "labels": ["image"]}}
+    destination = tmp_path / "result.png"
+    attached(network).download_output(descriptor, destination)
+    assert destination.read_bytes() == network["image"]
+    assert network["upstream"][-1][1].startswith("/view?filename=Qwen_image_")
+    assert "metadata" not in network["upstream"][-1][1]
 
 
 def test_attached_redirect_is_not_followed(comfy, network):

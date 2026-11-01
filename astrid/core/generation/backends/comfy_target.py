@@ -30,6 +30,7 @@ from astrid.core.generation.engine_contracts import TransportError
 from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
+MAX_DESCRIPTOR_INFO_BYTES = 64 * 1024
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
 _CHUNK_BYTES = 1024 * 1024
@@ -506,24 +507,29 @@ def validate_output_descriptor(descriptor: object) -> tuple[str, str, str]:
         raise ValueError("checkout_server output descriptor must be an object")
     if not {"filename", "subfolder", "type"}.issubset(descriptor):
         raise ValueError("checkout_server output descriptor has an invalid schema")
-    # Comfy/VHS may attach routing metadata to a descriptor, but accepting an
-    # arbitrary key set would make the custody contract ambiguous.  Keep the
-    # required routing fields plus the documented metadata emitted by Comfy;
-    # reject unknown fields so malformed or attacker-controlled descriptors do
-    # not silently pass through settlement.
-    allowed_metadata = {
-        "filename",
-        "subfolder",
-        "type",
-        "format",
-        "frame_rate",
-        "workflow",
-        "fullpath",
-        "prompt_id",
-        "node_id",
-    }
-    if set(descriptor).difference(allowed_metadata):
-        raise ValueError("checkout_server output descriptor has an invalid schema")
+    # All other fields are provenance only: never use them for routing.
+    # Bound and validate even descriptors supplied outside the JSON transport.
+    info = {key: value for key, value in descriptor.items()
+            if key not in {"filename", "subfolder", "type"}}
+    def plain_json(value: object, depth: int = 0) -> bool:
+        if depth > 32:
+            return False
+        if value is None or type(value) in (str, bool, int):
+            return True
+        if type(value) is float:
+            return math.isfinite(value)
+        if type(value) is list:
+            return all(plain_json(item, depth + 1) for item in value)
+        if type(value) is dict:
+            return all(type(key) is str and plain_json(item, depth + 1)
+                       for key, item in value.items())
+        return False
+    try:
+        valid_info = plain_json(info) and len(json.dumps(info, ensure_ascii=True, allow_nan=False).encode()) <= MAX_DESCRIPTOR_INFO_BYTES
+    except (ValueError, TypeError, RecursionError):
+        valid_info = False
+    if not valid_info:
+        raise ValueError("checkout_server output descriptor has invalid informational fields")
     filename = validate_output_field(
         descriptor.get("filename"), field="filename", reject_slash=True
     )
