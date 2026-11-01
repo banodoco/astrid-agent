@@ -9564,6 +9564,7 @@ class GenericPackHost:
         output_root = terminal.get("output_root", root / "outputs")
         payload = {} if minimal else terminal.get("payload") or {}
         warnings = list(payload.get("warnings") or [])
+        warnings.extend(terminal.get("evidence_warnings") or [])
 
         def error_text(error: BaseException) -> str:
             try:
@@ -9968,8 +9969,16 @@ class GenericPackHost:
                 abort.set()
             try:
                 if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
+                    # Admission shutdown happens before the producer starts.
+                    # During execution the observer cannot claim the child
+                    # stopped until the local execution path returns.
                     completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
-                                    fence=exact_fence, lease_id=lease_token)
+                                    fence=exact_fence, lease_id=lease_token,
+                                    runtime_epoch=data.get("runtime_epoch"), outputs=[],
+                                    result={"status": "cancelled",
+                                            "error": {"code": "cancelled",
+                                                      "message": "execution cancelled"}},
+                                    stop_observed=terminal.get("stage") == "admission")
                 else:
                     ensure_failure(error)
             except BaseException as reporting_error:
@@ -10503,6 +10512,7 @@ class GenericPackHost:
 
         def collect_terminal_evidence(status: str, error: BaseException) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             """Harvest and upload verified partial outputs before terminal mutation."""
+            upload_started = False
             try:
                 normalized = coerce_astrid_error(error)
                 error_value = {
@@ -10556,6 +10566,7 @@ class GenericPackHost:
                         )
                 typed = self._typed_outputs(record, harvested, root)
                 task_epoch = task_data.get("runtime_epoch")
+                upload_started = bool(typed)
                 uploaded = self._upload_outputs(
                     typed,
                     project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
@@ -10574,9 +10585,24 @@ class GenericPackHost:
                         "object_id": manifest.get("digest"), "size": manifest.get("size"),
                     }
             except Exception as evidence_error:
-                # The original terminal error remains authoritative. Keep the
-                # attempt spool and expose why evidence could not be attached.
+                # A local manifest/harvest/identity failure means these
+                # outputs cannot be described safely. Preserve the producer's
+                # original failure and publish an empty result; only an upload
+                # failure leaves evidence awaiting Runtime recovery.
                 _terminal["evidence_error"] = type(evidence_error).__name__
+                if not upload_started:
+                    warnings = _terminal.setdefault("evidence_warnings", [])
+                    warnings.append(f"terminal evidence unavailable: {type(evidence_error).__name__}")
+                    result_value = {
+                        "status": status,
+                        "error": error_value,
+                        "outcomes": {"execution": {"status": status}},
+                    }
+                    _terminal.update(
+                        pending_outputs=[], pending_result=result_value, pending_status=status
+                    )
+                    return [], result_value
+                # Keep the attempt spool and expose why evidence could not be attached.
                 _terminal["evidence_pending"] = True
                 raise HostError("terminal evidence publication is pending Runtime recovery") from evidence_error
             _terminal.update(pending_outputs=uploaded, pending_result=result_value, pending_status=status)
@@ -10613,7 +10639,7 @@ class GenericPackHost:
                     "attempt_id": attempt_id, "fence": fence, "lease_id": lease_token,
                     "runtime_epoch": task_data.get("runtime_epoch"),
                     "outputs": evidence_outputs, "result": evidence_result,
-                    "stop_observed": False,
+                    "stop_observed": True,
                 }
                 try:
                     completion_call(self.client.cancel, task_id, **cancel_kwargs)

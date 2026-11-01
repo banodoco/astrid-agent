@@ -73,6 +73,22 @@ def test_cancel_evidence_carries_complete_fence_and_unknown_stop():
     assert observed_key != pending_key
 
 
+def test_cancel_replay_reads_durable_result_after_observed_stop_clears_attempt():
+    result = {"status": "cancelled", "manifest_ref": {"object_id": "sha256:" + "c" * 64, "size": 20}}
+    client = _client(result)
+    client.generated.get_task = lambda task_id: {
+        "id": task_id, "attempt_id": None, "version": 5, "result": result,
+    }
+
+    response = client.cancel(
+        "task-1", attempt_id="attempt-1", fence=3, lease_id="lease-1",
+        outputs=[], result=result, stop_observed=True,
+    )
+
+    assert response["task"]["result"] == result
+    assert client.generated.calls == []
+
+
 def test_failure_lost_ack_uses_durable_readback_without_replaying():
     result = {"status": "failed", "manifest_ref": {"object_id": "sha256:" + "c" * 64, "size": 8}}
     client = _client({"status": "failed"})
