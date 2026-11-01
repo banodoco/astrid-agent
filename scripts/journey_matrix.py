@@ -55,6 +55,42 @@ DIRECT_LINUX_FAULT_SCENARIOS: Final = (
     },
 )
 
+# macOS fault declarations are separate from the existing nine routed jobs.
+DIRECT_MACOS_FAULT_SCENARIOS: Final = (
+    # macOS direct installed fault journeys. Each row requires its own receipt;
+    # disposable executor observations cannot stand in for installed state.
+    {
+        "scenario_id": "direct-macos-interrupted-update",
+        "job_id": "direct-macos-interrupted-update", "mode": "direct",
+        "runner": "macos-14", "shell": "sh", "os": "macos",
+        "leg": "interrupted-update", "manager": "launchd",
+        "executor": "failure_mode_executor.execute_installed_fault",
+        "steps": ("baseline", "interrupt", "recover", "verify"),
+        "required_evidence": (
+            "release0_fixture_and_installed_identity", "populated_data_before_and_after",
+            "sentinel_identity_and_survival", "interruption_and_same_operation_terminal_journal",
+            "installed_identity_after_recovery", "launchd_ownership_health_and_one_runtime",
+            "keep_data_and_launchd_process_cleanup", "per_step_command_and_inner_exit",
+            "scenario_tuple_runner_and_evidence_file_hashes",
+        ),
+    },
+    {
+        "scenario_id": "direct-macos-rollback",
+        "job_id": "direct-macos-rollback", "mode": "direct",
+        "runner": "macos-14", "shell": "sh", "os": "macos",
+        "leg": "rollback", "manager": "launchd",
+        "executor": "failure_mode_executor.execute_installed_fault",
+        "steps": ("baseline", "fail_candidate", "verify"),
+        "required_evidence": (
+            "release0_fixture_and_installed_identity", "populated_data_before_and_after",
+            "sentinel_identity_and_survival", "authenticated_selected_release0_predecessor_identity",
+            "candidate_failure_and_rollback_transaction_journal", "restored_predecessor_identity",
+            "launchd_ownership_health_and_one_runtime", "keep_data_and_launchd_process_cleanup",
+            "per_step_command_and_inner_exit", "scenario_tuple_runner_and_evidence_file_hashes",
+        ),
+    },
+)
+
 RELEASE1_MATRIX: Final = (
     {"job_id": "direct-macos", "mode": "direct", "runner": "macos-14", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
     {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},
