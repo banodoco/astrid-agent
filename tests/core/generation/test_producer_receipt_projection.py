@@ -124,13 +124,14 @@ def test_real_attached_settings_match_exact_http_prompt(comfy, tmp_path):
         task_identity='task-1', attempt_identity='attempt-1', profile_id='local_server',
         comfy_url=comfy.url, workflow_input_bindings={'seed': 123})
     payload = json.loads(result.managed_generation_result_path.read_bytes())
+    producer_root = result.managed_generation_result_path.parent
     ref = payload['inputs']['effective_settings']
-    validate_evidence_reference(ref, field='inputs.effective_settings', staging_root=out)
-    assert (out / ref['path']).read_bytes() == canonical_bytes(comfy.prompts[0])
+    validate_evidence_reference(ref, field='inputs.effective_settings', staging_root=producer_root)
+    assert (producer_root / ref['path']).read_bytes() == canonical_bytes(comfy.prompts[0])
     assert ref['sha256'] == hashlib.sha256(canonical_bytes(comfy.prompts[0])).hexdigest()
     assert payload['inputs']['source']['sha256'] == hashlib.sha256(original).hexdigest()
-    validate_evidence_reference(payload['inputs']['source'], field='inputs.source', staging_root=out)
-    assert (out / payload['inputs']['source']['path']).read_bytes() == original
+    validate_evidence_reference(payload['inputs']['source'], field='inputs.source', staging_root=producer_root)
+    assert (producer_root / payload['inputs']['source']['path']).read_bytes() == original
     assert all(key in payload['evidence']['producer'] for key in ('engine', 'entry', 'models', 'versions', 'provider', 'build'))
     assert all(key in payload['evidence']['transport'] for key in ('target', 'execution_binding', 'failure', 'cancel'))
 
@@ -147,10 +148,11 @@ def test_real_attached_failure_retains_verified_downloads(comfy, tmp_path, monke
         VibeComfyWorkflowBackend().workflow(comfy.workflow, out,
             task_identity='task-1', attempt_identity='attempt-1', profile_id='local_server', comfy_url=comfy.url)
     payload = json.loads(caught.value.managed_generation_result_path.read_bytes())
+    producer_root = Path(caught.value.managed_generation_result_path).parent
     assert len(payload['outputs']) == 1
     ref = payload['inputs']['effective_settings']
-    validate_evidence_reference(ref, field='inputs.effective_settings', staging_root=out)
-    assert (out / ref['path']).read_bytes() == canonical_bytes(comfy.prompts[0])
+    validate_evidence_reference(ref, field='inputs.effective_settings', staging_root=producer_root)
+    assert (producer_root / ref['path']).read_bytes() == canonical_bytes(comfy.prompts[0])
     assert payload['outcomes']['execution']['status'] == 'failed'
     assert payload['outcomes']['verification']['status'] == 'failed'
     assert payload['evidence']['transport']['cancel'] is None

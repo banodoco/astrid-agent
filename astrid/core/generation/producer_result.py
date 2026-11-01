@@ -57,7 +57,24 @@ def stage_executed_settings(record, destination: Path) -> dict:
             'path': path.relative_to(Path(destination).resolve()).as_posix()}
 
 
-def bind_executed_settings(result, settings: dict, *, task_id: str, attempt_id: str | None):
+def _stage_result_input(reference: dict | None, *, name: str,
+                        staging_root: Path, result_root: Path) -> dict | None:
+    """Keep local input bytes inside the root used to validate their receipt."""
+    if reference is None or 'path' not in reference:
+        return reference
+    from astrid.core.contracts.managed_generation_result import validate_evidence_reference
+    from astrid.core.foundation.atomic_io import write_bytes_atomic
+
+    reference = validate_evidence_reference(reference, field=f'inputs.{name}', staging_root=staging_root)
+    if staging_root.resolve() == result_root.resolve():
+        return reference
+    path = result_root / 'inputs' / name / reference['filename']
+    write_bytes_atomic(path, (staging_root / reference['path']).read_bytes())
+    return {**reference, 'path': path.relative_to(result_root).as_posix()}
+
+
+def bind_executed_settings(result, settings: dict, *, task_id: str, attempt_id: str | None,
+                           staging_root: Path | None = None):
     """Add the exact staged settings ref while retaining all producer evidence."""
     from astrid.core.foundation.atomic_io import write_json_atomic
 
@@ -66,6 +83,9 @@ def bind_executed_settings(result, settings: dict, *, task_id: str, attempt_id: 
         return result
     path = Path(raw_path)
     payload = _read_correlated_result(path, task_id=task_id, attempt_id=attempt_id)
+    if staging_root is not None:
+        settings = _stage_result_input(settings, name='effective_settings',
+                                       staging_root=staging_root, result_root=path.parent)
     payload['inputs']['effective_settings'] = _executed_settings_input(
         payload['inputs'].get('effective_settings'), settings)
     write_json_atomic(path, payload)
@@ -191,9 +211,11 @@ def complete_producer_result(result, destination: Path, *, task_id: str,
     runtime = producer.get('runtime') or {}
     if 'approved_projection' not in runtime:
         return result
-    settings = stage_executed_settings(_projection(runtime), destination)
+    settings = stage_executed_settings(_projection(runtime), path.parent)
     result = bind_executed_settings(result, settings, task_id=task_id, attempt_id=attempt_id)
     payload = _read_correlated_result(path, task_id=task_id, attempt_id=attempt_id)
+    if 'source' not in payload['inputs']:
+        source = _stage_result_input(source, name='source', staging_root=destination, result_root=path.parent)
     _complete_evidence(payload, source=source,
                        attempt=(producer.get('attempt') or {}).get('record') or {},
                        metadata=(producer.get('metadata') or {}).get('record') or {},
