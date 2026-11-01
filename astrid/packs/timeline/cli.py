@@ -1155,7 +1155,8 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         for name in ("clip", "occurrence", "shot", "track", "asset", "range", "detail", "limit", "cursor", "revision_id")
     }
     inspection_view = bool(
-        getattr(parsed, "layers", False)
+        parsed.json
+        or getattr(parsed, "layers", False)
         or any(values.get(name) for name in ("clip", "occurrence", "asset", "track", "cursor"))
         # --detail with --at or a text view (--as code/script) means "untruncated", not the layer rows
         or (values.get("detail") and not getattr(parsed, "at", None) and parsed.as_view == "cuts")
@@ -2496,7 +2497,7 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
         help="Canvas frame rate (default 30).",
     )
     _add_idempotency_key(subparser)
-    _add_json_flag(subparser, default=False)
+    _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_create)
 
 
