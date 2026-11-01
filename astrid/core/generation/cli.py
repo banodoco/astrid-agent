@@ -420,8 +420,8 @@ def main(argv: list[str] | None = None) -> int:
     from astrid.core.generation.preflight import generation_error
     try:
         return _main(argv)
-    except (RuntimeError, ValueError, OSError) as exc:
-        error = generation_error(exc)
+    except (RuntimeError, ValueError, OSError, ImportError) as exc:
+        error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:
             print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
             return 2

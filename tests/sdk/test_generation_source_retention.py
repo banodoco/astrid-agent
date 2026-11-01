@@ -195,6 +195,20 @@ def test_workflow_inputs_require_an_object_before_source_read(inputs):
         GenerationFacade().workflow(workflow='absent.py', target='auto', inputs=inputs)
 
 
+def test_missing_native_entry_api_returns_readiness_before_target(monkeypatch, tmp_path):
+    source = tmp_path / 'submitted.json'
+    source.write_bytes(b'{}')
+    def unavailable(*args, **kwargs):
+        raise ModuleNotFoundError('native workflow entry API is absent', name='vibecomfy.entries')
+    monkeypatch.setattr(entries, 'resolve_workflow_inputs', unavailable)
+    monkeypatch.setattr(preflight, 'select_generation_target', lambda *a, **k: pytest.fail('target probe'))
+    with pytest.raises(preflight.GenerationReadinessError) as raised:
+        GenerationFacade().workflow(workflow=source, target='auto', dry_run=True)
+    issue = raised.value.to_envelope()['issues'][0]
+    assert issue['code'] == 'missing_dependency'
+    assert issue['details'] == {'field': 'workflow', 'module': 'vibecomfy.entries'}
+
+
 @pytest.mark.parametrize('change', ['stale', 'missing'])
 def test_saved_entry_keeps_exact_source_when_original_changes(monkeypatch, admission, tmp_path, change):
     from vibecomfy.entries import import_as_entry

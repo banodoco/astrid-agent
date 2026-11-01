@@ -690,6 +690,10 @@ class GenerationFacade:
                     project, out = source_controls['project'], source_controls['out']
                 try:
                     description, values = resolve_workflow_inputs(frozen, inputs or {}, mode=mode)
+                except ImportError as exc:
+                    from astrid.core.generation.preflight import generation_error
+                    raise generation_error(exc, code='missing_dependency',
+                        details={'field': 'workflow', 'module': exc.name}) from exc
                 except (ValueError, RuntimeError, OSError) as exc:
                     raise GenerationInputError(str(exc)) from exc
                 workflow_entry = {'id': description['id'], 'kind': description['kind'],
