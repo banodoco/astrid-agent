@@ -194,8 +194,12 @@ def test_generate_pin_and_h3_pin_are_independent():
     h3_sources = {s.name: (s.pin.repository, s.pin.revision) for s in h3.sources}
     assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
-    assert {k: v for k, v in generate_sources.items() if k != 'comfyui'} == {
-        k: v for k, v in h3_sources.items() if k != 'comfyui'}
+    assert generate_sources['vibecomfy'] == (
+        'https://github.com/AstridPseudon/vibecomfy-proof', '3bebae39655eb460454885040be4d3aefaf2ef31')
+    assert h3_sources['vibecomfy'] == (
+        'https://github.com/peteromallet/VibeComfy.git', 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6')
+    assert {k: v for k, v in generate_sources.items() if k not in {'comfyui', 'vibecomfy'}} == {
+        k: v for k, v in h3_sources.items() if k not in {'comfyui', 'vibecomfy'}}
 
     root = Path(__file__).parents[4] / 'astrid/packs/vibecomfy'
     env = json.loads((root / 'environment.windows-nvidia.json').read_text())

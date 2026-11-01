@@ -19,9 +19,10 @@ import pytest
 
 from astrid.core import action_cli
 from tests.helpers import h3_attached_engine as attached
+from tests._checkouts import clip_input_path
 
-REQUEST = Path(os.environ.get("ASTRID_CLIP_REQUEST", "/home/user/proof/job/request.json"))
-ASSET_MAP = Path(os.environ.get("ASTRID_CLIP_ASSET_MAP", "/home/user/proof/job/asset-map.json"))
+REQUEST = Path("request.json")
+ASSET_MAP = Path("asset-map.json")
 CLIP_SECONDS = 9
 FPS, FRAMES = 24, 216
 
@@ -80,7 +81,9 @@ def test_run_path_rehearsal_attached_test_engine_install_proven_on_pod(attached_
     out_root = Path(__file__).resolve().parents[2] / ".rehearsal-out"
     out_root.mkdir(exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix="clip-", dir=out_root))
-    code = action_cli.main(_argv(out))
+    request = clip_input_path("ASTRID_CLIP_REQUEST")
+    asset_map = clip_input_path("ASTRID_CLIP_ASSET_MAP")
+    code = action_cli.main(_argv(out, request=request, asset_map=asset_map))
     captured = capfd.readouterr()
     (tmp_path / "stdout.txt").write_text(captured.out)
     (tmp_path / "stderr.txt").write_text(captured.err)

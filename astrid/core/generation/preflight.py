@@ -374,6 +374,7 @@ def check_local_generation_readiness(
         guidance = f"start your existing ComfyUI and attach with {shlex.join(attach)}"
         if install:
             guidance = f"{shlex.join(install['argv'])} ({install['details']['guidance']}); or {guidance}"
+        guidance += "; ComfyUI version provenance is unknown until the selected runtime is observed"
         return LocalGenerationReadiness(
             ready=False,
             reason=(
