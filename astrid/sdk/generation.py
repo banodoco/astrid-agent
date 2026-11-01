@@ -54,6 +54,63 @@ class GenerationInputError(CapabilityValidationError):
         return {**self.readiness, 'task_id': None}
 
 
+def _declared_output_count_from_document(document: Any) -> int | None:
+    """Count the sealed graph's declared final sinks, as VibeComfy's runtime does.
+
+    VibeComfy treats an output as a declared sink when it carries a node_id.
+    Returns None when the document declares no outputs list.
+    """
+    outputs = document.get("outputs") if isinstance(document, Mapping) else None
+    if not isinstance(outputs, list):
+        return None
+    return sum(1 for item in outputs
+               if isinstance(item, Mapping) and item.get("node_id") is not None)
+
+
+def _declared_output_count(companion: Path) -> int | None:
+    import json
+
+    try:
+        document = json.loads(companion.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return _declared_output_count_from_document(document)
+
+
+def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
+    """Refuse before any staging or admission unless exactly one declared sink exists."""
+    from astrid.core.generation.preflight import generation_error
+
+    if companion is not None:
+        if isinstance(companion, Mapping):
+            declared = _declared_output_count_from_document(companion)
+        elif isinstance(companion, (str, Path)):
+            declared = _declared_output_count(Path(companion))
+        else:
+            declared = None
+    elif isinstance(workflow, (str, Path)):
+        original = Path(workflow).expanduser().resolve()
+        if original.is_dir():
+            original = original / "workflow.py"
+        sealed = original.with_suffix(".vibe.json")
+        if not sealed.exists():
+            # Companion-less workflows (for example audio or raw-target) are not
+            # VibeComfy-declared and pass unchanged; any extra output still fails
+            # loudly at host harvest.
+            return
+        declared = _declared_output_count(sealed)
+    else:
+        return
+    # Refuse only when more than one final sink is declared. Zero or undeclared
+    # keeps VibeComfy's legacy full-output map, and extra undeclared outputs still
+    # fail loudly at host harvest.
+    if declared is not None and declared > 1:
+        raise generation_error(
+            ValueError(f"this workflow produces {declared} outputs; Phase 1 supports exactly one"),
+            code="unsupported_output_cardinality", details={"field": "workflow"},
+        )
+
+
 def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
     import hashlib
     from astrid.core.execution.managed_inputs import managed_file_digest
@@ -761,6 +818,7 @@ class GenerationFacade:
         Placement validates scheduling intent; it is never a creative input.
         Omitted domain values stay omitted so the action owns its defaults.
         """
+        _require_single_declared_output(workflow=workflow, companion=companion)
         if target is not None:
             from astrid.core.generation.entries import resolve_workflow_inputs
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
