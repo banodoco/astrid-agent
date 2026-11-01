@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import jsonschema
 import pytest
+import runtime_protocol
 
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering import _local_schema, _schema_observation as observation, transport
@@ -69,18 +71,27 @@ def test_transport_only_inherits_context_for_render(monkeypatch, tmp_path, pipe,
 
 def test_renderer_timeline_consumer_emits_exact_live_identity_and_document(tmp_path, pipe):
     read, write = pipe
+    installed = tmp_path / "installed-agent"
+    installed.mkdir()
+    shutil.copytree(REPO_ROOT / "astrid", installed / "astrid", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copy2(REPO_ROOT / "runtime.lock.json", installed / "runtime.lock.json")
+    shutil.copy2(REPO_ROOT / "pyproject.toml", installed / "pyproject.toml")
+    shutil.copytree(Path(runtime_protocol.__file__).parent, installed / "runtime_protocol",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    installed_schema = installed / _local_schema.SCHEMA_RELATIVE_PATH
     timeline = tmp_path / "timeline.json"
     timeline.write_text('{"clips":[],"tracks":[]}')
-    env = dict(os.environ, ASTRID_TIMELINE_SCHEMA_PYTHONPATH=str(SCHEMA),
-               PYTHONPATH=os.pathsep.join((str(REPO_ROOT), os.environ.get("PYTHONPATH", ""))))
+    env = dict(os.environ, ASTRID_TIMELINE_SCHEMA_PYTHONPATH=str(installed_schema),
+               ASTRID_HOST_EXECUTION_PROFILE="installed")
     assert observation.bind_host_context("rendering.render", RUN, env, {observation.FD_ENV: str(write)}) == (write,)
     env[observation.RENDER_ENV] = "1"  # Set only by the renderer transport.
-    script = ("from pathlib import Path; "
+    script = ("import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; "
               "from astrid.packs.rendering.shared.rendering_backend import _serialize_timeline; "
-              "import sys; _serialize_timeline(Path(sys.argv[1])); "
+              "import astrid; assert sys.flags.isolated and Path(astrid.__file__).is_relative_to(Path(sys.argv[1])); "
+              "_serialize_timeline(Path(sys.argv[2])); "
               "print('consumed', flush=True); sys.stdin.read(1)")
     before = time.monotonic_ns()
-    process = subprocess.Popen([sys.executable, "-c", script, str(timeline)], env=env,
+    process = subprocess.Popen([sys.executable, "-I", "-c", script, str(installed), str(timeline)], env=env,
                                pass_fds=(write,), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True)
     try:
@@ -90,9 +101,9 @@ def test_renderer_timeline_consumer_emits_exact_live_identity_and_document(tmp_p
         assert events
         start = int(Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
         boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        schema = _local_schema.load_verified_schema(REPO_ROOT, str(SCHEMA))
+        schema = json.loads(installed_schema.read_text())
         digest = hashlib.sha256(json.dumps(schema, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
-        origin = hashlib.sha256(str(Path(banodoco_schema.__file__).absolute()).encode()).hexdigest()
+        origin = hashlib.sha256(str(installed / "astrid/core/timeline/banodoco_schema.py").encode()).hexdigest()
         for event in events:
             assert event == {"event": "timeline_schema_consumed", "run_id": RUN,
                              "monotonic_ns": event["monotonic_ns"], "pid": process.pid,
