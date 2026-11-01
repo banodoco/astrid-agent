@@ -169,14 +169,106 @@ def test_contract_allows_verified_partial_outputs_without_publication(tmp_path: 
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled", "interrupted"])
-def test_contract_rejects_partial_outputs_without_verified_retrieval_or_no_publication(
+def test_contract_rejects_publication_of_partial_outputs(
     tmp_path: Path, status: str
 ) -> None:
-    for phase, invalid_status in (("retrieval", "failed"), ("verification", "failed"), ("publication", "succeeded")):
-        payload = _managed_payload(tmp_path, execution_status=status)
-        payload["outcomes"][phase]["status"] = invalid_status
-        with pytest.raises(ManagedGenerationResultError, match="partial outputs"):
-            validate_managed_generation_result(payload, staging_root=tmp_path)
+    # Failed retrieval or verification can now honestly accompany partial outputs.
+    payload = _managed_payload(tmp_path, execution_status=status)
+    payload["outcomes"]["publication"]["status"] = "succeeded"
+    with pytest.raises(ManagedGenerationResultError, match="partial outputs"):
+        validate_managed_generation_result(payload, staging_root=tmp_path)
+
+
+@pytest.mark.parametrize("status,retrieval", [("failed", "succeeded"), ("cancelled", "failed")])
+def test_terminal_partial_receipt_retains_each_hash_check_and_native_outcome(tmp_path, status, retrieval):
+    from astrid.core._shared.result_manifest import harvest_staged_outputs
+    from astrid.core.execution.generic_host import GenericPackHost, HostError
+
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer, execution_status=status)
+    original = payload["outputs"][0]
+    original["hash_check"] = {"status": "verified", "expected_sha256": original["sha256"]}
+    changed = b"bytes that failed the producer hash check"
+    (producer / "outputs" / "changed.mp4").write_bytes(changed)
+    payload["outputs"].append({**original, "producer_output_id": "engine:video:1", "ordinal": 1,
+        "path": "outputs/changed.mp4", "bytes": len(changed), "sha256": _sha256(changed),
+        "hash_check": {"status": "failed", "expected_sha256": _sha256(b"expected bytes")}})
+    payload["outcomes"]["retrieval"]["status"] = retrieval
+    payload["outcomes"]["verification"]["status"] = "failed"
+    payload["evidence"]["transport"]["native"] = {"outcome": status}
+    spool = tmp_path / "spool"
+    manifest = run._materialize_managed_generation_result(
+        spool, _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "unused.json")
+    receipt = manifest["managed_generation_result"]
+    assert receipt["outcomes"] == payload["outcomes"]
+    assert receipt["evidence"]["transport"]["native"] == {"outcome": status}
+    assert [row["hash_check"] for row in receipt["outputs"]] == [row["hash_check"] for row in payload["outputs"]]
+    assert (spool / receipt["outputs"][1]["path"]).read_bytes() == changed
+    assert all(not row["is_primary"] for row in manifest["outputs"])
+    descriptors = harvest_staged_outputs(spool)
+    host = GenericPackHost.__new__(GenericPackHost)
+    host._validate_producer_evidence(descriptors, output_root=spool, task_id="task-1", attempt_id="attempt-1")
+    with pytest.raises(HostError, match="successful publication"):
+        host._validate_producer_evidence(descriptors, output_root=spool, task_id="task-1",
+                                         attempt_id="attempt-1", successful=True)
+    (spool / receipt["outputs"][1]["path"]).write_bytes(b"changed after custody")
+    with pytest.raises(ManagedGenerationResultError, match="hashes to"):
+        host._validate_producer_evidence(descriptors, output_root=spool, task_id="task-1", attempt_id="attempt-1")
+
+
+def test_failed_receipt_without_outputs_keeps_downstream_not_run(tmp_path):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer, execution_status="failed")
+    payload["outputs"] = []
+    for phase in ("retrieval", "verification", "publication"):
+        payload["outcomes"][phase]["status"] = "not_started"
+    payload["evidence"]["transport"]["native"] = {"outcome": "failed"}
+    manifest = run._materialize_managed_generation_result(
+        tmp_path / "spool", _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "unused.json")
+    receipt = manifest["managed_generation_result"]
+    assert receipt["outputs"] == []
+    assert receipt["outcomes"] == payload["outcomes"]
+    assert receipt["evidence"]["transport"]["native"] == {"outcome": "failed"}
+    assert all(not row["is_primary"] for row in manifest["outputs"])
+
+
+def test_failed_retrieval_without_outputs_keeps_verification_not_run(tmp_path):
+    payload = _managed_payload(tmp_path, execution_status="failed")
+    payload["outputs"] = []
+    payload["outcomes"]["retrieval"]["status"] = "failed"
+    payload["outcomes"]["verification"]["status"] = "not_started"
+    result = validate_managed_generation_result(payload, staging_root=tmp_path).to_dict()
+    assert result["outcomes"] == payload["outcomes"]
+    assert result["outputs"] == []
+
+
+def test_success_receipt_remains_publishable_without_hash_check_extension(tmp_path):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer)
+    assert validate_managed_generation_result(payload, staging_root=producer).to_dict() == payload
+    manifest = run._materialize_managed_generation_result(
+        tmp_path / "spool", _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "unused.json")
+    assert manifest["managed_generation_result"]["outcomes"] == payload["outcomes"]
+    assert next(row for row in manifest["outputs"] if row["role"] == "result")["is_primary"] is True
+
+
+def test_hash_check_cannot_claim_verification_for_a_mismatch(tmp_path):
+    payload = _managed_payload(tmp_path, execution_status="failed")
+    payload["outputs"][0]["hash_check"] = {"status": "verified", "expected_sha256": _sha256(b"other")}
+    with pytest.raises(ManagedGenerationResultError, match="disagrees with the hashes"):
+        validate_managed_generation_result(payload, staging_root=tmp_path)
+    payload["outputs"][0]["hash_check"]["status"] = "failed"
+    with pytest.raises(ManagedGenerationResultError, match="successful verification"):
+        validate_managed_generation_result(payload, staging_root=tmp_path)
 
 
 @pytest.mark.parametrize("created", ["2026-09-21T12:00:00", "2026-09-21T12:00:00+01:00", "not-a-time"])
@@ -298,6 +390,48 @@ def test_native_interruption_does_not_invent_cancel_request(tmp_path, monkeypatc
     assert payload["outcomes"]["execution"]["status"] == "interrupted"
     assert payload["evidence"]["transport"]["cancel"]["requested"] is None
     assert payload["evidence"]["transport"]["cancel"]["observed_stop"] is None
+
+
+def test_native_failure_without_outputs_records_unstarted_phases(tmp_path, monkeypatch):
+    from astrid.core.generation import producer_result
+
+    receipt = tmp_path / "native" / "attempt.json"
+    receipt.parent.mkdir()
+    terminal = {"phase": "execution", "execution_state": "succeeded"}
+    receipt.write_text(json.dumps({"runtime_evidence": {"terminal": terminal}}))
+    monkeypatch.setattr(producer_result, "_projection", lambda runtime: SimpleNamespace(to_dict=lambda: {"input_binding": {}}))
+    monkeypatch.setattr(producer_result, "stage_executed_settings", lambda record, root:
+                        _evidence_reference(root, "settings.json", "settings.json", b"{}"))
+    error = RuntimeError("native failure")
+    producer_result._native_failure_result(error, receipt, tmp_path, task_id="task-1", attempt_id="attempt-1",
+                                           source=None, workflow_path=None, transport=None)
+    payload = json.loads(error.managed_generation_result_path.read_bytes())
+    assert payload["outcomes"] == {"execution": {"status": "failed"},
+        **{phase: {"status": "not_started"} for phase in ("retrieval", "verification", "publication")}}
+    assert payload["outputs"] == []
+    assert payload["evidence"]["producer"]["runtime"]["terminal"] == terminal
+    assert validate_managed_generation_result(payload, staging_root=tmp_path).outcomes["execution"].status == "failed"
+
+
+def test_native_pending_downstream_phase_is_recorded_as_not_started(tmp_path, monkeypatch):
+    from astrid.core.generation import producer_result
+
+    receipt = tmp_path / "native" / "attempt.json"
+    receipt.parent.mkdir()
+    terminal = {"phase": "retrieval", "execution_state": "succeeded",
+                "retrieval_state": "failed", "verification_state": "pending"}
+    receipt.write_text(json.dumps({"runtime_evidence": {"terminal": terminal}}))
+    monkeypatch.setattr(producer_result, "_projection", lambda runtime: SimpleNamespace(to_dict=lambda: {"input_binding": {}}))
+    monkeypatch.setattr(producer_result, "stage_executed_settings", lambda record, root:
+                        _evidence_reference(root, "settings.json", "settings.json", b"{}"))
+    error = RuntimeError("native retrieval failure")
+    producer_result._native_failure_result(error, receipt, tmp_path, task_id="task-1", attempt_id="attempt-1",
+                                           source=None, workflow_path=None, transport=None)
+    payload = json.loads(error.managed_generation_result_path.read_bytes())
+    assert payload["outcomes"] == {"execution": {"status": "failed"}, "retrieval": {"status": "failed"},
+                                   "verification": {"status": "not_started"}, "publication": {"status": "not_started"}}
+    assert payload["evidence"]["producer"]["runtime"]["terminal"] == terminal
+    assert validate_managed_generation_result(payload, staging_root=tmp_path).to_dict()["outcomes"] == payload["outcomes"]
 
 
 def test_model_identity_never_upgrades_an_observed_or_mismatched_digest(tmp_path):

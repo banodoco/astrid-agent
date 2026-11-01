@@ -16,9 +16,8 @@ from astrid.core._shared.result_manifest import (
 def _read_correlated_result(path: Path, *, task_id: str | None, attempt_id: str | None):
     """Check custody/bytes, leaving terminal-profile admission to F06.
 
-    This lane's managed profile still rejects partial outputs on failure.
-    Recovery must preserve those bytes and their actual outcomes for the
-    terminal publisher; it must never relabel an execution as successful.
+    Recovery preserves those bytes and their actual outcomes for the terminal
+    publisher; it must never relabel an execution as successful.
     """
     payload = json.loads(path.read_bytes())
     if (payload.get('kind') != 'managed-generation-result.v1' or payload.get('schema_version') != 1
@@ -246,12 +245,16 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
             or attempt.get('attempt_id', attempt_id) != attempt_id):
         raise ValueError('native receipt belongs to another Runtime attempt')
     terminal = runtime.get('terminal') or attempt.get('terminal') or {}
-    interrupted = isinstance(error, KeyboardInterrupt) or terminal.get('phase') == 'interrupted'
+    native_execution = terminal.get('execution_state')
+    interrupted = (isinstance(error, KeyboardInterrupt) or terminal.get('phase') == 'interrupted'
+                   or native_execution == 'interrupted')
     cancelled = (isinstance(error, asyncio.CancelledError)
                  or isinstance(error, SystemExit) and error.code in (130, 143)
-                 or terminal.get('phase') == 'cancelled')
+                 or terminal.get('phase') == 'cancelled' or native_execution == 'cancelled')
     status = 'interrupted' if interrupted else 'cancelled' if cancelled else 'failed'
     outputs, warnings = [], []
+    unavailable = False
+    failed_byte_check = False
     artifacts = attempt.get('artifacts') or []
     # Use the producer's own declared-output attribution and ordinal rules.
     declarations = []
@@ -291,6 +294,7 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
                    if declaration.name == port]
         if len(matches) != 1:
             warnings.append('Native partial artifact has no unambiguous declared output')
+            unavailable = True
             continue
         indexed.append((*matches[0], artifact))
     indexed.sort(key=lambda item: (item[0], str(item[2].get('reported_path') or '')))
@@ -317,25 +321,39 @@ def _native_failure_result(error, receipt: Path, destination: Path, *, task_id: 
             sha256 = sha256_file(staged)
             size = staged.stat().st_size
             if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-                    or artifact.get('sha256', sha256) != sha256
-                    or artifact.get('bytes', size) != size):
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
                 staged.unlink()
-                raise ValueError('partial artifact differs from native byte evidence')
+                raise ValueError('partial artifact changed while copying')
+            expected = artifact.get('sha256')
+            if not isinstance(expected, str) or len(expected) != 64 or any(c not in '0123456789abcdef' for c in expected):
+                expected = None
+            check = 'not_checked' if expected is None else 'verified' if expected == sha256 else 'failed'
+            if check == 'failed' or artifact.get('bytes', size) != size:
+                failed_byte_check = True
+                warnings.append('Native partial artifact differs from native byte evidence')
             outputs.append({'producer_output_id': f'vibecomfy:{declaration.name}:{ordinal}',
                             'output_port': declaration.name, 'ordinal': ordinal,
                             'path': staged.relative_to(destination).as_posix(), 'media_type': media_type,
-                            'bytes': size, 'sha256': sha256})
+                            'bytes': size, 'sha256': sha256,
+                            'hash_check': {'status': check, 'expected_sha256': expected}})
         except (OSError, ValueError, KeyError) as exc:
+            unavailable = True
             warnings.append(f'Native partial artifact unavailable: {exc}')
-    execution = terminal.get('execution_state')
-    execution = execution if execution in {'succeeded', 'failed', 'cancelled', 'interrupted'} else status
+    # A downstream exception is still a failed/cancelled run even if the
+    # native execution phase succeeded; its original state remains in evidence.
+    execution = native_execution if native_execution in {'failed', 'cancelled', 'interrupted'} else status
     retrieval = terminal.get('retrieval_state')
     retrieval = retrieval if retrieval in {'succeeded', 'failed', 'pending', 'not_started'} else (
-        'failed' if warnings else 'succeeded' if outputs else 'not_started')
+        'failed' if unavailable else 'succeeded' if outputs else 'not_started')
     verification = terminal.get('verification_state')
     verification = verification if verification in {'succeeded', 'failed', 'pending', 'not_started'} else (
         'failed' if terminal.get('phase') == 'verification' else 'not_started')
+    # The producer's terminal delivery receipt uses pending for phases it has
+    # not started; retain the native value in runtime evidence below.
+    retrieval = 'not_started' if retrieval == 'pending' else retrieval
+    verification = 'not_started' if verification == 'pending' else verification
+    if failed_byte_check:
+        verification = 'failed'
     payload = {
         'schema_version': 1, 'kind': 'managed-generation-result.v1',
         'task_id': task_id, 'attempt_id': attempt_id, 'producer_run_id': receipt.parent.name,
