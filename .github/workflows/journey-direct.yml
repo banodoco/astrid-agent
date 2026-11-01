@@ -5,7 +5,7 @@ name: Release-1 direct lifecycle receipts
   workflow_dispatch: {}
   push:
     branches:
-    - venue/M-QUAL-R-05-1
+    - venue/M-QUAL-R-05-FAILURES-R1-1
 permissions:
   contents: write
 concurrency:
@@ -165,7 +165,7 @@ jobs:
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/artifact-size.txt
         if-no-files-found: error
     - name: Publish this row to git results
-      if: always() && github.event_name == 'push' && github.ref == 'refs/heads/venue/M-QUAL-R-05-1'
+      if: always() && github.event_name == 'push' && github.ref == 'refs/heads/venue/M-QUAL-R-05-FAILURES-R1-1'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         ROW_ID: ${{ matrix.job_id }}

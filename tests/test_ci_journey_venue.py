@@ -28,9 +28,12 @@ def test_independent_rows_publish_and_hash_failures(tmp_path, monkeypatch):
 
     monkeypatch.setattr(venue, 'git', local_git)
     monkeypatch.chdir(tmp_path)
+    global_config = tmp_path / 'gitconfig'
+    global_config.write_text('[core]\n\tautocrlf = true\n', encoding='utf-8')
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(global_config))
     for key, value in {
         'GITHUB_TOKEN': 'dummy', 'GITHUB_REPOSITORY': 'example/repo', 'GITHUB_RUN_ID': '42',
-        'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_REF': 'refs/heads/venue/M-QUAL-R-05-1',
+        'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_REF': 'refs/heads/venue/M-QUAL-R-05-FAILURES-R1-1',
         'GITHUB_SHA': 'head', 'GITHUB_WORKFLOW_REF': 'workflow', 'GITHUB_WORKFLOW_SHA': 'head',
         'ROW_RUNNER': 'runner', 'RUNNER_OS': 'Linux', 'JOURNEY_OUTCOME': 'failure',
         'EVIDENCE_OUTCOME': 'failure', 'EVIDENCE_OVERSIZE': '',
@@ -40,7 +43,7 @@ def test_independent_rows_publish_and_hash_failures(tmp_path, monkeypatch):
         root = tmp_path / row
         (root / 'journey-venue').mkdir(parents=True)
         (root / 'journey-venue/inner-exit.txt').write_text('7\n')
-        (root / 'journey-venue/journey.log').write_text(row)
+        (root / 'journey-venue/journey.log').write_bytes((row + '\r\n').encode())
         monkeypatch.setenv('RUNNER_TEMP', str(root))
         monkeypatch.setenv('ROW_ID', row)
         venue.publish()
@@ -51,4 +54,7 @@ def test_independent_rows_publish_and_hash_failures(tmp_path, monkeypatch):
         receipt = json.loads(subprocess.check_output(['git', '--git-dir', str(remote), 'show', venue.RESULT_REF + ':' + prefix + 'receipt.json']))
         assert receipt['inner_exit'] == 7 and receipt['row_id'] == row
         sums = subprocess.check_output(['git', '--git-dir', str(remote), 'show', venue.RESULT_REF + ':' + prefix + 'SHA256SUMS'], text=True)
-        assert hashlib.sha256(row.encode()).hexdigest() + '  journey.log' in sums
+        expected = (row + '\r\n').encode()
+        blob = subprocess.check_output(['git', '--git-dir', str(remote), 'show', venue.RESULT_REF + ':' + prefix + 'journey.log'])
+        assert blob == expected
+        assert hashlib.sha256(blob).hexdigest() + '  journey.log' in sums

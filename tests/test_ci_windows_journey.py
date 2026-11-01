@@ -9,6 +9,7 @@ import pytest
 
 from scripts import ci_windows_journey as journey
 from scripts import ci_journey as shared_journey
+from scripts import journey_version_jumps
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "windows-journey.yml"
@@ -575,6 +576,26 @@ def test_non_powershell_child_keeps_explicit_environment(tmp_path, monkeypatch):
 
     assert captured["env"] is inherited
     assert inherited == {"PSModulePath": "caller-value", "KEEP_ME": "explicit"}
+
+
+def test_release0_bootstrap_sanitizes_powershell_module_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("PSModulePath", r"C:\pwsh\7\Modules")
+    monkeypatch.setenv("KEEP_ME", "present")
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured.update(argv=argv, **kwargs)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(shared_journey.subprocess, "run", fake_run)
+    journey_version_jumps.bootstrap_release0(tmp_path, tmp_path / "manifest.json", "powershell.exe",
+                                              tmp_path / "evidence", tmp_path / "program", tmp_path / "data")
+    assert captured["argv"][0] == "powershell.exe"
+    assert captured["argv"][6].endswith("install.ps1")
+    assert not any(key.casefold() == "psmodulepath" for key in captured["env"])
+    assert captured["env"]["KEEP_ME"] == "present"
+    assert journey.os.environ["PSModulePath"] == r"C:\pwsh\7\Modules"
 
 
 @pytest.mark.parametrize(

@@ -484,7 +484,7 @@ def _linux_systemd_bridge_fixture(tmp_path, monkeypatch):
     run = tmp_path / "run"
     data = run / "data"
     unit = run / "home" / ".config" / "systemd" / "user" / "astrid.service"
-    link = directory / "astrid.service"
+    link = unit.parent
     state = {"LoadState": "not-found", "FragmentPath": "", "ActiveState": "inactive"}
     def fake_run(argv, **kwargs):
         if "show-environment" in argv:
@@ -507,32 +507,35 @@ def test_linux_systemd_bridge_records_paths_and_removes_only_owned_link(tmp_path
     args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
     evidence = tmp_path / "evidence"
     with journey.linux_direct_unit_bridge(args, data, evidence):
-        assert link.is_symlink() and os.readlink(link) == str(unit)
-        unit.parent.mkdir(parents=True)
+        assert link.is_symlink() and os.readlink(link) == str(link.resolve())
         unit.write_text("[Service]\nExecStart=/bin/true\n")
-        state.update(LoadState="loaded", FragmentPath=str(unit), ActiveState="active")
+        assert unit.resolve().is_file() and not unit.resolve().is_symlink()
+        state.update(LoadState="loaded", FragmentPath=str(unit.resolve()), ActiveState="active")
         owner = journey.assert_direct_service_ownership(data.parent / "program", data)
-        assert owner["fragment_path"] == str(unit)
+        assert owner["fragment_path"] == str(unit.resolve())
         assert owner["load_state"] == "loaded" and owner["active_state"] == "active"
         unit.unlink()
         state.update(LoadState="not-found", FragmentPath="", ActiveState="inactive")
     record = journey.read_json(evidence / "systemd-manager.json")
-    assert str(link.parent) in record["unit_path"]
+    assert record["manager_directory"] in record["unit_path"]
     assert record["owned_unit"] == str(unit)
-    assert record["observations"][0]["fragment_path"] == str(unit)
+    assert record["observations"][0]["fragment_path"] == record["manager_unit"]
     assert len(record["observations"][0]["unit_sha256"]) == 64
     assert record["cleanup"] == "pass" and record["after_cleanup"]["LoadState"] == "not-found"
+    staged = journey.read_json(evidence.parent / "evidence-upload/after-cleanup/systemd-manager.json")
+    assert staged["cleanup"] == "pass" and staged["observations"] == record["observations"]
     assert not os.path.lexists(link)
 
 
 def test_linux_systemd_bridge_rejects_existing_or_dangling_unit(tmp_path, monkeypatch):
     args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
-    link.parent.mkdir(parents=True)
-    link.symlink_to(tmp_path / "foreign")
+    manager_unit = tmp_path / "manager/.config/systemd/user/astrid.service"
+    manager_unit.parent.mkdir(parents=True)
+    manager_unit.symlink_to(tmp_path / "foreign")
     with pytest.raises(RuntimeError, match="already exists"):
         with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
             pytest.fail("existing units must be refused")
-    assert link.is_symlink() and os.readlink(link) == str(tmp_path / "foreign")
+    assert manager_unit.is_symlink() and os.readlink(manager_unit) == str(tmp_path / "foreign")
 
 
 def test_linux_systemd_bridge_refuses_to_remove_replaced_link(tmp_path, monkeypatch):
@@ -549,7 +552,6 @@ def test_linux_systemd_bridge_preserves_link_if_owned_unit_remains(tmp_path, mon
     args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="remains after uninstall"):
         with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
-            unit.parent.mkdir(parents=True)
             unit.write_text("owned")
     assert link.is_symlink() and unit.is_file()
 
@@ -586,15 +588,40 @@ def test_linux_systemd_bridge_rejects_preloaded_unit(tmp_path, monkeypatch):
     assert not os.path.lexists(link)
 
 
-def test_linux_service_ownership_requires_exact_fragment_even_for_symlink(tmp_path, monkeypatch):
+def test_linux_service_ownership_rejects_unverified_symlink_fragment(tmp_path, monkeypatch):
     args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
     unit.parent.mkdir(parents=True)
     unit.write_text("owned")
-    link.parent.mkdir(parents=True)
-    link.symlink_to(unit)
-    state.update(LoadState="loaded", FragmentPath=str(link), ActiveState="active")
+    foreign_link = tmp_path / "foreign.service"
+    foreign_link.symlink_to(unit)
+    state.update(LoadState="loaded", FragmentPath=str(foreign_link), ActiveState="active")
     with pytest.raises(RuntimeError, match="not owned"):
         journey.assert_direct_service_ownership(data.parent / "program", data)
+
+
+def test_linux_service_ownership_rejects_symlink_unit_in_bridge(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
+        foreign = tmp_path / "foreign.service"
+        foreign.write_text("foreign")
+        unit.symlink_to(foreign)
+        state.update(LoadState="loaded", FragmentPath=str(unit.resolve()), ActiveState="active")
+        with pytest.raises(RuntimeError, match="owned systemd user unit"):
+            journey.assert_direct_service_ownership(data.parent / "program", data)
+        unit.unlink()
+        state.update(LoadState="not-found", FragmentPath="", ActiveState="inactive")
+
+
+def test_linux_service_ownership_rejects_replaced_bridge(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="no longer owned"):
+        with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
+            unit.write_text("owned")
+            state.update(LoadState="loaded", FragmentPath=str(unit.resolve()), ActiveState="active")
+            link.unlink()
+            link.symlink_to(tmp_path / "foreign", target_is_directory=True)
+            with pytest.raises(RuntimeError):
+                journey.assert_direct_service_ownership(data.parent / "program", data)
 
 
 def test_direct_evidence_stages_nested_bootstraps_and_installer_logs(tmp_path, monkeypatch):

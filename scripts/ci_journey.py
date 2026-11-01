@@ -68,6 +68,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+    "systemd-manager.json",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 
@@ -921,6 +922,9 @@ def linux_direct_unit_bridge(args, data: Path, evidence: Path):
                                      "error": f"{type(exc).__name__}: {exc}",
                                      "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None)})
         raise
+    finally:
+        if sys.platform == "linux" and getattr(args, "job_id", None) == "direct-linux":
+            retain_named_evidence(evidence, "after-cleanup")
 
 
 @contextmanager
@@ -951,15 +955,22 @@ def _linux_direct_unit_bridge(args, data: Path, evidence: Path):
     if before["LoadState"] != "not-found" or before["FragmentPath"]:
         raise RuntimeError("An Astrid unit is already loaded by the systemd user manager")
     directory.mkdir(parents=True, exist_ok=True)
-    unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
-    link = directory / "astrid.service"
-    record = {"unit_path": paths, "manager_link": str(link), "owned_unit": str(unit),
+    link = data.parent / "home" / ".config" / "systemd" / "user"
+    unit = link / "astrid.service"
+    manager_unit = directory / "astrid.service"
+    if os.path.lexists(link):
+        raise RuntimeError("Journey systemd directory already exists")
+    link.parent.mkdir(parents=True, exist_ok=True)
+    record = {"unit_path": paths, "manager_directory": str(directory),
+              "manager_unit": str(manager_unit), "journey_link": str(link), "owned_unit": str(unit),
               "before": before}
     evidence.mkdir(parents=True, exist_ok=True)
     manager_evidence = evidence / "systemd-manager.json"
     write_json(manager_evidence, record)
-    os.symlink(str(unit), link)
+    os.symlink(str(directory), link, target_is_directory=True)
     owned = link.lstat()
+    record.update(link_device=owned.st_dev, link_inode=owned.st_ino)
+    write_json(manager_evidence, record)
     previous_evidence = os.environ.get("ASTRID_CI_SYSTEMD_MANAGER_EVIDENCE")
     os.environ["ASTRID_CI_SYSTEMD_MANAGER_EVIDENCE"] = str(manager_evidence)
     try:
@@ -970,11 +981,11 @@ def _linux_direct_unit_bridge(args, data: Path, evidence: Path):
             record["after_uninstall"] = after_uninstall
             current = link.lstat()
             if (not link.is_symlink() or (current.st_dev, current.st_ino) != (owned.st_dev, owned.st_ino)
-                    or os.readlink(link) != str(unit)):
+                    or os.readlink(link) != str(directory)):
                 raise RuntimeError("systemd manager link is no longer owned by this run")
             if os.path.lexists(unit) or after_uninstall["ActiveState"] not in {"inactive", "failed"}:
                 raise RuntimeError("Run-owned systemd unit or active service remains after uninstall")
-            if after_uninstall["FragmentPath"] not in {"", str(unit), str(link)}:
+            if after_uninstall["FragmentPath"] not in {"", str(manager_unit)}:
                 raise RuntimeError("systemd manager now points to a foreign unit")
             link.unlink()
             reload_result = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True,
@@ -1018,16 +1029,27 @@ def assert_direct_service_ownership(root: Path, data: Path) -> dict:
         fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
         fragment = fields.get("FragmentPath", "")
         evidence_path = os.environ.get("ASTRID_CI_SYSTEMD_MANAGER_EVIDENCE")
+        expected_fragment = str(unit)
         if evidence_path:
             manager_evidence = Path(evidence_path)
             record = read_json(manager_evidence)
+            link = Path(record["journey_link"])
+            manager_unit = Path(record["manager_unit"])
+            stat = link.lstat()
+            if (link != unit.parent or not link.is_symlink()
+                    or (stat.st_dev, stat.st_ino) != (record["link_device"], record["link_inode"])
+                    or os.readlink(link) != record["manager_directory"]
+                    or manager_unit != Path(record["manager_directory"]) / "astrid.service"
+                    or manager_unit.is_symlink() or not os.path.samefile(unit, manager_unit)):
+                raise RuntimeError("Direct journey systemd bridge is not owned by this run")
+            expected_fragment = str(manager_unit)
             record.setdefault("observations", []).append({
                 "returncode": completed.returncode, "load_state": fields.get("LoadState"),
                 "fragment_path": fragment, "active_state": fields.get("ActiveState"),
                 "unit_sha256": hashlib.sha256(unit.read_bytes()).hexdigest()})
             write_json(manager_evidence, record)
         if (completed.returncode or fields.get("LoadState") != "loaded"
-                or fragment != str(unit)
+                or fragment != expected_fragment
                 or fields.get("ActiveState") != "active"):
             raise RuntimeError("Direct journey service is not owned by the expected systemd user unit")
         return {"manager": "systemd-user", "service_path": str(unit),
@@ -1101,6 +1123,9 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
 
 def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600) -> str:
     log.parent.mkdir(parents=True, exist_ok=True)
+    if ntpath.basename(str(argv[0])).casefold() in {"powershell.exe", "pwsh.exe"}:
+        env = {key: value for key, value in (os.environ if env is None else env).items()
+               if key.casefold() != "psmodulepath"}
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)

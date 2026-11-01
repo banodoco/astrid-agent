@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-RESULT_REF = 'refs/heads/venue-results/M-QUAL-R-05-1'
+RESULT_REF = 'refs/heads/venue-results/M-QUAL-R-05-FAILURES-R1-1'
 
 
 def run_row(args):
@@ -83,6 +83,10 @@ def publish():
     run = os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
     with tempfile.TemporaryDirectory(prefix='journey-results-') as work:
         git(['init', '-q'], work, env)
+        # Result artifacts are byte evidence, including CRLF logs on Windows.
+        # Override both Git's platform defaults and inherited attributes.
+        git(['config', 'core.autocrlf', 'false'], work, env)
+        (Path(work) / '.git' / 'info' / 'attributes').write_text('* -text\n', encoding='utf-8')
         git(['config', 'user.name', 'github-actions[bot]'], work, env)
         git(['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'], work, env)
         git(['remote', 'add', 'origin', remote], work, env)
