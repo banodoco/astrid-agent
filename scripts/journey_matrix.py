@@ -1,7 +1,7 @@
 """The fixed Release-1 installed-lifecycle receipt contract.
 
 This is deliberately a small data-only module so the driver, evidence checker and
-workflow tests share the same nine required jobs.  A mode name is an ownership
+workflow tests share the required jobs.  A mode name is an ownership
 statement, not permission for a direct installer journey to fall back to an
 unmanaged foreground process.
 """
@@ -18,6 +18,45 @@ else:
     except ModuleNotFoundError:
         from scripts.journey_release2 import RELEASE2_SCENARIOS
 
+# Independently attributable direct Linux faults. Each row requires a fresh
+# fixture installation; these contracts are not yet routed by the workflow.
+DIRECT_LINUX_FAULT_SCENARIOS: Final = (
+    {
+        "scenario_id": "direct-linux-interrupted-update",
+        "job_id": "direct-linux-interrupted-update",
+        "scenario": "interrupted-update",
+        "leg": "interrupted-update",
+        "mode": "direct", "os": "linux", "runner": "ubuntu-24.04", "shell": "sh",
+        "steps": ("baseline", "interrupt", "recover", "verify"),
+        "required_evidence": (
+            "direct-installed-release0-fixture-and-native-service",
+            "populated-semantic-data-and-live-sentinel-before",
+            "durable-interrupted-operation-and-same-operation-terminal-journal",
+            "selected-installed-program-and-restored-healthy-native-service",
+            "unchanged-semantic-data-and-same-live-sentinel-after",
+            "per-step-command-and-inner-exits-and-sha256-evidence-binding",
+            "candidate-tuple-and-runner-provenance",
+        ),
+    },
+    {
+        "scenario_id": "direct-linux-rollback",
+        "job_id": "direct-linux-rollback",
+        "scenario": "rollback",
+        "leg": "rollback",
+        "mode": "direct", "os": "linux", "runner": "ubuntu-24.04", "shell": "sh",
+        "steps": ("baseline", "fail_candidate", "verify"),
+        "required_evidence": (
+            "direct-installed-release0-fixture-and-native-service",
+            "populated-semantic-data-and-live-sentinel-before",
+            "observed-failed-candidate-operation-and-terminal-rollback-journal",
+            "authentic-selected-release0-predecessor-and-restored-healthy-native-service",
+            "unchanged-semantic-data-and-same-live-sentinel-after",
+            "per-step-command-and-inner-exits-and-sha256-evidence-binding",
+            "candidate-tuple-and-runner-provenance",
+        ),
+    },
+)
+
 RELEASE1_MATRIX: Final = (
     {"job_id": "direct-macos", "mode": "direct", "runner": "macos-14", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
     {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},
@@ -28,6 +67,7 @@ RELEASE1_MATRIX: Final = (
     {"job_id": "pinokio-fully-local-macos", "mode": "pinokio-fully-local", "runner": "macos-14", "shell": "sh", "os": "macos"},
     {"job_id": "pinokio-fully-local-linux", "mode": "pinokio-fully-local", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux"},
     {"job_id": "pinokio-fully-local-windows", "mode": "pinokio-fully-local", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
+    *DIRECT_LINUX_FAULT_SCENARIOS,
 )
 
 RELEASE1_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_MATRIX)
