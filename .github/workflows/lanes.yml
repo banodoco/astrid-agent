@@ -13,7 +13,11 @@ on:
         required: false
         type: string
   push:
-    branches: [main, release-1]
+    branches: [main, release-1, "int/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   integration:
