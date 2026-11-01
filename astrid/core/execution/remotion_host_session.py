@@ -28,7 +28,7 @@ _client = None
 # Environment a render request may carry. Each key is checked in _validate_request;
 # the project itself is already the host-fixed projectDir and is not repeated here.
 _ADMITTED_RENDER_ENVIRONMENT = frozenset({
-    "TMPDIR", "TMP", "TEMP", "ASTRID_TIMELINE_COMPOSITION_SRC", "PYTHONPATH",
+    "TMPDIR", "TMP", "TEMP", "PYTHONPATH",
 })
 
 
@@ -285,9 +285,6 @@ class HostRemotionSession:
         for key in ("TMPDIR", "TMP", "TEMP"):
             if key in environment:
                 self._inside(environment[key], lease.attempt)
-        expected_source = lease.project / "node_modules/@banodoco/timeline-composition/typescript/src"
-        if "ASTRID_TIMELINE_COMPOSITION_SRC" in environment and environment["ASTRID_TIMELINE_COMPOSITION_SRC"] != str(expected_source):
-            raise ValueError("renderer composition source differs from admitted project")
         if "PYTHONPATH" in environment and environment["PYTHONPATH"] != lease.environment.get("ASTRID_TIMELINE_SCHEMA_PYTHONPATH"):
             raise ValueError("renderer schema environment differs from admission")
 

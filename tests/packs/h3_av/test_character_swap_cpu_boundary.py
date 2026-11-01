@@ -209,6 +209,10 @@ def test_installed_cpu_renderer_uses_real_provisioned_outputs():
     paths = run._registry_output_paths(project)
     assert len(paths) == 3
     assert {p.name for p in paths} == {"effects.generated.ts", "animations.generated.ts", "transitions.generated.ts"}
+    # The installed Composition release is a built, immutable package. Host
+    # registries belong beside the host entry point, so an installed run must
+    # work without the retired package TypeScript tree.
+    assert not (project / "node_modules/@banodoco/timeline-composition/typescript/src").exists()
     assert run.gen_effect_registry.HOST_SRC == project / "src"
     assert set(run.gen_effect_registry.OUTPUTS.values()) == set(paths)
     assert not (project / run._REGISTRY_STATE_PATH).exists()

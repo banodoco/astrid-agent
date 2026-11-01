@@ -502,6 +502,28 @@ def test_task_cannot_modify_host_scope_inputs_or_escape_attempt(tmp_path, monkey
         manager.close()
 
 
+def test_immutable_composition_source_override_is_not_admitted(tmp_path, monkeypatch):
+    """Host registries are project-owned; Composition ships only its built API."""
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    processes = fake_native(monkeypatch, manager)
+    lease = manager.lease(env, attempt=tmp_path)
+    value = request(env)
+    value["request"]["environment"] = {
+        "ASTRID_TIMELINE_COMPOSITION_SRC": str(
+            Path(env["ASTRID_REMOTION_PROJECT_DIR"])
+            / "node_modules/@banodoco/timeline-composition/typescript/src"
+        )
+    }
+    try:
+        with pytest.raises(ValueError, match="outside admitted projection"):
+            manager.request(lease, value)
+        assert not processes
+    finally:
+        lease.close()
+        manager.close()
+
+
 def test_child_start_environment_does_not_include_runtime_credentials(tmp_path, monkeypatch):
     manager, _ = owner(tmp_path)
     env = environment(tmp_path)
