@@ -19,7 +19,6 @@ import functools
 import hashlib
 import json
 import os
-import sys
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
@@ -28,14 +27,6 @@ from typing import Any, List, Literal, TypedDict, Union, cast
 import jsonschema
 
 from astrid.core.env_vars import ASTRID_TIMELINE_SCHEMA_PYTHONPATH
-
-_schema_pythonpath = os.environ.get(ASTRID_TIMELINE_SCHEMA_PYTHONPATH, "").strip()
-if _schema_pythonpath:
-    _schema_root = Path(_schema_pythonpath).expanduser()
-    if _schema_root.is_absolute():
-        _schema_root = _schema_root.resolve()
-        if str(_schema_root) not in sys.path:
-            sys.path.insert(0, str(_schema_root))
 
 try:
     from banodoco_timeline_schema import (
@@ -181,6 +172,7 @@ class TrackDefinition(_TrackDefinitionRequired, total=False):
     # Editor extension metadata is intentionally opaque to Astrid but must
     # round-trip through the shared timeline contract.
     app: dict[str, Any]
+    meta: dict[str, Any]
 
 class ClipEntrance(TypedDict, total=False):
     type: str
@@ -348,7 +340,7 @@ class PipelineMetadata(TypedDict):
 # swaps to/from `"from"` at the JSON boundary. Every other field is 1:1 with TS.
 _FROM_ALIAS = ("from_", "from")
 _TIMELINE_TOP_ALLOWED = frozenset(
-    {"theme", "theme_overrides", "generation_defaults", "clips", "tracks", "pinnedShotGroups", "app", "output"}
+    {"theme", "theme_overrides", "generation_defaults", "clips", "tracks", "pinnedShotGroups", "app", "meta", "output"}
 )
 _TIMELINE_CONTAINER_REQUIRED = frozenset({"clips", "tracks"})
 _LEGACY_CONTAINER_KEYS = frozenset({"schema_version", "assembly", "pool", "arrangement"})
@@ -367,10 +359,11 @@ _CLIP_ALLOWED = frozenset(
         # are flattened into media/image/text clips.  These fields are not
         # authoring hints: admission stamps them from the registered shot.
         "shot_id", "shot_occurrence_id", "shot_name",
+        "meta",
     }
 )
 _TRACK_ALLOWED = frozenset(
-    {"id", "kind", "label", "scale", "fit", "opacity", "volume", "muted", "blendMode", "app", "role"}
+    {"id", "kind", "label", "scale", "fit", "opacity", "volume", "muted", "blendMode", "app", "meta", "role"}
 )
 _ASSET_ENTRY_ALLOWED = frozenset(
     {
@@ -479,6 +472,11 @@ def _known_timeline_payload(config: Mapping[str, Any]) -> dict[str, Any]:
         key: value for key, value in config.items() if key in _TIMELINE_TOP_ALLOWED
     }
     known.pop("app", None)
+    # ``meta`` is an admitted authored extension, not part of the current
+    # shared render schema. Keep it on the caller's value while excluding it
+    # from the strict render-shape check; the local validator checks its
+    # bounded envelope at the known timeline/clip/track seams.
+    known.pop("meta", None)
     render_provenance_fields = {"shot_id", "shot_occurrence_id", "shot_name", "elementRef"}
     for collection in ("clips", "tracks"):
         entries = known.get(collection)
@@ -488,7 +486,7 @@ def _known_timeline_payload(config: Mapping[str, Any]) -> dict[str, Any]:
             (
                 {
                     key: value for key, value in entry.items()
-                    if key != "app" and not (
+                    if key not in {"app", "meta"} and not (
                         collection == "clips" and key in render_provenance_fields
                     )
                 }
@@ -507,7 +505,6 @@ def _json_safe_copy(value: Any) -> Any:
 _VENDORED_SCHEMA = Path(__file__).with_name("schema") / "timeline-config.schema.json"
 
 
-@functools.lru_cache(maxsize=1)
 def load_vendored_timeline_schema() -> dict[str, Any]:
     """Load the TimelineConfig JSON Schema vendored from the Runtime contract.
 
@@ -516,6 +513,11 @@ def load_vendored_timeline_schema() -> dict[str, Any]:
     is copied here by ``scripts/vendor_lock.py update`` (see
     ``runtime.lock.json``) and is the validation source.
     """
+    configured = os.environ.get(ASTRID_TIMELINE_SCHEMA_PYTHONPATH)
+    if configured is not None:
+        from astrid.core.rendering._local_schema import verified_schema_path
+
+        verified_schema_path(Path(__file__).absolute().parents[3], configured)
     return cast(dict[str, Any], json.loads(_VENDORED_SCHEMA.read_text(encoding="utf-8")))
 
 
@@ -547,6 +549,11 @@ def _validate_shared_timeline(config: Any) -> None:
     intentionally not threaded through here.
     """
     validator = _shared_timeline_validator()
+    if ASTRID_TIMELINE_SCHEMA_PYTHONPATH in os.environ:
+        # Installed admission remains bound to the exact pinned file even
+        # after the compiled validator has been cached.
+        if validator.schema != load_vendored_timeline_schema():
+            raise ValueError("installed timeline validator differs from verified schema")
     error = jsonschema.exceptions.best_match(validator.iter_errors(config))
     if error is not None:
         raise error
@@ -610,6 +617,11 @@ from astrid.core.timeline.validators.arrangement import (
 from astrid.core.timeline.validators.metadata import (
     _validate_generated_at as _validate_generated_at,
     validate_metadata as validate_metadata,
+)
+from astrid.core.timeline.validators.meta import (
+    MetaValidationError as MetaValidationError,
+    validate_meta as validate_meta,
+    validate_timeline_meta_locations as validate_timeline_meta_locations,
 )
 from astrid.core.timeline.validators.pool import (
     _validate_pool_scores as _validate_pool_scores,

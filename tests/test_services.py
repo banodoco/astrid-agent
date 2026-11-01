@@ -68,7 +68,7 @@ def test_declaration_binds_installed_product_to_pinned_nonwheel_resources(tmp_pa
         "ASTRID_HOST_EXECUTION_PROFILE": "installed",
         "ASTRID_SOURCE_PROVENANCE_ROOT": str(tmp_path / "a"),
         "ASTRID_REMOTION_PROJECT_DIR": str(tmp_path / "a/remotion"),
-        "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": str(tmp_path / "a/remotion/node_modules/schema/python"),
+        "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": str(tmp_path / "py/Lib/site-packages/astrid/core/timeline/schema/timeline-config.schema.json"),
         "ASTRID_CAPABILITY_MATRIX_PATH": str(tmp_path / "a/config/astrid-beta-capabilities.json"),
     }
     for key, value in values.items():

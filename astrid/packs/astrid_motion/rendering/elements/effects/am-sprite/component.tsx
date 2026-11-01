@@ -1,5 +1,6 @@
 import type {CSSProperties, ReactElement} from 'react';
 import {Img, useCurrentFrame} from 'remotion';
+import type {ComponentCapabilityContext, PreparedComponentCapability} from '@banodoco/timeline-composition/evaluation';
 import {
   LOGICAL_PX,
   elementSource,
@@ -31,6 +32,10 @@ type Params = {
   flipX?: boolean;
   keyframes?: Keyframe[];
   stepFrames?: 2 | 3;
+  /** Source clip-local frame for a piece cut from an existing sprite clip. */
+  frameOffset?: number;
+  /** Original output-frame clock for a chapter piece, before playback-rate flooring. */
+  sourceClock?: {offsetFrames: number; speed: number};
   enter?: 'stamp' | 'slideIn' | 'cut';
   slideFrom?: 'left' | 'right' | 'top' | 'bottom';
   slideDistance?: number;
@@ -49,18 +54,21 @@ const ENTERS = ['stamp', 'slideIn', 'cut'] as const;
 const SIDES = ['left', 'right', 'top', 'bottom'] as const;
 const SLIDE_STEPS = 4;
 
-export default function AmSprite(props: ElementComponentProps): ReactElement | null {
-  const frame = useCurrentFrame();
-  const params = narrowParams<Params>(props.params);
-  const url = elementSource(props.assetEntry, params.src);
-  if (!url) {
-    return null;
-  }
-
-  const fps = props.fps;
+const spriteAt = (raw: unknown, assetEntry: ElementComponentProps['assetEntry'], frame: number, fps: number) => {
+  const params = narrowParams<Params>(raw);
   const scale = integerIn(params.scale, 1, 24, 6);
   const stepFrames = integerIn(params.stepFrames, 2, 3, 2);
-  const sf = stepStart(frame, stepFrames);
+  const frameOffset = integerIn(params.frameOffset, 0, 10000000, 0);
+  const clock = params.sourceClock;
+  const animationFrame = clock && Number.isFinite(clock.offsetFrames) && Number.isFinite(clock.speed) && clock.speed > 0
+    ? Math.floor((frame + clock.offsetFrames) * clock.speed)
+    : frame;
+  const sourceFrame = animationFrame + frameOffset;
+  const sf = stepStart(sourceFrame, stepFrames) - frameOffset;
+  const keyframeOrigin = clock && Number.isFinite(clock.offsetFrames) && Number.isFinite(clock.speed) && clock.speed > 0
+    ? Math.floor(clock.offsetFrames * clock.speed)
+    : 0;
+  const keyframeStep = sf - keyframeOrigin;
 
   // Active keyframe: the last one at or before this step. Keyframes apply
   // as held poses, so the sprite never interpolates between them.
@@ -69,7 +77,7 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
   let flipX = params.flipX === true;
   const keyframes = [...(params.keyframes ?? [])].sort((a, b) => a.frame - b.frame);
   for (const key of keyframes) {
-    if (key.frame <= sf) {
+    if (key.frame <= keyframeStep) {
       x = finiteNumber(key.x, x);
       y = finiteNumber(key.y, y);
       flipX = key.flipX ?? flipX;
@@ -82,14 +90,14 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
   const enter = oneOf(params.enter, ENTERS, 'cut');
   if (enter === 'stamp') {
     // 2-frame flicker (on, off) then land 1 px lower on frame 2.
-    if (frame < 2) {
-      visible = frame === 0;
+    if (sourceFrame < 2) {
+      visible = sourceFrame === 0;
       dy = -1;
     }
   } else if (enter === 'slideIn') {
     const side = oneOf(params.slideFrom, SIDES, 'left');
     const distance = Math.max(0, finiteNumber(params.slideDistance, 24));
-    const k = Math.min(SLIDE_STEPS, Math.floor(frame / stepFrames));
+    const k = Math.min(SLIDE_STEPS, Math.floor(sourceFrame / stepFrames));
     const remaining = Math.round((distance * (SLIDE_STEPS - k)) / SLIDE_STEPS);
     if (side === 'left') dx = -remaining;
     if (side === 'right') dx = remaining;
@@ -102,12 +110,12 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
     : params.blinkAt === undefined
       ? []
       : [params.blinkAt];
-  const blinking = blinks.some((at) => frame >= at && frame < at + 2);
+  const blinking = blinks.some((at) => animationFrame >= at && animationFrame < at + 2);
 
   const frames = params.frames;
   let index = 0;
   if (frames && frames.count >= 1 && frames.fps > 0) {
-    const tick = Math.floor((frame * frames.fps) / fps);
+    const tick = Math.floor((sourceFrame * frames.fps) / fps);
     const seq = Array.isArray(frames.sequence) ? frames.sequence.filter((n) => Number.isFinite(n)) : [];
     index = seq.length > 0
       ? Math.round(seq[tick % seq.length])
@@ -121,17 +129,55 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
     }
   }
 
+  // Sprite size in art px: the strip frame, else the registry resolution.
+  const res = /^(\d+)x(\d+)$/.exec(String((assetEntry as {resolution?: string} | undefined)?.resolution ?? ''));
+  const artW = frames ? Math.max(1, Math.round(frames.frameWidth)) : res ? Number(res[1]) : 0;
+  const artH = frames ? Math.max(1, Math.round(frames.frameHeight)) : res ? Number(res[2]) : 0;
+  const rect = {x: (x + dx) * LOGICAL_PX, y: (y + dy) * LOGICAL_PX,
+    width: artW * scale, height: artH * scale};
+  return {scale, x, y, dx, dy, flipX, visible, frames, index, artW, artH, rect, animationFrame};
+};
+
+const prepareSpriteScene = ({clip, assetEntry, fps}: ComponentCapabilityContext): PreparedComponentCapability => ({
+  identity: JSON.stringify([clip.params, assetEntry, fps]),
+  frame: frame => {
+    const p = narrowParams<Params>(clip.params);
+    const url = elementSource(assetEntry, p.src);
+    if (!url) return {presence: 'absent', opaqueSupport: 'none',
+      bounds: {status: 'unknown', reason: 'Sprite has no renderable source'}};
+    const {visible, frames, artW, artH, rect} = spriteAt(p, assetEntry, frame, fps);
+    // A layout rectangle says nothing about PNG alpha or successful decoding.
+    const known = (frames || elementSource(assetEntry, undefined)) && artW > 0 && artH > 0 && Number.isFinite(artW) && Number.isFinite(artH)
+      && !p.outline && !p.shadow;
+    return {
+      presence: !visible ? 'absent' : 'unknown',
+      opaqueSupport: !visible ? 'none' : 'unknown',
+      bounds: known
+        ? {status: 'known', rect}
+        : {status: 'unknown', reason: 'Sprite source dimensions or decorated bounds are not declared'},
+    };
+  },
+});
+
+function AmSprite(props: ElementComponentProps): ReactElement | null {
+  const frame = useCurrentFrame();
+  const params = narrowParams<Params>(props.params);
+  const frameOffset = integerIn(params.frameOffset, 0, 10000000, 0);
+  const url = elementSource(props.assetEntry, params.src);
+  if (!url) return null;
+  const {scale, x, y, dx, dy, flipX, visible, frames, index, artW, artH, rect, animationFrame} = spriteAt(params, props.assetEntry, frame, props.fps);
+
   // Silhouette and outline are CSS filters on the art (inside the scale), so
   // offsets are art px and land on the pixel grid. drop-shadow with 0 blur is a
   // hard 1-art-px ring; four of them make an outline.
   const sil = params.silhouette;
-  const silOn = sil === true || (typeof sil === 'object' && sil !== null && (sil.until === undefined || frame < sil.until));
+  const silOn = sil === true || (typeof sil === 'object' && sil !== null && (sil.until === undefined || animationFrame < sil.until));
   const ol = params.outline && typeof params.outline === 'object' ? params.outline : null;
   const filters: string[] = [];
   if (silOn) filters.push('brightness(0)');
   if (ol) {
     const pulse = Math.max(0, Math.round(finiteNumber(ol.pulse, 0)));
-    const wide = pulse > 0 && Math.floor(frame / pulse) % 2 === 1;
+    const wide = pulse > 0 && Math.floor((animationFrame + frameOffset) / pulse) % 2 === 1;
     const w = Math.max(1, Math.round(finiteNumber(ol.px, 1))) + (wide ? 1 : 0);
     const c = typeof ol.color === 'string' ? ol.color : '#ED6B23';
     filters.push(`drop-shadow(${w}px 0 0 ${c})`, `drop-shadow(-${w}px 0 0 ${c})`, `drop-shadow(0 ${w}px 0 ${c})`, `drop-shadow(0 -${w}px 0 ${c})`);
@@ -140,8 +186,8 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
 
   const outer: CSSProperties = {
     position: 'absolute',
-    left: (x + dx) * LOGICAL_PX,
-    top: (y + dy) * LOGICAL_PX,
+    left: rect.x,
+    top: rect.y,
     transform: `scale(${scale})`,
     transformOrigin: '0 0',
     lineHeight: 0,
@@ -152,10 +198,6 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
     transformOrigin: 'center center',
   };
 
-  // Sprite size in art px: the strip frame, else the registry resolution.
-  const res = /^(\d+)x(\d+)$/.exec(String((props.assetEntry as {resolution?: string} | undefined)?.resolution ?? ''));
-  const artW = frames ? Math.max(1, Math.round(frames.frameWidth)) : res ? Number(res[1]) : 0;
-  const artH = frames ? Math.max(1, Math.round(frames.frameHeight)) : res ? Number(res[2]) : 0;
   const shadow = params.shadow && typeof params.shadow === 'object' ? params.shadow : null;
   let shadowNode: ReactElement | null = null;
   if (shadow && visible && artW > 0) {
@@ -189,8 +231,8 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
   }
 
   if (frames) {
-    const fw = Math.max(1, Math.round(frames.frameWidth));
-    const fh = Math.max(1, Math.round(frames.frameHeight));
+    const fw = artW;
+    const fh = artH;
     return (
       <>
       {shadowNode}
@@ -220,3 +262,5 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
     </>
   );
 }
+
+export default Object.assign(AmSprite, {prepareSceneCapability: prepareSpriteScene});

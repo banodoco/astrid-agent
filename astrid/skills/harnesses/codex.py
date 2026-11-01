@@ -49,7 +49,7 @@ class CodexAdapter(HarnessAdapter):
     def target_for(self, descriptor: SkillDescriptor) -> Path:
         if descriptor.pack_id == "_core":
             return self.skills_dir / "astrid"
-        return self.skills_dir / f"astrid-{descriptor.pack_id}"
+        return self.skills_dir / f"astrid-{descriptor.skill_id}"
 
     def plan(self, action: Action, descriptors: Iterable[SkillDescriptor], **opts) -> list[PlannedStep]:
         steps: list[PlannedStep] = []
@@ -136,11 +136,11 @@ class CodexAdapter(HarnessAdapter):
             inner = "_no Astrid skills installed_"
         else:
             lines = []
-            for descriptor in sorted(descriptors, key=lambda d: d.pack_id):
+            for descriptor in sorted(descriptors, key=lambda d: d.skill_id):
                 target = self.target_for(descriptor)
                 desc = (descriptor.short_description or descriptor.description or "").strip().splitlines()
                 desc_line = desc[0] if desc else ""
-                lines.append(f"- `{descriptor.pack_id}` ({target}): {desc_line}".rstrip())
+                lines.append(f"- `{descriptor.skill_id}` ({target}): {desc_line}".rstrip())
             inner = "\n".join(lines)
         return rewrite_commands(f"{BEGIN_MARKER}\n# Astrid skills\n\n{inner}\n{END_MARKER}")
 

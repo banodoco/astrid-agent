@@ -15,18 +15,26 @@ convention, the stable exit codes, and the two operational families
 
 from __future__ import annotations
 
+import sys
+
 
 def _print_entrypoint_help() -> None:
     print(
-        """Astrid command gateway — Python SDK + CLI
+        f"""Astrid: make and edit video timelines with a human. The Runtime on this
+computer owns every project, timeline and media file.
 
-The canonical Python boundary is ``import astrid`` (see docs/reference/sdk.md).
-This gateway is the CLI entry point for the seven product families,
-workspace status, operational families (doctor, backup), and external tools.
+Start here:
+  astrid status                      Runtime, current project, recent timelines
+  astrid projects list               your projects (* = current)
+  astrid timelines list --recent     timelines, last edited first
+  astrid projects create SLUG --name NAME --select
+  astrid timelines create --name NAME          (in the current project)
 
-Usage:
-  python3 -m astrid <family> <command> [options]
-  python3 -m astrid help
+Edit and look (Python: {sys.executable}):
+  from astrid.sdk.timeline.api import Timeline
+  tl = Timeline.open("<project>", "<timeline>")
+  tl.commit(fn, label="…")           one commit = one undo
+  astrid timelines visualize <timeline>        composed frames, no render
 
 Product families:
   python3 -m astrid projects ...
@@ -51,12 +59,12 @@ Latest project render:
 Operational families:
   python3 -m astrid status [--json]
   python3 -m astrid doctor [--json]
-  python3 -m astrid backup {create,restore,export,tombstone,recover,purge} [--json]
-  python3 -m astrid dev {status,promote,reclaim} [--ref REF] [--dry-run] [--json]
-  python3 -m astrid auth {login,status,logout,revoke}
+  python3 -m astrid backup {{create,restore,export,tombstone,recover,purge}} [--json]
+  python3 -m astrid dev {{status,promote,reclaim}} [--ref REF] [--dry-run] [--json]
+  python3 -m astrid auth {{login,status,logout,revoke}}
 
 External tools:
-  python3 -m astrid h3 {plan,run,compose,edit} ...
+  python3 -m astrid h3 {{plan,run,compose,edit}} ...
   python3 -m astrid hivemind search QUERY [--limit N] [--json]
 
 Nested mounts (manifest-owned):
@@ -80,6 +88,7 @@ Ownership handoff:
   install from a runtime that only needs configuration or startup.
 """
     )
+
 
 
 def _product_help_text() -> str:

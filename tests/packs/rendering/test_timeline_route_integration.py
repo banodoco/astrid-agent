@@ -14,7 +14,7 @@ from astrid.packs.timeline.cli import (
     _visualization_show_range,
     build_parser,
 )
-from astrid.sdk.contracts import DomainResult
+from astrid.sdk.contracts import DomainResult, ErrorObject
 from astrid.sdk.remote import RemoteTimelines
 from astrid.sdk.results import InvocationResult
 
@@ -89,6 +89,21 @@ class _Client:
             manifest_path=None,
             outputs={},
         )
+
+
+class _InputAwareClient(_Client):
+    def visualize(self, project, ref, **kwargs):  # noqa: ANN001
+        self.visualize_inputs = kwargs["options"]
+        self.visualize_mode = kwargs["mode"]
+        if kwargs["mode"] == "inputs" and kwargs["options"].get("view") != "filmstrip":
+            return DomainResult.failure(
+                ErrorObject(
+                    "validation_error",
+                    "render-free input mode supports only view=filmstrip; composed views require output authority",
+                    {"field": "view", "mode": "inputs"},
+                )
+            )
+        return DomainResult.success({"kind": "timeline-view", "inspection": {"revision_id": "head-1"}})
 
 
 def _presentation_bundle() -> dict:
@@ -298,6 +313,49 @@ def test_visualize_forwards_admitted_contact_and_motion_options(capsys) -> None:
         "preview": True,
     }
     capsys.readouterr()
+
+
+def test_visualize_inputs_defaults_to_native_filmstrip_but_explicit_contact_rejects(capsys) -> None:
+    client = _InputAwareClient()
+    parser = build_parser(client)
+
+    args = parser.parse_args([
+        "visualize", "main", "--project", "demo", "--mode", "inputs", "--format", "md", "--json",
+    ])
+    assert _cmd_visualize(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True
+    assert client.visualize_mode == "inputs"
+    assert client.visualize_inputs == {
+        "formats": ["md"],
+        "timeline_slug": "main",
+        "view": "filmstrip",
+    }
+
+    args = parser.parse_args([
+        "visualize", "main", "--project", "demo", "--hide", "output", "--preset", "overview", "--json",
+    ])
+    assert _cmd_visualize(args) == 0
+    json.loads(capsys.readouterr().out)
+    assert client.visualize_mode == "inputs"
+    assert client.visualize_inputs["view"] == "filmstrip"
+
+    args = parser.parse_args([
+        "visualize", "main", "--project", "demo", "--mode", "inputs", "--view", "contact", "--json",
+    ])
+    assert _cmd_visualize(args) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["error"] == {
+        "code": "validation_error",
+        "message": "render-free input mode supports only view=filmstrip; composed views require output authority",
+        "details": {"field": "view", "mode": "inputs"},
+    }
+
+    args = parser.parse_args(["visualize", "main", "--project", "demo", "--json"])
+    assert _cmd_visualize(args) == 0
+    json.loads(capsys.readouterr().out)
+    assert client.visualize_mode == "auto"
+    assert client.visualize_inputs["view"] == "contact"
 
 
 def test_visualize_forwards_admitted_diff_revision_selectors(capsys) -> None:
