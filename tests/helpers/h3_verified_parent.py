@@ -32,13 +32,31 @@ class VerifiedH3Host:
         self.target = {"kind": "machine", "id": socket.gethostname()}
         self.preparer = None
         self.qualification = None
+        self.capacity = 2
         self.output_root = self.root / "host-outputs"
         self.output_root.mkdir()
         self._claim = daemon.service.claim_delegated_child
 
         def observe_claim(*args, **kwargs):
             try:
-                return self._claim(*args, **kwargs)
+                result = self._claim(*args, **kwargs)
+                with daemon.service.store._mutex:
+                    capacity = daemon.service.store.conn.execute(
+                        "SELECT max_concurrency FROM executors WHERE id='astrid-pack-host'",
+                    ).fetchone()[0]
+                    active = daemon.service.store.conn.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE executor_id='astrid-pack-host' AND status='running'",
+                    ).fetchone()[0]
+                assert capacity == self.capacity
+                assert active == 2, "the parent and exact delegated child must hold both slots"
+                binding = result["execution_binding"]
+                (self.root / ("h3-child-binding-" + result["task_id"] + ".json")).write_text(json.dumps({
+                    "registered_capacity": capacity, "running_tasks": active,
+                    **{key: binding[key] for key in (
+                        "actual_target", "verification", "executor_incarnation", "executor_id",
+                    )},
+                }, indent=2))
+                return result
             except Exception as exc:
                 with daemon.service.store._mutex:
                     executor = daemon.service.store.conn.execute(
@@ -74,7 +92,7 @@ class VerifiedH3Host:
         profile_path = self.root / "h3-readiness.json"
         profile = json.loads(profile_path.read_text())
         session_path = self.root / "placement-session.json"
-        session_path.write_text(json.dumps({"session_ref": "h3-cpu-placement", "capacity": 1}))
+        session_path.write_text(json.dumps({"session_ref": "h3-cpu-placement", "capacity": self.capacity}))
         boot = daemon.support_root / "boot-manifest.json"
         handoff = compose_profile_handoff(boot, support_root=daemon.support_root)
         executable = Path(sys.executable).resolve()
@@ -98,7 +116,7 @@ class VerifiedH3Host:
             data_root=daemon.support_root.parent, support_root=daemon.support_root, runtime_endpoint=daemon.endpoint,
             runtime_instance_id=daemon.instance_id, runtime_epoch=health.runtime_epoch,
             runtime_schema_digest=health.schema_digest, model_root=Path(profile["launch"]["model_root"]["path"]),
-            capacity=1, session_ref="h3-cpu-placement",
+            capacity=self.capacity, session_ref="h3-cpu-placement",
             session_config_digest="sha256:" + hashlib.sha256(session_path.read_bytes()).hexdigest(),
             output_root=self.output_root, credential_ref=str(daemon.worker_credential_path),
             executor_id=host_bootstrap.PACK_HOST_ACTOR, boot_manifest_path=boot,
@@ -110,12 +128,6 @@ class VerifiedH3Host:
             input_bindings=binding.input_bindings, original_target=self.target, effective_target=self.target,
             execution_target=self.target,
         )
-        try:
-            replace(reference, capacity=2)
-        except ValueError as exc:
-            (self.root / "h3-capacity-limit.json").write_text(json.dumps({
-                "requested_capacity": 2, "type": type(exc).__name__, "message": str(exc),
-            }, indent=2))
         # Carry the existing CPU Comfy session through the real launch seam.
         # None of these values supplies placement or activation authority.
         names = (

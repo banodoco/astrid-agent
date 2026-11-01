@@ -292,6 +292,9 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
                 "actual": verified_host.target, "verification": parent_binding["verification"],
                 "executor_incarnation": parent_binding["executor_incarnation"],
             } for row in children)
+            assert all(all(row["execution_binding"][key] == parent_binding[key] for key in (
+                "actual_target", "verification", "executor_incarnation", "executor_id",
+            )) for row in children)
             managed = {}
             for row in [*parents, *children]:
                 listing = client.tasks.list_managed_outputs(row["task_id"])
