@@ -1,0 +1,93 @@
+repos:
+  astrid-agent: cf7e288f9e9d2abf6acdd84fddfaa648842ce2fe
+  astrid-runtime: ecc9f1533234d33bfc082b34e1dc4e18a22e3f3d
+cpu:
+  vcpu: 8
+gpu: false
+max_minutes: 45
+setup:
+- 'set -euo pipefail
+
+  mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"
+
+  export TMPDIR="$PWD/runpod-tmp"
+
+  python3 -m venv "$PWD/runpod-tmp/venv"
+
+  CUSTODY_PYTHON="$PWD/runpod-tmp/venv/bin/python"
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation . ../astrid-runtime
+  ../astrid-runtime/packages/python
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "banodoco-timeline-schema @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python"
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "git+https://github.com/peteromallet/VibeComfy.git@ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+
+  "$CUSTODY_PYTHON" -m pip freeze > runpod-evidence/environment.txt
+
+  '
+run:
+- 'set -euo pipefail
+
+  mkdir -p "$PWD/runpod-evidence" "$PWD/runpod-tmp"
+
+  trap ''code=$?; printf "%s\n" "$code" > runpod-evidence/exit-code.txt'' EXIT
+
+  export TMPDIR="$PWD/runpod-tmp" PYTHONDONTWRITEBYTECODE=1
+
+  export ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)"
+
+  export PYTHONPATH="$PWD:$ASTRID_RUNTIME_CHECKOUT:$ASTRID_RUNTIME_CHECKOUT/packages/python"
+
+  CUSTODY_PYTHON="$PWD/runpod-tmp/venv/bin/python"
+
+  test "$(git rev-parse HEAD)" = cf7e288f9e9d2abf6acdd84fddfaa648842ce2fe
+
+  test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = ecc9f1533234d33bfc082b34e1dc4e18a22e3f3d
+
+  git rev-parse HEAD > runpod-evidence/agent-head.txt
+
+  git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
+
+  "$CUSTODY_PYTHON" --version > runpod-evidence/python.txt
+
+  "$CUSTODY_PYTHON" -m pytest --version > runpod-evidence/pytest.txt
+
+  uname -a > runpod-evidence/platform.txt
+
+  sha256sum runtime.lock.json astrid_runtime_client/*.py astrid/core/timeline/schema/timeline-config.schema.json
+  > runpod-evidence/generated.sha256
+
+  "$CUSTODY_PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT" 2>&1 |
+  tee runpod-evidence/vendor-check.txt
+
+  "$CUSTODY_PYTHON" -m pytest -p no:cacheprovider -o addopts= --collect-only -q tests/core/execution/test_orchestrator_custody_i_ag_03b.py
+  tests/core/execution/test_execution_custody_composition_i_ag_03b.py tests/test_generic_host_result_json.py tests/core/execution/test_child_import_receipt.py
+  tests/core/execution/test_generic_host_handoff.py tests/core/execution/test_terminal_evidence_transport_f05.py
+  tests/core/execution/test_producer_evidence_transport_f06.py tests/core/execution/test_fail_closed_g28.py::test_cancel_completion_error_propagates_and_retains_pending_evidence
+  tests/core/test_orchestrator_runner_errors.py tests/integrations/test_execution_custody_runtime_i_ag_03b.py tests/integrations/test_h3_delegated_child_claim_135.py
+  tests/core/execution/test_delegated_publication_transport_g31.py tests/core/execution/test_child_bridge_target_transport_265.py
+  tests/sdk/test_delegated_publication_policy_g31.py tests/sdk/test_invocation_custody_composition_i_ag_03b.py tests/sdk/test_workspace_client_custody_composition_i_ag_03b.py
+  tests/test_generic_host.py::test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit tests/test_generic_host.py::test_cancellation_reaps_descendant_spawned_by_sigterm_handler
+  tests/test_generic_host.py::test_descendant_terminated_requires_matching_zombie tests/test_generic_host.py::test_descendant_terminated_fails_closed_on_observation_errors
+  tests/core/generation/test_entries.py tests/core/generation/test_workflow_input_a01.py tests/sdk/test_generation_source_retention.py
+  2>&1 | tee runpod-evidence/collected-nodes.txt
+
+  "$CUSTODY_PYTHON" -m pytest -p no:cacheprovider -o addopts= -q --basetemp="$TMPDIR/pytest" --junitxml=runpod-evidence/focused.xml
+  tests/core/execution/test_orchestrator_custody_i_ag_03b.py tests/core/execution/test_execution_custody_composition_i_ag_03b.py
+  tests/test_generic_host_result_json.py tests/core/execution/test_child_import_receipt.py tests/core/execution/test_generic_host_handoff.py
+  tests/core/execution/test_terminal_evidence_transport_f05.py tests/core/execution/test_producer_evidence_transport_f06.py
+  tests/core/execution/test_fail_closed_g28.py::test_cancel_completion_error_propagates_and_retains_pending_evidence
+  tests/core/test_orchestrator_runner_errors.py tests/integrations/test_execution_custody_runtime_i_ag_03b.py tests/integrations/test_h3_delegated_child_claim_135.py
+  tests/core/execution/test_delegated_publication_transport_g31.py tests/core/execution/test_child_bridge_target_transport_265.py
+  tests/sdk/test_delegated_publication_policy_g31.py tests/sdk/test_invocation_custody_composition_i_ag_03b.py tests/sdk/test_workspace_client_custody_composition_i_ag_03b.py
+  tests/test_generic_host.py::test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit tests/test_generic_host.py::test_cancellation_reaps_descendant_spawned_by_sigterm_handler
+  tests/test_generic_host.py::test_descendant_terminated_requires_matching_zombie tests/test_generic_host.py::test_descendant_terminated_fails_closed_on_observation_errors
+  tests/core/generation/test_entries.py tests/core/generation/test_workflow_input_a01.py tests/sdk/test_generation_source_retention.py
+  2>&1 | tee runpod-evidence/focused.txt
+
+  '
+artifacts:
+- runpod-evidence/**
