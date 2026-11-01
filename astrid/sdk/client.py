@@ -250,6 +250,9 @@ class AstridClient:
 
     def __init__(self, *, remote: Any) -> None:
         self._remote = remote
+        from astrid.packs.runpod.generation_owner import RunPodGenerationOwner
+
+        self.runpod_generation_owner = RunPodGenerationOwner(self)
 
     @classmethod
     def open(
@@ -669,7 +672,9 @@ class AstridClient:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        return None
+        close_owner = getattr(getattr(self, "runpod_generation_owner", None), "close", None)
+        if callable(close_owner):
+            close_owner()
 
     @property
     def endpoint(self) -> str:

@@ -37,7 +37,7 @@ class PreparedRunPodGeneration:
 
 
 class RunPodGenerationOwner(Protocol):
-    """Typed fake boundary pending R04 and F05/F06/F07 publication.
+    """Product host contract for the existing RunPod custody owners.
 
     validation_target is read-only and must not claim/install. prepare checks
     a fresh offer/rate/consent and compatibility before beginning warm custody.
