@@ -92,7 +92,8 @@ def _default_render(result, as_json: bool):
     if as_json or not result.ok:
         return print_result(result, as_json=as_json)
     data = result.data
-    if isinstance(data, dict) and isinstance(data.get("slots"), list):
+    if (isinstance(data, dict) and isinstance(data.get("slots"), list)
+            and all(isinstance(row, dict) for row in data["slots"])):
         for row in data["slots"]:
             print(f"{row['slot']}: {row.get('selected') or '(unset)'} ({row.get('source', 'none')})")
         if data.get("library"):
