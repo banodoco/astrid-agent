@@ -9478,6 +9478,14 @@ class GenericPackHost:
         )
         broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
         inherited_fds: tuple[int, ...] = ()
+        from astrid.core.rendering._schema_observation import bind_host_context
+
+        # Only the admitted kernel task and the host-inherited collector can
+        # supply this context; never accept a capability environment overlay.
+        inherited_fds += bind_host_context(
+            record.id, import_binding.get("run_id") if isinstance(import_binding, Mapping) else None,
+            env, os.environ,
+        )
         if child_bridge is not None:
             # Bootstrap in the action interpreter before pack code. Private
             # launch arguments contain a descriptor and command, no authority.
@@ -9499,11 +9507,11 @@ class GenericPackHost:
             if (not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}
                     or arguments[0] in {"-c", "-m"} and len(arguments) < 2):
                 raise HostError("unsupported delegating Python command flags")
-            inherited_fds = (child_bridge.inherited_fd(),)
+            inherited_fds += (child_bridge.inherited_fd(),)
             if not utf8_flag:
                 flags = ["-X", "utf8", *flags]
             argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
-                    "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+                    "--child-command", str(child_bridge.inherited_fd()), json.dumps(arguments)]
         source_channel = _runtime_external_sources.descriptor(record) if _runtime_external_sources is not None else None
         if source_channel is not None:
             if Path(argv[0]).resolve() != Path(sys.executable).resolve():
