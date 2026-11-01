@@ -60,6 +60,10 @@ _TRACKED_FIRST_PARTY_PACK_IDS = tuple(
 # their durable state belongs to the neutral workspace runtime, not a local
 # schema host.
 _FIRST_PARTY_INTERNAL_DIRS = {"_core", "references", "shots"}
+# Engine recipe inputs are first-party inventory, but not capability packs or
+# Runtime mounts.  They intentionally have no ``pack.yaml`` and are consumed
+# only by the engine installer/recipe loader.
+_FIRST_PARTY_ENGINE_RESOURCE_DIRS = {"comfyui"}
 _EXCLUDED_FIRST_PARTY_DIRS = {"external", "hivemind"}
 _IGNORED_PACKS_ROOT_DIRS = {"__pycache__"}
 
@@ -197,7 +201,11 @@ def is_first_party_packs_root_candidate(path: str | Path) -> bool:
         if child.is_dir()
         and not child.name.startswith(".")
         and child.name not in _IGNORED_PACKS_ROOT_DIRS
-        and child.name in set(_FIRST_PARTY_PACK_IDS) | _FIRST_PARTY_INTERNAL_DIRS
+        and child.name in (
+            set(_FIRST_PARTY_PACK_IDS)
+            | _FIRST_PARTY_INTERNAL_DIRS
+            | _FIRST_PARTY_ENGINE_RESOURCE_DIRS
+        )
     }
     if root == _FIRST_PARTY_PACKS_ROOT:
         return True
@@ -412,10 +420,17 @@ def _first_party_inventory(
         return [], selected, excluded, runtime_mounts
 
     expected = set(_FIRST_PARTY_PACK_IDS if root == _FIRST_PARTY_PACKS_ROOT else _TRACKED_FIRST_PARTY_PACK_IDS)
+    if root == _FIRST_PARTY_PACKS_ROOT:
+        expected |= _FIRST_PARTY_ENGINE_RESOURCE_DIRS
     # Mirrored/test roots may omit optional personal packs, but a known
     # optional pack is still valid when explicitly present. Keep the allowed
     # inventory wider than the required inventory so only unknown roots fail.
-    allowed = set(_FIRST_PARTY_PACK_IDS) | _FIRST_PARTY_INTERNAL_DIRS | _EXCLUDED_FIRST_PARTY_DIRS
+    allowed = (
+        set(_FIRST_PARTY_PACK_IDS)
+        | _FIRST_PARTY_INTERNAL_DIRS
+        | _FIRST_PARTY_ENGINE_RESOURCE_DIRS
+        | _EXCLUDED_FIRST_PARTY_DIRS
+    )
     errors: list[str] = []
     for pack_id in sorted(expected - set(child_dirs)):
         errors.append(f"missing first-party pack directory: {pack_id}")

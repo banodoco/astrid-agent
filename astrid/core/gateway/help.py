@@ -20,7 +20,9 @@ import sys
 
 def _print_entrypoint_help() -> None:
     print(
-        f"""Astrid: make and edit video timelines with a human. The Runtime on this
+        f"""usage: astrid [COMMAND] [OPTIONS]
+
+Astrid: make and edit video timelines with a human. The Runtime on this
 computer owns every project, timeline and media file.
 
 Start here:
