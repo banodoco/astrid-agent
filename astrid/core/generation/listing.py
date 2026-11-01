@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any
 
-from astrid.core.generation.availability import availability_declaration
+from astrid.core.generation.availability import availability_declaration, availability_projection, model_availability, template_availability
 from astrid.core.generation.backends.comfy_target import (
     ComfyModelMissing, ComfyTarget, ComfyTargetClient, MAX_JSON_BYTES,
     resolve_comfy_models,
@@ -31,7 +31,11 @@ def catalog_rows() -> list[dict[str, Any]]:
     for entry in registry.list_all(include_closed=True):
         for mode, spec in entry.modes.items():
             for backend, target in spec.backends.items():
-                add(entry.id, entry.modality, mode, backend, target.template, "catalog")
+                decision = model_availability(entry.id, mode, backend)
+                unavailable = decision.get("available") is not True
+                add(entry.id, entry.modality, mode, backend, target.template, "catalog",
+                    "unavailable" if unavailable else "available",
+                    decision.get("error", {}).get("message", "") if unavailable else "")
     for spec in CANONICAL_CAPABILITIES.values():
         if spec.model_id == "z-image-turbo":
             # Public direct-image spelling of the catalog's z-image identity.
@@ -53,20 +57,24 @@ def catalog_rows() -> list[dict[str, Any]]:
         name = capability.id.lower()
         kind = "image" if "image" in name or "thumbnail" in name else "video" if "video" in name else "audio" if "audio" in name or "speech" in name else "generation"
         record = actions.get(capability.id, {})
-        unavailable = record.get("available") is False
+        unavailable = capability.id in actions and record.get("available") is not True
         error = record.get("error", {})
         add(capability.id, kind, source="action", availability="unavailable" if unavailable else "available", reason=error.get("message", "") if unavailable else "")
     existing = {row["id"] for row in rows if row["source"] == "action"}
     for action, record in actions.items():
         if action not in existing:
-            add(action, "image" if "thumbnail" in action or "sampler" in action else "generation", source="action", availability="unavailable" if record.get("available") is False else "available", reason=record.get("error", {}).get("message", ""))
+            add(action, "image" if "thumbnail" in action or "sampler" in action else "generation", source="action", availability="unavailable" if record.get("available") is not True else "available", reason=record.get("error", {}).get("message", ""))
     for route, fixture in declaration.get("fixture_only_routes", {}).items():
         if fixture:
             add(route, "fixture", source="fixture", availability="fixture-only", reason="fixture-only route")
     from astrid.core.generation.entries import action_entries, user_entries, ready_entries
     for entry in action_entries(discovery):
         for mode in entry["modes"]:
-            add(entry["id"], entry["kind"], mode, "action", entry["action"], "action-entry")
+            record = actions.get(entry["action"], {})
+            unavailable = entry["action"] in actions and record.get("available") is not True
+            add(entry["id"], entry["kind"], mode, "action", entry["action"], "action-entry",
+                "unavailable" if unavailable else "available",
+                record.get("error", {}).get("message", "") if unavailable else "")
             rows[-1]["requirements"] = entry["requirements"]
             rows[-1]["isolation_requirements"] = entry["isolation_requirements"]
     for entry in user_entries():
@@ -80,6 +88,24 @@ def catalog_rows() -> list[dict[str, Any]]:
                 reason=entry["ambiguity"] or next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), ""))
             if entry.get("registry_id"):
                 rows[-1]["registry_id"] = entry["registry_id"]
+            decision = template_availability(entry["id"], mode, "local")
+            if entry.get("registry_id") and decision.get("available") is True:
+                decision = model_availability(entry["registry_id"], mode, "local")
+            if decision.get("available") is not True:
+                rows[-1]["availability"] = "unavailable"
+                rows[-1]["reason"] = decision.get("error", {}).get("message", "")
+    for row in rows:
+        record = None
+        if row['source'] == 'catalog':
+            record = model_availability(row['id'], row['mode'], row['backend'])
+        elif row['source'] in {'action', 'action-entry'}:
+            record = actions.get(row['id'] if row['source'] == 'action' else row['template'])
+        elif row['source'] == 'ready-template':
+            record = template_availability(row['id'], row['mode'], row['backend'])
+            if record.get('available') is True and row.get('registry_id'):
+                record = model_availability(row['registry_id'], row['mode'], row['backend'])
+        if record is not None and record.get('available') is not True:
+            row.update(availability_projection(record))
     return sorted(rows, key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["template"]))
 
 
@@ -182,7 +208,7 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
     for row in rows:
         base = dict(row)
         if row["availability"] != "available":
-            output.append({**base, "target": "declaration", "ready": False, "reason": row["reason"], "fix": "Use an implemented generation route; see the availability declaration.", "models_present": []})
+            output.append({**base, "target": "declaration", "ready": False, "reason": row["reason"], "fix": row.get("fix") or "Use an implemented generation route; see the availability declaration.", "models_present": []})
         elif row["source"] == "action-entry":
             output.append({**base, "target": "action", "ready": False,
                            "readiness_scope": "requirements_unverified",

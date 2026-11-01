@@ -1,0 +1,445 @@
+{
+  "corpus": "timeline-h3-agent-feasibility",
+  "status": "provider-executed on real R1; membership-removal precedence red; Runtime HTTP/App H3 proof pending",
+  "contract": "Timeline commit contract v2, sections 1-3",
+  "request_shape": {
+    "required_runtime_fields": [
+      "api_version",
+      "project_id",
+      "timeline_id",
+      "base_revision_id",
+      "base_publication_id",
+      "commands",
+      "label",
+      "steps",
+      "Idempotency-Key"
+    ],
+    "note": "The corpus has project/timeline and Agent revision identities, but no Runtime publication IDs or idempotency keys. Vectors therefore preserve the exact doc.patch command and operands; the missing envelope facts are recorded per vector rather than guessed."
+  },
+  "vectors": [
+    {
+      "id": "trim-internal-clip-window",
+      "source": {
+        "fixture": "canonical_clip_trim.json",
+        "source": "tests/editing_conformance/fixtures/recipe_m2_clip_trim.json",
+        "source_sha256": "60fcc84d769a2a68b5330288e842ca286f3907510a5dd18bc240c6e314ee612c",
+        "provenance": "tests/editing_conformance/test_recipe_m2_clip_trim.py::test_portable_golden_and_closed_schema"
+      },
+      "scope": {
+        "project_id": "project-1",
+        "timeline_id": "film",
+        "base_revision_id": "parent-1",
+        "physical_root": "parent"
+      },
+      "request": {
+        "merge": "fields",
+        "reads": [],
+        "commands": [
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "args": {
+              "changes": [
+                {
+                  "op": "set",
+                  "ref": "parent",
+                  "path": ["clips", "id:clip-a", "from"],
+                  "before": {"state": "present", "value": 2},
+                  "value": 1
+                },
+                {
+                  "op": "set",
+                  "ref": "parent",
+                  "path": ["clips", "id:clip-a", "to"],
+                  "before": {"state": "present", "value": 6},
+                  "value": 5
+                },
+                {
+                  "op": "set",
+                  "ref": "parent",
+                  "path": ["clips", "id:clip-a", "hold"],
+                  "before": {"state": "present", "value": 17},
+                  "value": 4.0
+                },
+                {
+                  "op": "remove",
+                  "ref": "parent",
+                  "path": ["clips", "id:clip-a", "app", "astrid", "for"],
+                  "before": {"state": "present", "value": 19}
+                },
+                {
+                  "op": "remove",
+                  "ref": "parent",
+                  "path": ["clips", "id:clip-a", "app", "astrid", "until"],
+                  "before": {"state": "present", "value": null}
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "accepted",
+        "authored_deltas": [
+          {"ref": "parent", "path": ["clips", "id:clip-a", "from"], "before": 2, "after": 1},
+          {"ref": "parent", "path": ["clips", "id:clip-a", "to"], "before": 6, "after": 5},
+          {"ref": "parent", "path": ["clips", "id:clip-a", "hold"], "before": 17, "after": 4.0},
+          {"ref": "parent", "path": ["clips", "id:clip-a", "app", "astrid", "for"], "before": 19, "after": {"state": "absent"}},
+          {"ref": "parent", "path": ["clips", "id:clip-a", "app", "astrid", "until"], "before": null, "after": {"state": "absent"}}
+        ],
+        "provider_effects_from_real_edit": {
+          "hold": {"before": 17, "after": 4.0},
+          "app.astrid.for": {"before": 19, "after": {"state": "absent"}},
+          "app.astrid.until": {"before": null, "after": {"state": "absent"}}
+        },
+        "opaque_preserved": {
+          "app.org.example": {"literal": "clip-a", "clear": null},
+          "config.opaque": {"timestamp": "authored timestamp", "v": [null, false, 0]}
+        }
+      },
+      "unexecuted_provider_cases": ["Runtime HTTP publication and App/UI H3 chain"]
+    },
+    {
+      "id": "created-track-and-clip-list-inserts",
+      "source": {
+        "fixture": "canonical_created_ids.json",
+        "source": "tests/editing_conformance/fixtures/recipe_m2_clip_add.json",
+        "source_sha256": "cebe45dbf6806c2fb772665ad2c3a416eae172df48d1b0cc48d023cbc80345ff",
+        "provenance": "tests/editing_conformance/test_recipe_m2_clip_add.py::test_empty_bootstrap_explicit_track_then_first_clip_golden"
+      },
+      "scope": {
+        "project_id": "project-1",
+        "timeline_id": "film",
+        "base_revision_id": "parent-1",
+        "physical_root": "parent"
+      },
+      "request": {
+        "merge": "fields",
+        "reads": [],
+        "commands": [
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "created": ["parent/track:first-track"],
+            "args": {
+              "changes": [
+                {
+                  "op": "list.insert",
+                  "ref": "parent",
+                  "path": ["config", "tracks"],
+                  "id": "first-track",
+                  "before": {"state": "absent"},
+                  "order_before": [],
+                  "after_id": null,
+                  "value": {"id": "first-track", "kind": "visual", "role": "output", "unknown": [null, false]}
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "created": ["parent/clip:first-clip"],
+            "args": {
+              "changes": [
+                {
+                  "op": "list.insert",
+                  "ref": "parent",
+                  "path": ["config", "clips"],
+                  "id": "first-clip",
+                  "before": {"state": "absent"},
+                  "order_before": [],
+                  "after_id": null,
+                  "value": {
+                    "id": "first-clip",
+                    "clipType": "text",
+                    "track": "first-track",
+                    "at": 0.017,
+                    "hold": 1.013,
+                    "params": {"text": "First"},
+                    "app": {"astrid": {"on": null, "opaque": ["first-clip", null]}, "future": false},
+                    "nullable": null,
+                    "sourceURL": null,
+                    "from": null,
+                    "opaque": {"id": "first-clip", "ordered": [null, false, 0, {}, []]}
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "accepted",
+        "created": ["parent/track:first-track", "parent/clip:first-clip"],
+        "orders": {
+          "config.tracks": ["first-track"],
+          "config.clips": ["first-clip"]
+        },
+        "opaque_preserved": {
+          "config.unknown": [null, false, {"literal": "first-clip"}],
+          "config.clips[id:first-clip].app": {"astrid": {"on": null, "opaque": ["first-clip", null]}, "future": false},
+          "config.clips[id:first-clip].nullable": null,
+          "config.clips[id:first-clip].sourceURL": null,
+          "config.clips[id:first-clip].from": null
+        }
+      },
+      "unexecuted_provider_cases": ["allocation and parent mirror validation", "accepted two-command request at Runtime base/publication"]
+    },
+    {
+      "id": "params-absent-to-explicit-values",
+      "source": {
+        "fixture": "canonical_params_absent.json",
+        "source": "tests/editing_conformance/fixtures/recipe_m2_scalar_params_absent.json",
+        "source_sha256": "9687956ee3850c5d873580a28cd6e8354f0b76dcb9a17bf56eb6ae0213f24b36",
+        "provenance": "tests/editing_conformance/test_recipe_scalar_commands.py::test_portable_scalar_capture_goldens[params_absent]"
+      },
+      "scope": {"project_id": "p", "timeline_id": "main", "base_revision_id": "pr", "physical_root": "internal-revision:ir"},
+      "request": {
+        "merge": "fields",
+        "reads": [],
+        "commands": [
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "args": {
+              "changes": [
+                {
+                  "op": "set",
+                  "ref": "internal-revision:ir",
+                  "path": ["clips", "id:c", "params"],
+                  "before": {"state": "absent"},
+                  "value": {"": "", "a.b[0]::c": {"literal": [null, false, "ƒ(keep)"]}, "null": null}
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "accepted",
+        "authored_deltas": [
+          {"ref": "internal-revision:ir", "path": ["clips", "id:c", "params"], "before": {"state": "absent"}, "after": {"": "", "a.b[0]::c": {"literal": [null, false, "ƒ(keep)"]}, "null": null}}
+        ],
+        "tagged_states": {"params": "absent", "params.null": "absent", "params.old": "absent"}
+      },
+      "unexecuted_provider_cases": ["Runtime HTTP publication and App/UI H3 chain"]
+    },
+    {
+      "id": "params-null-to-object",
+      "source": {
+        "fixture": "canonical_params_null.json",
+        "source": "tests/editing_conformance/fixtures/recipe_m2_scalar_params_null.json",
+        "source_sha256": "15e945496b805af2554d78777be4585aa684615de575960352376f1dd4eaba74",
+        "provenance": "tests/editing_conformance/test_recipe_scalar_commands.py::test_portable_scalar_capture_goldens[params_null]"
+      },
+      "scope": {"project_id": "p", "timeline_id": "main", "base_revision_id": "pr", "physical_root": "internal-revision:ir"},
+      "request": {
+        "merge": "fields",
+        "reads": [],
+        "commands": [
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "args": {
+              "changes": [
+                {
+                  "op": "set",
+                  "ref": "internal-revision:ir",
+                  "path": ["clips", "id:c", "params"],
+                  "before": {"state": "present", "value": null},
+                  "value": {"": "", "a.b[0]::c": {"literal": [null, false, "ƒ(keep)"]}, "null": null}
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "accepted",
+        "authored_deltas": [
+          {"ref": "internal-revision:ir", "path": ["clips", "id:c", "params"], "before": {"state": "present", "value": null}, "after": {"": "", "a.b[0]::c": {"literal": [null, false, "ƒ(keep)"]}, "null": null}}
+        ],
+        "tagged_states": {"params": "present-null", "params.null": "absent", "params.old": "absent"}
+      },
+      "unexecuted_provider_cases": ["Runtime HTTP publication and App/UI H3 chain"]
+    },
+    {
+      "id": "params-remove-and-preserve-opaque",
+      "source": {
+        "fixture": "canonical_params_object.json",
+        "source": "tests/editing_conformance/fixtures/recipe_m2_scalar_params_object.json",
+        "source_sha256": "ae9f96e55432d0cf892f6045285e56265c6adc66058caf146bf4a7d7b1869638",
+        "provenance": "tests/editing_conformance/test_recipe_scalar_commands.py::test_portable_scalar_capture_goldens[params_object]"
+      },
+      "scope": {"project_id": "p", "timeline_id": "main", "base_revision_id": "pr", "physical_root": "internal-revision:ir"},
+      "request": {
+        "merge": "fields",
+        "reads": [],
+        "commands": [
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "args": {
+              "changes": [
+                {"op": "remove", "ref": "internal-revision:ir", "path": ["clips", "id:c", "params", "old"], "before": {"state": "present", "value": null}},
+                {"op": "set", "ref": "internal-revision:ir", "path": ["clips", "id:c", "params", ""], "before": {"state": "absent"}, "value": ""},
+                {"op": "set", "ref": "internal-revision:ir", "path": ["clips", "id:c", "params", "a.b[0]::c"], "before": {"state": "absent"}, "value": {"literal": [null, false, "ƒ(keep)"]}},
+                {"op": "set", "ref": "internal-revision:ir", "path": ["clips", "id:c", "params", "null"], "before": {"state": "absent"}, "value": null}
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "accepted",
+        "authored_deltas": [
+          {"ref": "internal-revision:ir", "path": ["clips", "id:c", "params", "old"], "before": {"state": "present", "value": null}, "after": {"state": "absent"}},
+          {"ref": "internal-revision:ir", "path": ["clips", "id:c", "params", ""], "before": {"state": "absent"}, "after": ""},
+          {"ref": "internal-revision:ir", "path": ["clips", "id:c", "params", "a.b[0]::c"], "before": {"state": "absent"}, "after": {"literal": [null, false, "ƒ(keep)"]}},
+          {"ref": "internal-revision:ir", "path": ["clips", "id:c", "params", "null"], "before": {"state": "absent"}, "after": null}
+        ],
+        "opaque_preserved": {"params.opaque": {"keep": [false, {}, ""]}, "params.x": 1, "params.y": null},
+        "tagged_states": {"params.old": "removed", "params.null": "present-null"}
+      },
+      "unexecuted_provider_cases": ["Runtime HTTP publication and App/UI H3 chain"]
+    },
+    {
+      "id": "disjoint-field-merge",
+      "source": {
+        "fixture": "canonical_disjoint_rebase.json",
+        "source": "tests/editing_conformance/fixtures/recipe_m2_scalar_disjoint.json",
+        "source_sha256": "0aab88bff6040ad741771fe8ed2198c141347970420ede78a981ba1416f6e866",
+        "provenance": "tests/editing_conformance/test_recipe_scalar_commands.py::test_portable_scalar_capture_goldens[disjoint]"
+      },
+      "scope": {"project_id": "p", "timeline_id": "main", "base_revision_id": "pr", "physical_root": "internal-revision:ir"},
+      "request": {
+        "merge": "fields",
+        "reads": [],
+        "commands": [
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "args": {
+              "changes": [
+                {"op": "set", "ref": "internal-revision:ir", "path": ["clips", "id:c", "params", "x"], "before": {"state": "present", "value": 1}, "value": 2}
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "rebased",
+        "rebased_onto": "fixture head_bundle",
+        "authored_deltas": [{"ref": "internal-revision:ir", "path": ["clips", "id:c", "params", "x"], "before": 1, "after": 2}],
+        "head_change_preserved": {"path": ["params", "y"], "before": null, "after": false},
+        "exact_expected_fields": {"params.x": 2, "params.y": false}
+      },
+        "unexecuted_provider_cases": ["Runtime HTTP publication and App/UI H3 chain"]
+    },
+    {
+      "id": "same-field-refusal",
+      "source": {
+        "fixture": "canonical_clip_trim.json",
+        "source": "tests/editing_conformance/fixtures/recipe_m2_clip_trim.json",
+        "source_sha256": "60fcc84d769a2a68b5330288e842ca286f3907510a5dd18bc240c6e314ee612c",
+        "provenance": "tests/editing_conformance/test_recipe_m2_clip_trim.py::test_replay_consumed_source_identity_bounds_and_selection_but_preserves_disjoint_data"
+      },
+      "scope": {"project_id": "project-1", "timeline_id": "film", "base_revision_id": "parent-1", "physical_root": "parent"},
+      "request": {
+        "merge": "fields",
+        "reads": [],
+        "commands": [
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "args": {
+              "changes": [
+                {"op": "set", "ref": "parent", "path": ["clips", "id:clip-a", "from"], "before": {"state": "present", "value": 2}, "value": 1}
+              ]
+            }
+          }
+        ]
+      },
+      "head": {
+        "provenance": "constructed-unexecuted on real base",
+        "changes": [{"ref": "parent", "path": ["clips", "id:clip-a", "from"], "before": 2, "after": 3}]
+      },
+      "expected": {
+        "status": "conflict",
+        "reason": "value_conflict",
+        "code": "value_conflict",
+        "head_unchanged_by_refusal": true,
+        "authored_deltas": [{"ref": "parent", "path": ["clips", "id:clip-a", "from"], "before": 2, "after": 1}]
+      },
+      "unexecuted_provider_cases": ["provider conflict reply and refusal atomicity"]
+    },
+    {
+      "id": "ordered-list-move-and-order-refusal",
+      "source": {
+        "fixture": "canonical_clip_trim.json",
+        "source": "tests/editing_conformance/fixtures/recipe_m2_clip_trim.json",
+        "source_sha256": "60fcc84d769a2a68b5330288e842ca286f3907510a5dd18bc240c6e314ee612c",
+        "provenance": "tests/editing_conformance/test_recipe_m2_clip_trim.py::test_portable_golden_and_closed_schema"
+      },
+      "scope": {"project_id": "project-1", "timeline_id": "film", "base_revision_id": "parent-1", "physical_root": "parent"},
+      "request": {
+        "merge": "fields",
+        "reads": [{"kind": "collection", "ref": "parent", "path": ["clips"], "members": ["clip-a", "clip-b"], "order": ["clip-a", "clip-b"]}],
+        "commands": [
+          {
+            "schema_version": 1,
+            "op": "doc.patch",
+            "version": "1",
+            "select": null,
+            "args": {
+              "changes": [
+                {
+                  "op": "list.move",
+                  "ref": "parent",
+                  "path": ["clips"],
+                  "id": "clip-b",
+                  "before": {"state": "present", "value": {"id": "clip-b", "track": "picture", "asset": "picture", "clipType": "media", "at": 5, "hold": 2, "app": {"org.example": {"literal": "clip-a", "clear": null}}}},
+                  "order_before": ["clip-a", "clip-b"],
+                  "after_id": null
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "accepted",
+        "order_after": ["clip-b", "clip-a"],
+        "membership_after": ["clip-a", "clip-b"],
+        "order_refusal": {"status": "conflict", "code": "selection_changed", "head_order": ["clip-b", "clip-a"]},
+        "membership_refusal": {"status": "conflict", "code": "selection_changed", "head_members": ["clip-a"]}
+      },
+      "scenario": {
+        "status": "constructed-unexecuted on real base",
+        "base_fragment": {
+          "fixture": "canonical_clip_trim.json",
+          "phase": "input",
+          "path": ["config", "clips"]
+        }
+      },
+      "unexecuted_provider_cases": ["accepted list.move", "membership/order dependency conflicts", "no last-writer-wins insertion tie"]
+    }
+  ]
+}

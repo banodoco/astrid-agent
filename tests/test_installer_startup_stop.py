@@ -1,6 +1,8 @@
 """Unpublished owners require a realm fence and exact recorded process identity."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import subprocess
 import sys
 from unittest.mock import Mock
@@ -8,6 +10,8 @@ from unittest.mock import Mock
 import pytest
 from runtime_protocol import platform
 
+from astrid.installer.backend import Backend
+from astrid.installer.service import LABEL
 from astrid.installer.core import RuntimeOperationError, is_lifecycle_refusal, write_json
 from tests.test_installer_busy_fence import Boundary, publish, realm_fixture
 
@@ -323,7 +327,8 @@ def test_manager_failure_after_owner_removes_advertisements_allows_installer_rec
     # exercises a later manager failure rather than candidate preparation.
     monkeypatch.setattr(backend, 'stage', lambda *_args: old)
     monkeypatch.setattr(backend, 'validate_candidate', lambda *_args: None)
-    monkeypatch.setattr('astrid.installer.core.inspect_schema', lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr('astrid.installer.core.inspect_schema',
+                        lambda *_args, **_kwargs: {'identity': {'version': 29}, 'target': 33})
     # The busy-fence fixture has only interruption tables. Schema admission is
     # covered with canonical realms in the cross-controller recovery tests.
     monkeypatch.setattr('runtime_protocol.upgrade.inspect_canonical_schema',
@@ -514,3 +519,181 @@ def test_agent_pre_handoff_validation_revokes_completed_receipt(
     assert calls == ['disable', 'stop']
     assert snapshot(watched) == before
     assert sorted(str(entry) for entry in data.rglob('*')) == before_names
+
+def test_native_identity_drift_failure_is_not_retried_with_a_pid(tmp_path, monkeypatch):
+    value = backend(tmp_path, monkeypatch)
+    record(value.service)
+    identity = {"pid": 123, "birth_id": "original", "uid": 7}
+    monkeypatch.setattr(platform, "current_user", lambda: 7)
+    monkeypatch.setattr(platform, "process_identity", lambda pid: identity)
+    signal = Mock(side_effect=OSError("incarnation changed while binding"))
+    monkeypatch.setattr(platform, "signal_process", signal)
+
+    with pytest.raises(OSError, match="incarnation changed"):
+        value.service.stop_foreground(expected=value.service.recorded()["foreground"])
+    signal.assert_called_once_with(identity, platform.TERM)
+
+
+@pytest.mark.parametrize("foreground", [{}, {"pid": True, "birth_id": "original"},
+                                         {"pid": 123, "birth_id": ""}, {"pid": -1, "birth_id": "old"}])
+def test_incomplete_foreground_identity_fails_before_signaling(tmp_path, monkeypatch, foreground):
+    value = backend(tmp_path, monkeypatch)
+    record(value.service)
+    write_json(value.service.selection, {**value.service.recorded(), "foreground": {**value.service.recorded()["foreground"], **foreground}})
+    if not foreground:
+        value_record = value.service.recorded()
+        value_record["foreground"].pop("pid")
+        value_record["foreground"].pop("birth_id")
+        write_json(value.service.selection, value_record)
+    signal = Mock()
+    monkeypatch.setattr(platform, "signal_process", signal)
+
+    with pytest.raises(ValueError, match="identity is incomplete"):
+        value.service.stop_foreground(expected=value.service.recorded()["foreground"])
+    signal.assert_not_called()
+
+
+def test_native_exit_race_never_retries_the_numeric_pid(tmp_path, monkeypatch):
+    value = backend(tmp_path, monkeypatch)
+    record(value.service)
+    identity = {"pid": 123, "birth_id": "original", "uid": 7}
+    monkeypatch.setattr(platform, "current_user", lambda: 7)
+    monkeypatch.setattr(platform, "process_identity", lambda pid: identity)
+    signal = Mock(side_effect=ProcessLookupError("already exited"))
+    monkeypatch.setattr(platform, "signal_process", signal)
+
+    with pytest.raises(ProcessLookupError, match="already exited"):
+        value.service.stop_foreground(expected=value.service.recorded()["foreground"])
+
+    signal.assert_called_once_with(identity, platform.TERM)
+
+
+def test_live_runtime_drains_through_down_without_signaling_foreground(tmp_path, monkeypatch):
+    value = backend(tmp_path, monkeypatch)
+    paths, realm, calls = value._test_paths, value._test_realm, value._test_calls
+    publish(paths, realm)
+    boundary = Boundary(paths, calls)
+    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+    runtime = Mock(side_effect=AssertionError('C1 owns the down handoff'))
+    monkeypatch.setattr(value, 'runtime', runtime)
+    signal = Mock(side_effect=AssertionError('live Runtime must own its drain'))
+    monkeypatch.setattr(value.service, 'stop_foreground', signal)
+
+    value.stop(value._test_old, paths.app_support)
+
+    assert calls == ['prepare', 'runtime-stop', 'disable', 'stop']
+    assert not paths.discovery_path.exists()
+    signal.assert_not_called()
+    runtime.assert_not_called()
+
+
+def backend(tmp_path, monkeypatch):
+    value, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    from astrid.installer.service import Service
+    value.service.stop_foreground = lambda **kwargs: Service.stop_foreground(value.service, **kwargs)
+    value._test_old, value._test_paths, value._test_realm = old, paths, realm
+    value._test_calls = calls
+    return value
+
+
+def record(manager, pid=123, birth="original"):
+    catalog = __import__('json').loads((Path(manager.recorded()['data_root']) / 'runtime/catalog.json').read_text())
+    realm_id = catalog['selected_realm_id']
+    realm = next(row for row in catalog['realms'] if row['realm_id'] == realm_id)
+    write_json(manager.selection, {**manager.recorded(), 'foreground': {
+        'pid': pid, 'birth_id': birth, 'realm_id': realm_id, 'realm_root': realm['data_root'],
+    }})
+
+
+@pytest.mark.parametrize("stale_discovery", [False, True])
+def test_stop_before_discovery_terminates_the_actual_recorded_owner(tmp_path, monkeypatch, stale_discovery):
+    value = backend(tmp_path, monkeypatch)
+    paths, realm = value._test_paths, value._test_realm
+    if stale_discovery:
+        publish(paths, realm)
+        stale = __import__('json').loads(paths.discovery_path.read_text())
+        stale.update(pid=2**31 - 1, process_birth_id='already absent')
+        write_json(paths.discovery_path, stale)
+        write_json(paths.instance_lock_path, stale)
+    child = platform.spawn_tree([sys.executable, '-I', '-c', 'import time;time.sleep(60)'],
+                                detached=True, stdin=subprocess.DEVNULL)
+    try:
+        identity = platform.process_identity(child.pid)
+        assert identity and identity['uid'] == platform.current_user()
+        record(value.service, child.pid, identity['birth_id'])
+        value.service._foreground_process = child
+        runtime = Mock(side_effect=AssertionError('unpublished owner has no Runtime down endpoint'))
+        monkeypatch.setattr(value, 'runtime', runtime)
+
+        value.stop(value._test_old, paths.app_support)
+
+        assert child.wait(timeout=5) != 0
+        runtime.assert_not_called()
+        # C1 removes the proven stale publication after the foreground stop.
+        assert not paths.discovery_path.exists()
+        assert not paths.instance_lock_path.exists()
+        assert value._test_calls == []
+    finally:
+        if child.poll() is None:
+            platform.stop_tree(child, grace=1)
+        child.wait(timeout=5)
+
+
+def test_unpublished_stop_uses_the_observed_identity_with_the_native_helper(tmp_path, monkeypatch):
+    value = backend(tmp_path, monkeypatch)
+    record(value.service)
+    identity = {"pid": 123, "birth_id": "original", "uid": os.getuid() if hasattr(os, "getuid") else 7}
+    monkeypatch.setattr(platform, "current_user", lambda: identity["uid"])
+    monkeypatch.setattr(platform, "process_identity", lambda pid: identity)
+    signal = Mock(side_effect=lambda *_args: monkeypatch.setattr(platform, "process_identity", lambda _pid: None))
+    monkeypatch.setattr(platform, "signal_process", signal)
+
+    value.service.stop_foreground(expected=value.service.recorded()["foreground"])
+
+    signal.assert_called_once_with(identity, platform.TERM)
+
+
+@pytest.mark.parametrize("identity", [None, {"pid": 123, "birth_id": "reused", "uid": 7}])
+def test_absent_or_reused_foreground_is_never_signaled(tmp_path, monkeypatch, identity):
+    value = backend(tmp_path, monkeypatch)
+    record(value.service)
+    monkeypatch.setattr(platform, "process_identity", lambda pid: identity)
+    signal = Mock()
+    monkeypatch.setattr(platform, "signal_process", signal)
+
+    if identity is None:
+        value.service.stop_foreground(expected=value.service.recorded()["foreground"])
+    else:
+        with pytest.raises(ValueError, match="identity changed"):
+            value.service.stop_foreground(expected=value.service.recorded()["foreground"])
+
+    signal.assert_not_called()
+
+
+@pytest.mark.parametrize("identity", [
+    {"pid": 124, "birth_id": "original", "uid": 7},
+    {"pid": 123, "birth_id": "original", "uid": 8},
+])
+def test_other_owner_or_invalid_pid_is_refused(tmp_path, monkeypatch, identity):
+    value = backend(tmp_path, monkeypatch)
+    record(value.service)
+    monkeypatch.setattr(platform, "current_user", lambda: 7)
+    monkeypatch.setattr(platform, "process_identity", lambda pid: identity)
+    signal = Mock()
+    monkeypatch.setattr(platform, "signal_process", signal)
+
+    with pytest.raises(ValueError, match="(?:identity|user) changed"):
+        value.service.stop_foreground(expected=value.service.recorded()["foreground"])
+    signal.assert_not_called()
+
+
+def test_unknown_identity_observation_does_not_signal(tmp_path, monkeypatch):
+    value = backend(tmp_path, monkeypatch)
+    record(value.service)
+    monkeypatch.setattr(platform, "process_identity", Mock(side_effect=PermissionError("cannot observe")))
+    signal = Mock()
+    monkeypatch.setattr(platform, "signal_process", signal)
+
+    with pytest.raises(PermissionError, match="cannot observe"):
+        value.service.stop_foreground(expected=value.service.recorded()["foreground"])
+    signal.assert_not_called()

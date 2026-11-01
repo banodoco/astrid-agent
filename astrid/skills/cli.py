@@ -47,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     install_parser = subparsers.add_parser("install", help="Install pack(s) into harness(es).")
     install_parser.add_argument("pack", nargs="?", help="Pack id, or omit with --all.")
+    install_parser.add_argument("--skill", action="append", default=[])
+    install_parser.add_argument("--all-skills", action="store_true")
     install_parser.add_argument("--all", action="store_true", help="Install every available pack.")
     add_choice_arg(install_parser, "--harness", values=HARNESS_CHOICES, action="append", help="One or more harnesses (default: all).")
     add_choice_arg(install_parser, "--mechanism", values=("symlink", "external-dir"), default="symlink", help="Hermes-only mechanism (default: symlink).")
@@ -57,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     uninstall_parser = subparsers.add_parser("uninstall", help="Remove pack(s) from harness(es).")
     uninstall_parser.add_argument("pack", nargs="?")
+    uninstall_parser.add_argument("--skill", action="append", default=[])
+    uninstall_parser.add_argument("--all-skills", action="store_true")
     uninstall_parser.add_argument("--all", action="store_true")
     add_choice_arg(uninstall_parser, "--harness", values=HARNESS_CHOICES, action="append")
     uninstall_parser.add_argument("--dry-run", action="store_true")
@@ -64,14 +68,16 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser.set_defaults(handler=_cmd_uninstall)
 
     sync_parser = subparsers.add_parser(
-        "sync",
+        "sync", aliases=["update"],
         help="Link the gateway skill + regenerate its pack registry into every detected harness; prune orphans.",
     )
+    sync_parser.add_argument("pack", nargs="?")
+    sync_parser.add_argument("--skill", action="append", default=[])
     add_choice_arg(sync_parser, "--mechanism", values=("symlink", "external-dir"), default="symlink")
     sync_parser.add_argument(
         "--deep",
         action="store_true",
-        help="Also link each pack's skill as astrid-<pack> (default: gateway only; alias: --all).",
+        help="Also link every main skill and extra (alias: --all).",
     )
     sync_parser.add_argument("--all", action="store_true", dest="deep", help="Alias for --deep.")
     sync_parser.add_argument(
@@ -104,6 +110,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
     detected = ", ".join(report["detected"]) or "(none)"
     print(f"detected harnesses: {detected}")
+    if any(item["harnesses"]["hermes"].get("visibility") for item in report["packs"]):
+        print("hermes: external-dir: all skills visible")
     for item in report["packs"]:
         states = []
         for harness in ADAPTERS:
@@ -117,7 +125,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
             else:
                 mark = " "
             states.append(f"{harness}[{mark}]")
-        print(f"  {item['pack_id']:<12} {' '.join(states)}  {item['short_description']}")
+        flags = ", ".join(f"{name}: " + "/".join(flag for flag in ("selected" if entry.get("selected") else "", "outdated" if entry.get("outdated") else "") if flag) for name, entry in item["harnesses"].items() if entry.get("selected") or entry.get("outdated"))
+        print(f"  {item['id']:<12} {' '.join(states)}  {item['short_description']}" + (f" ({flags})" if flags else ""))
     return 0
 
 
@@ -145,6 +154,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
         mechanism=args.mechanism,
         force=args.force,
         dry_run=args.dry_run,
+        skill_names=args.skill, all_skills=args.all_skills,
     )
     return _emit_report(report, args)
 
@@ -152,7 +162,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
 def _cmd_uninstall(args: argparse.Namespace) -> int:
     pack_ids = _resolve_packs(args)
     harness_names = _resolve_harness_arg(args)
-    report = uninstall_fn(pack_ids=pack_ids, harness_names=harness_names, dry_run=args.dry_run)
+    report = uninstall_fn(pack_ids=pack_ids, harness_names=harness_names, dry_run=args.dry_run, skill_names=args.skill, all_skills=args.all_skills)
     return _emit_report(report, args)
 
 
@@ -160,7 +170,21 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     if getattr(args, "check", False):
         report = check_fn(deep=args.deep)
         return _emit_check_report(report, args)
+    pack = getattr(args, "pack", None)
+    skill_names = getattr(args, "skill", [])
+    if skill_names and not pack:
+        raise AstridError(
+            "--skill requires a pack",
+            recovery_command="specify a pack id before --skill",
+        )
+    refresh = None
+    if pack:
+        from . import _units
+        units = _units([pack], skill_names, not bool(skill_names))
+        refresh = {unit.skill_id for unit in units}
     report = sync_fn(
+        refresh_ids=refresh,
+        refresh_selected_only=bool(pack and not skill_names),
         harness_names=_resolve_harness_arg(args),
         mechanism=args.mechanism,
         force=args.force,
@@ -264,6 +288,11 @@ def _emit_report(report: dict[str, Any], args: argparse.Namespace) -> int:
         print(f"[{action['harness']}]")
         for step in action["steps"]:
             print(f"  {step['description']}")
+        for key in ("outdated", "changed"):
+            if key in action:
+                print(f"  {key}: {', '.join(action[key]) or '(none)'}")
+        if action.get("visibility"):
+            print(f"  {action['visibility']}")
     return 0
 
 

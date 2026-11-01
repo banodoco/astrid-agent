@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "contract": "docs/design/audio-compile-contract.md",
+  "reference": "origin/main e51595c6: astrid/core/timeline/shot_composition_projection.py (occurrence -> clip) and Composition 0.0.6 AudioTrack (docs/reference/timeline-composition-v0.0.6/AudioTrack.tsx)",
+  "base": {
+    "graph": "tests/fixtures/timeline/shot_composition.json",
+    "occurrence": "occ-1",
+    "child": "alpha-audio",
+    "child_default": {"from": 0, "to": 2}
+  },
+  "vectors": [
+    {"id": "gain-child-x-occurrence", "child": {"volume": 0.8}, "occurrence": {"gain": 0.5}, "expect": {"volume": 0.4}},
+    {"id": "gain-boost-x-occurrence", "child": {"volume": 1.5}, "occurrence": {"gain": 2}, "expect": {"volume": 3}},
+    {"id": "gain-unity-keeps-child-volume", "child": {"volume": 0.8}, "occurrence": {"gain": 1}, "expect": {"volume": 0.8}},
+    {"id": "gain-child-absent-is-unity", "child": {}, "occurrence": {"gain": 0.5}, "expect": {"volume": 0.5}},
+    {"id": "gain-unity-keeps-volume-absent", "child": {}, "occurrence": {"gain": 1}, "expect": {"volume": null}},
+    {"id": "gain-zero-is-silent-not-absent", "child": {}, "occurrence": {"gain": 0}, "expect": {"volume": 0}},
+    {"id": "muted-occurrence-silences-child-gain", "child": {"volume": 0.8}, "occurrence": {"gain": 0.5, "muted": true}, "expect": {"volume": 0, "metadata": {"muted": true}}},
+    {"id": "source-offset-is-metadata-only", "child": {"from": 0.125, "to": 1.125}, "occurrence": {"source_offset": 350}, "expect": {"from": 0.125, "to": 1.125, "metadata": {"source_offset": 350}}},
+    {"id": "occurrence-speed-not-inherited", "child": {}, "occurrence": {"speed": 1.5}, "expect": {"from": 0, "to": 2, "speed": null, "metadata": {"speed": 1.5}}},
+    {"id": "child-speed-wins-over-occurrence-speed", "child": {"speed": 2}, "occurrence": {"speed": 1.5}, "expect": {"speed": 2, "metadata": {"speed": 1.5}}},
+    {"id": "fade-in-curve-is-kept-on-the-compiled-clip", "child": {"params": {"fadeIn": 0.5, "fadeInCurve": "equal-power"}}, "occurrence": {}, "expect": {"params.fadeIn": 0.5, "params.fadeInCurve": "equal-power"}},
+    {"id": "fade-out-curve-is-kept-on-the-compiled-clip", "child": {"params": {"fadeOut": 0.5, "fadeOutCurve": "exponential-slow"}}, "occurrence": {}, "expect": {"params.fadeOut": 0.5, "params.fadeOutCurve": "exponential-slow"}},
+    {"id": "linear-fade-has-no-curve-key", "child": {"params": {"fadeIn": 0.5}}, "occurrence": {}, "expect": {"params.fadeInCurve": null}},
+    {
+      "id": "fade-in-needs-prepared-envelope-source",
+      "child": {"params": {"fadeIn": 0.5}},
+      "occurrence": {},
+      "expect": {"audio.render_source": true}
+    },
+    {
+      "id": "fade-out-needs-prepared-envelope-source",
+      "child": {"params": {"fadeOut": 0.5}},
+      "occurrence": {},
+      "expect": {"audio.render_source": true}
+    }
+  ]
+}

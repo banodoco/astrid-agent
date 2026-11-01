@@ -37,6 +37,9 @@ def _walk(parser: argparse.ArgumentParser) -> dict:
                 node["flags"][name] = flag
         else:
             node["positionals"].append(action.dest)
+    # Native edit parsers share the legacy edit positional through its dispatcher.
+    for name, sub in getattr(parser, "native_edit_parsers", {}).items():
+        node["verbs"]["edit"]["verbs"][name] = _walk(sub)
     node["flags"] = dict(sorted(node["flags"].items()))
     return node
 

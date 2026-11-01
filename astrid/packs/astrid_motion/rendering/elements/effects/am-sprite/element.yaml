@@ -62,6 +62,11 @@ schema:
       enum:
       - 2
       - 3
+    frameOffset:
+      type: integer
+      minimum: 0
+      maximum: 10000000
+      description: Internal source frame offset used by a cut sprite piece.
     keyframes:
       type: array
       description: Held poses. The last keyframe at or before each step is active.
@@ -69,8 +74,6 @@ schema:
         type: object
         required:
         - frame
-        - x
-        - y
         properties:
           frame:
             type: integer
@@ -117,6 +120,19 @@ schema:
           type: integer
           minimum: 1
         fps:
+          type: number
+          exclusiveMinimum: 0
+    sourceClock:
+      type: object
+      description: Internal source frame clock for a sprite cut at a chapter boundary.
+      required:
+      - offsetFrames
+      - speed
+      properties:
+        offsetFrames:
+          type: number
+          minimum: 0
+        speed:
           type: number
           exclusiveMinimum: 0
     blinkAt:

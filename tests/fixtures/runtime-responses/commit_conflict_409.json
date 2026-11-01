@@ -1,0 +1,54 @@
+{
+  "body": {
+    "code": "conflict",
+    "details": {
+      "base": {
+        "publication_id": "<base_publication_id>",
+        "revision_id": "<base_revision_id>"
+      },
+      "code": "stale_head",
+      "conflicts": [],
+      "current": {
+        "publication_id": "<current_publication_id>",
+        "revision_id": "<current_revision_id>"
+      },
+      "hint": "Read the current timeline head before retrying",
+      "path": [],
+      "reason": "stale_head",
+      "status": "refused",
+      "suggested_command": "timeline show"
+    },
+    "message": "restore requires the exact head pair",
+    "request_id": "<request_id>"
+  },
+  "case": "commit_conflict_409",
+  "headers": {
+    "content-type": "application/json"
+  },
+  "request": {
+    "body": {
+      "api_version": 1,
+      "base_publication_id": "<base_publication_id>",
+      "base_revision_id": "<base_revision_id>",
+      "commands": [
+        {
+          "args": {
+            "content_digest": "<digest>",
+            "revision_id": "<base_revision_id>"
+          },
+          "op": "timeline.restore",
+          "schema_version": 1,
+          "select": null,
+          "version": "1"
+        }
+      ],
+      "label": "Recorded title",
+      "merge": "fields",
+      "project_id": "<project_id>",
+      "timeline_id": "main"
+    },
+    "method": "POST",
+    "path": "/v1/projects/<project_id>/timelines/main/commit"
+  },
+  "status": 409
+}

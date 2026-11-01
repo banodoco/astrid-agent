@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
@@ -79,6 +80,7 @@ class _ViewLinks:
     core_dir: Path  # physical source directory of the core skill
     packs: dict[str, Path]  # composed pack id -> physical pack skill directory
     materialised: frozenset[str]  # view-relative core files written into the view
+    extras: tuple[Path, ...] = ()
 
     def target(self, raw: str, *, source: Path, dest: Path) -> object:
         path, tail = split_target(raw)
@@ -86,16 +88,24 @@ class _ViewLinks:
             return None
         dest_dir = dest.parent
         source_target = Path(os.path.normpath(source.parent / path))
+        crosses_unit = any(
+            _relative_within(source, extra) is not None and _relative_within(source_target, extra) is None
+            for extra in self.extras
+        )
 
         # 1. The link means a file in the checkout: a composed pack skill or a
         #    core file that the view materialises.
         for pack_id, skill_dir in self.packs.items():
             inner = _relative_within(source_target, skill_dir)
             if inner is not None:
-                return _relative_target(self.root / "packs" / pack_id / inner, dest_dir, tail)
+                mapped = self.root / "packs" / pack_id / inner
+                if crosses_unit:
+                    return _format_target(str(mapped.absolute()), tail)
+                return _relative_target(mapped, dest_dir, tail)
         core_rel = _relative_within(source_target, self.core_dir)
         if core_rel is not None and core_rel in self.materialised:
-            return _relative_target(self.root / core_rel, dest_dir, tail)
+            mapped = self.root / core_rel
+            return _format_target(str(mapped.absolute()), tail) if crosses_unit else _relative_target(mapped, dest_dir, tail)
 
         # 2. Any other real file in the checkout is linked absolutely.
         if os.path.exists(source_target):
@@ -106,9 +116,11 @@ class _ViewLinks:
         pack_rel = _relative_within(view_target, self.root / "packs")
         if pack_rel is not None:
             pack_id = pack_rel.split("/", 1)[0]
-            return None if pack_id in self.packs else DROP
+            if pack_id not in self.packs:
+                return DROP
+            return _format_target(str(view_target.absolute()), tail) if crosses_unit else None
         if _relative_within(view_target, self.root) in self.materialised:
-            return None
+            return _format_target(str(view_target.absolute()), tail) if crosses_unit else None
 
         # 4. Unresolvable: point at the absolute location so the link check
         #    reports exactly where it was expected.
@@ -117,6 +129,12 @@ class _ViewLinks:
 
 def _write_view_file(target: Path, text: str) -> None:
     """Write a regular file in the view, never through a symlink into the source."""
+    if target.is_file() and not target.is_symlink():
+        try:
+            if target.read_text(encoding="utf-8") == text:
+                return
+        except (OSError, UnicodeError):
+            pass
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_symlink():
         target.unlink()
@@ -127,6 +145,13 @@ def _materialise(source: Path, target: Path, links: _ViewLinks, *, pre: dict[str
     text = source.read_text(encoding="utf-8")
     for old, new in (pre or {}).items():
         text = text.replace(old, new)
+    if target.name == "SKILL.md":
+        binding = f"Run SDK scripts with `{sys.executable}`.\n\n"
+        frontmatter = re.match(r"\A---\n.*?\n---\n", text, re.DOTALL)
+        if frontmatter:
+            text = text[:frontmatter.end()] + "\n" + binding + text[frontmatter.end():]
+        else:
+            text = binding + text
     text = rewrite_links(text, lambda raw: links.target(raw, source=source, dest=target))
     _write_view_file(target, rewrite_commands(text))
 
@@ -136,15 +161,51 @@ def _materialise_pack(target: Path, source: Path, links: _ViewLinks, *, managed:
         if target.is_symlink():
             target.unlink()
         elif managed and target.is_dir():
-            shutil.rmtree(target)
+            pass
         else:
             raise AstridError(
                 f"Astrid skill view target is occupied: {target}",
                 recovery_command="remove the foreign entry or choose another profile",
             )
-    shutil.copytree(source, target)
+    target.mkdir(parents=True, exist_ok=True)
+    _copy_tree_if_changed(source, target)
     for md in iter_markdown_files(source):
         _materialise(md, target / md.relative_to(source), links)
+
+
+def _copy_tree_if_changed(source: Path, target: Path) -> None:
+    """Reconcile a managed pack copy without touching unchanged entries."""
+    source_names = {child.name for child in source.iterdir()}
+    for child in target.iterdir():
+        if child.name not in source_names:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    for child in source.iterdir():
+        dest = target / child.name
+        if child.is_dir() and not child.is_symlink():
+            if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+                dest.unlink()
+            dest.mkdir(exist_ok=True)
+            _copy_tree_if_changed(child, dest)
+        elif child.is_symlink():
+            link = child.readlink()
+            if dest.is_symlink() and dest.readlink() == link:
+                continue
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            elif dest.exists() or dest.is_symlink():
+                dest.unlink()
+            dest.symlink_to(link, target_is_directory=child.is_dir())
+        elif child.suffix.lower() == ".md":
+            continue
+        elif not dest.is_file() or dest.is_symlink() or child.read_bytes() != dest.read_bytes():
+            if dest.is_symlink():
+                dest.unlink()
+            elif dest.is_dir():
+                shutil.rmtree(dest)
+            shutil.copy2(child, dest)
 
 
 def view_descriptors(root: Path, packs: list[SkillDescriptor]) -> list[SkillDescriptor]:
@@ -190,6 +251,8 @@ def compose_view(
     packs: list[SkillDescriptor],
     *,
     dry_run: bool = False,
+    refresh: set[str] | None = None,
+    extras: list[SkillDescriptor] | None = None,
 ) -> tuple[SkillDescriptor, list[PlannedStep], list[SkillDescriptor]]:
     """Compose one harness view and return ``(gateway, steps, view_packs)``.
 
@@ -208,6 +271,7 @@ def compose_view(
         core_dir=core_dir,
         packs={d.pack_id: Path(os.path.realpath(d.skill_dir)) for d in packs},
         materialised=frozenset(materialised),
+        extras=tuple(Path(os.path.realpath(d.skill_dir)) for d in (extras or [])),
     )
 
     view_packs = view_descriptors(root, packs)
@@ -231,7 +295,33 @@ def compose_view(
         source = next(item.skill_dir for item in packs if item.pack_id == descriptor.pack_id)
         steps.append(PlannedStep(f"materialise {target} from {source}", target=target))
         if not dry_run:
-            _materialise_pack(target, source, links, managed=descriptor.pack_id in previous_ids)
+            pack_extras = [d for d in (extras or []) if d.pack_id == descriptor.pack_id]
+            if refresh is None or not target.is_dir():
+                _materialise_pack(target, source, links, managed=descriptor.pack_id in previous_ids)
+            else:
+                if descriptor.pack_id in refresh:
+                    preserved = {d.skill for d in pack_extras}
+                    for child in target.iterdir():
+                        if child.name in preserved:
+                            continue
+                        if child.is_dir() and not child.is_symlink():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                    for child in source.iterdir():
+                        if child.name in preserved:
+                            continue
+                        dest = target / child.name
+                        if child.is_dir():
+                            shutil.copytree(child, dest)
+                        else:
+                            shutil.copy2(child, dest)
+                    for md in iter_markdown_files(source):
+                        if md.relative_to(source).parts[0] not in preserved:
+                            _materialise(md, target / md.relative_to(source), links)
+                for extra in pack_extras:
+                    if extra.skill_id in refresh:
+                        _materialise_pack(target / extra.skill, extra.skill_dir, links, managed=True)
 
     if not dry_run:
         root.mkdir(parents=True, exist_ok=True)
@@ -247,7 +337,9 @@ def compose_view(
         if source_packs.is_file() and not (root / _PACKS_REGISTRY).exists():
             _materialise(source_packs, root / _PACKS_REGISTRY, links)
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("\n".join(sorted(enabled_ids)) + "\n", encoding="utf-8")
+        marker_text = "\n".join(sorted(enabled_ids)) + "\n"
+        if not marker.is_file() or marker.read_text(encoding="utf-8") != marker_text:
+            marker.write_text(marker_text, encoding="utf-8")
 
     gateway = replace(
         core,
