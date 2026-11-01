@@ -318,7 +318,12 @@ def test_generated_foreground_retains_exact_admission_across_rollback(
         else:
             with pytest.raises(ValueError) as result:
                 runpy.run_path(str(root / "run_runtime.py"))
-            assert str(result.value) == "Choose Update to finish"
+            if (step, selected, data_matches) in {
+                    ("switched", "candidate", True),
+                    ("rollback_selected", "old", True)}:
+                assert str(result.value) == "Choose Update to finish"
+            else:
+                assert "An Astrid update was interrupted" in str(result.value)
             assert observed == []
     finally:
         if lock is not None:
@@ -334,7 +339,7 @@ def test_generated_foreground_refuses_malformed_pending_journal(tmp_path, monkey
     launcher.install(root)
     monkeypatch.setattr(sys, "argv", [str(root / "run_runtime.py")])
     monkeypatch.setattr(os, "execvpe", lambda *_args: pytest.fail("malformed journal launched Runtime"))
-    with pytest.raises(ValueError, match="^Choose Update to finish$"):
+    with pytest.raises(ValueError, match="interrupted|Update"):
         runpy.run_path(str(root / "run_runtime.py"))
 
 

@@ -223,9 +223,11 @@ def launch_admission(version: Version, data: Path) -> bool:
             raise ValueError("Choose Update to finish")
         return True
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-        if version.managed_by == "pinokio" or str(exc) == "Choose Update to finish":
-            raise ValueError("Choose Update to finish") from exc
-        action = ("Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
+        if str(exc) == "Choose Update to finish":
+            raise
+        action = ("Choose Pinokio's Update button to finish it."
+                  if version.managed_by == "pinokio" else
+                  "Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
                   if os.name != "nt" else
                   "Run the install line to finish it: irm https://astrid.haus/install.ps1 | iex")
         raise ValueError("An Astrid update was interrupted; " + action) from exc
