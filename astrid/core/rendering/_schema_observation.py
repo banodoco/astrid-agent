@@ -17,6 +17,7 @@ from pathlib import Path
 
 FD_ENV = "ASTRID_TIMELINE_OBSERVER_FD"
 RUN_ENV = "ASTRID_TIMELINE_OBSERVER_RUN_ID"
+RENDER_ENV = "ASTRID_TIMELINE_OBSERVER_RENDER"
 _RUN = re.compile(r"[0-9a-f]{32}\Z")
 
 
@@ -44,6 +45,7 @@ def bind_host_context(capability: str, run_id: object, env: MutableMapping[str, 
     """Replace untrusted child overlays with the admitted host context."""
     env.pop(FD_ENV, None)
     env.pop(RUN_ENV, None)
+    env.pop(RENDER_ENV, None)
     context = observation_context(run_id, host_env.get(FD_ENV)) if capability == "rendering.render" else None
     if context is None:
         return ()
@@ -53,6 +55,8 @@ def bind_host_context(capability: str, run_id: object, env: MutableMapping[str, 
 
 
 def emit_schema_consumed(schema: dict, origin: str) -> None:
+    if os.environ.get(RENDER_ENV) != "1":
+        return
     context = observation_context(os.environ.get(RUN_ENV), os.environ.get(FD_ENV))
     if context is None:
         return
