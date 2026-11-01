@@ -5,12 +5,13 @@ name: CI
 
 on:
   push:
-    branches: [main, release-1, "int/**"]
+    branches: [main, int/r1]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows-native-and-installer:
