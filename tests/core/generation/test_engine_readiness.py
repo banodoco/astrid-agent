@@ -1,6 +1,6 @@
 """Target-local ordinary HC03 readiness producer against a real tiny retained session.
 
-What is real here: the installation-scoped supervisor (engine_custody), its
+What is real here for both H3 and plain ComfyUI: the installation-scoped supervisor (engine_custody), its
 registry, a live loopback CPU HTTP "engine" child, the canonical installed
 receipt parser, VibeComfy's own live composite/source verifiers imported from a
 real clone of the pinned VibeComfy revision, the strict model-root binding with
@@ -47,6 +47,7 @@ ENGINE = "vibecomfy-h3"
 CLONE = Path(__file__).resolve().parents[3]
 RUNTIME_SOURCE = Path(os.environ.get("ASTRID_RUNTIME_CHECKOUT", "/home/user/proof/src/astrid-runtime"))
 VIBECOMFY_SOURCE = Path(os.environ.get("ASTRID_VIBECOMFY_CHECKOUT", "/home/user/proof/src/VibeComfy"))
+VIBECOMFY_REVISION = "3bebae39655eb460454885040be4d3aefaf2ef31"
 COMFY_VERSION = "0.36.0"
 SYNTHETIC_DRIVER = "580.95.05"
 SYNTHETIC_VRAM_MIB = 32607
@@ -58,12 +59,13 @@ import json,os,sys
 from http.server import BaseHTTPRequestHandler,HTTPServer
 from pathlib import Path
 port=int(sys.argv[1]); mode=Path(sys.argv[2]); started=Path(sys.argv[3])
+version=sys.argv[4]; nodes=json.loads(sys.argv[5])
 with started.open('a') as f: f.write(str(os.getpid())+'\n')
 class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args): pass
  def do_GET(self):
   setting=mode.read_text()
-  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'VHS_VideoCombine':{}}
+  value={'system':{'comfyui_version':version}} if self.path=='/system_stats' else dict.fromkeys(nodes,{})
   if setting=='missing' and self.path=='/object_info': value={}
   data=json.dumps(value).encode()
   self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
@@ -72,7 +74,7 @@ HTTPServer(('127.0.0.1',port),Handler).serve_forever()
 
 # Shared by the supervisor program and the producer harness so both bind the
 # identical tiny recipe (the custody fixture's technique). Only start/health
-# are replaced; sources, pins (including real VibeComfy ac0ee1b), environments
+# are replaced; sources, pins (including each real selected VibeComfy), environments
 # and the models-lock reference stay canonical.
 _TINY_RECIPE = r'''
 import json
@@ -80,7 +82,9 @@ from dataclasses import replace
 from astrid.core.generation import engine_recipe
 from astrid.core.generation.engine_contracts import ModelLock, ModelSpec, StartSpec
 _cfg=json.loads(TINY)
-_base=engine_recipe.load_recipe('vibecomfy-h3','linux-x86_64-cu130')
+_base=engine_recipe.load_recipe(_cfg['engine'],'linux-x86_64-cu130')
+if _cfg.get('vibecomfy_revision'):
+    _base=replace(_base,sources=tuple(replace(s,pin=replace(s.pin,revision=_cfg['vibecomfy_revision'])) if s.name=='vibecomfy' else s for s in _base.sources))
 recipe=replace(_base,start=StartSpec(tuple(_cfg['argv']),_cfg['cwd'],{'VIBECOMFY_HEADLESS':'1'},'127.0.0.1',_cfg['port']),
                health=replace(_base.health,timeout_seconds=4,poll_interval_seconds=0.02))
 lock=ModelLock('astrid.models-lock.v1',tuple(ModelSpec(**m) for m in _cfg['models']))
@@ -88,8 +92,14 @@ lock=ModelLock('astrid.models-lock.v1',tuple(ModelSpec(**m) for m in _cfg['model
 
 _HARNESS = r'''
 import json,sys,time
+from pathlib import Path
 sys.dont_write_bytecode=True  # as run.py does; -I ignores PYTHONDONTWRITEBYTECODE
 cfg=json.loads(sys.argv[1])
+# This harness uses -I with venv dependencies, while the retained launcher
+# uses -I -S. Remove the venv's unimported source checkout from discovery so
+# the reviewed strict binder can select only the fixture's installed source.
+sys.path[:] = [value for value in sys.path
+               if not (Path(value) / 'vibecomfy/__init__.py').is_file()]
 sys.path.insert(0,cfg['site'])
 bearer_opens=[]
 def audit(event,args):
@@ -127,8 +137,29 @@ def status(*,root,deadline):
 hardware=lambda deadline: engine_readiness.probe_hardware(deadline,executable=cfg['smi'])
 try:
     result=engine_readiness.run_readiness(root=cfg['root'],release_root=cfg['release'],profile_path=cfg['profile'],
-                                          deadline=time.monotonic()+60,status=status,hardware=hardware)
-    out={'ok':True,'path':result.path,'sha256':result.sha256,'size':result.size}
+                                          deadline=time.monotonic()+60,status=status,hardware=hardware,
+                                          engine=cfg['tiny']['engine'])
+    # Consumer validation must use this same selected checkout, even when H3
+    # and plain ComfyUI select different client pins in the parent process.
+    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
+    adapter=CheckoutServerAdapter.from_host_session(
+        hc03_profile=result.profile,model_id='vibecomfy.run',template_id='vibecomfy.run',
+        invocation_identity='readiness-producer-test')
+    # Check both A04 source-mismatch refusals in the same selected checkout.
+    import pytest
+    from astrid.core.generation.backends import vibecomfy as backend
+    profile = result.profile
+    source = profile["vibecomfy_session"]
+    for revision, digest in (("0" * 40, source["source_content_digest"]),
+                             (source["source_revision"], "sha256:" + "0" * 64)):
+        with pytest.MonkeyPatch.context() as mismatch:
+            mismatch.setattr(backend, "_observed_source_identity", lambda *_: (revision, digest))
+            with pytest.raises(ValueError, match="source revision does not match the live VibeComfy checkout"):
+                CheckoutServerAdapter.from_host_session(
+                    hc03_profile=profile, model_id="vibecomfy.run", template_id="vibecomfy.run",
+                    invocation_identity="readiness-source-mismatch", expected_comfyui_version="==0.25.0")
+    out={'ok':True,'path':result.path,'sha256':result.sha256,'size':result.size,
+         'adapter_session':adapter._host_session}
 except engine_readiness.ReadinessError as exc:
     out={'ok':False,'reason':str(exc)}
 module=sys.modules.get('vibecomfy')
@@ -180,17 +211,24 @@ def _script(path, body):
     return str(path)
 
 
-@pytest.fixture(scope="module")
-def installation(tmp_path_factory):
+@pytest.fixture(scope="module", params=[ENGINE, "comfyui", "vibecomfy-h3-a04"])
+def installation(tmp_path_factory, request):
+    engine = ENGINE if request.param == "vibecomfy-h3-a04" else request.param
+    a04_source = request.param == "vibecomfy-h3-a04"
+    version = COMFY_VERSION if engine == ENGINE else "0.43.2"
     mp = pytest.MonkeyPatch()
     tmp = tmp_path_factory.mktemp("readiness")
     mp.setenv("TMPDIR", str(tmp))  # Existing ProcessCustody native scratch belongs to this test.
     root = tmp / "install"
     comfy = root / "runtime/ComfyUI"
     (comfy / "output").mkdir(parents=True)
-    (comfy / "comfyui_version.py").write_text(f'__version__ = "{COMFY_VERSION}"\n')
-    canonical_recipe = load_recipe(ENGINE, PLATFORM)
-    pin = next(s.pin.revision for s in canonical_recipe.sources if s.name == "vibecomfy")
+    (comfy / "comfyui_version.py").write_text(f'__version__ = "{version}"\n')
+    canonical_recipe = load_recipe(engine, PLATFORM)
+    pin = VIBECOMFY_REVISION if a04_source else next(s.pin.revision for s in canonical_recipe.sources if s.name == "vibecomfy")
+    # Both the pinned source and each installed producer use verified local checkouts.
+    import vibecomfy
+    assert Path(vibecomfy.__file__).resolve() == VIBECOMFY_SOURCE.resolve() / "vibecomfy/__init__.py"
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=VIBECOMFY_SOURCE, text=True).strip() == VIBECOMFY_REVISION
     # Real VibeComfy at the canonical pin (objects shared read-only with the source tree).
     _run(["git", "clone", "-q", "--shared", "--no-checkout", str(VIBECOMFY_SOURCE), str(root / "runtime/vibecomfy")], tmp)
     _run(["git", "-c", "advice.detachedHead=false", "checkout", "-q", pin], root / "runtime/vibecomfy")
@@ -213,8 +251,11 @@ def installation(tmp_path_factory):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    tiny = {"argv": [str(venv_python), str(server), str(port), str(mode), str(started)],
-            "cwd": str(comfy), "port": port, "models": models}
+    tiny = {"argv": [str(venv_python), str(server), str(port), str(mode), str(started),
+                     version, json.dumps(canonical_recipe.health.required_nodes)],
+            "cwd": str(comfy), "port": port, "models": models, "engine": engine}
+    if a04_source:
+        tiny["vibecomfy_revision"] = VIBECOMFY_REVISION
     namespace = {"TINY": json.dumps(tiny)}
     exec(_TINY_RECIPE, namespace)
     recipe, lock = namespace["recipe"], namespace["lock"]
@@ -227,7 +268,7 @@ def installation(tmp_path_factory):
     mp.setattr(custody, "_supervisor_argv", lambda identity, lock_fd, token:
                [sys.executable, "-c", program, _json(identity), str(lock_fd), json.dumps(tiny),
                 "--launch-token", token])
-    identity = dict(root=str(root), engine=ENGINE, platform=PLATFORM, recipe_sha256=recipe_digest(recipe),
+    identity = dict(root=str(root), engine=engine, platform=PLATFORM, recipe_sha256=recipe_digest(recipe),
                     helper_sha256=_sha(helper_manifest(recipe)))
     client = custody.LinuxEngineServiceClient(**identity)
     launch = {"argv": tiny["argv"], "cwd": str(comfy), "env": {"VIBECOMFY_HEADLESS": "1"}}
@@ -241,7 +282,7 @@ def installation(tmp_path_factory):
         stamp = "2026-10-28T00:30:00+00:00"
         # SYNTHETIC installed receipt in the canonical schema (no real install ran).
         receipt = InstallReceipt(
-            "astrid.engine-install.v1", "synthetic-readiness-receipt", ENGINE, PLATFORM, "local", str(root),
+            "astrid.engine-install.v1", "synthetic-readiness-receipt", engine, PLATFORM, "local", str(root),
             "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
             {e.name: "a" * 64 for e in recipe.environments}, {s.name: s.pin.revision for s in recipe.sources},
             tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped", m.bytes, m.sha256, True, 0)
@@ -263,7 +304,8 @@ def installation(tmp_path_factory):
         }
         yield {"root": root, "tmp": tmp, "release": release, "recipe": recipe, "lock": lock, "tiny": tiny,
                "client": client, "payload": payload, "facts": facts, "started": started, "mode": mode,
-               "receipt": receipt, "smi": scripts, "registry": root / "runtime/out/sessions" / ENGINE,
+               "receipt": receipt, "smi": scripts, "registry": root / "runtime/out/sessions" / engine,
+               "version": version,
                "venv_python": venv_python}
     finally:
         try:
@@ -317,7 +359,6 @@ def _assert_engine_retained(installation, before):
 
 def test_installed_engine_produces_private_profile_consumed_by_existing_validators(installation, state, monkeypatch):
     from astrid.core.execution.generic_host import _registration_verified_facts
-    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
     from astrid.core.generation.model_root import canonical_model_inventory_digest, model_root_binding_from_profile
 
     root, release, recipe = installation["root"], installation["release"], installation["recipe"]
@@ -346,21 +387,29 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     # Each fact recomputed here from its independent source, not copied from the producer.
     marker = json.loads(before["launch.json"])
     receipt = installation["receipt"]
+    if recipe.engine == "comfyui":
+        assert dict(receipt.source_commits) == {
+            "comfyui": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+            "vibecomfy": "3bebae39655eb460454885040be4d3aefaf2ef31",
+        }
     inventory = sorted(({"name": Path(m.destination).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
                          "subdir": str(Path(m.destination).parent)} for m in installation["lock"].models),
                        key=lambda e: (e["subdir"], e["name"]))
     custom = {s.name: s.pin.revision for s in recipe.sources if "/custom_nodes/" in s.relative_path}
     node_lock = recipe.environments[0].node_lock
+    if recipe.engine == ENGINE:
+        assert node_lock is not None
     expected_exact = {
         "interpreter": str(installation["venv_python"]),
         "runtime_lock": "sha256:" + hashlib.sha256((release / "release.json").read_bytes()).hexdigest(),
-        "engine_lock": readiness._digest({"engine": ENGINE, "platform": PLATFORM, "recipe_sha256": receipt.recipe_sha256,
+        "engine_lock": readiness._digest({"engine": recipe.engine, "platform": PLATFORM, "recipe_sha256": receipt.recipe_sha256,
                                           "requirements_locks": dict(receipt.requirements_locks),
                                           "source_commits": dict(sorted(receipt.source_commits.items()))}),
         "model_digest": canonical_model_inventory_digest(inventory),
         "custom_node_digest": readiness._digest({
             "custom_node_sources": dict(sorted(custom.items())),
-            "node_lock": {"source": node_lock.source, "path": node_lock.path, "sha256": node_lock.sha256},
+            "node_lock": None if node_lock is None else {
+                "source": node_lock.source, "path": node_lock.path, "sha256": node_lock.sha256},
             "object_info_sha256": installation["facts"]["object_info_sha256"]}),
         "driver": SYNTHETIC_DRIVER, "root": str(root), "port": recipe.start.port,
     }
@@ -372,7 +421,7 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     assert "workflow_endpoint" not in profile and "endpoint_evidence" not in profile
     assert "vibecomfy_candidate" not in profile
     assert profile["runtime"] == {"runtime_instance_id": str(__import__("uuid").UUID(marker["launch_token"])),
-                                  "comfyui_version": "==" + COMFY_VERSION}
+                                  "comfyui_version": "==" + installation["version"]}
     assert profile["vibecomfy_session"] == {
         "session_dir": str(installation["registry"]), "server_url": marker["url"],
         "pid": marker["pid"], "process_birth_id": marker["process_start_identity"],
@@ -395,11 +444,9 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     binding = model_root_binding_from_profile(profile, verify_files=True)
     assert binding.inventory_digest == expected_exact["model_digest"] and binding.path == root / "models"
     # Existing checkout adapter: digest, registry, live ownership, source and version gates.
-    adapter = CheckoutServerAdapter.from_host_session(
-        hc03_profile=profile, model_id="vibecomfy.run", template_id="vibecomfy.run",
-        invocation_identity="readiness-producer-test")
-    assert adapter._host_session["pid"] == marker["pid"] and adapter._host_session["comfy_pid"] == marker["comfy_pid"]
-    assert adapter._host_session["model_root"] == str(root / "models")
+    session = out["adapter_session"]
+    assert session["pid"] == marker["pid"] and session["comfy_pid"] == marker["comfy_pid"]
+    assert session["model_root"] == str(root / "models")
     _assert_engine_retained(installation, before)
 
 
@@ -415,6 +462,11 @@ _REFUSALS = {
     "release_incomplete": "incomplete or for another interpreter",
     "release_python": "incomplete or for another interpreter",
     "receipt_recipe": "installed session evidence could not be verified",
+    "receipt_engine": "installed session evidence could not be verified",
+    "receipt_comfyui": "installed session evidence could not be verified",
+    "receipt_vibecomfy": "installed session evidence could not be verified",
+    "receipt_owner": "installed session evidence could not be verified",
+    "registry_source": "installed session evidence could not be verified",
     "model_missing": "model root does not match the canonical lock",
     "model_extra": "model root does not match the canonical lock",
     "model_bytes": "model root does not match the canonical lock",
@@ -455,6 +507,23 @@ def test_refusals_fail_closed_without_profile_or_engine_change(installation, sta
         target = root / ".astrid-engine/install.json"
         original = target.read_bytes()
         target.write_text(json.dumps({**json.loads(original), "recipe_sha256": "0" * 64}))
+        restore.append(lambda: target.write_bytes(original))
+    elif change in {"receipt_engine", "receipt_comfyui", "receipt_vibecomfy", "receipt_owner"}:
+        target = root / ".astrid-engine/install.json"
+        original = target.read_bytes()
+        forged = json.loads(original)
+        if change == "receipt_engine":
+            forged["engine"] = "comfyui" if forged["engine"] == ENGINE else ENGINE
+        elif change == "receipt_owner":
+            next(s for s in forged["steps"] if s["kind"] == "start")["facts"]["owner_id"] = "another-owner"
+        else:
+            forged["source_commits"][change.removeprefix("receipt_")] = "0" * 40
+        target.write_text(json.dumps(forged))
+        restore.append(lambda: target.write_bytes(original))
+    elif change == "registry_source":
+        target = installation["registry"] / "source_revision"
+        original = target.read_bytes()
+        target.write_text("0" * 40)
         restore.append(lambda: target.write_bytes(original))
     elif change == "model_missing":
         target = root / "models/loras/synthetic-test-b.safetensors"
@@ -590,7 +659,8 @@ def test_retained_release_launcher_dispatches_readiness_and_fails_closed(install
     release, root = installation["release"], installation["root"]
     before = _snapshot(installation)
     profile = str(state / "engine-readiness.json")
-    base = ["readiness", "--root", str(root), "--profile", profile, "--seconds", "60"]
+    base = ["readiness", "--engine", installation["recipe"].engine,
+            "--root", str(root), "--profile", profile, "--seconds", "60"]
     mismatch = _launcher(release, *base, "--release", str(installation["tmp"] / "other-release"))
     assert mismatch.returncode == 1 and "readiness release argument differs" in mismatch.stderr
     canonical_recipe = _launcher(release, *base, "--release", str(release))

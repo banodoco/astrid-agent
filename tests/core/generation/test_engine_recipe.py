@@ -70,7 +70,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_keeps_h3_entry_unchanged():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "5c40a1e657050437d5c9d23dc15638daca1d34746accf6fa51177e8904500a3c"
+    assert h3_entry.recipe.sha256 == "613bae6d3fb90a1f13ac50eb5018e2eedb6c1cff458036f39ea8d58516559ad9"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
@@ -100,6 +100,41 @@ def test_comfyui_linux_recipe_is_package_owned_and_keeps_h3_entry_unchanged():
         "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
         "vae/qwen_image_2.1_vae_bf16.safetensors",
     ]
+
+
+def test_plain_comfyui_and_packaged_client_share_one_declared_vibecomfy_authority():
+    plain = recipes.load_recipe("comfyui", "linux-x86_64-cu130")
+    packaged = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    pins = recipes.load_pin_set(plain.pins)
+    assert plain.pins == packaged.pins
+    for recipe in (plain, packaged):
+        bindings = [source for source in recipe.sources if source.name == "vibecomfy"]
+        assert len(bindings) == 1
+        assert bindings[0].relative_path == "runtime/vibecomfy"
+        assert bindings[0].pin == pins["vibecomfy"]
+        assert bindings[0].pin.repository == "https://github.com/AstridPseudon/vibecomfy-proof"
+        assert bindings[0].pin.revision == "3bebae39655eb460454885040be4d3aefaf2ef31"
+        assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
+            "423cbd20511becb1f16122ab518e92e58bfa03d9")
+    declarations = sum(path.read_text().count('https://github.com/AstridPseudon/vibecomfy-proof')
+                       for path in (recipes._ROOT / "packs").rglob("*.json"))
+    assert declarations == 1
+
+
+def test_runpod_linux_recipe_binds_vibecomfy_to_its_preserved_h3_pin():
+    # G-030 coverage, retaining all H3 source authorities across the client bump.
+    recipe = recipes.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    pins = recipes.load_pin_set(recipe.pins)
+    bindings = [source for source in recipe.sources if source.name == "vibecomfy"]
+    assert len(bindings) == 1
+    assert bindings[0].relative_path == "runtime/vibecomfy"
+    assert bindings[0].pin == pins["vibecomfy-h3"]
+    assert {s.name: (s.pin.repository, s.pin.revision) for s in recipe.sources} == {
+        "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
+        "vibecomfy": ("https://github.com/peteromallet/VibeComfy.git", "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"),
+        "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
+        "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
+    }
 
 
 def test_unknown_engine_and_known_unsupported_platform_are_distinct():

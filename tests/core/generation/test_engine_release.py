@@ -35,8 +35,8 @@ def wheel_inputs(tmp_path_factory):
     assert all((p / 'pyproject.toml').is_file() for p in local.values()), 'frozen sibling source checkouts required'
     wheel_dir = work / 'wheels'
     wheel_dir.mkdir()
-    env = dict(os.environ, UV_CACHE_DIR='/home/user/proof/.uv-cache',
-               PIP_CACHE_DIR='/home/user/proof/.pip-cache',
+    env = dict(os.environ, UV_CACHE_DIR=str(work / 'uv-cache'),
+               PIP_CACHE_DIR=str(work / 'pip-cache'), PIP_NO_INDEX='1',
                SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD='1.12.0+astrid.2')
     built = subprocess.run([sys.executable, '-m', 'pip', 'wheel', '--no-deps', '--no-build-isolation',
                             '--wheel-dir', str(wheel_dir), *map(str, local.values())],
@@ -108,6 +108,43 @@ def test_production_build_refuses_incomplete_inputs(wheel_inputs):
     with pytest.raises(release.ReleaseError, match='incomplete release'):
         release.build_release(wheels, provenance, work / 'refused')
     assert not list((work / 'refused').glob('sha256-*.zip'))
+
+
+def test_retained_release_binds_plain_comfyui_and_selected_client(archive_fixture):
+    _, _, _, root = archive_fixture
+    environment = release._handoff_recipe(root, engine='comfyui')
+    assert environment == {'relative_path': 'runtime/venv', 'python_version': '3.12.10', 'uv_version': '0.11.32'}
+    program = r'''
+import json,sys
+sys.dont_write_bytecode=True
+sys.path.insert(0,sys.argv[1])
+from astrid.core.generation.engine_recipe import load_recipe
+recipe=load_recipe('comfyui','linux-x86_64-cu130')
+print(json.dumps({s.name:{'repository':s.pin.repository,'revision':s.pin.revision,'path':s.relative_path}
+                  for s in recipe.sources}))
+'''
+    result = subprocess.run([sys.executable, '-I', '-S', '-c', program, str(root / 'site')],
+                            cwd=root.parent, env={'PATH': os.defpath},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        'comfyui': {'repository': 'https://github.com/Comfy-Org/ComfyUI.git',
+                    'revision': '423cbd20511becb1f16122ab518e92e58bfa03d9', 'path': 'runtime/ComfyUI'},
+        'vibecomfy': {'repository': 'https://github.com/AstridPseudon/vibecomfy-proof',
+                      'revision': '3bebae39655eb460454885040be4d3aefaf2ef31', 'path': 'runtime/vibecomfy'},
+    }
+
+
+def test_plain_comfyui_release_handoff_requires_the_same_cli_engine():
+    kwargs = dict(archive='/release.zip', sha256='a' * 64, retain='/retained', root='/engine', engine='comfyui')
+    args = ('engines', 'status', 'comfyui', '--root', '/engine')
+    argv = release.release_cli_argv(**kwargs, cli_args=args)
+    assert argv[argv.index('--engine') + 1] == 'comfyui'
+    assert argv[-len(args):] == args
+    with pytest.raises(release.ReleaseError, match='handoff engine'):
+        release.release_cli_argv(**kwargs, cli_args=('engines', 'status', 'vibecomfy-h3', '--root', '/engine'))
+    with pytest.raises(release.ReleaseError, match='unsupported handoff engine'):
+        release._handoff_recipe('/unread', engine='unknown')
 
 
 def test_fixture_cannot_launch_install_or_startup(archive_fixture):
