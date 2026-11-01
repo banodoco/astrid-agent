@@ -80,6 +80,8 @@ def test_declaration_binds_installed_product_to_pinned_nonwheel_resources(tmp_pa
     host, chat = declaration["services"]
     assert host["argv"][host["argv"].index("--source-checkout") + 1] == str(tmp_path / "py/Lib/site-packages")
     assert all(host["env"][key] == value for key, value in values.items())
+    assert host["argv"][-1] == "--verified-local-worker"
+    assert host["ready"]["file"] == "worker-astrid-ready.json"
     assert not any(key in chat["env"] for key in values)
 
 

@@ -225,6 +225,10 @@ class HostError(RuntimeError):
         self.safe_message = safe_message
 
 
+class PlacementBindingError(HostError):
+    """A verified placement check rejected the retained Runtime binding."""
+
+
 class CommandCleanupUnresolved(HostError):
     """A command finished but its task scope may still own child writers."""
 
@@ -2417,31 +2421,31 @@ def _assert_verified_placement_binding(
 
     actual = binding.get("actual_target")
     if not isinstance(actual, Mapping):
-        raise HostError("task target binding has no credential-verified actual target")
+        raise PlacementBindingError("task target binding has no credential-verified actual target")
     verification = binding.get("verification")
     if not isinstance(verification, Mapping) or set(verification) != {
         "method", "evidence_digest", "verified",
     }:
-        raise HostError("task target binding has no credential-verified placement verification")
+        raise PlacementBindingError("task target binding has no credential-verified placement verification")
     if verification.get("method") != "credential_claim" or verification.get("verified") is not True:
-        raise HostError("task target binding placement verification is not a credential claim")
+        raise PlacementBindingError("task target binding placement verification is not a credential claim")
     digest = verification.get("evidence_digest")
     if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-        raise HostError("task target binding placement verification digest is invalid")
+        raise PlacementBindingError("task target binding placement verification digest is invalid")
     incarnation = binding.get("executor_incarnation")
     if not isinstance(incarnation, str) or not incarnation.strip() or len(incarnation) > 256:
-        raise HostError("task target binding has no valid executor incarnation")
+        raise PlacementBindingError("task target binding has no valid executor incarnation")
 
     selected_kind = target.get("kind")
     actual_kind = actual.get("kind")
     resolved = binding.get("resolved_target")
     if not isinstance(resolved, Mapping) or resolved != target:
-        raise HostError("credential-verified resolved target disagrees with execution_request")
+        raise PlacementBindingError("credential-verified resolved target disagrees with execution_request")
     if selected_kind != "default" and actual_kind != selected_kind:
-        raise HostError("credential-verified actual target kind disagrees with execution_request")
+        raise PlacementBindingError("credential-verified actual target kind disagrees with execution_request")
     for key, expected in target.items():
         if key != "kind" and actual.get(key) != expected:
-            raise HostError(f"credential-verified actual target {key} disagrees with execution_request")
+            raise PlacementBindingError(f"credential-verified actual target {key} disagrees with execution_request")
 
 
 def _execution_contract(

@@ -43,13 +43,16 @@ _OUTPUT_FIELDS = {"association_id", "run_id", "task_id", "attempt_id", "object_i
 
 _BRIDGE_OPERATIONS = frozenset({"submit", "status", "outputs", "publish_snapshot", "materialize_output"})
 _BRIDGE_PHASES = frozenset({"acquire", "send", "receive", "decode", "envelope", "data", "dispatch", "encode"})
+_BRIDGE_REJECTIONS = frozenset({("placement", "unverified_parent_placement"),
+                                ("dispatch", "dispatch_failed")})
 
 
 def _bridge_io_failure_frame(*, endpoint: str, phase: str, operation: Any,
                             exception: BaseException | None, request_sequence: int,
                             frame_bytes: int, elapsed_seconds: float,
                             budget_seconds: float | None,
-                            dispatch_elapsed_seconds: float | None = None) -> bytes | None:
+                            dispatch_elapsed_seconds: float | None = None,
+                            rejection: Mapping[str, str] | None = None) -> bytes | None:
     """Project only bounded fixed metadata, never exception text or identity."""
     try:
         exception_class = "unknown"
@@ -76,6 +79,10 @@ def _bridge_io_failure_frame(*, endpoint: str, phase: str, operation: Any,
             "budget_seconds": measured(budget_seconds),
             "dispatch_elapsed_seconds": measured(dispatch_elapsed_seconds),
         }
+        if (isinstance(rejection, Mapping) and set(rejection) == {"stage", "reason"}
+                and all(type(value) is str for value in rejection.values())
+                and (rejection["stage"], rejection["reason"]) in _BRIDGE_REJECTIONS):
+            row.update(rejection_stage=rejection["stage"], rejection_reason=rejection["reason"])
         encoded = (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
         # 512 is the POSIX minimum PIPE_BUF. One atomic pipe row, or skip.
         return encoded if len(encoded) <= 512 else None

@@ -4982,7 +4982,7 @@ def test_host_bridge_dispatch_diagnostic_preserves_redacted_reply(
                 raise OSError("secret-sink-error")
             return original_write(fd, frame)
 
-        monkeypatch.delenv("ASTRID_DEBUG_CHILD_BRIDGE_ERRORS", raising=False)
+        monkeypatch.setenv("ASTRID_DEBUG_CHILD_BRIDGE_ERRORS", "1")
         setup(world)
         b = bridge(world)
         sdk = ChildBridge(b.child_channel)
@@ -4996,7 +4996,8 @@ def test_host_bridge_dispatch_diagnostic_preserves_redacted_reply(
                     sdk._exchange("submit", {k: v for k, v in request(world).items()
                                              if k not in {"v", "request_id", "op"}})
             assert caught.value.error == {"code": "authorization_error",
-                                          "message": "child bridge rejected request", "details": {}}
+                                          "message": "child bridge rejected request",
+                                          "details": {"stage": "dispatch", "reason": "dispatch_failed"}}
             assert not b._revoked.is_set() and not b._channel_closed and not sdk._closed
             assert not world.service.store.delegated_children(world.task["id"], world.claim["attempt_id"])
             # Deferred host diagnostics cannot precede mandatory channel cleanup.
@@ -5018,9 +5019,62 @@ def test_host_bridge_dispatch_diagnostic_preserves_redacted_reply(
                     "host", "dispatch", "submit", "OSError", 5)
                 assert row["request_sequence"] == 1 and row["dispatch_elapsed_seconds"] >= 0
                 assert row["elapsed_seconds"] >= row["dispatch_elapsed_seconds"]
+                assert (row["rejection_stage"], row["rejection_reason"]) == ("dispatch", "dispatch_failed")
         finally:
             sdk.close()
             b.revoke()
+
+
+@pytest.mark.posix_native
+def test_host_bridge_placement_rejection_is_bounded_without_exception_text(world, monkeypatch, capsys):
+    setup(world, targeted=True)
+    world.task["execution_binding"]["verification"]["verified"] = False
+    original_task = world.client.task
+
+    def task(task_id):
+        from astrid.core.execution._child_bridge import task_resource
+        value = copy.deepcopy(task_resource(original_task(task_id)))
+        value["execution_binding"]["verification"]["verified"] = False
+        return value
+
+    monkeypatch.setattr(world.client, "task", task)
+    monkeypatch.setenv("ASTRID_DEBUG_CHILD_BRIDGE_ERRORS", "1")
+    b = bridge(world)
+    sdk = ChildBridge(b.child_channel)
+    try:
+        with pytest.raises(generic_host_module.PlacementBindingError):
+            b._child_execution_request(None)
+        with pytest.raises(_BridgeRejected) as caught:
+            sdk._exchange("submit", {k: v for k, v in request(world).items()
+                                      if k not in {"v", "request_id", "op"}})
+        assert caught.value.error == {
+            "code": "authorization_error", "message": "child bridge rejected request",
+            "details": {"stage": "placement", "reason": "unverified_parent_placement"},
+        }
+        assert not world.service.store.delegated_children(world.task["id"], world.claim["attempt_id"])
+    finally:
+        sdk.close()
+        b._thread.join(timeout=1)
+        b.revoke()
+    captured = capsys.readouterr()
+    public = json.dumps(caught.value.error) + captured.out + captured.err
+    assert SECRET not in public and "credential claim" not in public
+    assert "PlacementBindingError" not in public and "traceback" not in public.lower()
+
+
+def test_child_bridge_rejection_diagnostic_ignores_untrusted_attributes():
+    from astrid.core.execution._child_bridge import _rejection_diagnostic
+    from astrid.sdk._child_bridge import _bridge_io_failure_frame
+
+    error = RuntimeError(SECRET)
+    error.stage = SECRET
+    error.reason = SECRET
+    assert _rejection_diagnostic(error) == {"stage": "dispatch", "reason": "dispatch_failed"}
+    frame = _bridge_io_failure_frame(endpoint="host", phase="dispatch", operation="submit",
+        exception=error, request_sequence=1, frame_bytes=1, elapsed_seconds=0, budget_seconds=None,
+        rejection={"stage": SECRET, "reason": SECRET})
+    assert frame is not None and len(frame) <= 512 and SECRET.encode() not in frame
+    assert "rejection_stage" not in json.loads(frame)
 
 
 @pytest.mark.parametrize("sink_failed", [False, True])

@@ -33,7 +33,7 @@ from astrid.sdk._child_bridge import (
 from astrid.sdk.execution_request import ExecutionRequestError, normalize_execution_request
 
 from .generic_host import (
-    HostError, _assert_verified_placement_binding, _execution_contract, _verify_admitted_source,
+    HostError, PlacementBindingError, _assert_verified_placement_binding, _execution_contract, _verify_admitted_source,
 )
 
 _MAX_FRAME = 1048576
@@ -44,6 +44,12 @@ _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\Z")
 
 class ChildBridgeError(HostError):
     pass
+
+
+def _rejection_diagnostic(exception: BaseException) -> dict[str, str]:
+    if isinstance(exception, PlacementBindingError):
+        return {"stage": "placement", "reason": "unverified_parent_placement"}
+    return {"stage": "dispatch", "reason": "dispatch_failed"}
 
 
 def _child_wire_id(*, project_id: str | None, parent_task_id: str,
@@ -1206,22 +1212,18 @@ class HostChildBridge:
                     reply = {"v": 1, "request_id": request["request_id"], "ok": True, "data": data}
                 except Exception as exc:
                     dispatch_elapsed = time.monotonic() - dispatch_started
+                    rejection = _rejection_diagnostic(exc)
                     diagnostic = _bridge_io_failure_frame(endpoint="host", phase=phase, operation=operation,
                                             exception=exc, request_sequence=sequence,
                                             frame_bytes=frame_bytes,
                                             elapsed_seconds=time.monotonic() - started,
                                             budget_seconds=None,
-                                            dispatch_elapsed_seconds=dispatch_elapsed)
+                                            dispatch_elapsed_seconds=dispatch_elapsed,
+                                            rejection=rejection)
                     # Runtime exceptions can contain signed tokens or private
                     # identity. Never serialize their text/details to pack code.
-                    # A deliberately opt-in local diagnostic keeps the
-                    # redacted wire contract while making disposable
-                    # qualification failures debuggable without blind retries.
-                    if os.environ.get("ASTRID_DEBUG_CHILD_BRIDGE_ERRORS") == "1":
-                        print(f"child bridge rejected {type(exc).__name__}: {str(exc)[:512]}",
-                              file=sys.stderr, flush=True)
                     reply = {"v": 1, "request_id": request.get("request_id"), "ok": False,
-                             "error": {"code": "authorization_error", "message": "child bridge rejected request", "details": {}}}
+                             "error": {"code": "authorization_error", "message": "child bridge rejected request", "details": rejection}}
                 self.channel.settimeout(1.0)
                 phase = "encode"
                 encoded = _strict_json(reply) + b"\n"

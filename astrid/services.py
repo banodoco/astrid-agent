@@ -58,11 +58,15 @@ def service_declaration(
     # Resolve it at declaration time so the supervised bridge cannot select an
     # older launcher through the Scheduled Task's inherited PATH.
     default_agent_command = str(Path(python).with_name("astrid.exe")) if sys.platform == "win32" else "astrid"
+    verified = host_env.get("ASTRID_HOST_EXECUTION_PROFILE") == "installed"
     return {"version": 1, "services": [
-        {"name": "pack-host", "argv": [python, "-X", "utf8", "-m", "astrid.core.execution.generic_host", "--service",
-            "--source-checkout", str(source_checkout), "--support-root", str(discovery.parent)],
+        {"name": "pack-host", "argv": [python, "-X", "utf8", "-m",
+            "astrid.services" if verified else "astrid.core.execution.generic_host",
+            "pack-host" if verified else "--service",
+            "--source-checkout", str(source_checkout), "--support-root", str(discovery.parent),
+            *(["--verified-local-worker"] if verified else [])],
             "env": {**host_env, "ASTRID_PACK_HOST_PYTHON": python}, "restart": "always",
-            "ready": {"file": "generic-host.ready.json", "timeout_seconds": 300}},
+            "ready": {"file": "worker-astrid-ready.json" if verified else "generic-host.ready.json", "timeout_seconds": 300}},
         {"name": "chat", "argv": [bun, str(Path(__file__).parent / "chat" / "service.mjs")],
             "env": {**env, **chat_options, "ASTRID_ACP_CWD": str(chat_cwd),
                 "ASTRID_ACP_COMMAND": os.environ.get("ASTRID_ACP_COMMAND") or default_agent_command,
@@ -84,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     host = sub.add_parser("pack-host")
     host.add_argument("--source-checkout", type=Path, required=True)
     host.add_argument("--support-root", type=Path, required=True)
+    host.add_argument("--verified-local-worker", action="store_true")
     secure = sub.add_parser("secure-file")
     secure.add_argument("path", type=Path)
     args = parser.parse_args(argv)
@@ -106,8 +111,37 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("support root must match the Runtime discovery directory")
     configure_process_control(args.support_root)
     value = json.loads(discovery.read_text(encoding="utf-8"))
+    if args.verified_local_worker:
+        return run_verified_pack_host(args.support_root, value)
     value["source_checkout"] = str(args.source_checkout)
     return run_pack_host_foreground(value)
+
+
+def run_verified_pack_host(support_root: Path, discovery: dict[str, Any]) -> int:
+    """Activate and observe Runtime's host; Runtime retains process ownership."""
+    import threading
+    from astrid_runtime.cli import _credential, _start_local_worker
+    from astrid_runtime.paths import RuntimePaths
+    from astrid_runtime_client import WorkspaceClient
+
+    paths = RuntimePaths.current(data_root=support_root.parent)
+    receipt = _start_local_worker(paths, profile_id="astrid",
+                                  expected_workspace_uuid=discovery["active_realm"])
+    client = WorkspaceClient(discovery["endpoint"], _credential(paths))
+    stopped = threading.Event()
+
+    def stop_channel():
+        sys.stdin.read(1)
+        stopped.set()
+
+    threading.Thread(target=stop_channel, name="verified-host-stop", daemon=True).start()
+    while not stopped.wait(1):
+        generation = client.get_local_worker_generation()
+        if (generation.get("executor_incarnation") != receipt.get("executor_incarnation")
+                or generation.get("evidence_digest") != receipt.get("evidence_digest")
+                or generation.get("state") != "active"):
+            raise RuntimeError("Verified local host is unavailable; restart Astrid.")
+    return 0
 
 
 if __name__ == "__main__":

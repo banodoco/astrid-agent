@@ -233,6 +233,7 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     monkeypatch.setattr(backend, "existing", lambda _data: None)
     monkeypatch.setattr(backend, "_installed_product_root", lambda python, _env: python.parent / "Lib/site-packages")
     monkeypatch.setattr(backend, "_declare_services", lambda **kwargs: kwargs["folder"] / "services.json")
+    monkeypatch.setattr(backend, "_declare_worker_profile", lambda **kwargs: kwargs["folder"] / "worker-profile.json")
 
     version = backend.stage(value, tmp_path / "program", tmp_path / "data")
 
@@ -248,6 +249,7 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     assert version.env["ASTRID_INSTALL_MANAGED_BY"] == (managed_by or "")
     assert ("vibecomfy" in value) is with_vibecomfy
     assert "ASTRID_VIBECOMFY_CHECKOUT" not in version.env
+    assert json.loads(version.profile.read_text())["worker_profile"] == str(version.root / "worker-profile.json")
 
 
 @pytest.mark.parametrize("damage", ["release-missing", "release-differs", "managed-by-differs"])

@@ -330,6 +330,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 raise RuntimeError("The selected Python resolves Astrid code outside its installed product tree.")
         return product_root
 
+    def _declare_worker_profile(self, *, folder: Path, agent: Path, data: Path,
+                                python: Path, env: dict[str, str]) -> Path:
+        script = (
+            "from pathlib import Path; import sys; "
+            "from astrid.installer.worker_profile import write_worker_profile; "
+            "write_worker_profile(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), "
+            "Path(sys.argv[4]) if sys.argv[4] else None)"
+        )
+        self.run([python, "-X", "utf8", "-I", "-c", script, folder, agent, data,
+                  env.get("ASTRID_CAPABILITY_MATRIX_PATH", "")], extra_env=env)
+        return folder / "worker-profile.json"
+
     def workspace(self, version: Version | None, data: Path) -> dict:
         interpreter = version if version is not None and version.python.is_file() else None
         value = self.runtime(interpreter, data, "workspace", "inspect")
@@ -842,12 +854,16 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             folder=folder, agent=product_root, data=data, python=python,
             bun=env["ASTRID_BUN_EXECUTABLE"], env=env, old=prior,
         )
+        worker_profile = self._declare_worker_profile(
+            folder=folder, agent=product_root, data=data, python=python, env=env,
+        )
         # Compute the admitted source identity in the installed environment.
         digest = self.run([python, "-X", "utf8", "-I", "-c", "from astrid.core.execution.generic_host import source_checkout_digest; import pathlib,sys; print(source_checkout_digest(pathlib.Path(sys.argv[1])))", product_root], extra_env=env)
         write_json(profile, {"profile": "astrid", "runtime_checkout": str(runtime),
                              "source_checkout": str(product_root),
                              "runtime_environment": str(environment),
-                             "source_digest": digest, "service_declaration": str(services_path)})
+                             "source_digest": digest, "service_declaration": str(services_path),
+                             "worker_profile": str(worker_profile)})
         persist_install_identity(version, root)
         return version
 
@@ -875,6 +891,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         for key in ("runtime_checkout", "source_checkout", "runtime_environment", "service_declaration"):
             if not profile.get(key) or not absolute(profile[key]).is_relative_to(folder):
                 raise ValueError("The staged source profile is incomplete or outside its version directory.")
+        if profile.get("worker_profile") and not absolute(profile["worker_profile"]).is_relative_to(folder):
+            raise ValueError("The staged worker profile is outside its version directory.")
         # Admission must use the same Runtime owners that will load this profile
         # during upgrade and startup. Path containment alone admits syntactically
         # invalid profiles and service declarations, allowing the old owner to be
@@ -899,10 +917,15 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             "python=sys.executable, source_checkout=profile.source_checkout)",
             "if services is None or not any(item.name == 'pack-host' for item in services.services):",
             "    raise ValueError('Service declaration must include pack-host')",
+            "if profile.worker_profile:",
+            "    from runtime_protocol.local_worker_composition import load_local_worker_composition",
+            "    load_local_worker_composition(profile.worker_profile, workspace_uuid=sys.argv[2], "
+            "realm_root=Path(sys.argv[3]), support_root=Path(sys.argv[4]), runtime_instance_id='candidate-validation')",
         ))
         try:
             self.run([version.python, "-X", "utf8", "-I", "-c", validate_script,
-                      str(version.profile)], extra_env=version.env, timeout=120)
+                      str(version.profile), realm["realm_id"], realm["realm_root"], str(data / "runtime")],
+                     extra_env=version.env, timeout=120)
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             raise ValueError(f"The candidate Runtime rejected its source profile or services: {exc}") from exc
         selected = self.workspace(version, data)
@@ -1066,7 +1089,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                               f"Its log may say why: {self.service.log}"),
             )
 
-        ready_file = data / "runtime" / "generic-host.ready.json"
+        ready_name = ("worker-astrid-ready.json" if read_json(version.profile).get("worker_profile")
+                      else "generic-host.ready.json")
+        ready_file = data / "runtime" / ready_name
         state, pack_host, failed = _classify_services(services, ready_file)
         if state == "ready":
             return
