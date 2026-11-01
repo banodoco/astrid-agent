@@ -94,7 +94,7 @@ class PodOps(Protocol):
 
     def get(self, remote: str, local: Path) -> None: ...
 
-    def job_start(self, command: str) -> Mapping[str, Any]: ...
+    def job_start(self, command: str, *, job_id: str | None = None) -> Mapping[str, Any]: ...
 
     def job_poll(self, job_id: str) -> Mapping[str, Any]: ...
 
@@ -312,7 +312,8 @@ class RemotePlacement:
 
     # -- public ------------------------------------------------------------
 
-    def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float) -> RemoteRun:
+    def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float,
+                        supervisor_command: str | None = None) -> RemoteRun:
         """Bootstrap/install an exact existing claim for ordinary prepared work.
 
         Claim/admission/release stay with their existing journal and Runtime
@@ -327,6 +328,8 @@ class RemotePlacement:
         state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim)
         try:
             self._bootstrap(state)
+            if supervisor_command is not None:
+                self._run_job(state, supervisor_command, "preparation supervisor reservation")
             self._install(state)
             self._check_deadline("prepared install")
         except BaseException:
@@ -799,13 +802,15 @@ def _default_verify(out: Path, result: Mapping[str, Any]) -> None:
 
 
 class _HttpsOps:
-    def __init__(self, pod_id: str, token: str) -> None:
+    def __init__(self, pod_id: str, token: str, *, base_url: str | None = None,
+                 job_root: str = "/workspace/.astrid-jobs") -> None:
         self.pod_id, self.token = pod_id, token
+        self.base_url, self.job_root = base_url, job_root
 
     def _transport(self):
         from runpod_lifecycle.https import HttpsPodTransport
 
-        return HttpsPodTransport(self.pod_id, self.token)
+        return HttpsPodTransport(self.pod_id, self.token, base_url=self.base_url)
 
     def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         transport = self._transport()
@@ -823,14 +828,22 @@ class _HttpsOps:
     def get(self, remote: str, local: Path) -> None:
         self._call("get", remote, local)
 
-    def job_start(self, command: str) -> Mapping[str, Any]:
-        return self._call("detached_start", command)
+    def job_start(self, command: str, *, job_id: str | None = None) -> Mapping[str, Any]:
+        return self._call("detached_start", command, job_id=job_id, root=self.job_root)
 
     def job_poll(self, job_id: str) -> Mapping[str, Any]:
-        return self._call("detached_poll", job_id)
+        return self._call("detached_poll", job_id, root=self.job_root)
 
     def job_cancel(self, job_id: str) -> Mapping[str, Any]:
-        return self._call("detached_cancel", job_id)
+        return self._call("detached_cancel", job_id, root=self.job_root)
+
+    def job_observe_stopped(self, job_id: str, *, python: str = "python3") -> Mapping[str, Any]:
+        from .preparation_custody import observe_preparation_job_command
+
+        code, stdout, _ = self.exec(observe_preparation_job_command(self.job_root, job_id, python=python), 30)
+        if code != 0:
+            raise RemotePlacementError("exact preparation job stop remains uncertain")
+        return json.loads(stdout)
 
 
 def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:

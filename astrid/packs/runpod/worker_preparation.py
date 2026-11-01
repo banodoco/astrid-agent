@@ -599,6 +599,10 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
     """Accept only durable exact-task drain and process-stop evidence."""
     if attempt.get("state") == "cleanup_complete":
         _validate_absence_receipt(attempt)
+    if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.preparation-quiescence.v1":
+        from .preparation_custody import validate_preparation_quiescence
+
+        return validate_preparation_quiescence(value, attempt)
     if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.unactivated-quiescence.v1":
         if (attempt.get("schema_version") != "astrid.runpod.allocation-attempt.v1"
                 or attempt.get("acquisition_mode") != "allocate"

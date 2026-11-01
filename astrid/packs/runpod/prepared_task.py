@@ -163,7 +163,7 @@ class PreparedWorkerSelection:
             workflow_bundle_path=workflow_bundle_path,
             workflow_inputs=dict(workflow_inputs),
         )
-        return PreparedRunPodTaskClient(client, runtime)
+        return PreparedRunPodTaskClient(client, runtime, claim_handle_path=self.claim_handle_path)
 
 
 class PreparedTaskRuntime(Protocol):
@@ -234,9 +234,10 @@ def load_prepared_worker_selection(
 class PreparedRunPodTaskClient:
     """Two-phase wrapper around the SDK's one ordinary admission receipt."""
 
-    def __init__(self, client: Any, runtime: PreparedTaskRuntime) -> None:
+    def __init__(self, client: Any, runtime: PreparedTaskRuntime, *, claim_handle_path: Path | None = None) -> None:
         self._client = client
         self._runtime = runtime
+        self._claim_handle_path = claim_handle_path
 
     def invoke_result(self, capability_id: str, *, kind: str, **kwargs: Any) -> Any:
         request = kwargs.get("execution_request")
@@ -248,7 +249,25 @@ class PreparedRunPodTaskClient:
             raise PreparedWorkerError("prepared execution requires the ordinary SDK recovery receipt path")
         first_args = dict(kwargs)
         first_args["wait"] = False
-        first = self._client.invoke_result(capability_id, kind=kind, **first_args)
+        if self._claim_handle_path is None:
+            first = self._client.invoke_result(capability_id, kind=kind, **first_args)
+        else:
+            from .worker_preparation import target_owner, replace_target_record
+
+            # Admission is an effect even if its acknowledgement is lost.
+            # Preparation rollback must never infer "no task" from that loss.
+            with target_owner(self._claim_handle_path):
+                claim = _read_mapping(self._claim_handle_path, label="P1 claim")
+                if claim.get("state") != "claimed":
+                    raise PreparedWorkerError("prepared admission is excluded during RunPod release")
+                custody = claim.get("preparation_custody")
+                if custody is not None:
+                    if (not isinstance(custody, Mapping) or custody.get("state") != "prepared"):
+                        raise PreparedWorkerError("ordinary preparation is not ready for admission")
+                    replace_target_record(self._claim_handle_path, {
+                        **claim, "preparation_custody": {**custody, "admission": {"state": "requested"}},
+                    }, operation_id=claim["operation_id"])
+                first = self._client.invoke_result(capability_id, kind=kind, **first_args)
         if not bool(getattr(first, "ok", False)):
             return first
         task_id = getattr(first, "kernel_task_id", None)
@@ -341,6 +360,45 @@ def _read_exact_task(client: Any, task_id: str, *, capability_id: str) -> dict[s
             or not isinstance(task.get("execution_binding"), Mapping)):
         raise PreparedWorkerError("Runtime returned a foreign task or one without its exact binding")
     return task
+
+
+def release_preparation(
+    config: Any, claim_handle_path: str | Path, *, resume: bool = False,
+    ops: Any = None, verify_timeout_seconds: float = 90,
+) -> Mapping[str, Any]:
+    """Release only an unpublished allocation or a journaled, never-admitted preparation.
+
+    Activated/possibly admitted work must use release_prepared_worker and its
+    Runtime drain. Configuration is supplied by the authenticated owner; this
+    entry point never resolves ambient credentials or invents an activation.
+    """
+    from .preparation_custody import JournalPreparationOps, validate_preparation_custody
+    from .remote_placement import _HttpsOps, _read_token
+    from .worker_owner import _run_sync
+    from .worker_preparation import (
+        _release_exact_target_after_quiescence, unactivated_target_quiescence,
+    )
+
+    path = Path(claim_handle_path).expanduser()
+    claim = _read_mapping(path, label="P1 claim")
+    if claim.get("schema_version") == "astrid.runpod.allocation-attempt.v1":
+        unactivated_target_quiescence(claim)
+
+        async def quiesce(record: Mapping[str, Any]) -> Mapping[str, Any]:
+            return unactivated_target_quiescence(record)
+    else:
+        validate_preparation_custody(claim)
+
+        async def quiesce(record: Mapping[str, Any]) -> Mapping[str, Any]:
+            # Called only under P1's lock, after state=release_pending fences
+            # both admission and activation. Durable proof resumes provider-only.
+            transport = ops if ops is not None else _HttpsOps(record["pod_id"], _read_token(record))
+            return await JournalPreparationOps(path, transport).quiesce(record)
+
+    return _run_sync(_release_exact_target_after_quiescence(
+        config, handle_path=path, attempt=claim, quiesce_worker=quiesce, resume=resume,
+        verify_timeout_seconds=verify_timeout_seconds,
+    ))
 
 
 def release_prepared_worker(
@@ -1052,4 +1110,5 @@ def _production_composition_factory(**kwargs: Any) -> PreparedTaskRuntime:
 __all__ = [
     "PreparedWorkerSelection", "PreparedRunPodTaskClient", "PreparedTaskRuntime",
     "PreparedWorkerError", "load_prepared_worker_selection", "release_prepared_worker",
+    "release_preparation",
 ]
