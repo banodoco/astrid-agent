@@ -759,7 +759,7 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
     from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
     issues = []
     for class_type in sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys()):
-        issues.append({'code': 'missing_dependency', 'severity': 'error',
+        issues.append({'code': 'missing_node_pack', 'severity': 'error',
                        'message': f'target is missing node {class_type!r}',
                        'details': {'engine_code': 'comfyui.missing_node', 'node': class_type, 'bytes': None}})
     roles = {}
@@ -776,16 +776,17 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
         need = needs_by_key[key]
         if need['class_type'] not in observed:
             continue  # the missing node already explains this observation
-        issues.append({'code': 'missing_dependency', 'severity': 'error',
+        issues.append({'code': 'missing_model', 'severity': 'error',
                        'message': f"target is missing {need.get('role') or 'model'} {need['value']!r} for {need['class_type']}.{need['field']}",
                        'details': {'engine_code': 'comfyui.models_missing', 'model': need['value'],
                                    'node': need['class_type'], 'field': need['field'], 'bytes': need.get('bytes')}})
     if issues:
+        from .asset_gaps import align_argv
         raise GenerationReadinessError(readiness_envelope(entry={
             'id': entry.get('id'), 'engine': 'comfyui',
             'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))},
             target=getattr(client, 'generation_target', None), issues=issues,
-            fixes=[{'argv': ['astrid', 'generate', 'describe', '--entry', entry.get('id', 'workflow')],
-                    'scope': 'read_only', 'details': {'action': 'Provide the listed nodes/models on this selected target using its supported installer.'}}]))
+            fixes=[{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
+                    'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]))
     return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
         model_availability="target", refresh_object_info=client.object_info)
