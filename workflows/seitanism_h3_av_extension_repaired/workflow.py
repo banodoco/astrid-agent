@@ -38,11 +38,11 @@ DEFAULT_SOURCE_VIDEO = ''
 
 
 MODELS = {
-    'vae': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/vae/minimax_h3_audio_vae_fp32.safetensors', subdir='vae'),
-    'lora': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors', subdir='loras'),
-    'diffusion_model': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors', subdir='diffusion_models'),
-    'vae_2': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/vae/minimax_h3_video_vae_int8_convrot.safetensors', subdir='vae'),
-    'text_encoder': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors', subdir='text_encoders'),
+    'vae': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors', subdir='vae'),
+    'lora': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors', subdir='loras'),
+    'diffusion_model': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors', subdir='diffusion_models'),
+    'vae_2': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_int8_convrot.safetensors', subdir='vae'),
+    'text_encoder': ModelAsset(url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors', subdir='text_encoders'),
 }
 
 

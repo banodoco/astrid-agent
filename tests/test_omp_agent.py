@@ -443,6 +443,30 @@ def test_registered_gateway_commands_delegate_without_a_launcher_allowlist(monke
     assert calls[-1] == ["future-command", "--json"]
 
 
+def test_generate_managed_dry_run_without_comfyui_returns_target_not_ready(
+    monkeypatch, capsys,
+) -> None:
+    from astrid.core.generation import entries, preflight
+
+    # Exercise the shipped catalog entry without discovering unrelated entries.
+    monkeypatch.setattr(entries, "action_entries", lambda: [])
+    monkeypatch.setattr(entries, "ready_entries", lambda: [])
+    # VibeComfy is available, but neither managed ComfyUI discovery route is.
+    monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
+    monkeypatch.setattr(preflight.shutil, "which", lambda _name: None)
+
+    assert omp_agent.main([
+        "generate", "image", "--entry", "qwen-image-2.1-turbo", "--mode", "t2i",
+        "--target", "managed", "--dry-run", "a blue lighthouse", "--json",
+    ]) == 2
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "ComfyUI runtime" in output.err
+    assert "code: COMFY_TARGET_NOT_READY" in output.err.splitlines()
+    assert "field: target" in output.err.splitlines()
+
+
 @pytest.mark.parametrize("args,expected", [
     (["draw a dog"], ["--print", "draw a dog"]),
     (["-c", "follow-up"], ["--print", "follow-up"]),

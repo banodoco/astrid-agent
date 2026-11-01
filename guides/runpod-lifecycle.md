@@ -82,7 +82,7 @@ five-frame smoke. Then run the production-shape capacity diagnostic above.
 If any check differs, fail closed and rebuild/promote a new golden artifact;
 do not silently mutate the validated image in place.
 
-The existing manually prepared H3 candidate uses this placement contract:
+For the current H3 candidate, the placement and release contract is:
 
 ```text
 image:              runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404
@@ -92,102 +92,97 @@ python:             runtime/venv/bin/python
 Comfy entrypoint:   runtime/launch-comfy.sh
 ```
 
-New builds use the content-derived root reported by `build-h3-release` below;
-they do not overwrite that existing candidate. The image, host-CUDA constraint,
-and mounted release are one contract. A pod
+The image, host-CUDA constraint, and mounted release are one contract. A pod
 that merely has an RTX 5090 or a mounted `/workspace` is not compatible unless
 the direct release-venv CUDA preflight passes.
 
-### Build an H3 release on an existing network volume
+### Storage-first bootstrap on a network volume
 
-Before creating a volume on a fresh account, use the optional lifecycle
-availability helper to check the GPU and data center without allocating anything:
-`runpod-lifecycle availability --gpu "RTX 5090" --min-cuda-version 13.0`.
-This requires a lifecycle checkout with the `availability` command. Python callers
-can use `await astrid.core.integrations.runpod.storage.storage_availability(
-"RTX 5090", min_cuda_version="13.0")`; it uses Astrid's credential resolver and
-returns the same JSON-shaped evidence. Require `status: "available"` on the
-chosen data-center row and record its exact ID for both the volume and later pod.
-An `unknown` result does not establish capacity. The minimum CUDA filter permits
-newer compatible host capability; `--allowed-cuda-versions` is an exact allow-list.
-This snapshot does not qualify the eventual host or reserve stock.
+When the GPU is not yet needed, prepare the release on the cheapest CPU pod
+that can mount the target volume in the same data center. This is a staging
+machine, not a creative executor: launch it with an explicit CPU compute type,
+the exact `networkVolumeId`, a visible dollar/time deadline, and only the SSH
+port. Record the exact pod ID and terminate that ID after promotion; deleting
+the pod does not delete the network volume.
 
-Install Astrid with this checkout's patch and the pinned `runpod-lifecycle`
-dependency. Select the volume's data center before creating that volume; this
-command accepts an existing volume of at least **100 GB** and attaches it without
-creating or resizing it.
-Load `RUNPOD_API_KEY`, `RUNPOD_SSH_PUBLIC_KEY` (the public key text), and
-`RUNPOD_SSH_KEY_PATH` (the matching local private key path) in the invoking
-process, then run:
+Use a versioned candidate directory (for example
+`h3-golden/releases/h3-cu130-v1-candidate/`) and keep model downloads as one
+writer per asset. Resume only the same `.part` file, verify the expected byte
+count and SHA-256, and atomically rename it to the canonical model path. Do
+not pass a resume flag for a fresh file: with Hugging Face Xet redirects,
+`curl --continue-at -` can preserve the small text redirect body instead of
+the asset. Quarantine any tiny/non-model `.part` and restart that asset cleanly.
+For very large Xet assets, prefer explicit byte-range chunks: validate each
+`Content-Range`, write the chunk to a temporary file, append it only after the
+chunk is complete, and hash the assembled file before promotion. This keeps a
+network retry from truncating an otherwise valid multi-gigabyte `.part`.
+Do not repair the old continuity tree in place, and do not mark `READY` until the
+runtime, lock, model receipts and manifest all agree. A CPU pod cannot prove a
+CUDA smoke; GPU admission remains a separate host/backend/capacity gate.
 
-```bash
-build-h3-release --volume VOLUME_ID --pod-type cpu --max-seconds 10800 \
-  --max-hourly 0.30 --handle ./h3-build.json
-```
-
-`python -m astrid.packs.runpod.h3_release` exposes the same entrypoint.
-`--plan` prints the exact recipe, model lock, release ID and release root with
-no provider calls. `--claim-seconds` defaults to 1800 and cannot exceed it;
-the total cap includes a 120-second cleanup reserve. CPU placement requests
-two vCPUs, the price-prioritized compute CPU flavors, the exact volume/data
-center and only SSH. There is no automatic GPU fallback. To build on a GPU,
-pass its exact RunPod GPU type ID as `--pod-type` and an explicit suitable
-`--max-hourly`; the request then requires host CUDA 13.0.
-
-The builder saves the allocation intent before creation and the exact pod ID
-immediately after the response, before waiting for SSH. It verifies the
-provider's volume attachment, mount, image, data center and hourly price.
-On success, failure, timeout, SIGINT or SIGTERM it deletes that exact pod and
-requires an independent GET to return 404. An unresolved cleanup stays pending
-in the handle and exits unsuccessfully. After a host crash or SIGKILL, recover
-with the same handle:
-
-```bash
-build-h3-release --volume VOLUME_ID --handle ./h3-build.json --cleanup-only
-# Or rerun the original command to clean the old pod and resume on a new one.
-```
-
-A lost create response is reconciled by the unique request name before another
-allocation. If the outcome cannot be resolved, the command refuses a replacement;
-retain the handle and reconcile it against the provider account.
-
-The recipe is packaged as `astrid/packs/runpod/environment.linux-cu130.json`;
-`models.lock.json` pins the five generate-path assets to an immutable HF
-revision with exact bytes and SHA-256s. The release directory is
-`/workspace/h3-golden/releases/h3-cu130-<input-sha256>`, covering the recipe,
-model lock and provisioner implementation. Python 3.12.10, the managed Python
-installation and the venv all live on the volume. Pinned ComfyUI, VibeComfy,
-H3 and VideoHelperSuite sources are fetched directly at their commits.
-
-Each source/runtime/model step probes existing state before doing work. The
-supporting dependencies resolve against the dated PyPI cutoff into a hash lock;
-VibeComfy installs with `--no-deps`, and the exact official Linux CUDA 13
-Torch 2.10.0, TorchVision 0.25.0 and TorchAudio 2.10.0 wheels install last.
-The builder checks their CUDA local versions, `torch.version.cuda`, the pinned
-Comfy helper distributions, OpenCV imports and dependency closure. The preserved
-`runtime/requirements.lock`, `runtime/environment-receipt.json` and
-`runtime/build.log` record that environment.
-
-One volume flock serializes writers. Downloads use validated byte ranges and
-resumable `.part` files; only a matching byte count and SHA-256 permits atomic
-promotion to `models/`. The builder writes `release-manifest.json`,
-`models.lock.json`, `model-inventory.json` and `build-receipt.json` before
-writing `READY` last. The local handle, `.manifest.json` and `.receipt.json`
-record the release root, exact manifest bytes/digest, observed pod price and
-GET-verified cleanup. Retain these for P2 staging.
-
-Attach the volume to an inference pod using the recorded image, same data
-center and a CUDA-13-compatible host. Use the reported release root's
-`runtime/venv/bin/python`, `runtime/ComfyUI`,
-`runtime/vibecomfy/custom_nodes.lock` and `runtime/launch-comfy.sh` when
-constructing staging inputs. The release's `models/` directory is the model
-root. Storage preparation records `gpu_qualified: false`, even when built on
-a GPU: GPU admission and a real generation smoke remain separate gates.
-Storage modes and generation-selection builders remain follow-up work.
+Once `READY` exists, the volume is the reusable handoff: attach a GPU pod in
+`EUR-IS-1` with the recorded CUDA-13-compatible host and the same base-image
+contract, mount `sfak8553dy` at `/workspace`, re-check the manifest/marker, and
+run
+`/workspace/h3-golden/releases/h3-cu130-v1-candidate/runtime/launch-comfy.sh`.
+That path does not redownload models or reinstall Python packages. A generic
+pod with a different Python ABI or incompatible host driver is not an attach;
+fail the preflight and choose a compatible pod (or a future promoted golden
+image) first. The remaining GPU smoke/capacity test is deliberately separate
+from storage preparation.
 
 For non-UI CLI and worker startup, export `VIBECOMFY_HEADLESS=1` before
-invoking `vibecomfy session start` or `vibecomfy run`. The packaged launcher
-sets it automatically.
+invoking `vibecomfy session start` or `vibecomfy run`. The CLI builds its full
+command registry before a ComfyUI `PromptServer` exists; headless mode defers
+HTTP route registration to the live Comfy process while preserving the normal
+workflow/runtime path. Do not "fix" this by bypassing the managed session or by
+copying a different ComfyUI tree onto the release.
+
+#### Dependency order is part of the contract
+
+ComfyUI's requirements contain an unpinned `torch` entry. Installing those
+requirements after the canonical CUDA pin can silently replace
+`2.10.0+cu130` with a newer PyTorch build (the observed failure replaced it
+with `2.14.0` and changed Triton). The safe order is:
+
+1. create the volume-backed Python 3.12 environment;
+2. install ComfyUI's supporting requirements with the Torch/TorchVision/
+   TorchAudio lines excluded (or a constraints file that pins them);
+3. install the current VibeComfy checkout with `--no-deps`, then install only
+   its explicitly required non-Torch packages;
+4. install/reinstall the exact Torch CUDA build and audio companion last, with
+   inherited `PIP_CONSTRAINT` unset. Install TorchVision from the same CUDA
+   wheel index, not the generic PyPI wheel:
+
+   ```bash
+   uv pip install --python runtime/venv/bin/python \
+     --index-url https://download.pytorch.org/whl/cu130 \
+     --force-reinstall --no-deps \
+     torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0
+   ```
+
+   The resulting metadata must report `torchvision==0.25.0+cu130`. The plain
+   `0.25.0` wheel can install cleanly yet fail at Comfy startup with
+   `operator torchvision::nms does not exist` because it is a CPU/PyPI build.
+5. run `uv pip check` and assert `torch.__version__`, `torch.version.cuda`,
+   the TorchVision CUDA local version, `comfy-kitchen`, and `comfy-aimdo`
+   before downloading or launching Comfy.
+
+   If the locked VideoHelperSuite node is enabled, also assert
+   `import cv2` in the release interpreter. Its video sink imports OpenCV at
+   Comfy startup; a missing `opencv-python-headless==5.0.0.93` can leave the
+   server up while making `VHS_VideoCombine` unavailable, so the workflow then
+   fails at object-info resolution rather than at sampling.
+
+When copying a source checkout into a volume-backed release, make the archive
+deterministic and exclude macOS metadata (`._*`, `.DS_Store`, and resource-fork
+directories). If those AppleDouble files are copied into the Python tree,
+`compileall` reports misleading null-byte syntax errors even though the real
+modules are valid. Treat a clean compile/import scan as a release gate.
+
+The final version assertion is authoritative. A resolver's successful exit is
+not evidence that the declared backend survived installation. Preserve the
+repair log and fail closed on any mismatch.
 
 #### Lock custody and portable Python IR
 
@@ -650,46 +645,3 @@ Related repository guidance: [Astrid intro execution record](astrid-intro-animat
 [compute profiles](../docs/reference/compute-profiles.md),
 [VibeComfy execution skill](../../vibecomfy/docs/agent-skill/skills/run-comfy-workflow/SKILL.md),
 and [RunPod pack skill](../astrid/packs/runpod/skill/SKILL.md).
-
-
-## HTTPS-only RunPod clients
-
-The H3 release builder and claim waiter accept `--transport https`. This starts
-a single-file Python pod agent through the provider creation command and uses
-`https://<pod-id>-8000.proxy.runpod.net`; an SSH identity is not required.
-Install the companion runpod-lifecycle and RunPod SDK patches first.
-
-```sh
-build-h3-release --transport https --volume EXISTING_VOLUME_ID --handle ./h3-build.json
-python scripts/claim_runpod_5090_backup.py --transport https --storage-name EXISTING_VOLUME_NAME --provider-account-ref YOUR_ACCOUNT_LABEL --release-root /workspace/h3-golden/releases/EXACT_RELEASE_ID --handle-path ./claim.json
-```
-
-Keep all existing budget, storage, provider identity and cleanup requirements.
-SSH is still the default; proxy-configured SSH clients fail before allocation
-with `SSH egress unavailable; use --transport https`. `--plan` and builder
-`--cleanup-only` do not require pod-agent connectivity or an SSH key.
-
-The builder keeps its random agent token in memory. The claim waiter writes a
-random per-claim token to an owned 0600 sidecar; only its absolute path enters
-the ordinary claim handle. Keep that sidecar private and available for the
-claim lifetime. `--resume --transport https` reuses it; it never generates a
-replacement token for an existing pod. New HTTPS attachment without the
-original claim/token is refused. Prepared-worker composition reads the handle's
-transport and token-file reference automatically, so the normal
-`h3_av.transform --prepared-worker` selection format remains unchanged.
-Staging commands, source uploads, session operations, worker-process operations
-and pre-reserved worker credentials use the selected transport. A quiescent
-provider-only release does not require the token file.
-
-Claim transport/token custody also takes precedence over ambient reconnect
-variables. Provider-only cleanup after durable quiescence ignores an ambient
-token-file setting, so an unavailable sidecar cannot block exact provider
-cleanup. Failure cleanup for newly allocated, unactivated pods retains the
-Phase 0 release policy and preserves the existing network volume; unresolved
-cleanup remains in the same handle for reconciliation.
-
-Local transport tests cover staging probes and inode-preserving credential
-transfer. No complete GPU transform has been live-qualified. The single capped
-live smoke passed `uname -a` and a 50 MiB upload, but failed its original Range
-download. JSON download envelopes were added and tested locally afterwards;
-this remains a rollout limitation, not a successful live round trip.

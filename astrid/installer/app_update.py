@@ -130,6 +130,7 @@ def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[
 class PinokioLifecycle:
     def __init__(self, root: Path, backend):
         self.root, self.backend = root, backend
+        self._selected_mode: str | None = None
         if root.name != "astrid" or root.parent.name != "app":
             raise ValueError("The app update requires Pinokio's app/astrid installation layout.")
         self.repo = absolute(root.parent.parent)
@@ -140,7 +141,7 @@ class PinokioLifecycle:
             raise ValueError("The canonical Pinokio launcher is missing; update the launcher first.")
 
     def mode(self) -> str:
-        if hasattr(self, "_selected_mode"):
+        if self._selected_mode is not None:
             return self._selected_mode
         # Older backend-only installations predate this launcher receipt.
         receipt = read_json(self.root.parent / "install-mode.json")

@@ -24,8 +24,6 @@ from typing import Any, Mapping
 
 import paramiko
 
-from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
-
 ROOT = Path(__file__).resolve().parents[1]
 RUN = ROOT / ".otto/runs/astrid-runpod-task-queue-20260918"
 RECEIPTS = RUN / "receipts"
@@ -216,7 +214,7 @@ def launch(deadline: float) -> dict[str, Any]:
     command = [
         "runpod-lifecycle", "launch", "--detach",
         "--gpu-type", GPU, "--image", IMAGE,
-        "--allowed-cuda-versions", ",".join(DEFAULT_ALLOWED_CUDA_VERSIONS),
+        "--allowed-cuda-versions", "13.0",
         "--storage-name", VOLUME, "--storage-volumes", VOLUME,
         "--container-disk-gb", "40", "--disk-size-gb", "40",
         "--min-memory-gb", "32", "--name-prefix", PREFIX,

@@ -109,6 +109,10 @@ class Backend:
 
             platform.configure_process_control(process_control)  # this process signals too
         self.service = Service(root, log, self.run, say=say)
+        # A no-systemd foreground stop can be retried after its owner record is
+        # retired. Keep that receipt local to this controller so an initial
+        # unvalidated service definition still requires an ownership check.
+        self._foreground_stop_retired = False
 
     def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
         # Never inherit a developer's Python import path or Runtime connection.
@@ -264,10 +268,58 @@ class Backend:
             chat_cwd = Path(os.environ.get("ASTRID_ACP_CWD") or data / "chat")
         return chat_cwd, chat_options
 
+    def _external_chat_command(self, command: str) -> bool:
+        try:
+            path = Path(command)
+            resolved = path.resolve(strict=True)
+            versions = (self.root / "versions").resolve()
+            if sys.platform == "win32":
+                # Node launches exe/com directly; cmd/bat go through cmd.exe.
+                suffix = path.suffix.lower()
+                launchable = suffix in {".exe", ".com", ".cmd", ".bat"}
+                if suffix in {".cmd", ".bat"} and any(c in command for c in '\r\n"%'):
+                    launchable = False
+            else:
+                launchable = os.access(resolved, os.X_OK)
+            return (path.is_absolute() and resolved.is_file()
+                    and launchable
+                    and not resolved.is_relative_to(versions)
+                    and not Path(os.path.abspath(path)).is_relative_to(Path(os.path.abspath(self.root / "versions"))))
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    def repair_chat_command(self, version: Version) -> bool:
+        """Repair a stale command in the installed service declaration."""
+        profile = read_json(version.profile)
+        declaration_path = profile.get("service_declaration")
+        if not isinstance(declaration_path, str) or not Path(declaration_path).is_absolute():
+            return False
+        path = Path(declaration_path)
+        declaration = read_json(path)
+        chat = next((row for row in declaration.get("services", [])
+                       if isinstance(row, dict) and row.get("name") == "chat"), None)
+        if not isinstance(chat, dict) or not isinstance(chat.get("env"), dict):
+            return False
+        env = chat["env"]
+        default = str(version.python.with_name("astrid.exe")) if sys.platform == "win32" else "astrid"
+        command = env.get("ASTRID_ACP_COMMAND")
+        if command == default or (isinstance(command, str) and self._external_chat_command(command)):
+            return False
+        env["ASTRID_ACP_COMMAND"] = default
+        write_json(path, declaration)
+        self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
+        return True
+
     def _declare_services(self, *, folder: Path, agent: Path, data: Path, python: Path,
                           bun: str, env: dict[str, str], old: Version | None) -> Path:
         """Run the candidate package's declaration API and write its profile input."""
         chat_cwd, chat_options = self._selected_chat_settings(old, data)
+        command = chat_options.get("ASTRID_ACP_COMMAND")
+        if command and not self._external_chat_command(command):
+            self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
+            chat_options.pop("ASTRID_ACP_COMMAND", None)
+        # Mask inherited commands so the selected package chooses its default.
+        chat_options.setdefault("ASTRID_ACP_COMMAND", "")
         services_path = folder / "services.json"
         script = (
             "import json,sys; from pathlib import Path; "
@@ -516,6 +568,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                            or record.get("data_root") != str(data)):
                 raise ValueError("The service record does not match the selected installation.")
             paths = RuntimePaths.current(data_root=data)
+            if (self.managed_by != "pinokio" and self.service.system == "linux"
+                    and self._foreground_stop_retired
+                    and not record.get("foreground")
+                    and not paths.discovery_path.exists()
+                    and not paths.instance_lock_path.exists()
+                    and not self.service.systemd()):
+                return None
             prior_control = process_control.read_setting(paths.runtime_support)
             platform.configure_process_control(self.process_control or prior_control)
             boundary = getattr(self, "_stop_boundary", None)
@@ -599,6 +658,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     selected.pop("foreground")
                     write_json(self.service.selection, selected)
                     self.service._foreground_process = None
+                    self._foreground_stop_retired = True
         except Exception as exc:
             raise self._downstream_stop_failure(exc) from exc
         return result
