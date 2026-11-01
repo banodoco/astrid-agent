@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from astrid.installer import maintenance
+from astrid.installer import cli
 from astrid.installer.core import Version, read_json, write_json
 from astrid.installer.service import LABEL, install_selection
 
@@ -247,3 +248,17 @@ def test_partial_copy_verification_refuses_without_clearing_then_resumes(tmp_pat
     result = maintenance.apply_update_recovery(root, data, plan["plan_sha256"], backend=backend)
     assert result["state"] == "restored-working-installation"
     assert "attempt-2" in result["receipt_path"]
+
+
+def test_update_recovery_cli_is_plan_by_default_and_apply_is_explicit(tmp_path, monkeypatch, capsys):
+    root, data = tmp_path / "program", tmp_path / "data"
+    plan = {"plan_sha256": "b" * 64, "state": "plan"}
+    monkeypatch.setattr(maintenance, "plan_update_recovery", lambda *_args: plan)
+    monkeypatch.setattr(maintenance, "apply_update_recovery",
+                        lambda *_args: {"state": "restored-working-installation"})
+
+    assert cli.main(["--update-recovery", "--root", str(root), "--data-root", str(data)]) == 0
+    assert '"state": "plan"' in capsys.readouterr().out
+    assert cli.main(["--update-recovery", "--root", str(root), "--data-root", str(data),
+                     "--apply", "b" * 64]) == 0
+    assert '"state": "restored-working-installation"' in capsys.readouterr().out

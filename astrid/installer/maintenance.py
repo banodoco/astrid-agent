@@ -172,8 +172,14 @@ def plan_update_recovery(root: Path | str, data_root: Path | str, *, recovery_bu
             raise MaintenanceRefusal("unsafe-path", "Recovery bundle path is unsafe.") from error
         row, _ = _raw(path, "recovery-bundle")
         bundle = row
-    if marker.get("recovery_bundle_required") and (bundle is None or not bundle["present"]):
-        bundle_state = "missing-recovery-bundle"
+    if marker.get("recovery_bundle_required"):
+        expected_bundle_hash = marker.get("recovery_bundle_sha256")
+        if (not isinstance(expected_bundle_hash, str) or len(expected_bundle_hash) != 64
+                or bundle is None or not bundle["present"]
+                or bundle["sha256"] != expected_bundle_hash):
+            bundle_state = "missing-recovery-bundle"
+        else:
+            bundle_state = None
     else:
         bundle_state = None
     plan = {
@@ -356,6 +362,9 @@ def apply_update_recovery(root: Path | str, data_root: Path | str, plan_sha256: 
         raise MaintenanceRefusal("plan-mismatch", "Data changed since planning; review a new plan.", plan=plan)
 
     repair_id = plan["plan_sha256"][:32]
+    maintenance_root = root_path / "maintenance"
+    if maintenance_root.is_symlink() or (maintenance_root.exists() and not maintenance_root.is_dir()):
+        raise MaintenanceRefusal("unsafe-path", "Maintenance evidence location is unsafe.", plan=plan)
     attempt, number = _attempt(root_path, repair_id)
     preserved = data.with_name(f"{data.name}.astrid-preserved-{repair_id}-{number}")
     working = data.with_name(f"{data.name}.astrid-working-{repair_id}-{number}")
