@@ -567,7 +567,7 @@ def _pixel_provenance(client: Any, lineage: Mapping[str, Any], digest: str) -> d
         import numpy as np
         from PIL import Image
 
-        from astrid.packs.pixel.actions import _common as pixel  # a missing module raises: never silent
+        from astrid.core.media import load_rgba, outline_integrity  # core must work without the pixel pack
 
         try:
             image = Image.open(io.BytesIO(client.media.read_bytes(digest))).convert("RGBA")
@@ -576,7 +576,7 @@ def _pixel_provenance(client: Any, lineage: Mapping[str, Any], digest: str) -> d
         if image is not None:
             rgba = np.asarray(image)
             if (rgba[..., 3] < 255).any():
-                integrity = pixel.outline_integrity(rgba)
+                integrity = outline_integrity(rgba)
     return {"executor": "pixel.snap", "run_id": run_id,
             "lattice": report.get("grid") or report.get("lattice"),
             "outline_integrity": integrity}

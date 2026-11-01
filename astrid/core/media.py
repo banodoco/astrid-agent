@@ -21,6 +21,39 @@ from astrid.core.subprocess_env import build_child_subprocess_env
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def load_rgba(path: str | Path):
+    """Load a local image as an owned uint8 RGBA array."""
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(path) as image:
+        return np.asarray(image.convert("RGBA"), dtype=np.uint8).copy()
+
+
+def outline_integrity(sprite: Any) -> dict[str, Any]:
+    """Measure the dark outline fraction along exposed alpha boundary cells."""
+    import numpy as np
+
+    alpha = sprite[..., 3] >= 128
+    surrounded = np.pad(alpha, 1, constant_values=False)
+    boundary = alpha & ~(
+        surrounded[:-2, 1:-1] & surrounded[2:, 1:-1]
+        & surrounded[1:-1, :-2] & surrounded[1:-1, 2:]
+    )
+    rgb = sprite[..., :3].astype(np.float64)
+    dark = (
+        0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+    ) < 100
+    count = int(boundary.sum())
+    dark_count = int((boundary & dark).sum())
+    return {
+        "fraction": round(float(dark_count / count), 4) if count else 0.0,
+        "dark_rule": "luminance < 100",
+        "dark_boundary_cells": dark_count,
+        "boundary_cells": count,
+    }
+
+
 # ---------------------------------------------------------------------------
 # MediaProbe – structured ffprobe metadata
 # ---------------------------------------------------------------------------
