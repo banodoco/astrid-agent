@@ -29,6 +29,7 @@ from astrid.core.execution.platform_helpers import owned_by_current_user
 from astrid.core.execution.warm_hold import WarmHolds, _start_timer, idle_seconds
 
 from .worker_preparation import (
+    AcquisitionUnresolvedError,
     _checkpoint_release_progress,
     _release_exact_target_after_quiescence,
     _validate_absence_receipt,
@@ -59,6 +60,8 @@ def runpod_idle_seconds(*, requested: float | None = None,
                        environ: Mapping[str, str] | None = None,
                        service_environ: Mapping[str, str] | None = None) -> float:
     """Request, caller environment, service environment, then ten minutes."""
+    if isinstance(requested, bool):
+        raise RunPodWorkerOwnerError("RunPod idle seconds must be finite and nonnegative")
     default = idle_seconds(600.0, environ=service_environ or {})
     value = idle_seconds(default, requested=requested, environ=environ)
     if not math.isfinite(value) or value < 0:
@@ -147,10 +150,14 @@ class RunPodWarmSessionOwner:
                 or not isinstance(warm.get("task_id"), str) or not warm["task_id"]
                 or not isinstance(warm.get("run_id"), str) or not warm["run_id"]
                 or not isinstance(warm.get("invocation_id"), str) or not warm["invocation_id"]
+                or not isinstance(warm.get("deployment_digest"), str) or not warm["deployment_digest"]
+                or type(warm.get("idle_seconds")) not in (int, float)
+                or not math.isfinite(warm["idle_seconds"]) or warm["idle_seconds"] < 0
                 or type(warm.get("paid_expires_at")) not in (int, float)
                 or not math.isfinite(warm["paid_expires_at"])
                 or (warm["state"] == "idle" and (type(warm.get("idle_expires_at")) not in (int, float)
-                    or not math.isfinite(warm["idle_expires_at"])))
+                    or not math.isfinite(warm["idle_expires_at"])
+                    or warm["idle_expires_at"] > warm["paid_expires_at"]))
                 or (reference is not None and any(warm.get(key) != value for key, value in {
                     "task_id": reference.task_id, "run_id": reference.run_id,
                     "deployment_digest": reference.digest(),
@@ -212,8 +219,18 @@ class RunPodWarmSessionOwner:
                 _validate_absence_receipt(record)
                 return
             warm["generation"] += 1  # invalidate callbacks from an older owner
-            self._save(record, warm)
             pending = record["state"] != "claimed" or warm["state"] == "releasing"
+            try:
+                _invocation, expiry, _idle = self._bounds(record)
+                warm["paid_expires_at"] = min(warm["paid_expires_at"], expiry)
+                if warm["state"] == "idle":
+                    warm["idle_expires_at"] = min(warm["idle_expires_at"], warm["paid_expires_at"])
+            except RunPodWorkerOwnerError:
+                warm["state"] = "releasing"
+                pending = True
+            self._save(record, warm)
+            pending = pending or self.clock() >= warm["paid_expires_at"] or (
+                warm["state"] == "idle" and self.clock() >= warm["idle_expires_at"])
             if not pending:
                 self._arm(warm)
         if pending:
@@ -245,7 +262,7 @@ class RunPodWarmSessionOwner:
                     warm = self._warm(record)
                     if warm["generation"] != generation or record["state"] == "cleanup_complete":
                         return
-                    if record["state"] == "claimed":
+                    if record["state"] == "claimed" and warm["state"] != "releasing":
                         due = (self.clock() >= warm["paid_expires_at"] or
                                (warm["state"] == "idle" and self.clock() >= warm["idle_expires_at"]))
                         if not due:
@@ -270,6 +287,10 @@ class RunPodWarmSessionOwner:
             except Exception as exc:
                 # Keep only a type; provider/transport messages can hold secrets.
                 self.last_error_type = type(exc).__name__
+                if isinstance(exc, AcquisitionUnresolvedError):
+                    # A task-retirement checkpoint may hold P1's lock at the
+                    # deadline. Retry the exact expiry after it yields custody.
+                    self.deadline_timer = self.timer(0.1, lambda: self._expire(reason, generation))
 
 
 def _stop_original_installed_session(selection_value: Mapping[str, Any],
@@ -291,6 +312,12 @@ def _stop_original_installed_session(selection_value: Mapping[str, Any],
             getattr(selection, key) != getattr(receipt, key)
             for key in ("account_ref", "pod_id", "session_ref", "config_digest", "output_root"))):
         raise RunPodWorkerOwnerError("original supervisor stop selection is foreign")
+    if (any(type(pid) is not int or pid <= 0 for pid in (receipt.daemon_pid, receipt.comfy_pid))
+            or receipt.daemon_pid == receipt.comfy_pid
+            or any(not isinstance(birth, str) or not birth for birth in (receipt.daemon_birth_id, receipt.comfy_birth_id))
+            or not isinstance(receipt.launch_token_digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt.launch_token_digest)):
+        raise RunPodWorkerOwnerError("original supervisor process identities are invalid")
     root = str(Path(selection.runtime_root).parent)
     if selection.runtime_root != root + "/runtime":
         raise RunPodWorkerOwnerError("installed runtime root is not canonical")
@@ -938,6 +965,7 @@ class RunPodRemoteWorkerPreparer:
         self, preparation_launch: Any, claim: Mapping[str, Any], owner_lock_fd: int
     ) -> PreparedRunPodHost:
         reference = preparation_launch.reference
+        self._require_retained_admission(claim, reference)
         launch = preparation_launch.launch
         if (launch.deployment_digest != reference.digest()
                 or _credential_destination(reference.credential_ref) != str(
@@ -1041,6 +1069,20 @@ class RunPodRemoteWorkerPreparer:
             raise RunPodWorkerOwnerError("RunPod preparation handle is foreign to this owner")
         return handle
 
+    def _require_retained_admission(self, claim: Mapping[str, Any], reference: Any) -> None:
+        """A saved idle/expired/releasing hold cannot be bypassed by parking."""
+        warm = claim.get("warm_session")
+        if warm is None:
+            return
+        if (not isinstance(warm, Mapping) or warm.get("schema") != "astrid.runpod.warm-session.v1"
+                or warm.get("state") != "active"
+                or warm.get("identity") != {key: claim.get(key) for key in RunPodWarmSessionOwner._identity_fields}
+                or warm.get("task_id") != reference.task_id or warm.get("run_id") != reference.run_id
+                or warm.get("deployment_digest") != reference.digest()
+                or type(warm.get("paid_expires_at")) not in (int, float)
+                or not math.isfinite(warm["paid_expires_at"]) or time.time() >= warm["paid_expires_at"]):
+            raise RunPodWorkerOwnerError("retained RunPod session requires active unexpired exact-task custody")
+
     def persist_parked(self, handle: object, parked: Any) -> None:
         handle = self._assert_handle(handle)
         claim = self._read_claim()
@@ -1064,6 +1106,7 @@ class RunPodRemoteWorkerPreparer:
     ) -> None:
         handle = self._assert_handle(handle)
         claim = self._read_claim()
+        self._require_retained_admission(claim, handle.reference)
         persisted = dict(claim.get("managed_worker") or {})
         if persisted.get("deployment_digest") != handle.reference.digest():
             raise RunPodWorkerOwnerError("persisted RunPod deployment identity changed")
@@ -1091,6 +1134,7 @@ class RunPodRemoteWorkerPreparer:
         if stage not in stages or details.get("schema_version") != 1:
             raise RunPodWorkerOwnerError("Runtime activation checkpoint has an unsupported shape")
         claim = self._read_claim()
+        self._require_retained_admission(claim, handle.reference)
         persisted = dict(claim.get("managed_worker") or {})
         if (persisted.get("deployment_digest") != handle.reference.digest()
                 or persisted.get("process_handle") != handle.process.as_dict()
@@ -1753,6 +1797,7 @@ class RunPodRemoteWorkerPreparer:
                     "incarnation": process.incarnation, "credential_removed": True}
 
     def _restore_locked(self, reference: Any, claim: Mapping[str, Any]) -> Any:
+        self._require_retained_admission(claim, reference)
         value = claim.get("managed_worker")
         if (not isinstance(value, Mapping)
                 or value.get("schema") != "astrid.runpod.managed-worker.v1"

@@ -21,7 +21,8 @@ def no_network(monkeypatch):
 
 @pytest.mark.parametrize("get_result", [(404, None), (200, _pod()), (200, None), (404, {}),
                                         (401, None), (500, None), TimeoutError("secret-provider-message")])
-@pytest.mark.parametrize("listed", [[], [_pod()], None, TimeoutError("secret-list-message")])
+@pytest.mark.parametrize("listed", [[], [_pod()], None, [{}], [_pod(), _pod()],
+                                   TimeoutError("secret-list-message")])
 def test_delete404_still_requires_independent_get404_and_successful_list_absence(
     tmp_path, monkeypatch, get_result, listed,
 ):

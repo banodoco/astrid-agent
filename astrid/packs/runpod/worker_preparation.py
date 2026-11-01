@@ -516,7 +516,7 @@ async def _release_inventory(
 
     try:
         pods = await asyncio.to_thread(list_pods, config.api_key)
-    except Exception as exc:
+    except Exception:
         raise TargetObservationError(
             "could not observe RunPod account pod inventory for exact release"
         ) from None
@@ -528,7 +528,7 @@ async def _release_inventory(
 
     try:
         volumes = await asyncio.to_thread(get_network_volumes, config.api_key)
-    except Exception as exc:
+    except Exception:
         raise TargetObservationError(
             "could not confirm the persistent release volume"
         ) from None
@@ -704,6 +704,9 @@ def _validate_absence_receipt(attempt: Mapping[str, Any]) -> None:
         "account_list_succeeded": True, "account_list_absent": True,
     }
     if (not isinstance(absence, Mapping) or dict(absence) != expected
+            or type(absence.get("exact_get_status")) is not int
+            or absence.get("account_list_succeeded") is not True
+            or absence.get("account_list_absent") is not True
             or not expected["provider_account_ref"] or not expected["pod_id"]):
         raise TargetObservationError("completed release lacks independent exact GET404 and account-list absence")
 
@@ -714,7 +717,7 @@ async def _confirm_release_absence(config: Any, contract: RunPodTargetContract,
     # establish this product receipt. Always make both independent reads here.
     status, body = await asyncio.to_thread(read_exact_pod, config.api_key, contract.pod_id)
     after, volume = await _release_inventory(config, contract)
-    if status != 404 or body is not None or after is not None:
+    if type(status) is not int or status != 404 or body is not None or after is not None:
         raise TargetObservationError("exact GET404 and successful account-list absence are both required")
     return {
         "provider_account_ref": attempt["provider_account_ref"],
