@@ -534,3 +534,12 @@ def test_sdk_redacts_provider_keys_and_quoted_values_in_all_coded_fields() -> No
     assert envelope["field"] == "password=<redacted>"
     assert envelope["fix"] == "OPENAI_API_KEY=<redacted>"
     assert envelope["recovery"] == "Authorization: <redacted>"
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+def test_to_envelope_omits_code_and_source_type_when_none() -> None:
+    err = AstridError("no extras")
+    envelope = err.to_envelope()
+
+    assert "code" not in envelope
+    assert "source_type" not in envelope

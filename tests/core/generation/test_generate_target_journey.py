@@ -618,7 +618,7 @@ def test_f02_sdk_bound_target_failure_is_read_only(source, tmp_path, monkeypatch
     with pytest.raises(AstridError) as error:
         GenerationFacade().image(target="http://localhost:8202" if source == "request" else "auto",
             project_root=repo if source == "repo" else None, prompt="one boat", out=output, dry_run=True)
-    assert error.value.code == "COMFY_TARGET_UNAVAILABLE"
+    assert error.value.code == "target_unreachable"
     port = {"global": 8199, "repo": 8200, "env": 8201, "request": 8202}[source]
     assert observed == [(f"http://127.0.0.1:{port}", "/system_stats")]
     assert config.read_bytes() == original and config.stat().st_mtime_ns == modified
@@ -645,7 +645,7 @@ def test_f02_cli_dry_run_preserves_unreachable_saved_human_target(tmp_path, monk
     output = tmp_path / "absent-output"
     assert console.main(["generate", "image", "one boat", "--dry-run", "--out", str(output)]) == 2
     captured = capsys.readouterr()
-    assert "COMFY_TARGET_UNAVAILABLE" in captured.err and ":8199" in captured.err
+    assert "target_unreachable" in captured.err and ":8199" in captured.err
     assert not captured.out and not output.exists()
     assert config.read_bytes() == original and config.stat().st_mtime_ns == modified
 
@@ -675,7 +675,7 @@ def test_f02_successful_dry_run_keeps_saved_identity_and_does_not_admit(
     plan = GenerationFacade().image(
         prompt="one boat", target=loopback_comfy.url if source == "request" else "auto",
         out=output, dry_run=True)
-    assert plan["target"] == loopback_comfy.url
+    assert plan["target"]["endpoint"] == loopback_comfy.url
     assert config.read_bytes() == original and config.stat().st_mtime_ns == modified
     assert not targets.config_lock_path().exists() and not output.exists()
     assert not loopback_comfy.prompts

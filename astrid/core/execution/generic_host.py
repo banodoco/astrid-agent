@@ -16,6 +16,7 @@ import hashlib
 import heapq
 import hmac
 import importlib.util
+import inspect
 import io
 import json
 import logging
@@ -51,6 +52,11 @@ from astrid.core.execution.platform_helpers import (
     configure_process_control,
     owned_by_current_user,
     process_control_support,
+)
+from astrid.core.source_identity import (
+    _source_digest,
+    source_checkout_closure,
+    source_checkout_closure_digest,
 )
 
 # Startup observations use only the existing private stderr sink. Regular-file
@@ -126,6 +132,7 @@ from astrid.core.execution.guards import (
 )
 from astrid.core.execution.host_log import start_stdio_rotator
 from astrid.core.execution.managed_inputs import managed_file_digest
+from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.execution.managed_tool_session import (
     AdmissionToken,
     CapabilityDescriptor,
@@ -201,6 +208,16 @@ def _managed_input_staging_name(port: str, digest: str, original_name: str | Non
 
 if TYPE_CHECKING:
     from astrid.core.execution.executor.schema import ExecutorDefinition
+    from astrid.core.execution.orchestrator.schema import OrchestratorDefinition
+
+
+def _remotion_readiness_message(exc: BaseException) -> str:
+    """Explain why a worker's launch-bound Remotion context was rejected."""
+    reason = str(exc).strip() or type(exc).__name__
+    message = f"worker Remotion readiness context is unavailable: {reason}"
+    if "registry corpus changed" in reason:
+        message += "; restart Astrid to re-bind it"
+    return message
 
 
 def _structured_failure_kwargs(error: object) -> dict[str, Any]:
@@ -225,6 +242,186 @@ class HostError(RuntimeError):
         self.safe_message = safe_message
 
 
+class _RuntimeSourceCustody:
+    """Retain the private launcher's bytes, never a caller's source claims."""
+
+    def __init__(self, sources: Any):
+        from runtime_protocol import verified_host_launch
+
+        issuer = sys.modules.get(type(sources).__module__)
+        issuer_file = getattr(issuer, "__file__", None)
+        if (issuer is None or type(sources) is not getattr(issuer, "_RuntimeExternalSources", None)
+                or not isinstance(issuer_file, str)
+                or Path(issuer_file).resolve() != Path(verified_host_launch.__file__).resolve()):
+            raise HostError("external sources require the private Runtime launcher handle")
+        self._sources = sources
+        self._payload = sources.inventory()
+        self._bound = False
+        try:
+            value = json.loads(self._payload)
+            from runtime_protocol.external_pack_sources import _validate_grants
+            from runtime_protocol.verified_host_launch import canonical
+
+            if (type(self._payload) is not bytes or canonical(value) != self._payload
+                    or set(value) != {"scope", "selected_profile_digest", "sources"}
+                    or set(value["scope"]) != {"operation_id", "channel_id", "owner_epoch", "custody_scope"}
+                    or any(not isinstance(v, str) or not v for v in value["scope"].values())
+                    or not re.fullmatch(r"[0-9a-f]{64}", value["selected_profile_digest"])
+                    or not isinstance(value["sources"], list) or not value["sources"]):
+                raise ValueError("invalid external source inventory")
+            grants = []
+            for source in value["sources"]:
+                grants.append({key: item for key, item in source.items()
+                               if key not in {"contents", "materialization", "ancestors"}})
+                if (set(source) != set(grants[-1]) | {"contents", "materialization", "ancestors"}
+                        or set(source["contents"]) != set(source["files"])):
+                    raise ValueError("invalid external captured contents")
+                for relative, encoded in source["contents"].items():
+                    data = base64.b64decode(encoded, validate=True)
+                    if hashlib.sha256(data).hexdigest() != source["files"][relative]:
+                        raise ValueError("external captured bytes differ from inventory")
+            _validate_grants(grants)
+            self.verify(require_bound=False)
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            raise HostError("invalid private Runtime source capture") from exc
+
+    def bind(self, preparation: Mapping[str, Any]) -> None:
+        from runtime_protocol.verified_host_launch import raw_digest
+
+        value = json.loads(self._payload)
+        if ({key: preparation.get(key) for key in value["scope"]} != value["scope"]
+                or raw_digest(preparation.get("profile")) != value["selected_profile_digest"]):
+            raise HostError("external source custody differs from retained preparation")
+        extras = preparation["profile"].get("host_launch", {}).get("additional_pack_roots", [])
+        if extras != [{"path": source["root"], "files": source["files"]} for source in value["sources"]]:
+            raise HostError("external selected roots differ from retained preparation")
+        self._owner_support_root = Path(preparation["profile"]["support_root"])
+        self._workspace_uuid = preparation["profile"]["workspace_uuid"]
+        self._launch_roots = [preparation["profile"].get("host_launch", {}).get("pack_root"),
+                              *(source["root"] for source in value["sources"])]
+        self._bound = True
+        self.verify()
+
+    def verify(self, *, require_bound: bool = True) -> None:
+        if require_bound and not self._bound:
+            raise HostError("external source custody has no retained preparation")
+        if self._sources.inventory() != self._payload:
+            raise HostError("external source custody changed")
+        from runtime_protocol.external_pack_sources import _capture, _read_state, _state_path
+        from runtime_protocol.verified_host_launch import canonical
+
+        state = _read_state(_state_path(self._owner_support_root)) if self._bound else None
+        if state is not None and (not isinstance(state, dict)
+                or set(state) != {"workspace_uuid", "grants"}
+                or state["workspace_uuid"] != self._workspace_uuid):
+            raise HostError("external source owner scope changed")
+        for source in json.loads(self._payload)["sources"]:
+            grant = {key: value for key, value in source.items()
+                     if key not in {"contents", "materialization", "ancestors"}}
+            if state is not None and grant not in state["grants"]:
+                raise HostError("external source owner grant was revoked")
+            if canonical(_capture(grant)) != canonical(source):
+                raise HostError("external repository custody changed")
+
+    def source_for(self, path: Path) -> Mapping[str, Any] | None:
+        return next((source for source in json.loads(self._payload)["sources"]
+                     if path == Path(source["root"]) or path.is_relative_to(source["root"])), None)
+
+    def descriptor(self, record: Any, *, capability_kind: str = "executor"):
+        selected = self.select(record, capability_kind=capability_kind)
+        if selected is None:
+            return None
+        channel = tempfile.TemporaryFile()
+        channel.write(selected)
+        channel.seek(0)
+        return channel
+
+    def select(self, record: Any, *, capability_kind: str = "executor") -> bytes | None:
+        self.verify()
+        source = self.source_for(record.source_root)
+        if source is None:
+            builtin = self._launch_roots[0]
+            if builtin and record.source_root.is_relative_to(builtin):
+                return None
+            raise HostError("external source has no Runtime owner grant")
+        if _capability_digest(record.definition.to_dict()) != record.capability_digest:
+            raise HostError("external definition changed after discovery")
+        value = json.loads(self._payload)
+        matches = [definition for definition in source["definitions"]
+                   if definition["capability_kind"] == capability_kind
+                   and definition["capability_id"] == record.id
+                   and definition["definition_digest"] == record.capability_digest
+                   and record.manifest_path == Path(source["root"]) / definition["path"]]
+        if len(matches) != 1:
+            raise HostError("external definition has no exact Runtime selection")
+        selected = self._sources.select(scope=value["scope"],
+            selected_profile_digest=value["selected_profile_digest"], root=source["root"],
+            definition=matches[0])
+        from runtime_protocol.verified_host_launch import canonical
+
+        if selected != canonical({"scope": value["scope"],
+                "selected_profile_digest": value["selected_profile_digest"],
+                "source": source, "definition": matches[0]}):
+            raise HostError("external selected source custody changed")
+        return selected
+
+    def orchestrator_definitions(self, roots: tuple[Path, ...]):
+        """Read selected static manifests from owner-captured bytes only."""
+        import yaml
+
+        from astrid.core.execution.orchestrator.schema import validate_orchestrator_definition
+
+        self.verify()
+        for source in json.loads(self._payload)["sources"]:
+            root = Path(source["root"])
+            if not any(root == parent or root.is_relative_to(parent) for parent in roots):
+                continue
+            contents = {name: base64.b64decode(data, validate=True)
+                        for name, data in source["contents"].items()}
+            for selected in source["definitions"]:
+                if selected["capability_kind"] != "orchestrator":
+                    continue
+                path = Path(selected["path"])
+                if path.name not in {"orchestrator.yaml", "orchestrator.yml", "orchestrator.json"}:
+                    raise HostError("external orchestrator requires a captured static manifest")
+                data = contents[path.as_posix()]
+                payload = json.loads(data) if path.suffix == ".json" else yaml.safe_load(data)
+                definition = validate_orchestrator_definition(payload)
+                folder = root / path.parent
+                metadata = dict(definition.metadata)
+                metadata.update(source="folder", orchestrator_root=str(folder), folder_id=folder.name,
+                                manifest_file=str(root / path))
+                for filename, key in (("requirements.txt", "requirements_file"),
+                                      ("pyproject.toml", "pyproject_file"), ("STAGE.md", "stage_file")):
+                    relative = (path.parent / filename).as_posix()
+                    if relative in contents:
+                        metadata[key] = str(root / relative)
+                # Match folder/pack metadata without reopening either manifest.
+                pack_path = next((parent / "pack.yaml" for parent in (path.parent, *path.parent.parents)
+                                  if (parent / "pack.yaml").as_posix() in contents), None)
+                if pack_path is not None:
+                    pack_root = root / pack_path.parent
+                    pack = yaml.safe_load(contents[pack_path.as_posix()])
+                    metadata.setdefault("source_pack", str(pack.get("id") or pack_root.name))
+                    metadata.setdefault("pack_root", str(pack_root))
+                definition = replace(definition, metadata=metadata)
+                if (definition.id != selected["capability_id"]
+                        or _capability_digest(definition.to_dict()) != selected["definition_digest"]):
+                    raise HostError("external orchestrator differs from exact Runtime selection")
+                yield folder, definition, root / path
+
+
+_runtime_external_sources: _RuntimeSourceCustody | None = None
+
+
+def _consume_runtime_external_sources(*, sources: Any) -> None:
+    """Called only by Runtime's retained launcher, before CLI/discovery."""
+    global _runtime_external_sources
+    if _runtime_external_sources is not None:
+        raise HostError("external Runtime source custody was already consumed")
+    _runtime_external_sources = _RuntimeSourceCustody(sources)
+
+
 class CommandCleanupUnresolved(HostError):
     """A command finished but its task scope may still own child writers."""
 
@@ -240,7 +437,6 @@ class HostCancelled(HostError):
     """The runtime cancelled the attempt while the subprocess was running."""
 
 
-_CONTENT_ADDRESSED_MEDIA_ID = re.compile(r"(?:sha256:)?([0-9a-f]{64})\Z")
 _MANAGED_ASSET_LOCATOR_KEYS = frozenset({"url", "uri", "path", "source_path", "locator", "realm", "file"})
 
 
@@ -257,11 +453,10 @@ def _managed_asset_identity(key: str, raw: Mapping[str, Any]) -> tuple[str, str]
     if _MANAGED_ASSET_LOCATOR_KEYS.intersection(raw):
         raise HostError(f"managed asset {key!r} contains an unmanaged locator")
     object_id = raw.get("object_id") or raw.get("media_id")
-    raw_digest = raw.get("digest") or raw.get("content_sha256") or raw.get("sha256") or raw.get("hash")
-    media_id = raw.get("media_id")
-    media_match = _CONTENT_ADDRESSED_MEDIA_ID.fullmatch(media_id) if isinstance(media_id, str) else None
-    if not raw_digest and media_match:
-        raw_digest = media_match.group(1)
+    try:
+        raw_digest = managed_asset_digest(raw)
+    except ValueError as exc:
+        raise HostError(f"managed asset {key!r}: {exc}") from exc
     if not isinstance(object_id, str) or not object_id.strip() or not isinstance(raw_digest, str):
         raise HostError(f"managed asset {key!r} requires object_id and digest")
     digest_hex = raw_digest.removeprefix("sha256:")
@@ -1732,7 +1927,8 @@ def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]
     here, before any child exists. Only an omitted selector is chosen by the
     host: Remotion when this host can run it, else ffmpeg.
     """
-    if record.adapter.remotion != "selected":
+    adapter = getattr(record, "adapter", None)
+    if adapter is None or adapter.remotion != "selected":
         return None
     from astrid.core.rendering.contracts import FFMPEG_RENDERER_ID, REMOTION_RENDERER_ID
 
@@ -1746,8 +1942,13 @@ def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]
     else:
         selector, chosen_by = requested, "task"
     if selector == REMOTION_RENDERER_ID and not remotion_ok:
+        from astrid.core.rendering.failure_message import render_failure_message
+
         raise HostError(
-            f"{record.id}: this task renders with {REMOTION_RENDERER_ID}, which this host cannot run: {reason}"
+            render_failure_message(
+                f"{record.id}: this task renders with {REMOTION_RENDERER_ID}, which this host cannot run: {reason}",
+                remotion_reason=reason,
+            )
         )
     return {"selector": selector, "chosen_by": chosen_by, "remotion_ok": remotion_ok, "remotion_reason": reason}
 
@@ -1862,6 +2063,152 @@ def _fixed_worker_environment(record: "CapabilityRecord", explicit_env: Mapping[
         elif name.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")):
             raise HostError(f"undeclared secret environment variable {name!r}")
     return explicit
+
+
+def _record_may_render(record: 'CapabilityRecord') -> bool:
+    """True when a capability can run Remotion (so its worker context needs validation)."""
+    if str(record.definition.metadata.get('source_pack') or '') == 'rendering':
+        return True
+    try:
+        return AdapterRegistry.from_matrix(record.definition, record.matrix).remotion != 'never'
+    except HostError:
+        return True  # Unknown adapter: stay strict rather than skip validation.
+
+
+def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment: Mapping[str, str],
+                                     capability_matrix: Path | None = None,
+                                     *, remotion_only: bool = False,
+                                     installed_root: Path | None = None) -> list[dict[str, str]]:
+    """Project only fixed launch-known inputs; never expand task placeholders.
+
+    With ``remotion_only`` just the worker environments of capabilities that
+    can render are kept (matrix/metadata ``requires_remotion`` or the
+    rendering pack itself); the host baseline variant is always present.
+    A render in any other context is refused by ``_validated_runtime``.
+    """
+    from astrid.core.rendering.remotion_runtime import (
+        _NODE_ENV_KEYS, _UNSUPPORTED_PYTHON_STARTUP, _REGISTRY_SELECTORS,
+        _validate_remotion_worker_environment,
+    )
+    from astrid.core.subprocess_env import (
+        _SAFE_BASE_ENV,
+        _WINDOWS_BASE_ENV,
+        _is_secret_name,
+        _normalize_secret_names,
+    )
+    from astrid.core.execution.executor.folder import discover_folder_executor_roots, load_folder_executor
+    from astrid.core.execution.executor.schema import ExecutorValidationError
+    matrix = GenericPackHost._load_matrix(capability_matrix)
+    safe_base_env = set(_SAFE_BASE_ENV)
+    if sys.platform == "win32":
+        safe_base_env.update(_WINDOWS_BASE_ENV)
+    records: dict[str, CapabilityRecord] = {}
+    for root in pack_roots:
+        for executor_root in discover_folder_executor_roots(root):
+            try:
+                definition = load_folder_executor(executor_root)
+            except (ExecutorValidationError, OSError, ValueError):
+                continue  # Same unavailable optional definition as host discovery.
+            definition = _attach_pack_metadata(definition, executor_root)
+            records[definition.id] = CapabilityRecord(
+                definition=definition, capability_digest='', source_digest='',
+                source_root=executor_root, matrix=matrix.get(definition.id, {}))
+    # Match host discovery's strict V3 projection and exact source roots. A
+    # local orchestration action is deliberately not a host worker definition.
+    from astrid.core.pack.discovery import discover_pack_metadata
+    from astrid.sdk.actions import action_executor_definition
+    for discovered_pack in discover_pack_metadata(
+        project_root=pack_roots[0] if pack_roots else Path.cwd(),
+        extra_pack_roots=tuple(str(root) for root in pack_roots),
+    ):
+        pack = discovered_pack.pack
+        pack_root = pack.root.resolve()
+        if not any(pack_root == root or pack_root.is_relative_to(root) for root in pack_roots):
+            continue
+        for local_id, declaration in pack.actions.items():
+            try:
+                definition = action_executor_definition(discovered_pack, local_id, declaration)
+            except (ExecutorValidationError, OSError, ValueError):
+                continue  # Same unavailable optional action as host discovery.
+            records[definition.id] = CapabilityRecord(
+                definition=definition, capability_digest='', source_digest='',
+                source_root=pack_root, matrix=matrix.get(definition.id, {}))
+    # The SDK caller can carry import paths removed from the installed host
+    # launch. Qualify the explicit host mapping, not that caller's ambient env.
+    dependencies = dependency_pythonpath(environment)
+    baseline = build_child_subprocess_env(base=environment, parent=environment)
+    installed = (environment.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed'
+                 or os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed')
+    if installed:
+        from astrid.core.rendering.remotion_runtime import _registry_context
+        _registry_context(environment, generator=False)
+        # The installed host already discovers its selected package tree.
+        # Do not make a worker's pack root or source path a second authority.
+        baseline.pop(ASTRID_PACKS_PATH, None)
+        baseline.pop('PYTHONPATH', None)
+    variants = [baseline]
+    for record in records.values():
+        if remotion_only and not _record_may_render(record):
+            continue
+        if installed and remotion_only and not record.source_root.is_relative_to(
+                (installed_root or Path(__file__).absolute().parents[3]) / 'astrid/packs'):
+            raise HostError('installed Remotion workers require product-owned pack roots')
+        # Startup validation has no task credential channel. Legacy manifests
+        # can still list credentials in passthrough: omit those names entirely,
+        # while retaining their syntax checks without declaring any authority.
+        passthrough = record.definition.isolation.env_passthrough
+        omitted = tuple(name for name in passthrough if _is_secret_name(name))
+        _normalize_secret_names(omitted, 'probe_omitted_secrets')
+        public_passthrough = tuple(name for name in passthrough if not _is_secret_name(name))
+        command = record.definition.command
+        fixed = {str(k): str(v) for k, v in (getattr(command, 'env', {}) or {}).items()
+                 if '{' not in str(v) and '}' not in str(v)} if command is not None else {}
+        fixed = _fixed_worker_environment(record, fixed, environment)
+        relevant = {k: v for k, v in fixed.items()
+                    if k in set(_NODE_ENV_KEYS) | safe_base_env | set(_REGISTRY_SELECTORS) | set(_UNSUPPORTED_PYTHON_STARTUP) | {'XDG_CONFIG_HOME', 'PYTHONPATH'}
+                    or k.startswith(('DYLD_', 'LD_', 'GIT_'))
+                    or k in {'PYTHONEXECUTABLE', '__PYVENV_LAUNCHER__', 'PYTHONHOME',
+                             'NODE_OPTIONS', 'NODE_PATH', 'NODE_ICU_DATA', 'OPENSSL_CONF'}}
+        projected = build_child_subprocess_env(
+            base=environment, parent=environment, explicit_env=relevant,
+            passthrough=public_passthrough,
+            declared_passthrough=public_passthrough)
+        if _record_may_render(record):
+            _validate_remotion_worker_environment(projected)
+        native = dict(projected)
+        if installed:
+            if ASTRID_PACKS_PATH not in fixed:
+                native.pop(ASTRID_PACKS_PATH, None)
+            if 'PYTHONPATH' not in fixed:
+                native.pop('PYTHONPATH', None)
+        else:
+            native[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in pack_roots)
+            native['PYTHONPATH'] = os.pathsep.join(dict.fromkeys((
+                str(Path(__file__).resolve().parents[3]), *dependencies,
+                *(str(root) for root in _admitted_python_roots(record.source_root, record.definition)))))
+        variants.append(native)
+        # The command builder supplies a canonical default, then command/env
+        # and required nonsecret configuration override it, in the real order.
+        command_defaults = {} if installed else {
+            'PYTHONPATH': os.pathsep.join((str(Path(__file__).resolve().parents[3]), *dependencies)),
+        }
+        command_fixed = _fixed_worker_environment(record, {
+            **command_defaults, **fixed}, environment)
+        command_relevant = dict(relevant)
+        if 'PYTHONPATH' in command_fixed:
+            command_relevant['PYTHONPATH'] = command_fixed['PYTHONPATH']
+        command_variant = build_child_subprocess_env(
+            base=environment, parent=environment, explicit_env=command_relevant,
+            passthrough=public_passthrough,
+            declared_passthrough=public_passthrough)
+        if _record_may_render(record):
+            _validate_remotion_worker_environment(command_variant)
+        if not installed:
+            command_variant['PYTHONPATH'] = _command_worker_pythonpath(record, command_variant['PYTHONPATH'])
+        elif ASTRID_PACKS_PATH not in fixed:
+            command_variant.pop(ASTRID_PACKS_PATH, None)
+        variants.append(command_variant)
+    return variants
 
 
 def _command_worker_pythonpath(record: 'CapabilityRecord', existing: str) -> str:
@@ -2038,7 +2385,8 @@ site.execsitecustomize = lambda: None
 site.execusercustomize = lambda: None
 site.main()
 sys.path[:0] = list(dict.fromkeys(config['imports']))
-sys.path.insert(0, os.getcwd())
+if not config["captured"]:
+    sys.path.insert(0, os.getcwd())
 import runpy
 sys.argv = [config['module'], *sys.argv[2:]]
 runpy.run_module(config['module'], run_name='__main__', alter_sys=True)
@@ -2068,9 +2416,28 @@ def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str]
         "imports": [path for path in env.get("PYTHONPATH", "").split(os.pathsep) if path],
         "module": arguments[1],
         "broker_required": broker_required,
+        "captured": "--external-source-fd" in arguments,
     }
     return [argv[0], *flags, "-I", "-S", "-c", _STRICT_NETWORK_STARTUP,
             json.dumps(config, sort_keys=True), *arguments[2:]]
+
+
+def _captured_worker_argv(argv: list[str]) -> list[str]:
+    """Use the existing worker without startup imports from a mutable pack cwd."""
+    if "-I" in argv:
+        return argv
+    roots = []
+    if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") != "installed":
+        for name in ("astrid", "runtime_protocol", "astrid_runtime_client"):
+            module = sys.modules.get(name)
+            if module is not None and module.__file__:
+                roots.append(str(Path(module.__file__).resolve().parent.parent))
+        roots.extend(_dependency_pythonpath())
+    startup = ("import sys,runpy;sys.path[:0]=" + repr(list(dict.fromkeys(roots)))
+               + ";sys.argv=['astrid.core.execution.generic_host_worker',*sys.argv[1:]];"
+               + "runpy.run_module('astrid.core.execution.generic_host_worker',run_name='__main__')")
+    module_index = argv.index("astrid.core.execution.generic_host_worker")
+    return [argv[0], *argv[1:module_index - 1], "-I", "-c", startup, *argv[module_index + 1:]]
 
 
 def _network_sandbox_argv(argv: list[str], attempt: Path, endpoint: str | None) -> list[str]:
@@ -2185,18 +2552,6 @@ def _hivemind_source_preflight(record: "CapabilityRecord") -> dict[str, Any] | N
     return {"ok": True, "checkout": str(checkout), "revision": revision}
 
 
-def _source_digest(root: Path) -> str:
-    """Hash the complete executor source tree without retaining a source path in a task."""
-    entries: list[tuple[str, str]] = []
-    if root.is_file():
-        return hashlib.sha256(root.read_bytes()).hexdigest()
-    for path in sorted(root.rglob("*"), key=lambda path: path.parts):
-        if not path.is_file() or "__pycache__" in path.parts:
-            continue
-        entries.append((path.relative_to(root).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest()))
-    return _canonical_digest(entries)
-
-
 _TASK_OUTPUT_TAIL_BYTES = 64 * 1024
 _TASK_OUTPUT_TAIL_NAMES = {"stdout": "task-stdout-tail.log", "stderr": "task-stderr-tail.log"}
 _TASK_OUTPUT_METADATA_NAME = "task-output-capture.json"
@@ -2258,6 +2613,7 @@ _RENDERER_WORKSPACE_MARKERS = (
     ".render-service",
     ".render-inputs-",
     ".remotion-runtime-",
+    ".r-",
     "astrid-render-assets-",
 )
 
@@ -4227,50 +4583,6 @@ def source_checkout_digest(checkout: str | Path) -> str:
     return _source_digest(pack_root)
 
 
-def source_checkout_closure(checkout: str | Path) -> dict[str, Any]:
-    """Measure the executable host closure owned by this checkout.
-
-    The legacy pack digest remains the capability-admission identity.  This
-    separate receipt covers the process host, Astrid core, SDK/bootstrap,
-    package entrypoints, launcher, and vendored workspace-client files that
-    can change what an admitted executable does.
-    """
-    root = Path(checkout).expanduser().resolve()
-    components = {
-        "host": root / "astrid" / "core" / "execution" / "generic_host.py",
-        "core": root / "astrid" / "core",
-        "sdk": root / "astrid" / "sdk",
-        "launcher": root / "astrid" / "omp_agent.py",
-        "astrid_entrypoint": root / "astrid" / "__init__.py",
-        "astrid_version": root / "astrid" / "version.py",
-        "astrid_main": root / "astrid" / "__main__.py",
-        "astrid_runtime_cli": root / "astrid" / "runtime_cli.py",
-        "vendored_workspace_client": root / "astrid_runtime_client",
-    }
-    measured: list[dict[str, str]] = []
-    for name, path in components.items():
-        if path.is_symlink() or not path.exists():
-            raise ValueError(f"source closure component is missing or symlinked: {name}")
-        if path.is_dir() and any(child.is_symlink() for child in path.rglob("*")):
-            raise ValueError(f"source closure component contains a symlink: {name}")
-        measured.append({
-            "component": name,
-            "path": str(path.relative_to(root)),
-            "sha256": _source_digest(path),
-        })
-    measured.sort(key=lambda item: item["component"])
-    return {
-        "schema_version": 1,
-        "components": measured,
-        "digest": _canonical_digest(measured),
-    }
-
-
-def source_checkout_closure_digest(checkout: str | Path) -> str:
-    """Return the deterministic digest for the executable source closure."""
-    return str(source_checkout_closure(checkout)["digest"])
-
-
 def process_birth_identity(pid: int | None = None) -> str:
     """Return the OS birth token used to distinguish a reused PID."""
     return _process_birth_identity(pid)
@@ -4428,6 +4740,18 @@ def _attach_pack_metadata(definition: "ExecutorDefinition", executor_root: Path)
     metadata.setdefault("source_pack", pack_id)
     metadata.setdefault("pack_root", str(pack_root))
     return replace(definition, metadata=metadata)
+
+
+@dataclass(frozen=True)
+class _OrchestratorRecord:
+    definition: OrchestratorDefinition
+    capability_digest: str
+    source_root: Path
+    manifest_path: Path
+
+    @property
+    def id(self) -> str:
+        return self.definition.id
 
 
 @dataclass(frozen=True)
@@ -5080,10 +5404,11 @@ class RuntimeProtocolClient:
             "result": dict(result),
             "runtime_epoch": epoch,
         }
-        return self.generated.settle_attempt(
-            attempt_id,
-            settlement,
-            idempotency_key=f"settle-{attempt_id}-{fence}",
+        return self._terminal_evidence_mutation(
+            task_id, result if "manifest_ref" in result else None,
+            lambda: self.generated.settle_attempt(
+                attempt_id, settlement, idempotency_key=f"settle-{attempt_id}-{fence}",
+            ),
         )
 
     def fail(
@@ -5097,6 +5422,8 @@ class RuntimeProtocolClient:
         fence: int | None = None,
         failure_diagnostic: Mapping[str, Any] | None = None,
         structured_error: Mapping[str, Any] | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
     ):
         if not attempt_id or fence is None:
             raise HostError("generated failure requires attempt_id and fence")
@@ -5119,14 +5446,111 @@ class RuntimeProtocolClient:
         epoch = self._attempt_runtime_epochs.get(str(attempt_id))
         if epoch is None:
             raise HostError("attempt runtime epoch was not captured at claim")
-        return completion_client.fail_attempt(
-            attempt_id,
-            lease_id=lease_token,
-            fence=int(fence),
-            error=payload,
-            runtime_epoch=epoch,
-            idempotency_key=f"fail-{attempt_id}-{fence}",
+        evidence = {}
+        if outputs is not None:
+            evidence["outputs"] = [dict(row) for row in outputs]
+        if result is not None:
+            evidence["result"] = dict(result)
+        idempotency_key = f"fail-{attempt_id}-{fence}"
+        request = dict(
+            lease_id=lease_token, fence=int(fence), error=payload,
+            runtime_epoch=epoch, idempotency_key=idempotency_key, **evidence,
         )
+        return self._terminal_evidence_mutation(
+            task_id, result,
+            lambda: self._terminal_evidence_request(completion_client, "fail_attempt", attempt_id, request),
+        )
+
+    @staticmethod
+    def _terminal_evidence_request(client, operation_name, identifier, request):
+        """Carry server-supported terminal fields omitted by a generated signature.
+
+        The published server accepts F05 outputs/result and fenced cancellation.
+        Keep those bytes and the original idempotency key through the generated
+        transport/decoder when its convenience method has the older signature.
+        """
+        operation = getattr(client, operation_name)
+        parameters = inspect.signature(operation).parameters
+        if (any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+                or request.keys() <= parameters.keys()):
+            return operation(identifier, **request)
+        routes = {"fail_attempt": ("attempts", "fail"), "cancel_task": ("tasks", "cancel")}
+        if (operation_name not in routes or not callable(getattr(client, "_request", None))
+                or not callable(getattr(client, "_mutation_json", None))):
+            raise HostError("Runtime client cannot carry the complete terminal evidence request")
+        collection, action = routes[operation_name]
+        payload = dict(request)
+        idempotency_key = payload.pop("idempotency_key")
+        _, _, body = client._request(
+            "POST", f"/v1/{collection}/{quote(str(identifier), safe='')}/{action}",
+            body=json.dumps(payload, separators=(",", ":"), allow_nan=False).encode(),
+            headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key},
+        )
+        return client._mutation_json(body)
+
+    def _terminal_evidence_mutation(
+        self, task_id: str, expected_result: Mapping[str, Any] | None,
+        mutation: Callable[[], Any],
+    ) -> Any:
+        """Retry the same fenced write after checking whether its ACK was lost."""
+        last_error: BaseException | None = None
+        for attempt in range(2):
+            try:
+                response = mutation()
+            except Exception as exc:
+                last_error = exc
+                if expected_result is not None:
+                    try:
+                        return self._verify_terminal_evidence_readback(task_id, expected_result, None)
+                    except Exception:
+                        pass
+                if attempt == 0:
+                    continue
+                raise
+            if expected_result is None:
+                return response
+            try:
+                self._verify_terminal_evidence_readback(task_id, expected_result, response)
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    continue
+                raise
+            return response
+        assert last_error is not None
+        raise last_error
+
+    def _verify_terminal_evidence_readback(
+        self, task_id: str, expected_result: Mapping[str, Any], response: Any,
+    ) -> Any:
+        """Require a Runtime task readback to contain the submitted durable result."""
+        def contains(actual: Any, expected: Mapping[str, Any]) -> bool:
+            if not isinstance(actual, Mapping):
+                return False
+            return all(
+                (contains(actual.get(key), value) if isinstance(value, Mapping)
+                 else actual.get(key) == value)
+                for key, value in expected.items()
+            )
+
+        task = response.get("task") if isinstance(response, Mapping) else getattr(response, "task", None)
+        task_id_value = (
+            task.get("task_id", task.get("id")) if isinstance(task, Mapping)
+            else getattr(task, "task_id", getattr(task, "id", None))
+        )
+        result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
+        if (task_id_value is not None and str(task_id_value) != task_id) or not contains(result, expected_result):
+            task = self.generated.get_task(task_id)
+            task = task.get("task", task) if isinstance(task, Mapping) else task
+            task_id_value = (
+                task.get("task_id", task.get("id")) if isinstance(task, Mapping)
+                else getattr(task, "task_id", getattr(task, "id", None))
+            )
+            result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
+            if ((task_id_value is not None and str(task_id_value) != task_id)
+                    or not contains(result, expected_result)):
+                raise HostError("Runtime terminal evidence is not present in durable task readback")
+        return {"task": task} if task is not None else {"result": result}
 
     def cancel(
         self,
@@ -5135,6 +5559,10 @@ class RuntimeProtocolClient:
         attempt_id: str | None = None,
         fence: int | None = None,
         lease_id: str | None = None,
+        runtime_epoch: int | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
+        stop_observed: bool | None = None,
     ):
         if attempt_id is None or fence is None:
             return self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
@@ -5145,14 +5573,50 @@ class RuntimeProtocolClient:
             else getattr(task, "attempt_id", None)
         )
         if current_attempt != attempt_id:
+            # A prior observed-stop cancellation may already have cleared the
+            # active attempt before its response/readback was lost. Resolve
+            # that replay from durable task.result before rejecting the old
+            # fence; never issue a fresh mutation under a cleared binding.
+            if result is not None:
+                return self._verify_terminal_evidence_readback(
+                    task_id, result, {"task": task},
+                )
             raise HostError("runtime cancellation target no longer matches attempt")
         version = task.get("version") if isinstance(task, Mapping) else getattr(task, "version", None)
         if isinstance(version, bool) or not isinstance(version, int):
             raise HostError("runtime cancellation target has no version fence")
-        return self._lifecycle_client().cancel_task(
-            task_id,
+        epoch = self._attempt_runtime_epochs.get(str(attempt_id))
+        if runtime_epoch is not None and runtime_epoch != epoch:
+            raise HostError("runtime cancellation epoch does not match the claim fence")
+        if isinstance(fence, bool):
+            raise HostError("runtime cancellation fence must be an integer")
+        evidence = outputs is not None or result is not None or stop_observed is not None
+        if stop_observed is not None and not isinstance(stop_observed, bool):
+            raise HostError("runtime stop_observed must be a boolean")
+        if evidence and (lease_id is None or epoch is None):
+            raise HostError("runtime cancellation evidence requires a complete attempt fence")
+        kwargs = {}
+        if evidence:
+            kwargs.update(
+                attempt_id=attempt_id,
+                lease_id=lease_id,
+                fence=int(fence),
+                runtime_epoch=epoch,
+                **({"outputs": [dict(row) for row in outputs]} if outputs is not None else {}),
+                **({"result": dict(result)} if result is not None else {}),
+                stop_observed=stop_observed,
+            )
+        idempotency_key = f"cancel-{task_id}-{attempt_id}-{int(fence)}"
+        if stop_observed is not None:
+            idempotency_key += f"-stop-{int(stop_observed)}"
+        request = dict(
             expected_version=version,
-            idempotency_key=f"cancel-{task_id}-{attempt_id}-{int(fence)}",
+            idempotency_key=idempotency_key,
+            **kwargs,
+        )
+        return self._terminal_evidence_mutation(
+            task_id, result,
+            lambda: self._terminal_evidence_request(self._lifecycle_client(), "cancel_task", task_id, request),
         )
 
     def get_object(self, digest: str) -> bytes:
@@ -5665,6 +6129,10 @@ class GenericPackHost:
         for raw_root in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep):
             if raw_root:
                 configured_roots.append(Path(raw_root).expanduser().resolve())
+        if _runtime_external_sources is not None:
+            _runtime_external_sources.verify()
+            if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
+                raise HostError("discovery root is outside retained Runtime source custody")
         self.pack_roots = tuple(dict.fromkeys(configured_roots))
         self.client = client
         self.executor_id = executor_id
@@ -5674,6 +6142,7 @@ class GenericPackHost:
         self.attempt_root = Path(attempt_root).expanduser().resolve() if attempt_root else None
         self.attempt_base = Path(attempt_base).expanduser().resolve() if attempt_base else None
         self.capabilities: dict[str, CapabilityRecord] = {}
+        self._orchestrators: dict[str, _OrchestratorRecord] = {}
         self.stale_matrix_entries: tuple[str, ...] = ()
         self._registered_digests: dict[str, str] = {}
         self._registered_state: dict[str, dict[str, str]] = {}
@@ -5726,6 +6195,9 @@ class GenericPackHost:
         self.managed_tool_session = ManagedToolSession(
             manager_id=self.executor_id
         )
+        # One task at a time uses this host object's session slot. Parallel
+        # serving owns separate host objects; this is not a device scheduler.
+        self._session_task_lock = threading.Lock()
 
         self._active_processes: set[subprocess.Popen] = set()
         self._unresolved_task_scopes: list[str] = []
@@ -5791,15 +6263,22 @@ class GenericPackHost:
                 platform.private_directory(root)
             else:
                 root.mkdir()
+                root.chmod(0o700)
             return root.resolve()
+        # The lease and progress marker carry the task/attempt/fence identity;
+        # do not put those values in an ephemeral filesystem basename.  Keep
+        # the established reclaim prefix so storage_ownership still finds
+        # crash-abandoned roots.
         if self.attempt_root is None and sys.platform == "win32":
-            root = Path(tempfile.gettempdir()) / f"astrid-attempt-{task_id}-{secrets_module.token_hex(16)}"
+            root = Path(tempfile.gettempdir()) / f"astrid-attempt-{secrets_module.token_hex(16)}"
             platform.private_directory(root)
             return root.resolve()
-        root = self.attempt_root or Path(tempfile.mkdtemp(prefix=f"astrid-attempt-{task_id}-")).resolve()
+        root = self.attempt_root or Path(tempfile.mkdtemp(prefix="astrid-attempt-")).resolve()
         root.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             platform.owner_only(root)
+        elif self.attempt_root is None:
+            root.chmod(0o700)
         return root
 
     @property
@@ -6037,6 +6516,42 @@ class GenericPackHost:
         """
         manager = self.managed_tool_session
         return self.warm_holds.lease(manager, stop=self._release_idle_session, lock=manager._lock)
+
+    def release_managed_session(
+        self, *, expected_binding: SessionBinding, expected_generation: int,
+        reason: str = "requested",
+    ) -> Mapping[str, Any]:
+        """Control the existing owner, without racing task setup or admission.
+
+        The caller must route an exact observed binding to this host. Native
+        evidence remains separate from any claim of measured memory return.
+        """
+        if not isinstance(expected_binding, SessionBinding) or type(expected_generation) is not int:
+            raise StaleAdmissionError("session release requires exact owner authorization")
+        if not self._session_task_lock.acquire(blocking=False):
+            return {"ok": False, "released": False, "release_pending": True}
+        try:
+            manager = self.managed_tool_session
+            with manager._lock:
+                try:
+                    evidence = manager.release(
+                        reason=reason, expected_binding=expected_binding,
+                        expected_generation=expected_generation, require_quiescent=True,
+                    )
+                except SessionCapacityError as exc:
+                    if manager.occupied and not manager.active:
+                        self._latch_cleanup_uncertainty(f"managed session release remains pending: {exc}")
+                    return {"ok": False, "released": False, "release_pending": True}
+                self._vibecomfy_warmth_hint = None
+                self._vibecomfy_current_warmth_hint = None
+                self._vibecomfy_requested_warmth_hint = None
+                # Retire the old idle callback before another binding can
+                # occupy the slot, even if opened directly by owner control.
+                hold = self._hold_session_slot()
+                self.warm_holds.release(hold, holding=None, idle_seconds=0)
+                return {"ok": True, "released": True, "native": dict(evidence or {})}
+        finally:
+            self._session_task_lock.release()
 
     def _settle_session_hold(self, hold: WarmLease) -> None:
         """At task end, arm idle release for whatever the slot still keeps warm."""
@@ -6352,6 +6867,8 @@ class GenericPackHost:
         )
         from astrid.core.execution.executor.schema import ExecutorValidationError
 
+        if _runtime_external_sources is not None:
+            _runtime_external_sources.verify()
         records: dict[str, CapabilityRecord] = {}
         quarantined_dirs, quarantined_ids = _quarantine_scope(self.pack_roots)
         for root in self.pack_roots:
@@ -6443,6 +6960,10 @@ class GenericPackHost:
             key: CapabilityRecord(**{**record.__dict__, "dependency_digest": _dependency_digest(record.definition, records)})
             for key, record in records.items()
         }
+        if _runtime_external_sources is not None:
+            _runtime_external_sources.verify()
+            for record in records.values():
+                _runtime_external_sources.select(record)
         self.capabilities = records
         root = self.pack_roots[0] if self.pack_roots else Path.cwd()
         self.source_epoch = _canonical_digest({
@@ -6495,35 +7016,55 @@ class GenericPackHost:
                 load_folder_orchestrator,
             )
 
-            quarantined_dirs, _quarantined_ids = _quarantine_scope(self.pack_roots)
-            for root in self.pack_roots:
-                for orchestrator_root in discover_folder_orchestrator_roots(root):
-                    if _inside_quarantined(orchestrator_root, quarantined_dirs):
+            def definitions():
+                if _runtime_external_sources is not None:
+                    yield from _runtime_external_sources.orchestrator_definitions(self.pack_roots)
+                quarantined_dirs, _quarantined_ids = _quarantine_scope(self.pack_roots)
+                for root in self.pack_roots:
+                    if _runtime_external_sources is not None and _runtime_external_sources.source_for(root) is not None:
                         continue
-                    try:
-                        definition = load_folder_orchestrator(orchestrator_root)
-                    except (OSError, ValueError):
-                        continue
-                    if definition.id != capability_id:
-                        continue
-                    definition = _attach_pack_metadata(definition, orchestrator_root)
-                    source_roots = _admitted_source_roots(orchestrator_root, definition)
-                    source_digest = _source_digest_for_roots(source_roots)
-                    capability_digest = _capability_digest(definition.to_dict())
-                    return definition.to_dict(), {
-                        "capability_digest": capability_digest,
-                        "source_digest": source_digest,
-                        "dependency_digest": _canonical_digest({
-                            "child_executors": definition.child_executors,
-                            "child_orchestrators": definition.child_orchestrators,
-                        }),
-                        "version": definition.version,
-                        "source_root": str(orchestrator_root),
-                        "source_roots": [str(root) for root in source_roots],
-                        "python_path_roots": [
-                            str(root) for root in _admitted_python_roots(orchestrator_root, definition)
-                        ],
-                    }
+                    for orchestrator_root in discover_folder_orchestrator_roots(root):
+                        if _runtime_external_sources is not None and _runtime_external_sources.source_for(orchestrator_root) is not None:
+                            continue
+                        if _runtime_external_sources is not None:
+                            builtin = _runtime_external_sources._launch_roots[0]
+                            if not builtin or not orchestrator_root.is_relative_to(builtin):
+                                raise HostError("external orchestrator has no Runtime owner grant")
+                        if _inside_quarantined(orchestrator_root, quarantined_dirs):
+                            continue
+                        try:
+                            definition = load_folder_orchestrator(orchestrator_root)
+                        except (OSError, ValueError):
+                            continue
+                        definition = _attach_pack_metadata(definition, orchestrator_root)
+                        manifest = Path(str(definition.metadata.get("manifest_file")
+                                            or definition.metadata.get("orchestrator_file")))
+                        yield orchestrator_root, definition, manifest
+
+            for orchestrator_root, definition, manifest in definitions():
+                if definition.id != capability_id:
+                    continue
+                source_roots = _admitted_source_roots(orchestrator_root, definition)
+                source_digest = _source_digest_for_roots(source_roots)
+                capability_digest = _capability_digest(definition.to_dict())
+                orchestrator_record = _OrchestratorRecord(definition, capability_digest, orchestrator_root, manifest)
+                if _runtime_external_sources is not None:
+                    _runtime_external_sources.select(orchestrator_record, capability_kind="orchestrator")
+                self._orchestrators[capability_id] = orchestrator_record
+                return definition.to_dict(), {
+                    "capability_digest": capability_digest,
+                    "source_digest": source_digest,
+                    "dependency_digest": _canonical_digest({
+                        "child_executors": definition.child_executors,
+                        "child_orchestrators": definition.child_orchestrators,
+                    }),
+                    "version": definition.version,
+                    "source_root": str(orchestrator_root),
+                    "source_roots": [str(root) for root in source_roots],
+                    "python_path_roots": [
+                        str(root) for root in _admitted_python_roots(orchestrator_root, definition)
+                    ],
+                }
             raise HostError(f"capability not discovered: {capability_id}")
         raise HostError(f"unsupported capability kind {capability_kind!r}")
 
@@ -6534,19 +7075,61 @@ class GenericPackHost:
                     owner._registration_refresh_blocked or self._registration_refresh_blocked else None))
 
     def _remotion_idle_context(self) -> str | None:
-        """Key the last readiness observation by server-owned configuration.
+        """Bind idle observation reuse to the successful full launch context.
 
-        Idle renewal does not probe executables; task admission checks them again.
+        This is not a validation receipt or execution admission. The small
+        launch-reference file and exact effective probe/registry context must
+        still match the successful full observation. Tasks always validate
+        all installed inputs again.
         """
-        from astrid.core.rendering.remotion_runtime import (
-            NODE_EXECUTABLE_ENV,
-            REMOTION_PROJECT_DIR_ENV,
-            TIMELINE_SCHEMA_PYTHONPATH_ENV,
-        )
-        values = [os.environ.get(name) for name in (
-            REMOTION_PROJECT_DIR_ENV, NODE_EXECUTABLE_ENV, TIMELINE_SCHEMA_PYTHONPATH_ENV,
-        )]
-        return _canonical_digest(values) if all(values) else None
+        from astrid.core.rendering import remotion_runtime as runtime
+
+        env = os.environ
+        try:
+            context = runtime.probe_context(environment=env, python_executable=sys.executable)
+            context["registry_context"] = runtime._registry_context(env, generator=False)
+            names = (runtime.REMOTION_PROJECT_DIR_ENV, runtime.NODE_EXECUTABLE_ENV,
+                     runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV, *runtime._REF_ENV_KEYS)
+            configuration = {name: env[name] for name in names}
+            if any(not value for value in configuration.values()):
+                return None
+            # Constant-size filesystem checks only: no node_modules/schema
+            # tree enumeration, imports, subprocess probes, or registry writes.
+            selected = {}
+            for name in names[:3]:
+                path = Path(configuration[name]).expanduser()
+                if not path.is_absolute():
+                    return None
+                resolved = path.resolve(strict=True)
+                facts = resolved.stat()
+                selected[name] = (str(resolved), facts.st_dev, facts.st_ino,
+                                  facts.st_mode, facts.st_uid)
+            reference = Path(configuration[runtime.ASTRID_REMOTION_VALIDATION_PATH])
+            before = reference.stat()
+            if (not reference.is_absolute() or reference.is_symlink()
+                    or not stat.S_ISREG(before.st_mode)
+                    or not owned_by_current_user(reference, before, mode=0o600)
+                    or before.st_size > runtime._VALIDATION_MAX_BYTES):
+                return None
+            raw = reference.read_bytes()
+            after = reference.stat()
+
+            def identity(facts):
+                return (facts.st_dev, facts.st_ino, facts.st_mode, facts.st_uid,
+                        facts.st_size, facts.st_mtime_ns, facts.st_ctime_ns)
+
+            if (identity(before) != identity(after)
+                    or hashlib.sha256(raw).hexdigest() != configuration[runtime.ASTRID_REMOTION_VALIDATION_SHA256]):
+                return None
+            context.update(configuration=configuration, selected=selected,
+                           reference_identity=identity(after),
+                           interpreter=(sys.prefix, sys.exec_prefix, sys.base_prefix,
+                                        sys.base_exec_prefix, sys.version,
+                                        sys.implementation.cache_tag, sys.platform,
+                                        getattr(sys, "abiflags", "")))
+            return _canonical_digest(context)
+        except (OSError, KeyError, ValueError, runtime.RemotionValidationError):
+            return None
 
     def _forget_failed_remotion_observation(self, capability_id: str, context: str | None) -> None:
         owner = self._handoff_accounting_owner
@@ -7037,6 +7620,7 @@ class GenericPackHost:
         input_size_limits: Mapping[str, int] | None = None,
         storage_policy_version: str | None = None,
         continuation_id: str | None = None,
+        producer_identity: Mapping[str, Any] | None = None,
         file_input_names: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Materialize digest inputs and managed registry objects in *attempt*.
@@ -7077,6 +7661,12 @@ class GenericPackHost:
 
         input_spec = _admitted_spec_envelope(spec)
         values = dict(input_spec.get("inputs", {})) if isinstance(input_spec.get("inputs", {}), Mapping) else {}
+        from astrid.core.rendering.verified_source import PreparedTimelineInputs
+
+        try:
+            values = PreparedTimelineInputs.prepare(input_spec, values)
+        except ValueError as exc:
+            raise HostError(str(exc)) from exc
         params = input_spec.get("params")
         bounded_policy = None
         if storage_policy_version in {
@@ -7186,6 +7776,24 @@ class GenericPackHost:
                 "edges": _json_safe(runtime_dependencies.get("edges", [])),
                 "aggregation": _json_safe(runtime_dependencies.get("aggregation", {})),
             }
+            capture = values.get("resolved_children")
+            if capture is not None:
+                publication = runtime_dependencies.get("publication", {})
+                if (not isinstance(capture, Mapping) or not isinstance(publication, Mapping)
+                        or capture.get("admitted_target") != publication.get("admitted_target")):
+                    raise HostError("assembler capture differs from immutable admitted target")
+                resolved_envelope["capture"] = _json_safe(capture)
+            from astrid.core.contracts.runtime_orchestration import is_native_assembler_spec
+
+            if is_native_assembler_spec(input_spec) and producer_identity is not None:
+                from astrid.core.execution._child_bridge import resource
+
+                resolved_envelope["producer"] = _json_safe(producer_identity)
+                resolved_envelope["associations"] = [
+                    _json_safe(resource(self._client_operation("child_output")(
+                        child["association"]["association_id"])))
+                    for child in capture["children"]
+                ]
             if continuation_id is None:
                 resolved_envelope.pop("continuation_id", None)
             resolved_path = Path(attempt).resolve() / "inputs" / "resolved-children.json"
@@ -7278,6 +7886,12 @@ class GenericPackHost:
                             filmstrip_authority[key] = hydrate_snapshot(ref, key)
                             del filmstrip_authority[key + "_ref"]
                     values["filmstrip_authority"] = json.dumps(filmstrip_authority, sort_keys=True, separators=(",", ":"))
+        try:
+            snapshot = values.prepare_snapshot(input_spec, spec, snapshot, hydrate_snapshot)
+        except json.JSONDecodeError:
+            raise
+        except ValueError as exc:
+            raise HostError(str(exc)) from exc
         # The snapshot is an admission envelope, not a renderer input port.
         # Once its derived files are created, do not forward the authoring
         # document as an undeclared child argument.
@@ -7564,13 +8178,10 @@ class GenericPackHost:
         if materialized_objects:
             values["materialized_root"] = str(managed_root)
             values["materialized_objects"] = materialized_objects
-        if materialized_input_metadata:
-            metadata_path = attempt / "inputs" / "managed-input-metadata.json"
-            metadata_path.parent.mkdir(parents=True, exist_ok=True)
-            metadata_path.write_text(
-                json.dumps(materialized_input_metadata, sort_keys=True), encoding="utf-8"
-            )
-        return values
+        try:
+            return values.mint_source(attempt)
+        except ValueError as exc:
+            raise HostError(str(exc)) from exc
 
     def _start_network_broker(
         self,
@@ -7681,6 +8292,134 @@ class GenericPackHost:
         self._pending_provider_grants[task_id] = token
         return token
 
+    def _prepare_producer_evidence(self, output_root: Path, task: Mapping[str, Any]) -> None:
+        """Add host-observed identity to the existing producer result object."""
+        receipt_path = output_root / "manifest.json"
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            return
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict) or "managed_generation_result" not in receipt:
+            return
+        payload = receipt["managed_generation_result"]
+        if not isinstance(payload, dict) or payload.get("kind") != "managed-generation-result.v1":
+            raise HostError("managed producer receipt is invalid")
+        validate_result_manifest(receipt, staging_root=output_root)
+        original_payload = payload
+        payload = json.loads(json.dumps(payload))
+        manifests = [row for row in receipt["outputs"] if row.get("name") == "result_manifest"]
+        if len(manifests) != 1:
+            raise HostError("managed producer receipt requires one result_manifest")
+        original = json.loads((output_root / manifests[0]["path"]).read_text(encoding="utf-8"))
+        if original != original_payload:
+            raise HostError("embedded producer result differs from durable manifest")
+        # These are observations from the installed host, never development
+        # repository lookups. Producer evidence remains in its own namespace.
+        producer = payload["evidence"]["producer"]
+        transport = payload["evidence"]["transport"]
+        installed = self.boot_manifest_provenance()
+        if installed is not None:
+            manifest_path = self.boot_manifest_path
+            data = manifest_path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            destination = output_root / "outputs" / "installed-product-manifest.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
+                raise HostError("installed manifest evidence escapes output custody")
+            if destination.exists() and destination.read_bytes() != data:
+                raise HostError("installed manifest evidence destination collides")
+            if not destination.exists():
+                destination.write_bytes(data)
+            build = producer.setdefault("build", {})
+            if build is None:
+                build = producer["build"] = {}
+            build["installed_product"] = {
+                "object_id": f"sha256:{digest}", "sha256": digest,
+                "bytes": len(data), "filename": destination.name, "stamp": installed,
+            }
+            if not any(row.get("content_hash") == f"sha256:{digest}" for row in receipt["outputs"]):
+                receipt["outputs"].append({
+                    "path": destination.relative_to(output_root).as_posix(),
+                    "name": "vibecomfy_run", "output_port": "vibecomfy_run",
+                    "ordinal": max(row["ordinal"] for row in receipt["outputs"]) + 1,
+                    "role": "auxiliary", "is_primary": False, "media_type": "application/json",
+                    "content_hash": f"sha256:{digest}", "bytes": len(data),
+                })
+        request = task.get("execution_request")
+        if isinstance(request, Mapping) and isinstance(request.get("target"), Mapping):
+            transport["target"] = dict(request["target"])
+        if isinstance(task.get("execution_binding"), Mapping):
+            transport["execution_binding"] = dict(task["execution_binding"])
+        from astrid.core.contracts.managed_generation_result import redact_evidence
+
+        payload["evidence"] = redact_evidence(payload["evidence"])
+        receipt["managed_generation_result"] = payload
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        encoded_bytes = encoded.encode("utf-8")
+        digest = hashlib.sha256(encoded_bytes).hexdigest()
+        # Publish a new immutable spool object before atomically changing the
+        # universal receipt, so a crash never invalidates its prior hash.
+        destination = output_root / "outputs" / f"managed-generation-result-{digest}.json"
+        if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
+            raise HostError("managed result manifest escapes output custody")
+        if destination.exists() and destination.read_bytes() != encoded_bytes:
+            raise HostError("managed result manifest destination collides")
+        if not destination.exists():
+            destination.write_bytes(encoded_bytes)
+        for row in receipt["outputs"]:
+            if row.get("name") != "result_manifest":
+                continue
+            row["path"] = destination.relative_to(output_root).as_posix()
+            row["content_hash"] = f"sha256:{digest}"
+            row["bytes"] = len(encoded_bytes)
+            row.pop("sha256", None)
+            receipt["managed_generation_result_path"] = row["path"]
+        write_json_atomic(receipt_path, receipt)
+
+    def _validate_producer_evidence(
+        self, descriptors: Sequence[Mapping[str, Any]], *, output_root: Path,
+        task_id: str, attempt_id: str, successful: bool = False,
+    ) -> None:
+        """Check the durable producer receipt before any terminal publication.
+
+        Universal spool receipts may embed a neutral envelope, but the actual
+        result_manifest object is authoritative. Validate its correlation and
+        every local output/ref, including on the successful harvest path.
+        """
+        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+
+        for descriptor in descriptors:
+            if descriptor.get("name") != "result_manifest":
+                continue
+            path = Path(str(descriptor.get("path", "")))
+            if descriptor.get("media_type") != "application/json" and path.suffix != ".json":
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping) or payload.get("kind") != "managed-generation-result.v1":
+                continue
+            validated = validate_managed_generation_result(
+                payload, staging_root=output_root,
+                expected_task_id=task_id, expected_attempt_id=attempt_id,
+            )
+            if successful and any(
+                validated.outcomes[phase].status != expected
+                for phase, expected in (("execution", "succeeded"), ("retrieval", "succeeded"),
+                                        ("verification", "succeeded"), ("publication", "not_started"))
+            ):
+                raise HostError("successful publication requires a verified successful producer result")
+            for output in validated.outputs:
+                matches = [row for row in descriptors
+                           if Path(str(row.get("path", ""))).resolve() == (output_root / output.path).resolve()
+                           and row.get("bytes") == output.bytes
+                           and row.get("content_hash") == f"sha256:{output.sha256}"
+                           and row.get("ordinal") == output.ordinal
+                           and row.get("output_port", row.get("name")) == output.output_port]
+                if len(matches) != 1:
+                    raise HostError("managed producer output differs from harvested publication")
+            for key in ("source", "effective_settings"):
+                reference = validated.inputs.get(key)
+                if reference is not None and "path" in reference:
+                    raise HostError("managed producer input ref must be portable before publication")
+
     def _typed_outputs(
         self,
         record: CapabilityRecord,
@@ -7707,7 +8446,9 @@ class GenericPackHost:
                     f"harvested output {index} names undeclared port {name!r}"
                 )
             role = harvested.get("role", "result")
-            if role not in {"result", "auxiliary"}:
+            if role not in {"result", "auxiliary"} and not (
+                role == "manifest" and name == "result_manifest"
+            ):
                 raise HostError(f"harvested output {name!r} has invalid role {role!r}")
             is_generation_result = (
                 generation_port is not None
@@ -7789,6 +8530,9 @@ class GenericPackHost:
                     if field in harvested
                 },
             }
+            if name == "result_manifest" and role == "manifest":
+                output["output_port"] = "result_manifest"
+                output["durability"] = harvested.get("durability", "durable")
 
             existing_index = seen_paths.get(path)
             if existing_index is not None:
@@ -8077,6 +8821,7 @@ class GenericPackHost:
         admission: Mapping[str, Any] | None = None,
         network_broker: _NetworkBrokerContext | None = None,
         network_policy: Mapping[str, Any] | None = None,
+        readiness_worker_kind: str = "native",
         allow_runtime_connection: bool = True,
         workflow_execution_request: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
@@ -8195,6 +8940,16 @@ class GenericPackHost:
                 workflow_execution_request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
             )
             env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
+        if _record_may_render(record):
+            from astrid.core.rendering.remotion_runtime import (
+                RemotionValidationError,
+                _validate_remotion_worker_environment,
+            )
+            try:
+                _validate_remotion_worker_environment(env)
+            except RemotionValidationError as exc:
+                secrets.clear()
+                raise HostError(str(exc)) from exc
         if not allow_runtime_connection:
             # A parent has only its inherited three-operation channel.
             # Also remove manifest passthrough aliases of the worker secret.
@@ -8257,6 +9012,53 @@ class GenericPackHost:
             broker = policy.get("broker")
             if allow_runtime_connection and isinstance(broker, Mapping) and broker.get("evidence_path"):
                 env["ASTRID_NETWORK_BROKER_EVIDENCE"] = str(broker["evidence_path"])
+        from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_ROLE, ASTRID_REMOTION_PROJECT_DIR
+        if ASTRID_REMOTION_VALIDATION_ROLE in env and not _record_may_render(record):
+            # Launch validated only render-capable workers; any other worker
+            # carries no Remotion readiness, so it must not claim (or check) one.
+            from astrid.core.env_vars import (
+                ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_PATH,
+                ASTRID_REMOTION_VALIDATION_SHA256,
+            )
+            for name in (ASTRID_REMOTION_VALIDATION_PATH, ASTRID_REMOTION_VALIDATION_SHA256,
+                         ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE):
+                env.pop(name, None)
+        if ASTRID_REMOTION_VALIDATION_ROLE in env:
+            env[ASTRID_REMOTION_VALIDATION_ROLE] = "worker"
+            # Verify the launch-known import context without replacing the
+            # actual command environment's host-installed network-policy hook.
+            readiness_env = dict(env)
+            readiness_path = env.get('PYTHONPATH', '')
+            if policy is not None:
+                installed_hook = str(hook_root)
+                if readiness_path == installed_hook:
+                    readiness_path = ''
+                elif readiness_path.startswith(installed_hook + os.pathsep):
+                    readiness_path = readiness_path[len(installed_hook) + 1:]
+                else:
+                    raise HostError('host network hook context differs before readiness validation')
+            if readiness_worker_kind not in {'native', 'command'}:
+                raise HostError('unknown internal readiness worker projection')
+            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed':
+                if readiness_path:
+                    readiness_env['PYTHONPATH'] = readiness_path
+                else:
+                    readiness_env.pop('PYTHONPATH', None)
+            elif readiness_worker_kind == 'command':
+                readiness_env['PYTHONPATH'] = _command_worker_pythonpath(record, readiness_path)
+            elif readiness_worker_kind == 'native':
+                readiness_env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
+                readiness_env['PYTHONPATH'] = os.pathsep.join(dict.fromkeys((
+                    str(Path(__file__).resolve().parents[3]), *_dependency_pythonpath(),
+                    *(str(root) for root in _admitted_python_roots(record.source_root, record.definition)))))
+            else:
+                raise HostError('unknown internal readiness worker projection')
+            from astrid.core.rendering.remotion_runtime import _validated_runtime
+            try:
+                _validated_runtime(Path(env[ASTRID_REMOTION_PROJECT_DIR]), environment=readiness_env)
+            except Exception as exc:
+                secrets.clear()
+                raise HostError(_remotion_readiness_message(exc)) from exc
         return env, secrets
 
     @staticmethod
@@ -8545,6 +9347,7 @@ class GenericPackHost:
                 safe_label = "".join(char if char.isalnum() or char in "-_." else "_" for char in task_label)
                 output_root = managed_root / "astrid-tasks" / safe_label / "outputs"
                 output_root.mkdir(parents=True, exist_ok=True)
+        prepared_inputs = inputs
         values = {**inputs, "out": str(output_root), "run_root": str(attempt), "python_exec": sys.executable}
         for port in record.definition.inputs:
             if port.name not in values and port.default is not None:
@@ -8634,7 +9437,9 @@ class GenericPackHost:
             ),
             allow_runtime_connection=allow_runtime_connection and child_bridge is None,
             explicit_env={
-                "PYTHONPATH": os.pathsep.join((package_parent, *_dependency_pythonpath())),
+                **({} if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed' else {
+                    "PYTHONPATH": os.pathsep.join((package_parent, *_dependency_pythonpath())),
+                }),
                 ASTRID_INTERNAL_INVOCATION: "1",
                 **binding.env,
                 "ASTRID_PROGRESS_PATH": str(attempt / ".astrid-progress.json"),
@@ -8657,7 +9462,11 @@ class GenericPackHost:
         # unrelated same-named checkout in ambient site-packages. The parent
         # remains available for packs whose source package uses the checkout
         # directory name as its import root.
-        env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
+        from astrid.core.rendering.verified_source import PreparedTimelineInputs
+
+        PreparedTimelineInputs.handoff_source(prepared_inputs, env)
+        if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+            env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
         cwd = _confined_cwd(
             binding.cwd,
             attempt=attempt,
@@ -8665,7 +9474,7 @@ class GenericPackHost:
             values=values,
         )
         broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
-        inherited_fds = ()
+        inherited_fds: tuple[int, ...] = ()
         if child_bridge is not None:
             # Bootstrap in the action interpreter before pack code. Private
             # launch arguments contain a descriptor and command, no authority.
@@ -8692,6 +9501,19 @@ class GenericPackHost:
                 flags = ["-X", "utf8", *flags]
             argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
                     "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+        source_channel = _runtime_external_sources.descriptor(record) if _runtime_external_sources is not None else None
+        if source_channel is not None:
+            if Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                source_channel.close()
+                raise HostError("captured external commands require the admitted Python interpreter")
+            inherited_fds += (source_channel.fileno(),)
+            if child_bridge is None:
+                argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker",
+                        "--captured-command", json.dumps(argv[1:])]
+            worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+            argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
+            # External code is loaded from the descriptor, never PYTHONPATH.
+            env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
@@ -8710,6 +9532,8 @@ class GenericPackHost:
                         "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
             if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
                 argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
+            if source_channel is not None:
+                argv = _captured_worker_argv(argv)
             # Rendering can create native descendants that change groups.
             # Retain their incarnation-bound custody while the leader runs;
             # a group-only census after it exits cannot own those processes.
@@ -8735,6 +9559,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty(str(exc))
                 raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
             raise
+        finally:
+            if source_channel is not None:
+                source_channel.close()
         if import_receipt is not None:
             import_receipt.launched(process)
         self._track_process(process)
@@ -8991,17 +9818,31 @@ class GenericPackHost:
         # Preserve the host-created sitecustomize hook when replacing the
         # worker import path; arbitrary child PYTHONPATH is still excluded.
         network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
-        env["PYTHONPATH"] = os.pathsep.join(
-            dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
-        )
-        env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
+        if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+            env["PYTHONPATH"] = os.pathsep.join(
+                dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
+            )
+            env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
         secret_values = {
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
         }
         broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
         argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
-        inherited_fds = ()
+        inherited_fds: tuple[int, ...] = ()
+        source_channel = None
+        if _runtime_external_sources is not None:
+            record = (self._orchestrators.get(capability_id) if capability_kind == "orchestrator"
+                      else self.capabilities.get(capability_id))
+            if record is None:
+                raise HostError("external execution requires a discovered definition")
+            if definition != record.definition.to_dict():
+                raise HostError("external execution definition differs from discovery")
+            source_channel = _runtime_external_sources.descriptor(record, capability_kind=capability_kind)
+            if source_channel is not None:
+                inherited_fds = (source_channel.fileno(),)
+                worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+                argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
         try:
             if capability_kind == "executor" and capability_id == "rendering.timeline_visualize":
                 remotion_lease = self._renderer_task_lease(env, attempt_path)
@@ -9014,6 +9855,8 @@ class GenericPackHost:
                 argv.extend(("--child-bridge", str(bridge_fd)))
             if require_network_startup:
                 argv = _network_startup_argv(argv, attempt_path, env, broker_required=network_broker_required)
+            if source_channel is not None:
+                argv = _captured_worker_argv(argv)
             render_scope = capability_id == "rendering.render"
             if render_scope:
                 env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
@@ -9031,6 +9874,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty(str(exc))
                 raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
             raise
+        finally:
+            if source_channel is not None:
+                source_channel.close()
         self._track_process(process)
         output_capture = _TaskOutputCapture(attempt_path, secret_values, self._scrub_secret_text)
         output_capture.start(process)
@@ -9140,98 +9986,6 @@ class GenericPackHost:
                 env.clear()
                 request_path.unlink(missing_ok=True)
                 result_path.unlink(missing_ok=True)
-
-    def _publish_assembled_timeline(
-        self,
-        *,
-        task_data: Mapping[str, Any],
-        attempt_id: str,
-        fence: int,
-        lease_token: str,
-        outputs: Sequence[Mapping[str, Any]],
-        attempt_root: Path,
-    ) -> Mapping[str, Any]:
-        """Publish the authoring result before settling its Runtime attempt."""
-        publish = getattr(self.client, "publish_timeline_render", None)
-        if not callable(publish):
-            raise HostError("runtime client lacks canonical publish_timeline_render operation")
-        proposal_descriptor = next(
-            (
-                item for item in outputs
-                if str(item.get("artifact_type", "")) == "timeline/authoring-proposal"
-                or Path(str(item.get("path", ""))).name == "authoring-proposal.json"
-            ),
-            None,
-        )
-        if proposal_descriptor is None:
-            raise HostError("rendering.assemble_timeline produced no authoring proposal")
-        proposal_path = Path(str(proposal_descriptor.get("path", ""))).expanduser().resolve()
-        if not proposal_path.is_file() or not proposal_path.is_relative_to(Path(attempt_root).resolve()):
-            raise HostError("authoring proposal path is outside the current attempt")
-        try:
-            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise HostError(f"authoring proposal is unreadable: {exc}") from exc
-        if not isinstance(proposal, Mapping):
-            raise HostError("authoring proposal must be an object")
-        publication = proposal.get("publication")
-        timeline = proposal.get("timeline")
-        registry = proposal.get("registry")
-        if not isinstance(publication, Mapping) or publication.get("authority") != "workspace_runtime":
-            raise HostError("authoring proposal is not Runtime-owned")
-        if publication.get("render_capability") != "rendering.render":
-            raise HostError("authoring proposal must use rendering.render")
-        if not isinstance(timeline, Mapping) or not isinstance(registry, Mapping):
-            raise HostError("authoring proposal must contain timeline and registry objects")
-
-        admitted = task_data.get("spec")
-        if not isinstance(admitted, Mapping):
-            raise HostError("authoring task is missing its immutable spec")
-        public_spec = admitted.get("spec") if isinstance(admitted.get("spec"), Mapping) else admitted
-        dependencies = public_spec.get("runtime_dependencies") if isinstance(public_spec, Mapping) else None
-        if not isinstance(dependencies, Mapping):
-            raise HostError("authoring task is missing runtime publication settings")
-        timeline_id = dependencies.get("timeline_id") or dependencies.get("timeline_ref")
-        expected_version = dependencies.get("expected_version")
-        publication_settings = dependencies.get("publication")
-        if isinstance(publication_settings, Mapping):
-            timeline_id = timeline_id or publication_settings.get("timeline_id") or publication_settings.get("timeline_ref")
-            expected_version = expected_version if expected_version is not None else publication_settings.get("expected_version")
-        if not isinstance(timeline_id, str) or not timeline_id.strip():
-            raise HostError("authoring task publication settings require timeline_id")
-        if isinstance(expected_version, bool) or not isinstance(expected_version, int) or expected_version < 1:
-            raise HostError("authoring task publication settings require a positive expected_version")
-
-        render = dependencies.get("render")
-        if render is None and isinstance(publication_settings, Mapping):
-            render = publication_settings.get("render")
-        if not isinstance(render, Mapping):
-            raise HostError("authoring task publication settings require render configuration")
-        render = dict(render)
-        if render.get("capability_id") != "rendering.render":
-            raise HostError("authoring task render configuration must use rendering.render")
-        if not isinstance(render.get("capability_digest"), str) or not render["capability_digest"].startswith("sha256:"):
-            render_record = self.capabilities.get("rendering.render")
-            if render_record is None:
-                raise HostError("rendering.render capability is not registered with this host")
-            render["capability_digest"] = render_record.capability_digest
-        render.setdefault("schema_version", "1")
-        render_spec = render.get("spec")
-        if not isinstance(render_spec, Mapping):
-            render_spec = {"capability_id": "rendering.render", "kind": "executor", "inputs": {}, "outputs": {}}
-        render["spec"] = dict(render_spec)
-        idempotency_key = f"timeline-publication-{task_data.get('id', attempt_id)}"
-        return publish(
-            attempt_id,
-            lease_token,
-            fence=int(fence),
-            timeline_id=timeline_id,
-            expected_version=expected_version,
-            config=dict(timeline),
-            registry=dict(registry),
-            render=render,
-            idempotency_key=idempotency_key,
-        )
 
     def _wan_session_context(self, task_data: Mapping[str, Any]) -> dict[str, Any]:
         """Read the explicitly admitted Wan source/config/interpreter tuple."""
@@ -9457,6 +10211,7 @@ class GenericPackHost:
         output_root = terminal.get("output_root", root / "outputs")
         payload = {} if minimal else terminal.get("payload") or {}
         warnings = list(payload.get("warnings") or [])
+        warnings.extend(terminal.get("evidence_warnings") or [])
 
         def error_text(error: BaseException) -> str:
             try:
@@ -9717,7 +10472,9 @@ class GenericPackHost:
                 terminal["lease_diagnostic"] = diagnostic
 
         def ensure_failure(error):
-            if terminal.get("recorded") or self.client is None or not exact_attempt or exact_fence is None:
+            if (terminal.get("recorded") or terminal.get("evidence_pending")
+                    or terminal.get("pending_status") == "cancelled"
+                    or self.client is None or not exact_attempt or exact_fence is None):
                 return
             try:
                 normalized = coerce_astrid_error(error)
@@ -9729,16 +10486,27 @@ class GenericPackHost:
                 # Their failure cannot suppress the original fenced mutation.
                 message = type(error).__name__
                 structured_error = {"code": "executor_failed", "field": None, "fix": ""}
+            pending_evidence = {
+                key: terminal[key]
+                for key in ("pending_outputs", "pending_result")
+                if key in terminal
+            }
             try:
                 completion_call(
                     self.client.fail, str(data["id"]), lease_token,
                     message, retryable=False,
                     attempt_id=exact_attempt, fence=exact_fence,
                     structured_error=structured_error,
+                    **({"outputs": pending_evidence["pending_outputs"]}
+                       if "pending_outputs" in pending_evidence else {}),
+                    **({"result": pending_evidence["pending_result"]}
+                       if "pending_result" in pending_evidence else {}),
                     **({"failure_diagnostic": dict(terminal["lease_diagnostic"])}
                        if terminal.get("forced") == "lease_lost" else {}),
                 )
             except Exception:
+                if pending_evidence:
+                    terminal["evidence_pending"] = True
                 # Observe cancellation only after attempting the original
                 # failure mutation; a broken read cannot suppress that write.
                 if task_snapshot()["status"] != "cancelled":
@@ -9848,8 +10616,21 @@ class GenericPackHost:
                 abort.set()
             try:
                 if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
+                    # Admission shutdown happens before the producer starts.
+                    # During execution the observer cannot claim the child
+                    # stopped until the local execution path returns.
                     completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
-                                    fence=exact_fence, lease_id=lease_token)
+                                    fence=exact_fence, lease_id=lease_token,
+                                    runtime_epoch=data.get("runtime_epoch"), outputs=[],
+                                    result={"status": "cancelled",
+                                            "error": {"code": "cancelled",
+                                                      "message": "execution cancelled"}},
+                                    stop_observed=terminal.get("stage") == "admission")
+                elif code == "cancelled":
+                    # Local containment cannot turn an unacknowledged Runtime
+                    # cancellation into a failed task. Keep cancellation as
+                    # the pending status without inventing an evidence upload.
+                    terminal.update(pending_status="cancelled")
                 else:
                     ensure_failure(error)
             except BaseException as reporting_error:
@@ -9985,11 +10766,24 @@ class GenericPackHost:
             contract = _execution_contract(data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
             terminal["execution_contract"] = contract
             lifetime.runtime_limit = (contract or {}).get("limits", {}).get("max_runtime_seconds")
-            return self._run_task_impl(
-                task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
-                keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
-                _terminal=terminal,
-            )
+            # The lease observer continues while waiting for this host's
+            # session. No second task may replace a live binding or overwrite
+            # its request-specific idle policy during setup/collection.
+            while not self._session_task_lock.acquire(timeout=0.05):
+                lifetime.assert_deadline()
+                if abort.is_set() or self._shutdown.is_set():
+                    raise HostCancelled("session wait cancelled")
+            try:
+                lifetime.assert_deadline()
+                if abort.is_set() or self._shutdown.is_set():
+                    raise HostCancelled("session wait cancelled")
+                return self._run_task_impl(
+                    task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
+                    keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
+                    _terminal=terminal,
+                )
+            finally:
+                self._session_task_lock.release()
         except BaseException as exc:
             terminal.setdefault("error", exc)
             try:
@@ -10008,7 +10802,8 @@ class GenericPackHost:
             try:
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
-                    if self.attempt_root is None and not keep_attempt:
+                    if (self.attempt_root is None and not keep_attempt
+                            and not terminal.get("evidence_pending")):
                         self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
             finally:
                 stop.set()
@@ -10079,11 +10874,21 @@ class GenericPackHost:
         def fail_admission(error: Exception) -> None:
             """Fence deterministic admission failures as terminal attempts."""
             _terminal["error"] = error
+            message = str(error) + recovery_suffix(error)
+            if (record.adapter.family == "render" or record.adapter.remotion != "never") and "\nDetail: " not in message:
+                from astrid.core.rendering.failure_message import render_failure_message
+
+                check = record.preflight.get("remotion", {})
+                remotion_reason = (str(check["reason"]) if isinstance(check, Mapping)
+                                   and check.get("ok") is False and not check.get("gates")
+                                   and check.get("reason") and str(check["reason"]) in message else None)
+                message = render_failure_message(message, remotion_reason=remotion_reason,
+                                                 unavailable=True, recovery=getattr(error, "recovery_command", ""))
             try:
                 completion_call(self.client.fail,
                     task_id,
                     lease_token,
-                    str(error) + recovery_suffix(error),
+                    message,
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
@@ -10109,6 +10914,9 @@ class GenericPackHost:
         # exceptions as well as unavailable results settle the exact lease.
         renderer_selection: dict[str, Any] | None = None
         try:
+            if capability_id == "wan2gp.generate_video":
+                from astrid.core.generation.availability import require_action_available
+                require_action_available(capability_id)
             self.preflight(capability_id)
             record = self.capabilities[capability_id]
             _terminal["record"] = record
@@ -10186,6 +10994,14 @@ class GenericPackHost:
             )
             raise HostError(str(exc)) from exc
         spec = task_data.get("spec", {})
+        if capability_id == "rendering.assemble_timeline":
+            from astrid.core.contracts.runtime_orchestration import is_native_assembler_spec
+
+            if not is_native_assembler_spec(_admitted_spec_envelope(spec)):
+                fail_admission(HostError(
+                    "legacy assembler admission lacks an immutable original target; "
+                    "native assembly admission is required"
+                ))
         private_runtime_context = isinstance(spec, Mapping) and (
             "child_delegation" in spec or "delegated_parent" in spec or "delegated_recoverable_outputs" in spec)
         authorized_input_object_ids = task_data.get("input_object_ids")
@@ -10357,6 +11173,9 @@ class GenericPackHost:
             """Fence a deadline expiry at Runtime before returning to the worker."""
             nonlocal deadline_failed
             try:
+                deadline_outputs, deadline_result = collect_terminal_evidence(
+                    "failed", AstridError("execution deadline exceeded", code="timeout")
+                )
                 completion_call(self.client.fail,
                     task_id,
                     lease_token,
@@ -10365,6 +11184,7 @@ class GenericPackHost:
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
+                    outputs=deadline_outputs, result=deadline_result,
                 )
                 deadline_failed = True
             except Exception as exc:
@@ -10376,6 +11196,108 @@ class GenericPackHost:
                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
                 deadline_failed = state == "failed"
 
+        def collect_terminal_evidence(status: str, error: BaseException) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            """Harvest and upload verified partial outputs before terminal mutation."""
+            upload_started = False
+            try:
+                normalized = coerce_astrid_error(error)
+                error_value = {
+                    "code": normalized.code or "executor_failed",
+                    "message": normalized.message or type(error).__name__,
+                }
+            except BaseException:
+                # Error normalization is executor controlled and may itself
+                # fail. Terminal evidence must still be attachable with a
+                # bounded fallback description.
+                error_value = {"code": "executor_failed", "message": type(error).__name__}
+            if ("pending_outputs" in _terminal and "pending_result" in _terminal
+                    and _terminal.get("pending_status") == status):
+                return _terminal["pending_outputs"], _terminal["pending_result"]
+            output_root = _terminal.get("output_root")
+            if output_root is None:
+                result_value = {"status": status, "error": error_value}
+                _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
+                return [], result_value
+            try:
+                values = dict(_terminal.get("inputs") or {})
+                values.update({"out": str(output_root), "run_root": str(root), "python_exec": sys.executable})
+                if record.definition.command is not None:
+                    _, values = _bind_host_owned_command_outputs(
+                        record, values, output_root=Path(output_root)
+                    )
+                manifest_path = Path(output_root) / "manifest.json"
+                self._prepare_producer_evidence(Path(output_root), task_data)
+                # A result manifest is mandatory for a successful run, but a
+                # failure before the producer writes one is still publishable
+                # as a terminal result with no outputs. Do not guess output
+                # identities from loose files in that spool.
+                receipt_required = bool(
+                    isinstance(record.definition.metadata, Mapping)
+                    and record.definition.metadata.get("output_result_manifest")
+                )
+                if receipt_required and not manifest_path.exists():
+                    harvested = []
+                else:
+                    harvested = harvest_staged_outputs(
+                        output_root, definition=record.definition,
+                        declared_outputs=record.definition.outputs, values=values, require=False,
+                    )
+                if manifest_path.is_file() and not manifest_path.is_symlink():
+                    manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if manifest_value.get("kind") == "managed-generation-result.v1":
+                        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+
+                        validate_managed_generation_result(
+                            manifest_value, staging_root=output_root,
+                            expected_task_id=task_id, expected_attempt_id=attempt_id,
+                        )
+                self._validate_producer_evidence(
+                    harvested, output_root=Path(output_root), task_id=task_id, attempt_id=attempt_id,
+                )
+                typed = self._typed_outputs(record, harvested, root)
+                task_epoch = task_data.get("runtime_epoch")
+                upload_started = bool(typed)
+                uploaded = self._upload_outputs(
+                    typed,
+                    project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
+                    task_id=task_id, attempt_id=attempt_id, lease_id=lease_token,
+                    fence=fence, runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
+                ) if typed else []
+                result_value: dict[str, Any] = {
+                    "status": status,
+                    "error": error_value,
+                    "outcomes": {"execution": {"status": status}},
+                }
+                manifest = next((row for row in uploaded
+                                 if row.get("output_port", row.get("name")) == "result_manifest"), None)
+                if manifest is not None:
+                    result_value["manifest_ref"] = {
+                        "object_id": manifest.get("digest"), "size": manifest.get("size"),
+                    }
+            except Exception as evidence_error:
+                # A local manifest/harvest/identity failure means these
+                # outputs cannot be described safely. Preserve the producer's
+                # original failure and publish an empty result; only an upload
+                # failure leaves evidence awaiting Runtime recovery.
+                _terminal["evidence_error"] = type(evidence_error).__name__
+                if not upload_started:
+                    warnings = _terminal.setdefault("evidence_warnings", [])
+                    warnings.append(f"terminal evidence unavailable: {type(evidence_error).__name__}")
+                    result_value = {
+                        "status": status,
+                        "error": error_value,
+                        "outcomes": {"execution": {"status": status}},
+                    }
+                    _terminal.update(
+                        pending_outputs=[], pending_result=result_value, pending_status=status
+                    )
+                    return [], result_value
+                # Keep the attempt spool and expose why evidence could not be attached.
+                _terminal["evidence_pending"] = True
+                raise HostError("terminal evidence publication is pending Runtime recovery") from evidence_error
+            _terminal.update(pending_outputs=uploaded, pending_result=result_value, pending_status=status)
+            return uploaded, result_value
+
         def handle_guard_abort() -> None:
             if _terminal.get("forced") == "lease_lost":
                 raise HostError("execution lease lost")
@@ -10383,21 +11305,38 @@ class GenericPackHost:
                 nonlocal deadline_exceeded
                 deadline_exceeded = True
             if evidence_cap_exceeded:
+                evidence_outputs, evidence_result = collect_terminal_evidence(
+                    "failed", AstridError(_evidence_cap_message(evidence_failure_message), code="evidence_cap")
+                )
                 completion_call(self.client.fail,
                     task_id,
                     lease_token,
                     _evidence_cap_message(evidence_failure_message),
+                    structured_error={"code": "evidence_cap"},
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
                     failure_diagnostic=evidence_failure_receipt,
+                    outputs=evidence_outputs, result=evidence_result,
                 )
                 raise HostError(_evidence_cap_message(evidence_failure_message))
             if deadline_exceeded:
                 terminalize_deadline()
             elif callable(getattr(self.client, "cancel", None)):
-                completion_call(self.client.cancel, task_id, attempt_id=attempt_id,
-                                fence=fence, lease_id=lease_token)
+                evidence_outputs, evidence_result = collect_terminal_evidence(
+                    "cancelled", AstridError("execution cancelled", code="cancelled")
+                )
+                cancel_kwargs = {
+                    "attempt_id": attempt_id, "fence": fence, "lease_id": lease_token,
+                    "runtime_epoch": task_data.get("runtime_epoch"),
+                    "outputs": evidence_outputs, "result": evidence_result,
+                    "stop_observed": True,
+                }
+                try:
+                    completion_call(self.client.cancel, task_id, **cancel_kwargs)
+                except BaseException:
+                    _terminal["evidence_pending"] = True
+                    raise
 
         read_progress = _terminal["read_progress"]
         try:
@@ -10461,6 +11400,9 @@ class GenericPackHost:
                     else None
                 ),
                 continuation_id=task_id,
+                producer_identity={"task_id": task_id, "attempt_id": attempt_id,
+                                   "executor_id": self.executor_id, "fence": fence,
+                                   "runtime_epoch": claim_epoch},
                 file_input_names=frozenset(
                     port.name
                     for port in record.definition.inputs
@@ -10483,7 +11425,10 @@ class GenericPackHost:
                 inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
                 if inputs.get("comfy_output_dir"):
                     inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
-                network_admission["allowed_routes"] = _network_policy(record, inputs)["allowed_destinations"]
+                local_network_policy = _network_policy(record, inputs)
+                if local_network_policy is None:
+                    raise HostError("vibecomfy.run local_server requires a network policy")
+                network_admission["allowed_routes"] = local_network_policy["allowed_destinations"]
                 managed_adapter = _ManagedLocalServerTaskAdapter(
                     cancel_signal, url=inputs["comfy_url"], destination=root / "outputs",
                     process_census=lambda: bool(self._active_processes),
@@ -10805,6 +11750,8 @@ class GenericPackHost:
                 lifetime.begin_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
+                if capability_id != "wan2gp.generate_video":
+                    self.managed_tool_session.adapter_for(managed_token, begin=True)
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,
@@ -10957,6 +11904,7 @@ class GenericPackHost:
                     evidence_failure_message = str(exc)
                 raise HostError(str(exc)) from exc
             try:
+                self._prepare_producer_evidence(output_root, task_data)
                 harvested = harvest_staged_outputs(
                     output_root,
                     definition=record.definition,
@@ -10966,6 +11914,9 @@ class GenericPackHost:
                 )
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
+            self._validate_producer_evidence(
+                harvested, output_root=output_root, task_id=task_id, attempt_id=attempt_id, successful=True,
+            )
             typed_outputs = self._typed_outputs(
                 record,
                 harvested,
@@ -10981,16 +11932,6 @@ class GenericPackHost:
                 task_data=task_data,
             )
             typed_outputs.extend(thumbnail_outputs)
-            publication_result: Mapping[str, Any] | None = None
-            if capability_id == "rendering.assemble_timeline":
-                publication_result = self._publish_assembled_timeline(
-                    task_data=task_data,
-                    attempt_id=attempt_id,
-                    fence=fence,
-                    lease_token=lease_token,
-                    outputs=typed_outputs,
-                    attempt_root=root,
-                )
             result_names = {
                 descriptor["name"]
                 for descriptor in harvested
@@ -11066,6 +12007,13 @@ class GenericPackHost:
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
             }
+            producer_manifest = next((row for row in outputs
+                                      if row.get("output_port", row.get("name")) == "result_manifest"
+                                      and row.get("role") == "manifest"), None)
+            if producer_manifest is not None:
+                payload["manifest_ref"] = {
+                    "object_id": producer_manifest["digest"], "size": producer_manifest["size"],
+                }
             if capability_id == "h3_av.transform" and child_bridge is not None:
                 action_result = payload.get("action_result")
                 if not isinstance(action_result, Mapping):
@@ -11078,8 +12026,6 @@ class GenericPackHost:
                 payload["renderer_selection"] = dict(renderer_selection)
             if "gpu" in record.preflight:
                 payload["gpu_qualification"] = dict(record.preflight["gpu"])
-            if publication_result is not None:
-                payload["timeline_render_publication"] = dict(publication_result)
             if thumbnail_diagnostics:
                 payload["thumbnail_diagnostics"] = thumbnail_diagnostics
             network_evidence = self._network_evidence(
@@ -11157,6 +12103,11 @@ class GenericPackHost:
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
             _terminal["stage"] = "settlement"
+            if "manifest_ref" in payload:
+                _terminal.update(
+                    evidence_pending=True, publication_pending=True,
+                    pending_outputs=outputs, pending_result=payload, pending_status="succeeded",
+                )
             settlement = completion_call(self.client.settle,
                 task_id,
                 lease_token,
@@ -11167,6 +12118,8 @@ class GenericPackHost:
                 fence=fence,
             )
             settled = True
+            _terminal.pop("evidence_pending", None)
+            _terminal.pop("publication_pending", None)
             _terminal.update(settled=True, settlement=settlement, effect=effect)
             if capability_id == "vibecomfy.run" and self._vibecomfy_current_warmth_hint:
                 # The hint becomes reusable only after the Runtime settlement
@@ -11181,6 +12134,11 @@ class GenericPackHost:
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
         except BaseException as exc:
             _terminal.setdefault("error", exc)
+            if _terminal.get("publication_pending"):
+                # The successful fenced publication may have committed while
+                # its response/readback was unavailable. Keep the exact spool
+                # for idempotent reconciliation instead of publishing failure.
+                raise
             if isinstance(exc, CommandCleanupUnresolved):
                 command_cleanup_error = exc
             original_error = exc.execution_error if isinstance(exc, CommandCleanupUnresolved) else exc
@@ -11188,6 +12146,7 @@ class GenericPackHost:
                 storage_failure_receipt = dict(original_error.diagnostic)
             _terminal["error"] = original_error
             failure_message = str(exc)
+            remotion_reason = None
             if (render_child_pending and renderer_selection is not None
                     and renderer_selection["chosen_by"] == "host" and not renderer_selection["remotion_ok"]):
                 # The host chose ffmpeg only because Remotion was unavailable, so
@@ -11196,10 +12155,19 @@ class GenericPackHost:
                     f"; {record.id} chose {renderer_selection['selector']} because rendering.remotion "
                     f"is unavailable on this host: {renderer_selection['remotion_reason']}"
                 )
+                remotion_reason = renderer_selection["remotion_reason"]
             gpu = record.preflight.get("gpu")
             if isinstance(gpu, Mapping) and (gpu.get("warning") or not gpu.get("qualified")):
                 failure_message += " " + str(gpu.get("warning") or gpu["reason"])
-            failure_message += recovery_suffix(original_error)
+            failure_message += recovery_suffix(original_error or exc)
+            if record.adapter.family == "render" or record.adapter.remotion != "never":
+                from astrid.core.rendering.failure_message import render_failure_message
+
+                failure_message = render_failure_message(
+                    failure_message, remotion_reason=remotion_reason,
+                    recovery=getattr(original_error or exc, "recovery_command", ""),
+                )
+            evidence_outputs, evidence_result = collect_terminal_evidence("failed", original_error)
             completion_call(self.client.fail,
                 task_id,
                 lease_token,
@@ -11213,6 +12181,8 @@ class GenericPackHost:
                     if getattr(original_error, "child_import_receipt", None) is not None
                     else storage_failure_receipt or evidence_failure_receipt
                 ),
+                outputs=evidence_outputs,
+                result=evidence_result,
                 **_structured_failure_kwargs(original_error),
             )
             raise
@@ -11245,12 +12215,20 @@ class GenericPackHost:
                 child_bridge.revoke()
                 with self._process_lock:
                     self._child_bridges.discard(child_bridge)
-            retain_for_unresolved_scope = command_cleanup_error is not None
+            retain_for_unresolved_scope = (
+                command_cleanup_error is not None
+                or bool(_terminal.get("evidence_pending"))
+                or (bool(_terminal.get("pending_result")) and not _terminal.get("recorded"))
+            )
             if retain_for_unresolved_scope:
                 # The task-scope supervisor has evidence of a child writer
                 # that outlived its leader. Keep the attempt even when the
                 # caller did not request debug retention.
-                cleanup_errors.append("unresolved command task scope; attempt retained")
+                cleanup_errors.append(
+                    "unresolved command task scope; attempt retained"
+                    if command_cleanup_error is not None
+                    else "Runtime terminal evidence publication pending; attempt retained"
+                )
             cleanup_receipt: dict[str, Any] = {
                 "path": str(root),
                 "intended_disposition": (
@@ -11387,7 +12365,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
             self._publish_evidence_status()
-            if cleanup_errors:
+            if cleanup_errors and not (_terminal.get("evidence_pending") and sys.exc_info()[1] is not None):
+                # Pending evidence retains the spool and latches cleanup above.
+                # Preserve the publication exception already being propagated.
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
             self._record_native_cpu_handoff(
                 self.managed_tool_session.current_adapter, managed_token,
@@ -11428,11 +12408,20 @@ class GenericPackHost:
         attempt_id: str | None = None,
         fence: int | None = None,
         lease_id: str | None = None,
+        runtime_epoch: int | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
+        stop_observed: bool | None = None,
         require_fence: bool = False,
     ) -> Any:
         """Propagate cancellation, requiring identity for orphan reclaim."""
         operation = self._client_operation("cancel")
+        has_evidence = outputs is not None or result is not None or stop_observed is not None
+        if has_evidence and (not attempt_id or not lease_id or fence is None or runtime_epoch is None):
+            raise HostError("runtime cancellation evidence requires a complete attempt fence")
         if attempt_id is None or fence is None:
+            if has_evidence:
+                raise HostError("runtime cancellation evidence requires an attempt fence")
             return operation(task_id)
         try:
             return operation(
@@ -11440,9 +12429,13 @@ class GenericPackHost:
                 attempt_id=attempt_id,
                 fence=int(fence),
                 lease_id=lease_id,
+                **({"runtime_epoch": runtime_epoch} if runtime_epoch is not None else {}),
+                **({"outputs": outputs} if outputs is not None else {}),
+                **({"result": result} if result is not None else {}),
+                **({"stop_observed": stop_observed} if stop_observed is not None else {}),
             )
         except TypeError as exc:
-            if require_fence:
+            if require_fence or has_evidence:
                 raise HostError("runtime cancellation lacks an attempt/fence operation") from exc
             return operation(task_id)
 
@@ -15195,6 +16188,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     parser.add_argument("--runtime-instance-id", help="runtime instance identity bound to this host")
     parser.add_argument("--source-inventory-identity", help="verified managed source inventory identity bound to this host")
     parser.add_argument("--boot-manifest-path", help="existing explicit boot-manifest path")
+    parser.add_argument("--remotion-validation-launch-id", help=argparse.SUPPRESS)
     parser.add_argument("--boot-manifest-hash", help="expected SHA-256 hash of the boot manifest")
     parser.add_argument("--readiness-profile-path", help="Worker-published readiness profile")
     parser.add_argument("--readiness-profile-hash", help="expected SHA-256 hash of the readiness profile")
@@ -15214,6 +16208,13 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     )
     args = parser.parse_args()
     _emit_startup_phase("cli_args_parsed")
+    from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE
+
+    declared_validation = os.environ.get(ASTRID_REMOTION_VALIDATION_LAUNCH)
+    if declared_validation != args.remotion_validation_launch_id:
+        parser.error("Remotion readiness reference belongs to a foreign launch")
+    if declared_validation and os.environ.get(ASTRID_REMOTION_VALIDATION_ROLE) != "host":
+        parser.error("Remotion readiness context is not the host launch context")
     if args.attempt_root and args.attempt_base:
         parser.error("--attempt-root and --attempt-base are mutually exclusive")
     if (args.readiness_profile_path is None) != (args.readiness_profile_hash is None):
@@ -15483,6 +16484,11 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             parser.error(f"host-only attempt directory is not writable: {exc}")
         args.attempt_base = str(owned_attempts)
 
+    if _runtime_external_sources is not None:
+        if preparation is None or preparation._request is None or preparation._aborted:
+            raise HostError("external sources require retained Runtime preparation")
+        _runtime_external_sources.bind(preparation._request)
+
     _emit_startup_phase("host_constructor_begin")
     _install_host_vibecomfy_import_root()
     host = GenericPackHost(
@@ -15624,6 +16630,10 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     if ready_path is not None:
         ready_payload = {
             "status": "ready",
+            "remotion_validation": {
+                key: value for key, value in os.environ.items()
+                if key.startswith("ASTRID_REMOTION_VALIDATION_")
+            } or None,
             "python_executable": os.path.abspath(sys.executable),
             "pid": os.getpid(),
             "process_birth_id": process_birth_identity(),

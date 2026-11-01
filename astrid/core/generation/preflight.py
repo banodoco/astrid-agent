@@ -19,6 +19,132 @@ import shutil
 from dataclasses import dataclass
 from typing import Any
 
+from astrid.core.contracts.errors import AstridError
+from astrid.core.generation.interfaces import ReadinessEnvelope, ReadinessFix, ReadinessIssue
+
+
+_CORE_CODES = {
+    'COMFY_TARGET_UNAVAILABLE': 'target_unreachable',
+    'COMFY_TARGET_INVALID': 'input_rejected',
+    'COMFY_TARGET_UNSUPPORTED': 'missing_dependency',
+    'COMFY_TARGET_NOT_READY': 'engine_not_found',
+    'COMFY_TARGET_NO_MODEL': 'missing_dependency',
+    'engine_not_installed': 'engine_not_found',
+    'comfyui.missing_node': 'missing_dependency',
+    'comfyui.models_missing': 'missing_dependency',
+}
+
+
+def readiness_envelope(*, entry=None, target=None, issues=(), fixes=()) -> ReadinessEnvelope:
+    """Project observations once; unknown version facts do not become issues."""
+    from copy import deepcopy
+    issues = [{**issue, 'details': deepcopy(issue.get('details', {}))} for issue in issues]
+    fixes = [{**fix, 'argv': list(fix['argv']), 'details': deepcopy(fix.get('details', {}))}
+             for fix in fixes]
+    status = ('blocked' if any(issue['severity'] == 'error' for issue in issues) else
+              'ready_with_warnings' if issues else 'ready')
+    return {'entry': deepcopy(entry),
+            'target': deepcopy(target.as_dict() if hasattr(target, 'as_dict') else target),
+            'status': status, 'issues': issues, 'fixes': fixes}
+
+
+class GenerationReadinessError(AstridError, ValueError):
+    """The same blocked payload is available to CLI, SDK and MCP adapters."""
+
+    def __init__(self, envelope: ReadinessEnvelope, *, task_id: str | None = None):
+        from astrid.core.contracts.errors import _redact_credential_data
+        self.readiness = readiness_envelope(**{key: envelope[key] for key in
+            ('entry', 'target', 'issues', 'fixes')})
+        self.readiness = _redact_credential_data(self.readiness)
+        self.task_id = task_id
+        issue = self.readiness['issues'][0]
+        fix = self.readiness['fixes'][0] if self.readiness['fixes'] else None
+        import shlex
+        recovery = shlex.join(fix['argv']) if fix else None
+        if issue['code'] == 'generation_route_unqualified':
+            recovery = issue['details'].get('fix') or recovery
+        super().__init__(issue['message'], code=issue['code'],
+                         field=issue['details'].get('field'),
+                         recovery_command=recovery,
+                         state_snapshot={'readiness': self.readiness})
+
+    def to_envelope(self) -> dict[str, Any]:
+        return {**self.readiness, 'status': 'blocked', 'task_id': self.task_id}
+
+
+def generation_error(error: Any, *, entry=None, target=None, code=None,
+                     details=None, fixes=(), task_id=None) -> GenerationReadinessError:
+    """Normalize old engine/ExecError spellings at the generation boundary."""
+    if isinstance(error, GenerationReadinessError):
+        return error
+    from collections.abc import Mapping
+    if isinstance(error, Mapping) and {'entry', 'target', 'status', 'issues', 'fixes'} <= error.keys():
+        return GenerationReadinessError(error, task_id=task_id or error.get('task_id'))
+    task_id = task_id or getattr(error, 'task_id', None)
+    readiness = getattr(error, 'readiness', None)
+    if isinstance(readiness, dict):
+        return GenerationReadinessError(readiness, task_id=task_id)
+    get = error.get if isinstance(error, Mapping) else lambda key, default=None: getattr(error, key, default)
+    category = get('category') or get('sdk_category')
+    native = code or get('code') or {
+        'precondition': 'missing_dependency', 'runtime': 'generation_failed',
+    }.get(category, 'input_rejected')
+    normalized = _CORE_CODES.get(native, native)
+    detail = {**(get('details') or {}), **(details or {})}
+    if normalized == 'generation_route_unqualified':
+        detail['fix'] = get('fix') or get('recovery_command')
+    for key in ('sdk_category', 'sdk_error'):
+        if get(key):
+            detail.setdefault(key, get(key))
+    if normalized != native:
+        detail['engine_code'] = native
+    if get('field'):
+        detail.setdefault('field', get('field'))
+    message = get('message') or get('cause') or str(error)
+    if normalized == 'input_rejected':
+        import re
+        match = re.search(r"(?:input|inputs for) '([^']+)'", message)
+        if match:
+            detail.setdefault('field', match[1])
+        else:
+            match = re.search(r'(?:unsupported entry inputs|missing required entry inputs|duplicate input values): (.+)', message)
+            if match:
+                names = match[1].split(', ')
+                detail.setdefault('field', names[0])
+                if len(names) > 1:
+                    detail.setdefault('fields', names)
+        detail.setdefault('constraint', message)
+    issue = {'code': normalized, 'severity': 'error', 'message': message, 'details': detail}
+    return GenerationReadinessError(readiness_envelope(entry=entry, target=target,
+        issues=[issue], fixes=fixes), task_id=task_id)
+
+
+def compare_versions(recorded: dict[str, Any], observed: dict[str, Any]) -> list[ReadinessIssue]:
+    """Different known versions warn; unknown recorded/observed facts are silent."""
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.version import InvalidVersion, Version
+    issues = []
+    for name, version in recorded.items():
+        current = observed.get(name)
+        if not isinstance(version, str) or not isinstance(current, str):
+            continue
+        try:
+            actual = Version(current)
+            try:
+                different = Version(version) != actual
+            except InvalidVersion:
+                constraint = SpecifierSet(version)
+                if not str(constraint):
+                    continue
+                different = actual not in constraint
+        except (InvalidVersion, InvalidSpecifier):
+            continue
+        if different:
+            issues.append({'code': 'version_drift', 'severity': 'warning',
+                           'message': f'{name} recorded version differs from the selected target',
+                           'details': {'name': name, 'recorded': version, 'observed': current}})
+    return issues
+
 
 @dataclass(frozen=True)
 class LocalGenerationReadiness:
@@ -27,6 +153,18 @@ class LocalGenerationReadiness:
     ready: bool
     reason: str = ""
     recovery_command: str = ""
+    entry: dict[str, Any] | None = None
+    target: Any = None
+    issues: tuple[ReadinessIssue, ...] = ()
+    fixes: tuple[ReadinessFix, ...] = ()
+
+    def to_envelope(self) -> ReadinessEnvelope:
+        issues = self.issues
+        if not self.ready and not issues:
+            issues = ({'code': 'engine_not_found', 'severity': 'error',
+                       'message': self.reason, 'details': {}},)
+        return readiness_envelope(entry=self.entry, target=self.target,
+                                  issues=issues, fixes=self.fixes)
 
 
 def _feature_is_missing(feature: str, value: Any) -> bool:
@@ -121,6 +259,8 @@ def validate_generation_request(
             f"Provide {pronoun} before admission and retry."
         )
 
+    from astrid.core.generation.availability import require_model_available
+    require_model_available(model, mode, execution)
     return entry, mode_spec
 
 
@@ -142,6 +282,43 @@ def _comfyui_runtime_available() -> bool:
         return True
     executable = shutil.which("comfyui")
     return bool(executable)
+
+
+def _managed_install_fix() -> ReadinessFix | None:
+    """Describe the indexed local installer for this host without running it."""
+    import platform
+    from astrid.core.generation.engine_contracts import EngineError
+    from astrid.core.generation.engine_local_endpoint import default_engine_root
+    from astrid.core.generation.engine_recipe import load_recipe_index, load_recipe_model_lock
+
+    # The current local execution adapter supports Linux x86_64. Do not offer
+    # its recipe on another machine, or infer a CUDA platform from the CPU pod.
+    if platform.system() != 'Linux' or platform.machine().lower() not in {'x86_64', 'amd64'}:
+        return None
+    try:
+        candidates = [row for row in load_recipe_index().entries
+                      if row.engine in {'vibecomfy-h3', 'vibecomfy'}
+                      and row.platform.startswith('linux-x86_64-')]
+        if len(candidates) != 1:
+            return None
+        recipe = candidates[0]
+        root = default_engine_root(recipe.engine)
+    except (EngineError, OSError):
+        return None
+    try:
+        model_bytes = sum(model.bytes for model in load_recipe_model_lock(
+            recipe.engine, recipe.platform).models)
+    except (EngineError, OSError):
+        model_bytes = None
+    scope = f'installs Astrid-managed ComfyUI under {root}; user scope; no system changes'
+    size = (f'at least {model_bytes} bytes of locked models; additional runtime download size unknown'
+            if model_bytes is not None else 'size unknown')
+    return {'argv': ['astrid', 'engines', 'install', recipe.engine,
+                     '--platform', recipe.platform, '--placement', 'local'],
+            'scope': 'managed_write',
+            'details': {'bytes': model_bytes, 'size_scope': 'locked_models',
+                        'additional_bytes': None, 'scope': scope,
+                        'guidance': f'{scope}; {size}'}}
 
 
 def check_local_generation_readiness(
@@ -191,15 +368,23 @@ def check_local_generation_readiness(
         )
 
     if require_managed_runtime and not _comfyui_runtime_available():
+        install = _managed_install_fix()
+        attach = ['astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
+        import shlex
+        guidance = f"start your existing ComfyUI and attach with {shlex.join(attach)}"
+        if install:
+            guidance = f"{shlex.join(install['argv'])} ({install['details']['guidance']}); or {guidance}"
         return LocalGenerationReadiness(
             ready=False,
             reason=(
                 "local generation requires a ComfyUI runtime ('comfy.cmd.main' "
                 "or the 'comfyui' CLI); neither is installed or discoverable"
             ),
-            recovery_command=(
-                "start your existing ComfyUI and use vibecomfy.run with its local server URL; "
-                "see the VibeComfy skill for setup"
+            recovery_command=guidance,
+            fixes=(
+                *((install,) if install else ()),
+                {'argv': attach, 'scope': 'read_only',
+                 'details': {'guidance': 'Attach after starting your existing ComfyUI'}},
             ),
         )
 
@@ -230,7 +415,7 @@ def require_local_generation_readiness(
     )
 
 
-def select_generation_target(target: str, *, repo=None):
+def _select_generation_target(target: str, *, repo=None):
     """Select and probe one Comfy target without changing machine config.
 
     ``None`` selects managed lifecycle; a returned client owns only HTTP I/O.
@@ -281,8 +466,26 @@ def select_generation_target(target: str, *, repo=None):
             f"ComfyUI target {url} is unavailable: {exc}",
             code="COMFY_TARGET_UNAVAILABLE", field="target",
             fix=f"Start ComfyUI at {url}, or use --target managed with an installed ComfyUI runtime",
+            state_snapshot={'target': record.as_dict()},
         ) from exc
-    return ComfyTargetClient(ComfyTarget(client.target.url, "attached", {**record.facts, **facts}))
+    client = ComfyTargetClient(ComfyTarget(client.target.url, "attached", {**record.facts, **facts}))
+    from dataclasses import replace
+    from datetime import datetime, timezone
+    client.generation_target = replace(record, facts={**record.facts, **facts},
+        verified_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
+    return client
+
+
+def select_generation_target(target: str, *, repo=None):
+    """Read/probe the bound target and expose the shared error envelope."""
+    try:
+        return _select_generation_target(target, repo=repo)
+    except AstridError as exc:
+        snapshot = exc.state_snapshot.get('target')
+        selector = (snapshot or {}).get('endpoint') or target
+        argv = ['astrid', 'generate', 'targets', '--target', selector]
+        raise generation_error(exc, target=snapshot,
+            fixes=[{'argv': argv, 'scope': 'read_only', 'details': {'guidance': exc.fix}}]) from exc
 
 
 def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> None:
@@ -293,8 +496,12 @@ def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> N
         entry, mode, require_managed_runtime=client is None,
     )
     if not readiness.ready:
-        raise AstridError(
+        error = AstridError(
             readiness.reason, code="COMFY_TARGET_NOT_READY", field="target",
             fix=(readiness.recovery_command + "; use --target http://127.0.0.1:8188 "
                  "when your existing ComfyUI is running there"),
         )
+        raise generation_error(error,
+            fixes=readiness.fixes or [
+                {'argv': ['astrid', 'generate', 'targets', '--target', 'http://127.0.0.1:8188'],
+                 'scope': 'read_only', 'details': {'guidance': readiness.recovery_command}}])

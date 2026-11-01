@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterator, Mapping
 from astrid.core.env_vars import ASTRID_REMOTION_PROJECT_DIR
 from astrid.core.execution.executor.registry import load_default_registry
 from astrid.core.execution.executor.runner import ExecutorRunRequest, run_executor
+from astrid.core.media import require_runtime_materialized_file
 
 PACK_ID = "rendering.render"
 FAMILY = "render_export"
@@ -211,6 +212,41 @@ def _stage_managed_registry(
     return result
 
 
+def _admitted_theme_path(
+    *,
+    materialized_objects: Mapping[str, str | Path | bytes],
+    materialized_root: Path,
+) -> str | None:
+    """Return the existing host-admitted theme file, if one was supplied."""
+
+    value = materialized_objects.get("theme")
+    if value is None:
+        return None
+    if isinstance(value, bytes) or not isinstance(value, (str, Path, os.PathLike)):
+        raise RenderExportRefused("render_export theme must be a host materialized file")
+    raw_value = os.fspath(value)
+    if not isinstance(raw_value, str):
+        raise RenderExportRefused("render_export theme must be a host materialized file")
+    candidate = Path(raw_value).expanduser()
+    if candidate.is_symlink():
+        raise RenderExportRefused("render_export theme materialization must not be a symlink")
+    try:
+        admitted = require_runtime_materialized_file(
+            candidate,
+            label="render_export theme",
+        )
+        admitted.relative_to(materialized_root.resolve(strict=True))
+    except (OSError, ValueError) as exc:
+        raise RenderExportRefused(
+            "render_export theme must be an admitted file beneath the host materialization root"
+        ) from exc
+    if admitted.name != "theme.json":
+        raise RenderExportRefused("render_export theme materialization must be theme.json")
+    # Preserve the host-admitted path itself.  The executor receives no
+    # caller-supplied theme path and no copied or slug-resolved substitute.
+    return raw_value
+
+
 @contextmanager
 def _scoped_env(key: str, value: str) -> Iterator[None]:
     previous = os.environ.get(key)
@@ -315,6 +351,10 @@ class RenderExportTaskAdapter:
             raise RenderExportRefused(
                 "render_export host materialization root is missing"
             )
+        theme_path = _admitted_theme_path(
+            materialized_objects=dict(raw_materialized),
+            materialized_root=materialized_root,
+        )
         staged_registry = _stage_managed_registry(
             registry=registry,
             materialized_objects=dict(raw_materialized),
@@ -386,6 +426,8 @@ class RenderExportTaskAdapter:
                 "materialized_root": str(owned_inputs_dir),
                 "materialized_objects": dict(raw_materialized),
             }
+            if theme_path is not None:
+                renderer_inputs["theme"] = theme_path
             if expected_version is not None:
                 renderer_inputs["expected_version"] = expected_version
             render_env = nullcontext()
