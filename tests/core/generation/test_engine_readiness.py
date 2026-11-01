@@ -47,7 +47,7 @@ ENGINE = "vibecomfy-h3"
 CLONE = Path(__file__).resolve().parents[3]
 RUNTIME_SOURCE = Path(os.environ.get("ASTRID_RUNTIME_CHECKOUT", "/home/user/proof/src/astrid-runtime"))
 VIBECOMFY_SOURCE = Path(os.environ.get("ASTRID_VIBECOMFY_CHECKOUT", "/home/user/proof/src/VibeComfy"))
-VIBECOMFY_REVISION = "3bebae39655eb460454885040be4d3aefaf2ef31"
+VIBECOMFY_REVISION = "2967033970cbb5884651c9565265778482d3b44e"
 COMFY_VERSION = "0.36.0"
 SYNTHETIC_DRIVER = "580.95.05"
 SYNTHETIC_VRAM_MIB = 32607
@@ -390,7 +390,7 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     if recipe.engine == "comfyui":
         assert dict(receipt.source_commits) == {
             "comfyui": "423cbd20511becb1f16122ab518e92e58bfa03d9",
-            "vibecomfy": "3bebae39655eb460454885040be4d3aefaf2ef31",
+            "vibecomfy": "2967033970cbb5884651c9565265778482d3b44e",
         }
     inventory = sorted(({"name": Path(m.destination).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
                          "subdir": str(Path(m.destination).parent)} for m in installation["lock"].models),

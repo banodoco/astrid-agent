@@ -6,8 +6,8 @@
       "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf"
     },
     "vibecomfy": {
-      "repository": "https://github.com/AstridPseudon/vibecomfy-proof",
-      "revision": "3bebae39655eb460454885040be4d3aefaf2ef31"
+      "repository": "https://github.com/banodoco/VibeComfy.git",
+      "revision": "2967033970cbb5884651c9565265778482d3b44e"
     },
     "h3-motion-context": {
       "repository": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",

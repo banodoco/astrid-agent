@@ -70,7 +70,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_keeps_h3_entry_unchanged():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "613bae6d3fb90a1f13ac50eb5018e2eedb6c1cff458036f39ea8d58516559ad9"
+    assert h3_entry.recipe.sha256 == "d0e081ab4371be6399a52327315a460bd77b4b851fcddecad1c1c697dd152274"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
@@ -112,11 +112,11 @@ def test_plain_comfyui_and_packaged_client_share_one_declared_vibecomfy_authorit
         assert len(bindings) == 1
         assert bindings[0].relative_path == "runtime/vibecomfy"
         assert bindings[0].pin == pins["vibecomfy"]
-        assert bindings[0].pin.repository == "https://github.com/AstridPseudon/vibecomfy-proof"
-        assert bindings[0].pin.revision == "3bebae39655eb460454885040be4d3aefaf2ef31"
+        assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
+        assert bindings[0].pin.revision == "2967033970cbb5884651c9565265778482d3b44e"
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
             "423cbd20511becb1f16122ab518e92e58bfa03d9")
-    declarations = sum(path.read_text().count('https://github.com/AstridPseudon/vibecomfy-proof')
+    declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
                        for path in (recipes._ROOT / "packs").rglob("*.json"))
     assert declarations == 1
 
