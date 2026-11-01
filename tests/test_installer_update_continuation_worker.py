@@ -215,13 +215,6 @@ def test_orphan_native_submission_after_replacement_is_fenced(tmp_path, monkeypa
     assert adapter.events == before_events  # no old manager API call
     assert (root / "install.json").read_bytes() == before_marker
 
-    with pytest.raises(ValueError) as queued_old_wrapper:
-        update_job.run_job(root, original["operation_id"], old_epoch, old_nonce)
-    assert queued_old_wrapper.value.reason == "busy"
-    assert adapter.events == before_events  # no claim, entry, or native call
-    assert (root / "install.json").read_bytes() == before_marker
-
-
 def test_replacement_requires_a_positive_native_retirement_barrier(tmp_path, monkeypatch):
     """An inactive-looking registration cannot be replaced until it is absent."""
     root, _, _, request = _fixture(tmp_path, monkeypatch)
@@ -246,4 +239,25 @@ def test_replacement_requires_a_positive_native_retirement_barrier(tmp_path, mon
         update_job.accept(request)
     assert refusal.value.reason == "busy"
     assert adapter.events == ["registration", "liveness", "retire", "registration"]
+    assert (root / "install.json").read_bytes() == before_marker
+
+
+def test_queued_old_wrapper_nonce_is_denied_before_claim_or_job_write(tmp_path, monkeypatch):
+    """A queued wrapper must not adopt the replacement epoch at claim time."""
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    original = update_job.accept(request)
+    old_epoch, old_nonce = update_job._attempt_tuple(original)
+    old_command = update_job._expected_worker_command(Version.load(original["old_version"]), original)
+    _set_unresolved(root, original, "never-entered", _descriptor(original, old_command))
+    adapter = _ContinuationAdapter(root, registered=True)
+    monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
+    replacement = update_job.accept(request)
+    assert replacement["attempt"]["epoch"] == old_epoch + 1
+
+    before_marker = (root / "install.json").read_bytes()
+    before_events = list(adapter.events)
+    with pytest.raises(ValueError) as queued_old_wrapper:
+        update_job.run_job(root, original["operation_id"], old_epoch, old_nonce)
+    assert queued_old_wrapper.value.reason == "busy"
+    assert adapter.events == before_events
     assert (root / "install.json").read_bytes() == before_marker
