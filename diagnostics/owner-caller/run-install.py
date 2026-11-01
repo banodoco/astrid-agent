@@ -41,6 +41,8 @@ missing = []
 for phase in ('before', 'after'):
     try:
         meta = json.loads((out / ('installer-' + phase + '.json')).read_text(encoding='utf-8'))
+        if 'installer_token' not in meta:
+            missing.append(phase + ': installer token unavailable')
         if meta.get('helper_exit') != 0:
             missing.append(phase + ': helper did not succeed')
         for name in ('acl-', 'identity-', 'sha256-', 'token-'):
