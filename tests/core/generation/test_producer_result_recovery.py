@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.core.generation.backends.vibecomfy_workflow import VibeComfyWorkflowBackend
+from astrid.core.contracts.managed_generation_result import validate_evidence_reference
 from astrid.core.generation.producer_result import bind_executed_settings, stage_executed_settings
 
 
@@ -130,6 +131,7 @@ def test_staged_settings_are_exact_compiled_api_and_keep_existing_evidence(tmp_p
     path.write_text(json.dumps(before))
     record = compiled()
     ref = stage_executed_settings(record, root)
+    validate_evidence_reference(ref, field='inputs.effective_settings', staging_root=root)
     assert ref['sha256'] == record.api_digest
     assert ref['bytes'] == len(canonical_bytes(record.to_dict()['api_projection']))
     assert (root / ref['filename']).read_bytes() == canonical_bytes(record.to_dict()['api_projection'])

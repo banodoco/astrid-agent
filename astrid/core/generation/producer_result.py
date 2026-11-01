@@ -53,7 +53,8 @@ def stage_executed_settings(record, destination: Path) -> dict:
         raise ValueError('executed settings do not match the approved API digest')
     path = Path(destination).resolve() / 'effective-settings.json'
     write_bytes_atomic(path, data)
-    return {'sha256': sha256, 'bytes': len(data), 'filename': path.name, 'path': str(path)}
+    return {'sha256': sha256, 'bytes': len(data), 'filename': path.name,
+            'path': path.relative_to(Path(destination).resolve()).as_posix()}
 
 
 def bind_executed_settings(result, settings: dict, *, task_id: str, attempt_id: str | None):
@@ -101,7 +102,7 @@ def _with_payload(result, payload):
 
 
 def source_input_ref(workflow_path: Path, destination: Path) -> dict | None:
-    """Identify the retained source member, before any producer conversion."""
+    """Identify the retained source member relative to its producer staging root."""
     path = Path(workflow_path)
     if path.suffix == '.py' and path.with_name('source.json').is_file():
         path = path.with_name('source.json')
@@ -115,7 +116,7 @@ def source_input_ref(workflow_path: Path, destination: Path) -> dict | None:
     # A digest of a local file alone is not proof of a project association.
     # The admitted source ref, when supplied by the producer, takes priority.
     return {'sha256': sha256, 'bytes': len(data), 'filename': path.name,
-            'path': str(staged)}
+            'path': staged.relative_to(Path(destination).resolve()).as_posix()}
 
 
 def _projection(runtime: dict):
