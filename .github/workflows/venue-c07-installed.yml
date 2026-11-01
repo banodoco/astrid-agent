@@ -171,6 +171,36 @@ jobs:
             run_stage npm_ci bash -c 'cd product && npm ci --prefix remotion'
           else printf 'npm_ci=skipped\n' >> "$RUN_DIR/inner-exits.txt"; fi
           if [ "$overall" -eq 0 ]; then
+            run_stage registry_generate bash -c 'cd product && "$RUNNER_TEMP/installed-venv/bin/python" scripts/gen_effect_registry.py'
+            run_stage registry_verify bash -c '
+              set -uo pipefail
+              registry_dir="$ASTRID_REMOTION_PROJECT_DIR/node_modules/@banodoco/timeline-composition/typescript/src"
+              ls -la "$registry_dir" | tee "$RUN_DIR/artifacts/registry-listing.txt"
+              rc=${PIPESTATUS[0]}
+              : > "$RUN_DIR/artifacts/registry.sha256"
+              for name in effects.generated.ts animations.generated.ts transitions.generated.ts; do
+                if [ -s "$registry_dir/$name" ] && [ -f "$registry_dir/$name" ]; then
+                  sha256sum "$registry_dir/$name" | tee -a "$RUN_DIR/artifacts/registry.sha256"
+                  hash_rc=${PIPESTATUS[0]}
+                  if [ "$hash_rc" -ne 0 ]; then rc="$hash_rc"; fi
+                else
+                  printf "Missing or empty registry output: %s\n" "$registry_dir/$name" >&2
+                  rc=1
+                fi
+              done
+              state="$ASTRID_REMOTION_PROJECT_DIR/.astrid-registry-state.json"
+              if [ -e "$state" ] || [ -L "$state" ]; then
+                printf "Unexpected registry state: %s\n" "$state" >&2
+                rc=1
+              else
+                printf "Registry state absent: %s\n" "$state"
+              fi
+              exit "$rc"
+            '
+          else
+            printf 'registry_generate=skipped\nregistry_verify=skipped\n' >> "$RUN_DIR/inner-exits.txt"
+          fi
+          if [ "$overall" -eq 0 ]; then
             set +e
             cd product
             PYTEST_ADDOPTS="--junitxml=$RUN_DIR/selector.junit.xml" "$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py 2>&1 | tee -a "$RUN_DIR/logs/command.log"
