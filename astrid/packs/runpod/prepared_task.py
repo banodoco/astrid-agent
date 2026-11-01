@@ -89,6 +89,22 @@ def _require_paid_lifetime(claim: Mapping[str, Any], *, now: datetime | None = N
         raise PreparedWorkerError("ordinary prepared claim has no verified remaining paid lifetime") from None
 
 
+def _require_prepared_account(selection: PreparedWorkerSelection, claim: Mapping[str, Any]) -> str:
+    """Explicit owner selection authorizes its exact claim; env is legacy fallback."""
+    account = claim.get("provider_account_ref")
+    explicit = getattr(selection, "provider_account_ref", None)
+    ambient = os.environ.get("ASTRID_RUNPOD_ACCOUNT_REF", "").strip()
+    if explicit is not None:
+        if (not isinstance(explicit, str) or not explicit or explicit != account
+                or explicit != selection.target.get("provider_account_ref")):
+            raise PreparedWorkerError("explicit selection account must match the exact P1 claim account")
+        if ambient and ambient != explicit:
+            raise PreparedWorkerError("ASTRID_RUNPOD_ACCOUNT_REF conflicts with the explicit selection account")
+    elif not ambient or ambient != account:
+        raise PreparedWorkerError("ASTRID_RUNPOD_ACCOUNT_REF must match the exact P1 claim account")
+    return str(account)
+
+
 @dataclass(frozen=True)
 class PreparedWorkerSelection:
     claim_handle_path: Path
@@ -99,6 +115,7 @@ class PreparedWorkerSelection:
     deployment_profile: Mapping[str, Any]
     staging_inputs: Mapping[str, Any]
     composition_factory: Callable[..., PreparedTaskRuntime] | None = None
+    provider_account_ref: str | None = None
 
     def execution_request(
         self, supplied: Mapping[str, Any] | None
@@ -175,6 +192,7 @@ def load_prepared_worker_selection(
     path: str | Path,
     *,
     composition_factory: Callable[..., PreparedTaskRuntime] | None = None,
+    provider_account_ref: str | None = None,
 ) -> PreparedWorkerSelection:
     """Load a reference to existing P1/P2 custody; do not create or attach a pod."""
 
@@ -198,6 +216,8 @@ def load_prepared_worker_selection(
     journal_dir = selected_path("journal_dir", directory=True)
     claim = _read_mapping(claim_path, label="P1 claim")
     target = _claim_target(claim)
+    if provider_account_ref is not None and provider_account_ref != target["provider_account_ref"]:
+        raise PreparedWorkerError("explicit selection account must match the exact P1 claim account")
     profile = _read_mapping(profile_path, label="deployment profile")
     if profile.get("schema") != _DEPLOYMENT_PROFILE_SCHEMA:
         raise PreparedWorkerError("deployment profile schema is invalid")
@@ -227,7 +247,7 @@ def load_prepared_worker_selection(
         staging[key] = local_path
     return PreparedWorkerSelection(
         claim_path, profile_path, staging_path, journal_dir,
-        target, profile, staging, composition_factory,
+        target, profile, staging, composition_factory, provider_account_ref,
     )
 
 
@@ -404,6 +424,7 @@ def release_preparation(
 
 def release_prepared_worker(
     client: Any, selection_path: str | Path, task_id: str, *, resume: bool = False,
+    provider_account_ref: str | None = None,
 ) -> Mapping[str, Any]:
     """Explicitly release the exact prepared claim after its Runtime task settles."""
     claim_path = Path(selection_path).expanduser()
@@ -420,6 +441,12 @@ def release_prepared_worker(
         raise
     if not isinstance(claim, Mapping):
         raise PreparedWorkerError("prepared worker selection does not name a readable exact P1 claim")
+    if provider_account_ref is not None:
+        if provider_account_ref != claim.get("provider_account_ref"):
+            raise PreparedWorkerError("explicit selection account must match the exact P1 claim account")
+        ambient = os.environ.get("ASTRID_RUNPOD_ACCOUNT_REF", "").strip()
+        if ambient and ambient != provider_account_ref:
+            raise PreparedWorkerError("ASTRID_RUNPOD_ACCOUNT_REF conflicts with the explicit selection account")
     managed = claim.get("managed_worker")
     qualification = managed.get("activation_qualification") if isinstance(managed, Mapping) else None
     if claim.get("state") == "cleanup_complete":
@@ -446,7 +473,9 @@ def release_prepared_worker(
             raise PreparedWorkerError("completed RunPod release lacks exact provider cleanup evidence")
         return dict(claim)
 
-    selection = load_prepared_worker_selection(claim_path)
+    selection = load_prepared_worker_selection(claim_path, **(
+        {"provider_account_ref": provider_account_ref} if provider_account_ref is not None else {}
+    ))
     task = _read_exact_task(client, task_id, capability_id="vibecomfy.run")
     state = str(task.get("state") or task.get("status") or "").casefold()
     if state not in {"succeeded", "completed", "failed", "cancelled", "canceled"}:
@@ -775,9 +804,7 @@ class _ProductionPreparedTaskRuntime:
             reference = replace(reference, readiness_profile_hash=managed.get("readiness_profile_hash"))
             if reference.digest() != managed.get("deployment_digest"):
                 raise PreparedWorkerError("persisted endpoint readiness reference changed")
-        account_env = os.environ.get("ASTRID_RUNPOD_ACCOUNT_REF", "").strip()
-        if account_env != claim["provider_account_ref"]:
-            raise PreparedWorkerError("ASTRID_RUNPOD_ACCOUNT_REF must match the exact P1 claim account")
+        _require_prepared_account(self.selection, claim)
         from astrid.core.util.credentials_scope import CredentialsScope
 
         api_key_ref = str(claim.get("api_key_ref") or "RUNPOD_API_KEY")
