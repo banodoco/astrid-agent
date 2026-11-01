@@ -38,7 +38,7 @@ from .core import (
 from .launcher import install_shim, owned_shim, remove_shim
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
-from .tools import binary, install_tools, source
+from .tools import binary, clone_source, install_tools, source
 
 
 def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
@@ -924,6 +924,16 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                          **({"repo": manifest["runtime"]["repo"]} if "repo" in manifest["runtime"] else {}))
         vibecomfy = source("vibecomfy", manifest["vibecomfy"]["sha"], folder / "v",
                           **({"repo": manifest["vibecomfy"]["repo"]} if "repo" in manifest["vibecomfy"] else {}))
+        sibling_sources = []
+        source_install_env = {}
+        if "lifecycle" in manifest or "runpod" in manifest:
+            for name, directory, distribution in (
+                ("lifecycle", "lifecycle", "RUNPOD_LIFECYCLE"),
+                ("runpod", "runpod", "RUNPOD"),
+            ):
+                pin = manifest[name]
+                sibling_sources.append(clone_source(pin["repo"], pin["sha"], folder / directory))
+                source_install_env[f"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_{distribution}"] = pin["version"]
         self._verify_local_timeline_schema(agent)
         environment = folder / "py"
         self.run([self.uv, "venv", "--python", manifest["tools"]["python"]["version"], environment])
@@ -931,7 +941,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         self.run([self.uv, "pip", "install", "--python", python, "--require-hashes",
                   "-r", agent / "requirements" / "runtime.lock"])
         self.run([self.uv, "pip", "install", "--python", python, "--no-deps", runtime,
-                  runtime / "packages" / "python", agent, vibecomfy])
+                  runtime / "packages" / "python", agent, vibecomfy, *sibling_sources],
+                 extra_env=source_install_env)
         env = install_tools(manifest, folder / "tools", platform_target(), self.run)
         prior = current(root) or self.existing(data)
         env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),

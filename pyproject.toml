@@ -23,6 +23,28 @@ dependencies = [
     "fal-client>=0.7.0",
     "xxhash>=3.4",
     "PyJWT[crypto]>=2.8",
+    # Third-party runtime requirements for the manifest-installed RunPod
+    # lifecycle and SDK sources. Those two distributions themselves are
+    # installed from immutable manifest commits with --no-deps.
+    "aiohttp[speedups]>=3.14.3",
+    "aiohttp-retry>=2.9.1",
+    "backoff>=2.2.1",
+    "boto3>=1.43.66",
+    "click>=8.4.2",
+    "colorama>=0.4.6,<0.4.7",
+    "cryptography>=50.0.0",
+    "fastapi[all]>=0.141.1",
+    "inquirerpy==0.3.4",
+    "paramiko>=5.0.0",
+    "prettytable>=3.18.0",
+    "psutil>=7.2.2",
+    "py-cpuinfo>=9.0.0",
+    "requests>=2.34.2",
+    "tomli>=2.4.1",
+    "tomlkit>=0.15.1",
+    "tqdm-loggable>=0.4.1",
+    "urllib3>=2.7.0",
+    "watchdog>=6.0.0",
     # VibeComfy is installed with --no-deps by the managed installer.
     "huggingface_hub[hf_xet]>=0.32.0",
     # pyannote.audio is intentionally excluded from core metadata.
