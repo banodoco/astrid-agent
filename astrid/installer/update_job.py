@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -103,6 +104,86 @@ JOB_STATES = {"accepted", "launching", "active", "updated", "rolled_back", "fail
 BOOTSTRAP_PROOF_FORMAT = "astrid-update-bootstrap-proof/v1"
 MAX_RESULT_LINE = 240
 
+_ATTEMPT_PHASES = {"reserved", "submitted", "claimed", "retired", "settled"}
+_ATTEMPT_SUBMITS = {"not-issued", "spent", "acknowledged", "unknown"}
+
+
+def _new_attempt(epoch: int) -> dict:
+    """Create the private, immutable identity carried by one native wrapper."""
+    if type(epoch) is not int or epoch < 1:
+        raise ValueError("The update attempt epoch is invalid.")
+    return {
+        "epoch": epoch,
+        "nonce": secrets.token_hex(16),
+        "phase": "reserved",
+        "submit": "not-issued",
+        "wrapper_sha256": None,
+        "descriptor_sha256": None,
+        "claim": None,
+        "retirement": None,
+    }
+
+
+def _attempt(job: dict) -> dict:
+    """Return the current native-attempt identity or refuse unsafe legacy data.
+
+    An older wrapper must never be permitted to infer a replacement identity
+    from the operation ID.  Missing private attempt evidence is consequently a
+    refusal boundary rather than a compatibility fallback.
+    """
+    value = job.get("attempt")
+    if not isinstance(value, dict):
+        raise ValueError("The accepted update has no native attempt identity.")
+    epoch, nonce = value.get("epoch"), value.get("nonce")
+    if (type(epoch) is not int or epoch < 1
+            or not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{32}", nonce)
+            or value.get("phase") not in _ATTEMPT_PHASES
+            or value.get("submit") not in _ATTEMPT_SUBMITS):
+        raise ValueError("The accepted update native attempt identity is invalid.")
+    for key in ("wrapper_sha256", "descriptor_sha256", "retirement"):
+        if value.get(key) is not None and (not isinstance(value[key], str)
+                                           or not re.fullmatch(r"[0-9a-f]{64}", value[key])):
+            raise ValueError("The accepted update native attempt evidence is invalid.")
+    if value.get("claim") is not None and not isinstance(value["claim"], dict):
+        raise ValueError("The accepted update native claim is invalid.")
+    return value
+
+
+def _attempt_tuple(job: dict) -> tuple[int, str]:
+    value = _attempt(job)
+    return value["epoch"], value["nonce"]
+
+
+def _attempt_matches(job: dict, operation_id: str, epoch: int, nonce: str) -> bool:
+    try:
+        return (job.get("operation_id") == operation_id
+                and _attempt_tuple(job) == (epoch, nonce))
+    except ValueError:
+        return False
+
+
+def _attempt_digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _current_attempt(root: Path, operation_id: str, epoch: int, nonce: str, *,
+                     submitted: bool = False) -> dict:
+    """Reread the durable tuple at a native authority boundary.
+
+    Callers already own the installer lock.  The extra reread deliberately
+    fences a delayed callback or wrapper: it must fail before manager activity,
+    claim, entry, or a job write when an explicit continuation has replaced its
+    epoch.
+    """
+    job = _read_job(root, operation_id)
+    if not _attempt_matches(job, operation_id, epoch, nonce):
+        _busy("The native update attempt was replaced before it could run.")
+    attempt = _attempt(job)
+    if submitted and (attempt.get("phase") not in {"submitted", "claimed"}
+                      or attempt.get("submit") not in {"spent", "acknowledged", "unknown"}):
+        _busy("The native update submission is not durably authorized.")
+    return job
+
 
 def _selected_bytes(path: Path, limit: int) -> bytes:
     if path.is_symlink() or not path.is_file() or not platform.is_owner_only(path):
@@ -179,7 +260,8 @@ def _validate_existing_windows_worker(old: Version, job: dict) -> None:
     if not isinstance(metadata, dict):
         raise ValueError("The accepted update job has no private worker directory.")
     directory, _, _ = _validate_input_paths(metadata)
-    worker_script = directory / f"worker-{job['operation_id']}.py"
+    epoch, nonce = _attempt_tuple(job)
+    worker_script = directory / f"worker-{job['operation_id']}-{epoch}-{nonce}.py"
     if worker_script.is_symlink():
         raise ValueError("The private update worker script is a link.")
     if not worker_script.exists():
@@ -389,6 +471,11 @@ def _validate_request(request: dict, root: Path) -> dict:
                             "operation_id": operation_id, "program_root": str(root),
                             "data_root": str(data_root), "owner": LABEL,
                             "state": "never-entered", "claim_state": "unclaimed"},
+        # This tuple is carried by the native wrapper itself.  It is distinct
+        # from the stable logical operation ID so a later continuation can
+        # revoke a delayed old wrapper without changing the operation.
+        "attempt": _new_attempt(1),
+        "retired_attempts": [],
         "accepted_at": int(time.time()), "message": "Update accepted.",
     }
 
@@ -531,37 +618,53 @@ def _validate_prebootstrap(root: Path, job: dict, data_root: Path) -> Version:
 
 def _continue_prebootstrap(root: Path, job: dict, descriptor: dict,
                            old: Version, registration_present: bool, api=None) -> dict:
-    """Retire and relaunch one proved-never-entered operation under accept's lock."""
+    """Retire one fenced attempt and reserve its same-ID replacement under L."""
     api = api or _platform_api()
     operation_id = job["operation_id"]
+    old_epoch, old_nonce = _attempt_tuple(job)
+    _current_attempt(root, operation_id, old_epoch, old_nonce)
     try:
         command = _worker_command(old, job, inactive_reconciliation=True)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
         raise _BusyRefusal("The private update worker command cannot be safely prepared.") from failure
+    retirement = {
+        "operation_id": operation_id,
+        "epoch": old_epoch,
+        "nonce": old_nonce,
+        "registration": "absent" if not registration_present else "owned-inactive",
+    }
     if registration_present:
         try:
+            # This was positively observed inactive immediately before cleanup.
+            # A manager error, a still-present object, or an ambiguous readback
+            # leaves the old authority unresolved and blocks replacement.
+            _current_attempt(root, operation_id, old_epoch, old_nonce)
             api.cleanup(descriptor)
+            _current_attempt(root, operation_id, old_epoch, old_nonce)
+            if api.is_registered(descriptor, command) is not False:
+                _busy("The inactive update registration did not reach an authoritative absence barrier.")
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
             raise _BusyRefusal("The inactive update registration could not be safely retired.") from failure
+        retirement["registration"] = "retired-absent"
+    old_attempt = dict(_attempt(job))
+    old_attempt.update({"phase": "retired", "retirement": _attempt_digest(retirement)})
+    retired_attempts = job.get("retired_attempts")
+    if not isinstance(retired_attempts, list):
+        _busy("The accepted update retirement history is invalid.")
+    replacement = _new_attempt(old_epoch + 1)
     proof = dict(job["bootstrap_proof"])
     proof.pop("native_claim", None)
     proof.update({"claim_state": "unclaimed", "continuation_at": int(time.time())})
-    job = _write_job(root, operation_id, state="launching",
+    job = _write_job(root, operation_id, state="accepted",
                      message="Continuing the accepted update operation.",
-                     fields={"platform": descriptor, "launch_status": "launching",
+                     fields={"platform": None, "launch_status": "not-issued",
                              "cleanup_status": "not-needed", "cleanup_error": None,
-                             "bootstrap_proof": proof,
+                             "bootstrap_proof": proof, "attempt": replacement,
+                             "retired_attempts": [*retired_attempts, old_attempt],
+                             "worker_command_sha256": _worker_binding_digest(old, {
+                                 **job, "attempt": replacement}),
                              "continuation_attempted_at": int(time.time())}, allow_reconcile=True)
-    try:
-        api.launch(descriptor, command, Path(job["log_path"]))
-    except (Exception, KeyboardInterrupt) as failure:
-        _write_job(root, operation_id, state="recovery-needed",
-                   message="Recovery needed. Update launch acknowledgement was lost; run Update again.",
-                   fields={"launch_status": "unknown", "launch_error": _one_line(failure)},
-                   allow_reconcile=True)
-        raise _BusyRefusal("The update continuation launch could not be acknowledged.") from failure
-    return _write_job(root, operation_id, state="launching", message="Update job launched.",
-                      fields={"launch_status": "acknowledged", "launch_error": None}, allow_reconcile=True)
+    return _launch_current_attempt(root, job, old, api, continuation=True)
 
 
 def _matching_journal(job: dict, journal: dict) -> bool:
@@ -1068,6 +1171,7 @@ def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
 
 
 def _worker_command_source(old: Version, job: dict) -> str:
+    epoch, nonce = _attempt_tuple(job)
     profile = read_json(old.profile)
     source_paths = []
     for key in ("runtime_checkout", "source_checkout"):
@@ -1082,7 +1186,7 @@ def _worker_command_source(old: Version, job: dict) -> str:
         f"sys.path[:0]={source_paths!r}; "
         f"os.environ.update({old.env!r}); "
         "from astrid.installer.update_job import run_job; "
-        f"result=run_job({job['program_root']!r}, {job['operation_id']!r}); "
+        f"result=run_job({job['program_root']!r}, {job['operation_id']!r}, {epoch!r}, {nonce!r}); "
         "print(__import__('json').dumps(result))"
     )
 
@@ -1095,8 +1199,9 @@ def _expected_worker_command(old: Version, job: dict) -> list[str]:
         if not isinstance(metadata, dict):
             raise ValueError("The accepted update job has no private worker directory.")
         directory, _, _ = _validate_input_paths(metadata)
+        epoch, nonce = _attempt_tuple(job)
         return [str(old.python), "-B", "-X", "utf8", "-I",
-                str(directory / f"worker-{job['operation_id']}.py")]
+                str(directory / f"worker-{job['operation_id']}-{epoch}-{nonce}.py")]
     return [str(old.python), "-B", "-X", "utf8", "-I", "-c", script]
 
 
@@ -1125,7 +1230,8 @@ def _worker_command(old: Version, job: dict, *, inactive_reconciliation: bool = 
         if (not directory.is_dir() or directory.is_symlink()
                 or not platform.is_owner_only(directory, directory=True)):
             raise ValueError("The accepted update worker directory is not private.")
-        worker_script = directory / f"worker-{job['operation_id']}.py"
+        epoch, nonce = _attempt_tuple(job)
+        worker_script = directory / f"worker-{job['operation_id']}-{epoch}-{nonce}.py"
         expected_bytes = (script + "\n").encode("utf-8")
         if worker_script.is_symlink():
             raise ValueError("The private update worker script already exists as a link.")
@@ -1185,6 +1291,107 @@ def _owned_descriptor(descriptor: dict, operation_id: str) -> bool:
     return descriptor.get("unit") == expected
 
 
+def _submit_native_attempt(root: Path, operation_id: str, epoch: int, nonce: str,
+                           api, descriptor: dict, command: list[str], log_path: Path) -> None:
+    """Make the one manager call only if this exact attempt is still current.
+
+    Keeping this fence adjacent to ``api.launch`` is intentional.  It covers a
+    submitter delayed after its durable reservation as well as a normal caller;
+    a replacement has changed the durable epoch/nonce, so the stale caller
+    cannot reach any native API method.
+    """
+    job = _current_attempt(root, operation_id, epoch, nonce, submitted=True)
+    if job.get("platform") != descriptor:
+        _busy("The native update descriptor was replaced before submission.")
+    api.launch(descriptor, command, log_path)
+
+
+def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
+                            continuation: bool = False) -> dict:
+    """Reserve, fence, submit, and acknowledge one current native attempt.
+
+    The caller holds the installer lock.  No write is made after the final
+    fence unless the just-reread tuple still names the attempt being submitted.
+    """
+    operation_id = job["operation_id"]
+    epoch, nonce = _attempt_tuple(job)
+    _current_attempt(root, operation_id, epoch, nonce)
+    try:
+        command = _worker_command(old, job)
+        if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
+            raise ValueError("The accepted worker command changed after acceptance.")
+        descriptor = api.describe(job, command)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+        return _write_job(root, operation_id, state="failed",
+                          message="Failed: the operating system update job could not be prepared.",
+                          fields={"launch_status": "failed", "launch_error": _one_line(failure),
+                                  "cleanup_status": "not-needed"},
+                          allow_reconcile=continuation)
+
+    attempt = dict(_attempt(job))
+    attempt.update({
+        "phase": "submitted",
+        "submit": "spent",
+        "wrapper_sha256": hashlib.sha256((_worker_command_source(old, job) + "\n").encode("utf-8")).hexdigest(),
+        "descriptor_sha256": _attempt_digest(descriptor),
+    })
+    # Spend the launch authority before the one manager call.  The final
+    # reread in _submit_native_attempt is the epoch fence for delayed callers.
+    job = _write_job(root, operation_id, state="launching", message="Update job registration is pending.",
+                     fields={"platform": descriptor, "launch_status": "launching",
+                             "cleanup_status": "pending", "attempt": attempt},
+                     allow_reconcile=continuation)
+    try:
+        _submit_native_attempt(root, operation_id, epoch, nonce, api, descriptor, command,
+                               Path(job["log_path"]))
+    except _BusyRefusal:
+        raise
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+        # A manager failure can race a worker claim only when the exact current
+        # attempt launched.  Reread it before recording any outcome.
+        current = _current_attempt(root, operation_id, epoch, nonce, submitted=True)
+        current_attempt = dict(_attempt(current))
+        current_attempt["submit"] = "unknown"
+        rejected = (type(failure).__name__ == "UpdateJobLaunchError"
+                    or isinstance(failure, subprocess.CalledProcessError))
+        if current.get("state") != "launching":
+            return current
+        try:
+            still_active = api.is_active(descriptor)
+            query_known = True
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            still_active, query_known = True, False
+        if rejected and query_known and still_active is False:
+            return _write_job(root, operation_id, state="failed",
+                              message="Failed: the operating system rejected update job launch.",
+                              fields={"launch_status": "failed", "launch_error": _one_line(failure),
+                                      "attempt": current_attempt}, allow_reconcile=continuation)
+        failed = _write_job(root, operation_id, state="launching",
+                            message="Update launch acknowledgement was lost; repair will inspect the owned job.",
+                            fields={"launch_status": "unknown", "launch_error": _one_line(failure),
+                                    "attempt": current_attempt}, allow_reconcile=continuation)
+        if continuation:
+            _write_job(root, operation_id, state="recovery-needed",
+                       message="Recovery needed. Update launch acknowledgement was lost; run Update again.",
+                       fields={"launch_status": "unknown", "launch_error": _one_line(failure),
+                               "attempt": current_attempt}, allow_reconcile=True)
+            raise _BusyRefusal("The update continuation launch could not be acknowledged.") from failure
+        return failed
+
+    current = _current_attempt(root, operation_id, epoch, nonce, submitted=True)
+    current_attempt = dict(_attempt(current))
+    current_attempt["submit"] = "acknowledged"
+    if current.get("state") == "launching":
+        return _write_job(root, operation_id, state="launching", message="Update job launched.",
+                          fields={"launch_status": "acknowledged", "launch_error": None,
+                                  "attempt": current_attempt}, allow_reconcile=continuation)
+    if current.get("state") == "active" and current.get("launch_status") == "launching":
+        return _write_job(root, operation_id, state="active", message=_job_message(current),
+                          fields={"launch_status": "acknowledged", "attempt": current_attempt},
+                          allow_reconcile=continuation)
+    return current
+
+
 def launch_job(root: Path, operation_id: str) -> dict:
     """Register and start the accepted job while retaining the installer lock."""
     _require_update_job_available()
@@ -1209,58 +1416,7 @@ def launch_job(root: Path, operation_id: str) -> dict:
                               message="Failed: saved autostart is off and the installer cannot preserve that choice.",
                               fields={"launch_status": "refused", "cleanup_status": "not-needed"})
         from .core import Version
-        old = Version.load(job["old_version"])
-        try:
-            command = _worker_command(old, job)
-            if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
-                raise ValueError("The accepted worker command changed after acceptance.")
-            api = _platform_api()
-            descriptor = api.describe(job, command)
-        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
-            return _write_job(root, operation_id, state="failed",
-                              message="Failed: the operating system update job could not be prepared.",
-                              fields={"launch_status": "failed", "launch_error": _one_line(failure),
-                                      "cleanup_status": "not-needed"})
-        # Ownership must be durable before system registration or launch. A
-        # crash after registration can then be recognized by a later sweep.
-        job = _write_job(root, operation_id, state="launching", message="Update job registration is pending.",
-                         fields={"platform": descriptor, "launch_status": "launching",
-                                 "cleanup_status": "pending"})
-        try:
-            api.launch(descriptor, command, Path(job["log_path"]))
-        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
-            rejected = (type(failure).__name__ == "UpdateJobLaunchError"
-                        or isinstance(failure, subprocess.CalledProcessError))
-            current = _read_job(root, operation_id)
-            if current.get("state") != "launching":
-                failed = current
-            else:
-                try:
-                    still_active = api.is_active(descriptor)
-                    query_known = True
-                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-                    still_active, query_known = True, False
-            if current.get("state") == "launching" and rejected and query_known and not still_active:
-                failed = _write_job(root, operation_id, state="failed",
-                                    message="Failed: the operating system rejected update job launch.",
-                                    fields={"launch_status": "failed", "launch_error": _one_line(failure)})
-            elif current.get("state") == "launching":
-                failed = _write_job(root, operation_id, state="launching",
-                                    message="Update launch acknowledgement was lost; repair will inspect the owned job.",
-                                    fields={"launch_status": "unknown", "launch_error": _one_line(failure)})
-            if failed.get("state") == "failed":
-                return _cleanup_terminal(root, operation_id, locked=True)
-            return failed
-        job = _read_job(root, operation_id)
-        if job.get("state") == "launching":
-            # Keep state launching until the worker claims it. If launch starts
-            # immediately, the worker waits on this lock until the ack is durable.
-            return _write_job(root, operation_id, state="launching", message="Update job launched.",
-                              fields={"launch_status": "acknowledged"})
-        if job.get("state") == "active" and job.get("launch_status") == "launching":
-            return _write_job(root, operation_id, state="active", message=_job_message(job),
-                              fields={"launch_status": "acknowledged"})
-        return job
+        return _launch_current_attempt(root, job, Version.load(job["old_version"]), _platform_api())
     finally:
         _unlock(stream)
 
@@ -1566,8 +1722,14 @@ def record_failure(root: Path, data: Path, backend: Backend, job: dict,
                    transaction_id=journal.get("operation_id") if journal else None)
 
 
-def run_job(root: Path, operation_id: str) -> dict:
-    """Run the accepted selected public bootstrap in an independent worker."""
+def run_job(root: Path, operation_id: str, epoch: int | None = None,
+            nonce: str | None = None) -> dict:
+    """Run the accepted selected public bootstrap in an independent worker.
+
+    Native wrappers always supply their embedded epoch/nonce.  The optional
+    form remains for in-process diagnostics and legacy test callers, but it
+    still snapshots the current tuple while holding the installer lock.
+    """
     root = absolute(root)
     windows_bootstrap = None
     claimed = False
@@ -1576,6 +1738,15 @@ def run_job(root: Path, operation_id: str) -> dict:
     stream = _locked(root, blocking=True)
     try:
         job = _read_job(root, operation_id)
+        direct_call = epoch is None and nonce is None
+        if direct_call:
+            epoch, nonce = _attempt_tuple(job)
+        elif type(epoch) is not int or not isinstance(nonce, str):
+            _busy("The native update wrapper has an incomplete attempt identity.")
+        # This must precede *every* state branch: an obsolete wrapper must not
+        # even return/rewrite the replacement job, much less claim or enter it.
+        job = _current_attempt(root, operation_id, epoch, nonce,
+                               submitted=not direct_call)
         if job.get("state") in {"updated", "rolled_back", "failed", "recovery-needed", "active"}:
             return job
         if job.get("state") not in {"accepted", "launching"}:
@@ -1586,6 +1757,9 @@ def run_job(root: Path, operation_id: str) -> dict:
         proof = job.get("bootstrap_proof")
         if not isinstance(proof, dict) or not _bootstrap_proof_valid(job):
             raise ValueError("The accepted update has no valid bootstrap-entry proof.")
+        attempt = dict(_attempt(job))
+        if not direct_call and (attempt.get("phase") != "submitted" or attempt.get("claim") is not None):
+            _busy("The native update wrapper is not eligible to claim this attempt.")
         proof = dict(proof)
         proof["claim_state"] = "claimed"
         proof["claimed_at"] = int(time.time())
@@ -1594,9 +1768,14 @@ def run_job(root: Path, operation_id: str) -> dict:
             raise ValueError("The accepted update native claim is not bound to this operation.")
         proof["native_claim"] = {"operation_id": operation_id,
                                  "program_root": str(root), "data_root": job["data_root"],
-                                 "owner": LABEL, "descriptor": descriptor}
+                                 "owner": LABEL, "descriptor": descriptor,
+                                 "epoch": epoch, "nonce": nonce}
+        attempt.update({"phase": "claimed", "claim": {
+            "operation_id": operation_id, "epoch": epoch, "nonce": nonce,
+        }})
+        _current_attempt(root, operation_id, epoch, nonce, submitted=not direct_call)
         _write_job(root, operation_id, state="active", message="Update worker is validating the accepted operation.",
-                   fields={"bootstrap_proof": proof})
+                   fields={"bootstrap_proof": proof, "attempt": attempt})
         claimed = True
         if pending_transaction(root):
             from .backend import Backend
@@ -1620,12 +1799,14 @@ def run_job(root: Path, operation_id: str) -> dict:
         )
         if inputs["release"] != job["target_release"] or inputs["release"] <= old.release:
             raise ValueError("The selected update release is no longer newer.")
+        _current_attempt(root, operation_id, epoch, nonce, submitted=not direct_call)
         _write_job(root, operation_id, state="active", message="Update is running.")
         # This durable transition is the boundary after which a fresh bootstrap
         # must never be launched, even if the next process call loses its ack.
         proof = dict(_read_job(root, operation_id)["bootstrap_proof"])
         proof["state"] = "entered"
         proof["entered_at"] = int(time.time())
+        _current_attempt(root, operation_id, epoch, nonce, submitted=not direct_call)
         _write_job(root, operation_id, state="active", message="Update is running.",
                    fields={"bootstrap_proof": proof})
         # The worker must release the installer lock before bootstrap launches
@@ -1666,6 +1847,8 @@ def run_job(root: Path, operation_id: str) -> dict:
             fail(root, operation_id, f"Bootstrap exited with status {result.returncode} without a verified result.")
             return _cleanup_terminal(root, operation_id, finishing=claimed)
         return _cleanup_terminal(root, operation_id, finishing=claimed)
+    except _BusyRefusal:
+        raise
     except (Exception, KeyboardInterrupt) as failure:
         if stream is not None:
             failed = None
