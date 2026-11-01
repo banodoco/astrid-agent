@@ -8,3 +8,8 @@ same bytes as `evidence-source-source.json` / `application/json` to reproduce
 the pinned Runtime's deterministic conflict. The integration test reuses
 `../comfyui/live-423cbd20/history.json` for the completed producer fixture.
 No provider submission or GPU is needed.
+
+`expired-task.json` retains only the existing Runtime observation fields from
+the live task used by `cpu/repro_cli_wait.py` and `cpu/repro_expiry.py`'s custody
+scenario. The waiter tests freeze wall time at 2026-11-01 16:29 UTC and advance
+only their virtual clock; they do not sleep or contact a service.
