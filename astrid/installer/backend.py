@@ -499,7 +499,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     raise ValueError("Runtime discovery owner identity is incomplete; refusing to change it.")
                 boundary = LocalRuntimeBoundary()
                 health = boundary.owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
-                live_identity = validate_live_owner_identity(health, instance_id=instance_id)
+                from .legacy_identity import admitted as legacy_admitted
+                if (self.process_control is not None and self.managed_by is None
+                        and legacy_admitted(installed, health, discovery, program_root=self.root)):
+                    self._legacy_identity_admitted = True
+                    live_identity = {"release": 0, "managed_by": None}
+                else:
+                    live_identity = validate_live_owner_identity(health, instance_id=instance_id)
                 # Bind the OS and HTTP observations to the same advertisement.
                 if paths.discovery_path.read_bytes() != discovery_bytes:
                     raise ValueError("Runtime discovery owner identity changed; refusing to change it.")
