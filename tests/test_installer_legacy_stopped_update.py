@@ -145,6 +145,7 @@ def test_stale_selected_row_with_native_observations_composed(legacy, monkeypatc
 def test_stale_discovery_probes_do_not_exclude_an_unadvertised_healthy_door(legacy, monkeypatch):
     """A refused stale endpoint is not evidence about another live door."""
     from astrid.installer.core import write_json
+    from astrid.installer.legacy_identity import admitted
 
     root, data, _, discovery, _ = legacy
     old = current(root)
@@ -175,6 +176,7 @@ def test_stale_discovery_probes_do_not_exclude_an_unadvertised_healthy_door(lega
             backend = backend_for(root)
             monkeypatch.setattr('runtime_protocol.platform.process_identity', lambda pid: None)
             monkeypatch.setattr(backend.service, 'legacy_manager_stopped', lambda data: True)
+            assert admitted(current(root), {}, discovery, program_root=root, stopped=True)
             assert backend._legacy_doors_stopped(discovery, current(root))
             with pytest.raises(RuntimeError, match='Cannot prove.*stopped'):
                 backend.source_checkout_ownership(data, current(root))
