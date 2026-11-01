@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 
 from .engine_platforms import platform_adapter
 from .engine_recipe import load_model_lock, load_recipe
@@ -112,3 +112,32 @@ def recheck_install(binding: InstallBinding):
     if current != binding:
         raise ValueError('managed install binding changed; re-admit the task')
     return disk
+
+
+def recheck_install_under_custody(binding: InstallBinding, *, root_identity=None):
+    """Recheck an admitted binding after the installer lock creates its root.
+
+    The caller must hold the install lock throughout this check and the work
+    it protects.  The original admission anchor must retain its identity;
+    unlike the read-only admission check, newly created descendants are
+    expected.  Return the root identity to pin on all subsequent checks.
+    """
+    if not isinstance(binding, InstallBinding):
+        raise TypeError('an exact install binding is required')
+    if binding.anchor != '/' and not (binding.root == binding.anchor
+                                     or binding.root.startswith(binding.anchor + '/')):
+        raise ValueError('managed install anchor is outside the root ancestry')
+    current, _ = prepare_install(root=binding.root, engine=binding.engine,
+                                 platform=binding.platform)
+    if replace(current, anchor=binding.anchor, anchor_device=binding.anchor_device,
+               anchor_inode=binding.anchor_inode) != binding:
+        raise ValueError('managed install binding changed; re-admit the task')
+    anchor, device, inode, _ = _disk_anchor(binding.anchor)
+    if (anchor, device, inode) != (binding.anchor, binding.anchor_device, binding.anchor_inode):
+        raise ValueError('managed install anchor changed; re-admit the task')
+    if current.anchor != binding.root:
+        raise ValueError('managed install root is missing under custody')
+    observed = (current.anchor_device, current.anchor_inode)
+    if root_identity is not None and root_identity != observed:
+        raise ValueError('managed install root changed under custody')
+    return observed
