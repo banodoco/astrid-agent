@@ -12,7 +12,7 @@ image: default
 max_minutes: 90
 setup: []
 run:
-- "set +e\n(\numask 077\nROOT=\"$PWD/g01-r9\"\nOUT=\"/workspace/out/g01\"\nINNER=\"/workspace/jobs/G-01-Q-RUNNER-R9\"\nmkdir\
+- "set +e\n(\numask 077\nROOT=\"$PWD/g01-r10\"\nOUT=\"/workspace/out/g01\"\nINNER=\"/workspace/jobs/G-01-Q-RUNNER-R9\"\nmkdir\
   \ -p \"$ROOT/package\" \"$OUT\" \"$INNER/out\"\nfinalize() {\n  printf 'finalized_at=%s\\n' \"$(date -u +%FT%TZ)\" >> \"\
   $OUT/stages.txt\"\n  cp -a \"$INNER/out/.\" \"$OUT/\" || printf 'copy_inner_failed=%s\\n' \"$?\" >> \"$OUT/finalization-errors.txt\"\
   \n  if [ -f \"$INNER/progress.log\" ]; then cp \"$INNER/progress.log\" \"$OUT/progress.log\" || echo progress_copy_failed\
