@@ -2,6 +2,9 @@
 import errno
 import json
 import socket
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -137,3 +140,44 @@ def test_stale_selected_row_with_native_observations_composed(legacy, monkeypatc
     assert backend.service.legacy_manager_stopped(data)
     with pytest.raises(RuntimeError, match='Cannot prove.*stopped'):
         backend.source_checkout_ownership(data, current(root))
+
+
+def test_stale_discovery_probes_do_not_exclude_an_unadvertised_healthy_door(legacy, monkeypatch):
+    """A refused stale endpoint is not evidence about another live door."""
+    from astrid.installer.core import write_json
+
+    root, data, _, discovery, _ = legacy
+    old = current(root)
+    record = json.loads((old.root / 'version.json').read_text())
+
+    class Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+
+        def log_message(self, *args):
+            pass
+
+    with socket.socket() as old_private, socket.socket() as old_door, HTTPServer(('127.0.0.1', 0), Health) as live:
+        old_private.bind(('127.0.0.1', 0))
+        old_door.bind(('127.0.0.1', 0))
+        record['env']['ASTRID_RUNTIME_DOOR_PORT'] = str(old_door.getsockname()[1])
+        write_json(old.root / 'version.json', record)
+        discovery['endpoint'] = f'http://127.0.0.1:{old_private.getsockname()[1]}'
+        discovery['door_endpoint'] = f'http://127.0.0.1:{old_door.getsockname()[1]}'
+        write_json(data / 'runtime/discovery.json', discovery)
+        thread = threading.Thread(target=live.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(f'http://127.0.0.1:{live.server_port}/api/runtime/v1/health', timeout=2) as response:
+                assert json.load(response) == {'status': 'ok'}
+            backend = backend_for(root)
+            monkeypatch.setattr('runtime_protocol.platform.process_identity', lambda pid: None)
+            monkeypatch.setattr(backend.service, 'legacy_manager_stopped', lambda data: True)
+            assert backend._legacy_doors_stopped(discovery, current(root))
+            with pytest.raises(RuntimeError, match='Cannot prove.*stopped'):
+                backend.source_checkout_ownership(data, current(root))
+        finally:
+            live.shutdown()
+            thread.join()
