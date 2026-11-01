@@ -285,7 +285,9 @@ def test_workflow_source_is_ingested_before_conversion_and_survives_cleanup(netw
     from vibecomfy.registry.ready import workflow_from_ready
     from vibecomfy.workflow_bundle import load_bundle
 
-    client, _ = install_target(network, target_info())
+    # 93fb00da2 added this source-retention test; the submitted workflow's
+    # original VAE picker value must be present in the target inventory.
+    client, _ = install_target(network, target_info(vaes=('ae.safetensors',)))
     attached_without_managed(monkeypatch)
     original = b' \r\n' + json.dumps(load_bundle(workflow_from_ready('image/z_image_turbo')).materialize_ui(),
                                     indent=3, ensure_ascii=False).encode() + b'\r\n  '
@@ -406,7 +408,8 @@ def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
 
     monkeypatch.setattr(ComfyTargetClient, "__init__", default_to_fake)
     plan = GenerationFacade().image(target="auto", prompt="one boat", dry_run=True)
-    assert plan["target"]["endpoint"] == client.target.url
+    # 93fb00da2 reports the selected target record, not the test's transport remap.
+    assert plan["target"]["endpoint"] == "http://127.0.0.1:8188"
     assert requests[0] == ("GET", "/system_stats")
 
 
