@@ -30,6 +30,9 @@ def receipts(root):
                "runner_image": contract["runner"], "shell": contract["shell"],
                "runner_provenance": {"RUNNER_OS": os_name, "ImageOS": image, "ImageVersion": "synthetic"},
                "os_build": os_name + "-synthetic", "final_cleanup": "pass"}
+        row["producer_run"] = {"producer": "github-actions:banodoco/astrid-agent", "provider": "github-actions", "repository": "banodoco/astrid-agent",
+                               "workflow_sha": "f" * 40, "run_id": "123", "run_attempt": "1",
+                               "job_id": str(len(rows) + 1)}
         def observation(label, **fields):
             data = ("synthetic " + label).encode()
             (directory / (label + ".txt")).write_bytes(data)
@@ -67,6 +70,14 @@ def receipts(root):
                 selected = "1" * 64
             steps["verify"] = observation("verify", installation_id="installation", native_service_healthy=True,
                                            data_sha256="3" * 64, sentinel=sentinel, selected_sha256=selected)
+            if "fail_candidate" in steps:
+                selected_tuple = {**row["candidate_tuple"], "agent": "1" * 40, "runtime": "2" * 40}
+                row["attempted_tuple"] = copy.deepcopy(row["candidate_tuple"])
+                row["selected_tuple"] = selected_tuple
+                row["installed_tuple"] = copy.deepcopy(selected_tuple)
+                steps["baseline"]["selected_tuple"] = copy.deepcopy(selected_tuple)
+                steps["verify"]["selected_tuple"] = copy.deepcopy(selected_tuple)
+                steps["fail_candidate"]["attempted_tuple"] = copy.deepcopy(row["candidate_tuple"])
             row["steps"] = steps
         rows[name] = row
     return candidate, manifest, rows
@@ -77,20 +88,101 @@ def write(root, rows):
         (root / name / "journey-result.json").write_text(json.dumps(row))
 
 
+def trusted_index(root, candidate, rows):
+    return {"candidate_tuple": {k: candidate[k] for k in ("app", "agent", "runtime", "pinokio")},
+            "manifest_sha256": candidate["manifest_sha256"],
+            "scenarios": {name: {"producer_run": copy.deepcopy(row["producer_run"]),
+                                 "receipt_sha256": gate.digest(root / name / "journey-result.json")}
+                          for name, row in rows.items()}}
+
+
+def evaluate(candidate, manifest, root, rows):
+    return gate.evaluate_installed_faults(candidate, manifest, root, trusted_index(root, candidate, rows))
+
+
+@pytest.mark.parametrize("mutation", ["missing_index", "missing_row", "wrong_candidate", "wrong_manifest",
+                                      "missing_identity", "forged_identity", "stale_run", "stale_attempt",
+                                      "wrong_job", "wrong_workflow", "forged_receipt", "bad_digest"])
+def test_producer_run_binding_rejects_unauthenticated_or_stale_evidence(tmp_path, mutation):
+    candidate, manifest, rows = receipts(tmp_path)
+    write(tmp_path, rows)
+    index = trusted_index(tmp_path, candidate, rows)
+    name = gate.DIRECT_LINUX_FAULT_SCENARIOS[0]["scenario_id"]
+    if mutation == "missing_index": index = None
+    elif mutation == "missing_row": del index["scenarios"][name]
+    elif mutation == "wrong_candidate": index["candidate_tuple"]["agent"] = "f" * 40
+    elif mutation == "wrong_manifest": index["manifest_sha256"] = "f" * 64
+    elif mutation == "bad_digest": index["scenarios"][name]["receipt_sha256"] = "0" * 64
+    else:
+        if mutation == "missing_identity": del rows[name]["producer_run"]
+        elif mutation == "forged_identity": rows[name]["producer_run"]["repository"] = "attacker/repo"
+        elif mutation == "stale_run": rows[name]["producer_run"]["run_id"] = "122"
+        elif mutation == "stale_attempt": rows[name]["producer_run"]["run_attempt"] = "2"
+        elif mutation == "wrong_job": rows[name]["producer_run"]["job_id"] = "987"
+        elif mutation == "wrong_workflow": rows[name]["producer_run"]["workflow_sha"] = "1" * 40
+        elif mutation == "forged_receipt": rows[name]["untrusted_extra"] = "forged"
+        write(tmp_path, rows)
+        # Isolate identity mismatches from the separate receipt-byte check.
+        if mutation != "forged_receipt":
+            index["scenarios"][name]["receipt_sha256"] = gate.digest(tmp_path / name / "journey-result.json")
+    errors = gate.evaluate_installed_faults(candidate, manifest, tmp_path, index)
+    expected_error = ("trusted producer/run index" if mutation in
+                      ("missing_index", "missing_row", "wrong_candidate", "wrong_manifest")
+                      else "authenticated producer/run identity or receipt binding")
+    assert any(expected_error in error for error in errors), (mutation, errors)
+
+
+@pytest.mark.parametrize("mutation", ["missing_attempt", "wrong_attempt", "missing_selected", "candidate_selected",
+                                      "installed", "baseline", "verify", "fault", "malformed"])
+def test_rollback_attempted_and_selected_tuples(tmp_path, mutation):
+    candidate, manifest, rows = receipts(tmp_path)
+    name = gate.DIRECT_LINUX_FAULT_SCENARIOS[1]["scenario_id"]
+    row = rows[name]
+    if mutation == "missing_attempt": del row["attempted_tuple"]
+    elif mutation == "wrong_attempt": row["attempted_tuple"]["agent"] = "9" * 40
+    elif mutation == "missing_selected": del row["selected_tuple"]
+    elif mutation == "candidate_selected": row["selected_tuple"] = copy.deepcopy(row["candidate_tuple"])
+    elif mutation == "installed": row["installed_tuple"] = copy.deepcopy(row["candidate_tuple"])
+    elif mutation == "baseline": row["steps"]["baseline"]["selected_tuple"]["agent"] = "9" * 40
+    elif mutation == "verify": row["steps"]["verify"]["selected_tuple"]["runtime"] = "9" * 40
+    elif mutation == "fault": row["steps"]["fail_candidate"]["attempted_tuple"]["agent"] = "9" * 40
+    elif mutation == "malformed": row["selected_tuple"]["agent"] = "bad"
+    write(tmp_path, rows)
+    assert any("attempted candidate and selected predecessor" in e for e in evaluate(candidate, manifest, tmp_path, rows))
+
+
+def test_interrupted_update_rolled_back_has_separate_tuples(tmp_path):
+    candidate, manifest, rows = receipts(tmp_path)
+    row = rows[gate.DIRECT_LINUX_FAULT_SCENARIOS[0]["scenario_id"]]
+    predecessor = {**row["candidate_tuple"], "agent": "1" * 40, "runtime": "2" * 40}
+    row.update(attempted_tuple=copy.deepcopy(row["candidate_tuple"]), selected_tuple=predecessor,
+               installed_tuple=copy.deepcopy(predecessor))
+    row["steps"]["baseline"]["selected_tuple"] = copy.deepcopy(predecessor)
+    row["steps"]["interrupt"]["attempted_tuple"] = copy.deepcopy(row["candidate_tuple"])
+    row["steps"]["recover"]["journal_step"] = "rolled_back"
+    row["steps"]["verify"].update(selected_tuple=copy.deepcopy(predecessor), selected_sha256="1" * 64)
+    write(tmp_path, rows)
+    assert evaluate(candidate, manifest, tmp_path, rows) == []
+    del row["selected_tuple"]
+    write(tmp_path, rows)
+    assert evaluate(candidate, manifest, tmp_path, rows)
+
+
 def test_synthetic_complete_and_inventory_fail_closed(tmp_path):
     candidate, manifest, rows = receipts(tmp_path)
     write(tmp_path, rows)
-    assert gate.evaluate_installed_faults(candidate, manifest, tmp_path) == []
+    assert evaluate(candidate, manifest, tmp_path, rows) == []
+    index = trusted_index(tmp_path, candidate, rows)
     first = next(iter(rows))
     (tmp_path / first / "journey-result.json").unlink()
-    assert any("missing receipt" in e for e in gate.evaluate_installed_faults(candidate, manifest, tmp_path))
+    assert any("missing receipt" in e for e in gate.evaluate_installed_faults(candidate, manifest, tmp_path, index))
     write(tmp_path, rows)
     extra = tmp_path / "extra"
     extra.mkdir()
     (extra / "journey-result.json").write_text(json.dumps(rows[first]))
-    assert any("duplicate" in e for e in gate.evaluate_installed_faults(candidate, manifest, tmp_path))
+    assert any("duplicate" in e for e in evaluate(candidate, manifest, tmp_path, rows))
     (extra / "journey-result.json").write_text(json.dumps({"scenario_id": "unknown"}))
-    assert any("unknown" in e for e in gate.evaluate_installed_faults(candidate, manifest, tmp_path))
+    assert any("unknown" in e for e in evaluate(candidate, manifest, tmp_path, rows))
 
 
 @pytest.mark.parametrize("mutation", ["skipped", "failed", "candidate", "manifest", "runner", "provenance", "installed", "sources", "cleanup", "manager", "predicate", "baseline", "predecessor", "fixture", "operation", "data", "sentinel", "selected", "command", "exit", "inner", "hash", "missing_file", "extra_step", "override"])
@@ -124,7 +216,7 @@ def test_synthetic_fault_rejections(tmp_path, mutation):
     elif mutation == "extra_step": step["extra"] = {}
     elif mutation == "override": row["source_override_test_mode"] = True
     write(tmp_path, rows)
-    assert gate.evaluate_installed_faults(candidate, manifest, tmp_path), mutation
+    assert evaluate(candidate, manifest, tmp_path, rows), mutation
 
 
 @pytest.mark.parametrize("mutation", ["unresolved_post", "settled_post", "bool_count", "missing_phase", "duplicate_phase", "wrong_save", "identity", "missing_exit", "hash", "reused"])
@@ -143,7 +235,7 @@ def test_synthetic_guard_rejections(tmp_path, mutation):
     elif mutation == "hash": phases[0]["evidence"][0]["sha256"] = "0" * 64
     elif mutation == "reused": phases[1]["evidence"] = copy.deepcopy(phases[0]["evidence"])
     write(tmp_path, rows)
-    assert gate.evaluate_installed_faults(candidate, manifest, tmp_path), mutation
+    assert evaluate(candidate, manifest, tmp_path, rows), mutation
 
 
 @pytest.mark.parametrize("contract", (*gate.DIRECT_LINUX_FAULT_SCENARIOS, *gate.DIRECT_MACOS_FAULT_SCENARIOS,
@@ -156,7 +248,7 @@ def test_each_fault_row_rejects_bad_terminal_observation(tmp_path, contract):
     else:
         row["steps"]["recover"]["operation_id"] = "other"
     write(tmp_path, rows)
-    assert any(contract["scenario_id"] in e for e in gate.evaluate_installed_faults(candidate, manifest, tmp_path))
+    assert any(contract["scenario_id"] in e for e in evaluate(candidate, manifest, tmp_path, rows))
 
 
 def test_cli_routes_to_single_checker(tmp_path, monkeypatch, capsys):
@@ -164,12 +256,33 @@ def test_cli_routes_to_single_checker(tmp_path, monkeypatch, capsys):
     write(tmp_path, rows)
     candidate_file = tmp_path / "candidate.json"
     candidate_file.write_text(json.dumps(candidate))
+    index_file = tmp_path.parent / (tmp_path.name + "-trusted.json")
+    index_file.write_text(json.dumps(trusted_index(tmp_path, candidate, rows)))
     monkeypatch.setattr(gate, "validate_tuple", lambda *args: manifest)
     monkeypatch.setattr(gate.sys, "argv", ["checker", "--installed-faults", "--candidate", str(candidate_file),
-                                           "--app-checkout", str(tmp_path), "--results", str(tmp_path)])
+                                           "--app-checkout", str(tmp_path), "--results", str(tmp_path), "--trusted-producer-index", str(index_file)])
     assert gate.main() == 0
     assert "PASS" in capsys.readouterr().out
     rows[gate.APP_UPDATE_GUARD_MATRIX[0]["scenario_id"]]["phases"][0]["update_post_count"] = 1
     write(tmp_path, rows)
+    index_file.write_text(json.dumps(trusted_index(tmp_path, candidate, rows)))
     assert gate.main() == 1
     assert "FAIL" in capsys.readouterr().out
+
+
+def test_cli_rejects_missing_or_results_supplied_index(tmp_path, monkeypatch, capsys):
+    candidate, manifest, rows = receipts(tmp_path)
+    write(tmp_path, rows)
+    candidate_file = tmp_path / "candidate.json"
+    candidate_file.write_text(json.dumps(candidate))
+    index_file = tmp_path / "untrusted-index.json"
+    index_file.write_text(json.dumps(trusted_index(tmp_path, candidate, rows)))
+    monkeypatch.setattr(gate, "validate_tuple", lambda *args: manifest)
+    args = ["checker", "--installed-faults", "--candidate", str(candidate_file),
+            "--app-checkout", str(tmp_path), "--results", str(tmp_path)]
+    monkeypatch.setattr(gate.sys, "argv", args)
+    assert gate.main() == 1
+    assert "trusted producer index" in capsys.readouterr().out
+    monkeypatch.setattr(gate.sys, "argv", args + ["--trusted-producer-index", str(index_file)])
+    assert gate.main() == 1
+    assert "independent of downloaded results" in capsys.readouterr().out

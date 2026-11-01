@@ -687,12 +687,15 @@ def evaluate_m4_6_local_matrix(results, candidate):
     return errors
 
 
-def evaluate_installed_faults(candidate, manifest, results):
+def evaluate_installed_faults(candidate, manifest, results, trusted_producers=None):
     """Validate independently attributed installed-fault and App-guard receipts.
 
     Step evidence paths are relative to each receipt directory. Fault steps use
     the shared installed-fault helper's observation contract; replay only checks
-    recorded observations and does not execute an installed journey.
+    recorded observations and does not execute an installed journey. The caller
+    must obtain trusted_producers independently from the authenticated artifact
+    retrieval system, never from the downloaded results being evaluated. Its
+    entries bind each scenario's producer identity to the exact receipt bytes.
     """
     if __package__:
         from .failure_mode_executor import execute_installed_fault
@@ -717,10 +720,19 @@ def evaluate_installed_faults(candidate, manifest, results):
     if (not isinstance(manifest, dict) or any(not isinstance(manifest.get(k), dict)
             or manifest[k].get("sha") != candidate[k] for k in ("agent", "runtime"))):
         return errors + ["manifest sources differ from candidate"]
+    if (not isinstance(trusted_producers, dict)
+            or trusted_producers.get("candidate_tuple") != {k: candidate[k] for k in keys}
+            or trusted_producers.get("manifest_sha256") != candidate["manifest_sha256"]
+            or not isinstance(trusted_producers.get("scenarios"), dict)
+            or set(trusted_producers["scenarios"]) != set(expected)):
+        return errors + ["trusted producer/run index missing or mismatched"]
     found = {}
     for path in Path(results).rglob("journey-result.json"):
         try:
-            row = read(path)
+            receipt_bytes = path.read_bytes()
+            row = json.loads(receipt_bytes)
+            if not isinstance(row, dict):
+                raise ValueError("expected object")
         except (OSError, ValueError) as exc:
             errors.append(f"{path}: {exc}")
             continue
@@ -730,17 +742,30 @@ def evaluate_installed_faults(candidate, manifest, results):
         elif name in found:
             errors.append(f"{name}: duplicate receipt")
         else:
-            found[name] = (row, path.parent)
+            found[name] = (row, path, hashlib.sha256(receipt_bytes).hexdigest())
 
     for name, contract in expected.items():
         if name not in found:
             errors.append(f"{name}: missing receipt")
             continue
-        row, root = found[name]
+        row, receipt_path, receipt_digest = found[name]
+        root = receipt_path.parent
         def fail(message):
             errors.append(f"{name}: {message}")
 
         guard = "phases" in contract
+        trusted = trusted_producers["scenarios"].get(name)
+        identity = row.get("producer_run")
+        if (not isinstance(trusted, dict) or not isinstance(identity, dict)
+                or any(not isinstance(identity.get(k), str) or not identity[k].strip()
+                       for k in ("producer", "run_id"))
+                or any(not isinstance(k, str) or not isinstance(v, str) or not v.strip()
+                       for k, v in identity.items())
+                or trusted.get("producer_run") != identity
+                or not isinstance(trusted.get("receipt_sha256"), str)
+                or not DIGEST.fullmatch(trusted["receipt_sha256"])
+                or receipt_digest != trusted["receipt_sha256"]):
+            fail("authenticated producer/run identity or receipt binding is missing or mismatched")
         if (row.get("receipt_kind") != "installed-lifecycle-scenario"
                 or row.get("execution_scope") != "hosted-installed"
                 or row.get("evidence_class") != (contract["evidence_class"] if guard else "installed_native")
@@ -750,7 +775,26 @@ def evaluate_installed_faults(candidate, manifest, results):
             fail("candidate tuple differs from frozen candidate")
         if row.get("manifest_sha256") != candidate["manifest_sha256"]:
             fail("manifest digest differs from frozen candidate")
-        if row.get("installed_tuple") != {k: candidate[k] for k in keys}:
+        steps_for_selection = row.get("steps")
+        rolled_back = (not guard and isinstance(steps_for_selection, dict)
+                       and ("fail_candidate" in steps_for_selection
+                            or (isinstance(steps_for_selection.get("recover"), dict)
+                                and steps_for_selection["recover"].get("journal_step") == "rolled_back")))
+        if rolled_back:
+            attempted = row.get("attempted_tuple")
+            selected = row.get("selected_tuple")
+            baseline = steps_for_selection.get("baseline")
+            verify = steps_for_selection.get("verify")
+            fault = steps_for_selection.get("fail_candidate", steps_for_selection.get("interrupt"))
+            if (attempted != {k: candidate[k] for k in keys}
+                    or not isinstance(selected, dict) or set(selected) != set(keys)
+                    or any(not isinstance(selected.get(k), str) or not SHA.fullmatch(selected[k]) for k in keys)
+                    or selected == attempted or row.get("installed_tuple") != selected
+                    or not isinstance(baseline, dict) or baseline.get("selected_tuple") != selected
+                    or not isinstance(verify, dict) or verify.get("selected_tuple") != selected
+                    or not isinstance(fault, dict) or fault.get("attempted_tuple") != attempted):
+                fail("attempted candidate and selected predecessor tuples are missing or inconsistent")
+        elif row.get("installed_tuple") != {k: candidate[k] for k in keys}:
             fail("installed tuple differs from frozen candidate")
         sources = row.get("sources")
         if (not isinstance(sources, dict) or sources.get("agent") != manifest["agent"]
@@ -877,6 +921,8 @@ def main():
                         help="require all nine separately retained local-disposable M4-6 outputs")
     parser.add_argument("--installed-faults", action="store_true",
                         help="require all installed fault and App guard scenario receipts")
+    parser.add_argument("--trusted-producer-index", type=Path,
+                        help="independently authenticated producer/run index for installed faults")
     args = parser.parse_args()
     errors = []
     try:
@@ -898,9 +944,11 @@ def main():
             candidate = read(args.candidate)
             manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
         if args.installed_faults:
-            if args.results is None or args.allow_source_override or args.prepare_only:
-                raise ValueError("--installed-faults requires results and forbids override and prepare-only")
-            errors.extend(evaluate_installed_faults(candidate, manifest, args.results))
+            if args.results is None or args.trusted_producer_index is None or args.allow_source_override or args.prepare_only:
+                raise ValueError("--installed-faults requires results and a trusted producer index and forbids override and prepare-only")
+            if args.trusted_producer_index.resolve().is_relative_to(args.results.resolve()):
+                raise ValueError("trusted producer index must be independent of downloaded results")
+            errors.extend(evaluate_installed_faults(candidate, manifest, args.results, read(args.trusted_producer_index)))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
