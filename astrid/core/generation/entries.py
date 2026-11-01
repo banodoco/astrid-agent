@@ -76,7 +76,7 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
                         if (item['id'], mode) in catalog_by_template}
         rows.append({'id': item['id'], 'kind': kind, 'modes': sorted(modes),
                      'bundle': str((root / item['path']).resolve()), 'needs': needs, 'binds': binds,
-                     'defaults': {}, 'inputs': item.get('public_inputs', []),
+                     'defaults': {}, 'inputs': item.get('public_inputs', []), 'source': 'ready-template',
                      'requirements': {'custom_nodes': item.get('custom_nodes', []), 'models': needs},
                      'registry_id': next(iter(registry_ids)) if len(registry_ids) == 1 else None,
                      'ambiguity': ambiguity})
@@ -152,7 +152,7 @@ def find_entry(entry_id: str) -> dict[str, Any] | None:
     if len(matches) > 1:
         raise ValueError(f'ambiguous workflow entry {entry_id!r}')
     if matches:
-        return matches[0]
+        return {**matches[0], 'source': 'user-entry'}
     return next((entry for entry in ready_entries() if entry['id'] == entry_id), None)
 
 
@@ -415,7 +415,7 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         matches = users or _ready_entries_for(entry_id)
         if len(matches) != 1:
             raise ValueError(f'unknown generation entry {entry_id!r}')
-        entry = matches[0]
+        entry = {**matches[0], 'source': 'user-entry' if users else 'ready-template'}
         modes = entry['modes']
         if not modes or entry.get('kind') not in {'image', 'video', 'audio'}:
             raise ValueError(f'entry {entry_id!r} kind or mode requires review')
@@ -433,6 +433,24 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
     description = {**base, 'modes': list(modes), 'mode': selected,
             'inputs': schemas[selected] if selected is not None else [],
             'mode_descriptions': {name: {'mode': name, 'inputs': fields} for name, fields in schemas.items()}}
+    from astrid.core.generation.availability import (
+        availability_projection, entry_availability, model_availability,
+    )
+    for name, row in description['mode_descriptions'].items():
+        if base['source'] == 'catalog':
+            backends = {backend: availability_projection(model_availability(entry_id, name, backend))
+                        for backend in catalog.modes[name].backends}
+            row['backends'] = backends
+            projection = next((item for item in backends.values() if item['availability'] == 'available'),
+                              next(iter(backends.values()), availability_projection({'available': True})))
+        else:
+            projection = availability_projection(entry_availability(entry, name))
+        row.update(projection)
+    rows = description['mode_descriptions']
+    projection = rows[selected] if selected is not None else next(
+        (row for row in rows.values() if row['availability'] == 'available'),
+        next(iter(rows.values()), availability_projection({'available': True})))
+    description.update({key: projection[key] for key in ('availability', 'reason', 'fix')})
     return description if _native else public_description(description)
 
 

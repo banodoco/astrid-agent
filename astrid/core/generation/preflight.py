@@ -60,9 +60,12 @@ class GenerationReadinessError(AstridError, ValueError):
         issue = self.readiness['issues'][0]
         fix = self.readiness['fixes'][0] if self.readiness['fixes'] else None
         import shlex
+        recovery = shlex.join(fix['argv']) if fix else None
+        if issue['code'] == 'generation_route_unqualified':
+            recovery = issue['details'].get('fix') or recovery
         super().__init__(issue['message'], code=issue['code'],
                          field=issue['details'].get('field'),
-                         recovery_command=shlex.join(fix['argv']) if fix else None,
+                         recovery_command=recovery,
                          state_snapshot={'readiness': self.readiness})
 
     def to_envelope(self) -> dict[str, Any]:
@@ -88,6 +91,8 @@ def generation_error(error: Any, *, entry=None, target=None, code=None,
     }.get(category, 'input_rejected')
     normalized = _CORE_CODES.get(native, native)
     detail = {**(get('details') or {}), **(details or {})}
+    if normalized == 'generation_route_unqualified':
+        detail['fix'] = get('fix') or get('recovery_command')
     for key in ('sdk_category', 'sdk_error'):
         if get(key):
             detail.setdefault(key, get(key))
@@ -254,6 +259,8 @@ def validate_generation_request(
             f"Provide {pronoun} before admission and retry."
         )
 
+    from astrid.core.generation.availability import require_model_available
+    require_model_available(model, mode, execution)
     return entry, mode_spec
 
 
