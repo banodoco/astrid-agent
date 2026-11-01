@@ -172,8 +172,11 @@ def runtime(monkeypatch, tmp_path):
         yield state
 
 
-def argv(out=None, *, target='managed', negative_prompt=None):
-    args = ['generate', 'image', '--entry', 'qwen-image-2.1-turbo', '--mode', 't2i',
+def argv(out=None, *, target='managed', negative_prompt=None, entry='qwen-image-2.1-turbo'):
+    args = ['generate', 'image']
+    if entry is not None:
+        args += ['--entry', entry]
+    args += ['--mode', 't2i',
             '--target', target, '--width', '512', '--height', '512', '--seed', '19',
             '--project', 'gpu-shakedown', '--consent', 'user_env', '--json', PROMPT]
     if negative_prompt is not None:
@@ -207,11 +210,13 @@ def test_exact_cli_delivers_verified_caller_local_image(runtime, tmp_path, monke
     assert '/view' in runtime.calls
 
 
-def test_qwen_cli_records_selected_id_and_submitted_inputs(runtime, tmp_path, capsys):
+@pytest.mark.parametrize('entry', ['qwen-image-2.1-turbo', None],
+                         ids=['explicit-entry', 'no-entry-builtin-default'])
+def test_qwen_cli_records_selected_id_and_submitted_inputs(runtime, tmp_path, capsys, entry):
     from vibecomfy.registry.ready import repo_ready_template_discovery, resolve_ready_template
 
     out = tmp_path / 'qwen.png'
-    assert console.main(argv(out, negative_prompt='D0 no lettering')) == 0
+    assert console.main(argv(out, entry=entry, negative_prompt='D0 no lettering')) == 0
     payload = json.loads(capsys.readouterr().out)
     assert len(runtime.invocations) == 1
     capability, submitted = runtime.invocations[0]
