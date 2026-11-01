@@ -48,6 +48,15 @@ def evaluate(args):
     identity = core.digest({k: v for k, v in tup.items() if k != 'digest'})
     if reviewed.get('tuple_digest') != identity:
         raise ValueError('reviewed inventory tuple mismatch')
+    features = reviewed.get('features')
+    required_features = coverage.get('features')
+    if reviewed.get('features_complete') is not True or not isinstance(features, list) or not features or not isinstance(required_features, list) or not required_features:
+        raise ValueError('feature coverage and reviewed feature inventory are missing or incomplete')
+    feature_key = lambda x: tuple(x[k] for k in ('repo', 'lane', 'platform', 'scenario', 'slot_id'))
+    if (len({feature_key(x) for x in features}) != len(features) or
+            len({feature_key(x) for x in required_features}) != len(required_features) or
+            {feature_key(x) for x in features} != {feature_key(x) for x in required_features}):
+        raise ValueError('reviewed feature inventory does not match required coverage')
     lanes = reviewed['lanes']
     key = lambda x: (x['repo'], x['lane'], x['platform'])
     required = coverage['lanes']
@@ -67,7 +76,7 @@ def evaluate(args):
         inventory.write_text(json.dumps({'tuple_digest': identity, 'lanes': lanes}), encoding='utf-8')
         return local.local_evaluate(args.tuple, inventory, COVERAGE, args.ledger,
                                     args.broker_root, args.hosted_root, args.freshness,
-                                    args.not_before)
+                                    args.not_before, features=features)
 
 
 def main(argv=None):

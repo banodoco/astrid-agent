@@ -69,14 +69,42 @@ class AggregateTests(unittest.TestCase):
                 lanes.append(lane)
             (p / 'broker/pods.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
             review = p / 'review.json'
-            reviewed = {'complete': True, 'tuple_digest': identity, 'lanes': lanes}
+            row = next(row for row in lanes if row['source']['kind'] == 'hosted')
+            source = row['source']
+            host = p / 'hosted' / source['id']
+            feature = {k: row[k] for k in ('repo', 'lane', 'platform')}
+            feature.update(scenario='synthetic', slot_id='slot', candidate=dict(aggregate.CP1), files=['feature.json'], attempt=1)
+            manifest = json.loads((host/'manifest.json').read_text())
+            manifest.update(attempt=1, feature_bindings=[{'scenario': 'synthetic', 'slot_id': 'slot', 'attempt': 1}])
+            write(host/'manifest.json', manifest)
+            write(host/'feature.json', {'observed': True})
+            run = json.loads((host/'run.json').read_text())
+            run['files'] = [{'path': f.name, 'bytes': f.stat().st_size, 'sha256': local.sha(f)} for f in (host/'manifest.json', host/'junit.xml', host/'feature.json')]
+            write(host/'run.json', run)
+            coverage['features'] = [{k: feature[k] for k in ('repo', 'lane', 'platform', 'scenario', 'slot_id')}]
+            coverage_path = p/'coverage.json'
+            write(coverage_path, coverage)
+            (p/'synthetic_predicates.py').write_text('def check_synthetic(evidence):\n    return (evidence["files"][0]["json"] == {"observed": True}, [])\n')
+            reviewed = {'complete': True, 'features_complete': True, 'features': [feature], 'tuple_digest': identity, 'lanes': lanes}
             write(review, reviewed)
             args = type('Args', (), {'tuple': p/'tuple.json', 'ledger': p/'ledger', 'broker_root': p/'broker', 'hosted_root': p/'hosted', 'freshness': p/'freshness.json', 'collection': p/'collection.json', 'not_before': aggregate.CUTOFF})()
             original = local.local_evaluate
-            def evaluate_at_fixed_time(*a):
-                return original(*a, now=dt.datetime(2026, 10, 31, 23, 40, tzinfo=dt.timezone.utc))
-            with mock.patch.object(aggregate, 'REVIEW', review), mock.patch.object(local, 'local_evaluate', side_effect=evaluate_at_fixed_time):
+            def evaluate_at_fixed_time(*a, **kw):
+                return original(*a, now=dt.datetime(2026, 10, 31, 23, 40, tzinfo=dt.timezone.utc), **kw)
+            with mock.patch.object(aggregate, 'REVIEW', review), mock.patch.object(aggregate, 'COVERAGE', coverage_path), mock.patch.object(local, 'PREDICATE_MODULE', 'synthetic_predicates'), mock.patch.object(local, 'local_evaluate', side_effect=evaluate_at_fixed_time), mock.patch.object(sys, 'path', [str(p)] + sys.path):
                 self.assertEqual(aggregate.evaluate(args), ([], []))
+                reviewed['features'] = []
+                write(review, reviewed)
+                with self.assertRaisesRegex(ValueError, 'feature'):
+                    aggregate.evaluate(args)
+                reviewed['features'] = [feature]
+                coverage['features'].append(dict(coverage['features'][0], slot_id='missing'))
+                write(coverage_path, coverage)
+                write(review, reviewed)
+                with self.assertRaisesRegex(ValueError, 'feature inventory'):
+                    aggregate.evaluate(args)
+                coverage['features'].pop()
+                write(coverage_path, coverage)
                 reviewed['lanes'].pop()
                 write(review, reviewed)
                 with self.assertRaisesRegex(ValueError, 'coverage'):

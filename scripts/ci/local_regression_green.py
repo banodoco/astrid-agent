@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""Validate broker journals and downloaded hosted artifacts, then evaluate the ledger."""
+"""Validate broker/hosted evidence, then evaluate the ledger and feature predicates.
+
+Feature obligations are supplied only by reviewed inventory after comparison with
+independent fixed coverage. Each selects a lane, scenario, slot_id, candidate,
+attempt and artifact-relative JSON files. A feature manifest must bind the same
+scenario/slot/attempt, tuple, lane and checkouts. For hosted artifacts the trusted
+orchestrator downloader supplies run.json files entries with path, bytes, sha256,
+and the authenticated run/job/attempt/artifact association. Broker entries come
+from the local journal. Hash bytes before strict parsing, retain the snapshots and
+pass the selected {path, sha256, json} entries to the imported predicate.
+Neither an artifact's own claims nor a synthetic fixture authenticates evidence.
+"""
 import argparse
 import datetime as dt
 import hashlib
+import importlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sys
@@ -38,7 +50,41 @@ def component(value):
     return value
 
 
-def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broker_root, hosted_root, freshness_path, not_before, now=None):
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+PREDICATE_MODULE = 'scripts.journey_predicates'
+
+
+def safe_path(value):
+    core.require(isinstance(value, str) and value and '\\' not in value, 'invalid artifact path')
+    path = PurePosixPath(value)
+    core.require(not path.is_absolute() and '..' not in path.parts and str(path) == value, 'invalid artifact path')
+    return value
+
+
+def strict_json(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            core.require(key not in result, 'duplicate JSON key')
+            result[key] = value
+        return result
+    def invalid_constant(value):
+        raise ValueError('invalid JSON constant: ' + value)
+    value = json.loads(raw, object_pairs_hook=pairs, parse_constant=invalid_constant)
+    core.require(isinstance(value, dict), 'feature JSON must be an object')
+    return value
+
+
+def checked_bytes(path, size, digest):
+    core.require(type(size) is int and size >= 0 and isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest), 'invalid file metadata')
+    raw = path.read_bytes()
+    core.require(len(raw) == size and hashlib.sha256(raw).hexdigest() == digest, 'download hash or size mismatch')
+    return raw
+
+
+def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broker_root, hosted_root, freshness_path, not_before, now=None, features=None):
     try:
         now = now or dt.datetime.now(dt.timezone.utc)
         tup = core.read_json(tuple_path)
@@ -60,6 +106,26 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
         journal = Path(broker_root)
         hosted = Path(hosted_root)
         used = set()
+        artifact_ids = set()
+        download_paths = set()
+        selected = {}
+        pending = []
+        if features is not None:
+            core.require(isinstance(features, list) and features, 'missing reviewed feature inventory')
+            obligations = set()
+            for feature in features:
+                key = tuple(feature[k] for k in ('repo', 'lane', 'platform'))
+                scenario, slot = feature['scenario'], feature['slot_id']
+                core.require(isinstance(scenario, str) and re.fullmatch(r'[a-z][a-z0-9_]*', scenario), 'invalid scenario')
+                core.require(isinstance(slot, str) and slot and (scenario, slot) not in obligations, 'duplicate or missing feature obligation')
+                obligations.add((scenario, slot))
+                core.require(key in lane_keys, 'feature references unknown lane')
+                candidate = feature['candidate']
+                core.require(isinstance(candidate, dict) and all(candidate.get(r) == shas[r] for r in shas), 'feature candidate tuple mismatch')
+                paths = feature['files']
+                core.require(isinstance(paths, list) and paths and len(set(map(safe_path, paths))) == len(paths), 'missing or duplicate feature files')
+                core.require(type(feature['attempt']) is int and feature['attempt'] > 0, 'invalid selected attempt')
+                selected.setdefault(key, []).append(feature)
         with tempfile.TemporaryDirectory(prefix='regression-green-') as tmp:
             for lane in lanes:
                 key = (lane['repo'], lane['lane'], lane['platform'])
@@ -99,34 +165,77 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                     destinations = [Path(d['to']).resolve() for d in spec['download']]
                     core.require(destinations and all(p.is_absolute() for p in destinations), 'missing download destinations')
                     files = {}
+                    snapshots = {}
                     for entry in downloads:
                         path = Path(entry['path'])
                         core.require(path.is_absolute() and path.name not in files and path.is_file() and any(path.resolve().is_relative_to(d) for d in destinations), 'invalid or duplicate download')
-                        core.require(type(entry['bytes']) is int and path.stat().st_size == entry['bytes'] and sha(path) == entry['sha256'], 'download hash or size mismatch')
+                        core.require(path.resolve() not in download_paths, 'duplicate broker artifact file')
+                        download_paths.add(path.resolve())
+                        raw = checked_bytes(path, entry['bytes'], entry['sha256'])
+                        relative = [path.resolve().relative_to(d).as_posix() for d in destinations if path.resolve().is_relative_to(d)]
+                        core.require(len(relative) == 1 and relative[0] not in snapshots, 'ambiguous or duplicate download path')
+                        snapshots[safe_path(relative[0])] = (entry['sha256'], raw)
                         files[path.name] = path
                     manifest_file, junit_file = files['manifest.json'], files['junit.xml']
-                    manifest = core.read_json(manifest_file)
-                    core.require(manifest.get('checkouts') == {r: shas[r] for r in repos}, 'wrong effective checkouts')
-                    core.require(manifest.get('pod_id') == pod and manifest.get('job_id') == source_id, 'wrong broker result identity')
+                    if key not in selected:
+                        manifest = core.read_json(manifest_file)
+                        core.require(manifest.get('checkouts') == {r: shas[r] for r in repos}, 'wrong effective checkouts')
+                        core.require(manifest.get('pod_id') == pod and manifest.get('job_id') == source_id, 'wrong broker result identity')
                 elif kind == 'hosted':
                     core.require(key[2] in ('linux', 'macos', 'windows'), 'invalid hosted platform')
                     base = hosted / source_id
                     run = core.read_json(base / 'run.json')
                     manifest_file, junit_file = base / 'manifest.json', base / 'junit.xml'
-                    manifest = core.read_json(manifest_file)
                     core.require(run.get('id') == source['run_id'] and run.get('run_attempt') == source['run_attempt'] and run.get('repository') == tup['repos'][key[0]]['url'] and run.get('head_sha') == shas[key[0]] and run.get('status') == 'completed' and run.get('conclusion') == 'success', 'wrong or unsuccessful hosted run')
                     core.require(run.get('workflow_path') == source['workflow_path'] and run.get('job_id') == source['job_id'] and run.get('job_conclusion') == 'success', 'wrong or unsuccessful hosted job')
                     artifact = run['artifact']
+                    core.require(source['artifact_id'] not in artifact_ids, 'duplicate hosted artifact')
+                    artifact_ids.add(source['artifact_id'])
                     core.require(type(source['artifact_id']) is int and artifact == {'id': source['artifact_id'], 'name': source_id, 'run_id': source['run_id'], 'run_attempt': source['run_attempt'], 'job_id': source['job_id']}, 'wrong hosted artifact association')
                     started = fresh(run['run_started_at'], cutoff, now)
                     ended = fresh(run['updated_at'], cutoff, now)
-                    core.require(started <= ended and manifest.get('run_id') == run['id'] and manifest.get('run_attempt') == run['run_attempt'] and manifest.get('job_id') == run['job_id'], 'hosted identity mismatch')
-                    core.require(manifest.get('checkouts') == {r: shas[r] for r in source['checkouts']} and key[0] in source['checkouts'], 'wrong hosted checkouts')
+                    core.require(started <= ended and key[0] in source['checkouts'], 'invalid hosted times or checkouts')
+                    if key not in selected:
+                        manifest = core.read_json(manifest_file)
+                        core.require(manifest.get('run_id') == run['id'] and manifest.get('run_attempt') == run['run_attempt'] and manifest.get('job_id') == run['job_id'], 'hosted identity mismatch')
+                        core.require(manifest.get('checkouts') == {r: shas[r] for r in source['checkouts']}, 'wrong hosted checkouts')
+                    snapshots = {}
+                    if key in selected:
+                        entries = run['files']  # Authenticated downloader's file inventory, not artifact claims.
+                        core.require(isinstance(entries, list) and entries, 'missing hosted file inventory')
+                        for entry in entries:
+                            rel = safe_path(entry['path'])
+                            path = base / rel
+                            core.require(rel not in snapshots and path.resolve().is_relative_to(base.resolve()) and path.is_file(), 'invalid or duplicate hosted file')
+                            snapshots[rel] = (entry['sha256'], checked_bytes(path, entry['bytes'], entry['sha256']))
                 else:
                     raise ValueError(f'unknown source kind: {kind}')
+                if key in selected:
+                    core.require('manifest.json' in snapshots and 'junit.xml' in snapshots, 'missing authenticated manifest or junit')
+                    # Use only the checked snapshot for all later interpretations.
+                    manifest = strict_json(snapshots['manifest.json'][1])
+                    core.require(manifest.get('checkouts') == {r: shas[r] for r in source['checkouts']}, 'wrong authenticated checkouts')
+                    if kind == 'hosted':
+                        core.require(manifest.get('run_id') == run['id'] and manifest.get('run_attempt') == run['run_attempt'] and manifest.get('job_id') == run['job_id'], 'authenticated hosted identity mismatch')
+                    else:
+                        core.require(manifest.get('pod_id') == pod and manifest.get('job_id') == source_id, 'authenticated broker identity mismatch')
+                    attempt = source.get('run_attempt') if kind == 'hosted' else source.get('attempt')
+                    if kind == 'broker':
+                        core.require(result.get('attempt') == attempt, 'broker attempt mismatch')
+                    core.require(type(attempt) is int and attempt > 0 and manifest.get('attempt') == attempt, 'manifest attempt mismatch')
+                    bindings = [{'scenario': f['scenario'], 'slot_id': f['slot_id'], 'attempt': f['attempt']} for f in selected[key]]
+                    core.require(all(f['attempt'] == attempt for f in selected[key]) and manifest.get('feature_bindings') == bindings, 'feature binding or attempt mismatch')
+                    for feature in selected[key]:
+                        entries = []
+                        for rel in feature['files']:
+                            core.require(rel in snapshots, 'missing authenticated feature file: ' + rel)
+                            digest, raw = snapshots[rel]
+                            entries.append({'path': rel, 'sha256': digest, 'json': strict_json(raw)})
+                        pending.append((feature, entries))
                 code = manifest.get('test_exit_code')
                 core.require(type(code) is int and code in (0, 1) and manifest.get('result') == ('success' if code == 0 else 'failure'), 'test command failed to run or was skipped')
-                xml = ET.fromstring(junit_file.read_bytes())
+                xml = ET.fromstring(snapshots['junit.xml'][1] if key in selected else junit_file.read_bytes())
+                core.require(key not in selected or (manifest.get('test_exit_code') == 0 and not xml.findall('.//testcase/skipped')), 'feature job failed or skipped')
                 has_failures = bool(xml.findall('.//testcase/failure') or xml.findall('.//testcase/error'))
                 core.require(has_failures == (code == 1), 'test outcome conflicts with JUnit')
                 observed = fresh(manifest['created_at'], cutoff, now)
@@ -134,10 +243,25 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                 target = Path(tmp) / core.digest(list(key))
                 core.require(not target.exists(), f'duplicate lane {key}')
                 target.mkdir()
-                shutil.copyfile(manifest_file, target / 'manifest.json')
-                shutil.copyfile(junit_file, target / 'junit.xml')
-            return core.evaluate(tuple_path, inventory_path, ledger_path, tmp, freshness_path)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError, yaml.YAMLError, jsonschema.exceptions.ValidationError) as exc:
+                if key in selected:
+                    (target / 'manifest.json').write_bytes(snapshots['manifest.json'][1])
+                    (target / 'junit.xml').write_bytes(snapshots['junit.xml'][1])
+                else:
+                    shutil.copyfile(manifest_file, target / 'manifest.json')
+                    shutil.copyfile(junit_file, target / 'junit.xml')
+            errors, retirement = core.evaluate(tuple_path, inventory_path, ledger_path, tmp, freshness_path)
+            if errors or features is None:
+                return errors, retirement
+            module = importlib.import_module(PREDICATE_MODULE)
+            for feature, entries in pending:
+                predicate = getattr(module, 'check_' + feature['scenario'], None)
+                core.require(callable(predicate), 'missing predicate: ' + feature['scenario'])
+                result = predicate({'slot_id': feature['slot_id'], 'candidate': feature['candidate'], 'files': entries})
+                core.require(isinstance(result, tuple) and len(result) == 2 and type(result[0]) is bool and isinstance(result[1], list) and all(isinstance(x, str) for x in result[1]), 'invalid predicate result')
+                if not result[0] or result[1]:
+                    errors.append('feature %s/%s: %s' % (feature['scenario'], feature['slot_id'], '; '.join(result[1]) or 'predicate failed'))
+            return errors, retirement
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError, yaml.YAMLError, jsonschema.exceptions.ValidationError, ImportError) as exc:
         return [f'invalid or missing provenance: {exc}'], []
 
 
