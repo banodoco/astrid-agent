@@ -1,0 +1,52 @@
+{
+  "artifact_collection_outcome": "failure",
+  "command": "set +e\ncd \"$ASTRID_RUNTIME_CHECKOUT\"\nmkdir -p r07-cp3-evidence\npython -m pip install -e '.[test]' > r07-cp3-evidence/install.log 2>&1\ninstall_code=$?\nprintf '%s\\n' \"$install_code\" > r07-cp3-evidence/install.exit\npython -m pytest --collect-only -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/collect.log 2>&1\ncollect_code=$?\nprintf '%s\\n' \"$collect_code\" > r07-cp3-evidence/collect.exit\npython -m pytest -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/test.log 2>&1\ntest_code=$?\nprintf '%s\\n' \"$test_code\" > r07-cp3-evidence/test.exit\ncat r07-cp3-evidence/install.log\ncat r07-cp3-evidence/collect.log\ncat r07-cp3-evidence/test.log\nif [ \"$install_code\" -ne 0 ]; then exit \"$install_code\"; fi\nif [ \"$collect_code\" -ne 0 ]; then exit \"$collect_code\"; fi\nexit \"$test_code\"",
+  "effective_tuple": {
+    "agent": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+    "app": "9d3ccda1e81383082258943207745086da2aabe4",
+    "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime": "bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf"
+  },
+  "event": "push",
+  "inner_exit_code": 0,
+  "inventory": [
+    {
+      "bytes": 16566,
+      "path": "command.log",
+      "sha256": "dbae8185861b0e1ad5751224b3c13736c8188782c4ac1db2c5a5e23ec7d4e006"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 1183,
+      "path": "requested-inputs.json",
+      "sha256": "47030a1ba26222eacb22332f947ec9cff9e7554ddadfdce94ecb51d395b9c574"
+    },
+    {
+      "bytes": 423,
+      "path": "tuple.txt",
+      "sha256": "b6b6525a4aa2de45a73d28e2807aa786d9ec7d43efdea05a21cb7ed36fdf2c4b"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+    "app_ref": "9d3ccda1e81383082258943207745086da2aabe4",
+    "artifact_paths": "r07-cp3-evidence",
+    "command": "set +e\ncd \"$ASTRID_RUNTIME_CHECKOUT\"\nmkdir -p r07-cp3-evidence\npython -m pip install -e '.[test]' > r07-cp3-evidence/install.log 2>&1\ninstall_code=$?\nprintf '%s\\n' \"$install_code\" > r07-cp3-evidence/install.exit\npython -m pytest --collect-only -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/collect.log 2>&1\ncollect_code=$?\nprintf '%s\\n' \"$collect_code\" > r07-cp3-evidence/collect.exit\npython -m pytest -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-cp3-evidence/test.log 2>&1\ntest_code=$?\nprintf '%s\\n' \"$test_code\" > r07-cp3-evidence/test.exit\ncat r07-cp3-evidence/install.log\ncat r07-cp3-evidence/collect.log\ncat r07-cp3-evidence/test.log\nif [ \"$install_code\" -ne 0 ]; then exit \"$install_code\"; fi\nif [ \"$collect_code\" -ne 0 ]; then exit \"$collect_code\"; fi\nexit \"$test_code\"",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime_ref": "bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf",
+    "slot": "1"
+  },
+  "run_attempt": "1",
+  "run_id": "41326350052",
+  "source_head": "de49fb7cf7372abe1d10683d262b6264911b382a",
+  "source_ref": "refs/heads/venue/M-VENUE-R-07-R3-3",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-VENUE-R-07-R3-3",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "de49fb7cf7372abe1d10683d262b6264911b382a"
+}
