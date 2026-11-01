@@ -29,9 +29,9 @@ def test_shared_context_labeled_precedence():
     assert "Current explicit instructions override project preferences" in text
     assert "User preferences\nUse model A." in text
     assert "Project preferences (project p)\nUse model B." in text
-    assert "checkout/edit/checkin" in text
-    assert "astrid preferences checkout --scope user --file /tmp/prefs.md" in text
-    assert "Temporary choices stay" in text
+    assert "astrid preferences defaults set SLOT[/MODE] ENTRY" in text
+    assert "never Markdown preferences" in text
+    assert "Temporary choices\nstay" in text
 
 
 def test_preference_helper_edit_commands_match_cli_parser():
@@ -43,6 +43,15 @@ def test_preference_helper_edit_commands_match_cli_parser():
     assert user.project is None
     assert project.scope == "project"
     assert project.project == "project-id"
+
+
+def test_generation_default_guidance_uses_cli_not_markdown():
+    text = agent_context.PREFERENCE_HELPER
+    assert "astrid preferences defaults show" in text
+    assert "astrid preferences defaults set SLOT[/MODE] ENTRY" in text
+    assert "astrid preferences defaults reset SLOT[/MODE]" in text
+    assert "“Remember my default”" in text
+    assert "never Markdown preferences" in text
 
 
 def test_empty_scopes_keep_helper_and_are_distinct_from_runtime_error():

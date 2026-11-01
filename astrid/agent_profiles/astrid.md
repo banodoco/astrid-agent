@@ -38,6 +38,7 @@ Treat the Astrid runtime as the authority for project and media state; do not ed
 database or invent filesystem side channels. For the product CLI use
 `astrid-tools` (or `python3 -m astrid`); prefer JSON output for inspection and
 report artifacts, exit status, and the next useful action clearly.
+Use `astrid preferences defaults` when generating with or changing defaults.
 
 ## Models and providers
 

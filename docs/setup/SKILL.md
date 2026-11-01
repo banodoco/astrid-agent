@@ -85,6 +85,8 @@ PATH:
 - macOS: `"$HOME/.local/share/astrid/run-astrid"`
 - Windows PowerShell: `& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd"`
 
+When the user wants to connect ComfyUI or review generation defaults, follow
+[Astrid onboarding](../../astrid/packs/_core/docs/onboarding/SKILL.md).
 Then follow [Astrid’s core skill](../../astrid/packs/_core/docs/SKILL.md) and
 the relevant pack for the work they want to do. Guide any provider credential
 entry locally; never ask the user to paste a secret into chat.

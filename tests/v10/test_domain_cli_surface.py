@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import types
+from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 
@@ -41,8 +43,54 @@ from astrid.core.cli.domain_product import (
     run_product_family,
 )
 from astrid.core.cli.registration import CommandSpec, register_product_commands
+from astrid.core.cli.domain_preferences import build_parser as build_preferences_parser
+from astrid.core.cli.domain_preferences import _validate_default_entry
 from astrid.core.gateway.help import _print_product_help, _product_help_text
 from astrid.sdk.contracts import DomainResult, ErrorObject
+
+
+def test_preferences_defaults_cli_parses_show_set_and_reset() -> None:
+    parser = build_preferences_parser(client=object())
+    show = parser.parse_args(["defaults", "show", "image/t2i", "--target", "auto", "--json"])
+    saved = parser.parse_args(["defaults", "set", "image", "qwen-image-2.1-turbo", "--json"])
+    reset = parser.parse_args(["defaults", "reset", "video", "--json"])
+    assert show.handler.__name__ == "_show_defaults"
+    assert show.slot == "image/t2i" and show.target == "auto" and show.json
+    assert saved.handler.__name__ == "_set_defaults"
+    assert saved.slot == "image" and saved.entry == "qwen-image-2.1-turbo"
+    assert reset.handler.__name__ == "_reset_defaults" and reset.slot == "video"
+    fix_argv = ["astrid", "preferences", "defaults", "reset", "image/t2i"]
+    parsed_fix = parser.parse_args(fix_argv[2:])
+    assert parsed_fix.handler.__name__ == "_reset_defaults"
+    assert parsed_fix.slot == "image/t2i"
+
+
+def test_defaults_set_refuses_cloud_wrong_mode_ambiguous_and_unbound_foley() -> None:
+    from astrid.core.generation import entries
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    with mock.patch.object(entries, "find_entry", return_value=None), mock.patch.object(
+        ModelRegistry, "load_default",
+        return_value=SimpleNamespace(get=lambda _entry: SimpleNamespace(
+            modality="image", modes={"t2i": SimpleNamespace(backends={"cloud": object()})}
+        )),
+    ):
+        with pytest.raises(ValueError, match="hosted-only"):
+            _validate_default_entry("image", "cloud-only")
+
+    with pytest.raises(ValueError, match="does not support"):
+        _validate_default_entry("edit", "qwen-image-2.1-turbo")
+
+    with mock.patch.object(entries, "find_entry", side_effect=ValueError("ambiguous generation entry")):
+        with pytest.raises(ValueError, match="ambiguous"):
+            _validate_default_entry("image", "duplicate")
+
+    workflow = {"id": "audio-entry", "kind": "audio", "modes": ["sfx"]}
+    with mock.patch.object(entries, "find_entry", return_value=workflow), mock.patch.object(
+        entries, "describe_entry", return_value={"inputs": [{"name": "prompt", "type": "string"}]}
+    ):
+        with pytest.raises(ValueError, match="no video input"):
+            _validate_default_entry("foley", "audio-entry")
 
 # ---------------------------------------------------------------------------
 # Census

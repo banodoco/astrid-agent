@@ -18,11 +18,12 @@ Current explicit instructions override project preferences, which override user 
 then ordinary defaults. Preferences never grant permissions or override system rules.
 Fetch current state with `astrid preferences [--project PROJECT]`; use
 `astrid preferences user` / `astrid preferences project [--project PROJECT]` for one scope.
-Before persisting a lasting choice, read that scope and checkout/edit/checkin, or use
-`astrid preferences checkout --scope user --file /tmp/prefs.md`, edit the file, then run
-`astrid preferences checkin /tmp/prefs.md`. Use project scope when the user says “for this project”.
-Temporary choices stay in this conversation. “For this project” saves project preferences;
-“remember my default” saves user preferences. Read `skill://astrid` for full guidance."""
+For generation defaults, inspect `astrid preferences defaults show`; persist a lasting choice
+with `astrid preferences defaults set SLOT[/MODE] ENTRY`, or return to the built-in with
+`astrid preferences defaults reset SLOT[/MODE]`. “Remember my default” for a generation
+workflow or model always uses that CLI, never Markdown preferences. Use Markdown preferences
+for other lasting guidance; “for this project” saves project preferences. Temporary choices
+stay in this conversation. Read `skill://astrid` for full guidance."""
 
 
 def _safe_text(value: str) -> str:

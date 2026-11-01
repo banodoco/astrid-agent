@@ -20,6 +20,7 @@ Choose the route by the requested result. Read only that route's guidance:
 
 | Request | Start here |
 | --- | --- |
+| Review or change default generation workflows, or connect ComfyUI for defaults | [Astrid onboarding](onboarding/SKILL.md) |
 | Generate with the user's own ComfyUI: "my ComfyUI", "my saved workflow", local generation | [Run on your own ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui) |
 | Find a project, inspect a run, or open a render | The CLI recipes below |
 | **Edit a timeline** (clips, timing, text, layout, effects), then publish and point the user to the editor (render only if asked) | [Timeline editing](../../timeline/docs/SKILL.md) |

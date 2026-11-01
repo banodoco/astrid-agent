@@ -490,6 +490,29 @@ class LintTest(unittest.TestCase):
     def test_lint_passes_clean_text(self) -> None:
         self.assertEqual(discovery.lint_shared_skill_md("nothing forbidden here"), [])
 
+    def test_onboarding_skill_matches_final_and_lints_clean(self) -> None:
+        import hashlib
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[1] / "astrid/packs/_core/docs/onboarding/SKILL.md"
+        text = source.read_text(encoding="utf-8")
+        self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(),
+                         "f6a61670b9093021138f9891e943afb64b97e7e09c8871b1507d101b823c8f39")
+        self.assertEqual(discovery.lint_shared_skill_md(text), [])
+
+    def test_core_view_materialises_onboarding_route(self) -> None:
+        from astrid.skills.view import compose_view
+
+        descriptors = discovery.list_skills()
+        core = next(d for d in descriptors if d.pack_id == "_core")
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "view"
+            compose_view(root, core, [d for d in descriptors if d.pack_id != "_core"])
+            synced_skill = (root / "onboarding/SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("First-generation proof", synced_skill)
+            self.assertIn("COMPLETED", synced_skill)
+            self.assertIn("Astrid onboarding", (root / "SKILL.md").read_text(encoding="utf-8"))
+
 
 class GenerationSkillDiscoveryTest(unittest.TestCase):
     """Verify that ``astrid skills list`` surfaces the updated generation skill."""

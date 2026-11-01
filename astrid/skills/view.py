@@ -34,6 +34,7 @@ from .links import DROP, iter_link_targets, iter_markdown_files, rewrite_links, 
 # Core guidance copied into every view.  Keys are view-relative paths; the
 # root ``SKILL.md`` is written separately from the descriptor's skill_md.
 _CORE_FILES = (
+    "onboarding/SKILL.md",
     "creative-work/SKILL.md",
     "pack-builder/SKILL.md",
     "pack-testing/SKILL.md",
