@@ -94,6 +94,12 @@ class _BusyRefusal(ValueError):
     reason = "busy"
 
 
+class _AcknowledgementUnknown(_BusyRefusal):
+    """A submitted native attempt whose acknowledgement cannot be proved."""
+
+    reason = "acknowledgement-unknown"
+
+
 def _busy(message: str = "An update operation is already active or unresolved; try again after it finishes.") -> NoReturn:
     raise _BusyRefusal(message)
 
@@ -103,9 +109,103 @@ JOB_FORMAT = "astrid-update-job/v1"
 JOB_STATES = {"accepted", "launching", "active", "updated", "rolled_back", "failed", "recovery-needed"}
 BOOTSTRAP_PROOF_FORMAT = "astrid-update-bootstrap-proof/v1"
 MAX_RESULT_LINE = 240
+ROUTE_DISPOSITION_FORMAT = "astrid-update-route-disposition/v1"
+
+# These are private Agent outcomes. Runtime owns their HTTP projection.
+_ROUTE_DISPOSITIONS = {
+    "accepted-new", "continued-existing", "recovered-this-request",
+    "confirmed-prior", "acknowledgement-unknown",
+}
 
 _ATTEMPT_PHASES = {"reserved", "submitted", "claimed", "retired", "settled"}
 _ATTEMPT_SUBMITS = {"not-issued", "spent", "acknowledged", "unknown"}
+
+
+def _new_route_disposition() -> dict:
+    """Start an unresolved operation with a durable held blocker."""
+    return {
+        "format": ROUTE_DISPOSITION_FORMAT,
+        "blocker": "held",
+        "disposition": "accepted-new",
+        "confirmation": None,
+    }
+
+
+def _route_disposition(job: dict) -> dict | None:
+    value = job.get("route_disposition")
+    if not isinstance(value, dict) or value.get("format") != ROUTE_DISPOSITION_FORMAT:
+        return None
+    if value.get("blocker") not in {"held", "cleared"}:
+        return None
+    if value.get("disposition") not in _ROUTE_DISPOSITIONS:
+        return None
+    return value
+
+
+def _with_route_disposition(job: dict, disposition: str, *, blocker: str,
+                            confirmation: dict | None = None) -> dict:
+    """Return the complete private route outcome to publish with this job write."""
+    if disposition not in _ROUTE_DISPOSITIONS or blocker not in {"held", "cleared"}:
+        raise ValueError("The update route disposition is invalid.")
+    prior = _route_disposition(job)
+    value = dict(prior) if prior is not None else _new_route_disposition()
+    value.update({"format": ROUTE_DISPOSITION_FORMAT, "blocker": blocker,
+                  "disposition": disposition, "confirmation": confirmation})
+    return value
+
+
+def _confirmed_route_disposition(root: Path, job: dict, state: str, message: str,
+                                 disposition: str, ready_instance_id: str | None,
+                                 ready_identity: dict | None) -> dict:
+    """Build H3's evidence-bound private outcome before the atomic job write."""
+    if disposition not in {"recovered-this-request", "confirmed-prior"}:
+        raise ValueError("The update confirmation disposition is invalid.")
+    transaction_id = job.get("transaction_id")
+    if not isinstance(transaction_id, str) or not re.fullmatch(r"[0-9a-f]{32}", transaction_id):
+        _busy("The confirmed update result has no valid transaction binding.")
+    try:
+        journal_sha256 = hashlib.sha256((root / "update-transaction.json").read_bytes()).hexdigest()
+        selection_sha256 = hashlib.sha256(_selection_path().read_bytes()).hexdigest()
+    except OSError as failure:
+        raise _BusyRefusal("The confirmed update evidence cannot be retained.") from failure
+    confirmation = {
+        "operation_id": job.get("operation_id"), "outcome": state, "confirmed": True,
+        "transaction_id": transaction_id, "journal_sha256": journal_sha256,
+        "selection_sha256": selection_sha256, "ready_instance_id": ready_instance_id,
+        "ready_identity": dict(ready_identity) if isinstance(ready_identity, dict) else None,
+        "message": _one_line(message),
+    }
+    return _with_route_disposition(job, disposition, blocker="cleared",
+                                   confirmation=confirmation)
+
+
+def _helper_result(job: dict) -> dict:
+    """Expose only additive Agent disposition facts to Runtime's helper caller."""
+    result = dict(job)
+    route = _route_disposition(job)
+    if route is None:
+        return result
+    disposition = route["disposition"]
+    result.update({"disposition": disposition, "blocker": route["blocker"]})
+    confirmation = route.get("confirmation")
+    if disposition in {"recovered-this-request", "confirmed-prior"}:
+        if isinstance(confirmation, dict) and confirmation.get("confirmed") is True:
+            result.update({"confirmed": True, "outcome": confirmation.get("outcome"),
+                           "new_admission": False, "next_action": "observe"})
+    elif disposition == "acknowledgement-unknown":
+        result["next_action"] = "observe"
+    return result
+
+
+def _held_operation_id(root_value: object) -> str | None:
+    """Read a response identifier without mutating or trusting malformed metadata."""
+    try:
+        root = absolute(root_value)
+        job = read_json(root / "install.json").get("update_job")
+        operation_id = job.get("operation_id") if isinstance(job, dict) else None
+        return operation_id if isinstance(operation_id, str) and re.fullmatch(r"[0-9a-f]{32}", operation_id) else None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
 
 
 def _new_attempt(epoch: int) -> dict:
@@ -471,6 +571,7 @@ def _validate_request(request: dict, root: Path) -> dict:
                             "operation_id": operation_id, "program_root": str(root),
                             "data_root": str(data_root), "owner": LABEL,
                             "state": "never-entered", "claim_state": "unclaimed"},
+        "route_disposition": _new_route_disposition(),
         # This tuple is carried by the native wrapper itself.  It is distinct
         # from the stable logical operation ID so a later continuation can
         # revoke a delayed old wrapper without changing the operation.
@@ -663,6 +764,8 @@ def _continue_prebootstrap(root: Path, job: dict, descriptor: dict,
                              "retired_attempts": [*retired_attempts, old_attempt],
                              "worker_command_sha256": _worker_binding_digest(old, {
                                  **job, "attempt": replacement}),
+                             "route_disposition": _with_route_disposition(
+                                 job, "continued-existing", blocker="held"),
                              "continuation_attempted_at": int(time.time())}, allow_reconcile=True)
     return _launch_current_attempt(root, job, old, api, continuation=True)
 
@@ -731,13 +834,14 @@ def _journal_result(job: dict, journal: dict) -> tuple[dict, dict, str, str]:
 
 
 def _verify_journal_result_ready(root: Path, data_root: Path, job: dict, journal: dict,
-                                 expected: dict, identity: dict, state: str) -> None:
-    _selected, instance_id, _identity = _verify_selected_ready(
+                                 expected: dict, identity: dict, state: str) -> tuple[Version, str, dict]:
+    selected, instance_id, observed_identity = _verify_selected_ready(
         root, data_root, expected, identity, journal.get("realm"))
     requires_new_instance = (state == "updated"
                              or (state == "rolled_back" and journal.get("step") == "rolled_back"))
     if requires_new_instance and instance_id == job.get("old_instance_id"):
         raise ValueError("The recovered Runtime instance was not restarted.")
+    return selected, instance_id, observed_identity
 
 
 def _verify_selected_ready(root: Path, data_root: Path, expected_version: dict,
@@ -843,7 +947,10 @@ def _prove_recovery_owner(data_root: Path, expected_identity: dict, expected_rea
     return state
 
 
-def _set_reconciled_job(root: Path, job: dict, state: str, message: str) -> dict:
+def _set_reconciled_job(root: Path, job: dict, state: str, message: str, *,
+                        disposition: str | None = None,
+                        ready_instance_id: str | None = None,
+                        ready_identity: dict | None = None) -> dict:
     """Allow only explicit reconciliation to resolve the unresolved state."""
     marker_path = root / "install.json"
     marker = read_json(marker_path)
@@ -854,6 +961,10 @@ def _set_reconciled_job(root: Path, job: dict, state: str, message: str) -> dict
     latest["state"] = state
     latest["message"] = _one_line(message)
     latest["finished_at"] = int(time.time())
+    if disposition is not None:
+        latest["route_disposition"] = _confirmed_route_disposition(
+            root, latest, state, latest["message"], disposition,
+            ready_instance_id, ready_identity)
     marker["update_job"] = latest
     write_json(marker_path, marker)
     return latest
@@ -917,10 +1028,14 @@ def _recover_matching_transaction(root: Path, job: dict, journal: dict) -> dict:
         _busy("The update transaction did not reach a verified terminal phase.")
     expected, identity, state, message = _journal_result(job, result_journal)
     try:
-        _verify_journal_result_ready(root, data_root, job, result_journal, expected, identity, state)
+        _selected, ready_instance_id, ready_identity = _verify_journal_result_ready(
+            root, data_root, job, result_journal, expected, identity, state)
     except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - an interrupted manager acknowledgement is unknown.
         raise _BusyRefusal("The recovered Runtime identity or readiness could not be confirmed.") from failure
-    return _set_reconciled_job(root, job, state, message)
+    return _set_reconciled_job(root, job, state, message,
+                               disposition="recovered-this-request",
+                               ready_instance_id=ready_instance_id,
+                               ready_identity=ready_identity)
 
 
 def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict | None, bool]:
@@ -947,8 +1062,12 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
             if journal.get("step") not in TERMINAL_STEPS:
                 return _recover_matching_transaction(root, job, journal), False
             expected, identity, state, message = _journal_result(job, journal)
-            _verify_journal_result_ready(root, data_root, job, journal, expected, identity, state)
-            return _set_reconciled_job(root, job, state, message), False
+            _selected, ready_instance_id, ready_identity = _verify_journal_result_ready(
+                root, data_root, job, journal, expected, identity, state)
+            return _set_reconciled_job(root, job, state, message,
+                                       disposition="confirmed-prior",
+                                       ready_instance_id=ready_instance_id,
+                                       ready_identity=ready_identity), False
         if not _journal_is_accepted_preexisting(job, journal):
             _busy("The unresolved update journal is new, missing, or unrelated to its accepted snapshot.")
         old = _validate_prebootstrap(root, job, data_root)
@@ -1095,7 +1214,7 @@ def read_job(root: Path) -> dict:
         "data_root", "old_instance_id", "old_identity", "old_version", "target_release",
         "metadata", "transaction_id", "accepted_at", "finished_at", "message",
         "platform", "launch_status", "launch_error", "cleanup_status", "cleanup_error",
-        "residue", "autostart_snapshot",
+        "residue", "autostart_snapshot", "route_disposition",
     ) if key in job}
 
 
@@ -1369,13 +1488,19 @@ def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
         failed = _write_job(root, operation_id, state="launching",
                             message="Update launch acknowledgement was lost; repair will inspect the owned job.",
                             fields={"launch_status": "unknown", "launch_error": _one_line(failure),
-                                    "attempt": current_attempt}, allow_reconcile=continuation)
+                                    "attempt": current_attempt,
+                                    "route_disposition": _with_route_disposition(
+                                        current, "acknowledgement-unknown", blocker="held")},
+                            allow_reconcile=continuation)
         if continuation:
             _write_job(root, operation_id, state="recovery-needed",
                        message="Recovery needed. Update launch acknowledgement was lost; run Update again.",
                        fields={"launch_status": "unknown", "launch_error": _one_line(failure),
-                               "attempt": current_attempt}, allow_reconcile=True)
-            raise _BusyRefusal("The update continuation launch could not be acknowledged.") from failure
+                               "attempt": current_attempt,
+                               "route_disposition": _with_route_disposition(
+                                   current, "acknowledgement-unknown", blocker="held")},
+                       allow_reconcile=True)
+            raise _AcknowledgementUnknown("The update continuation launch could not be acknowledged.") from failure
         return failed
 
     current = _current_attempt(root, operation_id, epoch, nonce, submitted=True)
@@ -1905,20 +2030,36 @@ def main():
         try:
             result = accept(value)
         except (_UnsupportedServiceManager, _BusyRefusal) as failure:
-            print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
-                              "message": _one_line(failure)}))
+            response = {"state": "recovery-needed", "reason": failure.reason,
+                        "message": _one_line(failure)}
+            if isinstance(failure, _BusyRefusal):
+                response.update({"disposition": ("acknowledgement-unknown"
+                                                 if failure.reason == "acknowledgement-unknown"
+                                                 else "refused"),
+                                 "blocker": "held", "operation_id": _held_operation_id(value.get("root"))})
+                if failure.reason == "acknowledgement-unknown":
+                    response["next_action"] = "observe"
+            print(json.dumps(response))
             raise SystemExit(1)
-        print(json.dumps(result))
+        print(json.dumps(_helper_result(result)))
     elif action == "fail":
         print(json.dumps(fail(Path(value["root"]), value["operation_id"], value.get("reason"))))
     elif action == "launch":
         try:
             result = launch_job(Path(value["root"]), value["operation_id"])
         except (_UnsupportedServiceManager, _BusyRefusal) as failure:
-            print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
-                              "message": _one_line(failure)}))
+            response = {"state": "recovery-needed", "reason": failure.reason,
+                        "message": _one_line(failure)}
+            if isinstance(failure, _BusyRefusal):
+                response.update({"disposition": ("acknowledgement-unknown"
+                                                 if failure.reason == "acknowledgement-unknown"
+                                                 else "refused"),
+                                 "blocker": "held", "operation_id": _held_operation_id(value.get("root"))})
+                if failure.reason == "acknowledgement-unknown":
+                    response["next_action"] = "observe"
+            print(json.dumps(response))
             raise SystemExit(1)
-        print(json.dumps(result))
+        print(json.dumps(_helper_result(result)))
     else:
         raise ValueError("Unknown update helper action.")
 

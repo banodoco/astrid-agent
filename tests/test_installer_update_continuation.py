@@ -517,11 +517,13 @@ def test_lost_continuation_ack_is_recovery_needed_and_repeated_status_does_not_r
     monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
     with pytest.raises(ValueError) as refusal:
         update_job.accept(request)
-    assert getattr(refusal.value, "reason", None) == "busy"
+    assert getattr(refusal.value, "reason", None) == "acknowledgement-unknown"
     saved = read_json(root / "install.json")["update_job"]
     assert saved["operation_id"] == job["operation_id"]
     assert saved["state"] == "recovery-needed"
     assert saved["launch_status"] == "unknown"
+    assert saved["route_disposition"]["disposition"] == "acknowledgement-unknown"
+    assert saved["route_disposition"]["blocker"] == "held"
     assert adapter.events.count("launch") == 1
     before = (root / "install.json").read_bytes()
     for _ in range(2):
