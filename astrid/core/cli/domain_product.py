@@ -396,6 +396,10 @@ def run_product_family(
         parser_kwargs["reference_commands"] = reference_commands
     parser = build_parser(client, **parser_kwargs)
     parsed = parser.parse_args(list(args))
+    if family == "timelines" and parsed.command == "create" and not parsed._json_explicit:
+        # The public command remains human-first; direct Timeline parser users
+        # retain its stable default envelope. An explicit --json always wins.
+        parsed.json = False
     handler = getattr(parsed, "handler", None)
     if handler is None:
         raise ProductRegistryError(

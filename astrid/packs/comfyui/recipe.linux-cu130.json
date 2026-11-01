@@ -3,14 +3,19 @@
   "engine": "comfyui",
   "platform": "linux-x86_64-cu130",
   "pins": {
-    "path": "packs/comfyui/pins.json",
-    "sha256": "fc507ee2e05ae64ba48f64d84d409ea836e17b678efe2442804614d9323d2c16"
+    "path": "packs/runpod/pins.json",
+    "sha256": "c9d51210d0b2ecdca59d2bb1a8ce2eb74159d4de4afd4fc4682852e2b671e17d"
   },
   "source_bindings": [
     {
       "name": "comfyui",
-      "pin": "comfyui",
+      "pin": "comfyui-plain",
       "relative_path": "runtime/ComfyUI"
+    },
+    {
+      "name": "vibecomfy",
+      "pin": "vibecomfy",
+      "relative_path": "runtime/vibecomfy"
     }
   ],
   "environments": [

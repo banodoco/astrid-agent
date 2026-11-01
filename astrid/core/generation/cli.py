@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +190,13 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('--save', action='store_true')
     command.add_argument('--input', action='append', default=[])
     command.add_argument('--json', action='store_true')
+    command = sub.add_parser('launch', help='Launch or re-probe only the selected human ComfyUI.')
+    command.add_argument('--target', action=_Once, default='auto')
+    command.add_argument('--engine', action=_Once, default='comfyui')
+    command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
+    command.add_argument('--timeout', action=_Once, type=float, default=10.0,
+                         help='Launch and health deadline in seconds (positive, at most 30).')
+    command.add_argument('--json', action='store_true')
     command = sub.add_parser('release', help='Admit release through the current host owner.')
     command.add_argument('--engine', required=True)
     command.add_argument('--target', required=True)
@@ -304,6 +312,11 @@ def _main(argv: list[str]) -> int:
         return list_main(argv)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
+    if parsed.modality == 'launch':
+        payload = _generate_facade().launch(target=parsed.target, engine=parsed.engine,
+            consent=parsed.consent, timeout=parsed.timeout)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 2 if payload['status'] == 'blocked' else 0
     if parsed.modality == 'release':
         with _open_client() as client:
             result = _generate_facade().release(engine=parsed.engine, target=parsed.target,
@@ -419,7 +432,12 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
     try:
-        return _main(argv)
+        scope = nullcontext()
+        if '--dry-run' in argv:
+            from astrid.core.pack.discovery import pack_discovery_scope
+            scope = pack_discovery_scope()
+        with scope:
+            return _main(argv)
     except (RuntimeError, ValueError, OSError, ImportError) as exc:
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:

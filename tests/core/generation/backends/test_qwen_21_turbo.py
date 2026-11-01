@@ -109,11 +109,34 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
             registry=ModelRegistry.load_default(), model=None, mode=mode, modality='image',
             target=client.target.url, execution='local', inputs=params, dry_run=True,
         )
-        assert selected['entry'] == model
-        assert selected['approval']['status'] == 'approved'
+        assert selected['entry']['id'] == model
+        assert selected['entry']['model'] == model
+        if mode == 'edit':
+            # The graph was compiled above; facade approval must wait for
+            # the caller's image to be staged and the final graph sealed.
+            assert 'approval' not in selected['entry']
+            assert selected['entry']['effective_values']['image'] == 'input.png'
+            assert 'image_ref' in selected['entry']['accepted_inputs']
+        else:
+            assert selected['entry']['approval']['status'] == 'approved'
         assert requests == ['/object_info', '/object_info', '/system_stats', '/object_info']
     finally:
         server.shutdown(); server.server_close(); thread.join()
+
+
+@pytest.mark.parametrize('invalid', [42, True, {'path': 'input.png'}])
+def test_qwen_edit_image_requires_a_string_reference(invalid):
+    from astrid.core.generation.entries import _workflow_inputs, validate_inputs
+
+    workflow = workflow_from_ready('edit/qwen_image_2_1_turbo_edit')
+    fields = _workflow_inputs({'binds': {}, 'defaults': {}}, 'edit', workflow=workflow)
+    image = next(field for field in fields if field['name'] == 'image')
+    assert (image['type'], image['media_semantics']) == ('string', 'image')
+    assert validate_inputs({'inputs': fields}, {'image': 'input.png'}, required=False) == {'image': 'input.png'}
+    with pytest.raises(ValueError, match="entry input 'image' requires a string"):
+        validate_inputs({'inputs': fields}, {'image': invalid}, required=False)
+    with pytest.raises(ValueError, match='no declared scalar type'):
+        validate_inputs({'inputs': [{'name': 'other', 'type': 'image'}]}, {'other': 'input.png'}, required=False)
 
 
 def test_public_lock_matches_workflow_assets():
@@ -171,8 +194,12 @@ def test_generate_pin_and_h3_pin_are_independent():
     h3_sources = {s.name: (s.pin.repository, s.pin.revision) for s in h3.sources}
     assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
-    assert {k: v for k, v in generate_sources.items() if k != 'comfyui'} == {
-        k: v for k, v in h3_sources.items() if k != 'comfyui'}
+    assert generate_sources['vibecomfy'] == (
+        'https://github.com/AstridPseudon/vibecomfy-proof', '3bebae39655eb460454885040be4d3aefaf2ef31')
+    assert h3_sources['vibecomfy'] == (
+        'https://github.com/peteromallet/VibeComfy.git', 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6')
+    assert {k: v for k, v in generate_sources.items() if k not in {'comfyui', 'vibecomfy'}} == {
+        k: v for k, v in h3_sources.items() if k not in {'comfyui', 'vibecomfy'}}
 
     root = Path(__file__).parents[4] / 'astrid/packs/vibecomfy'
     env = json.loads((root / 'environment.windows-nvidia.json').read_text())

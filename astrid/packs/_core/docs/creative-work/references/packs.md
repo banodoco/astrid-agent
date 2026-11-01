@@ -11,6 +11,9 @@
 | capture | Capture admitted HTTPS web pages with a host-provisioned Remotion browser, broker evidence, and managed PNG provenance. | `astrid/packs/capture/docs/SKILL.md` |
 | chiptune | Generate deterministic procedural retro music and sound effects locally without samples, network services, or models. | `astrid/packs/chiptune/docs/SKILL.md` |
 | comfy_wrap | Comfy Workflow Wrapper — generate images by injecting a text prompt into a ComfyUI workflow JSON and running it via v... | `astrid/packs/comfy_wrap/docs/SKILL.md` |
+| developer | Develop Astrid itself: the repositories, building and testing, and the developer skills. | `astrid/packs/developer/docs/SKILL.md` |
+| developer / fast-iteration | Iterate fast on Astrid with evidence you can trust.; developer skill: `astrid skills sync --developer` | `astrid/packs/developer/docs/fast-iteration/SKILL.md` |
+| developer / releasing | Astrid's release gates and qualification, from candidate to go/no-go.; developer skill: `astrid skills sync --developer` | `astrid/packs/developer/docs/releasing/SKILL.md` |
 | discord_local | Run one bounded personal Discord browser generation attempt or recover one completed result into an experiment-ready ... | `astrid/packs/discord_local/docs/SKILL.md` |
 | editorial | Editorial pack: the 14-step hype video pipeline from transcribe through validate, plus auxiliary tools for human-in-t... | `astrid/packs/editorial/docs/SKILL.md` |
 | fal | fal.ai integration for short-clip Foley plus MiniMax H3 text-to-video and multimodal reference-to-video generation. R... | `astrid/packs/fal/docs/SKILL.md` |
@@ -27,6 +30,11 @@
 | runpod | RunPod pack — provision GPU pods, execute scripts remotely, pull artifacts, and tear down, including a guaranteed-cle... | `astrid/packs/runpod/docs/SKILL.md` |
 | seedance_local | Run one temporary personal Seedance 2.0 reference-media generation through fal.ai as an experiment-ready Astrid run. | `astrid/packs/seedance_local/docs/SKILL.md` |
 | stream_content | Distill long event or stream recordings into content blocks and clip candidates. | `astrid/packs/stream_content/docs/SKILL.md` |
+| timeline | Edit and inspect Astrid video timelines: place, trim, move, and remove clips, then look at the result and report it. | `astrid/packs/timeline/docs/SKILL.md` |
+| timeline / narrated | Place and arrange clips around spoken words, beats, cuts, and music beds.; available: `astrid skills install timeline --skill narrated` | `astrid/packs/timeline/docs/narrated/SKILL.md` |
+| timeline / review | Preview exact timeline changes, get approval, and recover saved edits.; available: `astrid skills install timeline --skill review` | `astrid/packs/timeline/docs/review/SKILL.md` |
+| timeline / series | Edit a group of timelines safely, record each outcome, and recover failures.; available: `astrid skills install timeline --skill series` | `astrid/packs/timeline/docs/series/SKILL.md` |
+| timeline / shots | Label timeline sections, store them as shots, and reuse a stored shot in another occurrence.; available: `astrid skills install timeline --skill shots` | `astrid/packs/timeline/docs/shots/SKILL.md` |
 | training | Training pack — build video training datasets and run LoRA training end to end: clip pools, captioning/review, RunPod... | `astrid/packs/training/docs/SKILL.md` |
 | typed_timeline | Map admitted typed rows into validated runtime render timelines using explicit mapping resources. | `astrid/packs/typed_timeline/docs/SKILL.md` |
 | understanding | Understanding pack: modality-specific LLM inspection for audio, images, synchronized video, and scene descriptions, w... | `astrid/packs/understanding/docs/SKILL.md` |

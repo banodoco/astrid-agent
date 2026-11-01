@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -12,8 +14,14 @@ from pathlib import Path
 import pytest
 
 from astrid.core.generation import engine_release as release
+from tests._checkouts import (
+    agent_checkout,
+    runpod_checkout,
+    runpod_lifecycle_checkout,
+    runtime_checkout,
+)
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = agent_checkout()
 BASES = {
     'astrid': 'e9340851c165a157a2dbdd4764cc446e44e3b69f',
     'astrid-runtime': '470f6f4f49de3318e0e57cda19ca6dd666cd5cc4',
@@ -22,24 +30,61 @@ BASES = {
 }
 
 
+def test_checkout_resolvers_name_required_overrides_when_packages_are_unavailable(monkeypatch):
+    import tests._checkouts as checkouts
+
+    cases = (
+        (checkouts.agent_checkout, 'ASTRID_AGENT_CHECKOUT'),
+        (lambda: checkouts.runtime_checkout(require_git=True), 'ASTRID_RUNTIME_CHECKOUT'),
+        (checkouts.runpod_lifecycle_checkout, 'ASTRID_RUNPOD_LIFECYCLE_CHECKOUT'),
+        (checkouts.runpod_checkout, 'ASTRID_RUNPOD_CHECKOUT'),
+    )
+    monkeypatch.setattr(checkouts.importlib.util, 'find_spec', lambda _name: None)
+    for resolver, env_var in cases:
+        monkeypatch.delenv(env_var, raising=False)
+        with pytest.raises(AssertionError, match=re.escape(env_var)):
+            resolver()
+
+
 @pytest.fixture(scope='module')
 def wheel_inputs(tmp_path_factory):
     work = tmp_path_factory.mktemp('whole-wheel-inputs')
-    local = {'astrid': REPO, 'astrid-runtime': REPO.parent / 'runtime',
-             'runpod-lifecycle': REPO.parent / 'lifecycle', 'runpod': REPO.parent / 'sdk'}
-    conventional = {'astrid-runtime': 'astrid-runtime', 'runpod-lifecycle': 'runpod-lifecycle',
-                    'runpod': 'runpod-python'}
-    for name in conventional:
-        if not (local[name] / 'pyproject.toml').exists():
-            local[name] = REPO.parent / conventional[name]
-    assert all((p / 'pyproject.toml').is_file() for p in local.values()), 'frozen sibling source checkouts required'
+    local = {
+        'astrid': REPO,
+        'astrid-runtime': runtime_checkout(require_git=True),
+        'runpod-lifecycle': runpod_lifecycle_checkout(),
+        'runpod': runpod_checkout(),
+    }
+    required_env = {
+        'astrid': 'ASTRID_AGENT_CHECKOUT',
+        'astrid-runtime': 'ASTRID_RUNTIME_CHECKOUT',
+        'runpod-lifecycle': 'ASTRID_RUNPOD_LIFECYCLE_CHECKOUT',
+        'runpod': 'ASTRID_RUNPOD_CHECKOUT',
+    }
+    for name, checkout in local.items():
+        assert (checkout / 'pyproject.toml').is_file(), (
+            f"The {name} source checkout must contain pyproject.toml; "
+            f"set {required_env[name]} to that checkout."
+        )
     wheel_dir = work / 'wheels'
     wheel_dir.mkdir()
-    env = dict(os.environ, UV_CACHE_DIR='/home/user/proof/.uv-cache',
-               PIP_CACHE_DIR='/home/user/proof/.pip-cache',
+    # pip's local-directory wheel builds write build/ and egg-info artifacts
+    # into source trees. Keep the reused source checkouts untouched and build
+    # from disposable copies inside this test's isolated temp directory.
+    build_sources = {}
+    for name, source in local.items():
+        build_source = work / 'sources' / name
+        shutil.copytree(
+            source,
+            build_source,
+            ignore=shutil.ignore_patterns('.git', 'build', '*.egg-info', '__pycache__', '*.py[cod]'),
+        )
+        build_sources[name] = build_source
+    env = dict(os.environ, UV_CACHE_DIR=str(work / 'uv-cache'),
+               PIP_CACHE_DIR=str(work / 'pip-cache'), PIP_NO_INDEX='1',
                SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD='1.12.0+astrid.2')
     built = subprocess.run([sys.executable, '-m', 'pip', 'wheel', '--no-deps', '--no-build-isolation',
-                            '--wheel-dir', str(wheel_dir), *map(str, local.values())],
+                            '--wheel-dir', str(wheel_dir), *map(str, build_sources.values())],
                            env=env, capture_output=True, text=True, timeout=180)
     assert built.returncode == 0, built.stderr
     wheels = sorted(wheel_dir.glob('*.whl'))
@@ -64,11 +109,22 @@ def archive_fixture(wheel_inputs):
     return archive, manifest, sha, root
 
 
-def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fixture):
+def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fixture, wheel_inputs):
     archive, manifest, sha, root = archive_fixture
     assert archive.name == 'sha256-' + sha + '.zip'
     assert manifest['fixture'] is True and manifest['complete'] is False
     assert manifest['python'] == release.interpreter_identity()
+    _, wheels, _ = wheel_inputs
+    agent_wheel = next(wheel for wheel in wheels if wheel.name.startswith('astrid-'))
+    with zipfile.ZipFile(agent_wheel) as wheel:
+        packaged_locks = {
+            name for name in wheel.namelist()
+            if name.startswith('astrid/') and name.endswith('.lock')
+        }
+    assert packaged_locks == {
+        'astrid/packs/runpod/requirements.linux-cu130.lock',
+        'astrid/packs/comfyui/requirements.linux-cu130.lock',
+    }
     recipe = json.loads((REPO / 'astrid/packs/runpod/recipe.linux-cu130.json').read_text())
     for env in recipe['environments']:
         if env['requirements']['mode'] != 'packaged':
@@ -108,6 +164,43 @@ def test_production_build_refuses_incomplete_inputs(wheel_inputs):
     with pytest.raises(release.ReleaseError, match='incomplete release'):
         release.build_release(wheels, provenance, work / 'refused')
     assert not list((work / 'refused').glob('sha256-*.zip'))
+
+
+def test_retained_release_binds_plain_comfyui_and_selected_client(archive_fixture):
+    _, _, _, root = archive_fixture
+    environment = release._handoff_recipe(root, engine='comfyui')
+    assert environment == {'relative_path': 'runtime/venv', 'python_version': '3.12.10', 'uv_version': '0.11.32'}
+    program = r'''
+import json,sys
+sys.dont_write_bytecode=True
+sys.path.insert(0,sys.argv[1])
+from astrid.core.generation.engine_recipe import load_recipe
+recipe=load_recipe('comfyui','linux-x86_64-cu130')
+print(json.dumps({s.name:{'repository':s.pin.repository,'revision':s.pin.revision,'path':s.relative_path}
+                  for s in recipe.sources}))
+'''
+    result = subprocess.run([sys.executable, '-I', '-S', '-c', program, str(root / 'site')],
+                            cwd=root.parent, env={'PATH': os.defpath},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        'comfyui': {'repository': 'https://github.com/Comfy-Org/ComfyUI.git',
+                    'revision': '423cbd20511becb1f16122ab518e92e58bfa03d9', 'path': 'runtime/ComfyUI'},
+        'vibecomfy': {'repository': 'https://github.com/AstridPseudon/vibecomfy-proof',
+                      'revision': '3bebae39655eb460454885040be4d3aefaf2ef31', 'path': 'runtime/vibecomfy'},
+    }
+
+
+def test_plain_comfyui_release_handoff_requires_the_same_cli_engine():
+    kwargs = dict(archive='/release.zip', sha256='a' * 64, retain='/retained', root='/engine', engine='comfyui')
+    args = ('engines', 'status', 'comfyui', '--root', '/engine')
+    argv = release.release_cli_argv(**kwargs, cli_args=args)
+    assert argv[argv.index('--engine') + 1] == 'comfyui'
+    assert argv[-len(args):] == args
+    with pytest.raises(release.ReleaseError, match='handoff engine'):
+        release.release_cli_argv(**kwargs, cli_args=('engines', 'status', 'vibecomfy-h3', '--root', '/engine'))
+    with pytest.raises(release.ReleaseError, match='unsupported handoff engine'):
+        release._handoff_recipe('/unread', engine='unknown')
 
 
 def test_fixture_cannot_launch_install_or_startup(archive_fixture):

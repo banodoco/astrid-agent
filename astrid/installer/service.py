@@ -136,6 +136,14 @@ def installer_lock_path(home: Path, system: str) -> Path:
     return parent / "astrid-install.lock"
 
 
+def pinokio_lock_paths(home: Path, system: str) -> list[Path]:
+    """Lock the Pinokio foreground location and any inherited legacy location."""
+    legacy = installer_lock_path(home, system)
+    foreground = home / ".local" / "share" / "astrid-install.lock" if system == "linux" else legacy
+    # Resolve aliases so the same kernel lock is never acquired twice.
+    return [foreground] if foreground.resolve() == legacy.resolve() else [foreground, legacy]
+
+
 def bootstrap_root(home: Path, system: str) -> Path:
     root = default_program_root(home, system)
     return (root.parent / "Astrid Installer" if system == "win32" else root) / "bootstrap"
@@ -216,6 +224,8 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
         step = transaction.get("step")
         if step in {"complete", "rolled_back"}:
             return False
+        if version.managed_by == "pinokio" and not custody:
+            raise ValueError("Choose Update to finish")
         allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")

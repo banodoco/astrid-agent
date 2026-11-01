@@ -111,7 +111,7 @@ def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     assert "repository: banodoco/reigh-app" not in workflow
 
 
-def test_direct_journey_workflow_is_dispatchable_and_bound_to_round1b():
+def test_direct_journey_workflow_is_dispatchable_and_bound_to_cp2():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey-direct.yml").read_text()
     assert "workflow_dispatch: {}" in workflow
     assert "fail-fast: false" in workflow
@@ -123,11 +123,11 @@ def test_direct_journey_workflow_is_dispatchable_and_bound_to_round1b():
         assert f"job_id: {job_id}" in workflow
         assert f"runner: {runner}" in workflow
     for sha in (
-        "1a275bb339ae897e52a5be5e1da99e846e402037",
-        "ddd5d278796641901bd11508863a8ea21e6c9697",
-        "7f6f99208100e895efebf39c70bc30af6cee0884",
+        "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+        "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+        "a55bec9ff384b5bbfee5535962880084ab2adb1b",
         "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
-        "4758572cf02ce7ef2cc8cb42c4f11cf6095dab584f9d54734d258e2eb455776c",
+        "ced136903a7319e78a0be7db0cc1709c0663eaf7d567c040fe1812a916693874",
     ):
         assert sha in workflow
     assert "before-cleanup/journey-result.json" in workflow
