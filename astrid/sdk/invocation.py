@@ -3849,11 +3849,12 @@ def _invoke_bridge_child(
                                 native_kind=capability.native_kind, ok=False, error=error,
                                 raw_result={"ok": False, "error": exc.error}, executor_version=digest)
     if (not isinstance(data, Mapping) or not _valid_id(data.get("task_id"))
-            or not _valid_id(data.get("run_id"))):
+            or not _valid_id(data.get("run_id"))
+            or not _valid_id(data.get("attempt_id"))):
         bridge.close()
         raise CapabilityInvocationError("child bridge admission returned an incomplete task resource")
     run_id, task_id = data["run_id"], data["task_id"]
-    attempt_id = str(data.get("attempt_id") or "")
+    attempt_id = data["attempt_id"]
     raw = {"ok": True, "run_id": run_id, "kernel_run_id": run_id,
            "kernel_task_id": task_id, "kernel_attempt_id": attempt_id, "task": dict(data)}
     ok = True
@@ -3864,9 +3865,14 @@ def _invoke_bridge_child(
 
         def validate_status(observed: Any) -> None:
             nonlocal protocol_error
-            if not isinstance(observed, Mapping) or observed.get("task_id") != task_id or observed.get("run_id") != run_id:
+            if (not isinstance(observed, Mapping) or observed.get("task_id") != task_id
+                    or observed.get("run_id") != run_id):
                 bridge.close()
                 protocol_error = CapabilityInvocationError("child bridge status returned a foreign task resource")
+                raise protocol_error
+            if observed.get("attempt_id") != attempt_id:
+                bridge.close()
+                protocol_error = CapabilityInvocationError("child bridge status returned a foreign task attempt")
                 raise protocol_error
             state = observed.get("state", observed.get("status"))
             if not isinstance(state, str) or state not in {

@@ -5,8 +5,9 @@ import astrid
 from tests.sdk.test_child_bridge_d18 import isolated, channel, call, write_pack
 
 
-@pytest.mark.parametrize("fault", ["foreign_status", "publication", "invalid_state", "malformed_state",
-                                    "foreign_outputs", "timeout_foreign", "timeout_state"])
+@pytest.mark.parametrize("fault", ["foreign_status", "foreign_attempt", "publication", "invalid_state",
+                                    "malformed_state", "foreign_outputs", "timeout_foreign",
+                                    "timeout_attempt", "timeout_state"])
 def test_child_status_and_publication_validators_both_apply(tmp_path, isolated, channel, monkeypatch, fault):
     from astrid.sdk import invocation, _child_bridge
 
@@ -15,6 +16,8 @@ def test_child_status_and_publication_validators_both_apply(tmp_path, isolated, 
     monkeypatch.setattr(invocation, "_kernel_invoke", lambda *a, **kw: pytest.fail("standalone fallback"))
     if fault == "foreign_status":
         terminal["task_id"] = "T-foreign"
+    elif fault == "foreign_attempt":
+        terminal["attempt_id"] = "A-foreign"
     elif fault == "publication":
         terminal["publication_readback"] = {}
     elif fault in {"invalid_state", "malformed_state"}:
@@ -23,16 +26,22 @@ def test_child_status_and_publication_validators_both_apply(tmp_path, isolated, 
         monkeypatch.setattr(bridge, "outputs", lambda *a, **kw: [{"task_id": "foreign"}])
     else:
         def late_status(child_key, task_id, **kwargs):
-            data = {"task_id": task_id, "run_id": "R-" + child_key, "state": "completed"}
-            data.update({"task_id": "foreign"} if fault == "timeout_foreign" else {"state": []})
+            data = {"task_id": task_id, "run_id": "R-" + child_key,
+                    "attempt_id": "A-" + child_key, "state": "completed"}
+            data.update(
+                {"task_id": "foreign"} if fault == "timeout_foreign"
+                else {"attempt_id": "A-foreign"} if fault == "timeout_attempt"
+                else {"state": []}
+            )
             now = invocation.time.monotonic() + 100
             raise _child_bridge._BridgeTimeout("late status", observed_at=now) from (
                 _child_bridge._BridgeReplyTimeout(data, observed_at=now))
         monkeypatch.setattr(bridge, "status", late_status)
-    expected = {"foreign_status": "foreign task", "publication": "publication readback",
+    expected = {"foreign_status": "foreign task", "foreign_attempt": "foreign task attempt",
+                "publication": "publication readback",
                 "invalid_state": "invalid task state", "malformed_state": "invalid task state",
                 "foreign_outputs": "foreign or invalid outputs", "timeout_foreign": "foreign task",
-                "timeout_state": "invalid task state"}[fault]
+                "timeout_attempt": "foreign task attempt", "timeout_state": "invalid task state"}[fault]
     if fault == "foreign_outputs":
         result = call(root, inputs={"message": "hello"}, wait=True, stage="prepare", input_refs=[])
         assert not result.ok
@@ -42,6 +51,25 @@ def test_child_status_and_publication_validators_both_apply(tmp_path, isolated, 
         with pytest.raises(astrid.CapabilityInvocationError, match=expected):
             call(root, inputs={"message": "hello"}, wait=True, stage="prepare", input_refs=[])
     assert [item["op"] for item in messages][:2] == (["submit"] if fault.startswith("timeout") else ["submit", "status"])
+    assert bridge._closed
+
+
+def test_child_admission_requires_exact_attempt_identity(tmp_path, isolated, channel, monkeypatch):
+    from astrid.sdk import invocation
+
+    root = write_pack(tmp_path)
+    bridge, messages, _ = channel
+    monkeypatch.setattr(invocation, "_kernel_invoke", lambda *a, **kw: pytest.fail("standalone fallback"))
+    monkeypatch.setattr(
+        bridge,
+        "submit",
+        lambda request: {"task_id": "T-echo", "run_id": "R-echo"},
+    )
+
+    with pytest.raises(astrid.CapabilityInvocationError, match="incomplete task resource"):
+        call(root, inputs={"message": "hello"}, wait=True)
+
+    assert messages == []
     assert bridge._closed
 
 
