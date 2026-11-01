@@ -281,3 +281,47 @@ def test_generation_help_does_not_load_sdk_or_start_runtime(monkeypatch, capsys)
         cli.main(["image", "--help"])
     assert exc.value.code == 0
     assert "--target" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('entrypoint', ['console', 'gateway'])
+@pytest.mark.parametrize('status,code', [('ready', 0), ('blocked', 2)])
+def test_public_launch_forwards_per_call_controls_without_runtime(
+    monkeypatch, capsys, entrypoint, status, code,
+):
+    from astrid.core.generation.preflight import readiness_envelope
+    calls = []
+    payload = readiness_envelope(issues=[] if status == 'ready' else [{
+        'code': 'target_unreachable', 'severity': 'error', 'message': 'start manually',
+        'details': {'manual_start': True, 'reason': 'launch_timeout'}}])
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+        launch=lambda **kwargs: calls.append(kwargs) or payload))
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('launch opened Runtime'))
+    assert _public_main(entrypoint)(['generate', 'launch', '--engine', 'local',
+        '--consent', 'user_env', '--timeout', '0.5', '--json']) == code
+    assert calls == [{'target': 'auto', 'engine': 'local',
+                      'consent': ['user_env'], 'timeout': 0.5}]
+    assert json.loads(capsys.readouterr().out) == payload
+
+
+def test_launch_help_is_metadata_only(monkeypatch, capsys):
+    monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('help loaded SDK'))
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('help opened Runtime'))
+    with pytest.raises(SystemExit) as exc:
+        cli.main(['launch', '--help'])
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert '--consent' in output and '--timeout' in output
+
+
+def test_launch_default_does_not_supply_consent(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+        launch=lambda **kwargs: calls.append(kwargs) or {'status': 'blocked'}))
+    assert cli.main(['launch', '--json']) == 2
+    assert calls[0]['consent'] == []
+
+
+def test_launch_rejects_duplicate_selector_before_sdk(monkeypatch, capsys):
+    monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('duplicate reached SDK'))
+    assert cli.main(['launch', '--target', 'auto', '--target', 'managed', '--json']) == 2
+    assert json.loads(capsys.readouterr().out)['issues'][0]['code'] == 'input_rejected'

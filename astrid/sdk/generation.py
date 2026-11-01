@@ -349,7 +349,7 @@ def _resolve_invoke_destination(
 
 
 def _validate_catalog_target_request(*, registry, candidate, mode, modality, inputs):
-    """Keep matrix/input validation ahead of qualification and target probes."""
+    """Keep matrix and input validation ahead of qualification and target probes."""
     from astrid.core.generation.preflight import validate_generation_request
     mode_spec = candidate.modes.get(mode)
     spec = mode_spec.backends.get('local') if mode_spec is not None else None
@@ -526,6 +526,27 @@ class GenerationFacade:
     def list(self, *, kind=None):
         from astrid.core.generation.listing import generation_rows
         return generation_rows(kind)
+
+    @_generation_boundary
+    def launch(self, *, target='auto', engine='comfyui', consent=(), timeout=10.0,
+               project_root=None):
+        """Launch/re-probe one selected human ComfyUI with fresh user_env consent.
+
+        Return the ordinary readiness envelope, including manual-start guidance
+        on failure. Never save consent or health, discover a fallback, or admit
+        a generation task. URL/env overrides resolve without prior launch facts.
+        """
+        from astrid.core.generation import targets
+        from astrid.core.generation.target_launch import launch_target
+
+        _generation_controls(engine=engine, consent=consent, max_usd=None, deadline=None)
+        if target == 'runpod':
+            raise GenerationInputError('launch requires a selected local human ComfyUI')
+        try:
+            selection = targets.resolve_target(target, repo=project_root)
+        except (ValueError, OSError) as exc:
+            raise GenerationInputError(str(exc)) from exc
+        return launch_target(selection, consent=consent, timeout=timeout).readiness
 
     @_generation_boundary
     def targets(self, *, target='auto', engine='comfyui', save=False, inputs=None,
