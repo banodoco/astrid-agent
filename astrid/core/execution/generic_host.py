@@ -9923,6 +9923,7 @@ class GenericPackHost:
             broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
             argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
             inherited_fds = ()
+            source_channel = None
             if _runtime_external_sources is not None:
                 record = (self._orchestrators.get(capability_id) if capability_kind == "orchestrator"
                           else self.capabilities.get(capability_id))
