@@ -2315,7 +2315,7 @@ class RemoteTasks(_RemoteFamily):
         """Publish a settled assembler result through its requester's commit outbox."""
         from .timeline._common import TimelineEditError
         from .timeline.assembly import commit_assembly
-        from .timeline.sync import CommitConflict
+        from .timeline.sync import CommitConflict, CommitRefused
 
         try:
             if (requester_session is None
@@ -2332,7 +2332,7 @@ class RemoteTasks(_RemoteFamily):
                 result["data"], receipt=CommandReceipt.from_dict(result["receipt"]) if result["receipt"] else None,
                 idempotency_key=idempotency_key,
             )
-        except CommitConflict as exc:
+        except (CommitConflict, CommitRefused) as exc:
             return DomainResult.failure(ErrorObject(**exc.failure), idempotency_key=idempotency_key)
         except WorkspaceClientError as exc:
             return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key)

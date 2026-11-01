@@ -1,6 +1,7 @@
-"""Requester render handoff; generated acceptance/admission remain transport fakes."""
+"""Requester render handoff, from guarded commit through completed render retrieval."""
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
@@ -12,7 +13,7 @@ from astrid.packs.rendering.shared.runtime_stitch import publish_authoring_propo
 from astrid.sdk.contracts import DomainResult
 from astrid.sdk.remote import RemoteTasks
 from astrid.sdk.timeline.assembly import read_assembly_proposal
-from astrid.sdk.timeline.capture import capture_move
+from astrid.sdk.timeline.capture import capture_move, capture_track_create
 from astrid.sdk.timeline.sync import TimelineSession
 from astrid.sdk.workspace_client import WorkspaceClientError
 from tests.sdk.test_timeline_assembly import DIGEST, _admit, _requester
@@ -268,71 +269,157 @@ def test_landed_peer_state_and_original_merge_spelling_survive_replay(tmp_path, 
 
 
 @pytest.mark.integration
-def test_requester_render_reaches_real_task_admission_after_commit(real_runtime, tmp_path, monkeypatch):
-    """The mounted requester path uses the real RemoteTasks admission method."""
+def test_requester_render_commits_exact_revision_settles_and_retrieves_over_real_daemon(
+        real_runtime, tmp_path):
+    """The requester route, render admission, settlement, and reads use the real daemon."""
     from tests.editing_conformance.test_commit_runtime_m1 import open_client
-    from tests.helpers.runtime import use_runtime, vendored_runtime_commit
+    from tests.helpers.runtime import executor_token, use_runtime, vendored_runtime_commit
+    from astrid.sdk.timeline import commit
+    from astrid.sdk.workspace_client import WorkspaceClient
 
-    runtime = use_runtime(commit=vendored_runtime_commit())
-    monkeypatch.syspath_prepend(str(runtime / "tests"))
-    from timeline_commit_film_fixture import build_film_fixture
-
-    fixture = build_film_fixture(tmp_path)
+    use_runtime(commit=vendored_runtime_commit())
     daemon = real_runtime(
-        fixture.duplicate_root, support_root=tmp_path / "support",
+        tmp_path / "realm", support_root=tmp_path / "support",
         commit=vendored_runtime_commit(), authoring_profile="astrid",
     )
+    service = daemon.service
+    project = service.create_project({"slug": "requester-render", "name": "Requester render"})["id"]
+    service.create_timeline(project, "film", idempotency_key="timeline")
+    timeline = service.get_project_timeline(project, "film")
+    target = {
+        "project_id": project,
+        "timeline_id": "film",
+        "base_revision_id": timeline["head_revision_id"],
+        "base_publication_id": timeline["head_publication_id"],
+    }
+    producer_capability = "fixture.requester-proposal"
+    producer_digest = commit._digest(producer_capability)
+    child_capability = "fixture.requester-input"
+    child_digest = commit._digest(child_capability)
+    service.register_capability({"capability_id": producer_capability, "definition_digest": producer_digest})
+    service.register_capability({"capability_id": child_capability, "definition_digest": child_digest})
+    service.register_executor(
+        {"executor_id": "proposal-worker", "capabilities": [producer_capability, child_capability]},
+        idempotency_key="proposal-worker",
+    )
+    children = []
+    for index in range(2):
+        child = service.create_task({
+            "project": project,
+            "capability_id": child_capability,
+            "capability_digest": child_digest,
+            "input_object_ids": [],
+            "spec": {"index": index},
+            "idempotency_key": f"input-{index}",
+        })
+        claimed = service.claim_next({
+            "executor_id": "proposal-worker",
+            "capability_ids": [child_capability],
+            "runtime_epoch": service.health()["runtime_epoch"],
+        }, idempotency_key=f"claim-input-{index}")
+        raw = commit._json({"index": index}).encode("utf-8")
+        service.settle_attempt(claimed["attempt_id"], {
+            **{key: claimed[key] for key in ("lease_id", "fence", "runtime_epoch")},
+            "outputs": [{
+                "name": "data",
+                "output_port": "data",
+                "kind": "object",
+                "filename": "data.json",
+                "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "size": len(raw),
+                "media_type": "application/json",
+                "durability": "durable",
+                "data_base64": base64.b64encode(raw).decode("ascii"),
+            }],
+        }, idempotency_key=f"settle-input-{index}")
+        children.append(child["task"]["id"])
+    admitted = service.create_task({
+        "project": project,
+        "capability_id": producer_capability,
+        "capability_digest": producer_digest,
+        "input_object_ids": [],
+        "idempotency_key": "proposal",
+        "spec": {
+            "runtime_dependencies": {
+                "publication": {"admitted_target": target},
+                "edges": [{
+                    "from_task_id": child,
+                    "to": "self",
+                    "requires_event": "task.succeeded",
+                    "fence": "runtime_task",
+                } for child in children],
+                "aggregation": {"kind": "ordered_cas_inputs"},
+            },
+            "outputs": {"authoring_proposal": {
+                "type": "file",
+                "artifact_type": "timeline/authoring-proposal",
+            }},
+        },
+    })
+    proposal_attempt = service.claim_next({
+        "executor_id": "proposal-worker",
+        "capability_ids": [producer_capability],
+        "runtime_epoch": service.health()["runtime_epoch"],
+    }, idempotency_key="claim-proposal")
+    assert proposal_attempt["task_id"] == admitted["task"]["id"]
+    document = service._timeline_commits()[0].revision_closure(
+        project, "film", target["base_revision_id"]
+    )
+    proposal = {
+        "schema_version": 1,
+        "producer": {
+            "task_id": proposal_attempt["task_id"],
+            "attempt_id": proposal_attempt["attempt_id"],
+            "executor_id": "proposal-worker",
+            "fence": proposal_attempt["fence"],
+            "runtime_epoch": proposal_attempt["runtime_epoch"],
+        },
+        "admitted_target": target,
+        "rationale": "Requester guarded proposal",
+        "commands": [capture_track_create(
+            commit.bundle_from_document(document), "parent", {"id": "proposed", "kind": "visual"}
+        )],
+    }
+    proposal["proposal_digest"] = commit._digest(proposal)
+    proposal_raw = commit._json(proposal).encode("utf-8")
+    service.settle_attempt(proposal_attempt["attempt_id"], {
+        **{key: proposal_attempt[key] for key in ("lease_id", "fence", "runtime_epoch")},
+        "outputs": [{
+            "name": "authoring_proposal",
+            "output_port": "authoring_proposal",
+            "kind": "object",
+            "filename": "proposal.json",
+            "digest": "sha256:" + hashlib.sha256(proposal_raw).hexdigest(),
+            "size": len(proposal_raw),
+            "media_type": "application/json",
+            "durability": "durable",
+            "data_base64": base64.b64encode(proposal_raw).decode("ascii"),
+        }],
+    }, idempotency_key="settle-proposal")
     daemon.service.register_capability({
         "capability_id": "rendering.render", "definition_digest": DIGEST, "status": "ready",
     })
     client = open_client(daemon)
     from astrid.sdk.remote import RemoteTasks
-    from astrid.sdk.workspace_client import WorkspaceClient
 
     assert isinstance(client._remote._transport, WorkspaceClient)
     assert isinstance(client.tasks, RemoteTasks)
     session = TimelineSession.open(
-        fixture.project_id, fixture.timeline_id, client=client,
+        project, "film", client=client,
         outbox_path=tmp_path / "real-render-outbox.json",
     )
-    state = session._state()
-    bundle = session._bundle(state)
-    clip = bundle["parent"]["clips"][0]
-    command = capture_move(bundle, f"parent/clip:{clip['id']}", 2)
-    body = {
-        "api_version": 1, "project_id": fixture.project_id, "timeline_id": fixture.timeline_id,
-        "base_revision_id": state["base"]["revision_id"],
-        "base_publication_id": state["base"]["publication_id"],
-        "commands": [command], "label": "Real requester render control",
-        "steps": [{"id": "edit", "label": "Real requester render control", "intent": "control",
-                    "tags": [], "command_ordinals": [0], "patch": []}],
-        "merge": "atomic", "reads": [], "dry_run": False, "source": {"via": "python"},
-    }
-    proposal = {
-        "admitted_target": {"project_id": fixture.project_id, "timeline_id": fixture.timeline_id,
-                            **state["base"]},
-        "producer": {"attempt_id": "attempt"},
-    }
-
-    def requester_commit(_attempt_id, _proposal, *, idempotency_key, **_options):
-        result = client.timelines.commit(
-            fixture.project_id, fixture.timeline_id, body, idempotency_key=idempotency_key,
-        )
-        assert result.ok, result.as_dict()
-        return result
-
-    client.tasks.publish_timeline_render = requester_commit
     first = publish_authoring_proposal(
-        client, proposal=proposal, timeline_id=fixture.timeline_id, expected_version=1,
+        client, proposal=proposal, timeline_id="film", expected_version=1,
         render_capability_digest=DIGEST, output_name="real.mp4", selector="rendering.ffmpeg",
         requester_session=session, idempotency_key="real-publish",
     )
     second = publish_authoring_proposal(
-        client, proposal=proposal, timeline_id=fixture.timeline_id, expected_version=1,
+        client, proposal=proposal, timeline_id="film", expected_version=1,
         render_capability_digest=DIGEST, output_name="real.mp4", selector="rendering.ffmpeg",
         requester_session=session, idempotency_key="real-publish",
     )
     assert first["render_task_id"] == second["render_task_id"]
+    assert first["data"]["publisher"] == "owner"
     assert daemon.service.store.conn.execute(
         "SELECT COUNT(*) FROM tasks WHERE capability='rendering.render'"
     ).fetchone()[0] == 1
@@ -340,3 +427,28 @@ def test_requester_render_reaches_real_task_admission_after_commit(real_runtime,
     assert task["spec"]["spec"]["params"]["selector"] == "rendering.ffmpeg"
     assert task["spec"]["spec"]["params"]["output_name"] == "real.mp4"
     assert task["spec"]["spec"]["params"]["canonical_revision"]["revision_id"] == first["data"]["accepted_revision_id"]
+    client._remote._transport.register_executor({
+        "executor_id": "render-worker",
+        "protocol": "workspace.v1",
+        "resource_keys": [],
+        "capabilities": [{
+            "capability_id": "rendering.render",
+            "definition_digest": DIGEST,
+            "status": "ready",
+        }],
+    }, idempotency_key="register-render-worker")
+    worker = WorkspaceClient(daemon.endpoint, executor_token(daemon, "render-worker"))
+    render_attempt = worker.claim_task(
+        executor_id="render-worker",
+        capability_ids=["rendering.render"],
+        idempotency_key="claim-render",
+    )
+    assert render_attempt["task_id"] == first["render_task_id"]
+    settled = worker.settle_attempt(render_attempt["attempt_id"], {
+        **{key: render_attempt[key] for key in ("lease_id", "fence", "runtime_epoch")},
+        "outputs": [],
+        "effect": None,
+    }, idempotency_key="settle-render")
+    assert settled["data"]["state"] == "succeeded"
+    retrieved = client.tasks.show(first["render_task_id"])
+    assert retrieved.ok and retrieved.data["state"] == "succeeded"
