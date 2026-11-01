@@ -839,10 +839,11 @@ class _HttpsOps:
 
     def job_observe_stopped(self, job_id: str, *, python: str = "python3") -> Mapping[str, Any]:
         from .preparation_custody import observe_preparation_job_command
+        from .worker_preparation import TargetObservationError
 
         code, stdout, _ = self.exec(observe_preparation_job_command(self.job_root, job_id, python=python), 30)
         if code != 0:
-            raise RemotePlacementError("exact preparation job stop remains uncertain")
+            raise TargetObservationError("exact preparation job stop remains uncertain")
         return json.loads(stdout)
 
 

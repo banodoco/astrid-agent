@@ -252,7 +252,7 @@ class PreparedRunPodTaskClient:
         if self._claim_handle_path is None:
             first = self._client.invoke_result(capability_id, kind=kind, **first_args)
         else:
-            from .worker_preparation import target_owner, replace_target_record
+            from .worker_preparation import replace_target_record, target_owner
 
             # Admission is an effect even if its acknowledgement is lost.
             # Preparation rollback must never infer "no task" from that loss.
@@ -376,7 +376,8 @@ def release_preparation(
     from .remote_placement import _HttpsOps, _read_token
     from .worker_owner import _run_sync
     from .worker_preparation import (
-        _release_exact_target_after_quiescence, unactivated_target_quiescence,
+        _release_exact_target_after_quiescence,
+        unactivated_target_quiescence,
     )
 
     path = Path(claim_handle_path).expanduser()

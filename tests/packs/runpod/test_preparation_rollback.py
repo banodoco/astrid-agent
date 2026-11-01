@@ -118,6 +118,8 @@ def prepared(tmp_path, monkeypatch):
             _validate_release_quiescence(saved["release_quiescence"], saved)
             state.deletes += 1
             state.present = False
+            if state.failure == "delete_reply":
+                return httpx.Response(503, request=request)
             return httpx.Response(204, request=request)
         if request.url.path == "/v1/networkvolumes":
             size = 101 if not state.present and state.failure == "volume" else 100
@@ -380,6 +382,142 @@ def test_release_fences_admission_and_job_launch(prepared):
     with target_owner(p.path), pytest.raises(TargetObservationError, match="excluded"):
         p.journal.job_start("echo should-never-run")
     assert p.requests == []
+
+
+def test_lost_launch_ack_still_cancels_the_write_ahead_job(prepared, monkeypatch):
+    p = prepared
+    _reserve(p)
+    original_send = httpx.Client.send
+
+    def lose_ack(client, request, **kwargs):
+        response = original_send(client, request, **kwargs)
+        if request.method == "POST" and request.url.path == "/jobs":
+            command = json.loads(request.content)["command"]
+            if "base64 -d" in command:
+                raise RuntimeError("controller lost the detached launch acknowledgement")
+        return response
+
+    with monkeypatch.context() as fault:
+        fault.setattr(httpx.Client, "send", lose_ack)
+        with target_owner(p.path), pytest.raises(RuntimeError, match="lost the detached"):
+            p.journal.job_start("sleep 60")
+    job_id = _read(p.path)["preparation_custody"]["jobs"][-1]["job_id"]
+    _wait(lambda: Path(p.ops.job_root, job_id, "pid").exists())
+    _failed(p)
+    result = _release(p)
+    _assert_proof(p, result)
+    assert result["release_quiescence"]["jobs"][-1]["job_id"] == job_id
+
+
+def test_cancel_ack_without_positive_group_stop_keeps_cleanup_pending(prepared, monkeypatch):
+    p = prepared
+    _reserve(p)
+    with target_owner(p.path):
+        started = p.journal.job_start("sleep 60")
+    _wait(lambda: Path(started["dir"], "pid").exists())
+    _failed(p)
+    original_send = httpx.Client.send
+
+    def false_cancel(client, request, **kwargs):
+        if request.method == "POST" and request.url.path == "/jobs":
+            body = json.loads(request.content)
+            if "kill -TERM --" in body["command"]:
+                headers = {key: value for key, value in request.headers.items() if key != "content-length"}
+                request = httpx.Request(request.method, request.url, headers=headers,
+                                        json={**body, "command": "true"})
+        return original_send(client, request, **kwargs)
+
+    try:
+        with monkeypatch.context() as fault:
+            fault.setattr(httpx.Client, "send", false_cancel)
+            with pytest.raises(TargetObservationError, match="job stop remains uncertain"):
+                _release(p)
+        current = _read(p.path)
+        assert current["state"] == "cleanup_pending"
+        assert current["reconciliation_required"] is True
+        assert "release_quiescence" not in current
+        assert p.requests == []
+        _assert_proof(p, _release(p))
+    finally:
+        p.ops.job_cancel(started["id"])
+
+
+def test_missing_job_observation_is_not_an_unactivated_proof(prepared):
+    p = prepared
+    # A launch intent whose outcome was lost cannot be called unstarted.
+    current = _read(p.path)
+    current["preparation_custody"]["jobs"].append({
+        "job_id": uuid.uuid4().hex, "command_sha256": "sha256:" + "b" * 64,
+    })
+    write_target_record(p.path, current)
+    _failed(p)
+    with pytest.raises(TargetObservationError, match="job stop remains uncertain"):
+        _release(p)
+    assert _read(p.path)["state"] == "cleanup_pending"
+    assert p.requests == []
+
+
+def test_lost_delete_reply_recovers_from_durable_proof_without_remote_transport(prepared):
+    p = prepared
+    _reserve(p)
+    _failed(p)
+    p.failure = "delete_reply"
+    with pytest.raises(RuntimeError, match="termination failed"):
+        _release(p)
+    checkpoint = _read(p.path)
+    assert checkpoint["state"] == "cleanup_pending"
+    assert checkpoint["release_quiescence"]["supervisor_stop"]["stopped"] is True
+    p.failure = None
+    # No token reference or remote ops: durable proof is the sole recovery input.
+    result = release_preparation(p.config, p.path, resume=True, verify_timeout_seconds=0)
+    _assert_proof(p, result)
+
+
+def test_rollback_never_stops_a_different_supervisor_owner(prepared):
+    p = prepared
+    _reserve(p)
+    original = _read(p.path)["preparation_custody"]["supervisor"]
+    marker = Path(original["identity"]["root"], ".astrid-engine/session/session.json")
+    assert _read(marker)["owner_id"] == original["owner_id"]
+    current = _read(p.path)
+    current["preparation_custody"]["supervisor"] = {**original, "owner_id": uuid.uuid4().hex}
+    write_target_record(p.path, current)
+    _failed(p)
+    try:
+        with pytest.raises(TargetObservationError, match="supervisor stop remains unresolved"):
+            _release(p)
+        assert _read(marker)["owner_id"] == original["owner_id"]
+        assert p.requests == []
+        assert "release_quiescence" not in _read(p.path)
+    finally:
+        current = _read(p.path)
+        current["preparation_custody"]["supervisor"] = original
+        write_target_record(p.path, current)
+    _assert_proof(p, _release(p))
+
+
+@pytest.mark.parametrize("field", ["jobs", "supervisor", "identity", "operation", "progress", "boolean"])
+def test_completed_preparation_proof_cannot_be_rebound_or_weakened(prepared, field):
+    p = prepared
+    _reserve(p)
+    _failed(p)
+    result = _release(p)
+    proof = result["release_quiescence"]
+    if field == "jobs":
+        proof["jobs"] = []
+        result["release_progress"]["preparation"]["jobs"] = []
+    elif field == "supervisor":
+        proof["supervisor_stop"]["owner_id"] = uuid.uuid4().hex
+    elif field == "identity":
+        proof["pod_id"] = "foreign-pod"
+    elif field == "operation":
+        result["ordinary_preparation"]["claim_operation_id"] = "foreign"
+    elif field == "progress":
+        result["release_progress"] = {}
+    else:
+        proof["supervisor_stop"]["stopped"] = 1
+    with pytest.raises(TargetObservationError):
+        _validate_release_quiescence(proof, result)
 
 
 def test_old_unactivated_proof_still_refuses_every_published_claim(prepared):
