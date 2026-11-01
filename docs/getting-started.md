@@ -30,6 +30,9 @@ For help, see [Troubleshooting](setup/troubleshooting.md).
 Astrid Runtime runs on this computer and owns workspace projects, media,
 timelines, tasks, and run records.
 
+For which model-generation routes run locally, use a provider, or require a
+RunPod worker, see the [platform and execution matrix](reference/where-things-run.md).
+
 ## Run everything on your computer
 
 After the official install above, ask your agent to follow the
