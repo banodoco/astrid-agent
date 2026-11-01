@@ -660,7 +660,7 @@ def _bootstrap_proof_valid(job: dict) -> bool:
             and claim.get("descriptor") == job.get("platform"))
 
 
-def _journal_is_accepted_preexisting(job: dict, journal: dict | None) -> bool:
+def _journal_is_accepted_preexisting(root: Path, job: dict, journal: dict | None) -> bool:
     """Recognize only the exact journal snapshot observed during acceptance."""
     if journal is None:
         return (job.get("prior_transaction_present") is False
@@ -668,8 +668,10 @@ def _journal_is_accepted_preexisting(job: dict, journal: dict | None) -> bool:
                 and job.get("prior_transaction_id") is None
                 and job.get("prior_transaction_sha256") is None)
     try:
-        encoded = json.dumps(journal, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    except (TypeError, ValueError):
+        if job.get("prior_transaction_hash_kind") != "raw-sha256/v1":
+            return False
+        encoded = (root / "update-transaction.json").read_bytes()
+    except OSError:
         return False
     digest = hashlib.sha256(encoded).hexdigest()
     return (job.get("prior_transaction_present") is True
@@ -1069,7 +1071,7 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
                                        disposition="confirmed-prior",
                                        ready_instance_id=ready_instance_id,
                                        ready_identity=ready_identity), False
-        if not _journal_is_accepted_preexisting(job, journal):
+        if not _journal_is_accepted_preexisting(root, job, journal):
             _busy("The unresolved update journal is new, missing, or unrelated to its accepted snapshot.")
         old = _validate_prebootstrap(root, job, data_root)
         expected = api.describe(job, _expected_worker_command(old, job))
@@ -1161,8 +1163,9 @@ def accept(request: dict) -> dict:
         if pending is None or isinstance(pending, dict):
             job["prior_transaction_present"] = pending is not None
             job["prior_transaction_id"] = pending.get("operation_id") if isinstance(pending, dict) else None
+            job["prior_transaction_hash_kind"] = "raw-sha256/v1"
             job["prior_transaction_sha256"] = (
-                hashlib.sha256(json.dumps(pending, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                hashlib.sha256(pending_path.read_bytes()).hexdigest()
                 if isinstance(pending, dict) else None)
         preferences = read_json(_selection_path()).get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
