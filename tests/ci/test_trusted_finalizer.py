@@ -134,6 +134,22 @@ class FinalizerTests(unittest.TestCase):
                 download.assert_called_once()
                 invoked.assert_called_once()
 
+    def test_completed_worker_death_invokes_aggregate_without_replaying_producers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            completed = p / 'completed.json'
+            completed.write_text(json.dumps([{'id': 'worker-1', 'state': 'worker-death'}]))
+            args = ['--status', str(p / 'status'), '--tuple', str(p / 'tuple'), '--ledger', str(p / 'ledger'),
+                    '--broker-root', str(p / 'broker'), '--freshness', str(p / 'freshness'),
+                    '--completed-producers', str(completed)]
+            def check(arguments):
+                receipt = json.loads(Path(arguments[arguments.index('--collection') + 1]).read_text())
+                self.assertEqual(receipt, {'collection': 'failure', 'prerequisites': 'failure'})
+                return 1
+            with mock.patch.object(finalizer.aggregate, 'main', side_effect=check) as invoked:
+                self.assertEqual(finalizer.main(args), 1)
+                invoked.assert_called_once()
+
     def test_failed_producer_writes_failed_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
