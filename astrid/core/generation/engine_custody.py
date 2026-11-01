@@ -285,7 +285,7 @@ class LinuxEngineServiceClient:
                     _send(channel, {"identity": self.identity, "operation": operation, "payload": payload,
                                     "remaining_seconds": _remaining(deadline)}, deadline)
                     # Keep the connection open while target deadline cleanup is verified.
-                    response = _receive(channel, deadline + _CLEANUP_SECONDS)
+                    response = _receive(channel, deadline if operation == "stop" else deadline + _CLEANUP_SECONDS)
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
                         or set(response) not in ({"identity", "result"}, {"identity", "error"},
                                                  {"identity", "error", "cleanup_failure"})):
@@ -322,9 +322,9 @@ class LinuxEngineServiceClient:
         self._request("stop", {}, deadline, start=False)
         # Successful explicit stop includes retirement of the ephemeral marker.
         while Path(self.control, "session.json").exists():
-            time.sleep(min(0.02, _remaining(deadline + _CLEANUP_SECONDS)))
+            time.sleep(min(0.02, _remaining(deadline)))
         if self._spawned is not None:
-            self._spawned.wait(timeout=_remaining(deadline + _CLEANUP_SECONDS))
+            self._spawned.wait(timeout=_remaining(deadline))
 
 
 class _Output:
@@ -389,7 +389,7 @@ class _Owned:
         try:
             terminate_tree(self.process, grace_seconds=0.1, cleanup_deadline=deadline)
             stage = "verify"
-            verify_tree_absent(self.process)
+            verify_tree_absent(self.process, deadline=deadline)
             for name in ("stdout", "stderr"):
                 output = getattr(self, name, None)
                 if output is None:
@@ -520,6 +520,9 @@ class _Supervisor:
         self.commands = []  # Retain uncertain handles; never reconstruct them from disk.
         self.stopping = threading.Event()
         self.finished = threading.Event()
+        self.finished_deadline = None
+        self.stop_deadlines = {}
+        self.stop_lock = threading.Lock()
         self.unresolved = False
         self.cleanup_failure = None
         self.work = threading.Lock()
@@ -574,21 +577,33 @@ class _Supervisor:
             raise
         self.commands.remove(owned)
 
+    def cleanup_deadline(self, deadline=None):
+        # An explicit stop also owns cleanup in an interrupted run/start thread.
+        with self.stop_lock:
+            if self.stop_deadlines:
+                return min(self.stop_deadlines.values())
+        return deadline if deadline is not None else time.monotonic() + _CLEANUP_SECONDS
+
     def run(self, value, deadline, channel):
         request = _command(value, deadline)
         started = time.monotonic()
         owned = self.spawn(request)
         timed_out = False
+        cleanup_deadline = deadline
         try:
             while owned.live():
                 try:
                     self.check(channel, deadline)
                 except DeadlineExceeded:
                     timed_out = True
+                    cleanup_deadline = None
                     break
                 time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+        except BaseException:
+            cleanup_deadline = None
+            raise
         finally:
-            self.drain(owned, time.monotonic() + _CLEANUP_SECONDS)
+            self.drain(owned, self.cleanup_deadline(cleanup_deadline))
         return asdict(CommandResult(None if timed_out else owned.process.returncode,
                       owned.stdout.text(), owned.stderr.text(), timed_out,
                       time.monotonic() - started, uuid.uuid4().hex,
@@ -631,9 +646,10 @@ class _Supervisor:
                         pass
             self.registry_names.clear()
 
-    def stop_engine(self):
+    def stop_engine(self, deadline=None):
+        deadline = self.cleanup_deadline(deadline)
         if self.engine is not None:
-            self.drain(self.engine, time.monotonic() + _CLEANUP_SECONDS)
+            self.drain(self.engine, deadline)
             self.engine = None
         self.clear_registry()
 
@@ -713,7 +729,7 @@ class _Supervisor:
                 or payload["poll_interval_seconds"] != self.recipe.health.poll_interval_seconds):
             raise EndpointOwnershipError("service request differs from bound recipe or owner")
         if self.engine is not None and not self.engine.live():
-            self.stop_engine()
+            self.stop_engine(deadline)
         if self.engine is None:
             # Availability is observational only. Never adopt or signal a port owner.
             with socket.socket() as probe:
@@ -739,10 +755,13 @@ class _Supervisor:
             return self.health(channel, deadline)
         return self.facts("owned")
 
-    def stop(self):
-        self.stop_engine()
+    def stop(self, deadline=None):
+        deadline = self.cleanup_deadline(deadline)
         for owned in list(self.commands):
-            self.drain(owned, time.monotonic() + _CLEANUP_SECONDS)
+            if owned is not self.engine:
+                self.drain(owned, deadline)
+        # Retire engine/registry only after every other owned drain is certified.
+        self.stop_engine(deadline)
 
     def connection(self, channel):
         operation = None
@@ -757,14 +776,18 @@ class _Supervisor:
             deadline = time.monotonic() + remaining
             operation = value["operation"]
             if operation == "stop":
-                self.stopping.set()
-            if not self.work.acquire(timeout=_remaining(deadline + _CLEANUP_SECONDS)):
+                with self.stop_lock:
+                    self.stop_deadlines[channel] = deadline
+                    self.stopping.set()
+            response_deadline = deadline if operation == "stop" else deadline + _CLEANUP_SECONDS
+            if not self.work.acquire(timeout=_remaining(response_deadline)):
                 raise CustodyUnresolved("active supervisor operation did not drain")
             engine_before = self.engine
             try:
                 if operation == "stop":
-                    self.stop()
+                    self.stop(deadline)
                     result = {"stopped": True}
+                    self.finished_deadline = deadline
                     self.finished.set()
                 else:
                     self.check(channel, deadline)
@@ -774,7 +797,7 @@ class _Supervisor:
                         result = self.service(operation, value["payload"], deadline, channel)
                     else:
                         raise RecipeValidationError("unsupported supervisor operation")
-                _send(channel, {"identity": self.identity, "result": result}, deadline + _CLEANUP_SECONDS)
+                _send(channel, {"identity": self.identity, "result": result}, response_deadline)
             except (OSError, EOFError):
                 if operation == "start" and self.engine is not engine_before:
                     self.stop_engine()
@@ -782,10 +805,6 @@ class _Supervisor:
             finally:
                 self.work.release()
         except BaseException as exc:
-            if operation == "stop" and not self.finished.is_set():
-                # Keep this live owner and its handles available for explicit
-                # recovery; a failed stop never retires its session marker.
-                self.stopping.clear()
             try:
                 response = {"identity": self.identity, "error": exc.code if isinstance(exc, EngineError)
                             else CustodyUnresolved.code}
@@ -795,6 +814,12 @@ class _Supervisor:
             except (OSError, EngineError):
                 pass
         finally:
+            if operation == "stop":
+                # Failed stops retain this live owner and its marker for recovery.
+                with self.stop_lock:
+                    self.stop_deadlines.pop(channel, None)
+                    if not self.finished.is_set() and not self.stop_deadlines:
+                        self.stopping.clear()
             channel.close()
 
 
@@ -845,7 +870,7 @@ def _serve(identity, recipe, lock_fd, token):
                     thread.join(timeout=_CLEANUP_SECONDS + 5)
                 if not any(t.is_alive() for t in threads):
                     with owner.work:
-                        owner.stop()
+                        owner.stop(owner.finished_deadline)
                         clean = True
                 if clean:
                     os.unlink("control.sock", dir_fd=fd)
