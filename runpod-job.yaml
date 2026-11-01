@@ -1,0 +1,117 @@
+repos:
+  astrid-agent: bb60de67c0651a2733a56fac85206c4123f62b5e
+cpu:
+  vcpu: 8
+max_minutes: 120
+setup:
+  - |
+      set -euo pipefail
+      PROOF_ROOT=/workspace/I-AG-CP2-ASSEMBLY-R1-proof
+      mkdir -p "$PROOF_ROOT/tmp" "$PWD/runpod-evidence" /workspace/out
+      trap 'status=$?; printf "%s\n" "$status" > runpod-evidence/payload-exit.txt; cp -a runpod-evidence/. /workspace/out/; exit "$status"' EXIT
+      export TMPDIR="$PROOF_ROOT/tmp"
+      python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+      python3 -m venv "$PROOF_ROOT/venv"
+      PROOF_PYTHON="$PROOF_ROOT/venv/bin/python"
+      "$PROOF_PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+      "$PROOF_PYTHON" -m pip install --disable-pip-version-check hatchling==1.33.0
+      git clone --filter=blob:none --no-checkout https://github.com/banodoco/astrid-runtime.git "$PROOF_ROOT/runtime"
+      git -C "$PROOF_ROOT/runtime" fetch --no-tags origin 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+      git -C "$PROOF_ROOT/runtime" checkout --detach 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+      test -z "$(git -C "$PROOF_ROOT/runtime" status --porcelain)"
+      "$PROOF_PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation "$PROOF_ROOT/runtime" "$PROOF_ROOT/runtime/packages/python" .
+      "$PROOF_PYTHON" -m pip freeze > runpod-evidence/environment.txt
+      uname -a > runpod-evidence/platform.txt
+      df -h . > runpod-evidence/disk.txt
+run:
+  - |
+      set -euo pipefail
+      PROOF_ROOT=/workspace/I-AG-CP2-ASSEMBLY-R1-proof
+      PROOF_PYTHON="$PROOF_ROOT/venv/bin/python"
+      export TMPDIR="$PROOF_ROOT/tmp"
+      export ASTRID_AGENT_CHECKOUT="$PWD"
+      export ASTRID_RUNTIME_CHECKOUT="$PROOF_ROOT/runtime"
+      test "$(git rev-parse HEAD)" = bb60de67c0651a2733a56fac85206c4123f62b5e
+      test "$(git rev-parse HEAD^1)" = c2b5abb3f76bddf16faf9479ec8884e405299cc9
+      test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+      git rev-parse HEAD > runpod-evidence/agent-head.txt
+      git rev-parse HEAD^1 > runpod-evidence/agent-parent.txt
+      git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
+      "$PROOF_PYTHON" --version > runpod-evidence/python.txt
+      "$PROOF_PYTHON" -m pytest --version > runpod-evidence/pytest.txt
+      "$PROOF_PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT" 2>&1 | tee runpod-evidence/vendor-check.txt
+      sha256sum runtime.lock.json artifacts.json astrid_runtime_client/*.py > runpod-evidence/generated-lock-hashes.txt
+      : > runpod-evidence/inner-exit-codes.txt
+      run_group() {
+        label="$1"
+        shift
+        set +e
+        "$@" 2>&1 | tee "runpod-evidence/${label}.log"
+        status=${PIPESTATUS[0]}
+        set -e
+        printf '%s=%s\n' "$label" "$status" | tee -a runpod-evidence/inner-exit-codes.txt
+        return 0
+      }
+      run_group r05 "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/r05.xml tests/test_ci_journey.py
+      run_group graph-roots "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/graph-roots.xml tests/sdk/test_timeline_commit_graph_roots.py
+      run_group correction "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/correction.xml \
+        tests/v10/test_timelines_create.py::test_remote_create_empty_creates_shell_then_empty_head \
+        tests/v10/test_domain_cli_projects_timelines.py::test_first_run_timeline_journey_uses_selection_recent_history_and_project_list \
+        tests/test_skills.py::test_timeline_main_skill_code_blocks_run_with_scratch_runtime \
+        tests/sdk/test_timeline_import_prepare.py::test_prepare_import_builds_fresh_children_and_target_transcript_ids \
+        tests/v10/test_domain_cli_projects_timelines.py::test_timelines_visualize_routes_public_sdk_and_normalizes_formats \
+        tests/v10/test_domain_cli_projects_timelines.py::test_timelines_visualize_forwards_filmstrip_options \
+        tests/v10/test_domain_cli_projects_timelines.py::test_projects_list_default_matches_explicit_json \
+        tests/sdk/test_timeline_restructure.py::test_split_stores_chapters_as_shots_and_music_and_crossers_on_the_film \
+        tests/sdk/test_timeline_restructure.py::test_restructure_refuses_what_would_change_the_render \
+        tests/sdk/test_timeline_restructure.py::test_split_routes_a_new_clip_by_placement_and_a_wall_crosser_to_the_film \
+        tests/packs/timeline/test_verbs_working_copy.py::test_show_as_sheet_prints_the_working_copy_sheet_with_a_banner \
+        'tests/packs/timeline/test_verbs_working_copy.py::test_publish_conflict_names_the_writer_and_offers_discard_first[astrid.editor.timeline.5fb2249e000000000000000000000000-the editor published 5fb2249e after your checkout (rev-0)]' \
+        'tests/packs/timeline/test_verbs_working_copy.py::test_publish_conflict_names_the_writer_and_offers_discard_first[authoring-parent-revision-38cecaa5ffffffffffffffffffffffff-someone published 38cecaa5 after your checkout (rev-0)]'
+      run_group installed-schema "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/installed-schema.xml tests/test_installer_installed_schema.py
+      run_group vendor-lock "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/vendor-lock.xml tests/test_vendor_lock.py
+      status_of() { awk -F= -v label="$1" '$1 == label { value=$2 } END { print value }' runpod-evidence/inner-exit-codes.txt; }
+      unexpected=0
+      for label in r05 correction installed-schema vendor-lock; do
+        value="$(status_of "$label")"
+        if [ "$value" != 0 ]; then
+          printf 'unexpected nonzero %s=%s\n' "$label" "$value" >&2
+          unexpected=1
+        fi
+      done
+      graph_status="$(status_of graph-roots)"
+      if [ "$graph_status" != 1 ]; then
+        printf 'expected graph-roots=1 for the admitted node, got %s\n' "$graph_status" >&2
+        unexpected=1
+      fi
+      set +e
+      "$PROOF_PYTHON" - <<'PY' | tee runpod-evidence/runtime-alias-ledger.txt
+      import xml.etree.ElementTree as ET
+
+      root = ET.parse('runpod-evidence/graph-roots.xml').getroot()
+      failures = []
+      for case in root.iter('testcase'):
+          for child in case:
+              if child.tag in {'failure', 'error'}:
+                  failures.append((case.attrib.get('classname', ''), case.attrib.get('name', ''), child.text or '', child.attrib.get('message', '')))
+      expected_name = 'test_authenticated_created_child_stages_reload_inverse_redo_exact_closure'
+      expected_message = 'provider occurrence alias is outside its boundary'
+      assert len(failures) == 1, failures
+      classname, name, body, message = failures[0]
+      assert name == expected_name, failures[0]
+      assert expected_message in body or expected_message in message, failures[0]
+      print(f'BASE-IDENTICAL KNOWN FAILURE: {classname}::{name}')
+      print(expected_message)
+      PY
+      ledger_status=${PIPESTATUS[0]}
+      set -e
+      printf 'runtime-alias-ledger=%s\n' "$ledger_status" | tee -a runpod-evidence/inner-exit-codes.txt
+      if [ "$ledger_status" != 0 ]; then
+        unexpected=1
+      fi
+      find runpod-evidence -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > runpod-evidence/SHA256SUMS
+      if [ "$unexpected" -ne 0 ]; then
+        exit 1
+      fi
+artifacts:
+  - runpod-evidence/**
