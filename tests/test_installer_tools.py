@@ -1,7 +1,6 @@
-"""Use qualified PATH media tools or the pinned archive, with recorded selection."""
+"""Install manifest-pinned media tools into the managed environment."""
 
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -84,7 +83,7 @@ def harness(tmp_path, monkeypatch, *, availability="qualified"):
             name = Path(executable).stem
             if host and availability == "unidentifiable":
                 return "unknown tool"
-            return f"{name} version {'6.1.2-system' if host else '7.0.2-static'} Copyright test"
+            return f"{name} version {'7.1.1' if host else '7.0.2-static'} Copyright test"
         if args == ["-hide_banner", "-encoders"]:
             encoders = tools.ENCODERS - ({"libopus"} if host and availability == "missing_encoder" else set())
             return "\n".join(f" V..... {name} encoder" for name in encoders)
@@ -103,25 +102,28 @@ def harness(tmp_path, monkeypatch, *, availability="qualified"):
     return root, ffmpeg, ffprobe, other, downloads, calls, run
 
 
-def test_qualified_path_media_tools_are_selected_and_recorded(tmp_path, monkeypatch):
+def test_qualified_path_media_tools_cannot_override_manifest_pin(tmp_path, monkeypatch):
     root, ffmpeg, ffprobe, other, downloads, calls, run = harness(tmp_path, monkeypatch)
+    assert run([ffmpeg, "-version"]).startswith("ffmpeg version 7.1.1")
+    assert run([ffprobe, "-version"]).startswith("ffprobe version 7.1.1")
 
     env = tools.install_tools(manifest(), root, TARGET, run)
 
-    assert downloads == ["https://example.invalid/bun.zip", "https://example.invalid/node.zip"]
-    assert env["ASTRID_FFMPEG_EXECUTABLE"] == str(ffmpeg)
-    assert env["ASTRID_FFPROBE_EXECUTABLE"] == str(ffprobe)
-    assert env["ASTRID_INSTALL_FFMPEG_SOURCE"] == "path"
-    assert env["ASTRID_INSTALL_FFMPEG_VERSION"] == "6.1.2-system"
-    assert env["ASTRID_INSTALL_FFPROBE_VERSION"] == "6.1.2-system"
+    downloaded_ffmpeg = root / "ffmpeg" / "bundle" / ("ffmpeg" + EXE_SUFFIX)
+    downloaded_ffprobe = root / "ffmpeg" / "bundle" / ("ffprobe" + EXE_SUFFIX)
+    assert downloads == [f"https://example.invalid/{name}.zip" for name in ("bun", "node", "ffmpeg")]
+    assert env["ASTRID_FFMPEG_EXECUTABLE"] == str(downloaded_ffmpeg)
+    assert env["ASTRID_FFPROBE_EXECUTABLE"] == str(downloaded_ffprobe)
+    assert env["ASTRID_INSTALL_FFMPEG_SOURCE"] == "download"
+    assert env["ASTRID_INSTALL_FFMPEG_VERSION"] == "7.0.2-static"
+    assert env["ASTRID_INSTALL_FFPROBE_VERSION"] == "7.0.2-static"
     path = env["PATH"].split(os.pathsep)
-    assert str(ffmpeg.parent) in path and str(ffprobe.parent) in path
-    assert shutil.which("ffmpeg", path=env["PATH"]) == str(ffmpeg)
-    assert shutil.which("ffprobe", path=env["PATH"]) == str(ffprobe)
+    assert downloaded_ffmpeg.is_relative_to(root)
+    assert downloaded_ffprobe.is_relative_to(root)
+    assert str(ffmpeg.parent) not in path and str(ffprobe.parent) not in path
     assert str(other) not in path
-    assert (str(ffmpeg), ["-hide_banner", "-encoders"]) in calls
-    assert (str(ffmpeg), ["-hide_banner", "-filters"]) in calls
-    assert not (root / "ffmpeg").exists()
+    assert (str(downloaded_ffmpeg), ["-hide_banner", "-encoders"]) in calls
+    assert (str(downloaded_ffmpeg), ["-hide_banner", "-filters"]) in calls
 
 
 def test_generated_service_environment_uses_utf8_stdio(tmp_path, monkeypatch):
@@ -132,7 +134,7 @@ def test_generated_service_environment_uses_utf8_stdio(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("availability", ["missing", "missing_ffprobe", "missing_encoder", "missing_filter",
                                          "broken_ffprobe", "unidentifiable"])
-def test_absent_or_unqualified_media_tools_download_pinned_fallback(tmp_path, monkeypatch, availability):
+def test_ambient_media_tools_never_change_the_pinned_download(tmp_path, monkeypatch, availability):
     root, host_ffmpeg, host_ffprobe, _other, downloads, calls, run = harness(tmp_path, monkeypatch, availability=availability)
 
     env = tools.install_tools(manifest(), root, TARGET, run)
