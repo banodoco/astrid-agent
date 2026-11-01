@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.core.generation.backends.vibecomfy_workflow import VibeComfyWorkflowBackend
+from astrid.core.contracts.managed_generation_result import validate_evidence_reference
 from tests.core.generation.test_producer_result_recovery import compiled, envelope
 from tests.packs.vibecomfy.test_local_server_run import comfy  # noqa: F401
 
@@ -103,7 +104,8 @@ def test_native_failure_writes_known_envelope_with_honest_partial_evidence(
     assert payload['evidence']['transport'] == transport
     assert all(payload['evidence']['producer'][key] == value for key, value in producer.items())
     settings = payload['inputs']['effective_settings']
-    assert Path(settings['path']).read_bytes() == canonical_bytes(record.to_dict()['api_projection'])
+    validate_evidence_reference(settings, field='inputs.effective_settings', staging_root=out)
+    assert (out / settings['path']).read_bytes() == canonical_bytes(record.to_dict()['api_projection'])
     assert settings['sha256'] == record.api_digest
     assert len(payload['outputs']) == (1 if partial == 'valid' else 0)
     if payload['outputs']:
@@ -122,11 +124,14 @@ def test_real_attached_settings_match_exact_http_prompt(comfy, tmp_path):
         task_identity='task-1', attempt_identity='attempt-1', profile_id='local_server',
         comfy_url=comfy.url, workflow_input_bindings={'seed': 123})
     payload = json.loads(result.managed_generation_result_path.read_bytes())
+    producer_root = result.managed_generation_result_path.parent
     ref = payload['inputs']['effective_settings']
-    assert Path(ref['path']).read_bytes() == canonical_bytes(comfy.prompts[0])
+    validate_evidence_reference(ref, field='inputs.effective_settings', staging_root=producer_root)
+    assert (producer_root / ref['path']).read_bytes() == canonical_bytes(comfy.prompts[0])
     assert ref['sha256'] == hashlib.sha256(canonical_bytes(comfy.prompts[0])).hexdigest()
     assert payload['inputs']['source']['sha256'] == hashlib.sha256(original).hexdigest()
-    assert Path(payload['inputs']['source']['path']).read_bytes() == original
+    validate_evidence_reference(payload['inputs']['source'], field='inputs.source', staging_root=producer_root)
+    assert (producer_root / payload['inputs']['source']['path']).read_bytes() == original
     assert all(key in payload['evidence']['producer'] for key in ('engine', 'entry', 'models', 'versions', 'provider', 'build'))
     assert all(key in payload['evidence']['transport'] for key in ('target', 'execution_binding', 'failure', 'cancel'))
 
@@ -143,9 +148,11 @@ def test_real_attached_failure_retains_verified_downloads(comfy, tmp_path, monke
         VibeComfyWorkflowBackend().workflow(comfy.workflow, out,
             task_identity='task-1', attempt_identity='attempt-1', profile_id='local_server', comfy_url=comfy.url)
     payload = json.loads(caught.value.managed_generation_result_path.read_bytes())
+    producer_root = Path(caught.value.managed_generation_result_path).parent
     assert len(payload['outputs']) == 1
     ref = payload['inputs']['effective_settings']
-    assert Path(ref['path']).read_bytes() == canonical_bytes(comfy.prompts[0])
+    validate_evidence_reference(ref, field='inputs.effective_settings', staging_root=producer_root)
+    assert (producer_root / ref['path']).read_bytes() == canonical_bytes(comfy.prompts[0])
     assert payload['outcomes']['execution']['status'] == 'failed'
     assert payload['outcomes']['verification']['status'] == 'failed'
     assert payload['evidence']['transport']['cancel'] is None

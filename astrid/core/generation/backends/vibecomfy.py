@@ -2444,7 +2444,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 except BaseException as exc:
                     try:
                         bind_executed_settings(exc, settings_ref, task_id=task_identity,
-                                               attempt_id=attempt_identity)
+                                               attempt_id=attempt_identity, staging_root=destination)
                     except Exception as evidence_error:
                         exc.add_note(f'Could not bind executed-settings evidence: {evidence_error}')
                     raise
@@ -2454,7 +2454,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 else:
                     os.environ[environment_key] = previous_environment_configuration
             result = bind_executed_settings(result, settings_ref, task_id=task_identity,
-                                           attempt_id=attempt_identity)
+                                           attempt_id=attempt_identity, staging_root=destination)
             outputs = self._collect_outputs(result, destination)
             self._last_run_result = result
             return outputs
