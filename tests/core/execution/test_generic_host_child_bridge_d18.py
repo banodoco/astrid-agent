@@ -1015,6 +1015,9 @@ def world(tmp_path, monkeypatch):
                 data = {"task": service._task_resource(service.create_task(
                     {**payload, "idempotency_key": key}, enforce_readiness=True))}
                 mutation = True
+            elif parts[2] == "tasks" and len(parts) == 5 and parts[4] == "cancel" and method == "POST":
+                data = service.cancel_task_canonical(parts[3], payload, idempotency_key=key, identity=identity)
+                mutation = True
             elif parts[2] == "tasks":
                 data = service.managed_output_page(parts[3]) if len(parts) == 5 else service._task_resource(service.task(parts[3]))
             elif parts[2] == "managed-outputs":
@@ -3366,6 +3369,7 @@ def _real_unacknowledged_batch(world, monkeypatch, url, state_bytes):
 @pytest.mark.parametrize("end", ["cancel", "expiry", "restart"])
 def test_actual_human_review_acknowledged_batch_recovers_and_settles(world, monkeypatch, end):
     from concurrent.futures import ThreadPoolExecutor
+    from runtime_protocol.errors import LeaseError
 
     _real_review_fixture(world)
     source_host, launched, processes = _real_receiver_host(world, monkeypatch, "actual-source")
@@ -3413,7 +3417,19 @@ def test_actual_human_review_acknowledged_batch_recovers_and_settles(world, monk
             # A verified execution binding can retain a running task while
             # Runtime contains uncertain placement. The normal lease pump
             # observes the expired/stale attempt and stops this owned process.
-            assert source_future.result(timeout=8)["status"] == "cancelled"
+            if end == "cancel":
+                assert source_future.result(timeout=8)["status"] == "cancelled"
+            else:
+                # Lost authority is refused; containment cannot fabricate
+                # Runtime cancellation under an expired attempt fence.
+                with pytest.raises((HostError, LeaseError)) as stopped:
+                    source_future.result(timeout=8)
+                allowed = {"execution lease lost"}
+                if end == "restart":
+                    allowed.add("executor belongs to a stale runtime epoch")
+                assert str(stopped.value) in allowed
+            assert all(process.poll() is not None for process in processes)
+            assert not source_host._active_processes
             with pytest.raises(ChildBridgeError):
                 old_bridge._live()
             assert old_bridge._revoked.is_set()
@@ -3433,7 +3449,15 @@ def test_actual_human_review_acknowledged_batch_recovers_and_settles(world, monk
                     world.service.cancel_task_canonical(world.claim["task_id"], {}, idempotency_key="cleanup-real-source-parent")
                 source_future.result(timeout=8)
             source_host.shutdown()
-        assert source_future.result(timeout=8)["status"] == "cancelled"
+        if end == "cancel":
+            assert source_future.result(timeout=8)["status"] == "cancelled"
+        else:
+            with pytest.raises((HostError, LeaseError)) as stopped:
+                source_future.result(timeout=8)
+            allowed = {"execution lease lost"}
+            if end == "restart":
+                allowed.add("executor belongs to a stale runtime epoch")
+            assert str(stopped.value) in allowed
 
         fresh = RuntimeProtocolClient("http://127.0.0.1:1", SECRET)
         from astrid_runtime_client import WorkspaceClient
