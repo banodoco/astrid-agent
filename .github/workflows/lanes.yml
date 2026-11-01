@@ -155,7 +155,13 @@ jobs:
 
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
-        run: rev=$(python3 scripts/vibecomfy_pin.py) && echo "revision=$rev" >> "$GITHUB_OUTPUT"
+        run: |
+          rev="$(python3 -c 'from astrid.core.generation.engine_recipe import engine_source_revision; print(engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy"))')"
+          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
+            exit 1
+          fi
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
 
       - name: Check out VibeComfy at the pinned engine revision
         uses: actions/checkout@v4
@@ -260,7 +266,13 @@ jobs:
 
       - name: Read the pinned VibeComfy revision
         id: vibecomfy-pin
-        run: rev=$(python3 scripts/vibecomfy_pin.py) && echo "revision=$rev" >> "$GITHUB_OUTPUT"
+        run: |
+          rev="$(python3 -c 'from astrid.core.generation.engine_recipe import engine_source_revision; print(engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy"))')"
+          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
+            exit 1
+          fi
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
 
       - name: Check out VibeComfy at the pinned engine revision
         uses: actions/checkout@v4
