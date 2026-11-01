@@ -101,10 +101,12 @@ def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
         declared = _declared_output_count(sealed)
     else:
         return
-    if declared != 1:
-        shown = "an undeterminable number of" if declared is None else str(declared)
+    # Refuse only when more than one final sink is declared. Zero or undeclared
+    # keeps VibeComfy's legacy full-output map, and extra undeclared outputs still
+    # fail loudly at host harvest.
+    if declared is not None and declared > 1:
         raise generation_error(
-            ValueError(f"this workflow produces {shown} outputs; Phase 1 supports exactly one"),
+            ValueError(f"this workflow produces {declared} outputs; Phase 1 supports exactly one"),
             code="unsupported_output_cardinality", details={"field": "workflow"},
         )
 

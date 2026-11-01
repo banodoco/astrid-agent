@@ -116,3 +116,12 @@ def test_companion_less_workflow_is_not_refused_by_the_cardinality_check(tmp_pat
         GenerationFacade().workflow(workflow=workflow, client=_FakeRuntime(), dry_run=True)
     except Exception as exc:  # noqa: BLE001 - only the cardinality refusal is forbidden here
         assert "Phase 1 supports exactly one" not in str(exc)
+
+
+def test_declared_two_sinks_is_refused_with_no_task_admitted(tmp_path):
+    message, runtime = _refuse({"outputs": [
+        {"node_id": "9", "output_type": "SaveImage"},
+        {"node_id": "10", "output_type": "SaveVideo"},
+    ]}, tmp_path)
+    assert "produces 2 outputs; Phase 1 supports exactly one" in message
+    assert runtime.tasks.admitted == []
