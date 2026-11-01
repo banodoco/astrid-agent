@@ -472,7 +472,14 @@ def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None) -> A
         )
     if retain_source is not None:
         retain_source(template_path_resolved.name, original)
-    return workflow_from_ready(canonical_id, _discovery=discovery)
+    workflow = workflow_from_ready(canonical_id, _discovery=discovery)
+    if canonical_id == 'edit/qwen_image_2_1_turbo_edit':
+        # Keep the pinned source intact. Some materialized edit graphs omit
+        # this required native loader widget; default is the authored value.
+        for node in workflow.runtime_nodes().values():
+            if node.class_type == 'UNETLoader':
+                node.inputs.setdefault('weight_dtype', 'default')
+    return workflow
 
 
 def _catalog_alternative_is_executable(spec: BackendSpec, roles: Mapping[str, str],
@@ -733,6 +740,9 @@ class VibeComfyBackend(BackendAdapter):
 
         if plan is not None:
             _bind_target_model_roles(wf, backend_spec, plan["roles"])
+        if target_schema is not None:
+            from astrid.core.generation.asset_gaps import require_workflow_assets
+            require_workflow_assets(wf, observed, entry.id)
 
         unbound_inputs = getattr(wf, "metadata", {}).get("unbound_inputs", {})
         if isinstance(unbound_inputs, dict):

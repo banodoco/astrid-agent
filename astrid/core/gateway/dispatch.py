@@ -78,7 +78,7 @@ def _dispatch_skills(args: list[str]) -> int:
 
 
 def _dispatch_generate(args: list[str]) -> int:
-    if args and args[0] in {"image", "video"}:
+    if args and args[0] in {"image", "video", "align", "-h", "--help"}:
         from astrid.core.generation.cli import main
     else:
         from astrid.core.generation.listing import main

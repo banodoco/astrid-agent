@@ -967,6 +967,7 @@ class GenerationFacade:
             from astrid.core.generation.preflight import runpod_generation_owner
             runpod_owner = runpod_generation_owner(controls.get('client'))
         target_client = select_generation_target(target, repo=controls.get("project_root"),
+            entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id'),
             **({'runpod_owner': runpod_owner} if runpod_owner is not None else {}))
         backend = VibeComfyBackend(target_client=target_client)
 
