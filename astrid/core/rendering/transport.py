@@ -161,6 +161,19 @@ class CommandTransport:
             )
 
         child_env = _build_environment(env)
+        from astrid.core.rendering._schema_observation import FD_ENV, RENDER_ENV, RUN_ENV, observation_context
+
+        child_env.pop(FD_ENV, None)
+        child_env.pop(RUN_ENV, None)
+        child_env.pop(RENDER_ENV, None)
+        observation_fds: tuple[int, ...] = ()
+        if verb == "render":
+            observation = observation_context(os.environ.get(RUN_ENV), os.environ.get(FD_ENV))
+            if observation is not None:
+                child_env[RUN_ENV], fd = observation
+                child_env[FD_ENV] = str(fd)
+                child_env[RENDER_ENV] = "1"
+                observation_fds = (fd,)
         # Progress remains a host-owned retained-attempt file. Request data
         # and arbitrary environment overlays cannot nominate another path.
         inherited_progress = os.environ.get("ASTRID_PROGRESS_PATH")
@@ -213,6 +226,7 @@ class CommandTransport:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                pass_fds=observation_fds,
                 text=True,
                 encoding="utf-8",
                 errors="replace",

@@ -548,15 +548,28 @@ def _validate_shared_timeline(config: Any) -> None:
     strict-independent in the shared TimelineConfig contract, so ``strict`` is
     intentionally not threaded through here.
     """
-    validator = _shared_timeline_validator()
-    if ASTRID_TIMELINE_SCHEMA_PYTHONPATH in os.environ:
-        # Installed admission remains bound to the exact pinned file even
-        # after the compiled validator has been cached.
-        if validator.schema != load_vendored_timeline_schema():
+    configured = os.environ.get(ASTRID_TIMELINE_SCHEMA_PYTHONPATH)
+    schema = origin = None
+    from astrid.core.rendering._schema_observation import FD_ENV, RENDER_ENV, RUN_ENV, observation_context
+
+    observing = (os.environ.get(RENDER_ENV) == "1"
+                 and observation_context(os.environ.get(RUN_ENV), os.environ.get(FD_ENV)) is not None)
+    if configured is not None and observing:
+        from astrid.core.rendering._local_schema import load_verified_schema_with_origin
+
+        schema, origin = load_verified_schema_with_origin(Path(__file__).absolute().parents[3], configured)
+        validator = jsonschema.validators.validator_for(schema)(schema)
+    else:
+        validator = _shared_timeline_validator()
+        if configured is not None and validator.schema != load_vendored_timeline_schema():
             raise ValueError("installed timeline validator differs from verified schema")
     error = jsonschema.exceptions.best_match(validator.iter_errors(config))
     if error is not None:
         raise error
+    if schema is not None and origin is not None:
+        from astrid.core.rendering._schema_observation import emit_schema_consumed
+
+        emit_schema_consumed(schema, origin)
 
 
 def canonical_empty_timeline() -> TimelineConfig:
