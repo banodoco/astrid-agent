@@ -96,6 +96,7 @@ def release1_index(slot: str = "direct-linux") -> dict:
     candidate = copy.deepcopy(PROVISIONAL_CANDIDATE)
     direct = contract["mode"] == "direct"
     receipt = {
+        "schema_version": 2,
         "receipt_kind": "release1-installed-lifecycle",
         "job_id": slot,
         "mode": contract["mode"],
@@ -112,11 +113,21 @@ def release1_index(slot: str = "direct-linux") -> dict:
         "installed_tuple": {name: candidate[name] for name in ("app", "agent", "runtime")},
         "import_origins": {"runtime": "/owned/runtime"},
         "service_manager_prerequisite": (
-            {"required": True, "outcome": "pass", "manager": "native", "version": "1", "foreground_fallback": False}
+            {
+                "required": True,
+                "outcome": "pass",
+                "manager": native.MANAGERS[contract["os"]],
+                "version": "1",
+                "foreground_fallback": False,
+            }
             if direct else
             {"required": False, "outcome": "explicit-owner", "managed_by": "pinokio", "foreground_fallback": False}
         ),
-        "service_manager": {"manager": "native", "foreground_fallback": False},
+        "service_manager": {
+            "manager": native.MANAGERS[contract["os"]],
+            "version": "1",
+            "foreground_fallback": False,
+        },
         "release_transition": {"from": 0, "to": 1, "harness_override": "frozen-release0-direct-to-release1"},
         "release0_fixture": {
             "fixture_sums_sha256": failure.RELEASE0_SUMS_SHA256,
@@ -150,7 +161,7 @@ def m4_5_index(scenario_id: str = "release2-install-line-direct-linux") -> dict:
         "os_build": runner["runner_os"] + "-shape-only",
         "service_manager_prerequisite": {"required": True, "outcome": "pass", "manager": runner["manager"], "version": "shape-only", "foreground_fallback": False},
         "semantic_data": {"identical": True, "before_sha256": "a" * 64, "after_sha256": "a" * 64},
-        "checks": {name: "pass" for name in ("release", "marker", "service", "health", "semantic_data", "task_settled", "one_runtime", "unrelated_sentinel", "install_line")},
+        "checks": {name: "pass" for name in ("release", "marker", "service", "health", "semantic_data", "task_settled", "one_runtime", "unrelated_sentinel")},
         "controls": [],
         "trigger": {"channel": "install-line", "entrypoint": "public-bootstrap", "update_flag": True, "manifest_sha256": release2.STAND_IN_MANIFEST_SHA256, "root_bound": True, "data_root_bound": True},
         "actions": [],
@@ -177,6 +188,8 @@ def m4_5_index(scenario_id: str = "release2-install-line-direct-linux") -> dict:
             },
         }
         receipt["checks"]["pinokio_update"] = "pass"
+    else:
+        receipt["checks"]["install_line"] = "pass"
     return {"scenario_id": scenario_id, "files": [_entry("journey-result.json", receipt)]}
 
 
@@ -295,6 +308,28 @@ def test_parsers_reject_undeclared_fields(factory, parser) -> None:
     index["files"][0]["json"]["not_declared_by_contract"] = True
     _parsed, errors = parser(index)
     assert any("unknown field" in error for error in errors)
+
+
+def test_release1_parser_requires_schema_kind_full_r0_binding_and_native_manager_identity() -> None:
+    index = release1_index()
+    receipt = index["files"][0]["json"]
+    del receipt["schema_version"]
+    receipt["release0_fixture"]["bootstrap_sha256"] = {}
+    receipt["service_manager"]["manager"] = "foreground-process"
+    _parsed, errors = observations.parse_release1_evidence(index)
+    assert any("receipt.schema_version" in error for error in errors)
+    assert any("release-0 provenance" in error for error in errors)
+    assert any("direct service ownership" in error for error in errors)
+
+
+def test_m4_5_parser_rejects_nested_unknown_or_duplicate_check_shapes() -> None:
+    index = m4_5_index()
+    receipt = index["files"][0]["json"]
+    receipt["trigger"]["forged"] = True
+    receipt["checks"]["duplicate-claim"] = "pass"
+    _parsed, errors = observations.parse_m4_5_evidence(index)
+    assert any("receipt.trigger: unknown field" in error for error in errors)
+    assert any("receipt.checks: unknown field" in error for error in errors)
 
 
 def test_m4_6_parser_rejects_sidecar_mismatch_and_malformed_observation() -> None:

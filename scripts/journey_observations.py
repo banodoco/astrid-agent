@@ -588,6 +588,7 @@ def _release1_errors(receipt: Mapping[str, object], candidate: Mapping[str, obje
         return [*errors, str(exc)]
     expected_os, expected_image = failure.RUNNER_PROVENANCE[contract["runner"]][1:]
     for field, expected in (
+        ("schema_version", 2),
         ("receipt_kind", "release1-installed-lifecycle"),
         ("job_id", job_id),
         ("mode", contract["mode"]),
@@ -636,18 +637,32 @@ def _release1_errors(receipt: Mapping[str, object], candidate: Mapping[str, obje
     if contract["mode"] == "direct":
         if (
             owner.get("required") is not True or owner.get("outcome") != "pass"
+            or owner.get("manager") != native.MANAGERS[contract["os"]]
             or not isinstance(owner.get("version"), str) or not owner["version"].strip()
             or owner.get("foreground_fallback") is not False
         ):
             errors.append("receipt: native service-manager prerequisite did not pass")
         manager = receipt.get("service_manager")
-        if not isinstance(manager, dict) or manager.get("foreground_fallback") is not False:
+        expected_manager = native.MANAGERS[contract["os"]]
+        if (
+            not isinstance(manager, dict)
+            or manager.get("manager") != expected_manager
+            or not isinstance(manager.get("version"), str)
+            or not manager["version"].strip()
+            or manager.get("foreground_fallback") is not False
+        ):
             errors.append("receipt: direct service ownership is absent")
         transition = receipt.get("release_transition")
         if not isinstance(transition, dict) or transition.get("from") != 0 or transition.get("to") != 1:
             errors.append("receipt.release_transition: authentic release-0 transition is absent")
         fixture = receipt.get("release0_fixture")
-        if not isinstance(fixture, dict) or fixture.get("fixture_sums_sha256") != failure.RELEASE0_SUMS_SHA256:
+        if (
+            not isinstance(fixture, dict)
+            or fixture.get("fixture_sums_sha256") != failure.RELEASE0_SUMS_SHA256
+            or fixture.get("bootstrap_sha256") != failure.RELEASE0_BOOTSTRAP_SHA256
+            or fixture.get("sources") != failure.RELEASE0_REFS
+            or any(_DIGEST.fullmatch(str(fixture.get(name, ""))) is None for name in ("manifest_sha256", "provenance_sha256"))
+        ):
             errors.append("receipt.release0_fixture: frozen release-0 provenance is absent")
         semantic = receipt.get("semantic_data")
         if (
@@ -676,6 +691,103 @@ _M4_5_FIELDS = {
     "service_manager_prerequisite", "semantic_data", "checks", "controls", "trigger",
     "actions", "execution_boundary", "final_cleanup", "failure",
 }
+
+
+def _exact_legacy_object(
+    value: object, expected_fields: set[str], label: str, errors: list[str]
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        errors.append(f"{label}: exact object required")
+        return {}
+    if set(value) != expected_fields:
+        missing = expected_fields - set(value)
+        unknown = set(value) - expected_fields
+        if missing:
+            errors.append(f"{label}: missing field(s): {', '.join(sorted(missing))}")
+        if unknown:
+            errors.append(f"{label}: unknown field(s): {', '.join(sorted(unknown))}")
+    return value
+
+
+def _m4_5_nested_errors(receipt: Mapping[str, object], scenario: Mapping[str, object]) -> list[str]:
+    """Close the legacy M4-5 nested shape without treating it as authority."""
+    errors: list[str] = []
+    _exact_legacy_object(
+        receipt.get("runner_provenance"), {"RUNNER_OS", "ImageOS", "ImageVersion"},
+        "receipt.runner_provenance", errors,
+    )
+    candidate = _exact_legacy_object(
+        receipt.get("candidate"), {"app", "agent", "runtime", "pinokio"}, "receipt.candidate", errors,
+    )
+    checkouts = _exact_legacy_object(
+        receipt.get("candidate_checkouts"), {"app", "agent", "runtime", "pinokio"},
+        "receipt.candidate_checkouts", errors,
+    )
+    for name in ("app", "agent", "runtime", "pinokio"):
+        _exact_legacy_object(checkouts.get(name), {"sha"}, f"receipt.candidate_checkouts.{name}", errors)
+    _exact_legacy_object(
+        receipt.get("installed"),
+        {"release", "qualification_marker", "manifest_sha256", "agent", "runtime", "schema_digest"},
+        "receipt.installed", errors,
+    )
+    _exact_legacy_object(
+        receipt.get("semantic_data"), {"identical", "before_sha256", "after_sha256"},
+        "receipt.semantic_data", errors,
+    )
+    mode = scenario["mode"]
+    owner_fields = (
+        {"required", "outcome", "manager", "version", "foreground_fallback"}
+        if mode == "direct" else
+        {"required", "outcome", "managed_by", "foreground_fallback"}
+    )
+    _exact_legacy_object(receipt.get("service_manager_prerequisite"), owner_fields, "receipt.service_manager_prerequisite", errors)
+    required_checks = {
+        "release", "marker", "service", "health", "semantic_data", "task_settled", "one_runtime",
+        "unrelated_sentinel",
+    }
+    channel = scenario["channel"]
+    if channel == "button":
+        required_checks.update({"native_one_shot", "lost_ack_controls"})
+        if scenario["os"] == "linux":
+            required_checks.add("draft_controls")
+    elif channel == "install-line":
+        required_checks.add("install_line")
+    else:
+        required_checks.add("pinokio_update")
+    _exact_legacy_object(receipt.get("checks"), required_checks, "receipt.checks", errors)
+    trigger = receipt.get("trigger")
+    if channel == "install-line":
+        _exact_legacy_object(
+            trigger,
+            {"channel", "entrypoint", "update_flag", "manifest_sha256", "root_bound", "data_root_bound"},
+            "receipt.trigger", errors,
+        )
+    elif channel == "pinokio-update":
+        trigger_row = _exact_legacy_object(
+            trigger,
+            {"channel", "entrypoint", "managed_by", "mode", "route", "foreground_fallback", "action_provenance"},
+            "receipt.trigger", errors,
+        )
+        _exact_legacy_object(
+            trigger_row.get("action_provenance"), {"pinokio_sha", "action_sha256"},
+            "receipt.trigger.action_provenance", errors,
+        )
+    else:
+        trigger_row = _exact_legacy_object(
+            trigger, {"channel", "entrypoint", "request", "draft_flush", "native_job"}, "receipt.trigger", errors,
+        )
+        _exact_legacy_object(
+            trigger_row.get("native_job"),
+            {"format", "system", "one_shot", "owned", "acknowledged", "operation_id"},
+            "receipt.trigger.native_job", errors,
+        )
+    if not isinstance(receipt.get("controls"), list):
+        errors.append("receipt.controls: list required")
+    if not isinstance(receipt.get("actions"), list):
+        errors.append("receipt.actions: list required")
+    if not isinstance(receipt.get("execution_boundary"), dict):
+        errors.append("receipt.execution_boundary: object required")
+    return errors
 
 
 def parse_release1_evidence(evidence: object) -> tuple[ParsedEvidence | None, list[str]]:
@@ -719,10 +831,12 @@ def parse_m4_5_evidence(evidence: object) -> tuple[ParsedEvidence | None, list[s
     except (TypeError, ValueError, KeyError, AttributeError) as exc:
         errors.append(f"receipt: malformed M4-5 observation: {exc}")
     try:
-        expected_owner = "native" if release2.scenario_definition(parsed.selector)["mode"] == "direct" else "pinokio"
+        definition = release2.scenario_definition(parsed.selector)
     except ValueError:  # selector error is already reported above
         pass
     else:
+        errors.extend(_m4_5_nested_errors(parsed.receipt, definition))
+        expected_owner = "native" if definition["mode"] == "direct" else "pinokio"
         errors.extend(_producer_owner_errors(parsed.producer, expected_owner, "M4-5"))
     return parsed, errors
 
