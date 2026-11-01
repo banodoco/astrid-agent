@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping
 from astrid.core.generation.interfaces import GenerationAdmission, RunPodPreparationRequest
 
 from .prepared_task import PreparedWorkerError, PreparedWorkerSelection, _read_mapping
-from .remote_placement import Claim, RemotePlacement
+from .remote_placement import Claim, RemotePlacement, connect_claimed_for_preparation
 from .target_selection import PaidRunConsent, RunPodSelectionOwner, _utc
 from .worker_owner import _run_sync
 from .worker_preparation import replace_target_record, target_owner
@@ -61,12 +61,13 @@ class RunPodGenerationPreparer:
 
     def __init__(self, *, owner: RunPodSelectionOwner, placement: RemotePlacement,
                  validate: Callable[[RunPodPreparationRequest], None],
-                 connect_claim: Callable[[Mapping[str, Any]], Claim],
+                 connect_claim: Callable[[Mapping[str, Any]], Claim] | None = None,
                  select_worker: Callable[[Mapping[str, Any]], PreparedWorkerSelection],
                  consent: PaidRunConsent,
                  cancel_task: Callable[..., Mapping[str, Any]] | None = None) -> None:
         self.owner, self.placement = owner, placement
-        self.validate, self.connect_claim, self.select_worker = validate, connect_claim, select_worker
+        self.validate, self.select_worker = validate, select_worker
+        self.connect_claim = connect_claim or connect_claimed_for_preparation
         self.consent, self.cancel_task = consent, cancel_task
 
     def prepare(self, request: RunPodPreparationRequest) -> PreparedRunPodGeneration:
@@ -104,7 +105,11 @@ class RunPodGenerationPreparer:
                                   operation_id=operation)
             try:
                 claim = self.connect_claim(claimed)
-                if claim.pod_id != claimed["pod_id"] or claim.identity.get("operation_id") != operation:
+                if (claim.pod_id != claimed["pod_id"] or claim.transport != "https"
+                        or any(claim.identity.get(key) != claimed.get(key) for key in (
+                            "operation_id", "pod_id", "provider_account_ref", "worker_image",
+                            "network_volume_id", "volume_mount_path",
+                        ))):
                     raise PreparedWorkerError("bootstrap transport differs from the journal-owned claim")
                 remaining = (_utc(claimed["paid_limits"]["expires_at"]) - self.owner.clock()).total_seconds()
                 state = self.placement.prepare_claimed(

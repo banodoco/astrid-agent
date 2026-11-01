@@ -43,7 +43,7 @@ def generation(case, sources, tmp_path):
         events.append("validate")
     def connect(claim):
         events.append("connect")
-        return Claim(claim["pod_id"], pod, {"operation_id": claim["operation_id"]})
+        return Claim(claim["pod_id"], pod, dict(claim))
     def select(claim):
         events.append("select-worker")
         return PreparedWorkerSelection(case.owner.path, tmp_path / "profile", tmp_path / "staging",

@@ -827,6 +827,31 @@ class _HttpsOps:
         return self._call("detached_cancel", job_id)
 
 
+def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:
+    """Connect existing R02 custody without a provider lookup or another claim."""
+    from .prepared_task import _claim_target
+
+    _claim_target(record)
+    operation = record.get("operation_id")
+    if (record.get("state") != "claimed" or record.get("transport") != "https"
+            or record.get("acquisition_mode") != "allocate"
+            or record.get("release_authorized") is not True
+            or record.get("target_identity_verified") is not True
+            or not isinstance(operation, str)
+            or record.get("request_name") != "astrid-product-" + operation
+            or record.get("name") != record["request_name"]):
+        raise RemotePlacementError("ordinary preparation requires verified journal-created HTTPS custody")
+    return Claim(
+        pod_id=record["pod_id"], ops=_HttpsOps(record["pod_id"], _read_token(record)),
+        identity={key: record.get(key) for key in (
+            "operation_id", "pod_id", "provider_account_ref", "worker_image",
+            "network_volume_id", "volume_mount_path",
+        )},
+        transport="https", storage_name=record.get("network_volume_name"),
+        datacenter_id=record.get("network_volume_datacenter_id"), handle=dict(record),
+    )
+
+
 class LifecyclePodProvider:
     """Claims through ``scripts/claim_runpod_5090_backup.py`` and releases the exact pod."""
 

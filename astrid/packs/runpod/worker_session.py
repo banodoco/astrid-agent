@@ -300,6 +300,10 @@ class RunPodManagedVibeComfySessionOwner:
             observed = read_installed(runtime_root)
             config = observed["config"]
             digest = observed["config_digest"]
+            if observed.get("vibecomfy_root") != vibecomfy:
+                select_source = getattr(self.transport, "select_prepared_source", None)
+                if callable(select_source):
+                    vibecomfy = select_source(vibecomfy, observed.get("vibecomfy_root"))
             if (config.get("runtime_root") != runtime_root
                     or config.get("base_directory") != comfy
                     or config.get("models_root") != model

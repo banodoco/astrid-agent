@@ -213,6 +213,7 @@ class RunPodInstalledVibeComfySessionTransport(InstalledVibeComfySessionTranspor
         self.pod = pod
         self.preparation_transport = preparation_transport
         self._prepared = None
+        self._installed_source = None
 
     def bind_preparation(self, *, claim_handle_path, reference, staging):
         from .prepared_task import _claim_target, _read_mapping
@@ -261,6 +262,21 @@ class RunPodInstalledVibeComfySessionTransport(InstalledVibeComfySessionTranspor
         except Exception:
             raise ManagedSessionError("journal claim and preparation receipt do not verify this installed attachment") from None
 
+    def select_prepared_source(self, staged_root, installed_root):
+        """Permit distinct locations only for a receipt-bound source comparison.
+
+        The actual bytes of both trees are checked on the target by status;
+        this selection alone never grants attachment or process authority.
+        """
+        if (self._prepared is None
+                or self._prepared[3]["cpu_readiness"]["effective_paths"].get("vibecomfy_root") != staged_root):
+            raise ManagedSessionError("installed source has no matching preparation receipt")
+        selected = _path(installed_root, "installed VibeComfy checkout")
+        if self._installed_source not in (None, selected):
+            raise ManagedSessionError("installed VibeComfy checkout changed")
+        self._installed_source = selected
+        return selected
+
     def _prepared_custody(self, selection):
         from .prepared_task import _read_mapping
         from .worker_staging import _claim_identity, _public_result
@@ -284,7 +300,7 @@ class RunPodInstalledVibeComfySessionTransport(InstalledVibeComfySessionTranspor
                 or selection.pod_id != custody["pod_id"]
                 or facts.get("status") != "cpu_ready" or facts.get("gpu_qualified") is not False
                 or facts.get("python_executable") != selection.python_executable
-                or paths.get("vibecomfy_root") != selection.vibecomfy_root
+                or selection.vibecomfy_root != (self._installed_source or paths.get("vibecomfy_root"))
                 or paths.get("comfy_root") != selection.comfy_root
                 or paths.get("model_root") != selection.model_root
                 or paths.get("output_root") != selection.output_root):
@@ -328,7 +344,9 @@ class RunPodInstalledVibeComfySessionTransport(InstalledVibeComfySessionTranspor
             from .worker_owner import _run_sync
 
             request = {"selection": asdict(selection), "platform": self.platform,
-                       "astrid_root": facts["effective_paths"]["astrid_root"]}
+                       "astrid_root": facts["effective_paths"]["astrid_root"],
+                       "staged_vibecomfy_root": facts["effective_paths"]["vibecomfy_root"],
+                       "vibecomfy_tree": facts["tree_facts"]["vibecomfy_root"]}
             observed = _run_sync(self.preparation_transport._run_json_program(
                 _PREPARED_INSTALLED_OBSERVATION, [json.dumps(request, separators=(",", ":"))],
                 python=selection.python_executable, timeout_seconds=20,
@@ -350,7 +368,18 @@ request=json.loads(sys.argv[1]); selected=request["selection"]
 sys.path[:0]=[request["astrid_root"],selected["vibecomfy_root"]]
 from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
 from astrid.packs.runpod.worker_session import ManagedSessionSelection
+from astrid.packs.runpod.worker_staging import _tree_inventory
+def check_sources():
+ expected=request["vibecomfy_tree"]
+ for value in (request["staged_vibecomfy_root"],selected["vibecomfy_root"]):
+  root=Path(value)
+  if root.resolve(strict=True)!=root: raise RuntimeError("prepared source path is aliased")
+  digest,count=_tree_inventory(root)
+  if {"tree_digest":digest,"file_count":count}!=expected:
+   raise RuntimeError("installed and staged VibeComfy sources differ from preparation receipt")
+check_sources()
 transport=LocalInstalledVibeComfySessionTransport(platform=request["platform"])
 observed=transport.status(ManagedSessionSelection(**selected))
+check_sources()
 print(json.dumps(observed,sort_keys=True,separators=(",",":")))
 '''

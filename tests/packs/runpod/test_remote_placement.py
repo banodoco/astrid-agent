@@ -228,6 +228,27 @@ def test_prepare_claimed_reuses_bootstrap_install_without_claim_or_transform(tmp
     assert not any("/01-prepare/" in path for path in claim.ops.files)
 
 
+def test_ordinary_connector_uses_only_the_verified_claim_and_existing_https_ops(monkeypatch):
+    from tests.packs.runpod.test_worker_preparation import _claim_handle
+
+    record = _claim_handle(
+        operation_id="a" * 32, request_name="astrid-product-" + "a" * 32,
+        name="astrid-product-" + "a" * 32, transport="https", target_identity_verified=True,
+        volume_mount_path="/workspace", https_token_file="/fake/agent.token",
+    )
+    reads = []
+    monkeypatch.setattr(rp, "_read_token", lambda value: reads.append(value) or "fake-only")
+    claim = rp.connect_claimed_for_preparation(record)
+    assert reads == [record]
+    assert isinstance(claim.ops, rp._HttpsOps)
+    assert claim.pod_id == record["pod_id"]
+    assert claim.identity["provider_account_ref"] == record["provider_account_ref"]
+    assert claim.handle == record
+    with pytest.raises(RemotePlacementError, match="journal-created"):
+        rp.connect_claimed_for_preparation({**record, "request_name": "another-broker"})
+    assert reads == [record]
+
+
 @pytest.mark.parametrize("seconds", [0, -1, float("inf"), float("nan")])
 def test_prepare_claimed_refuses_missing_paid_lifetime_without_provider_use(tmp_path, seconds):
     provider = FakeProvider("unused")

@@ -460,6 +460,24 @@ def test_restart_reconciles_ready_generation_without_rotating_or_replacing_it(tm
     assert events == ["restore-activation", "reconcile-activation"]
 
 
+def test_no_wait_then_same_host_follow_reconciles_without_second_submission(tmp_path):
+    runtime, events = _production_runtime(tmp_path, {"state": "stopped"})
+    client = _Client([_task(), _task()])
+    first = PreparedRunPodTaskClient(client, runtime)
+    assert first.invoke_result("vibecomfy.run", kind="executor", **{**_kwargs(), "wait": False}) is client.first
+    assert events == ["restore-local", "park", "relinquish-local", "activate"]
+    # The activation owner persists its qualification before no-wait returns.
+    # A fresh same-host owner tick recovers that exact generation.
+    qualification = {"task_id": "task-1", "run_id": "run-1", "activation_id": "activation-1"}
+    recovered, recovered_events = _production_runtime(tmp_path, {
+        "state": "committed", "activation_qualification": qualification,
+    })
+    follow = PreparedRunPodTaskClient(client, recovered)
+    follow.monitor_task(_task())
+    assert recovered_events == ["restore-activation", "reconcile-activation"]
+    assert len([event for event in client.events if event[0] == "invoke"]) == 1
+
+
 def test_local_worker_is_not_restarted_when_runtime_generation_is_unobservable():
     runtime = object.__new__(_ProductionPreparedTaskRuntime)
     runtime._local_generation = {"profile_id": "local-profile", "workspace_uuid": "workspace-1"}
