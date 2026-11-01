@@ -182,6 +182,40 @@ def test_prepared_selection_rejects_changed_claim_and_conflicting_mount(tmp_path
         selected.execution_request(None)
 
 
+@pytest.mark.parametrize("explicit,ambient,allowed", [
+    ("account-1", None, True),
+    ("account-1", "account-1", True),
+    ("account-1", "foreign-account", False),
+    ("foreign-account", None, False),
+    ("", None, False),
+    (None, None, False),
+    (None, "account-1", True),
+    (None, "foreign-account", False),
+])
+def test_prepared_selection_account_authority_preserves_legacy_fallback_and_refuses_conflicts(
+    tmp_path, monkeypatch, explicit, ambient, allowed,
+):
+    from astrid.packs.runpod.prepared_task import (
+        PreparedWorkerSelection, _claim_target, _require_prepared_account,
+    )
+
+    if ambient is None:
+        monkeypatch.delenv("ASTRID_RUNPOD_ACCOUNT_REF", raising=False)
+    else:
+        monkeypatch.setenv("ASTRID_RUNPOD_ACCOUNT_REF", ambient)
+    claim = {"state": "claimed", "pod_id": "pod-1", "provider_account_ref": "account-1",
+             "network_volume_id": "volume-1"}
+    selected = PreparedWorkerSelection(
+        tmp_path / "claim", tmp_path / "profile", tmp_path / "staging", tmp_path / "journal",
+        _claim_target(claim), {}, {}, provider_account_ref=explicit,
+    )
+    if allowed:
+        assert _require_prepared_account(selected, claim) == "account-1"
+    else:
+        with pytest.raises(PreparedWorkerError, match="account"):
+            _require_prepared_account(selected, claim)
+
+
 def test_existing_installed_runpod_transport_blocks_unverified_live_session() -> None:
     from astrid.packs.runpod.installed_session import RunPodInstalledVibeComfySessionTransport
     from astrid.packs.runpod.worker_session import ManagedSessionError
@@ -281,6 +315,11 @@ def test_selection_converts_file_backed_local_staging_paths_to_paths(tmp_path: P
     }), encoding="utf-8")
 
     selection = load_prepared_worker_selection(selection_path)
+    assert selection.provider_account_ref is None
+    explicit = load_prepared_worker_selection(selection_path, provider_account_ref="account-1")
+    assert explicit.provider_account_ref == "account-1"
+    with pytest.raises(PreparedWorkerError, match="explicit selection account"):
+        load_prepared_worker_selection(selection_path, provider_account_ref="foreign-account")
 
     assert selection.staging_inputs["release_manifest_path"] == release
     assert selection.staging_inputs["astrid_source"] == astrid_source
@@ -323,7 +362,7 @@ def test_selection_rejects_aliased_or_missing_local_staging_paths(tmp_path: Path
         load_prepared_worker_selection(selection_path)
 
 
-def test_completed_explicit_release_receipt_resumes_without_provider_access(tmp_path: Path) -> None:
+def test_completed_explicit_release_receipt_resumes_without_provider_access(tmp_path: Path, monkeypatch) -> None:
     claim_path = tmp_path / "claim.json"
     selection_path = tmp_path / "selection.json"
     binding = {
@@ -389,6 +428,19 @@ def test_completed_explicit_release_receipt_resumes_without_provider_access(tmp_
     ) == released
     with pytest.raises(PreparedWorkerError, match="completed RunPod release"):
         release_prepared_worker(NoProviderClient(), selection_path, "task-1")
+    monkeypatch.delenv("ASTRID_RUNPOD_ACCOUNT_REF", raising=False)
+    assert release_prepared_worker(
+        NoProviderClient(), selection_path, "task-1", resume=True, provider_account_ref="account-1",
+    ) == released
+    with pytest.raises(PreparedWorkerError, match="explicit selection account"):
+        release_prepared_worker(
+            NoProviderClient(), selection_path, "task-1", resume=True, provider_account_ref="foreign-account",
+        )
+    monkeypatch.setenv("ASTRID_RUNPOD_ACCOUNT_REF", "foreign-account")
+    with pytest.raises(PreparedWorkerError, match="conflicts"):
+        release_prepared_worker(
+            NoProviderClient(), selection_path, "task-1", resume=True, provider_account_ref="account-1",
+        )
 
 
 def _production_runtime(tmp_path: Path, managed: dict[str, object]):

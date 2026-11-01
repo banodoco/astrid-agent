@@ -586,7 +586,8 @@ def unactivated_target_quiescence(attempt: Mapping[str, Any]) -> dict[str, Any]:
     """Evidence for a failed allocation before any claim handle was published.
 
     Claim publication changes the journal schema and drops worker_activation.
-    Attached pods and published/activated workers must use the task drain gate.
+    Published preparations require their separate write-ahead custody gate;
+    admitted/activated workers must use the task drain gate.
     """
     return _validate_release_quiescence({
         "schema": "astrid.runpod.unactivated-quiescence.v1",
@@ -596,9 +597,13 @@ def unactivated_target_quiescence(attempt: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict[str, Any]:
-    """Accept only durable exact-task drain and process-stop evidence."""
+    """Accept durable exact-task drain or exclusive preparation-stop evidence."""
     if attempt.get("state") == "cleanup_complete":
         _validate_absence_receipt(attempt)
+    if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.preparation-quiescence.v1":
+        from .preparation_custody import validate_preparation_quiescence
+
+        return validate_preparation_quiescence(value, attempt)
     if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.unactivated-quiescence.v1":
         if (attempt.get("schema_version") != "astrid.runpod.allocation-attempt.v1"
                 or attempt.get("acquisition_mode") != "allocate"
@@ -833,6 +838,7 @@ async def _release_exact_target_after_quiescence(
             attempt = _read_release_checkpoint(handle_path, attempt)
             blocked = {
                 **attempt,
+                **({"state": "cleanup_pending"} if "preparation_custody" in attempt else {}),
                 "last_release_gate_failure_type": type(exc).__name__,
                 "last_release_gate_failure_at": utc_now_iso(),
             }

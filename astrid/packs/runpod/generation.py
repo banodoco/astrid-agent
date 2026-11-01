@@ -8,14 +8,21 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from astrid.core.generation.interfaces import GenerationAdmission, RunPodPreparationRequest
 
+from .preparation_custody import JournalPreparationOps
 from .prepared_task import PreparedWorkerError, PreparedWorkerSelection, _read_mapping
-from .remote_placement import Claim, RemotePlacement, connect_claimed_for_preparation
+from .remote_placement import (
+    ENGINE_ROOT,
+    POD_VENV,
+    Claim,
+    RemotePlacement,
+    connect_claimed_for_preparation,
+)
 from .target_selection import PaidRunConsent, RunPodSelectionOwner, _utc
 from .worker_owner import _run_sync
 from .worker_preparation import replace_target_record, target_owner
@@ -111,10 +118,15 @@ class RunPodGenerationPreparer:
                             "network_volume_id", "volume_mount_path",
                         ))):
                     raise PreparedWorkerError("bootstrap transport differs from the journal-owned claim")
+                jobs = JournalPreparationOps.begin(
+                    self.owner.path, claim.ops, engine_root=ENGINE_ROOT, python=POD_VENV + "/bin/python",
+                )
+                claim = replace(claim, ops=jobs)
                 remaining = (_utc(claimed["paid_limits"]["expires_at"]) - self.owner.clock()).total_seconds()
                 state = self.placement.prepare_claimed(
                     claim, out=self.owner.path.parent / "preparation" / operation,
                     deadline_seconds=remaining,
+                    supervisor_command=jobs.supervisor_command("reserve"),
                 )
                 if self.owner.clock() >= _utc(claimed["paid_limits"]["expires_at"]):
                     raise PreparedWorkerError("ordinary preparation consumed its paid lifetime")
@@ -127,7 +139,8 @@ class RunPodGenerationPreparer:
                     raise PreparedWorkerError("ordinary source/workflow changed during preparation")
                 receipt = {**receipt, "state": "prepared", "steps": list(state.steps)}
                 current = _read_mapping(self.owner.path, label="RunPod claim")
-                replace_target_record(self.owner.path, {**current, "ordinary_preparation": receipt},
+                replace_target_record(self.owner.path, {**current, "ordinary_preparation": receipt,
+                                      "preparation_custody": {**current["preparation_custody"], "state": "prepared"}},
                                       operation_id=operation)
             except BaseException:
                 current = _read_mapping(self.owner.path, label="RunPod claim")
@@ -137,6 +150,12 @@ class RunPodGenerationPreparer:
                 }, operation_id=operation)
                 raise
         return PreparedRunPodGeneration(selection, inputs, receipt)
+
+    def release_preparation(self, config: Any, *, resume: bool = False) -> Mapping[str, Any]:
+        """Resume failed R03 cleanup through P1's existing exact-release owner."""
+        from .prepared_task import release_preparation
+
+        return release_preparation(config, self.owner.path, resume=resume)
 
     def cancel(self, *, admission: GenerationAdmission, reason: str) -> Mapping[str, Any]:
         # The SDK owner bridge supplies exact task cancellation. Missing or

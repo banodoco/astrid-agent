@@ -72,9 +72,9 @@ class FakePod:
             data = data + b"tampered"
         Path(local).write_bytes(data)
 
-    def job_start(self, command):
+    def job_start(self, command, *, job_id=None):
         self.job_log.append(command)
-        job_id = f"{len(self.job_log):032x}"
+        job_id = job_id or f"{len(self.job_log):032x}"
         directory = f"/workspace/.astrid-jobs/{job_id}"
         rc = 1 if any(marker in command for marker in self.fail_jobs) else 0
         stdout = ""

@@ -194,7 +194,7 @@ def _supervisor_argv(identity, lock_fd, token):
 class LinuxEngineServiceClient:
     """Agreed v2 API. Construction performs no filesystem/process/network I/O."""
 
-    def __init__(self, *, root, engine, platform, recipe_sha256, helper_sha256):
+    def __init__(self, *, root, engine, platform, recipe_sha256, helper_sha256, owner_id=None):
         if not sys.platform.startswith("linux") or not platform.startswith("linux-"):
             raise UnsupportedPlatform("engine custody requires Linux")
         self.identity = dict(root=_root(root, platform), engine=engine, platform=platform,
@@ -205,6 +205,10 @@ class LinuxEngineServiceClient:
             raise RecipeValidationError("invalid installation identity")
         self.control = root + "/.astrid-engine/session"
         self._spawned = None
+        if owner_id is not None and (not isinstance(owner_id, str)
+                                     or not re.fullmatch(r"[0-9a-f]{32}", owner_id)):
+            raise RecipeValidationError("invalid preparation supervisor owner")
+        self.owner_id = owner_id
 
     def _connect(self, fd, deadline, *, start):
         while True:
@@ -216,6 +220,13 @@ class LinuxEngineServiceClient:
                 try:
                     channel.settimeout(_remaining(deadline))
                     channel.connect(_socket_path(fd))
+                    if self.owner_id is not None:
+                        marker_fd = os.open("session.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                        with os.fdopen(marker_fd, "rb") as stream:
+                            _private(os.fstat(stream.fileno()), stat.S_ISREG)
+                            marker = _decode(stream.read(_FRAME_LIMIT + 1))
+                        if marker != {"identity": self.identity, "owner_id": self.owner_id}:
+                            raise EndpointOwnershipError("original preparation supervisor changed")
                     return channel
                 except (ConnectionRefusedError, FileNotFoundError):
                     channel.close()
@@ -253,7 +264,7 @@ class LinuxEngineServiceClient:
                     continue
                 if _exists(fd, "session.json") is not None or _exists(fd, "control.sock") is not None:
                     continue
-                token = uuid.uuid4().hex
+                token = self.owner_id or uuid.uuid4().hex
                 _write(fd, "session.json", _json({"identity": self.identity, "owner_id": token}).encode())
                 # The child inherits the locked open description. Closing the parent
                 # copy (without LOCK_UN) leaves ownership with that live supervisor.
@@ -325,6 +336,40 @@ class LinuxEngineServiceClient:
             time.sleep(min(0.02, _remaining(deadline)))
         if self._spawned is not None:
             self._spawned.wait(timeout=_remaining(deadline))
+
+    def reserve_preparation(self, *, deadline):
+        """Establish the journal-selected owner before installation effects."""
+        if self.owner_id is None:
+            raise RecipeValidationError("preparation requires a pre-recorded supervisor owner")
+        with _directory(self.control, create=True) as fd:
+            with self._connect(fd, deadline, start=True):
+                pass
+        return {"identity": self.identity, "owner_id": self.owner_id}
+
+    def stop_preparation(self, *, deadline):
+        """Stop only the original journal-selected supervisor, including its commands.
+
+        Hold its original owner lock after socket retirement to positively
+        observe supervisor exit. Missing files alone are never a stop receipt.
+        """
+        if self.owner_id is None:
+            raise RecipeValidationError("preparation requires a pre-recorded supervisor owner")
+        self.stop_owned(deadline=deadline)
+        with _directory(self.control, create=False) as fd:
+            lock = os.open("owner.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            try:
+                while True:
+                    try:
+                        native.lock_file(lock, blocking=False)
+                        break
+                    except BlockingIOError:
+                        time.sleep(min(0.02, _remaining(deadline)))
+                if _exists(fd, "session.json") is not None or _exists(fd, "control.sock") is not None:
+                    raise CustodyUnresolved("original preparation supervisor remains uncertain")
+            finally:
+                os.close(lock)
+        return {"identity": self.identity, "owner_id": self.owner_id,
+                "stopped": True, "supervisor_stop": "original_preparation_owner"}
 
 
 class _Output:
