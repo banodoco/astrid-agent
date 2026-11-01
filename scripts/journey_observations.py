@@ -72,6 +72,8 @@ class ParsedEvidence:
     files: dict[str, dict[str, object]]
     producer: ParsedProducerEnvelope | None
     producer_supplied: bool
+    authenticated_context: dict[str, object] | None
+    producer_files: dict[str, dict[str, object]]
 
 
 def _reject_constant(value: str) -> object:
@@ -487,14 +489,16 @@ def safe_relative_path(value: object) -> bool:
     return True
 
 
-def index_files(value: object) -> tuple[dict[str, dict[str, object]], list[str]]:
+def index_files(
+    value: object, *, label: str = "files"
+) -> tuple[dict[str, dict[str, object]], list[str]]:
     """Validate the index fragment accepted by the decided predicate API."""
     if not isinstance(value, list):
-        return {}, ["files: evidence index list is required"]
+        return {}, [f"{label}: evidence index list is required"]
     indexed: dict[str, dict[str, object]] = {}
     errors: list[str] = []
     for number, item in enumerate(value):
-        prefix = f"files[{number}]"
+        prefix = f"{label}[{number}]"
         if not isinstance(item, dict):
             errors.append(f"{prefix}: index entry must be an object")
             continue
@@ -538,16 +542,25 @@ def _parse_selected(
 ) -> tuple[ParsedEvidence | None, list[str]]:
     if not isinstance(evidence, dict):
         return None, ["evidence: index object required"]
-    allowed = {selector_name, "files", "producer"}
-    if require_candidate:
-        allowed.add("candidate")
+    # ``authenticated_context`` and ``producer_files`` are supplied only by
+    # M-CI after it has authenticated the selected immutable bytes.  They are
+    # deliberately optional at this structural boundary: legacy callers keep
+    # parsing, while semantic predicates reject their absence.
+    allowed = {
+        selector_name,
+        "candidate",
+        "files",
+        "producer",
+        "authenticated_context",
+        "producer_files",
+    }
     errors = _unknown_fields(evidence, allowed, "evidence")
     selector = evidence.get(selector_name)
     if not isinstance(selector, str) or selector not in accepted_selectors:
         errors.append(f"{selector_name}: selected obligation is missing or unknown")
         selector = ""
     candidate: dict[str, object] | None = None
-    if require_candidate:
+    if require_candidate or "candidate" in evidence:
         candidate_value = evidence.get("candidate")
         errors.extend(_candidate_errors(candidate_value))
         if isinstance(candidate_value, dict):
@@ -557,6 +570,16 @@ def _parse_selected(
     if producer_supplied:
         producer, producer_errors = parse_producer_envelope(evidence.get("producer"))
         errors.extend(producer_errors)
+    context_value = evidence.get("authenticated_context")
+    authenticated_context = context_value if isinstance(context_value, dict) else None
+    if "authenticated_context" in evidence and authenticated_context is None:
+        errors.append("authenticated_context: object required")
+    producer_files: dict[str, dict[str, object]] = {}
+    if "producer_files" in evidence:
+        producer_files, producer_file_errors = index_files(
+            evidence.get("producer_files"), label="producer_files"
+        )
+        errors.extend(producer_file_errors)
     files, file_errors = index_files(evidence.get("files"))
     errors.extend(file_errors)
     for path in sorted(required_paths - files.keys()):
@@ -567,7 +590,16 @@ def _parse_selected(
     if not isinstance(receipt, dict):
         errors.append("receipt: parsed journey receipt is required")
         return None, errors
-    return ParsedEvidence(selector, candidate, receipt, files, producer, producer_supplied), errors
+    return ParsedEvidence(
+        selector,
+        candidate,
+        receipt,
+        files,
+        producer,
+        producer_supplied,
+        authenticated_context,
+        producer_files,
+    ), errors
 
 
 _RELEASE1_FIELDS = {
@@ -856,6 +888,54 @@ _M4_6_SIDECAR_FIELDS = {
 }
 
 
+def _m4_6_receipt_state_errors(
+    receipt: Mapping[str, object], candidate: Mapping[str, object], slot_id: str
+) -> list[str]:
+    """Keep the receipt/sidecar refusal boundary separate from raw semantics.
+
+    The historic native structural object is producer-supplied diagnostic data.
+    Once an M-CI-bound R-30 semantic observation is present, its custody and
+    scenario facts are recomputed by :func:`semantic_observation_errors`
+    instead.  Receipt state, all four named sidecars, and their selected-slot
+    bindings remain mandatory and fail closed here.
+    """
+    errors: list[str] = []
+    if receipt.get("schema_version") != failure.SCHEMA_VERSION:
+        errors.append("receipt.schema_version: unsupported failure receipt schema")
+    if receipt.get("receipt_kind") != failure.RECEIPT_KIND:
+        errors.append("receipt.receipt_kind: expected failure-mode receipt")
+    if receipt.get("receipt_state") != "recorded":
+        errors.append("receipt.receipt_state: recorded required")
+    if receipt.get("slot_id") != slot_id or receipt.get("job_id") != slot_id:
+        errors.append("receipt.slot_id: differs from selected obligation")
+    if receipt.get("status") != "pass":
+        errors.append(f"receipt.status: {receipt.get('status')!r} is not pass")
+    verification = receipt.get("verification")
+    if (
+        not isinstance(verification, dict)
+        or verification.get("state") != "verified-pass"
+        or verification.get("failed_assertions") != []
+    ):
+        errors.append("receipt.verification: clean verified-pass required")
+    checks = receipt.get("checks")
+    if (
+        not isinstance(checks, dict)
+        or set(checks) != set(failure.SCENARIOS)
+        or any(checks.get(name) != "pass" for name in failure.SCENARIOS)
+    ):
+        errors.append("receipt.checks: every named scenario must pass")
+    checkouts = receipt.get("candidate_checkouts")
+    if not isinstance(checkouts, dict):
+        errors.append("receipt.candidate_checkouts: frozen tuple bindings required")
+    else:
+        for name in ("app", "agent", "runtime", "pinokio"):
+            if (checkouts.get(name) or {}).get("sha") != candidate.get(name):
+                errors.append(f"receipt.candidate_checkouts.{name}: differs from selected tuple")
+    if receipt.get("manifest_sha256") != candidate.get("manifest_sha256"):
+        errors.append("receipt.manifest_sha256: differs from selected tuple")
+    return errors
+
+
 def _same_json(left: object, right: object) -> bool:
     try:
         return json.dumps(left, sort_keys=True, separators=(",", ":"), allow_nan=False) == json.dumps(
@@ -880,13 +960,18 @@ def parse_m4_6_evidence(evidence: object) -> tuple[ParsedEvidence | None, list[s
         return parsed, errors
     receipt = parsed.receipt
     errors.extend(_unknown_fields(receipt, _M4_6_FIELDS, "receipt"))
-    try:
-        errors.extend(failure.validate_receipt(receipt, parsed.candidate, parsed.selector))
-        # This function internally dispatches to the direct or Pinokio native
-        # structural contract.  It remains structural evidence only.
-        errors.extend(native._native_structural_errors(receipt))
-    except (TypeError, ValueError, KeyError, AttributeError, OverflowError) as exc:
-        errors.append(f"receipt: malformed native observation: {exc}")
+    errors.extend(_m4_6_receipt_state_errors(receipt, parsed.candidate, parsed.selector))
+    # Preserve the legacy structural refusal for the old receipt-only route.
+    # A complete M-CI context with a producer envelope instead has its native
+    # custody and four-scenario semantics recomputed from the linked raw
+    # producer observation below; those producer claims are not duplicated as
+    # a second authority inside the legacy receipt.
+    if parsed.authenticated_context is None or parsed.producer is None:
+        try:
+            errors.extend(failure.validate_receipt(receipt, parsed.candidate, parsed.selector))
+            errors.extend(native._native_structural_errors(receipt))
+        except (TypeError, ValueError, KeyError, AttributeError, OverflowError) as exc:
+            errors.append(f"receipt: malformed native observation: {exc}")
     declarations = receipt.get("evidence_files")
     if not isinstance(declarations, list):
         declarations = []
@@ -951,3 +1036,652 @@ def parse_m4_6_evidence(evidence: object) -> tuple[ParsedEvidence | None, list[s
     else:
         errors.extend(_producer_owner_errors(parsed.producer, expected_owner, "M4-6"))
     return parsed, errors
+
+
+# The following profile is intentionally a consumer of M-CI's authenticated
+# index, not an authenticator.  ``authenticated_context`` is constructed by
+# M-CI only after its frozen-tuple, selected-attempt, immutable-byte, and
+# transport/finalization checks.  These checks recompute the journey-specific
+# relations between that context, the R-30 producer envelope, and the parsed
+# machine observations.
+_AUTHENTICATED_CONTEXT_FIELDS = {
+    "kind",
+    "version",
+    "family",
+    "selector_name",
+    "selector_value",
+    "candidate",
+    "binding",
+    "producer_export_sha256",
+    "collector_seal_sha256",
+    "observation_ids",
+    "state",
+}
+_DIRECT_OBSERVATION_ID = "direct-custody"
+_DIRECT_OBSERVATION_PATH = "observations/direct-custody.json"
+_PINOKIO_OBSERVATION_ID = "pinokio-settlement"
+_PINOKIO_OBSERVATION_PATH = "observations/pinokio-settlement.json"
+
+
+def _semantic_owner_and_selector(
+    family: str, selector: str
+) -> tuple[str, str] | None:
+    """Return the required owner and selector field for one family member."""
+    try:
+        if family == "release1":
+            return (
+                "native" if matrix.release1_job(selector)["mode"] == "direct" else "pinokio",
+                "job_id",
+            )
+        if family == "m4_5":
+            return (
+                "native" if release2.scenario_definition(selector)["mode"] == "direct" else "pinokio",
+                "scenario_id",
+            )
+        if family == "m4_6":
+            return (
+                "native" if failure.SLOT_CONTRACTS[selector]["mode"] == "direct" else "pinokio",
+                "slot_id",
+            )
+    except (KeyError, ValueError):
+        return None
+    return None
+
+
+def _context_and_producer_errors(
+    parsed: ParsedEvidence, family: str
+) -> tuple[dict[str, object] | None, str | None, list[str]]:
+    """Cross-bind the M-CI context to one finalized R-30 producer pair."""
+    errors: list[str] = []
+    expected = _semantic_owner_and_selector(family, parsed.selector)
+    if expected is None:
+        return None, None, [f"authenticated_context: unknown {family!r} selector"]
+    owner_kind, selector_name = expected
+    producer = parsed.producer
+    if producer is None:
+        return None, owner_kind, [
+            "authenticated_context: producer export and collector seal are absent"
+        ]
+    if parsed.authenticated_context is None:
+        return None, owner_kind, [
+            "authenticated_context: M-CI finalized authenticated context is absent"
+        ]
+    context = _r30_exact_object(
+        parsed.authenticated_context,
+        _AUTHENTICATED_CONTEXT_FIELDS,
+        "authenticated_context",
+        errors,
+    )
+    for name, value in (
+        ("kind", "mci-authenticated-context"),
+        ("version", 1),
+        ("family", family),
+        ("selector_name", selector_name),
+        ("selector_value", parsed.selector),
+        ("state", "finalized"),
+    ):
+        if context.get(name) != value:
+            errors.append(f"authenticated_context.{name}: expected {value!r}")
+    context_candidate = context.get("candidate")
+    if not isinstance(context_candidate, dict):
+        errors.append("authenticated_context.candidate: frozen candidate object required")
+    else:
+        errors.extend(_candidate_errors(context_candidate))
+    if parsed.candidate is None:
+        errors.append("authenticated_context: selected top-level candidate is required")
+    elif not _same_json(context_candidate, parsed.candidate):
+        errors.append("authenticated_context.candidate: differs from selected candidate")
+    context_binding = _parse_r30_binding(
+        context.get("binding"), "authenticated_context.binding", errors
+    )
+    if not _same_json(context_binding, producer.export.get("binding")):
+        errors.append("authenticated_context.binding: differs from producer export")
+    if not _same_json(context_binding, producer.seal.get("binding")):
+        errors.append("authenticated_context.binding: differs from collector seal")
+    for field, actual in (
+        ("producer_export_sha256", producer.export_sha256),
+        ("collector_seal_sha256", producer.seal_sha256),
+    ):
+        _r30_digest(context.get(field), f"authenticated_context.{field}", errors)
+        if context.get(field) != actual:
+            errors.append(f"authenticated_context.{field}: differs from selected producer record")
+    ids = context.get("observation_ids")
+    export_ids = [
+        item.get("id") for item in producer.export.get("observations", [])
+        if isinstance(item, dict)
+    ]
+    if (
+        not isinstance(ids, list)
+        or any(not _r30_id(item) for item in ids)
+        or ids != sorted(ids)
+        or len(ids) != len(set(ids))
+        or ids != sorted(export_ids)
+    ):
+        errors.append(
+            "authenticated_context.observation_ids: exact sorted producer observation IDs required"
+        )
+    if producer.export.get("owner_kind") != owner_kind:
+        errors.append(
+            f"authenticated_context: {family} selector requires {owner_kind!r} producer ownership"
+        )
+    return context, owner_kind, errors
+
+
+def _producer_file_errors(parsed: ParsedEvidence) -> list[str]:
+    """Bind indexed parsed producer bytes to the R-30 export file list."""
+    errors: list[str] = []
+    if parsed.producer is None:
+        return errors
+    declared = parsed.producer.export.get("files")
+    observations = parsed.producer.export.get("observations")
+    if not isinstance(declared, list) or not isinstance(observations, list):
+        return ["producer: malformed export file or observation list"]
+    declared_by_path = {
+        item.get("path"): item for item in declared
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    if set(parsed.producer_files) != set(declared_by_path):
+        errors.append("producer_files: must contain exactly the R-30 export file set")
+    for path, declaration in declared_by_path.items():
+        indexed = parsed.producer_files.get(path)
+        if not isinstance(indexed, dict):
+            errors.append(f"producer_files: missing indexed producer file {path!r}")
+            continue
+        if indexed.get("sha256") != declaration.get("sha256"):
+            errors.append(f"producer_files[{path!r}]: SHA-256 differs from R-30 file declaration")
+        if not isinstance(indexed.get("json"), dict):
+            errors.append(f"producer_files[{path!r}]: parsed observation object required")
+    for observation in observations:
+        if not isinstance(observation, dict):
+            continue
+        path = observation.get("file")
+        indexed = parsed.producer_files.get(path)
+        if not isinstance(indexed, dict):
+            continue
+        if indexed.get("sha256") != observation.get("sha256"):
+            errors.append(
+                f"producer observation {observation.get('id')!r}: indexed SHA-256 differs"
+            )
+    return errors
+
+
+def _require_digest(value: object, label: str, errors: list[str]) -> None:
+    if not isinstance(value, str) or _DIGEST.fullmatch(value) is None:
+        errors.append(f"{label}: lowercase SHA-256 required")
+
+
+def _require_id(value: object, label: str, errors: list[str]) -> None:
+    if not _r30_id(value):
+        errors.append(f"{label}: nonempty bounded ID required")
+
+
+def _exact_fields(
+    value: object, fields: set[str], label: str, errors: list[str]
+) -> dict[str, object]:
+    return _r30_exact_object(value, fields, label, errors)
+
+
+def _custody_errors(
+    value: object, principal_id: object, label: str
+) -> list[str]:
+    """Validate loss-detecting process/removal/final-census semantics."""
+    errors: list[str] = []
+    custody = _exact_fields(
+        value,
+        {
+            "principal_id", "controller", "descendants", "listeners", "roots", "locks",
+            "authorized_removal", "removed", "final_census",
+        },
+        label,
+        errors,
+    )
+    if custody.get("principal_id") != principal_id:
+        errors.append(f"{label}.principal_id: differs from owner principal")
+    controller = _exact_fields(
+        custody.get("controller"),
+        {"incarnation", "executable_sha256", "birth_sequence", "reaped"},
+        f"{label}.controller",
+        errors,
+    )
+    controller_id = controller.get("incarnation")
+    _require_id(controller_id, f"{label}.controller.incarnation", errors)
+    _require_digest(controller.get("executable_sha256"), f"{label}.controller.executable_sha256", errors)
+    _r30_positive_integer(controller.get("birth_sequence"), f"{label}.controller.birth_sequence", errors)
+    if controller.get("reaped") is not True:
+        errors.append(f"{label}.controller.reaped: true required")
+    descendants = custody.get("descendants")
+    if not isinstance(descendants, list) or not descendants:
+        errors.append(f"{label}.descendants: nonempty list required")
+        descendants = []
+    seen = {controller_id} if isinstance(controller_id, str) else set()
+    identities = [controller_id] if isinstance(controller_id, str) else []
+    births = [controller.get("birth_sequence")] if type(controller.get("birth_sequence")) is int else []
+    for number, value in enumerate(descendants):
+        row = _exact_fields(
+            value,
+            {"incarnation", "parent_incarnation", "executable_sha256", "birth_sequence", "reaped"},
+            f"{label}.descendants[{number}]",
+            errors,
+        )
+        incarnation = row.get("incarnation")
+        _require_id(incarnation, f"{label}.descendants[{number}].incarnation", errors)
+        _require_digest(row.get("executable_sha256"), f"{label}.descendants[{number}].executable_sha256", errors)
+        _r30_positive_integer(row.get("birth_sequence"), f"{label}.descendants[{number}].birth_sequence", errors)
+        if row.get("parent_incarnation") not in seen:
+            errors.append(f"{label}.descendants[{number}].parent_incarnation: known earlier lineage required")
+        if incarnation in seen:
+            errors.append(f"{label}.descendants[{number}].incarnation: duplicate/PID-reused identity")
+        if births and type(row.get("birth_sequence")) is int and row["birth_sequence"] <= max(births):
+            errors.append(f"{label}.descendants[{number}].birth_sequence: strict lineage order required")
+        if row.get("reaped") is not True:
+            errors.append(f"{label}.descendants[{number}].reaped: true required")
+        if isinstance(incarnation, str):
+            seen.add(incarnation)
+            identities.append(incarnation)
+        if type(row.get("birth_sequence")) is int:
+            births.append(row["birth_sequence"])
+    for name in ("listeners", "roots", "locks"):
+        rows = custody.get(name)
+        if not isinstance(rows, list) or not rows:
+            errors.append(f"{label}.{name}: nonempty observed-owner list required")
+            continue
+        observed: set[object] = set()
+        for number, row_value in enumerate(rows):
+            row = _exact_fields(
+                row_value,
+                {"owner_incarnation", "identity_sha256"},
+                f"{label}.{name}[{number}]",
+                errors,
+            )
+            owner = row.get("owner_incarnation")
+            if owner not in seen:
+                errors.append(f"{label}.{name}[{number}].owner_incarnation: owned lineage required")
+            _require_digest(row.get("identity_sha256"), f"{label}.{name}[{number}].identity_sha256", errors)
+            key = (owner, row.get("identity_sha256"))
+            if key in observed:
+                errors.append(f"{label}.{name}[{number}]: duplicate owner observation")
+            observed.add(key)
+    for name in ("authorized_removal", "removed"):
+        if custody.get(name) != identities:
+            errors.append(f"{label}.{name}: exact controller-and-descendant set required")
+    census = _exact_fields(
+        custody.get("final_census"),
+        {
+            "absent_incarnations", "manager_absent", "no_owned_listeners",
+            "no_owned_roots", "no_owned_locks", "observer_loss", "fork_or_reparent_loss",
+        },
+        f"{label}.final_census",
+        errors,
+    )
+    if census.get("absent_incarnations") != identities:
+        errors.append(f"{label}.final_census.absent_incarnations: exact removal set required")
+    for name in (
+        "manager_absent", "no_owned_listeners", "no_owned_roots", "no_owned_locks",
+    ):
+        if census.get(name) is not True:
+            errors.append(f"{label}.final_census.{name}: true required")
+    for name in ("observer_loss", "fork_or_reparent_loss"):
+        if census.get(name) != 0:
+            errors.append(f"{label}.final_census.{name}: zero required")
+    return errors
+
+
+def _semantic_header_errors(
+    payload: object,
+    *,
+    fields: set[str],
+    kind: str,
+    owner_kind: str,
+    selector_name: str,
+    selector: str,
+    candidate: Mapping[str, object],
+    label: str,
+) -> tuple[dict[str, object], list[str]]:
+    errors: list[str] = []
+    row = _exact_fields(payload, fields, label, errors)
+    for name, value in (
+        ("kind", kind),
+        ("version", 1),
+        ("owner_kind", owner_kind),
+        ("selector_name", selector_name),
+        ("selector_value", selector),
+    ):
+        if row.get(name) != value:
+            errors.append(f"{label}.{name}: expected {value!r}")
+    expected_candidate = canonical_json_sha256(dict(candidate))
+    if row.get("candidate_sha256") != expected_candidate:
+        errors.append(f"{label}.candidate_sha256: differs from selected frozen candidate")
+    return row, errors
+
+
+def _direct_semantic_errors(
+    payload: object, parsed: ParsedEvidence, selector_name: str
+) -> list[str]:
+    if parsed.candidate is None:
+        return ["direct observation: selected candidate is absent"]
+    fields = {
+        "kind", "version", "owner_kind", "selector_name", "selector_value", "candidate_sha256",
+        "manager", "custody", "lifecycle", "semantic_data", "m4_6",
+    }
+    row, errors = _semantic_header_errors(
+        payload,
+        fields=fields,
+        kind="direct-custody/v1",
+        owner_kind="native",
+        selector_name=selector_name,
+        selector=parsed.selector,
+        candidate=parsed.candidate,
+        label="direct observation",
+    )
+    try:
+        if selector_name == "job_id":
+            os_name = matrix.release1_job(parsed.selector)["os"]
+        elif selector_name == "scenario_id":
+            os_name = release2.scenario_definition(parsed.selector)["os"]
+        else:
+            os_name = failure.SLOT_CONTRACTS[parsed.selector]["os"]
+    except (KeyError, ValueError):
+        return [*errors, "direct observation: selected OS is unavailable"]
+    manager = _exact_fields(
+        row.get("manager"),
+        {"name", "version", "definition_sha256", "action_sha256", "principal_id", "foreground_fallback"},
+        "direct observation.manager",
+        errors,
+    )
+    if manager.get("name") != native.MANAGERS[os_name]:
+        errors.append("direct observation.manager.name: differs from selected OS manager")
+    _require_id(manager.get("version"), "direct observation.manager.version", errors)
+    _require_digest(manager.get("definition_sha256"), "direct observation.manager.definition_sha256", errors)
+    _require_digest(manager.get("action_sha256"), "direct observation.manager.action_sha256", errors)
+    _require_id(manager.get("principal_id"), "direct observation.manager.principal_id", errors)
+    if manager.get("foreground_fallback") is not False:
+        errors.append("direct observation.manager.foreground_fallback: false required")
+    errors.extend(_custody_errors(row.get("custody"), manager.get("principal_id"), "direct observation.custody"))
+    lifecycle = _exact_fields(
+        row.get("lifecycle"),
+        {"operation_id", "journal_sha256", "terminal", "health", "cleanup"},
+        "direct observation.lifecycle",
+        errors,
+    )
+    _require_id(lifecycle.get("operation_id"), "direct observation.lifecycle.operation_id", errors)
+    _require_digest(lifecycle.get("journal_sha256"), "direct observation.lifecycle.journal_sha256", errors)
+    for name in ("terminal", "health", "cleanup"):
+        if lifecycle.get(name) != "pass":
+            errors.append(f"direct observation.lifecycle.{name}: pass required")
+    semantic = _exact_fields(
+        row.get("semantic_data"),
+        {"before_sha256", "after_sha256", "entities", "unrelated_sentinel_sha256"},
+        "direct observation.semantic_data",
+        errors,
+    )
+    _require_digest(semantic.get("before_sha256"), "direct observation.semantic_data.before_sha256", errors)
+    if semantic.get("after_sha256") != semantic.get("before_sha256"):
+        errors.append("direct observation.semantic_data: aggregate preservation differs")
+    entities = semantic.get("entities")
+    if not isinstance(entities, dict) or set(entities) != {"project", "document", "preferences", "cas"}:
+        errors.append("direct observation.semantic_data.entities: exact protected entity set required")
+    else:
+        for name, entity_value in entities.items():
+            entity = _exact_fields(
+                entity_value,
+                {"before_sha256", "after_sha256"},
+                f"direct observation.semantic_data.entities.{name}",
+                errors,
+            )
+            _require_digest(entity.get("before_sha256"), f"direct observation.semantic_data.entities.{name}.before_sha256", errors)
+            if entity.get("after_sha256") != entity.get("before_sha256"):
+                errors.append(f"direct observation.semantic_data.entities.{name}: preservation differs")
+    _require_digest(
+        semantic.get("unrelated_sentinel_sha256"),
+        "direct observation.semantic_data.unrelated_sentinel_sha256",
+        errors,
+    )
+    errors.extend(_m4_6_semantic_errors(row.get("m4_6"), "direct observation.m4_6"))
+    return errors
+
+
+def _pinokio_stop_case_errors(value: object, outcome: str, label: str) -> list[str]:
+    errors: list[str] = []
+    row = _exact_fields(
+        value,
+        {
+            "precondition_sha256", "injection_profile_sha256", "controller_incarnation",
+            "outcome", "no_write", "no_download", "no_admission", "no_retry",
+            "protected_state_sha256",
+        },
+        label,
+        errors,
+    )
+    for name in ("precondition_sha256", "injection_profile_sha256", "protected_state_sha256"):
+        _require_digest(row.get(name), f"{label}.{name}", errors)
+    _require_id(row.get("controller_incarnation"), f"{label}.controller_incarnation", errors)
+    if row.get("outcome") != outcome:
+        errors.append(f"{label}.outcome: expected {outcome!r}")
+    for name in ("no_write", "no_download", "no_admission", "no_retry"):
+        if row.get(name) is not True:
+            errors.append(f"{label}.{name}: true required")
+    return errors
+
+
+def _m4_6_semantic_errors(value: object, label: str) -> list[str]:
+    """Require the four independent M4-6 groups from raw producer facts."""
+    errors: list[str] = []
+    row = _exact_fields(
+        value,
+        {
+            "interruption_recovery", "failed_candidate_rollback", "keep_data_uninstall",
+            "stop_safety",
+        },
+        label,
+        errors,
+    )
+    interruption = _exact_fields(
+        row.get("interruption_recovery"),
+        {"operation_id", "terminal", "journal_sha256", "same_operation"},
+        f"{label}.interruption_recovery",
+        errors,
+    )
+    _require_id(interruption.get("operation_id"), f"{label}.interruption_recovery.operation_id", errors)
+    _require_digest(interruption.get("journal_sha256"), f"{label}.interruption_recovery.journal_sha256", errors)
+    if interruption.get("terminal") != "recovered" or interruption.get("same_operation") is not True:
+        errors.append(f"{label}.interruption_recovery: exact same-operation recovery required")
+    rollback = _exact_fields(
+        row.get("failed_candidate_rollback"),
+        {"release0_fixture_sha256", "rollback", "data_sha256"},
+        f"{label}.failed_candidate_rollback",
+        errors,
+    )
+    for name in ("release0_fixture_sha256", "data_sha256"):
+        _require_digest(rollback.get(name), f"{label}.failed_candidate_rollback.{name}", errors)
+    if rollback.get("rollback") != "pass":
+        errors.append(f"{label}.failed_candidate_rollback.rollback: pass required")
+    uninstall = _exact_fields(
+        row.get("keep_data_uninstall"),
+        {"cleanup", "data_sha256", "no_owned_residue"},
+        f"{label}.keep_data_uninstall",
+        errors,
+    )
+    _require_digest(uninstall.get("data_sha256"), f"{label}.keep_data_uninstall.data_sha256", errors)
+    if uninstall.get("cleanup") != "pass" or uninstall.get("no_owned_residue") is not True:
+        errors.append(f"{label}.keep_data_uninstall: cleanup and no-residue pass required")
+    stop = _exact_fields(row.get("stop_safety"), {"refused", "unknown"}, f"{label}.stop_safety", errors)
+    errors.extend(_pinokio_stop_case_errors(stop.get("refused"), "refused", f"{label}.stop_safety.refused"))
+    errors.extend(_pinokio_stop_case_errors(stop.get("unknown"), "unknown", f"{label}.stop_safety.unknown"))
+    return errors
+
+
+def _pinokio_semantic_errors(
+    payload: object, parsed: ParsedEvidence, selector_name: str
+) -> list[str]:
+    if parsed.candidate is None:
+        return ["Pinokio observation: selected candidate is absent"]
+    fields = {
+        "kind", "version", "owner_kind", "selector_name", "selector_value", "candidate_sha256",
+        "engine", "settlement", "stop_safety", "restoration", "custody", "m4_6",
+    }
+    row, errors = _semantic_header_errors(
+        payload,
+        fields=fields,
+        kind="pinokio-settlement/v1",
+        owner_kind="pinokio",
+        selector_name=selector_name,
+        selector=parsed.selector,
+        candidate=parsed.candidate,
+        label="Pinokio observation",
+    )
+    engine = _exact_fields(
+        row.get("engine"),
+        {
+            "daemon_sha256", "pterm_sha256", "instance_id", "boot_id", "app_id", "resource_id",
+            "root_sha256", "launcher_sha256", "action_sha256", "helper_graph_sha256",
+            "principal_id", "pinokio_sha",
+        },
+        "Pinokio observation.engine",
+        errors,
+    )
+    for name in (
+        "daemon_sha256", "pterm_sha256", "root_sha256", "launcher_sha256", "action_sha256",
+        "helper_graph_sha256",
+    ):
+        _require_digest(engine.get(name), f"Pinokio observation.engine.{name}", errors)
+    for name in ("instance_id", "boot_id", "app_id", "resource_id", "principal_id"):
+        _require_id(engine.get(name), f"Pinokio observation.engine.{name}", errors)
+    if engine.get("pinokio_sha") != parsed.candidate.get("pinokio"):
+        errors.append("Pinokio observation.engine.pinokio_sha: differs from selected candidate")
+    settlement = _exact_fields(
+        row.get("settlement"),
+        {
+            "request_id", "execution_id", "operation_id", "journal_sha256", "events", "terminal",
+            "readiness_sha256", "process_census_sha256",
+        },
+        "Pinokio observation.settlement",
+        errors,
+    )
+    for name in ("request_id", "execution_id", "operation_id"):
+        _require_id(settlement.get(name), f"Pinokio observation.settlement.{name}", errors)
+    for name in ("journal_sha256", "readiness_sha256", "process_census_sha256"):
+        _require_digest(settlement.get(name), f"Pinokio observation.settlement.{name}", errors)
+    events = settlement.get("events")
+    expected_kinds = ["accepted", "running", "terminal"]
+    if not isinstance(events, list) or len(events) != len(expected_kinds):
+        errors.append("Pinokio observation.settlement.events: one ordered accepted/running/terminal chain required")
+        events = []
+    terminal_event: dict[str, object] = {}
+    for number, expected_kind in enumerate(expected_kinds):
+        item = events[number] if number < len(events) else None
+        event = _exact_fields(
+            item,
+            {"sequence", "kind", "execution_id", "outcome", "source_sha256"},
+            f"Pinokio observation.settlement.events[{number}]",
+            errors,
+        )
+        if event.get("sequence") != number + 1:
+            errors.append(f"Pinokio observation.settlement.events[{number}].sequence: contiguous order required")
+        if event.get("kind") != expected_kind or event.get("execution_id") != settlement.get("execution_id"):
+            errors.append(f"Pinokio observation.settlement.events[{number}]: wrong kind or execution binding")
+        if expected_kind == "terminal":
+            if event.get("outcome") != "success":
+                errors.append("Pinokio observation.settlement terminal outcome: success required")
+            _require_digest(event.get("source_sha256"), "Pinokio observation.settlement terminal source", errors)
+            terminal_event = event
+        elif event.get("outcome") is not None or event.get("source_sha256") is not None:
+            errors.append(f"Pinokio observation.settlement.events[{number}]: only terminal may carry outcome/source")
+    terminal = _exact_fields(
+        settlement.get("terminal"),
+        {"execution_id", "outcome", "source_sha256", "sequence"},
+        "Pinokio observation.settlement.terminal",
+        errors,
+    )
+    if (
+        terminal.get("execution_id") != settlement.get("execution_id")
+        or terminal.get("outcome") != "success"
+        or terminal.get("sequence") != 3
+        or terminal.get("source_sha256") != terminal_event.get("source_sha256")
+    ):
+        errors.append("Pinokio observation.settlement.terminal: must exactly bind the one engine terminal")
+    stop_safety = _exact_fields(
+        row.get("stop_safety"), {"refused", "unknown"}, "Pinokio observation.stop_safety", errors
+    )
+    errors.extend(_pinokio_stop_case_errors(stop_safety.get("refused"), "refused", "Pinokio observation.stop_safety.refused"))
+    errors.extend(_pinokio_stop_case_errors(stop_safety.get("unknown"), "unknown", "Pinokio observation.stop_safety.unknown"))
+    restoration = _exact_fields(
+        row.get("restoration"),
+        {
+            "seam_removed", "callbacks_fenced", "controller_incarnation", "transport_sha256",
+            "checkout_sha", "runtime_sha", "readiness_sha256", "data_sha256", "sentinel_sha256", "cleanup",
+        },
+        "Pinokio observation.restoration",
+        errors,
+    )
+    if restoration.get("seam_removed") is not True or restoration.get("callbacks_fenced") is not True:
+        errors.append("Pinokio observation.restoration: seam removal and callback fencing required")
+    _require_id(restoration.get("controller_incarnation"), "Pinokio observation.restoration.controller_incarnation", errors)
+    for name in ("transport_sha256", "data_sha256", "sentinel_sha256"):
+        _require_digest(restoration.get(name), f"Pinokio observation.restoration.{name}", errors)
+    if restoration.get("checkout_sha") != parsed.candidate.get("pinokio"):
+        errors.append("Pinokio observation.restoration.checkout_sha: selected Pinokio checkout required")
+    if restoration.get("runtime_sha") != parsed.candidate.get("runtime"):
+        errors.append("Pinokio observation.restoration.runtime_sha: selected Runtime checkout required")
+    if restoration.get("readiness_sha256") != settlement.get("readiness_sha256"):
+        errors.append("Pinokio observation.restoration.readiness_sha256: differs from settled readiness")
+    if restoration.get("cleanup") != "pass":
+        errors.append("Pinokio observation.restoration.cleanup: pass required")
+    errors.extend(_custody_errors(row.get("custody"), engine.get("principal_id"), "Pinokio observation.custody"))
+    errors.extend(_m4_6_semantic_errors(row.get("m4_6"), "Pinokio observation.m4_6"))
+    m4_6 = row.get("m4_6")
+    if not isinstance(m4_6, dict) or not _same_json(m4_6.get("stop_safety"), row.get("stop_safety")):
+        errors.append("Pinokio observation.m4_6.stop_safety: differs from settlement stop safety")
+    return errors
+
+
+def semantic_observation_errors(parsed: ParsedEvidence | None, family: str) -> list[str]:
+    """Recompute R-30 §5 direct/Pinokio semantics for one selected input.
+
+    The caller must be M-CI's already-authenticated evaluator.  This function
+    only rejects mismatched or incomplete facts; it never reads files, chooses
+    an attempt, verifies signatures, or treats a producer claim as authority.
+    """
+    if parsed is None:
+        return ["authenticated_context: selected evidence could not be parsed"]
+    context, owner_kind, errors = _context_and_producer_errors(parsed, family)
+    if context is None or owner_kind is None:
+        return errors
+    errors.extend(_producer_file_errors(parsed))
+    if parsed.producer is None:
+        return errors
+    expected_id = _DIRECT_OBSERVATION_ID if owner_kind == "native" else _PINOKIO_OBSERVATION_ID
+    expected_path = _DIRECT_OBSERVATION_PATH if owner_kind == "native" else _PINOKIO_OBSERVATION_PATH
+    expected_kind = "direct-custody-v1" if owner_kind == "native" else "pinokio-settlement-v1"
+    observations = parsed.producer.export.get("observations")
+    checks = parsed.producer.export.get("checks")
+    if not isinstance(observations, list) or len(observations) != 1:
+        errors.append("producer export: exactly one selected semantic observation required")
+        observations = []
+    observation = observations[0] if observations else {}
+    if (
+        not isinstance(observation, dict)
+        or observation.get("id") != expected_id
+        or observation.get("kind") != expected_kind
+        or observation.get("file") != expected_path
+        or observation.get("sequence") != 1
+    ):
+        errors.append("producer export: semantic observation ID/kind/path/sequence differs")
+    if (
+        not isinstance(checks, list)
+        or len(checks) != 1
+        or not isinstance(checks[0], dict)
+        or checks[0].get("id") != expected_id
+        or checks[0].get("result") != "pass"
+        or checks[0].get("observations") != [expected_id]
+    ):
+        errors.append("producer export: exact semantic pass-check binding required")
+    payload = parsed.producer_files.get(expected_path, {}).get("json")
+    expected = _semantic_owner_and_selector(family, parsed.selector)
+    if expected is None:
+        return [*errors, "semantic observation: selected family/selector is unavailable"]
+    _owner, selector_name = expected
+    if owner_kind == "native":
+        errors.extend(_direct_semantic_errors(payload, parsed, selector_name))
+    else:
+        errors.extend(_pinokio_semantic_errors(payload, parsed, selector_name))
+    return errors

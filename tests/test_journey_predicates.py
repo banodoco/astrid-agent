@@ -1,7 +1,8 @@
-"""Focused refusal coverage for journey predicates.
+"""Focused positive and refusal coverage for the M-CI predicate seam.
 
-Synthetic fixtures exercise only parser and predicate rejection; they are not
-producer observations or authenticated evaluator input.
+Every positive fixture in this module is synthetic/rehearsal only.  It models
+the context which M-CI supplies after authentication; it is not release
+evidence and cannot qualify any journey on its own.
 """
 from __future__ import annotations
 
@@ -9,134 +10,156 @@ import copy
 
 import pytest
 
-from scripts import journey_failure_modes as failure
 from scripts import journey_predicates as predicates
-from tests.test_journey_observations import (
-    m4_5_index,
-    m4_6_index,
-    producer_envelope,
-    release1_index,
-)
+from tests.test_journey_observations import authenticated_index
 
 
 @pytest.mark.parametrize(
-    ("checker", "factory", "label"),
+    ("checker", "family", "selector"),
     [
-        (predicates.check_release1, release1_index, "Release-1"),
-        (predicates.check_m4_5, m4_5_index, "M4-5"),
-        (predicates.check_m4_6, m4_6_index, "M4-6"),
+        (predicates.check_release1, "release1", "direct-linux"),
+        (predicates.check_release1, "release1", "pinokio-backend-linux"),
+        (predicates.check_m4_5, "m4_5", "release2-install-line-direct-linux"),
+        (predicates.check_m4_5, "m4_5", "release2-pinokio-update-pinokio-backend-linux"),
+        (predicates.check_m4_6, "m4_6", "direct-linux"),
+        (predicates.check_m4_6, "m4_6", "pinokio-fully-local-linux"),
     ],
 )
-def test_every_available_predicate_remains_closed_without_independent_observations(checker, factory, label) -> None:
-    ok, reasons = checker(factory())
-    assert ok is False
-    assert any(label in reason and "independent R-30 section 5" in reason for reason in reasons)
-    assert any("authenticated producer export and collector seal are absent" in reason for reason in reasons)
-
-
-@pytest.mark.parametrize(
-    ("checker", "factory", "owner_kind", "label"),
-    [
-        (predicates.check_release1, release1_index, "native", "Release-1"),
-        (predicates.check_m4_5, m4_5_index, "native", "M4-5"),
-        (predicates.check_m4_6, m4_6_index, "native", "M4-6"),
-    ],
-)
-def test_structural_producer_export_still_refuses_without_mci_finalization(
-    checker, factory, owner_kind: str, label: str
+def test_complete_mci_context_and_semantic_observation_is_positive_synthetic_rehearsal(
+    checker, family: str, selector: str
 ) -> None:
-    index = factory()
-    index["producer"] = producer_envelope(owner_kind)
-    ok, reasons = checker(index)
-    assert ok is False
-    assert not any("producer export or collector seal is structurally invalid" in reason for reason in reasons)
-    assert any(label in reason and "M-CI authenticated finalization" in reason for reason in reasons)
+    ok, reasons = checker(authenticated_index(family, selector))
+    assert ok is True
+    assert reasons == []
 
 
 @pytest.mark.parametrize(
-    ("slot", "owner_kind"),
+    ("checker", "family", "selector"),
     [
-        ("direct-linux", "native"),
-        ("pinokio-backend-linux", "pinokio"),
-        ("pinokio-fully-local-linux", "pinokio"),
+        (predicates.check_release1, "release1", "direct-linux"),
+        (predicates.check_m4_5, "m4_5", "release2-install-line-direct-linux"),
+        (predicates.check_m4_6, "m4_6", "direct-linux"),
     ],
 )
-def test_m4_6_dispatches_direct_and_pinokio_producer_owners_then_refuses(slot: str, owner_kind: str) -> None:
-    index = m4_6_index(slot)
-    index["producer"] = producer_envelope(owner_kind)
-    ok, reasons = predicates.check_m4_6(index)
+def test_absent_or_structural_only_producer_is_not_an_authenticated_positive(
+    checker, family: str, selector: str
+) -> None:
+    absent = authenticated_index(family, selector)
+    absent.pop("authenticated_context")
+    ok, reasons = checker(absent)
     assert ok is False
-    assert not any("requires" in reason and "ownership" in reason for reason in reasons)
-    assert any("M-CI authenticated finalization" in reason for reason in reasons)
+    assert any("finalized authenticated context is absent" in reason for reason in reasons)
 
-
-def test_predicates_reject_foreign_producer_owner_and_malformed_producer_envelope() -> None:
-    foreign = m4_6_index("direct-linux")
-    foreign["producer"] = producer_envelope("pinokio")
-    reasons = predicates.check_m4_6(foreign)[1]
-    assert any("requires 'native' ownership" in reason for reason in reasons)
-    assert any("M-CI authenticated finalization" in reason for reason in reasons)
-
-    malformed = m4_6_index()
-    malformed["producer"] = producer_envelope()
-    malformed["producer"]["export"]["json"]["checks"][0]["observations"] = ["missing"]
-    reasons = predicates.check_m4_6(malformed)[1]
-    assert any("dangling observation" in reason for reason in reasons)
-    assert any("structurally invalid" in reason for reason in reasons)
-
-
-@pytest.mark.parametrize("slot", failure.REQUIRED_SLOT_IDS)
-def test_m4_6_all_slots_dispatch_then_refuse(slot: str) -> None:
-    ok, reasons = predicates.check_m4_6(m4_6_index(slot))
+    structural = authenticated_index(family, selector)
+    structural.pop("authenticated_context")
+    structural.pop("producer_files")
+    ok, reasons = checker(structural)
     assert ok is False
-    assert any("independent R-30 section 5" in reason for reason in reasons)
-    assert not any("parsed observation differs" in reason for reason in reasons)
+    assert any("finalized authenticated context is absent" in reason for reason in reasons)
 
 
-def test_m4_6_refuses_missing_skipped_forged_duplicate_and_wrong_slot_evidence() -> None:
-    missing = m4_6_index()
-    missing["files"].pop()
-    assert any("missing evidence" in reason for reason in predicates.check_m4_6(missing)[1])
+@pytest.mark.parametrize(
+    ("checker", "family", "selector"),
+    [
+        (predicates.check_release1, "release1", "direct-linux"),
+        (predicates.check_m4_5, "m4_5", "release2-install-line-direct-linux"),
+        (predicates.check_m4_6, "m4_6", "direct-linux"),
+    ],
+)
+def test_predicates_refuse_missing_skipped_forged_duplicate_and_wrong_tuple_evidence(
+    checker, family: str, selector: str
+) -> None:
+    missing = authenticated_index(family, selector)
+    missing["producer_files"] = []
+    ok, reasons = checker(missing)
+    assert ok is False
+    assert any("producer_files" in reason and "exactly" in reason for reason in reasons)
 
-    skipped = m4_6_index()
+    skipped = authenticated_index(family, selector)
     skipped["files"][0]["json"]["status"] = "skipped"
-    assert any("not pass" in reason for reason in predicates.check_m4_6(skipped)[1])
+    ok, reasons = checker(skipped)
+    assert ok is False
+    assert any("status" in reason or "not pass" in reason for reason in reasons)
 
-    forged = m4_6_index()
-    sidecar = forged["files"][1]
-    sidecar["json"]["observation"]["status"] = "forged"
-    assert any("parsed observation differs" in reason for reason in predicates.check_m4_6(forged)[1])
+    forged = authenticated_index(family, selector)
+    payload = forged["producer_files"][0]["json"]
+    if payload["owner_kind"] == "native":
+        payload["manager"]["foreground_fallback"] = True
+    else:
+        payload["settlement"]["terminal"]["outcome"] = "failed"
+    ok, reasons = checker(forged)
+    assert ok is False
+    assert any("foreground_fallback" in reason or "engine terminal" in reason for reason in reasons)
 
-    duplicate = m4_6_index()
-    duplicate["files"].append(copy.deepcopy(duplicate["files"][1]))
-    assert any("duplicate evidence path" in reason for reason in predicates.check_m4_6(duplicate)[1])
+    duplicate = authenticated_index(family, selector)
+    duplicate["producer_files"].append(copy.deepcopy(duplicate["producer_files"][0]))
+    ok, reasons = checker(duplicate)
+    assert ok is False
+    assert any("duplicate evidence path" in reason for reason in reasons)
 
-    wrong_slot = m4_6_index("direct-macos")
-    wrong_slot["slot_id"] = "direct-linux"
-    assert any("slot_id" in reason for reason in predicates.check_m4_6(wrong_slot)[1])
+    wrong_tuple = authenticated_index(family, selector)
+    wrong_tuple["authenticated_context"]["binding"]["tuple_sha256"] = "f" * 64
+    ok, reasons = checker(wrong_tuple)
+    assert ok is False
+    assert any("binding: differs from producer export" in reason for reason in reasons)
 
 
-def test_predicates_reject_malformed_indexes_digest_tuple_and_unsafe_paths() -> None:
-    ok, malformed = predicates.check_m4_6({"slot_id": [], "candidate": [], "files": [None]})
-    assert ok is False and malformed
+def test_context_rejects_wrong_selector_candidate_export_and_owner_bindings() -> None:
+    wrong_selector = authenticated_index("m4_6", "direct-linux")
+    wrong_selector["authenticated_context"]["selector_value"] = "direct-macos"
+    reasons = predicates.check_m4_6(wrong_selector)[1]
+    assert any("selector_value" in reason for reason in reasons)
 
-    index = m4_6_index()
-    index["candidate"]["manifest_sha256"] = "f" * 64
-    index["files"][0]["sha256"] = "A" * 64
-    index["files"].append({"path": "../escape.json", "sha256": "a" * 64, "json": {}})
-    reasons = predicates.check_m4_6(index)[1]
-    assert any("SHA-256 required" in reason for reason in reasons)
+    wrong_candidate = authenticated_index("m4_6", "direct-linux")
+    wrong_candidate["authenticated_context"]["candidate"]["agent"] = "f" * 40
+    reasons = predicates.check_m4_6(wrong_candidate)[1]
+    assert any("candidate" in reason and "differs" in reason for reason in reasons)
+
+    wrong_export = authenticated_index("m4_6", "direct-linux")
+    wrong_export["authenticated_context"]["producer_export_sha256"] = "0" * 64
+    reasons = predicates.check_m4_6(wrong_export)[1]
+    assert any("producer_export_sha256" in reason for reason in reasons)
+
+    wrong_owner = authenticated_index("m4_6", "direct-linux")
+    wrong_owner["producer"]["export"]["json"]["owner_kind"] = "pinokio"
+    reasons = predicates.check_m4_6(wrong_owner)[1]
+    assert any("ownership" in reason for reason in reasons)
+
+
+def test_direct_semantics_refuse_custody_loss_or_wrong_removal_set() -> None:
+    custody_loss = authenticated_index("m4_6", "direct-linux")
+    custody_loss["producer_files"][0]["json"]["custody"]["final_census"]["observer_loss"] = 1
+    reasons = predicates.check_m4_6(custody_loss)[1]
+    assert any("observer_loss" in reason for reason in reasons)
+
+    removal_mismatch = authenticated_index("release1", "direct-linux")
+    removal_mismatch["producer_files"][0]["json"]["custody"]["removed"] = ["controller-1"]
+    reasons = predicates.check_release1(removal_mismatch)[1]
+    assert any("exact controller-and-descendant set" in reason for reason in reasons)
+
+
+def test_pinokio_semantics_refuse_duplicate_terminal_and_unrestored_unknown_case() -> None:
+    duplicate_terminal = authenticated_index("m4_6", "pinokio-backend-linux")
+    duplicate_terminal["producer_files"][0]["json"]["settlement"]["events"][1]["kind"] = "terminal"
+    reasons = predicates.check_m4_6(duplicate_terminal)[1]
+    assert any("wrong kind" in reason for reason in reasons)
+
+    unsafe_unknown = authenticated_index("m4_5", "release2-pinokio-update-pinokio-fully-local-linux")
+    unsafe_unknown["producer_files"][0]["json"]["stop_safety"]["unknown"]["no_retry"] = False
+    reasons = predicates.check_m4_5(unsafe_unknown)[1]
+    assert any("no_retry" in reason for reason in reasons)
+
+
+def test_predicates_refuse_malformed_index_unsafe_paths_and_extra_context_fields() -> None:
+    ok, reasons = predicates.check_m4_6({"slot_id": [], "candidate": [], "files": [None]})
+    assert ok is False and reasons
+
+    unsafe = authenticated_index("m4_6", "direct-linux")
+    unsafe["producer_files"].append({"path": "../escape.json", "sha256": "a" * 64, "json": {}})
+    reasons = predicates.check_m4_6(unsafe)[1]
     assert any("safe relative path" in reason for reason in reasons)
-    assert any("manifest_sha256" in reason for reason in reasons)
 
-
-def test_release1_and_m4_5_reject_skipped_wrong_selector_and_malformed_observation() -> None:
-    release1 = release1_index()
-    release1["files"][0]["json"]["status"] = "skipped"
-    assert any("status" in reason for reason in predicates.check_release1(release1)[1])
-
-    m4_5 = m4_5_index()
-    m4_5["scenario_id"] = "release2-button-direct-windows"
-    m4_5["files"][0]["json"]["runner_provenance"] = []
-    reasons = predicates.check_m4_5(m4_5)[1]
-    assert any("scenario_id" in reason or "malformed M4-5" in reason for reason in reasons)
+    extra_context = authenticated_index("m4_6", "direct-linux")
+    extra_context["authenticated_context"]["authenticated"] = True
+    reasons = predicates.check_m4_6(extra_context)[1]
+    assert any("authenticated_context: unknown field" in reason for reason in reasons)

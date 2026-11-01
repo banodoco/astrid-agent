@@ -8,6 +8,7 @@ import json
 import pytest
 
 from scripts import journey_failure_modes as failure
+from scripts import journey_matrix as matrix
 from scripts import journey_observations as observations
 from scripts import journey_release2 as release2
 from scripts import native_service_adapter as native
@@ -210,6 +211,282 @@ def m4_6_index(slot: str = "direct-linux") -> dict:
         for path, raw in payloads.items()
     )
     return {"slot_id": slot, "candidate": copy.deepcopy(PROVISIONAL_CANDIDATE), "files": files}
+
+
+def _digest(label: str) -> str:
+    return hashlib.sha256(label.encode("ascii")).hexdigest()
+
+
+def _binding() -> dict:
+    return {
+        "qualification_id": "synthetic-rehearsal-r37",
+        "tuple_sha256": _digest("tuple"),
+        "inventory_sha256": _digest("inventory"),
+        "obligation_id": "synthetic-obligation-1",
+        "attempt_id": "synthetic-attempt-1",
+        "nonce": _digest("nonce"),
+        "origin_sha256": _digest("origin"),
+        "execution_sha256": _digest("execution"),
+    }
+
+
+def _custody(principal_id: str) -> dict:
+    identities = ["controller-1", "child-1"]
+    return {
+        "principal_id": principal_id,
+        "controller": {
+            "incarnation": identities[0],
+            "executable_sha256": _digest("controller"),
+            "birth_sequence": 1,
+            "reaped": True,
+        },
+        "descendants": [
+            {
+                "incarnation": identities[1],
+                "parent_incarnation": identities[0],
+                "executable_sha256": _digest("child"),
+                "birth_sequence": 2,
+                "reaped": True,
+            }
+        ],
+        "listeners": [{"owner_incarnation": identities[0], "identity_sha256": _digest("listener")}],
+        "roots": [{"owner_incarnation": identities[0], "identity_sha256": _digest("root")}],
+        "locks": [{"owner_incarnation": identities[1], "identity_sha256": _digest("lock")}],
+        "authorized_removal": identities,
+        "removed": identities,
+        "final_census": {
+            "absent_incarnations": identities,
+            "manager_absent": True,
+            "no_owned_listeners": True,
+            "no_owned_roots": True,
+            "no_owned_locks": True,
+            "observer_loss": 0,
+            "fork_or_reparent_loss": 0,
+        },
+    }
+
+
+def _direct_observation(selector_name: str, selector: str, candidate: dict, os_name: str) -> dict:
+    principal_id = "native-principal-1"
+    return {
+        "kind": "direct-custody/v1",
+        "version": 1,
+        "owner_kind": "native",
+        "selector_name": selector_name,
+        "selector_value": selector,
+        "candidate_sha256": observations.canonical_json_sha256(candidate),
+        "manager": {
+            "name": native.MANAGERS[os_name],
+            "version": "synthetic-version-1",
+            "definition_sha256": _digest("manager-definition"),
+            "action_sha256": _digest("manager-action"),
+            "principal_id": principal_id,
+            "foreground_fallback": False,
+        },
+        "custody": _custody(principal_id),
+        "lifecycle": {
+            "operation_id": "synthetic-operation-1",
+            "journal_sha256": _digest("native-journal"),
+            "terminal": "pass",
+            "health": "pass",
+            "cleanup": "pass",
+        },
+        "semantic_data": {
+            "before_sha256": _digest("native-data"),
+            "after_sha256": _digest("native-data"),
+            "entities": {
+                name: {"before_sha256": _digest(name), "after_sha256": _digest(name)}
+                for name in ("project", "document", "preferences", "cas")
+            },
+            "unrelated_sentinel_sha256": _digest("native-sentinel"),
+        },
+        "m4_6": _m4_6_groups(),
+    }
+
+
+def _stop_case(outcome: str) -> dict:
+    return {
+        "precondition_sha256": _digest(outcome + "-precondition"),
+        "injection_profile_sha256": _digest(outcome + "-injection"),
+        "controller_incarnation": "controller-1",
+        "outcome": outcome,
+        "no_write": True,
+        "no_download": True,
+        "no_admission": True,
+        "no_retry": True,
+        "protected_state_sha256": _digest(outcome + "-state"),
+    }
+
+
+def _m4_6_groups(stop_safety: dict | None = None) -> dict:
+    return {
+        "interruption_recovery": {
+            "operation_id": "same-operation-1",
+            "terminal": "recovered",
+            "journal_sha256": _digest("interruption-journal"),
+            "same_operation": True,
+        },
+        "failed_candidate_rollback": {
+            "release0_fixture_sha256": _digest("release0-fixture"),
+            "rollback": "pass",
+            "data_sha256": _digest("rollback-data"),
+        },
+        "keep_data_uninstall": {
+            "cleanup": "pass",
+            "data_sha256": _digest("keep-data"),
+            "no_owned_residue": True,
+        },
+        "stop_safety": copy.deepcopy(stop_safety or {
+            "refused": _stop_case("refused"),
+            "unknown": _stop_case("unknown"),
+        }),
+    }
+
+
+def _pinokio_observation(selector_name: str, selector: str, candidate: dict) -> dict:
+    terminal_source = _digest("engine-terminal")
+    readiness = _digest("pinokio-readiness")
+    principal_id = "pinokio-principal-1"
+    return {
+        "kind": "pinokio-settlement/v1",
+        "version": 1,
+        "owner_kind": "pinokio",
+        "selector_name": selector_name,
+        "selector_value": selector,
+        "candidate_sha256": observations.canonical_json_sha256(candidate),
+        "engine": {
+            "daemon_sha256": _digest("daemon"),
+            "pterm_sha256": _digest("pterm"),
+            "instance_id": "engine-instance-1",
+            "boot_id": "engine-boot-1",
+            "app_id": "registered-app-1",
+            "resource_id": "registered-resource-1",
+            "root_sha256": _digest("pinokio-root"),
+            "launcher_sha256": _digest("launcher"),
+            "action_sha256": _digest("action"),
+            "helper_graph_sha256": _digest("helpers"),
+            "principal_id": principal_id,
+            "pinokio_sha": candidate["pinokio"],
+        },
+        "settlement": {
+            "request_id": "request-1",
+            "execution_id": "execution-1",
+            "operation_id": "operation-1",
+            "journal_sha256": _digest("pinokio-journal"),
+            "events": [
+                {"sequence": 1, "kind": "accepted", "execution_id": "execution-1", "outcome": None, "source_sha256": None},
+                {"sequence": 2, "kind": "running", "execution_id": "execution-1", "outcome": None, "source_sha256": None},
+                {"sequence": 3, "kind": "terminal", "execution_id": "execution-1", "outcome": "success", "source_sha256": terminal_source},
+            ],
+            "terminal": {"execution_id": "execution-1", "outcome": "success", "source_sha256": terminal_source, "sequence": 3},
+            "readiness_sha256": readiness,
+            "process_census_sha256": _digest("pinokio-process-census"),
+        },
+        "stop_safety": {"refused": _stop_case("refused"), "unknown": _stop_case("unknown")},
+        "restoration": {
+            "seam_removed": True,
+            "callbacks_fenced": True,
+            "controller_incarnation": "controller-1",
+            "transport_sha256": _digest("transport"),
+            "checkout_sha": candidate["pinokio"],
+            "runtime_sha": candidate["runtime"],
+            "readiness_sha256": readiness,
+            "data_sha256": _digest("pinokio-data"),
+            "sentinel_sha256": _digest("pinokio-sentinel"),
+            "cleanup": "pass",
+        },
+        "custody": _custody(principal_id),
+        "m4_6": _m4_6_groups({"refused": _stop_case("refused"), "unknown": _stop_case("unknown")}),
+    }
+
+
+def authenticated_index(family: str, selector: str) -> dict:
+    """A complete synthetic/rehearsal M-CI predicate input, never acceptance evidence."""
+    if family == "release1":
+        index = release1_index(selector)
+        selector_name = "job_id"
+        row = matrix.release1_job(selector)
+        candidate = copy.deepcopy(index["candidate"])
+    elif family == "m4_5":
+        index = m4_5_index(selector)
+        selector_name = "scenario_id"
+        row = release2.scenario_definition(selector)
+        candidate = {**release2.RELEASE1_CANDIDATE, "manifest_sha256": release2.STAND_IN_MANIFEST_SHA256}
+        index["candidate"] = copy.deepcopy(candidate)
+    elif family == "m4_6":
+        index = m4_6_index(selector)
+        selector_name = "slot_id"
+        row = failure.SLOT_CONTRACTS[selector]
+        candidate = copy.deepcopy(index["candidate"])
+    else:  # pragma: no cover - test helper guard
+        raise ValueError(f"unknown synthetic family {family!r}")
+    owner_kind = "native" if row["mode"] == "direct" else "pinokio"
+    observation_id = "direct-custody" if owner_kind == "native" else "pinokio-settlement"
+    observation_path = (
+        "observations/direct-custody.json"
+        if owner_kind == "native" else "observations/pinokio-settlement.json"
+    )
+    observation_kind = "direct-custody-v1" if owner_kind == "native" else "pinokio-settlement-v1"
+    payload = (
+        _direct_observation(selector_name, selector, candidate, row["os"])
+        if owner_kind == "native"
+        else _pinokio_observation(selector_name, selector, candidate)
+    )
+    indexed_payload = _entry(observation_path, payload)
+    raw_size = len(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    binding = _binding()
+    export = {
+        "kind": "r23-export",
+        "version": 1,
+        "binding": binding,
+        "contract_sha256": _digest("producer-contract"),
+        "owner_kind": owner_kind,
+        "session_id": "synthetic-session-1",
+        "status": "pass",
+        "checks": [{"id": observation_id, "result": "pass", "observations": [observation_id]}],
+        "observations": [{"id": observation_id, "kind": observation_kind, "file": observation_path, "sha256": indexed_payload["sha256"], "sequence": 1}],
+        "continuity": {
+            "source_profile_sha256": _digest("loss-detecting-source"),
+            "first_sequence": 1,
+            "last_sequence": 1,
+            "event_count": 1,
+            "gaps": 0,
+            "dropped": 0,
+            "terminal": True,
+        },
+        "files": [{"path": observation_path, "role": "semantic-observation", "sha256": indexed_payload["sha256"], "size": raw_size}],
+    }
+    export_entry = _producer_record(export)
+    seal = {
+        "kind": "collector-seal",
+        "version": 1,
+        "binding": copy.deepcopy(binding),
+        "grant_sha256": _digest("grant"),
+        "collector_profile_sha256": _digest("collector-profile"),
+        "provider_contract_sha256": _digest("provider-contract"),
+        "export_sha256": export_entry["sha256"],
+        "claims_sha256": _digest("claims"),
+        "files_sha256": observations.canonical_json_sha256(export["files"]),
+        "result": "pass",
+        "context_state": "finalized",
+    }
+    producer = {"export": export_entry, "seal": _producer_record(seal)}
+    index["producer"] = producer
+    index["producer_files"] = [indexed_payload]
+    index["authenticated_context"] = {
+        "kind": "mci-authenticated-context",
+        "version": 1,
+        "family": family,
+        "selector_name": selector_name,
+        "selector_value": selector,
+        "candidate": copy.deepcopy(candidate),
+        "binding": copy.deepcopy(binding),
+        "producer_export_sha256": export_entry["sha256"],
+        "collector_seal_sha256": producer["seal"]["sha256"],
+        "observation_ids": [observation_id],
+        "state": "finalized",
+    }
+    return index
 
 
 @pytest.mark.parametrize(
