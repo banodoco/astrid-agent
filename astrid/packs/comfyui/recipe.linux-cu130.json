@@ -22,8 +22,8 @@
       "requirements": {
         "mode": "packaged",
         "packaged_lock": {
-          "path": "packs/runpod/requirements.linux-cu130.lock",
-          "sha256": "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
+          "path": "packs/comfyui/requirements.linux-cu130.lock",
+          "sha256": "75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"
         },
         "input_paths": [],
         "constraints": [],

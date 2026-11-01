@@ -66,6 +66,10 @@ def test_comfyui_linux_dry_run_resolves_packaged_recipe_and_model_lock(capsys):
     assert code == 0 and not err
     assert data['recipe']['engine'] == 'comfyui'
     assert data['recipe']['platform'] == 'linux-x86_64-cu130'
+    assert data['recipe']['environments'][0]['requirements']['packaged_lock'] == {
+        'path': 'packs/comfyui/requirements.linux-cu130.lock',
+        'sha256': '75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7',
+    }
     assert data['recipe']['models_lock']['path'] == 'packs/comfyui/models.lock.json'
     assert data['plan']['models_lock_sha256'] == data['recipe']['models_lock']['sha256']
     assert data['recipe']['start']['argv'][-1] == '{models_config}'

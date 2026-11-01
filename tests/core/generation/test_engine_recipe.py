@@ -74,6 +74,21 @@ def test_comfyui_linux_recipe_is_package_owned_and_keeps_h3_entry_unchanged():
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
+    requirements = recipe.environments[0].requirements.packaged_lock
+    assert requirements.path == "packs/comfyui/requirements.linux-cu130.lock"
+    assert requirements.sha256 == "75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"
+    assert hashlib.sha256((recipes._ROOT / requirements.path).read_bytes()).hexdigest() == requirements.sha256
+    lock_text = (recipes._ROOT / requirements.path).read_text(encoding="utf-8")
+    for pin in (
+        "comfyui-frontend-package==1.57.4", "comfyui-workflow-templates==0.11.100",
+        "comfyui-embedded-docs==0.5.15", "comfy-aimdo==0.6.0", "comfy-kitchen==0.2.40",
+        "opencv-python-headless==5.0.0.93",
+    ):
+        assert any(line.startswith(pin + " ") for line in lock_text.splitlines())
+    h3_requirements = recipes.load_recipe("vibecomfy-h3", platform).environments[0].requirements.packaged_lock
+    assert h3_requirements.path == "packs/runpod/requirements.linux-cu130.lock"
+    assert h3_requirements.sha256 == "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
+    assert hashlib.sha256((recipes._ROOT / h3_requirements.path).read_bytes()).hexdigest() == h3_requirements.sha256
     assert recipe.models_lock.path == "packs/comfyui/models.lock.json"
     assert recipe.models_lock.sha256 == hashlib.sha256(
         (recipes._ROOT / recipe.models_lock.path).read_bytes()
