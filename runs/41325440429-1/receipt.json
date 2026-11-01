@@ -1,0 +1,57 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "mkdir -p suite-proof; printf \"venue smoke\\n\" > suite-proof/result.txt; exit 7",
+  "effective_tuple": {
+    "agent": "ddd5d278796641901bd11508863a8ea21e6c9697",
+    "app": "7f6f99208100e895efebf39c70bc30af6cee0884",
+    "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime": "1a275bb339ae897e52a5be5e1da99e846e402037"
+  },
+  "event": "push",
+  "inner_exit_code": 7,
+  "inventory": [
+    {
+      "bytes": 12,
+      "path": "artifacts/suite-proof/result.txt",
+      "sha256": "be88a1a262d5a85a8c57a97161143be71c1c36e85eba1a532a69de841c4c2731"
+    },
+    {
+      "bytes": 0,
+      "path": "command.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "10159baf262b43a92d95db59dae1f72c645127301661e0a3ce4e38b295a97c58"
+    },
+    {
+      "bytes": 399,
+      "path": "requested-inputs.json",
+      "sha256": "352b269ed66bb303ae75af6f5daad7a612975cdf234b8c7d5e98cf83ec38cfb4"
+    },
+    {
+      "bytes": 428,
+      "path": "tuple.txt",
+      "sha256": "8125a86452fb069d9dc6c629f72d0c33dca55f3e54f0392e3b0cf543748f3f38"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "ddd5d278796641901bd11508863a8ea21e6c9697",
+    "app_ref": "7f6f99208100e895efebf39c70bc30af6cee0884",
+    "artifact_paths": "suite-proof/result.txt",
+    "command": "mkdir -p suite-proof; printf \"venue smoke\\n\" > suite-proof/result.txt; exit 7",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime_ref": "1a275bb339ae897e52a5be5e1da99e846e402037",
+    "slot": "1"
+  },
+  "run_attempt": "1",
+  "run_id": "41325440429",
+  "source_head": "f44acb319644b74d0167ef1b103329bce1776895",
+  "source_ref": "refs/heads/venue/M-VENUE-V-01-GITONLY-2",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-VENUE-V-01-GITONLY-2",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "f44acb319644b74d0167ef1b103329bce1776895"
+}
