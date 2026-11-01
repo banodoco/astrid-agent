@@ -163,16 +163,10 @@ from astrid.core.execution.process_group import (
     write_cleanup_latch,
 )
 from astrid.core.execution.process_group import (
-    group_exists as _owned_group_exists,
-)
-from astrid.core.execution.process_group import (
     process_birth_identity as _process_birth_identity,
 )
 from astrid.core.execution.process_group import (
     release_group as _release_owned_group,
-)
-from astrid.core.execution.process_group import (
-    signal_group as _signal_owned_group,
 )
 from astrid.core.execution.provider_route_grant import (
     ProviderRouteGrantAuthority,
@@ -1793,15 +1787,6 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return str(value)
-
-
-def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
-    _signal_owned_group(process, sig)
-    return
-
-
-def _process_group_exists(process: subprocess.Popen) -> bool:
-    return _owned_group_exists(process)
 
 
 def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
