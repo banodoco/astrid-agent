@@ -49,7 +49,7 @@ from urllib.request import url2pathname
 def qualified():
     runtime = importlib.import_module('astrid_runtime.bootstrap')
     capability = getattr(runtime, 'PINOKIO_STOP_HANDOFF_VERSION', None)
-    if type(capability) is not int or capability != 1:
+    if (len(sys.argv) < 3 or sys.argv[2] != 'provenance') and (type(capability) is not int or capability != 1):
         return False
     profile = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
     checkout = Path(profile['runtime_checkout']).resolve()
@@ -82,6 +82,15 @@ except (ImportError, OSError, ValueError, KeyError, TypeError):
 if not accepted:
     sys.exit('The selected Runtime cannot safely hand off Pinokio Stop. '
              'Update the Runtime through a qualified release first.')
+"""
+
+_PINOKIO_HANDOFF_CAPABILITY = """
+import importlib
+import sys
+runtime = importlib.import_module('astrid_runtime.bootstrap')
+capability = getattr(runtime, 'PINOKIO_STOP_HANDOFF_VERSION', None)
+if type(capability) is not int or capability != 1:
+    sys.exit(1)
 """
 
 
@@ -125,6 +134,38 @@ def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[
     identity = {key: recorded.get(key) for key in (
         "owner", "managed_by", "program_root", "data_root", "realm_id", "realm_root", "identity")}
     return old, data, identity
+
+
+def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
+    """Preserve C1 preflight; give a running incapable Runtime its contract refusal."""
+    from runtime_protocol import platform
+
+    lock_path = installer_lock_path(backend.service.home, backend.service.system)
+    held = False
+    if lock_path.exists():
+        try:
+            with lock_path.open("r+b") as stream:
+                try:
+                    platform.lock_file(stream.fileno(), blocking=False)
+                except BlockingIOError:
+                    held = True
+                else:
+                    platform.unlock_file(stream.fileno())
+        except FileNotFoundError:
+            pass
+
+    if held:
+        old, selected_data, _identity = selection(root, backend)
+        if selected_data != absolute(data):
+            raise ValueError("The selected Pinokio workspace changed before stop preflight.")
+        backend.run([old.python, "-I", "-B", "-c", _PINOKIO_RUNTIME_QUALIFICATION,
+                     old.profile, "provenance"], timeout=30, clean_bun_env=True)
+        try:
+            backend.run([old.python, "-I", "-B", "-c", _PINOKIO_HANDOFF_CAPABILITY],
+                        timeout=30, clean_bun_env=True)
+        except subprocess.CalledProcessError:
+            raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.") from None
+    backend.preflight_stop(absolute(data))
 
 
 class PinokioLifecycle:

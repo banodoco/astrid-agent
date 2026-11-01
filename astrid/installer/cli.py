@@ -97,7 +97,13 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Click-created update jobs require a login-managed Astrid installation.")
         if (args.update_app or (mode in {"install", "update"} and args.root
                 and marker.get("managed_by") == "pinokio")):
-            from .app_update import recover_app, selection, update_app, update_pinokio
+            from .app_update import (
+                preflight_pinokio_update,
+                recover_app,
+                selection,
+                update_app,
+                update_pinokio,
+            )
 
             backend.managed_by = "pinokio"
             pending = read_json(root / "update-transaction.json")
@@ -110,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             # Recovery-only invocations return above; fresh operations preflight
             # once here before downloads or staging. C1 remains stop authority.
-            backend.preflight_stop(absolute(marker["data_root"]))
+            preflight_pinokio_update(root, backend, absolute(marker["data_root"]))
             if not uv.is_absolute() or not uv.is_file():
                 raise ValueError("Run the install line to provide the pinned user-local uv.")
             manifest_path = args.manifest or root / "install-manifest.json"
