@@ -386,17 +386,22 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
         platform: str
         placement: str
 
-    monkeypatch.setattr(engine_cli, "load_recipe", lambda engine, platform: {"id": engine, "platform": platform})
+    class Recipe(dict):
+        models_lock = None
+
+    monkeypatch.setattr(engine_cli, "load_recipe", lambda engine, platform: Recipe(id=engine, platform=platform))
     monkeypatch.setattr(engine_cli, "_root", lambda args: "/fake/engine")
     monkeypatch.setattr(engine_cli, "plan_install", lambda recipe, root, placement: Plan(
         root=root, platform=recipe["platform"], placement=placement))
     monkeypatch.setattr(engine_cli, "validate_model_cache_root", lambda *args, **kwargs: None)
+    monkeypatch.setattr(engine_cli, "load_model_lock", lambda *args: type("Models", (), {"models": []})())
+    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 100))
     monkeypatch.setattr(engine_cli, "_custody_preflight", lambda root: None)
     monkeypatch.setattr(engine_cli, "install_engine", lambda *args, **kwargs: {"status": "installed", "engine": "e"})
     monkeypatch.setattr(engine_cli, "_default_backend", lambda **kwargs: (object(), object()))
     calls = []
 
-    def fake_run(argv, cwd):
+    def fake_run(argv, cwd, **kwargs):
         calls.append(argv)
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -427,4 +432,5 @@ def test_engine_install_success_and_coded_error_envelopes(monkeypatch):
     assert dry_run["structuredContent"] == {
         "plan": {"root": "/fake/engine", "platform": "linux-x86_64-cu130", "placement": "local"},
         "recipe": {"id": "e", "platform": "linux-x86_64-cu130"},
+        "disk_check": {"required_bytes": 0, "free_bytes": 100, "status": "ok", "basis": "locked_model_bytes"},
     }
