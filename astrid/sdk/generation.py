@@ -656,7 +656,12 @@ class GenerationFacade:
 
     @_generation_boundary
     def release(self, *, engine: str, target: str, client=None, wait=False):
-        """Delegate release admission to the actual host owner, never HTTP free."""
+        """Release a managed engine through its verified owner; never HTTP free an unowned target.
+
+        Attached or unmanaged targets are refused and never receive an HTTP free.
+        The owned managed engine is verified as the registered loopback owner, then
+        released through the existing native unload path (CheckoutServerAdapter.release).
+        """
         from astrid.core.generation.preflight import generation_error
         from astrid.core.generation.targets import canonical_engine
         if canonical_engine(engine) != 'comfyui':
@@ -670,7 +675,11 @@ class GenerationFacade:
                 code='missing_dependency', details={'field': 'target'},
                 fixes=[{'argv': ['astrid', 'generate', 'targets', '--target', target],
                         'scope': 'read_only', 'details': {}}])
-        return bridge(engine='comfyui', target=target, wait=wait)
+        result = bridge(engine='comfyui', target=target, wait=wait)
+        if isinstance(result, dict) and result.get('ok') is False:
+            raise generation_error(ValueError(str(result.get('reason') or 'release was not proven')),
+                code='release_not_proven', details={'field': 'target'})
+        return result
 
     def _invoke(self, capability_id: str, /, **kwargs: Any) -> Any:
         sdk_module = importlib.import_module(self.sdk_module_name)
