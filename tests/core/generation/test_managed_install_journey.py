@@ -1,9 +1,10 @@
 """Fake-only checks for read-only A03 preparation; no installer is run."""
 from dataclasses import replace
+import json
 
 import pytest
 
-from astrid.core.generation.engine_install_task import prepare_install, recheck_install
+from astrid.core.generation.engine_install_task import InstallBinding, prepare_install, recheck_install
 
 
 def test_plan_is_read_only_and_retains_unknown_disk_requirement(tmp_path):
@@ -65,3 +66,29 @@ def test_disk_observation_failure_is_not_silently_ignored(tmp_path, monkeypatch)
     monkeypatch.setattr(engine_install_task.os, 'fstatvfs', fail)
     with pytest.raises(OSError, match='disk unavailable'):
         prepare_install(root=str(tmp_path / 'engine'))
+
+
+def test_binding_round_trips_as_task_data_and_is_rechecked(tmp_path):
+    binding, _ = prepare_install(root=str(tmp_path / 'engine'))
+    restored = InstallBinding.from_dict(json.loads(json.dumps(binding.as_dict())))
+    assert restored == binding
+    assert recheck_install(restored).path == str(tmp_path)
+    altered = restored.as_dict()
+    altered['models_lock_sha256'] = '0' * 64
+    with pytest.raises(ValueError, match='binding changed'):
+        recheck_install(InstallBinding.from_dict(altered))
+
+
+@pytest.mark.parametrize('change', [
+    lambda d: d.pop('root'),
+    lambda d: d.update(extra='ignored'),
+    lambda d: d.update(root=''),
+    lambda d: d.update(anchor_inode=True),
+    lambda d: d.update(anchor_device=-1),
+])
+def test_binding_rejects_malformed_task_data(tmp_path, change):
+    binding, _ = prepare_install(root=str(tmp_path / 'engine'))
+    document = binding.as_dict()
+    change(document)
+    with pytest.raises(ValueError, match='invalid managed install binding'):
+        InstallBinding.from_dict(document)

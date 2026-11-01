@@ -6,7 +6,8 @@ binding in the admitted request and recheck it at the worker boundary.
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, fields
 
 from .engine_platforms import platform_adapter
 from .engine_recipe import load_model_lock, load_recipe
@@ -29,6 +30,23 @@ class InstallBinding:
 
     def as_dict(self):
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value):
+        """Reconstruct the exact JSON binding before the worker rechecks it.
+
+        The document is data, not proof of admission.  The host must obtain it
+        from the verified task envelope and call ``recheck_install`` before work.
+        """
+        if not isinstance(value, Mapping) or set(value) != {f.name for f in fields(cls)}:
+            raise ValueError('invalid managed install binding fields')
+        strings = {f.name for f in fields(cls)} - {'anchor_device', 'anchor_inode'}
+        if any(type(value[name]) is not str or not value[name] for name in strings):
+            raise ValueError('invalid managed install binding values')
+        if any(type(value[name]) is not int or value[name] < 0
+               for name in ('anchor_device', 'anchor_inode')):
+            raise ValueError('invalid managed install binding identity')
+        return cls(**dict(value))
 
 
 @dataclass(frozen=True)
