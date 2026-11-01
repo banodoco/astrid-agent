@@ -418,7 +418,11 @@ class ManagedToolSession:
                     "native cancellation is uncertain; session fenced for reconciliation"
                 )
             try:
-                native = self._call_adapter(active.adapter, "cancel", reason="confirmed")
+                cancel_admission = getattr(active.adapter, "cancel_admission", None)
+                if callable(cancel_admission):
+                    native = cancel_admission(token=token, reason="confirmed")
+                else:
+                    native = self._call_adapter(active.adapter, "cancel", reason="confirmed")
             except Exception as exc:
                 active.in_flight.pop(token.token_id, None)
                 self._fence_locked(reason="cancellation_not_verified")
