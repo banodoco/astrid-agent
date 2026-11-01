@@ -184,13 +184,41 @@ def _dispatch_dev(args: list[str]) -> int:
 
 
 def _dispatch_doctor(args: list[str]) -> int:
-    """Read the Runtime observer directly; never connect, start or provision."""
+    """Run a diagnostic, or the explicit bounded update-recovery front door."""
     import argparse
     import json
     import sys
     from pathlib import Path
 
-    parser = argparse.ArgumentParser(prog="astrid doctor", description="Read-only runtime health check.")
+    # Recovery is deliberately outside Runtime and the normal update route.
+    # In particular, it must not turn an H4/H5 held operation into a retry:
+    # the installer maintenance seam first produces a read-only plan, then
+    # requires an explicit reviewed hash before it can make a new generation.
+    if args and args[0] == "update-recovery":
+        if any(token in {"-h", "--help"} for token in args[1:]):
+            print(
+                "usage: astrid doctor update-recovery --root PROGRAM_ROOT "
+                "--data-root DATA_ROOT [--apply PLAN_SHA256]\n\n"
+                "Plan data-preserving recovery of unresolved update evidence. The default is a\n"
+                "read-only plan; --apply requires that plan's reviewed SHA-256 and never\n"
+                "retries the prior update operation.\n\n"
+                "options:\n"
+                "  --root PROGRAM_ROOT       absolute managed program directory\n"
+                "  --data-root DATA_ROOT     absolute workspace support directory\n"
+                "  --apply PLAN_SHA256       apply the reviewed recovery plan\n"
+                "  -h, --help                show this help\n"
+            )
+            return 0
+        from astrid.installer.cli import main as installer_main
+
+        return int(installer_main(["--update-recovery", *args[1:]]))
+
+    parser = argparse.ArgumentParser(
+        prog="astrid doctor",
+        description="Read-only runtime health check.",
+        epilog=("Recovery: astrid doctor update-recovery --root PROGRAM_ROOT "
+                "--data-root DATA_ROOT [--apply PLAN_SHA256]"),
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--diagnostic", action="store_true", help="emit the strict C2 diagnostic document")
     parser.add_argument("--shared", action="store_true", help="redact the diagnostic for shared transport")
