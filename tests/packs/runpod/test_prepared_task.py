@@ -16,6 +16,7 @@ from astrid.packs.runpod.prepared_task import (
     _task_credential_reference,
     release_prepared_worker,
 )
+from tests.packs.runpod.test_worker_release import release_case as release_case
 
 
 def _task(*, state: str = "queued", **changes: object) -> dict[str, object]:
@@ -394,3 +395,37 @@ def test_local_worker_is_not_restarted_when_runtime_generation_is_unobservable()
     runtime.workspace = UnavailableRuntime()
     with pytest.raises(PreparedWorkerError, match="could not be observed"):
         runtime._restore_local_worker()
+
+
+def test_installed_attachment_cannot_forge_quiescence_or_transfer_provider_release(release_case):
+    import asyncio
+    from dataclasses import asdict, replace
+    from astrid.packs.runpod.worker_preparation import write_target_record
+    from astrid.packs.runpod.worker_session import ManagedSessionError
+    from tests.test_runpod_managed_worker_session import _owner
+
+    case = release_case
+    session_owner, transport, selected, _ = _owner()
+    receipt = session_owner.start(selected)
+    selected = replace(selected, session_ref="vibecomfy-h3")
+    receipt = replace(receipt, session_ref="vibecomfy-h3")
+    record = {**case.record, "managed_session": {
+        "schema": "astrid.runpod.managed-session.v1",
+        "claim_operation_id": case.record["operation_id"],
+        "session_ref": selected.session_ref, "config_digest": selected.config_digest,
+        "output_root": selected.output_root, "selection": asdict(selected), "receipt": receipt.as_dict(),
+    }}
+    write_target_record(case.path, record)
+    preparer = case.fresh()
+    preparer.session_owner = session_owner
+    transport.calls.clear()
+    with pytest.raises(ManagedSessionError, match="original supervisor stop"):
+        asyncio.run(preparer.release(case.reference, runtime_owner=case.runtime))
+    saved = json.loads(case.path.read_bytes())
+    assert "delete" not in case.calls
+    assert "release_quiescence" not in saved
+    assert "session_stop" not in saved["release_progress"]
+    assert saved["operation_id"] == case.record["operation_id"]
+    assert saved["release_authorized"] is True
+    assert saved["acquisition_mode"] == "allocate"
+    assert transport.calls == []

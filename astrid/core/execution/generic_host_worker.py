@@ -50,6 +50,9 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
     else:
         bridge = _install_inherited_bridge(fd)
     try:
+        from ._child_import_receipt import observe_action_entry
+
+        observe_action_entry("worker_entry")
         if args[0] == "-c":
             sys.argv = ["-c", *args[2:]]
             sys.path[0] = ""

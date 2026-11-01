@@ -238,6 +238,47 @@ def test_new_generation_capability_can_opt_into_shared_publication_contract():
     assert _generation_capability_modality(capability) == "image"
 
 
+def test_specialized_publication_actions_opt_in_through_registered_metadata():
+    from astrid.sdk.invocation import (
+        _automatic_generation_intent,
+        _generation_capability_modality,
+        _generation_primary_output_port,
+        _generation_publish_effect,
+        get_capability,
+    )
+
+    declarations = (
+        ("wan2gp.generate_video", "video", "generated_videos"),
+        ("fal.h3_video", "video", "generated_videos"),
+        ("vibecomfy.character_animation", "video", "animated_video"),
+        ("vibecomfy.video_enhance", "video", "enhanced_video"),
+        ("fal.fal_foley", "audio", "audio"),
+    )
+    for capability_id, modality, output_port in declarations:
+        capability = get_capability(capability_id, kind="executor", include_elements=False)
+        publication = capability.definition["metadata"]["generation_publication"]
+        assert publication == {
+            "version": 1,
+            "modality": modality,
+            "output_port": output_port,
+        }
+        assert _generation_capability_modality(capability) == modality
+        intent = _automatic_generation_intent(capability, {}, modality=modality)
+        assert intent is not None
+        assert _generation_primary_output_port(capability, modality) == output_port
+        effect = _generation_publish_effect(
+            capability, project="project-1", generation_intent=intent
+        )
+        assert effect["payload"]["groups"][0]["selectors"][0]["output_port"] == output_port
+
+    undeclared = get_capability(
+        "wan2gp.validate_settings", kind="executor", include_elements=False
+    )
+    assert "generation_publication" not in undeclared.definition.get("metadata", {})
+    assert _generation_capability_modality(undeclared) is None
+    assert _automatic_generation_intent(undeclared, {}, modality=None) is None
+
+
 @pytest.fixture(scope="module")
 def registered_h3_finalizer():
     from astrid import sdk
