@@ -303,6 +303,7 @@ def test_native_render_uses_exact_verified_inputs_and_proves_cleanup(tmp_path, m
                 assert generated.get_object(digest).data == original_media[filename]
 
             assets_path.write_text(json.dumps(registry), encoding="utf-8")
+            admitted_registry = assets_path.read_bytes()
             managed = {}
             for name, path in (("timeline", timeline_path), ("assets_registry", assets_path)):
                 imported = generated.ingest_project_object(
@@ -317,6 +318,8 @@ def test_native_render_uses_exact_verified_inputs_and_proves_cleanup(tmp_path, m
                 assert isinstance(object_id, str) and isinstance(digest, str)
                 input_object_ids.append(object_id)
                 managed[name] = {"object_id": object_id, "digest": digest}
+            assert generated.get_object(managed["timeline"]["digest"]).data == original_timeline
+            assert generated.get_object(managed["assets_registry"]["digest"]).data == admitted_registry
 
             host_client = native.RuntimeProtocolClient(daemon.endpoint, daemon.worker_token)
             host = native.GenericPackHost(
@@ -354,9 +357,9 @@ def test_native_render_uses_exact_verified_inputs_and_proves_cleanup(tmp_path, m
             )
             admitted = host_client.task(task.task_id)
             assert list(admitted.input_object_ids) == input_object_ids
-            assert admitted.spec["inputs"] == spec["inputs"]
-            assert admitted.spec["inputs"]["timeline"] == managed["timeline"]
-            assert admitted.spec["inputs"]["assets_registry"] == managed["assets_registry"]
+            assert admitted.spec["spec"]["inputs"] == spec["inputs"]
+            assert admitted.spec["spec"]["inputs"]["timeline"] == managed["timeline"]
+            assert admitted.spec["spec"]["inputs"]["assets_registry"] == managed["assets_registry"]
             assert set(input_object_ids) == {
                 admitted_media["black"]["object_id"], admitted_media["silence"]["object_id"],
                 managed["timeline"]["object_id"], managed["assets_registry"]["object_id"],
