@@ -1053,7 +1053,10 @@ def world(tmp_path, monkeypatch):
         from astrid_runtime_client import WorkspaceClient
         import inspect
         assert type(client.generated) is WorkspaceClient
-        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
+        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/__init__.py"
+        from astrid_runtime_client.generated import WorkspaceClient as GeneratedWorkspaceClient
+        assert issubclass(WorkspaceClient, GeneratedWorkspaceClient)
+        assert Path(inspect.getfile(GeneratedWorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
         client.generated._transport = transport
         client.generated.timeout = 1
     else:
@@ -1239,7 +1242,7 @@ def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_chi
     )
     pack_root = tmp_path / "vibecomfy"
     pack_root.mkdir()
-    shipped = yaml.safe_load((Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/PACK.yaml").read_text())
+    shipped = yaml.safe_load((Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/pack.yaml").read_text())
     validate = copy.deepcopy(shipped["actions"]["validate"])
     validate.pop("resources", None)
     # This fixture dispatches the UI route only. Omitted optional canonical
@@ -2615,7 +2618,10 @@ def _fresh_snapshot_reader(world, *, authorized=True):
     from astrid_runtime_client import WorkspaceClient
     import inspect
     assert type(client.generated) is WorkspaceClient
-    assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
+    assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/__init__.py"
+    from astrid_runtime_client.generated import WorkspaceClient as GeneratedWorkspaceClient
+    assert issubclass(WorkspaceClient, GeneratedWorkspaceClient)
+    assert Path(inspect.getfile(GeneratedWorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
 
     def transport(method, path, headers, body):
         with world.lock:
@@ -3433,7 +3439,10 @@ def test_actual_human_review_acknowledged_batch_recovers_and_settles(world, monk
         from astrid_runtime_client import WorkspaceClient
         import inspect
         assert type(fresh.generated) is WorkspaceClient
-        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
+        assert Path(inspect.getfile(WorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/__init__.py"
+        from astrid_runtime_client.generated import WorkspaceClient as GeneratedWorkspaceClient
+        assert issubclass(WorkspaceClient, GeneratedWorkspaceClient)
+        assert Path(inspect.getfile(GeneratedWorkspaceClient)).resolve() == Path(__file__).resolve().parents[3] / "astrid_runtime_client/generated.py"
         fresh.generated._transport = world.transport
         fresh.executor_id = "worker"
         world.client = fresh

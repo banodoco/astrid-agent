@@ -16,6 +16,7 @@ import hashlib
 import heapq
 import hmac
 import importlib.util
+import inspect
 import io
 import json
 import logging
@@ -5457,8 +5458,35 @@ class RuntimeProtocolClient:
         )
         return self._terminal_evidence_mutation(
             task_id, result,
-            lambda: completion_client.fail_attempt(attempt_id, **request),
+            lambda: self._terminal_evidence_request(completion_client, "fail_attempt", attempt_id, request),
         )
+
+    @staticmethod
+    def _terminal_evidence_request(client, operation_name, identifier, request):
+        """Carry server-supported terminal fields omitted by a generated signature.
+
+        The published server accepts F05 outputs/result and fenced cancellation.
+        Keep those bytes and the original idempotency key through the generated
+        transport/decoder when its convenience method has the older signature.
+        """
+        operation = getattr(client, operation_name)
+        parameters = inspect.signature(operation).parameters
+        if (any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+                or request.keys() <= parameters.keys()):
+            return operation(identifier, **request)
+        routes = {"fail_attempt": ("attempts", "fail"), "cancel_task": ("tasks", "cancel")}
+        if (operation_name not in routes or not callable(getattr(client, "_request", None))
+                or not callable(getattr(client, "_mutation_json", None))):
+            raise HostError("Runtime client cannot carry the complete terminal evidence request")
+        collection, action = routes[operation_name]
+        payload = dict(request)
+        idempotency_key = payload.pop("idempotency_key")
+        _, _, body = client._request(
+            "POST", f"/v1/{collection}/{quote(str(identifier), safe='')}/{action}",
+            body=json.dumps(payload, separators=(",", ":"), allow_nan=False).encode(),
+            headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key},
+        )
+        return client._mutation_json(body)
 
     def _terminal_evidence_mutation(
         self, task_id: str, expected_result: Mapping[str, Any] | None,
@@ -5588,7 +5616,7 @@ class RuntimeProtocolClient:
         )
         return self._terminal_evidence_mutation(
             task_id, result,
-            lambda: self._lifecycle_client().cancel_task(task_id, **request),
+            lambda: self._terminal_evidence_request(self._lifecycle_client(), "cancel_task", task_id, request),
         )
 
     def get_object(self, digest: str) -> bytes:

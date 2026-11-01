@@ -115,6 +115,7 @@ class _Backend(Backend):
         self.say = print
         self.managed_by = None
         self.process_control = None
+        self._foreground_stop_retired = False
         from astrid.installer.service import Service
 
         self.service = Service(self.root, self.log, self.run, home=base / "home", system="linux")
@@ -454,7 +455,7 @@ def test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup(tmp_path,
     result = _run(tmp_path, "runtime:" + state)
     assert result.returncode == -signal.SIGKILL, result.stderr
     journal = read_json(tmp_path / "data/runtime/upgrade-journal.json")
-    assert journal["state"] == ("stopped" if state == "migration-committed" else state)
+    assert journal["state"] == ("backup_verified" if state == "migration-committed" else state)
     transaction = read_json(tmp_path / "program/update-transaction.json")
     assert transaction["backup"]["root"]
     assert transaction["realm"]["realm_id"] == journal["realm_id"]
@@ -954,6 +955,18 @@ def _installer(base, kill_at, mode):
     platform.durable_replace = durable_replace_and_kill
     Path.unlink = unlink_and_kill
     backend = _Backend(base, kill_at)
+    if (base / "authenticated").is_file():
+        # These synthetic versions share one interpreter, but this matrix
+        # exercises authenticated backup/restore across distinct installations.
+        # Keep the real schema observation and distinguish only the fixture's
+        # policy input. Current-schema no-touch dispatch has its own real test.
+        actual_inspect = core.inspect_schema
+
+        def distinct_installations(backend, version, realm, **kwargs):
+            return {**actual_inspect(backend, version, realm, **kwargs),
+                    "fixture_installation": version.root.name}
+
+        core.inspect_schema = distinct_installations
     # Service manager effects are the one OS boundary patched in this proof;
     # ordinary update staging/registration/candidate start are deterministic
     # fixture boundaries. Recovery C1, restore, and the old Runtime launch/status
