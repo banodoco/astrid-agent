@@ -58,7 +58,8 @@ def test_owned_canonical_legacy_uses_existing_lock(setup_location, monkeypatch):
 
 
 @pytest.mark.parametrize("location", ["custom-root", "custom-xdg", "canonical-with-custom-xdg", "wrong-owner"])
-@pytest.mark.parametrize("entry", ["foreground", "cli", "worker", "local"])
+@pytest.mark.parametrize("entry", ["foreground", "cli-install", "cli-update", "cli-uninstall",
+                                   "cli-app-update", "worker", "local", "custody", "preflight"])
 def test_identityless_refusal_is_durable_and_does_not_touch_lock_or_metadata(
         setup_location, monkeypatch, capsys, location, entry):
     home = setup_location
@@ -81,8 +82,11 @@ def test_identityless_refusal_is_durable_and_does_not_touch_lock_or_metadata(
         monkeypatch.setattr(platform, "is_current_user", lambda st: st.st_ino != bad_inode and original(st))
     monkeypatch.setattr(os, "execvpe", lambda *_: pytest.fail("Runtime executed"))
     monkeypatch.setattr(platform, "lock_file", lambda *_args, **_kwargs: pytest.fail("lock opened"))
-    if entry == "cli":
-        assert cli.main(["--root", str(root), "--uninstall"]) == 1
+    if entry.startswith("cli-"):
+        mode = {"cli-install": [], "cli-update": ["--update"],
+                "cli-uninstall": ["--uninstall"],
+                "cli-app-update": ["--update-app", "--managed-by", "pinokio"]}[entry]
+        assert cli.main(["--root", str(root), *mode]) == 1
         assert "Unsupported legacy location. Reinstall fresh." in capsys.readouterr().out
     else:
         with pytest.raises(ValueError, match="Unsupported legacy location. Reinstall fresh"):
@@ -90,8 +94,17 @@ def test_identityless_refusal_is_durable_and_does_not_touch_lock_or_metadata(
                 foreground.launch(root, [])
             elif entry == "worker":
                 update_job._locked(root)
-            else:
+            elif entry == "local":
                 local_update.execute({"action": "update"}, root, stdin=None, stdout=None)
+            elif entry == "custody":
+                from astrid.installer.custody import operation
+
+                with operation(root, None):
+                    pytest.fail("custody admitted")
+            else:
+                from astrid.installer.app_update import preflight_pinokio_update
+
+                preflight_pinokio_update(root, None, home / "data")
     receipt = json.loads((platform.log_dir() / "unsupported-legacy-location.json").read_text())
     assert receipt == {"exit": "unsupported-legacy-location", "message": "Unsupported legacy location. Reinstall fresh.", "program_root": str(root)}
     assert snapshot(metadata) == before
