@@ -1267,9 +1267,11 @@ def _custody_errors(
         _require_id(incarnation, f"{label}.descendants[{number}].incarnation", errors)
         _require_digest(row.get("executable_sha256"), f"{label}.descendants[{number}].executable_sha256", errors)
         _r30_positive_integer(row.get("birth_sequence"), f"{label}.descendants[{number}].birth_sequence", errors)
-        if row.get("parent_incarnation") not in seen:
+        parent_incarnation = row.get("parent_incarnation")
+        _require_id(parent_incarnation, f"{label}.descendants[{number}].parent_incarnation", errors)
+        if isinstance(parent_incarnation, str) and parent_incarnation not in seen:
             errors.append(f"{label}.descendants[{number}].parent_incarnation: known earlier lineage required")
-        if incarnation in seen:
+        if isinstance(incarnation, str) and incarnation in seen:
             errors.append(f"{label}.descendants[{number}].incarnation: duplicate/PID-reused identity")
         if births and type(row.get("birth_sequence")) is int and row["birth_sequence"] <= max(births):
             errors.append(f"{label}.descendants[{number}].birth_sequence: strict lineage order required")
@@ -1294,13 +1296,15 @@ def _custody_errors(
                 errors,
             )
             owner = row.get("owner_incarnation")
-            if owner not in seen:
+            _require_id(owner, f"{label}.{name}[{number}].owner_incarnation", errors)
+            if isinstance(owner, str) and owner not in seen:
                 errors.append(f"{label}.{name}[{number}].owner_incarnation: owned lineage required")
             _require_digest(row.get("identity_sha256"), f"{label}.{name}[{number}].identity_sha256", errors)
-            key = (owner, row.get("identity_sha256"))
-            if key in observed:
-                errors.append(f"{label}.{name}[{number}]: duplicate owner observation")
-            observed.add(key)
+            if isinstance(owner, str) and isinstance(row.get("identity_sha256"), str):
+                key = (owner, row["identity_sha256"])
+                if key in observed:
+                    errors.append(f"{label}.{name}[{number}]: duplicate owner observation")
+                observed.add(key)
     for name in ("authorized_removal", "removed"):
         if custody.get(name) != identities:
             errors.append(f"{label}.{name}: exact controller-and-descendant set required")
@@ -1321,7 +1325,7 @@ def _custody_errors(
         if census.get(name) is not True:
             errors.append(f"{label}.final_census.{name}: true required")
     for name in ("observer_loss", "fork_or_reparent_loss"):
-        if census.get(name) != 0:
+        if type(census.get(name)) is not int or census.get(name) != 0:
             errors.append(f"{label}.final_census.{name}: zero required")
     return errors
 

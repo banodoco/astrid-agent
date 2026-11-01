@@ -137,6 +137,50 @@ def test_direct_semantics_refuse_custody_loss_or_wrong_removal_set() -> None:
     reasons = predicates.check_release1(removal_mismatch)[1]
     assert any("exact controller-and-descendant set" in reason for reason in reasons)
 
+    census_mismatch = authenticated_index("release1", "direct-linux")
+    census_mismatch["producer_files"][0]["json"]["custody"]["final_census"][
+        "absent_incarnations"
+    ] = ["controller-1"]
+    reasons = predicates.check_release1(census_mismatch)[1]
+    assert any("absent_incarnations" in reason for reason in reasons)
+
+    boolean_loss = authenticated_index("m4_6", "direct-linux")
+    boolean_loss["producer_files"][0]["json"]["custody"]["final_census"]["observer_loss"] = False
+    reasons = predicates.check_m4_6(boolean_loss)[1]
+    assert any("observer_loss" in reason for reason in reasons)
+
+
+def test_direct_semantics_refuse_stale_owner_and_duplicate_bindings() -> None:
+    stale = authenticated_index("m4_6", "direct-linux")
+    stale["producer"]["seal"]["json"]["context_state"] = "observing"
+    ok, reasons = predicates.check_m4_6(stale)
+    assert ok is False
+    assert any("context_state" in reason or "producer.seal" in reason for reason in reasons)
+
+    owner_mismatch = authenticated_index("m4_6", "direct-linux")
+    owner_mismatch["producer"]["export"]["json"]["owner_kind"] = "pinokio"
+    ok, reasons = predicates.check_m4_6(owner_mismatch)
+    assert ok is False
+    assert any("ownership" in reason or "owner_kind" in reason for reason in reasons)
+
+    duplicate_observation = authenticated_index("m4_6", "direct-linux")
+    duplicate_observation["producer"]["export"]["json"]["observations"].append(
+        copy.deepcopy(duplicate_observation["producer"]["export"]["json"]["observations"][0])
+    )
+    ok, reasons = predicates.check_m4_6(duplicate_observation)
+    assert ok is False
+    assert any("duplicate" in reason or "exactly one" in reason for reason in reasons)
+
+
+def test_direct_semantics_turn_malformed_lineage_into_refusal_not_an_exception() -> None:
+    malformed = authenticated_index("m4_6", "direct-linux")
+    custody = malformed["producer_files"][0]["json"]["custody"]
+    custody["descendants"][0]["parent_incarnation"] = []
+    custody["listeners"][0]["owner_incarnation"] = {}
+    ok, reasons = predicates.check_m4_6(malformed)
+    assert ok is False
+    assert any("parent_incarnation" in reason or "owner_incarnation" in reason for reason in reasons)
+
 
 def test_pinokio_semantics_refuse_duplicate_terminal_and_unrestored_unknown_case() -> None:
     duplicate_terminal = authenticated_index("m4_6", "pinokio-backend-linux")
