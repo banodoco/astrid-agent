@@ -111,6 +111,9 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
             raise ValueError("Astrid is busy; the C1 preflight refused this update.")
 
         monkeypatch.setattr(Backend, "preflight_stop", fenced_preflight)
+        # This test targets the existing C1 busy refusal after a capable
+        # Runtime qualification; its placeholder interpreter isn't executable.
+        monkeypatch.setattr(Backend, "run", lambda *_args, **_kwargs: "")
     marker_before = marker_path.read_bytes() if marker_path.exists() else None
     selection_before = selection_path.read_bytes() if selection_path.exists() else None
     lock_path = installer_lock_path(home, sys.platform)
@@ -659,6 +662,9 @@ def test_posix_run_lock_is_not_inherited_by_child_and_crash_releases_it(tmp_path
             raise ValueError("C1 preflight refused: test owner has no Runtime custody report.")
 
         monkeypatch.setattr(Backend, "preflight_stop", refuse_unpublished_test_owner)
+        # The fixture's placeholder interpreter only models the live owner;
+        # qualification is outside this lock-inheritance test's boundary.
+        monkeypatch.setattr(Backend, "run", lambda *_args, **_kwargs: "")
         assert cli.main(["--update", "--root", str(app_root)]) == 1
         assert "C1 preflight refused: test owner has no Runtime custody report." in capsys.readouterr().out
         assert not (app_root / "update-transaction.json").exists()

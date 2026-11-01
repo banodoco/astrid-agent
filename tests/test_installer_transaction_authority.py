@@ -439,15 +439,15 @@ def test_recovery_rechecks_exact_stale_pid_absence_at_final_fence(tmp_path, monk
     _publish_owner(paths)
     boundary.live = True
     bootstrap = importlib.import_module("astrid_runtime.bootstrap")
-    mutex = bootstrap._bootstrap_mutex
+    fence = bootstrap.interruption_fence
 
     @contextmanager
-    def replacement_after_absence(paths_arg):
-        with mutex(paths_arg):
-            _publish_owner(paths_arg, pid=887, birth="replacement-birth")
+    def replacement_after_absence(realm_root):
+        with fence(realm_root):
+            _publish_owner(paths, pid=887, birth="replacement-birth")
             yield
 
-    monkeypatch.setattr(bootstrap, "_bootstrap_mutex", replacement_after_absence)
+    monkeypatch.setattr(bootstrap, "interruption_fence", replacement_after_absence)
     journal = backend.root / "update-transaction.json"
     before = journal.read_bytes()
 
@@ -550,8 +550,9 @@ def test_cli_recovers_completed_stop_with_fresh_controller(tmp_path, monkeypatch
         def foreground_start(version, workspace, realm_id):
             lock = installer_lock_path(fresh.service.home, fresh.service.system)
             with lock.open("a+b") as stream:
-                platform.lock_file(stream.fileno(), blocking=False)
-                platform.unlock_file(stream.fileno())
+                with pytest.raises(BlockingIOError):
+                    platform.lock_file(stream.fileno(), blocking=False)
+            assert fresh._pinokio_custody is not None
             verify(version, workspace, realm_id)
 
         lifecycle = SimpleNamespace(validate=lambda *_: None, stop=fresh.stop, start=foreground_start)

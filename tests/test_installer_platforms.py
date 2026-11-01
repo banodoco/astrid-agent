@@ -70,6 +70,31 @@ def _runtime_argv(script):
     raise AssertionError('the launch script does not call main() with a Runtime argv')
 
 
+def _service_envelope(rendered, system):
+    """Freeze the platform service shape without coupling it to the live prelude.
+
+    ``service.render`` deliberately embeds the current installer admission
+    prelude.  That prelude has its own custody and recovery coverage; keeping
+    it in these release-0 envelope snapshots would make an unrelated custody
+    change look like a platform-definition regression.
+    """
+    if system == 'darwin':
+        value = plistlib.loads(rendered.encode())
+        arguments = value['ProgramArguments']
+        assert len(arguments) == 6 and arguments[4] == '-c'
+        arguments[5] = '<installer-launch-prelude>'
+        return plistlib.dumps(value).decode()
+    if system == 'linux':
+        prefix, separator, remaining = rendered.partition('"-c" "')
+        prelude, boundary, suffix = remaining.partition('"\nEnvironment=')
+        assert separator and prelude and boundary
+        return prefix + '"-c" "<installer-launch-prelude>"\nEnvironment=' + suffix
+    prefix, separator, remaining = rendered.partition(' -c "')
+    prelude, boundary, suffix = remaining.partition('"</Arguments>')
+    assert separator and prelude and boundary
+    return prefix + ' -c "<installer-launch-prelude>"</Arguments>' + suffix
+
+
 @pytest.mark.parametrize('system,fixture', [('darwin','launchd.plist'), ('linux','systemd.service'), ('win32','task.xml')])
 def test_service_definitions_match_reviewed_snapshots(system, fixture):
     version, data, log = sample(system)
@@ -80,7 +105,8 @@ def test_service_definitions_match_reviewed_snapshots(system, fixture):
         boundary = root.find('t:Triggers/t:TimeTrigger/t:StartBoundary', ns)
         if boundary is not None:
             rendered = rendered.replace(boundary.text, '2000-01-01T00:00:00+00:00')
-    assert rendered == (FIXTURES / fixture).read_text(encoding='utf-8')
+    assert _service_envelope(rendered, system) == _service_envelope(
+        (FIXTURES / fixture).read_text(encoding='utf-8'), system)
     assert 'npm' not in rendered and 'pack_host' not in rendered and 'chat' not in rendered
     assert 'runtime-service.log' in rendered and 'install.log' not in rendered
 

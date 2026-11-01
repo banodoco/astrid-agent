@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
 import runpy
 import sys
@@ -269,7 +270,6 @@ def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path
 def test_generated_foreground_retains_exact_admission_across_rollback(
         tmp_path, monkeypatch, step, selected, allowed, data_matches, hold_update_lock):
     from runtime_protocol import platform
-
     root, data, old = _installation(tmp_path)
     candidate = _second_version(root)
     chosen = candidate if selected == "candidate" else old
@@ -318,12 +318,7 @@ def test_generated_foreground_retains_exact_admission_across_rollback(
         else:
             with pytest.raises(ValueError) as result:
                 runpy.run_path(str(root / "run_runtime.py"))
-            if (step, selected, data_matches) in {
-                    ("switched", "candidate", True),
-                    ("rollback_selected", "old", True)}:
-                assert str(result.value) == "Choose Update to finish"
-            else:
-                assert "An Astrid update was interrupted" in str(result.value)
+            assert str(result.value) == "Choose Update to finish"
             assert observed == []
     finally:
         if lock is not None:
@@ -339,8 +334,9 @@ def test_generated_foreground_refuses_malformed_pending_journal(tmp_path, monkey
     launcher.install(root)
     monkeypatch.setattr(sys, "argv", [str(root / "run_runtime.py")])
     monkeypatch.setattr(os, "execvpe", lambda *_args: pytest.fail("malformed journal launched Runtime"))
-    with pytest.raises(ValueError, match="interrupted|Update"):
+    with pytest.raises(ValueError) as raised:
         runpy.run_path(str(root / "run_runtime.py"))
+    assert str(raised.value) == "Choose Update to finish"
 
 
 def test_launch_resolves_the_selected_version_each_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

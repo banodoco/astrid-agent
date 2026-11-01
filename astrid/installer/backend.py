@@ -545,6 +545,31 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         except Exception as exc:
             raise self._stop_failure(exc) from exc
 
+    def pinokio_stopped(self, data: Path) -> bool:
+        """Admit a receipt-free old Stop only under stopped-update custody.
+
+        Old Runtimes remove both owner publications on successful Stop. C1's
+        newer completed-stop receipt is neither required nor manufactured here.
+        Any remaining publication/foreground claim keeps the normal C1 path.
+        """
+        custody = getattr(self, "_pinokio_custody", None)
+        if self.managed_by != "pinokio" or custody is None:
+            return False
+        custody.check()
+        if self._pending_restore_selection(data) is not None:
+            return False  # Restore gaps retain C1's final selection fence.
+        from astrid_runtime.paths import RuntimePaths
+
+        paths = RuntimePaths.current(data_root=data)
+        if (os.path.lexists(paths.discovery_path) or os.path.lexists(paths.instance_lock_path)
+                or self.service.recorded().get("foreground") is not None):
+            return False
+        # Repeat the read-only durable work/refusal checks at the stop boundary.
+        # Custody excludes canonical Start throughout this check and activation.
+        self.preflight_stop(data)
+        custody.check()
+        return True
+
     def publish_launch_admission(self, version: Version, data: Path) -> None:
         """Refresh the selected install's launch action before its first C1 stop."""
         if self.managed_by == "pinokio":
@@ -580,6 +605,20 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             boundary = getattr(self, "_stop_boundary", None)
             if boundary is None:
                 boundary = self._stop_boundary = LocalRuntimeBoundary()
+            # The published Runtime tuple handles the authoritative C1 fence,
+            # but its stale-PID branch cannot reject a positively observed
+            # different incarnation.  Never hand that owner to a manager: a
+            # proven birth mismatch is an installer-side refusal before any
+            # stop, workspace, or selection mutation.
+            discovery = read_json(paths.discovery_path)
+            if isinstance(discovery, dict):
+                pid, expected_birth = discovery.get("pid"), discovery.get("process_birth_id")
+                observe_birth = getattr(boundary, "process_birth_identity", None)
+                if type(pid) is int and pid > 0 and isinstance(expected_birth, str) and callable(observe_birth):
+                    observed_birth = observe_birth(pid)
+                    if (observed_birth is not None
+                            and platform.process_birth_matches(expected_birth, str(observed_birth)) is False):
+                        raise ValueError("Runtime owner process identity changed; refusing the stop.")
             restore_selection = self._pending_restore_selection(data)
             foreground = (record or {}).get("foreground")
             if foreground is not None and not isinstance(foreground, dict):
