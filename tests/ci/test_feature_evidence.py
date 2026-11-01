@@ -118,19 +118,19 @@ class FeatureEvidenceTests(LocalEvidenceTests):
     def test_predicate_does_not_run_before_authentication_or_ledger(self):
         self.configure('hosted')
         (self.base/'feature.json').write_text('{"observation":"forged"}')
-        with mock.patch.object(local.importlib, 'import_module') as imported:
+        with mock.patch.object(local, 'load_predicates') as imported:
             self.assertTrue(self.feature_check())
             imported.assert_not_called()
         (self.base/'feature.json').write_text('{"observation":"pass"}')
         self.authenticate()
         (self.p/'freshness.json').unlink()
-        with mock.patch.object(local.importlib, 'import_module') as imported:
+        with mock.patch.object(local, 'load_predicates') as imported:
             self.assertTrue(self.feature_check())
             imported.assert_not_called()
 
     def test_failed_predicate_and_invalid_return_are_red(self):
         self.configure('hosted')
-        with mock.patch.object(local.importlib, 'import_module') as imported:
+        with mock.patch.object(local, 'load_predicates') as imported:
             imported.return_value.check_demo.return_value = (False, ['skipped'])
             self.assertTrue(self.feature_check())
             imported.return_value.check_demo.return_value = (True, ['contradiction'])
@@ -148,7 +148,7 @@ class FeatureEvidenceTests(LocalEvidenceTests):
         for transport in ('broker', 'hosted'):
             with self.subTest(transport=transport):
                 self.configure(transport)
-                with mock.patch.object(local.importlib, 'import_module') as imported:
+                with mock.patch.object(local, 'load_predicates') as imported:
                     imported.return_value.check_demo.return_value = (True, [])
                     self.assertEqual(self.feature_check(), [])
                     imported.return_value.check_demo.assert_called_once_with({
@@ -160,14 +160,14 @@ class FeatureEvidenceTests(LocalEvidenceTests):
 
     def test_predicate_exception_is_a_red_result(self):
         self.configure('hosted')
-        with mock.patch.object(local.importlib, 'import_module') as imported:
+        with mock.patch.object(local, 'load_predicates') as imported:
             imported.return_value.check_demo.side_effect = RuntimeError('broken predicate')
             errors = self.feature_check()
         self.assertTrue(any('feature demo/selected-slot: RuntimeError: broken predicate' in e for e in errors), errors)
 
     def test_predicate_import_exception_is_a_red_result(self):
         self.configure('broker')
-        with mock.patch.object(local.importlib, 'import_module', side_effect=RuntimeError('broken import')):
+        with mock.patch.object(local, 'load_predicates', side_effect=RuntimeError('broken import')):
             errors = self.feature_check()
         self.assertTrue(any('predicate module import failed: RuntimeError: broken import' in e for e in errors), errors)
 
@@ -176,9 +176,32 @@ class FeatureEvidenceTests(LocalEvidenceTests):
         with mock.patch.object(local, 'PREDICATE_MODULE', 'missing_qual_predicates'):
             self.assertTrue(any('predicate module import failed' in e for e in self.feature_check()))
 
+    def test_published_predicate_runs_only_after_authenticated_provenance(self):
+        self.configure('hosted')
+        self.freeze_manifest_binding('a' * 64)
+        self.feature.update(scenario='m4_6', candidate=dict(self.shas, manifest_sha256='a' * 64))
+        manifest_path = self.base / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['feature_bindings'][0]['scenario'] = 'm4_6'
+        manifest_path.write_text(json.dumps(manifest))
+        self.authenticate()
+        with mock.patch.object(local, 'PREDICATE_MODULE', 'scripts.journey_predicates'):
+            errors = self.feature_check()
+            self.assertTrue(any('independent section 5 observation proofs' in e for e in errors), errors)
+            (self.base / 'feature.json').write_text('{"forged":true}')
+            with mock.patch.object(local, 'load_predicates', wraps=local.load_predicates) as loader:
+                self.assertTrue(any('hash or size mismatch' in e for e in self.feature_check()))
+                loader.assert_not_called()
+
+    def test_published_module_file_missing_is_red(self):
+        self.configure('hosted')
+        with mock.patch.object(local, 'PREDICATE_MODULE', 'scripts.journey_predicates'), \
+             mock.patch.object(local, 'PREDICATE_PATH', self.p / 'absent.py'):
+            self.assertTrue(any('predicate module import failed' in e for e in self.feature_check()))
+
     def test_missing_predicate_function_rejected(self):
         self.configure('hosted')
-        with mock.patch.object(local.importlib, 'import_module', return_value=object()):
+        with mock.patch.object(local, 'load_predicates', return_value=object()):
             self.assertTrue(any('missing predicate: demo' in e for e in self.feature_check()))
 
     def test_missing_receipt_rejected(self):
@@ -195,7 +218,7 @@ class FeatureEvidenceTests(LocalEvidenceTests):
     def test_forged_artifact_hash_rejected_before_predicate(self):
         self.configure('hosted')
         (self.base / 'feature.json').write_text('{"observation":"fail"}')
-        with mock.patch.object(local.importlib, 'import_module') as imported:
+        with mock.patch.object(local, 'load_predicates') as imported:
             self.assertTrue(any('hash or size mismatch' in e for e in self.feature_check()))
             imported.assert_not_called()
 
@@ -223,7 +246,38 @@ class FeatureEvidenceTests(LocalEvidenceTests):
         self.feature['files'].append('required.json')
         self.assertTrue(any('missing authenticated feature file: required.json' in e for e in self.feature_check()))
 
-    def test_unbound_candidate_field_rejected(self):
+    def freeze_manifest_binding(self, value):
+        self.tuple['generated']['manifest_sha256'] = value
+        self.identity = local.core.digest(self.tuple)
+        self.write('tuple.json', self.tuple)
+        self.mutate('freshness.json', tuple_digest=self.identity)
+        for name in ('download/manifest.json', 'hosted/artifact-1/manifest.json'):
+            self.mutate(name, tuple_digest=self.identity)
+        self.save_inventory()
+        self.rehash_downloads()
+        self.authenticate()
+
+    def test_tuple_bound_manifest_hash_reaches_predicate(self):
+        for transport in ('broker', 'hosted'):
+            with self.subTest(transport=transport):
+                self.configure(transport)
+                self.freeze_manifest_binding('a' * 64)
+                self.feature['candidate']['manifest_sha256'] = 'a' * 64
+                with mock.patch.object(local, 'load_predicates') as imported:
+                    imported.return_value.check_demo.return_value = (True, [])
+                    self.assertEqual(self.feature_check(), [])
+                    self.assertEqual(imported.return_value.check_demo.call_args.args[0]['candidate']['manifest_sha256'], 'a' * 64)
+
+    def test_missing_wrong_or_malformed_manifest_binding_rejected(self):
         self.configure('hosted')
         self.feature['candidate']['manifest_sha256'] = 'a' * 64
+        with mock.patch.object(local, 'load_predicates') as imported:
+            self.assertTrue(any('frozen tuple manifest binding' in e for e in self.feature_check()))
+            imported.assert_not_called()
+        self.freeze_manifest_binding('b' * 64)
+        self.assertTrue(any('unbound candidate fields' in e for e in self.feature_check()))
+        self.freeze_manifest_binding('A' * 64)
+        self.assertTrue(any('frozen tuple manifest binding' in e for e in self.feature_check()))
+        self.freeze_manifest_binding('a' * 64)
+        self.feature['candidate']['other'] = 'unbound'
         self.assertTrue(any('unbound candidate fields' in e for e in self.feature_check()))

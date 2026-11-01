@@ -15,6 +15,7 @@ import argparse
 import datetime as dt
 import hashlib
 import importlib
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -54,6 +55,19 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 PREDICATE_MODULE = 'scripts.journey_predicates'
+PREDICATE_PATH = ROOT / 'scripts/ci/journey_predicates.py'
+
+
+def load_predicates():
+    if PREDICATE_MODULE != 'scripts.journey_predicates':
+        return importlib.import_module(PREDICATE_MODULE)
+    # Load the published, byte-identical module from our permitted CI path,
+    # under its original package name so its relative imports remain intact.
+    spec = importlib.util.spec_from_file_location(PREDICATE_MODULE, PREDICATE_PATH)
+    core.require(spec is not None and spec.loader is not None, 'missing predicate module')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def safe_path(value):
@@ -121,9 +135,14 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                 obligations.add((scenario, slot))
                 core.require(key in lane_keys, 'feature references unknown lane')
                 candidate = feature['candidate']
-                # Additional candidate identities need their own approved binding;
-                # merely placing one in reviewed inventory cannot bind it to T.
-                core.require(isinstance(candidate, dict) and candidate == shas, 'feature candidate tuple mismatch or unbound candidate fields')
+                # The frozen tuple, not the producer or feature inventory, is
+                # authoritative for the candidate's release manifest identity.
+                expected_candidate = dict(shas)
+                if isinstance(candidate, dict) and 'manifest_sha256' in candidate:
+                    manifest_sha = tup['generated'].get('manifest_sha256')
+                    core.require(isinstance(manifest_sha, str) and re.fullmatch(r'[0-9a-f]{64}', manifest_sha), 'missing or invalid frozen tuple manifest binding')
+                    expected_candidate['manifest_sha256'] = manifest_sha
+                core.require(isinstance(candidate, dict) and candidate == expected_candidate, 'feature candidate tuple mismatch or unbound candidate fields')
                 paths = feature['files']
                 core.require(isinstance(paths, list) and paths and len(set(map(safe_path, paths))) == len(paths), 'missing or duplicate feature files')
                 core.require(type(feature['attempt']) is int and feature['attempt'] > 0, 'invalid selected attempt')
@@ -255,7 +274,7 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
             if errors or features is None:
                 return errors, retirement
             try:
-                module = importlib.import_module(PREDICATE_MODULE)
+                module = load_predicates()
             except Exception as exc:
                 return [f'predicate module import failed: {type(exc).__name__}: {exc}'], retirement
             for feature, entries in pending:
