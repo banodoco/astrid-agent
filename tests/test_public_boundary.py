@@ -146,6 +146,26 @@ def test_actual_cli_diagnostics_conform_to_bundle(case, tmp_path):
     assert observed_calls == expected_calls
 
 
+def test_actual_cli_diagnostics_missing_runtime_protocol_stays_in_bundle(tmp_path):
+    """A missing Runtime dependency must not escape through exception binding."""
+    env = hermetic_env(tmp_path / "home")
+    Path(env["HOME"]).mkdir(exist_ok=True)
+    env["PYTHONPATH"] = str(ROOT)
+    env["ASTRID_RUNTIME_CLI"] = "/definitely/missing/astrid-runtime"
+    result = subprocess.run(
+        [sys.executable, "-S", "-m", "astrid", "doctor", "--diagnostic", "--shared"],
+        cwd=env["HOME"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == CASES["doctor-unknown-shared"]["exitCode"], result.stderr or result.stdout
+    assert result.stderr == ""
+    assert "UnboundLocalError" not in result.stdout
+    assert _normalized(json.loads(result.stdout)) == CASES["doctor-unknown-shared"]["expected"]
+
+
 @pytest.mark.parametrize("case", FIXTURES["cases"], ids=lambda case: case["id"])
 def test_actual_gateway_diagnostics_conform_to_bundle(case, tmp_path, monkeypatch, capsys):
     env, calls = _runtime_stub(tmp_path, case)

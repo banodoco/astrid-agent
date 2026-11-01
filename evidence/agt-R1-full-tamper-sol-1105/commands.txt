@@ -1,0 +1,62 @@
+Working directory: /home/user/work/wt/agt-R1-full-tamper-sol-1105
+Agent HEAD for all runs: c2b1f7e5a31e3ab24309532bddfc892ae64ba374
+Runtime checkout: /home/user/work/wt/rt-pin-becfe6db
+Runtime commit/tree: becfe6db88b2cc034dba3fafa6c050117cdf2b06 / 7edc08e3fe94edcbc8ef695c479f4de301789b89
+TMPDIR: /tmp/w-fe03f1491c
+All pytest invocations used this exact prefix:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:/home/user/work/wt/rt-pin-becfe6db" /home/user/work/venv-agent/bin/python -m pytest -q -oaddopts= -pno:cacheprovider --timeout=45 --tb=short
+
+Exact five, first before any product edit (exact5-old: 5 failed in 5.05s), then on final product (exact5-final: 2 passed, 3 failed in 1.45s):
+[prefix] 'tests/editing_conformance/test_captured_config_root_mirror.py::test_captured_config_root_rejects_tampering_without_mutation[native-order]' 'tests/editing_conformance/test_nested_config_root_history.py::test_root_config_history_rejects_tampering_without_mutation[native-order]' 'tests/sdk/test_timeline_public_command.py::test_public_command_keeps_source_and_patch_guards[pair]' 'tests/sdk/test_timeline_public_command.py::test_public_command_keeps_source_and_patch_guards[foreign]' 'tests/sdk/test_timeline_public_command.py::test_public_command_keeps_source_and_patch_guards[digest]' --junitxml="$TMPDIR/exact5-old.xml"
+The final invocation differed only in --junitxml="$TMPDIR/exact5-final.xml".
+The intermediate exact5-new also reported 2 passed, 3 failed in 1.76s.
+The remaining three failures are pair/foreign/digest in test_timeline_public_command.py, all DID NOT RAISE after a cached source was already verified at public open.
+
+New regression on original product (native-order-old: 2 passed, 4 failed in 1.24s):
+[prefix] tests/editing_conformance/test_nested_native_order.py --junitxml="$TMPDIR/native-order-old.xml"
+
+Final targeted set (relevant-final: 147 passed in 71.89s; includes all six new regressions):
+[prefix] tests/editing_conformance/test_nested_native_order.py tests/editing_conformance/test_captured_config_root_mirror.py tests/editing_conformance/test_nested_config_root_history.py tests/editing_conformance/test_nested_native_aggregate_partition.py tests/editing_conformance/test_nested_parent_mirror_ranges.py tests/editing_conformance/test_nested_inverse_order.py tests/sdk/test_remote_timeline_owner_scope.py --junitxml="$TMPDIR/relevant-final.xml"
+An earlier product version passed this same set: 147 passed in 72.28s. That version compared every raw path; the final guard retains native ref order and parent path order because authenticated child item paths can be re-encoded.
+
+Public caller neighbors (public-final: 7 passed, 3 fixture failures in 2.48s):
+[prefix] tests/sdk/test_timeline_public_command.py --junitxml="$TMPDIR/public-final.xml"
+
+Separate source-consumption probe, not a substitute for main-suite evidence (public-classification: 3 passed in 1.01s):
+[prefix] "$TMPDIR/test_public_hydration_classification.py" --junitxml="$TMPDIR/public-classification.xml"
+Exact probe source retained as public-source-probe.py. The first attempt had 3 setup errors because runtime_abi hides runtime_protocol.platform before Checkout's first import. Importing the exact pinned platform before that existing fake ABI fixture fixed probe setup. No dependency or product file changed for this.
+
+Offline captured-redo neighbors (captured-neighbor: 14 passed, 1 failed in 1.26s):
+[prefix] tests/editing_conformance/test_captured_nested_redo.py::test_captured_nested_redo_compiles_and_partitions_without_rewriting_source tests/editing_conformance/test_captured_nested_redo.py::test_captured_groups_keep_exact_native_source_slices tests/editing_conformance/test_captured_nested_redo.py::test_captured_nested_identity_must_match_original_accepted_source tests/editing_conformance/test_captured_nested_redo.py::test_inherited_identity_requires_original_history_partition --junitxml="$TMPDIR/captured-neighbor.xml"
+The first node fails with CommandError: shot item source changed. Loading the original _step_undo module yields the identical failure (captured-neighbor-old: 1 failed in 0.65s). This is an existing failure on this assigned tree, not an upstream-preexisting claim.
+
+Original-validator comparison used this exact Python invocation prefix:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:/home/user/work/wt/rt-pin-becfe6db" /home/user/work/venv-agent/bin/python -
+with this stdin (selectors below):
+import subprocess
+import pytest
+from astrid.sdk.timeline import _step_undo
+source = subprocess.run(['git', 'show', 'HEAD:astrid/sdk/timeline/_step_undo.py'], check=True, text=True, capture_output=True).stdout
+exec(compile(source, 'HEAD:astrid/sdk/timeline/_step_undo.py', 'exec'), _step_undo.__dict__)
+raise SystemExit(pytest.main(['-q', '-oaddopts=', '-pno:cacheprovider', '--timeout=45', '--tb=short', SELECTORS, '--junitxml=OUTPUT']))
+HEAD was c2b throughout. This does not write .git or any source.
+For captured-neighbor-old: SELECTORS was 'tests/editing_conformance/test_captured_nested_redo.py::test_captured_nested_redo_compiles_and_partitions_without_rewriting_source'; OUTPUT was '/tmp/w-fe03f1491c/captured-neighbor-old.xml'.
+For old-existing-guards (3 passed in 2.23s): SELECTORS were 'tests/editing_conformance/test_nested_native_aggregate_partition.py::test_aggregate_partition_refuses_inconsistent_trusted_observations[native-order]', 'tests/editing_conformance/test_captured_config_root_mirror.py::test_captured_config_root_redo_preserves_exact_history', 'tests/editing_conformance/test_nested_config_root_history.py::test_exact_root_config_redo_authenticates_without_rewriting_history'; OUTPUT was '/tmp/w-fe03f1491c/old-existing-guards.xml'.
+
+An initial broader targeted invocation added the entire test_captured_nested_redo.py to the final targeted set. It was interrupted (exit 130) before reaching that file, after recognizing its integration-marked Runtime fixture test. It has no completion/JUnit credit. No live RuntimeService, persistent realm, HTTP, browser, original ABA, full-suite or gate run was performed.
+
+Strict required checks on final source:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:/home/user/work/wt/rt-pin-becfe6db" make ruff PY=/home/user/work/venv-agent/bin/python
+PASS: current=2143 baseline=2143.
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:/home/user/work/wt/rt-pin-becfe6db" MYPY_CACHE_DIR="$TMPDIR/mypy-cache-final" make mypy PY=/home/user/work/venv-agent-typecheck-v2/bin/python
+PASS: current=1902 baseline=1902.
+git diff --check
+PASS.
+
+Public source classification (separate cause, no product repair):
+Timeline.open -> store.fetch_bundle -> RemoteTimelines.open_bundle(publication_id=exact pair) verifies the original receipt pair and immutable closure, then Timeline._adopt removes the document from the public bundle but keeps its deep-copied private _runtime_document. _execution_bundle reuses this verified source; it only refetches if the private source is absent. The original fixture mutates realm backing data after public_session already called timeline.open. Thus it does not supply the damaged document to the staging command. The legitimate builder seam is to inject the damaged history/canonical/revision response before a fresh timeline.open (or before the lazy fetch of a genuinely portable source). public-source-probe.py shows all three fresh opens refuse while the already-open local draft keeps its verified original source. Do not add remote re-reads to each command as a product fix.
+
+Native source classification and production reachability:
+The immutable hash-locked captures are named in source-inputs.json; existing redo positives authenticate their before/after closures and replay exactly. The pre-existing aggregate native-order negative already passes on the old product. Root/config/registry storage writes commute, so image equality does not prove order. validate_nested_history previously compared source publication, step, ordinals and write count but not the native order. The production commit service's select_at in commit.py:1063 calls inverse_address_resolver(load_history=port.history_entry); _commit_patch.py:1054 calls validate_nested_history; native_occurrence_shared._historical_sources also uses it. The final main-suite targeted set includes exact public inverse refusal and existing accepted/redo positives. This is source/caller and detached-provider evidence, not live Runtime qualification.
+
+No original test body, assertion, marker, source/revision/publication/digest check, wire/schema/pin, timing, baseline, Runtime/auth or unrelated R2 helper changed. No new authority or contract introduced. All new ordering comparisons run inside the existing authenticated source validation.

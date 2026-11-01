@@ -1,0 +1,39 @@
+{
+  "astrid.sdk.timeline._step_undo": {
+    "path": "/home/user/work/wt/agt-R1-full-tamper-sol-1105/astrid/sdk/timeline/_step_undo.py",
+    "sha256": "f94ef32c53f4ef1e84067e20fe403f1aff4a16e21629795d8ffb3f4ffd072e75"
+  },
+  "astrid.sdk.timeline._commit_patch": {
+    "path": "/home/user/work/wt/agt-R1-full-tamper-sol-1105/astrid/sdk/timeline/_commit_patch.py",
+    "sha256": "506def3b046b96180954223d8334c33ae50274ca2e0cdf575e5a701d7bc46c07"
+  },
+  "astrid.sdk.timeline.commit": {
+    "path": "/home/user/work/wt/agt-R1-full-tamper-sol-1105/astrid/sdk/timeline/commit.py",
+    "sha256": "73a7afefb5c0bdc23ca7d2cce5c85d46ad6494b5af692181c3e428c5ea7b5499"
+  },
+  "astrid.sdk.timeline.commit_session": {
+    "path": "/home/user/work/wt/agt-R1-full-tamper-sol-1105/astrid/sdk/timeline/commit_session.py",
+    "sha256": "69b3468956cadc9549a495ac8a7aae6cf98ced0db0bcb0b33e63175addbd3503"
+  },
+  "astrid.sdk._remote_timeline": {
+    "path": "/home/user/work/wt/agt-R1-full-tamper-sol-1105/astrid/sdk/_remote_timeline.py",
+    "sha256": "833283bd72f6944567abbe6e5562964b24dbbba3bf88e35fdbe2007f2e4eb287"
+  },
+  "runtime_protocol": {
+    "path": "/home/user/work/wt/rt-pin-becfe6db/runtime_protocol/__init__.py",
+    "sha256": "4e4064e1d9b80c6637576490150f44f3c710fabc520af1e640abf2493dcbb0d2"
+  },
+  "runtime_protocol.platform": {
+    "path": "/home/user/work/wt/rt-pin-becfe6db/runtime_protocol/platform.py",
+    "sha256": "a1025d466641217b2ff67538801f6a354593e21e5b93b44146e0aab8c04bc185"
+  },
+  "astrid/sdk/timeline/commit_session.py": {
+    "identical_to_full9758": true
+  },
+  "astrid/sdk/_remote_timeline.py": {
+    "identical_to_full9758": true
+  },
+  "astrid/sdk/timeline/store.py": {
+    "identical_to_full9758": true
+  }
+}
