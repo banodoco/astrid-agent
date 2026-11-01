@@ -5,7 +5,7 @@ import copy
 from types import SimpleNamespace
 
 from astrid.sdk.contracts import DomainResult
-from astrid.sdk.timeline.clash import _probe
+from astrid.sdk.timeline.retry import _probe
 
 
 def test_clash_probe_preserves_merge_reads_steps_and_all_commands():
@@ -27,7 +27,7 @@ def test_clash_probe_preserves_merge_reads_steps_and_all_commands():
                'commands': commands, 'merge': 'atomic', 'reads': reads,
                'steps': steps, 'label': 'Reviewed batch'}
 
-    result = _probe(session, request, request['merge'], request['reads'])
+    result = _probe(session, request)
 
     assert result == {'status': 'preview'}
     assert timelines.body['commands'] == commands
