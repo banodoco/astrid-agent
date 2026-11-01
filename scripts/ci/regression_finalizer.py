@@ -32,7 +32,13 @@ def main(argv=None):
             plan = json.loads(Path(args.producer_plan).read_text(encoding='utf-8'))
             if not isinstance(plan, list) or not plan or any(not isinstance(cmd, list) or not cmd or any(not isinstance(v, str) or not v for v in cmd) for cmd in plan):
                 raise ValueError('producer plan must be a nonempty list of command argument lists')
-            results = [subprocess.run(command, check=False).returncode for command in plan]
+            results = []
+            for command in plan:
+                try:
+                    results.append(subprocess.run(command, check=False).returncode)
+                except OSError as exc:
+                    print(f'producer failed to start: {type(exc).__name__}: {exc}', file=sys.stderr)
+                    results.append(None)
             prerequisites = 'success' if all(code == 0 for code in results) else 'failure'
             review = aggregate.read(aggregate.REVIEW)
             if review.get('complete') is not True:

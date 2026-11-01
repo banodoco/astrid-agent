@@ -119,6 +119,29 @@ class FinalizerTests(unittest.TestCase):
                 download.assert_called_once()
                 invoked.assert_called_once()
 
+    def test_unstartable_producer_does_not_skip_remaining_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            marker = p / 'ran'
+            (p / 'plan').write_text(json.dumps([[str(p / 'missing')], [sys.executable, '-c', 'from pathlib import Path; Path(%r).touch()' % str(marker)]]))
+            args = ['--status', str(p / 'status'), '--tuple', str(p / 'tuple'), '--ledger', str(p / 'ledger'), '--broker-root', str(p / 'broker'), '--freshness', str(p / 'freshness'), '--producer-plan', str(p / 'plan')]
+            def check(arguments):
+                self.assertEqual(json.loads(Path(arguments[arguments.index('--collection') + 1]).read_text()), {'collection': 'success', 'prerequisites': 'failure'})
+                return 1
+            with mock.patch.object(finalizer.aggregate, 'read', side_effect=[{'complete': True, 'lanes': []}, {}]), mock.patch.object(hosted, 'download') as download, mock.patch.object(finalizer.aggregate, 'main', side_effect=check) as invoked:
+                self.assertEqual(finalizer.main(args), 1)
+                self.assertTrue(marker.exists())
+                download.assert_called_once()
+                invoked.assert_called_once()
+
+    def test_failed_producer_writes_failed_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'plan').write_text(json.dumps([[sys.executable, '-c', 'raise SystemExit(2)']]))
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/ci/regression_finalizer.py'), '--status', str(p / 'status'), '--tuple', str(p / 'tuple'), '--ledger', str(p / 'ledger'), '--broker-root', str(p / 'broker'), '--freshness', str(p / 'freshness'), '--producer-plan', str(p / 'plan')], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads((p / 'status').read_text())['result'], 'fail')
+
     def test_missing_arguments_writes_failed_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             status = Path(tmp) / 'status.json'
