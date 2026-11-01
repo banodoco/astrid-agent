@@ -23,6 +23,9 @@ dependencies = [
     "fal-client>=0.7.0",
     "xxhash>=3.4",
     "PyJWT[crypto]>=2.8",
+    # cryptography 49+ no longer publishes macOS x86_64 wheels. Keep the
+    # runtime closure binary-installable on every supported release platform.
+    "cryptography>=48.0.1,<49",
     # VibeComfy is installed with --no-deps by the managed installer.
     "huggingface_hub[hf_xet]>=0.32.0",
     # pyannote.audio is intentionally excluded from core metadata.
