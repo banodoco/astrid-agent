@@ -1,0 +1,2 @@
+pid=1636
+backend=D:\a\_temp\owner-caller-temp\astrid-install-29ab2260c554497dab1dcca37f7026ab\venv\Lib\site-packages\astrid\installer\backend.py

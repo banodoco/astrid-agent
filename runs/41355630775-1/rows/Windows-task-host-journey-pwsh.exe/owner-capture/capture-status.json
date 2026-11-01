@@ -1,0 +1,13 @@
+{
+  "journey_install_exit": 1,
+  "capture_missing_or_failed": [
+    "before: helper did not succeed",
+    "acl-before",
+    "sha256-before",
+    "token-before",
+    "after: helper did not succeed",
+    "acl-after",
+    "sha256-after",
+    "token-after"
+  ]
+}

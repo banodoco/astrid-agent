@@ -1,0 +1,12 @@
+{
+  "manifest_sha256": "b78ae7e74188f6e0bbf01950b0d388d4cf36ea990c9bb574fd8aef57a8782777",
+  "job": "windows-journey",
+  "run_id": "41355630775",
+  "agent": "3fff57b55ab6f51f33b66eedb7203013667cf3b1",
+  "caller": "c07a858d0a1eae5a23c08616e11886fb773f1b26",
+  "shell": "pwsh.exe",
+  "source_override": true,
+  "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+  "app": "36ff224e3c9ad862e3f807e2548b997a36799543",
+  "run_attempt": "1"
+}

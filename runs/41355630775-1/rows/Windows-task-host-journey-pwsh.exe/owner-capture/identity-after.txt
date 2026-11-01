@@ -1,0 +1,65 @@
+﻿PID=8988
+Name=runnervmdaln5\runneradmin
+UserSID=S-1-5-21-3776380004-1005456608-3524014338-500
+AuthenticationType=NTLM
+ImpersonationLevel=None
+ProductRoot=C:\Users\runneradmin\AppData\Local\Astrid\versions\3fff57b5-47e59494-89d4cc58\py\Lib\site-packages
+--- whoami /all ---
+
+USER INFORMATION
+----------------
+
+User Name                 SID                                          
+========================= =============================================
+runnervmdaln5\runneradmin S-1-5-21-3776380004-1005456608-3524014338-500
+
+
+GROUP INFORMATION
+-----------------
+
+Group Name                                                    Type             SID          Attributes                                                     
+============================================================= ================ ============ ===============================================================
+Everyone                                                      Well-known group S-1-1-0      Mandatory group, Enabled by default, Enabled group             
+NT AUTHORITY\Local account and member of Administrators group Well-known group S-1-5-114    Mandatory group, Enabled by default, Enabled group             
+BUILTIN\Administrators                                        Alias            S-1-5-32-544 Mandatory group, Enabled by default, Enabled group, Group owner
+BUILTIN\Users                                                 Alias            S-1-5-32-545 Mandatory group, Enabled by default, Enabled group             
+NT AUTHORITY\INTERACTIVE                                      Well-known group S-1-5-4      Mandatory group, Enabled by default, Enabled group             
+CONSOLE LOGON                                                 Well-known group S-1-2-1      Mandatory group, Enabled by default, Enabled group             
+NT AUTHORITY\Authenticated Users                              Well-known group S-1-5-11     Mandatory group, Enabled by default, Enabled group             
+NT AUTHORITY\This Organization                                Well-known group S-1-5-15     Mandatory group, Enabled by default, Enabled group             
+NT AUTHORITY\Local account                                    Well-known group S-1-5-113    Mandatory group, Enabled by default, Enabled group             
+LOCAL                                                         Well-known group S-1-2-0      Mandatory group, Enabled by default, Enabled group             
+NT AUTHORITY\NTLM Authentication                              Well-known group S-1-5-64-10  Mandatory group, Enabled by default, Enabled group             
+Mandatory Label\High Mandatory Level                          Label            S-1-16-12288                                                                
+
+
+PRIVILEGES INFORMATION
+----------------------
+
+Privilege Name                            Description                                                        State   
+========================================= ================================================================== ========
+SeIncreaseQuotaPrivilege                  Adjust memory quotas for a process                                 Disabled
+SeSecurityPrivilege                       Manage auditing and security log                                   Disabled
+SeTakeOwnershipPrivilege                  Take ownership of files or other objects                           Disabled
+SeLoadDriverPrivilege                     Load and unload device drivers                                     Disabled
+SeSystemProfilePrivilege                  Profile system performance                                         Disabled
+SeSystemtimePrivilege                     Change the system time                                             Disabled
+SeProfileSingleProcessPrivilege           Profile single process                                             Disabled
+SeIncreaseBasePriorityPrivilege           Increase scheduling priority                                       Disabled
+SeCreatePagefilePrivilege                 Create a pagefile                                                  Disabled
+SeBackupPrivilege                         Back up files and directories                                      Disabled
+SeRestorePrivilege                        Restore files and directories                                      Disabled
+SeShutdownPrivilege                       Shut down the system                                               Disabled
+SeDebugPrivilege                          Debug programs                                                     Enabled 
+SeSystemEnvironmentPrivilege              Modify firmware environment values                                 Disabled
+SeChangeNotifyPrivilege                   Bypass traverse checking                                           Enabled 
+SeRemoteShutdownPrivilege                 Force shutdown from a remote system                                Disabled
+SeUndockPrivilege                         Remove computer from docking station                               Disabled
+SeManageVolumePrivilege                   Perform volume maintenance tasks                                   Disabled
+SeImpersonatePrivilege                    Impersonate a client after authentication                          Enabled 
+SeCreateGlobalPrivilege                   Create global objects                                              Enabled 
+SeIncreaseWorkingSetPrivilege             Increase a process working set                                     Disabled
+SeTimeZonePrivilege                       Change the time zone                                               Disabled
+SeCreateSymbolicLinkPrivilege             Create symbolic links                                              Disabled
+SeDelegateSessionUserImpersonatePrivilege Obtain an impersonation token for another user in the same session Disabled
+
