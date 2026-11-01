@@ -1,0 +1,11 @@
+{
+  "task_id": "05ce5f2f02b2402e88896985077c9cc6",
+  "run_id": "b0aade0ee769478cb952562ae2d5b737",
+  "attempt_id": "38710a02d919424fa4069410ddd100c6",
+  "state": "running",
+  "result": null,
+  "lease_expires_at": "2026-11-01T16:10:48.500+00:00",
+  "lease_fence": 1,
+  "runtime_epoch": 2,
+  "execution_binding": null
+}
