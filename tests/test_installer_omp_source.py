@@ -385,7 +385,6 @@ def test_hostile_bun_settings_and_registration_paths_are_build_only(tmp_path, mo
     assert not outside.exists()
     assert (user_config.read_bytes(), user_config.stat().st_mtime_ns) == before
 
-
 @pytest.mark.parametrize("tamper", [False, True])
 def test_recipe_refresh_emits_only_the_candidate_build_closure(tmp_path, monkeypatch, tamper):
     import base64

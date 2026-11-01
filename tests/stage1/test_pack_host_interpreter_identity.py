@@ -23,6 +23,8 @@ from astrid.core._shared.boot_manifest import load_boot_manifest_hash
 def test_bootstrap_reuses_only_the_selected_interpreter(
     tmp_path, monkeypatch, previous_python, active_children, source_changed, use_override
 ):
+    # Interpreter identity only: an ambient Remotion env would demand launch validation.
+    monkeypatch.delenv("ASTRID_REMOTION_PROJECT_DIR", raising=False)
     source = tmp_path / "source"
     (source / "astrid" / "packs").mkdir(parents=True)
     selected_python = "/selected-venv/bin/python"

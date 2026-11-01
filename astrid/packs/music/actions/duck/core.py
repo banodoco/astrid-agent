@@ -4,9 +4,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NotRequired, TypedDict
 
 import numpy as np
+from numpy.typing import NDArray
 
 from astrid.core.contracts.errors import AstridError
 from astrid.core.foundation.hash import sha256_file
@@ -52,6 +53,23 @@ class DuckResult:
     times: np.ndarray
     gain_db: np.ndarray
     target_db: np.ndarray
+
+
+class _Line(TypedDict):
+    id: str
+    start_s: float
+    end_s: float
+    vo_i: float
+    music_i_before: float
+    gap_before_lu: float
+    bed_db: float
+    voiced: NotRequired[list[tuple[float, float]]]
+    sample_start: NotRequired[int]
+    sample_end: NotRequired[int]
+    music_i_after: NotRequired[float | None]
+    gap_after_lu: NotRequired[float | None]
+    worst_voiced_gap_lu: NotRequired[float | None]
+    floor_held: NotRequired[bool]
 
 
 def select_music_clip(clips: list[dict], clip: str | None = None) -> dict:
@@ -171,7 +189,7 @@ def duck_audio(music: Placement, voices: list[Placement], output: Path, *,
     music_power = weighted_power(played, rate)
     # Voice channels are mixed with a constant-power mono pan, matching stereo playback.
     stem = np.zeros((len(played), 2))
-    lines = []
+    lines: list[_Line] = []
     ignored = []
     for voice in sorted(voices, key=lambda p: (p.start, p.id)):
         _validate_placement(voice)
@@ -195,10 +213,10 @@ def duck_audio(music: Placement, voices: list[Placement], output: Path, *,
         if vi is None or mi is None or not voiced:
             ignored.append(voice.id)
             continue
-        bed = min(0., vi - bed_lu - mi)
+        line_bed = min(0., vi - bed_lu - mi)
         lines.append({"id": voice.id, "start_s": a, "end_s": b, "vo_i": vi,
                       "music_i_before": mi, "gap_before_lu": vi - mi,
-                      "bed_db": bed, "voiced": voiced, "sample_start": s, "sample_end": e})
+                      "bed_db": line_bed, "voiced": voiced, "sample_start": s, "sample_end": e})
     if not lines:
         raise AstridError("no measurable voice lines overlap the selected music clip")
 
@@ -216,13 +234,13 @@ def duck_audio(music: Placement, voices: list[Placement], output: Path, *,
             spans[-1][1] = max(spans[-1][1], b)
         else:
             spans.append([a, b])
-    inside = np.zeros(len(times), dtype=bool)
+    inside: NDArray[np.bool_] = np.zeros(len(times), dtype=bool)
     for a, b in spans:
         inside |= (timeline >= a) & (timeline < b)
     bed = np.zeros(len(times))
     cap = np.zeros(len(times))
-    voiced_mask = np.zeros(len(times), dtype=bool)
-    def require(line, zone):
+    voiced_mask: NDArray[np.bool_] = np.zeros(len(times), dtype=bool)
+    def require(line: _Line, zone: NDArray[np.bool_]) -> None:
         bed[zone] = np.minimum(bed[zone], line["bed_db"])
         cap[zone] = np.minimum(cap[zone], line["vo_i"] - CAP_LU - ml[zone])
 
@@ -237,7 +255,7 @@ def duck_audio(music: Placement, voices: list[Placement], output: Path, *,
         require(line, (timeline >= start) & (timeline < end))
         for a, b in line["voiced"]:
             voiced_mask |= (timeline >= a) & (timeline < b)
-        if previous_end is not None and 0 < start - previous_end < MERGE_GAP_S:
+        if previous_end is not None and previous_line is not None and 0 < start - previous_end < MERGE_GAP_S:
             gap = (timeline >= previous_end) & (timeline < start)
             require(previous_line, gap)
             require(line, gap)

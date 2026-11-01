@@ -22,7 +22,9 @@ from scripts import gen_effect_registry
 ROOT = Path(__file__).resolve().parents[3]
 REMOTION = ROOT / "remotion"
 KINDS: tuple[gen_effect_registry.ElementKind, ...] = ("effects", "animations", "transitions")
-_SCOPE = re.compile(r"""from '(@[^/']+)/""")
+# Composition-owned imports are fixed package dependencies, not generated
+# component scopes. Only hashed host imports participate in this mapping gate.
+_SCOPE = re.compile(r"""from '(@[^/']+)/[^']+\?astrid=""")
 _DECLARED = re.compile(r"""declare module '(@[^/']+)/\*'""")
 
 
@@ -68,8 +70,13 @@ def test_unmapped_names_a_scope_missing_from_either_file() -> None:
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_every_scope_the_generator_emits_is_declared_and_mapped(kind: gen_effect_registry.ElementKind) -> None:
-    emitted = emitted_scopes(gen_effect_registry.generate_element_registry(kind))
-    assert emitted, f"the generator emitted no {kind} imports; the check would pass vacuously"
+    generated = gen_effect_registry.generate_element_registry(kind)
+    emitted = emitted_scopes(generated)
+    if not emitted:
+        # The current Composition registry owns these public implementations;
+        # there are no generated host imports to map for this kind.
+        assert f"resolveElementRegistries(DEFAULT_THEME).{kind}" in generated
+        return
     declarations = (REMOTION / "src" / "astrid-hashed-imports.d.ts").read_text(encoding="utf-8")
     tsconfig = (REMOTION / "tsconfig.json").read_text(encoding="utf-8")
     assert unmapped(emitted, declarations, tsconfig) == []

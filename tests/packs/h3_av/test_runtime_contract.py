@@ -1690,3 +1690,23 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     Path(result["candidate"]).write_bytes(b"tampered")
     with pytest.raises(VerificationError, match="digest"):
         verify_candidate(preparation=preparation, composition=composition, candidate=result["candidate"])
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+def test_connected_client_uses_selected_lanpaint_bundle_and_attests_provenance(tmp_path: Path) -> None:
+    compiled, result, media = _compile_result_with_managed_bundle(tmp_path)
+
+    inputs = _retrieve_compiled_workflow(
+        SimpleNamespace(media=media),
+        result,
+        json.loads(Path(compiled["manifest_path"]).read_text(encoding="utf-8")),
+        tmp_path / "retrieved",
+    )
+
+    assert set(inputs) == {"python", "companion", "source"}
+    assert b"LanPaint_VideoMaskEditor" in media.objects[inputs["python"]["object_id"]]
+    assert media.reads == [
+        inputs["python"]["object_id"],
+        inputs["companion"]["object_id"],
+        inputs["source"]["object_id"],
+    ]

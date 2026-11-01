@@ -7,7 +7,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Protocol
 
 from astrid.core.timeline import moments as mo
 from astrid.sdk import timeline_intent as intent
@@ -21,6 +21,18 @@ from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.doc import _get_path
 from astrid.sdk.timeline.model import Clip
 from astrid.sdk.timeline.units import (formula_short, to_canvas)
+
+if TYPE_CHECKING:
+    from astrid.sdk.timeline.checkout import Checkout
+
+
+class _MutableSceneSpan(Protocol):
+    """The mutable span shape used by managed Scene's advisory result."""
+
+    start_frame: int
+    end_frame: int
+    cls: str
+    content: str | None
 
 
 def _broken_head() -> list[str]:
@@ -44,13 +56,13 @@ def _cut_in(table: list[tuple[float, float, str]], t: float) -> str | None:
 
 
 def element_coverage_cached(element_ids: Iterable[str]) -> dict[str, dict]:
-    """``onscreen.element_coverage`` read once per process per element (the registry load is the cost)."""
-    from astrid.core.timeline import onscreen
+    """``scene_roles.element_coverage`` read once per process per element (the registry load is the cost)."""
+    from astrid.core.timeline import scene_roles
 
     ids = list(element_ids)
     missing = sorted({i for i in ids if i not in _ELEMENT_COVERAGE})
     if missing:
-        _ELEMENT_COVERAGE.update(onscreen.element_coverage(missing))
+        _ELEMENT_COVERAGE.update(scene_roles.element_coverage(missing))
     return {i: _ELEMENT_COVERAGE[i] for i in ids}
 
 
@@ -78,7 +90,7 @@ class _CheckMixin:
                            + (f"; {note}" if "outside" in note else "") + f" (size {fits:g} fits; or move x/width)")
         return out
 
-    def _on_screen(self) -> list:
+    def _on_screen(self: Checkout) -> list:
         """Every frame of the film, covered or not: ``onscreen.coverage`` over the checkout's visual clips in
         timeline seconds (the render config's shape), tracks top first. Run per check, not per clip."""
         from astrid.core.timeline import onscreen
@@ -190,6 +202,83 @@ class _CheckMixin:
             out.append(f"DIP     {_cut_in(table, a) or 'no cut'} {a:.2f}–{b:.2f} s ({b - a:.2f} s): "
                        "a declared fade/dip (not a gap)")
         return out
+
+    @staticmethod
+    def _scene_warning_spans(spans: list) -> list:
+        """Project adjacent equal coverage/content rows for display warnings only.
+
+        Scene answers retain per-frame membership, findings and identity.  The
+        warning format has no use for membership, so a fade whose visible
+        membership changes can still be reported as one continuous DIP.  Copy
+        rows before extending them so the detailed answer rows are untouched.
+        """
+        from astrid.core.timeline.onscreen import Span
+
+        summary: list[Span | _MutableSceneSpan] = []
+        for span in spans:
+            if (summary and summary[-1].end_frame == span.start_frame
+                    and summary[-1].cls == span.cls and summary[-1].content == span.content):
+                previous = summary[-1]
+                if isinstance(previous, Span):
+                    summary[-1] = dataclasses.replace(previous, end_frame=span.end_frame)
+                else:
+                    merged = copy.copy(previous)
+                    object.__setattr__(merged, "end_frame", span.end_frame)
+                    summary[-1] = merged
+            else:
+                summary.append(copy.copy(span))
+        return summary
+
+    def _scene_problems(self, spans: list) -> list[str]:
+        """Advisory scene findings, retaining cut addresses and deliberate-hold classification."""
+        warning_spans = self._scene_warning_spans(spans)
+        sustained, incidental = self.empty_cuts(warning_spans)
+        out = [f"picture {line}" for line in self.picture_gaps(warning_spans)]
+        out += sustained + incidental + self.dips(warning_spans)
+        for span in spans:
+            if span.cls not in {"UNKNOWN", "UNAVAILABLE"} and span.content != "UNKNOWN":
+                continue
+            kind = span.cls if span.cls in {"UNKNOWN", "UNAVAILABLE"} else "CONTENT UNKNOWN"
+            out.append(f"scene   {kind} {span.start_frame / self.fps:.3f}–{span.end_frame / self.fps:.3f} s"
+                       + (f": {', '.join(span.findings)}" if span.findings else ""))
+        return out
+
+    def _managed_scene_spans(self: Checkout) -> list | None:
+        """Read Scene advice through an explicitly connected checkout, if bound.
+
+        Save and detached checkouts have no managed target binding and retain
+        the local structural coverage reader.  A connected checkout treats
+        a missing or stale managed result as advisory unavailability instead
+        of falling back to a different source of scene truth.
+        """
+        client = getattr(self, "_scene_client", None)
+        project = getattr(self, "_scene_project", None)
+        timeline = getattr(self, "_scene_timeline", None)
+        if client is None or not project or not timeline:
+            return None
+        from astrid.sdk.timeline_filmstrip import (
+            _invoke_scene_only,
+            _scene_only_candidate_request,
+            _scene_only_unavailable,
+        )
+
+        try:
+            if self.path:
+                request, _context = _scene_only_candidate_request(
+                    self.document(), project=project, timeline_ref=timeline, client=client,
+                )
+                # The candidate request is already frozen through the reviewed
+                # helper; _invoke_scene_only reuses that same managed path.
+                spans, _prepared = _invoke_scene_only(
+                    request, project=project, client=client,
+                )
+                return spans
+            spans, _prepared = _invoke_scene_only(
+                {"timeline_ref": timeline}, project=project, client=client,
+            )
+            return spans
+        except Exception:  # noqa: BLE001 - diagnostics remain advisory
+            return _scene_only_unavailable()
 
     def _length_problems(self) -> list[str]:
         """Visible clips that run past the end of their shot's placement: the render stops at the shot's end, so
@@ -519,9 +608,16 @@ class _CheckMixin:
         return out
 
     def check(self) -> "CheckReport":
-        from astrid.sdk.timeline.checkout import Checkout
         """Validate, say what moved (timeline seconds, against the checked-out head) and lint the changed cuts."""
-        from astrid.sdk.authoring_bundle import validate_authoring_candidate
+        return self._check(diagnostics=True)
+
+    def _check_core(self) -> "CheckReport":
+        """Save-time structure, timing and reference validity without scene or renderer diagnostics."""
+        return self._check(diagnostics=False)
+
+    def _check(self, *, diagnostics: bool) -> "CheckReport":
+        from astrid.core.timeline.authoring_bundle import validate_authoring_candidate
+        from astrid.sdk.timeline.checkout import Checkout
         from astrid.sdk.timeline_cuts import base_bundle, diff_bundles, render_diff
 
         resolved = self.resolve()  # formulas first: every anchored clip back on its word, every expression recalculated
@@ -539,8 +635,8 @@ class _CheckMixin:
         cut_numbers = sorted({cut.n for cut in self.cuts for clip in cut.clips if clip.id in changed})
         from astrid.sdk.timeline_address import ordinals_to_ids
 
-        lint = [ordinals_to_ids(line, self) for line in self.lint(cuts=cut_numbers)] if cut_numbers else []
-        lint_new, lint_old = _new_findings(lint, Checkout(base_bundle(candidate)))
+        lint = [ordinals_to_ids(line, self) for line in self.lint(cuts=cut_numbers)] if diagnostics and cut_numbers else []
+        lint_new, lint_old = _new_findings(lint, Checkout(base_bundle(candidate))) if diagnostics else ([], 0)
         names = []
         for n in cut_numbers:
             pic = self.cuts[n - 1].picture
@@ -553,25 +649,26 @@ class _CheckMixin:
         blocking += [f"outside {line}" for line in self._outside]
         blocking += [f"type    {line}" for line in self._type_mismatches()]
         blocking += [f"beats   {line}" for line in self._stale_beats()]
-        spans = self._on_screen()  # one pass over the film for the three readers below
-        blocking += [f"picture {line}" for line in self.picture_gaps(spans)]
-        empty_blocking, empty_info = self.empty_cuts(spans)
-        blocking += empty_blocking
         blocking += [f"length  {line}" for line in self._length_problems()]
-        sprite_blocking, sprite_notes = self._sprite_problems()
-        blocking += sprite_blocking
+        if diagnostics:
+            spans = self._managed_scene_spans()
+            if spans is None:
+                spans = self._on_screen()  # one pass over the film for the three readers below
+            problems += self._scene_problems(spans)
+            sprite_blocking, sprite_notes = self._sprite_problems()
+            blocking += sprite_blocking
+            problems += [f"why     {line}" for line in self._stale_whys()]
+            problems += sprite_notes
+            problems += [f"text    {line}" for line in self._text_overflow()]
+            from astrid.sdk.timeline.look import look_unrendered
+
+            problems += [f"look    {line}" for line in look_unrendered(self)]  # set, but this composition will not show it
+            music_end = max((c.end for c in self.clips(audio=True) if c.track == "music"), default=None)
+            if music_end is not None and music_end < self.duration - 0.5:
+                problems.append(f"music: the bed ends at {music_end:.2f} s; the film runs {self.duration:.2f} s "
+                                f"({self.duration - music_end:.1f} s without music)")
         if blocking:
             valid = False
-        problems += [f"why     {line}" for line in self._stale_whys()]
-        problems += empty_info + self.dips(spans) + sprite_notes
-        problems += [f"text    {line}" for line in self._text_overflow()]
-        from astrid.sdk.timeline.look import look_unrendered
-
-        problems += [f"look    {line}" for line in look_unrendered(self)]  # set, but this composition will not show it
-        music_end = max((c.end for c in self.clips(audio=True) if c.track == "music"), default=None)
-        if music_end is not None and music_end < self.duration - 0.5:
-            problems.append(f"music: the bed ends at {music_end:.2f} s; the film runs {self.duration:.2f} s "
-                            f"({self.duration - music_end:.1f} s without music)")
         return CheckReport(valid=valid, validation=validation, summary=summary, lint=lint,
                            problems=blocking + problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
                            diff=diff, cut_names=names, blocking=blocking, lint_new=lint_new, lint_old=lint_old,
