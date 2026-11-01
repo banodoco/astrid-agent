@@ -182,7 +182,11 @@ class RunPodRemoteWorkerPreparer:
         self.activation_timeout_seconds = activation_timeout_seconds
         self.ready_timeout_seconds = ready_timeout_seconds
         self._handle: PreparedRunPodHost | None = None
-        original = self._read_claim()
+        # Construction also serves terminal retirement/release recovery. Only
+        # the active-claim owner context below can authorize preparation.
+        original = self._read_claim(allowed_states=(
+            "claimed", "release_pending", "cleanup_pending", "cleanup_complete",
+        ))
         self._endpoint_claim_identity = {key: original.get(key) for key in (
             "operation_id", "provider_account_ref", "pod_id", "network_volume_id", "network_volume_name",
             "network_volume_size_gb", "network_volume_datacenter_id", "volume_mount_path", "acquisition_mode",
@@ -311,6 +315,9 @@ class RunPodRemoteWorkerPreparer:
                 raise AttestationError("workflow endpoint readiness binding is invalid")
             self._binding(reference)
             staging = self._stage(reference)
+            self.session_owner.bind_preparation(
+                claim_handle_path=self.claim_handle_path, reference=reference, staging=staging,
+            )
             selection = self.session_owner.select(reference, staging["cpu_readiness"], port=self.session_port)
             receipt = self.session_owner.start(selection)  # 47: observe installed engine; never legacy start
             self._write_managed_session(claim, selection, receipt, owner_lock_fd=lock_fd)
@@ -659,6 +666,9 @@ class RunPodRemoteWorkerPreparer:
             session_selection = None
             session_receipt = None
             if self.session_owner is not None:
+                self.session_owner.bind_preparation(
+                    claim_handle_path=self.claim_handle_path, reference=reference, staging=staging,
+                )
                 session_selection = self.session_owner.select(
                     reference, staging["cpu_readiness"], port=self.session_port,
                 )
@@ -1463,6 +1473,9 @@ class RunPodRemoteWorkerPreparer:
                 raise RunPodWorkerOwnerError("P1 record has no exact managed VibeComfy session receipt")
             from .worker_session import ManagedSessionReceipt
 
+            self.session_owner.bind_preparation(
+                claim_handle_path=self.claim_handle_path, reference=reference, staging=staging,
+            )
             session_selection = self.session_owner.select(
                 reference, staging["cpu_readiness"], port=self.session_port,
             )

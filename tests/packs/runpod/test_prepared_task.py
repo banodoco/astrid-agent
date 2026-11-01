@@ -130,6 +130,38 @@ def test_no_wait_terminal_receipt_retires_without_another_activation() -> None:
     assert [event[0] for event in client.events] == ["invoke", "show", "retire"]
 
 
+@pytest.mark.parametrize("state,action", [("queued", "activate"), ("succeeded", "retire"),
+                                         ("failed", "retire"), ("cancelled", "retire")])
+def test_follow_owner_tick_reconciles_exact_task_without_invoking(state, action):
+    task = _task(state=state)
+    client = _Client([task])
+    wrapper = PreparedRunPodTaskClient(client, _Runtime(client.events))
+    wrapper.monitor_task(task)
+    assert client.events == [("show", "task-1"), (action, task)]
+
+
+def test_follow_owner_tick_refuses_changed_execution_binding():
+    client = _Client([_task(execution_binding={"target": {"kind": "runpod", "pod_id": "other"}})])
+    wrapper = PreparedRunPodTaskClient(client, _Runtime(client.events))
+    with pytest.raises(PreparedWorkerError, match="binding changed"):
+        wrapper.monitor_task(_task())
+    assert client.events == [("show", "task-1")]
+
+
+def test_expired_ordinary_claim_blocks_activation_before_components_or_credentials(tmp_path):
+    runtime = object.__new__(_ProductionPreparedTaskRuntime)
+    claim_path = tmp_path / "claim.json"
+    claim_path.write_text(json.dumps({
+        "state": "claimed", "ordinary_preparation": {},
+        "paid_limits": {"hourly_usd": 1.0, "max_usd": 1.0,
+                        "expires_at": "2000-01-01T00:00:00Z", "deadline": "2000-01-01T00:00:00Z"},
+    }))
+    runtime.selection = SimpleNamespace(claim_handle_path=claim_path)
+    runtime._components = lambda task: pytest.fail("expired claim reached provider or credential boundary")
+    with pytest.raises(PreparedWorkerError, match="remaining paid lifetime"):
+        runtime.ensure_for_task(_task())
+
+
 def test_prepared_selection_rejects_changed_claim_and_conflicting_mount(tmp_path: Path) -> None:
     from astrid.packs.runpod.prepared_task import PreparedWorkerSelection, _claim_target
 

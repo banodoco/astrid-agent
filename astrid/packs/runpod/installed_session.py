@@ -1,9 +1,10 @@
 """Read-only attachment to the canonical installer registry.
 
 Registry files are compatibility evidence, never process-control authority.
-Remote file observations alone cannot establish a live composite; the existing
-read-only pod agent does not expose that operation. Refuse rather than exec or
-start a legacy daemon. Local observation reuses VibeComfy's actual verifier.
+Remote file observations alone cannot establish a live composite. A journal
+claim plus a verified preparation receipt permits a fresh target-local check
+through the existing preparation transport. Local observation reuses
+VibeComfy's actual verifier.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 import time
 
@@ -199,15 +201,95 @@ class LocalInstalledVibeComfySessionTransport(InstalledVibeComfySessionTransport
 
 
 class RunPodInstalledVibeComfySessionTransport(InstalledVibeComfySessionTransport):
-    """Original pod's authenticated JSON file reads; live attach fails closed.
+    """Installed attachment under exact product claim and preparation custody.
 
-    No /jobs, exec, SSH, WebSocket, Range or second installer is used here.
-    The agent's startup allowlist must already allow the selected public files.
+    Plain read-only attachments still cannot establish live ownership. Only
+    the prepared owner can bind a durable P2 receipt before using its existing
+    transport to observe the actual process/source/listener composite.
     """
 
-    def __init__(self, pod, *, platform=PLATFORM):
+    def __init__(self, pod, *, platform=PLATFORM, preparation_transport=None):
         super().__init__(platform=platform)
         self.pod = pod
+        self.preparation_transport = preparation_transport
+        self._prepared = None
+
+    def bind_preparation(self, *, claim_handle_path, reference, staging):
+        from .prepared_task import _claim_target, _read_mapping
+        from .worker_staging import _SCHEMA, _claim_identity, _public_result
+
+        try:
+            path = Path(claim_handle_path)
+            claim = _read_mapping(path, label="prepared claim")
+            identity = _claim_identity(path, reference.effective_target["provider_account_ref"])
+            journal_path = Path(staging["journal_path"])
+            journal = _read_mapping(journal_path, label="preparation receipt")
+            ordinary = claim.get("ordinary_preparation", {})
+            if (self.preparation_transport is None
+                    or getattr(self.preparation_transport, "pod", None) is not self.pod
+                    or claim.get("acquisition_mode") != "allocate"
+                    or claim.get("release_authorized") is not True
+                    or claim.get("target_identity_verified") is not True
+                    or claim.get("request_name") != "astrid-product-" + identity["operation_id"]
+                    or claim.get("name") != claim["request_name"]
+                    or claim.get("transport") != "https"
+                    or ordinary.get("schema") != "astrid.runpod.ordinary-preparation.v1"
+                    or ordinary.get("state") != "prepared" or ordinary.get("engine") != "comfyui"
+                    or ordinary.get("claim_operation_id") != identity["operation_id"]
+                    or ordinary.get("pod_id") != identity["pod_id"]
+                    or ordinary.get("provider_account_ref") != identity["provider_account_ref"]
+                    or str(self.pod.id) != identity["pod_id"]
+                    or reference.effective_target != _claim_target(claim)
+                    or journal.get("schema") != _SCHEMA
+                    or journal.get("identity") != identity
+                    or journal.get("status") != "cpu_ready"
+                    or _public_result(journal, journal_path) != staging
+                    or staging.get("gpu_qualified") is not False
+                    or staging.get("worker_qualified") is not False):
+                raise ValueError()
+            custody = {key: claim.get(key) for key in (
+                "operation_id", "provider_account_ref", "pod_id", "network_volume_id",
+                "network_volume_name", "network_volume_size_gb", "network_volume_datacenter_id",
+                "volume_mount_path", "gpu_type", "worker_image", "request_name", "name",
+                "transport", "https_token_file", "acquisition_mode", "release_authorized",
+                "target_identity_verified", "ordinary_preparation",
+            )}
+            prepared = (path, custody, journal_path, json.loads(json.dumps(staging)))
+            if self._prepared is not None and self._prepared != prepared:
+                raise ValueError()
+            self._prepared = prepared
+        except Exception:
+            raise ManagedSessionError("journal claim and preparation receipt do not verify this installed attachment") from None
+
+    def _prepared_custody(self, selection):
+        from .prepared_task import _read_mapping
+        from .worker_staging import _claim_identity, _public_result
+
+        if self._prepared is None:
+            raise ManagedSessionError(
+                "read-only pod agent lacks live installer session composite verification; "
+                "verified journal claim and preparation receipt are required"
+            )
+        path, custody, journal_path, staging = self._prepared
+        claim = _read_mapping(path, label="prepared claim")
+        journal = _read_mapping(journal_path, label="preparation receipt")
+        facts = staging["cpu_readiness"]
+        paths = facts["effective_paths"]
+        if (claim.get("state") != "claimed"
+                or any(claim.get(key) != value for key, value in custody.items())
+                or journal.get("identity") != _claim_identity(path, selection.account_ref)
+                or journal.get("status") != "cpu_ready"
+                or _public_result(journal, journal_path) != staging
+                or selection.account_ref != custody["provider_account_ref"]
+                or selection.pod_id != custody["pod_id"]
+                or facts.get("status") != "cpu_ready" or facts.get("gpu_qualified") is not False
+                or facts.get("python_executable") != selection.python_executable
+                or paths.get("vibecomfy_root") != selection.vibecomfy_root
+                or paths.get("comfy_root") != selection.comfy_root
+                or paths.get("model_root") != selection.model_root
+                or paths.get("output_root") != selection.output_root):
+            raise ManagedSessionError("prepared installed-session custody changed")
+        return facts
 
     def _read(self, root, path, deadline):
         _TargetFiles(root)._relative(path)
@@ -241,7 +323,34 @@ class RunPodInstalledVibeComfySessionTransport(InstalledVibeComfySessionTranspor
     def _verify_live(self, selection, value):
         if str(self.pod.id) != selection.pod_id:
             raise ManagedSessionError("installed observation belongs to a different original pod")
-        raise ManagedSessionError(
-            "read-only pod agent lacks live installer session composite verification; "
-            "registry downloads cannot authorize attachment"
-        )
+        try:
+            facts = self._prepared_custody(selection)
+            from .worker_owner import _run_sync
+
+            request = {"selection": asdict(selection), "platform": self.platform,
+                       "astrid_root": facts["effective_paths"]["astrid_root"]}
+            observed = _run_sync(self.preparation_transport._run_json_program(
+                _PREPARED_INSTALLED_OBSERVATION, [json.dumps(request, separators=(",", ":"))],
+                python=selection.python_executable, timeout_seconds=20,
+            ))
+            expected = {**value, "account_ref": selection.account_ref,
+                        "pod_id": selection.pod_id, "ownership_verified": True}
+            if observed != expected:
+                raise ManagedSessionError("prepared installed-session live composite differs")
+            self._prepared_custody(selection)
+        except ManagedSessionError:
+            raise
+        except Exception:
+            raise ManagedSessionError("prepared installed-session live composite could not be verified") from None
+
+
+_PREPARED_INSTALLED_OBSERVATION = r'''import json,sys
+from pathlib import Path
+request=json.loads(sys.argv[1]); selected=request["selection"]
+sys.path[:0]=[request["astrid_root"],selected["vibecomfy_root"]]
+from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+from astrid.packs.runpod.worker_session import ManagedSessionSelection
+transport=LocalInstalledVibeComfySessionTransport(platform=request["platform"])
+observed=transport.status(ManagedSessionSelection(**selected))
+print(json.dumps(observed,sort_keys=True,separators=(",",":")))
+'''
