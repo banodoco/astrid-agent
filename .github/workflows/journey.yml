@@ -119,10 +119,8 @@ on:
         required: false
         type: string
 
-concurrency:
-  group: reusable-journey-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+# Reusable callers can invoke this workflow more than once in the same run.
+# Do not group those invocations: GitHub replaces pending group members.
 permissions:
   contents: read
 
