@@ -139,6 +139,7 @@ astrid = [
     "omp_extensions/*.ts",
     # Native build pins for explicitly selected OMP fork sources.
     "installer/omp/*.json",
+    "installer/predecessors.json",
 
     # Installed service declarations launch this prebuilt Bun bundle. Ship its
     # local-only configuration and third-party notices alongside it.
