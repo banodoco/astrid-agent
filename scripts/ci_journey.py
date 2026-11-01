@@ -353,7 +353,7 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
     old_input = config.get("old_launcher")
     if not isinstance(old_input, dict) or old_input.get("ref") != args.old_launcher_ref:
         raise ValueError("M4-4a config old launcher differs from --old-launcher-ref")
-    old = validate_old_launcher_provenance(args.pinokio_checkout, args.old_launcher_ref)
+    validate_old_launcher_provenance(args.pinokio_checkout, args.old_launcher_ref)
     first_steps = build_pinokio_action(args.pinokio_checkout, args.old_launcher_ref,
                                        app_directory=args.pinokio_checkout)["run"]
     candidate_pinokio_ref = actual["pinokio"]["sha"]
@@ -365,26 +365,9 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
             or not isinstance(actions.get("retry"), dict)
             or actions["retry"].get("steps") != retry_steps):
         raise ValueError("M4-4a explicit action arrays must match the real immutable Pinokio action builder")
-    try:
-        from .shared_journey_driver import JourneyDriver
-    except ImportError:
-        from shared_journey_driver import JourneyDriver
-    config = JourneyDriver.compose_pinokio_backend_config(config)
-    config.setdefault("old_launcher", {}).update({
-        "checkout": str(args.pinokio_checkout.resolve()), "path": old["path"],
-        "sha256": old["sha256"],
-    })
-    try:
-        from . import pinokio_backend_executor as backend_executor
-    except ImportError:
-        import pinokio_backend_executor as backend_executor
     with tempfile.TemporaryDirectory(prefix="astrid-m4-4a-executor-") as temporary:
         executor_output = Path(temporary) / "output"
-        receipt = JourneyDriver.execute_pinokio_backend(
-            config, executor_output, backend_executor
-        )
-        if platform_input["hosted"]:
-            backend_executor.admit_hosted_receipt(receipt)
+        receipt = _execute_pinokio_adapter(args, config, checkouts, executor_output)
         sidecar_root = executor_output / "pinokio-backend"
         if not sidecar_root.is_dir():
             raise RuntimeError("M4-4a executor omitted its required sidecars")
@@ -396,6 +379,40 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
     if not isinstance(backend, dict):
         raise RuntimeError("M4-4a executor did not return a backend receipt")
     return receipt
+
+
+def _execute_pinokio_adapter(args: argparse.Namespace, config: dict,
+                              checkouts: dict, output: Path) -> dict:
+    """Bind the immutable M-PIN inputs before dispatching either Pinokio route."""
+    if getattr(args, "source_override", False) or config.get("source_override_test_mode") is not False:
+        raise ValueError("Pinokio routes must explicitly disable source overrides")
+    if not getattr(args, "pinokio_config_template", None) or not getattr(args, "pinokio_config_binding", None):
+        raise ValueError("Pinokio routes require the frozen config template and binding")
+    # The adapter has package-relative imports even when this driver is run as a script.
+    if not __package__ and str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts import pinokio_journey_adapter as adapter
+    kwargs = {"config": config, "template_path": args.pinokio_config_template,
+              "binding_path": args.pinokio_config_binding, "os_name": journey_os_label(),
+              "checkouts": checkouts, "output": output}
+    if args.mode == "pinokio-fully-local":
+        kwargs.update(local_checkout=args.pinokio_local_checkout,
+                      state_root=args.pinokio_local_state_root)
+    return adapter.execute(args.mode, **kwargs)
+
+
+def execute_pinokio_fully_local(args: argparse.Namespace, evidence: Path) -> dict:
+    """Run the disposable smoke and retain the adapter's unpromoted envelope."""
+    config = read_json(args.pinokio_backend_config)
+    actual = getattr(args, "candidate_checkouts", None)
+    if not isinstance(actual, dict):
+        raise ValueError("Pinokio local route requires the frozen four-checkout tuple")
+    checkouts = {"app": args.app_checkout, "agent": args.candidate_agent_checkout,
+                 "runtime": args.candidate_runtime_checkout, "pinokio": args.pinokio_checkout}
+    for name in checkouts:
+        if config.get("immutable_tuple", {}).get(name) != actual[name]["sha"]:
+            raise ValueError(f"Pinokio config candidate {name} differs from the frozen checkout")
+    return _execute_pinokio_adapter(args, config, checkouts, evidence / "pinokio-local-raw.json")
 
 
 def runner_identity() -> dict:
@@ -1008,7 +1025,7 @@ def selected_tuple(manifest: dict, version: dict) -> dict:
 
 def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
                    evidence: Path, sentinel: subprocess.Popen, birth: str) -> dict:
-    if args.leg in VERSION_JUMP_LEGS:
+    if args.leg in VERSION_JUMP_LEGS and getattr(args, "mode", "direct") == "direct":
         if __package__:
             from . import journey_version_jumps
         else:
@@ -1024,7 +1041,8 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
               "candidate_checkouts": getattr(args, "candidate_checkouts", None),
               "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
               "source_override_test_mode": args.source_override,
-              "evidence_class": "hosted-lifecycle",
+              "evidence_class": ("local_process" if getattr(args, "mode", "direct") == "pinokio-fully-local"
+                                 else "hosted-lifecycle"),
               "source_unit_evidence": {"status": "not-run", "substitute_for_hosted": False},
               "pinokio_backend": None,
               "retained_for_next_leg": getattr(args, "retain_for_next_leg", False),
@@ -1045,6 +1063,12 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
                 "historical_compatibility")
             result["status"] = backend_receipt["status"]
             result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return result
+        if getattr(args, "mode", "direct") == "pinokio-fully-local":
+            local_receipt = execute_pinokio_fully_local(args, evidence)
+            result.update(local_receipt)
+            result.update(status="exercised", receipt_kind="pinokio-local-process-smoke")
+            write_json(result_path, result)
             return result
         if getattr(args, "job_id", None) and args.mode != "direct":
             # M4-3a owns the fail-closed driver/receipt boundary.  Fully-local
@@ -1174,7 +1198,8 @@ def execute(args: argparse.Namespace) -> dict:
             "run_roots": {"program": str(root), "data": str(data)},
             "candidate_checkouts": getattr(args, "candidate_checkouts", None),
             "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
-            "evidence_class": "hosted-lifecycle",
+            "evidence_class": ("local_process" if getattr(args, "mode", "direct") == "pinokio-fully-local"
+                               else "hosted-lifecycle"),
             "source_unit_evidence": {"status": "not-run", "substitute_for_hosted": False},
             "pinokio_backend": None,
             "installed_tuple": None, "import_origins": None,
@@ -1450,6 +1475,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="required full candidate Agent SHA carrying the integrated stopped path")
     parser.add_argument("--pinokio-backend-config", type=Path,
                         help="explicit JSON inputs for the real M4-4a lifecycle executor")
+    parser.add_argument("--pinokio-config-template", type=Path,
+                        help="absolute path to the immutable M-PIN journey config template")
+    parser.add_argument("--pinokio-config-binding", type=Path,
+                        help="absolute path to the immutable M-PIN config binding")
+    parser.add_argument("--pinokio-local-checkout", type=Path,
+                        help="marker-attested disposable local smoke checkout")
+    parser.add_argument("--pinokio-local-state-root", type=Path,
+                        help="marker-attested disposable local smoke state root")
     parser.add_argument("--release0-fixture", type=Path,
                         help="the checked-in frozen release-0 fixture directory for the direct 0-to-1 leg")
     parser.add_argument("--allow-release0-to-release1", action="store_true",
@@ -1480,10 +1513,26 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("pinokio-backend requires --pinokio-backend-config")
         elif args.old_launcher_ref or args.stopped_path_agent_ref:
             parser.error("Pinokio backend refs require a pinokio-backend job")
-        if args.mode != "pinokio-backend" and args.pinokio_backend_config:
-            parser.error("--pinokio-backend-config is only valid for pinokio-backend")
-    elif args.old_launcher_ref or args.stopped_path_agent_ref:
-        parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
+        if args.mode != "direct":
+            if not all((args.pinokio_backend_config, args.pinokio_config_template, args.pinokio_config_binding)):
+                parser.error("Pinokio routes require executor config, frozen template and binding")
+            if args.source_override:
+                parser.error("Pinokio routes do not allow source overrides")
+            if args.leg != "fresh-install":
+                parser.error("Pinokio routes require the fresh-install leg")
+        if args.mode == "pinokio-fully-local":
+            if not all((args.pinokio_local_checkout, args.pinokio_local_state_root)):
+                parser.error("pinokio-fully-local requires disposable checkout and state root")
+        elif args.pinokio_local_checkout or args.pinokio_local_state_root:
+            parser.error("local checkout and state root require pinokio-fully-local")
+        if args.mode == "direct" and any((args.pinokio_backend_config, args.pinokio_config_template,
+                                          args.pinokio_config_binding)):
+            parser.error("Pinokio config inputs require a Pinokio job")
+    elif args.mode != "direct" or any((args.old_launcher_ref, args.stopped_path_agent_ref,
+                                       args.pinokio_backend_config, args.pinokio_config_template,
+                                       args.pinokio_config_binding, args.pinokio_local_checkout,
+                                       args.pinokio_local_state_root)):
+        parser.error("Pinokio inputs require a Release-1 Pinokio job")
     if args.leg == "release0-to-release1":
         if not (args.job_id and args.mode == "direct" and args.candidate):
             parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
