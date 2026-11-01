@@ -789,7 +789,7 @@ def evaluate_installed_faults(candidate, manifest, results, trusted_producers=No
             if (attempted != {k: candidate[k] for k in keys}
                     or not isinstance(selected, dict) or set(selected) != set(keys)
                     or any(not isinstance(selected.get(k), str) or not SHA.fullmatch(selected[k]) for k in keys)
-                    or selected == attempted or row.get("installed_tuple") != selected
+                    or row.get("installed_tuple") != selected
                     or not isinstance(baseline, dict) or baseline.get("selected_tuple") != selected
                     or not isinstance(verify, dict) or verify.get("selected_tuple") != selected
                     or not isinstance(fault, dict) or fault.get("attempted_tuple") != attempted):

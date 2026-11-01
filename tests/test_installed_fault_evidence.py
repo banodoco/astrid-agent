@@ -168,6 +168,18 @@ def test_interrupted_update_rolled_back_has_separate_tuples(tmp_path):
     assert evaluate(candidate, manifest, tmp_path, rows)
 
 
+def test_rollback_can_record_equal_commit_tuples_for_distinct_programs(tmp_path):
+    candidate, manifest, rows = receipts(tmp_path)
+    row = rows[gate.DIRECT_LINUX_FAULT_SCENARIOS[1]["scenario_id"]]
+    selected = copy.deepcopy(row["candidate_tuple"])
+    row["selected_tuple"] = selected
+    row["installed_tuple"] = copy.deepcopy(selected)
+    row["steps"]["baseline"]["selected_tuple"] = copy.deepcopy(selected)
+    row["steps"]["verify"]["selected_tuple"] = copy.deepcopy(selected)
+    write(tmp_path, rows)
+    assert evaluate(candidate, manifest, tmp_path, rows) == []
+
+
 def test_synthetic_complete_and_inventory_fail_closed(tmp_path):
     candidate, manifest, rows = receipts(tmp_path)
     write(tmp_path, rows)
