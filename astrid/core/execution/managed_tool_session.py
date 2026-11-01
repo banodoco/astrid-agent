@@ -317,7 +317,11 @@ class ManagedToolSession:
             if active.binding.identity_key != binding.identity_key:
                 self._fence_locked(reason="binding_changed")
                 raise StaleAdmissionError("managed session binding changed")
-            observation = self._call_adapter(active.adapter, "observe", binding=binding)
+            try:
+                observation = self._call_adapter(active.adapter, "observe", binding=binding)
+            except Exception as exc:
+                self._fence_locked(reason="observation_failed")
+                raise StaleAdmissionError("managed session observation was not verified") from exc
             if isinstance(observation, Mapping) and observation.get("ok") is False:
                 self._fence_locked(reason="observation_failed")
                 raise StaleAdmissionError("managed session observation was not verified")
@@ -463,11 +467,31 @@ class ManagedToolSession:
                 self._fence_and_release_locked(reason=reason)
             self._closed = True
 
-    def release(self, *, reason: str = "released") -> None:
-        """Release the current slot while keeping the manager reusable."""
+    def release(
+        self, *, reason: str = "released", expected_generation: int | None = None,
+        expected_binding: SessionBinding | None = None, require_quiescent: bool = False,
+    ) -> Mapping[str, Any] | None:
+        """Release the current slot while keeping the manager reusable.
+
+        Owner control supplies both expected values. A delayed request cannot
+        release a replacement, or a session fenced since it was observed.
+        Quiescent release leaves active work untouched so its caller can report
+        release_pending and retry after the existing admission has settled.
+        """
         with self._lock:
+            if expected_generation is not None or expected_binding is not None:
+                if (
+                    self._active is None or expected_binding is None
+                    or type(expected_generation) is not int
+                    or expected_generation != self._generation
+                    or expected_binding.identity_key != self._active.binding.identity_key
+                ):
+                    raise StaleAdmissionError("session release authorization is stale")
             if self._active is not None:
-                self._fence_and_release_locked(reason=reason)
+                if require_quiescent and self._active.in_flight:
+                    raise SessionCapacityError("session release is pending active admissions")
+                return self._fence_and_release_locked(reason=reason)
+            return None
 
     def _require_active_locked(self) -> _ActiveSession:
         if self._active is None:
@@ -485,7 +509,7 @@ class ManagedToolSession:
             raise StaleAdmissionError("admission token is missing or already consumed")
         return active
 
-    def _fence_locked(self, *, reason: str) -> None:
+    def _fence_locked(self, *, reason: str) -> Any:
         active = self._active
         if active is None:
             self._generation += 1
@@ -494,15 +518,17 @@ class ManagedToolSession:
         active.in_flight.clear()
         active.dispatched.clear()
         self._generation += 1
-        self._call_adapter(active.adapter, "fence", reason=reason)
+        return self._call_adapter(active.adapter, "fence", reason=reason)
 
-    def _fence_and_release_locked(self, *, reason: str) -> None:
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
         active = self._active
         if active is None:
             self._generation += 1
             return
-        self._fence_locked(reason=reason)
         try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
             evidence = self._call_adapter(active.adapter, "release", reason=reason)
             if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
                 raise RuntimeError("managed session release was not verified")
@@ -512,6 +538,7 @@ class ManagedToolSession:
             # orphan and violates the single-resource contract.
             raise SessionCapacityError("managed session release was not verified") from exc
         self._active = None
+        return evidence
 
     @staticmethod
     def _call_adapter(adapter: Any, method: str, **kwargs: Any) -> Any:
