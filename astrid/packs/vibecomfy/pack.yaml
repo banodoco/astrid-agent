@@ -462,14 +462,12 @@ actions:
       - vibecomfy_run
       - result_manifest
     inputs:
-    - default: ''
-      description: Optional VibeComfy UI workflow JSON. Use this or all three canonical
+    - description: Optional VibeComfy UI workflow JSON. Use this or all three canonical
         members.
       name: workflow
       required: false
       type: file
-    - default: ''
-      description: Optional managed source video staged into the Comfy input directory.
+    - description: Optional managed source video staged into the Comfy input directory.
       name: source_video
       required: false
       type: file
@@ -483,8 +481,7 @@ actions:
       name: source_video_widget
       required: false
       type: string
-    - default: ''
-      description: Optional deterministic ZIP containing manifest.json and runtime-managed
+    - description: Optional deterministic ZIP containing manifest.json and runtime-managed
         workflow media inputs.
       name: managed_assets
       required: false
@@ -505,18 +502,15 @@ actions:
       name: comfy_output_dir
       required: false
       type: string
-    - default: ''
-      description: Optional canonical workflow.py member.
+    - description: Optional canonical workflow.py member.
       name: python
       required: false
       type: file
-    - default: ''
-      description: Optional canonical workflow.vibe.json companion member.
+    - description: Optional canonical workflow.vibe.json companion member.
       name: companion
       required: false
       type: file
-    - default: ''
-      description: Optional byte-identical source.json member.
+    - description: Optional byte-identical source.json member.
       name: source
       required: false
       type: file
@@ -673,24 +667,20 @@ actions:
       provides:
       - vibecomfy_validation
     inputs:
-    - default: ''
-      description: Optional VibeComfy UI workflow JSON. Use this or all three canonical
+    - description: Optional VibeComfy UI workflow JSON. Use this or all three canonical
         members.
       name: workflow
       required: false
       type: file
-    - default: ''
-      description: Optional canonical workflow.py member.
+    - description: Optional canonical workflow.py member.
       name: python
       required: false
       type: file
-    - default: ''
-      description: Optional canonical workflow.vibe.json companion member.
+    - description: Optional canonical workflow.vibe.json companion member.
       name: companion
       required: false
       type: file
-    - default: ''
-      description: Optional byte-identical source.json member.
+    - description: Optional byte-identical source.json member.
       name: source
       required: false
       type: file
