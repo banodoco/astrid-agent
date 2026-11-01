@@ -51,7 +51,7 @@ def verified_schema_path(source_root: Path, configured: str) -> Path:
     return expected
 
 
-def load_verified_schema(source_root: Path, configured: str) -> dict:
+def load_verified_schema_with_origin(source_root: Path, configured: str) -> tuple[dict, str]:
     """Use the canonical reader without accepting an ambient or cached contract."""
     path = verified_schema_path(source_root, configured)
     from astrid.core.timeline import banodoco_schema
@@ -88,4 +88,8 @@ def load_verified_schema(source_root: Path, configured: str) -> dict:
     import jsonschema
 
     jsonschema.validators.validator_for(schema).check_schema(schema)
-    return schema
+    return schema, str(Path(banodoco_schema.__file__).absolute())
+
+
+def load_verified_schema(source_root: Path, configured: str) -> dict:
+    return load_verified_schema_with_origin(source_root, configured)[0]
