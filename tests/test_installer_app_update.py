@@ -222,7 +222,7 @@ def installed(tmp_path, monkeypatch):
     real_write_json = installer_core.write_json
 
     def observe_write_json(path, value):
-        if path.name == "update-transaction.json":
+        if path.name == "update-transaction.json" and read_json(path).get("step") != value["step"]:
             journal_steps.append(value["step"])
         real_write_json(path, value)
 
@@ -319,12 +319,164 @@ def run(env):
     update.update_app(env.root, env.backend, {}, lifecycle=env.lifecycle, say=lambda _: None)
 
 
+def _run_cli_app_update(env, monkeypatch):
+    """Exercise Pinokio admission through the public installer CLI."""
+    from astrid.installer import cli
+
+    uv = env.tmp_path / "uv"
+    uv.touch()
+    if not hasattr(env.backend, "preflight_stop"):
+        env.backend.preflight_stop = lambda *_args: None
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: env.backend, raising=False)
+    monkeypatch.setattr(cli, "default_uv", lambda: uv)
+    monkeypatch.setattr(cli, "download", lambda *_args, **_kwargs: pytest.fail(
+        "an incapable Runtime must be refused before manifest download"))
+    monkeypatch.setattr(cli, "validate_manifest", lambda _manifest: {})
+    return cli.main(["--update-app", "--managed-by", "pinokio", "--root", str(env.root)])
+
+
+def _tree_bytes(root):
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*") if path.is_file()}
+
+
+def _real_runtime(env, capability):
+    installed = _install_test_runtime(env.old.root, "legacy", capability=capability)
+    (installed.site / "astrid_runtime" / "bootstrap.py").write_text(
+        f"PINOKIO_STOP_HANDOFF_VERSION = {capability!r}\n", encoding="utf-8")
+    version_path = env.old.root / "version.json"
+    version_doc = read_json(version_path)
+    version_doc.update(python=str(installed.python), profile=str(installed.profile))
+    write_json(version_path, version_doc)
+    for cache in env.old.root.rglob("__pycache__"):
+        shutil.rmtree(cache)
+    return installed
+
+
+def _use_real_selected_runtime(env, runtime):
+    calls = []
+    fake_run = env.backend.run
+
+    def run(argv, **kwargs):
+        if Path(argv[0]) == runtime.python:
+            calls.append(argv)
+            return subprocess.run(list(map(str, argv)), check=True, capture_output=True,
+                                  text=True, timeout=30).stdout
+        return fake_run(argv, **kwargs)
+
+    env.backend.run = run
+    return calls
+
+
+def test_running_incapable_runtime_refuses_exact_i1_without_writes(
+        installed, monkeypatch, capsys):
+    env = installed
+    env.owner["running"] = True
+    (env.root / "install-manifest.json").write_bytes(b"{}\n")
+    (env.root / "service-env.json").write_bytes(b'{"services":[]}\n')
+    (env.root / "run_runtime.py").write_bytes(b"legacy runner\n")
+    journal = env.root / "update-transaction.json"
+    journal.write_bytes(b'{"step":"complete","opaque":"preserve"}\n')
+    runtime = _real_runtime(env, 0)
+    probe_calls = _use_real_selected_runtime(env, runtime)
+    env.record.pop("identity")  # Release-0 selection identity is read-only here.
+    old_version_path = env.old.root / "version.json"
+    old_version = read_json(old_version_path)
+    old_version.pop("identity")
+    write_json(old_version_path, old_version)
+    write_json(env.old.root / "manifest.json", {"release": env.old.release})
+    from astrid.installer.service import install_selection
+
+    service_selection = install_selection(env.tmp_path, sys.platform)
+    service_selection.parent.mkdir(parents=True, exist_ok=True)
+    service_selection.write_bytes(b'{"owner":"sentinel","keep":true}\n')
+    selection_before = service_selection.read_bytes()
+    assert not list(env.old.root.rglob("__pycache__"))
+    before = _tree_bytes(env.root)
+    preflight_calls = []
+    env.backend.preflight_stop = lambda *args: preflight_calls.append(args)
+
+    from astrid.installer.service import installer_lock_path
+
+    lifetime_lock = installer_lock_path(env.tmp_path, sys.platform)
+    lifetime_lock.parent.mkdir(parents=True, exist_ok=True)
+    with update.locked(lifetime_lock):
+        assert _run_cli_app_update(env, monkeypatch) == 1
+    output = capsys.readouterr().out
+    assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in output.splitlines()
+    assert _tree_bytes(env.root) == before
+    assert journal.read_bytes() == b'{"step":"complete","opaque":"preserve"}\n'
+    assert not list(env.old.root.rglob("__pycache__"))
+    assert service_selection.read_bytes() == selection_before
+    assert "identity" not in read_json(old_version_path)
+    assert "identity" not in env.record
+    assert preflight_calls == []
+    assert len(probe_calls) == 2
+    assert all("-B" in call for call in probe_calls)
+    assert env.candidate_admissions == []
+
+
+
+def test_start_racing_stopped_preflight_refuses_exact_i1_before_manifest_write(
+        installed, monkeypatch, capsys):
+    from astrid.installer.service import installer_lock_path
+
+    env = installed
+    runtime = _real_runtime(env, 0)
+    probe_calls = _use_real_selected_runtime(env, runtime)
+    before = _tree_bytes(env.root)
+    lock = update.locked(installer_lock_path(env.tmp_path, sys.platform))
+    acquired = []
+
+    def racing_start(_data):
+        lock.__enter__()
+        acquired.append(True)
+
+    env.backend.preflight_stop = racing_start
+    try:
+        assert _run_cli_app_update(env, monkeypatch) == 1
+    finally:
+        if acquired:
+            lock.__exit__(None, None, None)
+    assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in capsys.readouterr().out.splitlines()
+    assert _tree_bytes(env.root) == before
+    assert not list(env.old.root.rglob("__pycache__"))
+    assert len(probe_calls) == 2
+    assert all("-B" in call for call in probe_calls)
+    assert env.candidate_admissions == []
+
+
+def test_selected_runtime_provenance_mismatch_refuses_before_handoff_probe(
+        installed, monkeypatch):
+    env = installed
+    runtime = _real_runtime(env, 1)
+    profile = read_json(runtime.profile)
+    profile["runtime_checkout"] = str(env.tmp_path / "unrelated-runtime")
+    write_json(runtime.profile, profile)
+    probe_calls = _use_real_selected_runtime(env, runtime)
+    (env.root / "install-manifest.json").write_bytes(b"{}\n")
+    before = _tree_bytes(env.root)
+    from astrid.installer.service import installer_lock_path
+
+    lifetime_lock = installer_lock_path(env.tmp_path, sys.platform)
+    lifetime_lock.parent.mkdir(parents=True, exist_ok=True)
+
+    with update.locked(lifetime_lock):
+        assert _run_cli_app_update(env, monkeypatch) == 1
+    assert _tree_bytes(env.root) == before
+    assert not list(env.old.root.rglob("__pycache__"))
+    assert len(probe_calls) == 1
+    assert "-B" in probe_calls[0]
+    assert env.candidate_admissions == []
+
+
 @pytest.mark.parametrize("rollback", [False, True])
 def test_real_journal_and_installer_log_reach_doctor(installed, monkeypatch, capsys, rollback):
-    from astrid.installer.backend import Backend
     from astrid_runtime import cli
     from astrid_runtime.paths import RuntimePaths, _install_record_path
     from runtime_protocol import platform
+
+    from astrid.installer.backend import Backend
 
     env = installed
     paths = RuntimePaths.sandbox(env.tmp_path / "home")
@@ -485,10 +637,11 @@ def test_ordinary_start_refuses_update_publication_and_stop_handoffs(installed, 
     refusals = []
 
     def ordinary_start(boundary):
-        message = ("Another Astrid operation" if boundary == "published" else
-                   "An Astrid update was interrupted; Choose Pinokio's Update button")
-        with pytest.raises(ValueError, match=message):
+        message = ("Another Astrid operation still owns the installation lock."
+                   if boundary == "published" else "Choose Update to finish")
+        with pytest.raises(ValueError) as raised:
             runpy.run_path(str(runner))
+        assert str(raised.value) == message
         refusals.append(boundary)
 
     publish, stop = update.publish_runtime_runner, env.lifecycle.stop
@@ -792,7 +945,8 @@ def test_cli_allows_pending_app_transaction_through_selection(tmp_path, monkeypa
     uv, manifest = tmp_path / "uv", tmp_path / "manifest.json"
     uv.touch()
     manifest.write_text("{}", encoding="utf-8")
-    backend = SimpleNamespace(service=SimpleNamespace(recorded=lambda: record.copy()))
+    backend = SimpleNamespace(service=SimpleNamespace(home=home, system=sys.platform,
+                                                              recorded=lambda: record.copy()))
     called = []
 
     class CliBackend:
@@ -1094,14 +1248,17 @@ def test_lock_failure_after_stop_restarts_old(installed, monkeypatch):
             yield
 
     monkeypatch.setattr(update, "locked", lock)
-    with pytest.raises(ValueError, match="lock unavailable"):
-        run(installed)
+    from astrid.installer.service import installer_lock_path
+
+    with real_lock(installer_lock_path(installed.tmp_path, sys.platform)):
+        with pytest.raises(ValueError, match="lock unavailable"):
+            run(installed)
     assert installed.calls == ["stage", "stop:old", "stop:old", "start:old"]
     assert current(installed.root) == installed.old
     assert installed.record["identity"] == installed.old.document()["identity"]
 
 
-def test_start_runs_after_lifetime_lock_released(installed, monkeypatch):
+def test_stopped_start_retains_lifetime_lock(installed, monkeypatch):
     held = set()
 
     @contextlib.contextmanager
@@ -1112,10 +1269,16 @@ def test_start_runs_after_lifetime_lock_released(installed, monkeypatch):
         finally:
             held.remove(path.name)
 
+    # Check actual OS custody independently of the operation-lock observer.
+    real_lock = update.locked
     monkeypatch.setattr(update, "locked", lock)
-
     def start(*_):
+        from astrid.installer.service import installer_lock_path
+
         assert held == {".app-update.lock"}
+        with pytest.raises(ValueError, match="lock"):
+            with real_lock(installer_lock_path(installed.tmp_path, sys.platform)):
+                pass
 
     installed.lifecycle.start = start
     run(installed)
@@ -1709,3 +1872,31 @@ def test_pinokio_validate_refuses_runtime_without_installed_distribution(install
     assert "qualified release first" in message
     assert "stop_unproven" not in message
     assert calls[-1][1:2] == ["-I"]
+
+
+def test_custodian_loss_preserves_unconfirmed_journal_for_explicit_recovery(installed):
+    env = installed
+    start = env.lifecycle.start
+
+    def interrupted_start(version, *args):
+        start(version, *args)
+        custody = env.backend._pinokio_custody
+        custody.process.terminate()
+        custody.process.wait(timeout=5)
+        from astrid.installer.foreground import launch
+        from astrid.installer.service import launch_admission
+
+        with pytest.raises(ValueError, match="^Choose Update to finish$"):
+            launch(env.root, [])
+        with pytest.raises(ValueError, match="^Choose Update to finish$"):
+            launch_admission(version, env.data)
+
+    env.lifecycle.start = interrupted_start
+    with pytest.raises(RuntimeError, match="lock owner disconnected"):
+        run(env)
+    assert current(env.root) == env.candidate
+    assert read_json(env.root / "update-transaction.json")["step"] == "switched"
+    env.lifecycle.start = start
+    assert update.recover_app(env.root, env.backend, lifecycle=env.lifecycle, say=lambda _: None)
+    assert current(env.root) == env.old
+    assert read_json(env.root / "update-transaction.json")["step"] == "rolled_back"

@@ -217,7 +217,7 @@ def test_recovery_only_cli_sweeps_owned_job_under_installer_lock_after_recovery(
     assert repaired["update_job_residue"] == original_residues
 
 
-def test_regular_cli_recovers_app_journal_without_holding_installer_lock(
+def test_regular_cli_recovers_app_journal_with_stopped_custody(
         tmp_path, monkeypatch):
     root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     backend = _cli_backend(tmp_path, root, data, managed_by="pinokio")
@@ -243,8 +243,9 @@ def test_regular_cli_recovers_app_journal_without_holding_installer_lock(
         assert actual_backend is backend
         path = app_update.installer_lock_path(backend.service.home, backend.service.system)
         with path.open("a+b") as stream:
-            platform.lock_file(stream.fileno(), blocking=False)
-            platform.unlock_file(stream.fileno())
+            with pytest.raises(BlockingIOError):
+                platform.lock_file(stream.fileno(), blocking=False)
+        assert actual_backend._pinokio_custody is not None
         recovery.append("called")
 
     monkeypatch.setattr(app_update, "recover_app", recover_app)
