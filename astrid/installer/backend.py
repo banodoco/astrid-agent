@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -72,6 +73,18 @@ def _last_service_log(log: Path, *, tail: int = 8192) -> str | None:
         return value or None
     except OSError:
         return None
+
+
+def _available_door_port() -> str:
+    """Return the default Runtime door port, or a currently free replacement."""
+    for port in (DEFAULT_DOOR_PORT, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return str(probe.getsockname()[1])
+    raise RuntimeError("No free Runtime door port is available.")
 
 
 def _classify_services(services, ready_file: Path) -> tuple[str, dict | None, dict | None]:
@@ -934,10 +947,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                   runtime / "packages" / "python", agent, vibecomfy])
         env = install_tools(manifest, folder / "tools", platform_target(), self.run)
         prior = current(root) or self.existing(data)
-        env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
-                    "ASTRID_RUNTIME_DOOR_PORT": os.environ.get(
-                        "ASTRID_RUNTIME_DOOR_PORT",
-                        prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT)) if prior else str(DEFAULT_DOOR_PORT)),
+        door_port = os.environ.get("ASTRID_RUNTIME_DOOR_PORT")
+        if door_port is None:
+            door_port = (prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))
+                         if prior else _available_door_port())
+        env.update({"HOME": str(self.service.home),
+                    "ASTRID_RUNTIME_DATA_ROOT": str(data),
+                    "ASTRID_RUNTIME_DOOR_PORT": door_port,
                     "PATH": str(python.parent) + os.pathsep + env["PATH"]})
         profile = folder / "profile.json"
         version = Version(folder, python, profile, env, **install_identity(folder))

@@ -2,6 +2,7 @@
 import io
 import json
 import plistlib
+import socket
 import subprocess
 import sys
 import tarfile
@@ -119,6 +120,27 @@ def test_launchd_is_foreground_keepalive_with_explicit_environment():
     assert arguments[:5] == [str(version.python), '-X', 'utf8', '-I', '-c']
     assert _runtime_argv(arguments[5]) == ['run', '--profile', 'astrid', '--data-root', str(data), '--source-manifest', str(version.profile)]
     assert value['EnvironmentVariables']['PATH'] == version.env['PATH']
+
+
+def test_service_definitions_carry_the_same_home_and_runtime_door_port():
+    home, port = '/installer home', '17341'
+    for system in ('darwin', 'linux', 'win32'):
+        version, data, log = sample(system)
+        version = Version(version.root, version.python, version.profile,
+                          {**version.env, 'HOME': home, 'ASTRID_RUNTIME_DOOR_PORT': port})
+        rendered = service.render(system, version, data, log, user='S-1-5-21-1234')
+        if system == 'darwin':
+            environment = plistlib.loads(rendered.encode())['EnvironmentVariables']
+            assert environment['HOME'] == home
+            assert environment['ASTRID_RUNTIME_DOOR_PORT'] == port
+        elif system == 'linux':
+            assert f'Environment="HOME={home}"' in rendered
+            assert f'Environment="ASTRID_RUNTIME_DOOR_PORT={port}"' in rendered
+        else:
+            arguments = ET.fromstring(rendered).findtext(
+                './/{http://schemas.microsoft.com/windows/2004/02/mit/task}Arguments')
+            assert f"'HOME': '{home}'" in arguments
+            assert f"'ASTRID_RUNTIME_DOOR_PORT': '{port}'" in arguments
 
 
 def test_launchd_operations_use_runtime_posix_user_identity(tmp_path, monkeypatch):
@@ -326,11 +348,12 @@ def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tm
     assert json.loads(services_path.read_text(encoding='utf-8')) == {'version': 1, 'services': []}
 
 
-@pytest.mark.parametrize('prior_port,requested_port,expected_port', [
-    (None, None, '17340'), ('17391', None, '17391'), ('17391', '17393', '17393'),
+@pytest.mark.parametrize('prior_port,requested_port,expected_port,occupy_default', [
+    (None, None, None, False), ('17391', None, '17391', False), ('17391', '17393', '17393', False),
+    (None, None, None, True),
 ])
 @pytest.mark.parametrize('managed_by', [None, 'pinokio'])
-def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port, managed_by):
+def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port, occupy_default, managed_by):
     backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv', managed_by=managed_by)
     write_json(backend.root / 'install.json', {'owner': service.LABEL, 'managed_by': managed_by})
     backend.uv.touch()
@@ -398,13 +421,30 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
         'tools': {'uv': {'version': '1.0.0'}, 'python': {'version': '3.11.9'}},
     }
 
-    version = backend.stage(manifest, tmp_path / 'program', tmp_path / 'workspace')
+    occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM) if occupy_default else None
+    if occupied is not None:
+        occupied.bind(('127.0.0.1', 17340))
+    try:
+        version = backend.stage(manifest, tmp_path / 'program', tmp_path / 'workspace')
+    finally:
+        if occupied is not None:
+            occupied.close()
 
-    assert version.env['ASTRID_RUNTIME_DOOR_PORT'] == expected_port
+    selected_port = version.env['ASTRID_RUNTIME_DOOR_PORT']
+    if expected_port is not None:
+        assert selected_port == expected_port
+    else:
+        assert int(selected_port) > 0
+    if occupy_default:
+        assert selected_port != '17340'
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(('127.0.0.1', int(selected_port)))
     assert version.release == 23 and version.managed_by == managed_by
     assert version.env['ASTRID_INSTALL_RELEASE'] == '23'
     assert version.env['ASTRID_INSTALL_MANAGED_BY'] == (managed_by or '')
     assert Version.load(read_json(version.root / 'version.json')) == version
+    assert Version.load(read_json(version.root / 'version.json')).env['ASTRID_RUNTIME_DOOR_PORT'] == selected_port
+    assert version.env['HOME'] == str(backend.service.home)
     profile = json.loads(version.profile.read_text(encoding='utf-8'))
     assert Path(profile['source_checkout']) == installed_root(version.python, version.env)
     assert digest_roots == [Path(profile['source_checkout'])]
@@ -419,6 +459,12 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     assert Path(service_call[6]) == Path(profile['source_checkout'])
     assert any('service_declaration' in argv[5] for argv in calls if len(argv) > 5 and argv[3:5] == ['-I', '-c'])
     assert any('source_checkout_digest' in argv[5] for argv in calls if len(argv) > 5 and argv[3:5] == ['-I', '-c'])
+    if occupy_default:
+        from astrid.installer.core import switch
+
+        switch(tmp_path / 'program', version)
+        update = backend.stage({**manifest, 'release': 24}, tmp_path / 'program', tmp_path / 'workspace')
+        assert update.env['ASTRID_RUNTIME_DOOR_PORT'] == selected_port
 
 
 def test_installed_product_root_uses_selected_interpreter_origins_and_rejects_checkout_imports(tmp_path):
