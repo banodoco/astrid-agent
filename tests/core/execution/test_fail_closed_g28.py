@@ -37,10 +37,11 @@ def case(host_case, monkeypatch):
         assert kwargs["fence"] == data["fence"]
         assert kwargs["lease_id"] == "lease-result"
         assert kwargs["runtime_epoch"] == data["runtime_epoch"]
-        assert kwargs["stop_observed"] is True
+        assert kwargs["stop_observed"] is False
         assert isinstance(kwargs["outputs"], list)
         assert isinstance(kwargs["result"], dict)
-        data["status"] = "cancelled"
+        data["status"] = "cancel_requested"
+        data["waiting_reason"] = "provider_state_unknown"
         return {"task": dict(data)}
 
     monkeypatch.setattr(case.runtime, "fail", fail)
@@ -215,10 +216,11 @@ def test_cancellation_records_terminal_state_and_receipt(case, monkeypatch, sour
 
     monkeypatch.setattr(case.host, "_run_command_definition", execute)
     started = time.monotonic()
-    result = case.host.run_task(case.task, lease_token="lease-result")
+    with pytest.raises(HostError, match="Runtime terminal evidence publication pending"):
+        case.host.run_task(case.task, lease_token="lease-result")
     assert time.monotonic() - started < 10
-    assert result["cancelled"]
-    assert case.task["task"]["status"] == "cancelled"
+    assert case.task["task"]["status"] == "cancel_requested"
+    assert case.task["task"]["waiting_reason"] == "provider_state_unknown"
     assert receipt(case)["status"] == "cancelled"
     assert receipt(case)["error"]["code"] == "cancelled"
     assert not case.runtime.failures
