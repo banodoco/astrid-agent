@@ -1,4 +1,4 @@
-"""Use qualified PATH media tools or the pinned archive, with recorded selection."""
+"""Install verified manifest-pinned media tools, with recorded selection."""
 
 import os
 import shutil
@@ -103,25 +103,30 @@ def harness(tmp_path, monkeypatch, *, availability="qualified"):
     return root, ffmpeg, ffprobe, other, downloads, calls, run
 
 
-def test_qualified_path_media_tools_are_selected_and_recorded(tmp_path, monkeypatch):
+def test_qualified_path_media_tools_do_not_override_pinned_archive(tmp_path, monkeypatch):
     root, ffmpeg, ffprobe, other, downloads, calls, run = harness(tmp_path, monkeypatch)
 
     env = tools.install_tools(manifest(), root, TARGET, run)
 
-    assert downloads == ["https://example.invalid/bun.zip", "https://example.invalid/node.zip"]
-    assert env["ASTRID_FFMPEG_EXECUTABLE"] == str(ffmpeg)
-    assert env["ASTRID_FFPROBE_EXECUTABLE"] == str(ffprobe)
-    assert env["ASTRID_INSTALL_FFMPEG_SOURCE"] == "path"
-    assert env["ASTRID_INSTALL_FFMPEG_VERSION"] == "6.1.2-system"
-    assert env["ASTRID_INSTALL_FFPROBE_VERSION"] == "6.1.2-system"
+    downloaded_ffmpeg = root / "ffmpeg" / "bundle" / ("ffmpeg" + EXE_SUFFIX)
+    downloaded_ffprobe = root / "ffmpeg" / "bundle" / ("ffprobe" + EXE_SUFFIX)
+    assert downloads == [f"https://example.invalid/{name}.zip" for name in ("bun", "node", "ffmpeg")]
+    assert env["ASTRID_FFMPEG_EXECUTABLE"] == str(downloaded_ffmpeg)
+    assert env["ASTRID_FFPROBE_EXECUTABLE"] == str(downloaded_ffprobe)
+    assert env["ASTRID_INSTALL_FFMPEG_SOURCE"] == "download"
+    assert env["ASTRID_INSTALL_FFMPEG_VERSION"] == "7.0.2-static"
+    assert env["ASTRID_INSTALL_FFPROBE_VERSION"] == "7.0.2-static"
     path = env["PATH"].split(os.pathsep)
-    assert str(ffmpeg.parent) in path and str(ffprobe.parent) in path
-    assert shutil.which("ffmpeg", path=env["PATH"]) == str(ffmpeg)
-    assert shutil.which("ffprobe", path=env["PATH"]) == str(ffprobe)
+    assert str(downloaded_ffmpeg.parent) in path
+    assert shutil.which("ffmpeg", path=env["PATH"]) == str(downloaded_ffmpeg)
+    assert shutil.which("ffprobe", path=env["PATH"]) == str(downloaded_ffprobe)
+    assert Path(env["ASTRID_FFMPEG_EXECUTABLE"]).is_relative_to(root)
+    assert Path(env["ASTRID_FFPROBE_EXECUTABLE"]).is_relative_to(root)
+    assert str(ffmpeg.parent) not in path
+    assert str(ffprobe.parent) not in path
     assert str(other) not in path
-    assert (str(ffmpeg), ["-hide_banner", "-encoders"]) in calls
-    assert (str(ffmpeg), ["-hide_banner", "-filters"]) in calls
-    assert not (root / "ffmpeg").exists()
+    assert (str(downloaded_ffmpeg), ["-hide_banner", "-encoders"]) in calls
+    assert (str(downloaded_ffmpeg), ["-hide_banner", "-filters"]) in calls
 
 
 def test_generated_service_environment_uses_utf8_stdio(tmp_path, monkeypatch):

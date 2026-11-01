@@ -279,19 +279,6 @@ def _media_tool_metadata(ffmpeg: Path, ffprobe: Path, run, origin: str) -> dict[
 
 
 def _media_tools(pin: dict, root: Path, target: str, run) -> dict[str, str]:
-    selected = [Path(os.path.abspath(value)) for name in ("ffmpeg", "ffprobe")
-                if (value := shutil.which(name))]
-    versions = root.parent.parent
-    # Managed versions are pruned after updates; they cannot supply a future
-    # version's media executables, including through an external symlink.
-    managed = versions.name == "versions" and any(
-        path.is_relative_to(versions) or path.resolve().is_relative_to(versions) for path in selected)
-    if len(selected) == 2 and not managed:
-        try:
-            return _media_tool_metadata(selected[0], selected[1], run, "path")
-        except (OSError, ValueError, subprocess.SubprocessError):
-            # An absent/broken capability falls back to the qualified release.
-            pass
     asset = pin["assets"].get(target)
     if not asset:
         raise ValueError(f"There is no qualified ffmpeg build for {target}.")
