@@ -909,7 +909,7 @@ def _recover_matching_transaction(root: Path, job: dict, journal: dict) -> dict:
         else:
             backend.preflight_stop(data_root)
         Installer(root, data_root, backend, say=lambda _line: None)._recover_update()
-    except (Exception, KeyboardInterrupt) as failure:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
         raise _BusyRefusal("The matching update transaction could not be safely recovered.") from failure
     result_journal = read_json(root / "update-transaction.json")
     if (not isinstance(result_journal, dict) or result_journal.get("step") not in TERMINAL_STEPS
@@ -918,7 +918,7 @@ def _recover_matching_transaction(root: Path, job: dict, journal: dict) -> dict:
     expected, identity, state, message = _journal_result(job, result_journal)
     try:
         _verify_journal_result_ready(root, data_root, job, result_journal, expected, identity, state)
-    except (Exception, KeyboardInterrupt) as failure:
+    except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - an interrupted manager acknowledgement is unknown.
         raise _BusyRefusal("The recovered Runtime identity or readiness could not be confirmed.") from failure
     return _set_reconciled_job(root, job, state, message)
 
@@ -1346,7 +1346,7 @@ def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
                                Path(job["log_path"]))
     except _BusyRefusal:
         raise
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+    except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - an interrupted manager acknowledgement is unknown.
         # A manager failure can race a worker claim only when the exact current
         # attempt launched.  Reread it before recording any outcome.
         current = _current_attempt(root, operation_id, epoch, nonce, submitted=True)
@@ -1499,9 +1499,18 @@ def _cleanup_private_inputs(job: dict, cleanup_status: str) -> None:
     handoff = directory / f"bootstrap-{job['operation_id']}.ps1"
     if handoff.is_file() and not handoff.is_symlink() and platform.is_owner_only(handoff):
         handoff.unlink(missing_ok=True)
-    worker = directory / f"worker-{job['operation_id']}.py"
-    if worker.is_file() and not worker.is_symlink() and platform.is_owner_only(worker):
-        worker.unlink(missing_ok=True)
+    attempts = [job.get("attempt")]
+    retired = job.get("retired_attempts")
+    if isinstance(retired, list):
+        attempts.extend(retired)
+    for attempt in attempts:
+        try:
+            epoch, nonce = _attempt_tuple({"attempt": attempt})
+        except ValueError:
+            continue
+        worker = directory / f"worker-{job['operation_id']}-{epoch}-{nonce}.py"
+        if worker.is_file() and not worker.is_symlink() and platform.is_owner_only(worker):
+            worker.unlink(missing_ok=True)
     with contextlib.suppress(OSError):
         if platform.is_owner_only(directory, directory=True):
             directory.rmdir()

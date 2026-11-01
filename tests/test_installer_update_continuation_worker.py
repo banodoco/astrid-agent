@@ -1,13 +1,15 @@
 """Worker-produced evidence at the claim/bootstrap interruption boundaries."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from astrid.installer import update_job
 from astrid.installer.core import Version, read_json, write_json
 from tests.test_installer_update_continuation import (
-    _ContinuationAdapter,
     _assert_lock_busy,
+    _ContinuationAdapter,
     _descriptor,
     _set_unresolved,
 )
