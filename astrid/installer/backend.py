@@ -935,6 +935,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         env = install_tools(manifest, folder / "tools", platform_target(), self.run)
         prior = current(root) or self.existing(data)
         env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
+                    "ASTRID_INSTALL_UV": str(self.uv),
                     "ASTRID_RUNTIME_DOOR_PORT": os.environ.get(
                         "ASTRID_RUNTIME_DOOR_PORT",
                         prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT)) if prior else str(DEFAULT_DOOR_PORT)),

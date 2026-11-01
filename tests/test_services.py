@@ -17,11 +17,13 @@ def test_declaration_matches_runtime_contract_with_space_containing_paths(tmp_pa
     bun = str(tmp_path / "Bun tools" / "bun")
     program = str(tmp_path / "custom Astrid program")
     monkeypatch.setenv("ASTRID_INSTALL_PROGRAM_ROOT", program)
+    monkeypatch.setenv("ASTRID_INSTALL_UV", str(tmp_path / "bootstrap/uv"))
     declaration = service_declaration(source_checkout=source, data_root=root, python=python, bun=bun)
     schema = json.loads((Path(__file__).parent / "fixtures" / "services.schema.json").read_text())
     jsonschema.validate(declaration, schema)
     host, chat = declaration["services"]
     assert host["env"]["ASTRID_INSTALL_PROGRAM_ROOT"] == program
+    assert host["env"]["ASTRID_INSTALL_UV"] == str(tmp_path / "bootstrap/uv")
     assert chat["env"]["ASTRID_INSTALL_PROGRAM_ROOT"] == program
     assert host["argv"][0] == python
     assert host["argv"][host["argv"].index("--source-checkout") + 1] == str(source)
