@@ -7,9 +7,13 @@ import {
 import {
   COLOR,
   FAMILY,
+  LOGICAL_H,
+  LOGICAL_W,
+  clipFrames,
   finiteNumber,
+  integerIn,
 } from '../../_shared/am';
-import {type MosaicRamp} from '../../_shared/mosaic';
+import {mosaicBlockAt, type MosaicRamp} from '../../_shared/mosaic';
 import {
   type Anchor,
   type MouthState,
@@ -19,8 +23,7 @@ import {
   blinkClosedAt,
   mouthStateAt,
 } from './presenter-core';
-import {anchorOr, mouthAnchor, mouthEraseRect, pixelGeometry, presenterAt, type PixelRect} from './motion';
-import {preparePresenterScene, presenterMosaicAt} from './scene';
+import {presenterAt} from './motion';
 
 // am-presenter: the Remotion-animated stand-in for the speaker. It draws ONLY
 // the pixel overlay (mouth, eyes, blinks, bob) plus crisp UI chrome (label,
@@ -77,6 +80,7 @@ type Resolved = {
 
 // Defaults match the synthetic preview plate (320x180). Replace mouth/eyes with
 // the anchors measured on the real P-01 plate.
+const DEFAULT_MOUTH: Anchor = {x: 151, y: 104, w: 19};
 const DEFAULT_EYES: Anchor[] = [
   {x: 146, y: 85, w: 3},
   {x: 171, y: 85, w: 3},
@@ -85,11 +89,21 @@ const DEFAULT_EYES: Anchor[] = [
 const hexOr = (value: unknown, fallback: string): string =>
   typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value.trim()) ? value.trim() : fallback;
 
+const anchorOr = (value: unknown, fallback: Anchor): Anchor => {
+  if (!value || typeof value !== 'object') return fallback;
+  const a = value as Record<string, unknown>;
+  return {
+    x: integerIn(a.x, 0, LOGICAL_W - 1, fallback.x),
+    y: integerIn(a.y, 0, LOGICAL_H - 1, fallback.y),
+    w: integerIn(a.w, 1, 40, fallback.w),
+  };
+};
+
 const readParams = (raw: unknown): Resolved => {
   const p = narrowParams<Params>(raw);
   const chipRaw = p.chip && typeof p.chip === 'object' ? p.chip : null;
   return {
-    mouth: mouthAnchor(raw),
+    mouth: anchorOr(p.mouth, DEFAULT_MOUTH),
     skin: hexOr(p.skin, '#EDB98E'),
     lip: hexOr(p.lip, '#2B1A14'),
     inner: hexOr(p.inner, '#7A3510'),
@@ -108,11 +122,14 @@ const readParams = (raw: unknown): Resolved => {
   };
 };
 
-type Px = PixelRect & {color: string};
+type Px = {x: number; y: number; w: number; h: number; color: string};
 
 const pxStyle = (r: Px, v: PresenterView): CSSProperties => ({
   position: 'absolute',
-  ...pixelGeometry(r, v),
+  left: v.originX + r.x * v.scale,
+  top: v.originY + r.y * v.scale,
+  width: r.w * v.scale,
+  height: r.h * v.scale,
   background: r.color,
 });
 
@@ -120,7 +137,7 @@ const pxStyle = (r: Px, v: PresenterView): CSSProperties => ({
 // Half and open first erase the plate's line with skin, then draw the opening.
 const mouthPixels = (state: MouthState, m: Anchor, skin: string, lip: string, inner: string): Px[] => {
   if (state === 'closed') return [];
-  const erase: Px = {...mouthEraseRect(m), color: skin};
+  const erase: Px = {x: m.x - 1, y: m.y - 1, w: m.w + 2, h: 4, color: skin};
   if (state === 'half') {
     return [erase, {x: m.x + 2, y: m.y, w: m.w - 4, h: 1, color: lip}];
   }
@@ -216,7 +233,7 @@ const monoChip: CSSProperties = {
   padding: '10px 16px',
 };
 
-function AmPresenter(props: ElementComponentProps): ReactElement | null {
+export default function AmPresenter(props: ElementComponentProps): ReactElement | null {
   const frame = useCurrentFrame();
   const config = useVideoConfig();
   const fps = finiteNumber(props.fps, config.fps);
@@ -227,7 +244,8 @@ function AmPresenter(props: ElementComponentProps): ReactElement | null {
 
   // While the plate under this overlay is a mosaic, the crisp face pixels would
   // float over blocks, so they hide for those frames.
-  const mosaic = presenterMosaicAt(props.params, props.clip, frame, fps);
+  const raw = narrowParams<Params>(props.params);
+  const mosaic = mosaicBlockAt(frame, clipFrames(props.clip, fps), raw.mosaicIn, raw.mosaicOut) > 6;
   const pixels: Px[] = mosaic
     ? []
     : [
@@ -289,5 +307,3 @@ function AmPresenter(props: ElementComponentProps): ReactElement | null {
     </div>
   );
 }
-
-export default Object.assign(AmPresenter, {prepareSceneCapability: preparePresenterScene});

@@ -1,18 +1,12 @@
 """Execution tier: executor + orchestrator runners (orchestrator drives executor, intra-package)."""
-
-from astrid.core.source_identity import verify_installed_host_startup
-
-# The selected installed launch must be checked before imports of Runtime code.
-verify_installed_host_startup()
-
-from .persistent_supervisor import (  # noqa: E402
+from .persistent_supervisor import (
     JsonlSupervisor,
     LeaseFence,
     PersistentJsonlSupervisor,
     PersistentSupervisor,
     SupervisorError,
 )
-from .reconciler import (  # noqa: E402
+from .reconciler import (
     ExecutionReconciler,
     ExecutionUncertain,
     OutputCustodyError,
@@ -20,7 +14,7 @@ from .reconciler import (  # noqa: E402
     ReconcilerError,
     verify_output_custody,
 )
-from .target_adapter import (  # noqa: E402
+from .target_adapter import (
     LocalMachineTargetAdapter,
     RunPodTargetAdapter,
     TargetAdapterError,

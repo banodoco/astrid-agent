@@ -175,8 +175,7 @@ def format_offset(seconds: float, frames: int = 0) -> str:
     if frames:
         out.append(f"{frames:+d}f")
     if abs(seconds) > 1e-9:
-        value = f"{abs(seconds):.6f}".rstrip("0").rstrip(".")
-        out.append(f"{'+' if seconds > 0 else '-'}{value}s")
+        out.append(f"{'+' if seconds > 0 else '-'}{abs(seconds):g}s")
     return " ".join(out)
 
 

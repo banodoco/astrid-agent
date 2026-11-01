@@ -42,26 +42,6 @@ LOCAL_EFFECT_SMOKE_FIXTURE = ROOT / "tests" / "fixtures" / "local_effect_smoke"
 render_remotion = remotion
 
 
-def _selected_composition_package() -> Path:
-    configured_runtime = os.environ.get("ASTRID_REMOTION_PROJECT_DIR", "").strip()
-    if not configured_runtime:
-        raise AssertionError(
-            "registry fixture requires the explicitly selected Remotion runtime"
-        )
-    package = (
-        Path(configured_runtime).resolve()
-        / "node_modules"
-        / "@banodoco"
-        / "timeline-composition"
-    )
-    manifest = package / "package.json"
-    assert manifest.is_file(), manifest
-    assert json.loads(manifest.read_text(encoding="utf-8"))["version"] == (
-        remotion_runtime._COMPOSITION_PACKAGE_VERSION
-    )
-    return package
-
-
 def _is_remotion_render_command(command: list[str]) -> bool:
     return (
         len(command) >= 3
@@ -94,15 +74,18 @@ def _remotion_exec_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         remotion_runtime,
         "_probe_node",
-        lambda node_executable, *, cwd, environment=None: ("v20.19.4", None),
+        lambda node_executable, *, cwd: ("v20.19.4", None),
     )
     monkeypatch.setattr(remotion_runtime, "remotion_runtime_status", _available_runtime_status)
-    # Register the original value before helpers change it directly. Teardown
-    # must restore it after the test's own monkeypatch entries are unwound.
-    monkeypatch.setenv("ASTRID_REMOTION_PROJECT_DIR",
-                       os.environ.get("ASTRID_REMOTION_PROJECT_DIR") or str(ROOT / "remotion"))
+    old_project = os.environ.get("ASTRID_REMOTION_PROJECT_DIR")
     with _execution_env():
-        yield
+        try:
+            yield
+        finally:
+            if old_project is None:
+                os.environ.pop("ASTRID_REMOTION_PROJECT_DIR", None)
+            else:
+                os.environ["ASTRID_REMOTION_PROJECT_DIR"] = old_project
 
 
 
@@ -131,10 +114,11 @@ def _write_inputs(tmp_path: Path) -> tuple[Path, Path]:
 def _write_project(tmp_path: Path) -> Path:
     project = tmp_path / "remotion"
     packages = project / "node_modules" / "@banodoco"
-    for package in (
-        "timeline-composition",
-    ):
-        (packages / package).mkdir(parents=True)
+    for package in ("timeline-composition", "timeline-schema", "timeline-theme-2rp"):
+        package_dir = packages / package
+        package_dir.mkdir(parents=True)
+        (package_dir / "package.json").write_text("{}\n", encoding="utf-8")
+    (packages / "timeline-composition" / "typescript" / "src").mkdir(parents=True)
     (project / "package.json").write_text("{}\n", encoding="utf-8")
     cli = project / "node_modules" / "@remotion" / "cli" / "remotion-cli.js"
     cli.parent.mkdir(parents=True)
@@ -678,23 +662,9 @@ def test_raw_support_adapter_writes_authoritative_support_report(
     assert report.backend == remotion.BACKEND_ID
 
 
-def test_manifest_command_runs_from_owning_pack_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_manifest_command_runs_from_owning_pack_root(tmp_path: Path) -> None:
     timeline_path, assets_path = _write_inputs(tmp_path)
     project = _write_project(tmp_path)
-    from astrid.core.subprocess_env import build_child_subprocess_env
-    from tests.packs.rendering.test_render_export_task_adapter import _install_composition_package
-
-    # The subprocess performs real admission, so provision the selected package
-    # and an authentic launch proof rather than relying on in-process mocks.
-    shutil.rmtree(project / "node_modules/@banodoco/timeline-composition")
-    _install_composition_package(project)
-    for output in remotion._registry_output_paths(project):
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("// provisioned registry\n", encoding="utf-8")
-    (project / "package-lock.json").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setenv("ASTRID_REMOTION_PROJECT_DIR", str(project))
-    monkeypatch.setenv("ASTRID_TIMELINE_SCHEMA_PYTHONPATH",
-                       str(ROOT / "astrid/core/timeline/schema/timeline-config.schema.json"))
     request_path = tmp_path / "transport-request.json"
     result_path = tmp_path / "transport-result.json"
     request_path.write_text(
@@ -704,17 +674,6 @@ def test_manifest_command_runs_from_owning_pack_root(tmp_path: Path, monkeypatch
     pack_root = ROOT / "astrid" / "packs" / "rendering"
 
     with _execution_env():
-        environment = build_child_subprocess_env()
-        with mock.patch.object(remotion, "gen_effect_registry", None):
-            reference = remotion_runtime.prepare_remotion_validation(
-                artifact_directory=tmp_path / "launch-validation",
-                host_environment=environment,
-                python_executable=sys.executable,
-                launch_id="a" * 32,
-                contexts={"standalone": environment},
-            )
-        for name, value in reference.items():
-            monkeypatch.setenv(name, value)
         report = CommandTransport(remotion.BACKEND_ID).run(
             "support",
             ("python3", "run.py"),
@@ -883,12 +842,14 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
     def _write_fake_remotion_project(self, tmp: Path) -> tuple[Path, Path]:
         project_dir = tmp / "remotion"
         banodoco_root = project_dir / "node_modules" / "@banodoco"
-        composition_src = project_dir / "src"
+        composition_src = banodoco_root / "timeline-composition" / "typescript" / "src"
         composition_src.mkdir(parents=True)
-        banodoco_root.mkdir(parents=True)
-        (banodoco_root / "timeline-composition").symlink_to(
-            _selected_composition_package(), target_is_directory=True
-        )
+        # _validate_project_dir requires all three @banodoco adapter packages
+        # (see docs/reference/render-adapter.md).  Create stub directories for the other two.
+        (banodoco_root / "timeline-schema").mkdir(parents=True)
+        (banodoco_root / "timeline-schema" / "package.json").write_text("{}\n", encoding="utf-8")
+        (banodoco_root / "timeline-theme-2rp").mkdir(parents=True)
+        (banodoco_root / "timeline-theme-2rp" / "package.json").write_text("{}\n", encoding="utf-8")
         (project_dir / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
         cli = project_dir / "node_modules" / "@remotion" / "cli" / "remotion-cli.js"
         cli.parent.mkdir(parents=True)
@@ -949,28 +910,14 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
             theme_path = tmp / "theme.json"
             theme_path.write_text("{}", encoding="utf-8")
             calls: list[tuple[list[str], dict[str, object]]] = []
-            real_run = subprocess.run
 
             def fake_run(cmd, **kwargs):
-                command = [str(part) for part in cmd]
-                if "--input-type=module" in command:
-                    return real_run(cmd, **kwargs)
                 calls.append(([str(part) for part in cmd], kwargs))
                 self._generate_fixture(project_dir)
                 return subprocess.CompletedProcess(cmd, 0, stdout=_lock_receipt(kwargs), stderr="")
 
             with (
-                mock.patch.dict(
-                    render_remotion.os.environ,
-                    {
-                        "ASTRID_RENDER_UNDECLARED": "host",
-                        "ASTRID_REMOTION_PROJECT_DIR": str(project_dir),
-                        "ASTRID_NODE_EXECUTABLE": os.environ[
-                            "ASTRID_NODE_EXECUTABLE"
-                        ],
-                    },
-                    clear=True,
-                ),
+                mock.patch.dict(render_remotion.os.environ, {"ASTRID_RENDER_UNDECLARED": "host"}, clear=True),
                 mock.patch.object(render_remotion.subprocess, "run", side_effect=fake_run),
             ):
                 render_remotion._regenerate_element_registries(project_dir, theme_path)
@@ -985,7 +932,7 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
         self.assertEqual(kwargs["cwd"], str(ROOT))
         env = kwargs["env"]
         self.assertIsInstance(env, dict)
-        self.assertEqual(env["ASTRID_REMOTION_PROJECT_DIR"], str(project_dir))
+        self.assertEqual(env["ASTRID_TIMELINE_COMPOSITION_SRC"], str(composition_src))
         self.assertNotIn("ASTRID_RENDER_UNDECLARED", env)
         self.assertTrue(kwargs["capture_output"])
         self.assertTrue(kwargs["check"])
@@ -1157,12 +1104,9 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
             props_payloads: list[dict[str, object]] = []
             props_paths: list[Path] = []
             remotion_temp_roots: list[Path] = []
-            real_run = subprocess.run
 
             def fake_run(cmd, **kwargs):
                 command = [str(part) for part in cmd]
-                if "--input-type=module" in command:
-                    return real_run(cmd, **kwargs)
                 calls.append((command, kwargs))
                 if _is_remotion_render_command(command):
                     child_env = kwargs["env"]
@@ -1185,8 +1129,7 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
                         "ASTRID_REMOTION_PROJECT_DIR": str(project_dir),
                         "ASTRID_NODE_EXECUTABLE": os.environ[
                             "ASTRID_NODE_EXECUTABLE"
-                        ],
-                        "ASTRID_REMOTION_PROJECT_DIR": str(project_dir),
+                        ]
                     },
                     clear=True,
                 ),
@@ -1463,12 +1406,9 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
             project_dir, composition_src = self._write_fake_remotion_project(tmp)
             timeline_path, assets_path, out_path = self._write_empty_render_inputs(tmp)
             remotion_envs: list[dict[str, str]] = []
-            real_run = subprocess.run
 
             def fake_run(cmd, **kwargs):
                 command = [str(part) for part in cmd]
-                if "--input-type=module" in command:
-                    return real_run(cmd, **kwargs)
                 if _is_remotion_render_command(command):
                     remotion_envs.append(dict(kwargs["env"]))
                     _write_fake_remotion_output(command)
@@ -1487,7 +1427,6 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
                 "ASTRID_NODE_EXECUTABLE": render_remotion.os.environ[
                     "ASTRID_NODE_EXECUTABLE"
                 ],
-                "ASTRID_REMOTION_PROJECT_DIR": str(project_dir),
             }
             Path(host_env["HOME"]).mkdir()
             with (
@@ -1513,8 +1452,8 @@ class RemotionBackendRegistryGenerationTest(unittest.TestCase):
         # Required Node and Astrid runtime variables must be preserved/propagated.
         self.assertEqual(env["PATH"], "/usr/bin:/bin")
         self.assertEqual(env["ASTRID_TASK_RUN_ID"], "task-run-9")
-        # The Remotion-specific build-tool addition selects the host project.
-        self.assertEqual(env["ASTRID_REMOTION_PROJECT_DIR"], str(project_dir))
+        # The Remotion-specific build-tool addition is the composition source.
+        self.assertEqual(env["ASTRID_TIMELINE_COMPOSITION_SRC"], str(composition_src))
 
 
 # ---------------------------------------------------------------------------

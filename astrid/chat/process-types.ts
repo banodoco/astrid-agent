@@ -28,3 +28,4 @@ export interface JsonRpcProcessLike {
   removeListener?(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
   removeListener?(event: 'error', listener: (error: Error) => void): unknown;
 }
+

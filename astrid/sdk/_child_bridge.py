@@ -305,13 +305,6 @@ class _BridgeRejected(CapabilityInvocationError):
         self.error = error
 
 
-def _child_status_error(observed: Any, *, task_id: str, run_id: str, close: Any) -> CapabilityInvocationError | None:
-    if not isinstance(observed, Mapping) or observed.get("task_id") != task_id or observed.get("run_id") != run_id:
-        close()
-        return CapabilityInvocationError("child bridge status returned a foreign task resource")
-    return None
-
-
 def _strict_json(value: Any) -> bytes:
     def check(item: Any, depth: int = 0) -> None:
         if depth > 32:

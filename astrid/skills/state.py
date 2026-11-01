@@ -10,10 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-from contextlib import contextmanager
-
-from filelock import FileLock
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,7 +33,6 @@ def now_iso() -> str:
 
 def _empty_state() -> dict[str, Any]:
     return {
-        "skills": {h: {"synced_at": None, "skills": {}} for h in HARNESSES},
         "version": STATE_VERSION,
         "installs": {harness: {} for harness in HARNESSES},
         # Default-tier packs are installed on first discovery, but an
@@ -65,38 +60,18 @@ def load(path: Path | None = None) -> dict[str, Any]:
         return _empty_state()
     data.setdefault("version", STATE_VERSION)
     installs = data.setdefault("installs", {})
-    if "skills" not in data:
-        data["skills"] = {h: {"synced_at": None, "skills": {pid: {"role": "main", "selected": True, "digest": None} for pid in installs.get(h, {}) if pid != "_core"}} for h in HARNESSES}
     disabled_defaults = data.setdefault("disabled_defaults", {})
     data.setdefault("setup_selection", None)
     for harness in HARNESSES:
         installs.setdefault(harness, {})
         disabled_defaults.setdefault(harness, [])
-        data["skills"].setdefault(harness, {"synced_at": None, "skills": {}})
     return data
 
 
 def save(data: dict[str, Any], path: Path | None = None) -> None:
     target = path or state_path()
-    content = json.dumps(data, indent=2, sort_keys=True) + "\n"
-    try:
-        if target.read_text(encoding="utf-8") == content:
-            return
-    except OSError:
-        pass
     target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent, delete=False) as tmp:
-        tmp.write(content)
-        name = tmp.name
-    os.replace(name, target)
-
-
-@contextmanager
-def locked(path: Path | None = None):
-    target = path or state_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with FileLock(str(target) + ".lock"):
-        yield
+    target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def record_install(
@@ -107,18 +82,14 @@ def record_install(
     target: str,
     mechanism: str,
 ) -> None:
-    installs = state["installs"].setdefault(harness, {})
-    disabled = state.setdefault("disabled_defaults", {}).setdefault(harness, [])
-    if pack_id in disabled:
-        disabled.remove(pack_id)
-    previous = installs.get(pack_id)
-    if previous and previous.get("target") == target and previous.get("mechanism") == mechanism:
-        return
-    installs[pack_id] = {
+    state["installs"].setdefault(harness, {})[pack_id] = {
         "target": target,
         "installed_at": now_iso(),
         "mechanism": mechanism,
     }
+    disabled = state.setdefault("disabled_defaults", {}).setdefault(harness, [])
+    if pack_id in disabled:
+        disabled.remove(pack_id)
 
 
 def record_uninstall(

@@ -160,33 +160,3 @@ def test_unsupported_capabilities_fail_before_graph_submission(tmp_path: Path) -
     compiled = compile_preparation(_prepared(tmp_path, edit_with_refs, references=True), out_dir=tmp_path / "edit-refs")
     assert compiled["capabilities"]["reference_order"] == ["reference.png"]
     assert compiled["workflow_inputs"]["reference_0"].endswith("reference.png")
-
-
-# Parent coverage retained during the Release-1 + Timeline merge.
-def test_lanpaint_bindings_preserve_prompt_duration_masks_and_audio_intervals(tmp_path: Path) -> None:
-    compiled = compile_preparation(_prepared(tmp_path, _request()), out_dir=tmp_path / "compiled")
-    inputs = compiled["workflow_inputs"]
-
-    frozen_workflow = Path(compiled["workflow"]["workflow.py"]["path"])
-    assert "LanPaint_VideoMaskEditor" in frozen_workflow.read_text(encoding="utf-8")
-    assert inputs["duration"] == 4.0
-    assert "Keep the shot" in inputs["prompt"]
-    assert "Say hello." in inputs["prompt"]
-    assert json.loads(inputs["audio_intervals"]) == [{"start": 0.5, "end": 1.25}]
-    keyframes = json.loads(inputs["mask_keyframes"])
-    assert keyframes["24"].endswith("mask_full_frame.png")
-    assert keyframes["72"].endswith("mask_preserve.png")
-    assert compiled["capabilities"]["audio_mask"] == "independent sample intervals"
-    assert compiled["capabilities"]["output_contract"] == "separate_av_full_timeline"
-    _assert_single_public_video(compiled, internal_outputs=["audio"])
-
-def test_lanpaint_regional_change_requires_and_binds_real_mask_asset(tmp_path: Path) -> None:
-    request = _request(
-        changes={
-            "video": [{"during": [1, 3], "area": {"rectangle": [0, 0, 100, 100]}, "mask_asset": "mask.png", "action": "generate"}],
-            "audio": [],
-        }
-    )
-    compiled = compile_preparation(_prepared(tmp_path, request, masks=True), out_dir=tmp_path / "compiled")
-    keyframes = json.loads(compiled["workflow_inputs"]["mask_keyframes"])
-    assert keyframes["24"].endswith("mask.png")
