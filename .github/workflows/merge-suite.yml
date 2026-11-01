@@ -308,7 +308,6 @@ jobs:
             git switch --detach refs/remotes/origin/venue-result
           elif [ "$remote_status" -eq 2 ]; then
             git switch --orphan venue-result
-            git rm -rf --quiet .
           else
             exit "$remote_status"
           fi
