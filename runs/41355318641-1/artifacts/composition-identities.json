@@ -1,0 +1,12 @@
+{
+  "artifacts_json_sha256": "edfb56af12842c539aebc1d782b5d59a37bf04408d9957fdb6d4a6db5249bfe2",
+  "composition_artifact_sha256": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f",
+  "composition_integrity": "sha512-BYZ/Zq5C00/ZDCunhPcBoS2l3LhdEIWlCsu/8ZWM3P0Mp46otQKVGeHrrwFjpc12KwDiQYD6OgTLKylsJAlGBA==",
+  "composition_name": "@banodoco/timeline-composition",
+  "composition_resolved": "file:artifacts/banodoco-timeline-composition-0.0.17.tgz",
+  "composition_version": "0.0.17",
+  "package_json_sha256": "bcd09a781367b9d6d3582366e6be5c36844d13045288f0785986c582b6b85c9d",
+  "package_lock_sha256": "7d0c50e072d8fe2f2f8e725ce749642acef29b900a123e42de3df96760916011",
+  "runtime_lock_sha256": "2565cf9d49b22b5d3a53878f4209b36da561fa3700fe93895ca1ae503f66da4d",
+  "runtime_source_commit": "1e6d899efa77a2d6ec247c38250f9748330bb587"
+}

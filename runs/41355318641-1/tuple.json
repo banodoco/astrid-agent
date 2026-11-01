@@ -1,0 +1,24 @@
+{
+  "effective": {
+    "agent": "9544d8df23663e8a0ed7845017c2bde664f938d0",
+    "app": "not checked out; not required by installed-wheel job",
+    "pinokio": "not checked out; not required by installed-wheel job",
+    "runtime": "1e6d899efa77a2d6ec247c38250f9748330bb587"
+  },
+  "requested": {
+    "agent_lane": "lane/M-AG/I-AG-02-R1",
+    "agent_ref": "9544d8df23663e8a0ed7845017c2bde664f938d0",
+    "agent_repository": "banodoco/astrid-agent",
+    "app_branch": "int/r1",
+    "app_ref": "36ff224e3c9ad862e3f807e2548b997a36799543",
+    "app_repository": "banodoco/astrid-app",
+    "artifact_paths": "venue-c07-output/runs/**\n",
+    "command": "\"$RUNNER_TEMP/installed-venv/bin/pytest\" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py",
+    "pinokio_branch": "int/r1",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "pinokio_repository": "banodoco/astrid-pinokio",
+    "runtime_ref": "1e6d899efa77a2d6ec247c38250f9748330bb587",
+    "runtime_repository": "banodoco/astrid-runtime",
+    "slot": "1"
+  }
+}

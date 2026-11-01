@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="3" time="1.527" timestamp="2026-11-01T22:08:02.752584+00:00" hostname="runnervm48cm3"><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_origins_are_real_and_reject_mixed_source" time="0.830"><failure message="AssertionError: assert {'action', 'a...rotocol', ...} == {'action', 'c...'host', 'sdk'}&#10;  &#10;  Extra items in the left set:&#10;  'runtime_protocol.platform'&#10;  'runtime_protocol'&#10;  'astrid_runtime'&#10;  &#10;  Full diff:&#10;    {&#10;        'action',&#10;  +     'astrid_runtime',&#10;        'child',&#10;        'client',&#10;        'host',&#10;  +     'runtime_protocol',&#10;  +     'runtime_protocol.platform',&#10;        'sdk',&#10;    }">@pytest.mark.installed
+    def test_installed_cpu_origins_are_real_and_reject_mixed_source():
+        import sys
+        from astrid.sdk.host_bootstrap import _installed_execution_origins, PackHostBootstrapError
+        from tests.helpers import h3_cpu_runtime as helper
+    
+        origins = _installed_execution_origins(helper._INSTALLED_EXECUTION_ROOT, sys.executable)
+&gt;       assert set(origins) == {"host", "child", "action", "client", "sdk"}
+E       AssertionError: assert {'action', 'a...rotocol', ...} == {'action', 'c...'host', 'sdk'}
+E         
+E         Extra items in the left set:
+E         'runtime_protocol.platform'
+E         'runtime_protocol'
+E         'astrid_runtime'
+E         
+E         Full diff:
+E           {
+E               'action',
+E         +     'astrid_runtime',
+E               'child',
+E               'client',
+E               'host',
+E         +     'runtime_protocol',
+E         +     'runtime_protocol.platform',
+E               'sdk',
+E           }
+
+tests/packs/h3_av/test_character_swap_cpu_boundary.py:157: AssertionError</failure></testcase><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_actions_retain_candidate_content_pins" time="0.004" /><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_renderer_uses_real_provisioned_outputs" time="0.230"><failure message="AssertionError: assert &lt;module 'astrid.core.rendering._effect_registry' from '/home/runner/work/_temp/installed-venv/lib/python3.11/site-packages/astrid/core/rendering/_effect_registry.py'&gt; is None&#10; +  where &lt;module 'astrid.core.rendering._effect_registry' from '/home/runner/work/_temp/installed-venv/lib/python3.11/site-packages/astrid/core/rendering/_effect_registry.py'&gt; = &lt;module 'astrid.packs.rendering.rendering.renderers.remotion.run' from '/home/runner/work/_temp/installed-venv/lib/python3.11/site-packages/astrid/packs/rendering/rendering/renderers/remotion/run.py'&gt;.gen_effect_registry">@pytest.mark.installed
+    def test_installed_cpu_renderer_uses_real_provisioned_outputs():
+        from astrid.packs.rendering.rendering.renderers.remotion import run
+        from tests.helpers import h3_cpu_runtime as helper
+    
+        assert Path(run.__file__).is_relative_to(helper._INSTALLED_EXECUTION_ROOT)
+&gt;       assert run.gen_effect_registry is None
+E       AssertionError: assert &lt;module 'astrid.core.rendering._effect_registry' from '/home/runner/work/_temp/installed-venv/lib/python3.11/site-packages/astrid/core/rendering/_effect_registry.py'&gt; is None
+E        +  where &lt;module 'astrid.core.rendering._effect_registry' from '/home/runner/work/_temp/installed-venv/lib/python3.11/site-packages/astrid/core/rendering/_effect_registry.py'&gt; = &lt;module 'astrid.packs.rendering.rendering.renderers.remotion.run' from '/home/runner/work/_temp/installed-venv/lib/python3.11/site-packages/astrid/packs/rendering/rendering/renderers/remotion/run.py'&gt;.gen_effect_registry
+
+tests/packs/h3_av/test_character_swap_cpu_boundary.py:199: AssertionError</failure></testcase></testsuite></testsuites>
