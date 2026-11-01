@@ -1539,7 +1539,7 @@ def test_original_prepared_owner_records_installed_engine_without_allocation(ins
     assert len(started.read_text().splitlines()) == 1
 
 
-def test_release_runs_in_live_supervisor_against_owned_child(session):
+def test_release_runs_in_live_supervisor_against_owned_child(session, monkeypatch):
     client, payload, recipe, root, mode, started = session
     _call(client, payload)
     result = client._request("release", {}, time.monotonic() + 8, start=False)
@@ -1547,6 +1547,15 @@ def test_release_runs_in_live_supervisor_against_owned_child(session):
                       "vram_total_bytes": 24000, "vram_free_before_bytes": 20000,
                       "vram_free_after_bytes": 20000}
     assert (root / "release-posts").read_text().splitlines() == ["/api/free"]
+    from astrid.core.generation import preflight, engine_recipe
+    from astrid.sdk.client import AstridClient
+    monkeypatch.setattr(preflight, "_registered_managed_engine", lambda: {
+        "owner": "astrid", "root": str(root), "endpoint": f"http://127.0.0.1:{recipe.start.port}"})
+    monkeypatch.setattr(engine_recipe, "load_recipe", lambda *args: recipe)
+    result = AstridClient(remote=object()).release_generation(engine="comfyui", target="managed")
+    assert result["released"] and result["models_unloaded"] and result["queue_idle"]
+    assert result["vram_total_bytes"] == 24000 and result["vram_free_after_bytes"] == 20000
+    assert (root / "release-posts").read_text().splitlines() == ["/api/free", "/api/free"]
 
 
 def test_stale_registration_foreign_listener_receives_no_release(session, monkeypatch):
