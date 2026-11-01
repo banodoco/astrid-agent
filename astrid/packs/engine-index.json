@@ -2,6 +2,14 @@
   "schema": "astrid.engine-index.v1",
   "entries": [
     {
+      "engine": "comfyui",
+      "platform": "linux-x86_64-cu130",
+      "recipe": {
+        "path": "packs/comfyui/recipe.linux-cu130.json",
+        "sha256": "4f8cb88f72cc5ddad33533d20d4fc5241192a5d6705b1546882e2bbb8ea49848"
+      }
+    },
+    {
       "engine": "vibecomfy",
       "platform": "windows-x86_64-cu130",
       "recipe": {

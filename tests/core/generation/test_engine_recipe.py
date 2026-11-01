@@ -59,6 +59,34 @@ def test_unknown_fields_are_rejected_in_recipe_index(monkeypatch, tmp_path):
         recipes.load_recipe_index()
 
 
+def test_comfyui_linux_recipe_is_package_owned_and_keeps_h3_entry_unchanged():
+    platform = "linux-x86_64-cu130"
+    index = recipes.load_recipe_index()
+    entries = {(entry.engine, entry.platform): entry for entry in index.entries}
+    comfy_entry = entries[("comfyui", platform)]
+    h3_entry = entries[("vibecomfy-h3", platform)]
+    assert comfy_entry.recipe.path == "packs/comfyui/recipe.linux-cu130.json"
+    assert comfy_entry.recipe.sha256 == hashlib.sha256(
+        (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
+    ).hexdigest()
+    assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
+    assert h3_entry.recipe.sha256 == "5c40a1e657050437d5c9d23dc15638daca1d34746accf6fa51177e8904500a3c"
+
+    recipe = recipes.load_recipe("comfyui", platform)
+    lock = recipes.load_recipe_model_lock("comfyui", platform)
+    assert recipe.models_lock.path == "packs/comfyui/models.lock.json"
+    assert recipe.models_lock.sha256 == hashlib.sha256(
+        (recipes._ROOT / recipe.models_lock.path).read_bytes()
+    ).hexdigest()
+    assert recipe.sources[0].name == "comfyui"
+    assert recipe.start.argv[-1] == "{models_config}"
+    assert [model.destination for model in lock.models] == [
+        "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+        "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+        "vae/qwen_image_2.1_vae_bf16.safetensors",
+    ]
+
+
 def test_unknown_engine_and_known_unsupported_platform_are_distinct():
     with pytest.raises(UnknownEngine):
         recipes.load_recipe("not-a-pack", "linux-x86_64-cu130")
