@@ -425,6 +425,21 @@ def test_running_runtime_refuses_exact_i1_without_writes(
 
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux Pinokio filters XDG_DATA_HOME.")
+def test_running_foreground_lock_refuses_with_xdg_override_before_writes(installed, monkeypatch, capsys):
+    from astrid.installer.service import pinokio_lock_paths
+
+    env = installed
+    foreground, legacy = pinokio_lock_paths(env.tmp_path, sys.platform)
+    assert foreground != legacy
+    before = _tree_bytes(env.root)
+    env.backend.preflight_stop = lambda *_args: pytest.fail("preflight must not run")
+    with update.locked(foreground):
+        assert _run_cli_app_update(env, monkeypatch) == 1
+    assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in capsys.readouterr().out.splitlines()
+    assert _tree_bytes(env.root) == before
+
+
 def test_start_racing_stopped_preflight_refuses_exact_i1_before_manifest_write(
         installed, monkeypatch, capsys):
     from astrid.installer.service import installer_lock_path

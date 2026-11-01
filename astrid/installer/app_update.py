@@ -32,7 +32,7 @@ from .core import (
 )
 from .custody import operation, stopped_custody
 from .launcher import publish_runtime_runner
-from .service import installer_lock_path, pinokio_owned
+from .service import installer_lock_path, pinokio_lock_paths, pinokio_owned
 
 # Run with the Version's interpreter in isolated mode. Backend.stage installs
 # Runtime from a local source directory non-editably; PEP 610 records that
@@ -154,22 +154,19 @@ def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
     """Refuse a running owner before any update writes, then preserve C1 preflight."""
     from runtime_protocol import platform
 
-    lock_path = installer_lock_path(backend.service.home, backend.service.system)
-    held = False
-    if lock_path.exists():
-        try:
-            with lock_path.open("r+b") as stream:
-                try:
-                    platform.lock_file(stream.fileno(), blocking=False)
-                except BlockingIOError:
-                    held = True
-                else:
-                    platform.unlock_file(stream.fileno())
-        except FileNotFoundError:
-            pass
+    for lock_path in pinokio_lock_paths(backend.service.home, backend.service.system):
+        if lock_path.exists():
+            try:
+                with lock_path.open("r+b") as stream:
+                    try:
+                        platform.lock_file(stream.fileno(), blocking=False)
+                    except BlockingIOError:
+                        raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.") from None
+                    else:
+                        platform.unlock_file(stream.fileno())
+            except FileNotFoundError:
+                pass
 
-    if held:
-        raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.")
     backend.preflight_stop(absolute(data))
 
 

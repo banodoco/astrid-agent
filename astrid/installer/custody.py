@@ -22,7 +22,7 @@ from pathlib import Path
 
 if __package__:
     from .core import absolute, current, read_json
-    from .service import installer_lock_path, launch_admission
+    from .service import pinokio_lock_paths, launch_admission
 
 
 def _receive(stream):
@@ -74,7 +74,7 @@ def attach(ticket, root, version, data):
         receipt = json.loads((Path(root) / ".app-update-custody.json").read_text(encoding="utf-8"))
         from runtime_protocol import platform
 
-        expected_lock = installer_lock_path(Path.home(), sys.platform)
+        expected_lock = pinokio_lock_paths(Path.home(), sys.platform)[0]
         if (receipt["port"] != ticket["port"] or receipt["root"] != str(Path(root).resolve())
                 or receipt["lock"] != str(expected_lock.resolve())
                 or platform.process_identity(receipt["identity"]["pid"]) != receipt["identity"]):
@@ -153,11 +153,11 @@ class Custody:
 @contextlib.contextmanager
 def stopped_custody(root, backend):
     """Acquire, never probe/release, stopped admission; None means running."""
-    from astrid.installer.service import installer_lock_path
+    from astrid.installer.service import pinokio_lock_paths
 
-    path = installer_lock_path(backend.service.home, backend.service.system)
+    paths = pinokio_lock_paths(backend.service.home, backend.service.system)
     process = subprocess.Popen(
-        [sys.executable, "-I", "-B", str(Path(__file__).resolve()), str(path), str(root)],
+        [sys.executable, "-I", "-B", str(Path(__file__).resolve()), str(root), *(str(path) for path in paths)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
@@ -189,19 +189,23 @@ def operation(root, backend):
             del backend._pinokio_custody
 
 
-def _serve(path, root):
+def _serve(root, paths):
     # This entry point is also usable with a retained interpreter: it depends
     # only on the pinned Runtime's platform module and Python's standard library.
     from runtime_protocol import platform
 
-    if not path.parent.exists():
-        platform.private_directory(path.parent)
-    with path.open("r+b" if path.exists() else "a+b") as lock:
-        try:
-            platform.lock_file(lock.fileno(), blocking=False)
-        except BlockingIOError:
-            _send(sys.stdout.buffer, {"acquired": False})
-            return
+    with contextlib.ExitStack() as locks:
+        for path in paths:
+            if not path.parent.exists():
+                platform.private_directory(path.parent)
+            lock = locks.enter_context(path.open("r+b" if path.exists() else "a+b"))
+            try:
+                platform.lock_file(lock.fileno(), blocking=False)
+            except BlockingIOError:
+                _send(sys.stdout.buffer, {"acquired": False})
+                return
+            locks.callback(platform.unlock_file, lock.fileno())
+        path = paths[0]
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen(4)
@@ -287,8 +291,7 @@ def _serve(path, root):
             server.join(timeout=1)
             if receipt_path.read_bytes() == receipt:
                 receipt_path.unlink()
-            platform.unlock_file(lock.fileno())
 
 
 if __name__ == "__main__":
-    _serve(Path(sys.argv[1]), Path(sys.argv[2]))
+    _serve(Path(sys.argv[1]), [Path(path) for path in sys.argv[2:]])
