@@ -133,8 +133,8 @@ def test_workflow_inputs_cross_real_runtime_and_preserve_exact_source(
         assert any(node['class_type'] == 'KSampler' and node['inputs']['seed'] == 19
                    for node in loopback_comfy.prompts[0].values())
         # The CLI checks availability before admission; the separate worker
-        # makes two provenance observations during the run.
-        assert len([call for call in loopback_comfy.calls if call[1] == '/system_stats']) == 3
+        # makes one provenance observation during the run.
+        assert len([call for call in loopback_comfy.calls if call[1] == '/system_stats']) == 2
         assert source.read_bytes() == data
         assert (tmp_path / 'entries' / 'a01-saved' / 'entry.json').exists() == save_entry
     finally:
