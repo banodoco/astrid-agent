@@ -309,7 +309,7 @@ def test_negative_control_without_capture_blocks_on_full_pipe(tmp_path: Path, mo
         with pytest.raises(HostCancelled):
             host._run_command_definition(
                 host.capabilities["test.echo"], {}, output_root, attempt,
-                cancelled=lambda: True,
+                cancelled=lambda: process in host._active_processes,
             )
     finally:
         for writer in process._writers:

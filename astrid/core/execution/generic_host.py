@@ -5637,6 +5637,9 @@ class _TaskOutputCapture:
     def finish(self) -> None:
         self.wait_for_readers(timeout=2.0)
         self.persist(force=True)
+        if all(not reader.alive for reader in self._readers.values()):
+            self._secrets = ()
+            self._secret_trie.clear()
 
 
 class GenericPackHost:
@@ -8086,178 +8089,183 @@ class GenericPackHost:
         callers clear it in their ``finally`` block.  No credential is placed
         in request JSON, evidence, or diagnostics.
         """
-        declared = _required_secret_names(record)
-        secrets = {
-            name: value
-            for name in declared
-            if (
-                value := _resolve_credential_value(
-                    self.credential_source,
-                    name,
-                    explicit=self._credential_source_is_explicit,
-                )
-            )
-        }
-        explicit = dict(explicit_env or {})
-        explicit.pop("ASTRID_VIBECOMFY_EXECUTION_REQUEST_JSON", None)
-        # A worker may deliberately execute a qualified, local VibeComfy
-        # snapshot rather than the normal published dependency pin.  The
-        # candidate is selected only by the digest-bound readiness profile; never
-        # accept an ambient candidate variable from the pod environment.
-        if record.id in {"vibecomfy.run", "vibecomfy.validate"}:
-            # Canonical bundle loading imports VibeComfy custom-node modules
-            # before the child reaches the live checkout server. Keep that
-            # host-side preflight headless too; the actual Comfy daemon keeps
-            # its normal route-registration environment in its own process.
-            explicit["VIBECOMFY_HEADLESS"] = "1"
-            profile = _read_readiness_profile_document()
-            session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
-            if isinstance(session, Mapping):
-                explicit["ASTRID_VIBECOMFY_SESSION_OWNERSHIP_ATTESTED"] = "1"
-                revision = session.get("source_revision")
-                content_digest = session.get("source_content_digest")
-                if isinstance(revision, str) and isinstance(content_digest, str):
-                    explicit[VIBECOMFY_ATTESTED_REVISION_ENV] = revision
-                    explicit[VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV] = content_digest
-            if profile is not None:
-                try:
-                    model_root_binding = model_root_binding_from_profile(
-                        profile, verify_files=False
+        secrets = {}
+        explicit = {}
+        env = {}
+        ready = False
+        try:
+            declared = _required_secret_names(record)
+            for name in declared:
+                value = _resolve_credential_value(self.credential_source, name,
+                    explicit=self._credential_source_is_explicit)
+                if value:
+                    secrets[name] = value
+            explicit = dict(explicit_env or {})
+            explicit.pop("ASTRID_VIBECOMFY_EXECUTION_REQUEST_JSON", None)
+            # A worker may deliberately execute a qualified, local VibeComfy
+            # snapshot rather than the normal published dependency pin.  The
+            # candidate is selected only by the digest-bound readiness profile; never
+            # accept an ambient candidate variable from the pod environment.
+            if record.id in {"vibecomfy.run", "vibecomfy.validate"}:
+                # Canonical bundle loading imports VibeComfy custom-node modules
+                # before the child reaches the live checkout server. Keep that
+                # host-side preflight headless too; the actual Comfy daemon keeps
+                # its normal route-registration environment in its own process.
+                explicit["VIBECOMFY_HEADLESS"] = "1"
+                profile = _read_readiness_profile_document()
+                session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
+                if isinstance(session, Mapping):
+                    explicit["ASTRID_VIBECOMFY_SESSION_OWNERSHIP_ATTESTED"] = "1"
+                    revision = session.get("source_revision")
+                    content_digest = session.get("source_content_digest")
+                    if isinstance(revision, str) and isinstance(content_digest, str):
+                        explicit[VIBECOMFY_ATTESTED_REVISION_ENV] = revision
+                        explicit[VIBECOMFY_ATTESTED_CONTENT_DIGEST_ENV] = content_digest
+                if profile is not None:
+                    try:
+                        model_root_binding = model_root_binding_from_profile(
+                            profile, verify_files=False
+                        )
+                    except ModelRootBindingError as exc:
+                        raise HostError(f"VibeComfy model-root binding is invalid: {exc}") from exc
+                    explicit[MODEL_ROOT_ENV] = str(model_root_binding.path)
+                    explicit[MODEL_ROOT_BINDING_ENV] = json.dumps(
+                        model_root_binding.as_dict(), sort_keys=True, separators=(",", ":")
                     )
-                except ModelRootBindingError as exc:
-                    raise HostError(f"VibeComfy model-root binding is invalid: {exc}") from exc
-                explicit[MODEL_ROOT_ENV] = str(model_root_binding.path)
-                explicit[MODEL_ROOT_BINDING_ENV] = json.dumps(
-                    model_root_binding.as_dict(), sort_keys=True, separators=(",", ":")
-                )
-                receipt_dir = os.environ.get(MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV)
-                if receipt_dir:
-                    explicit[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = receipt_dir
-            elif os.environ.get(LOCAL_ENGINE_HOST_ENV):
-                # Local placement without a readiness profile: the binding is attested by
-                # the installed engine's own receipt, never by a profile or the ambient env.
-                explicit.update(self._local_engine_model_root_env(os.environ[LOCAL_ENGINE_HOST_ENV]))
-            candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None
-            if isinstance(candidate, Mapping) and candidate.get("kind") == "local_snapshot":
-                revision = candidate.get("revision")
-                content_digest = candidate.get("source_content_digest")
-                if isinstance(revision, str) and isinstance(content_digest, str):
-                    explicit["ASTRID_VIBECOMFY_CANDIDATE_KIND"] = "local_snapshot"
-                    explicit["ASTRID_VIBECOMFY_CANDIDATE_REVISION"] = revision
-                    explicit["ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST"] = content_digest
-            if self._vibecomfy_requested_warmth_hint:
-                from astrid.core.generation.backends.vibecomfy import (
-                    VIBECOMFY_WARMTH_HINT_ENV,
-                )
+                    receipt_dir = os.environ.get(MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV)
+                    if receipt_dir:
+                        explicit[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = receipt_dir
+                elif os.environ.get(LOCAL_ENGINE_HOST_ENV):
+                    # Local placement without a readiness profile: the binding is attested by
+                    # the installed engine's own receipt, never by a profile or the ambient env.
+                    explicit.update(self._local_engine_model_root_env(os.environ[LOCAL_ENGINE_HOST_ENV]))
+                candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None
+                if isinstance(candidate, Mapping) and candidate.get("kind") == "local_snapshot":
+                    revision = candidate.get("revision")
+                    content_digest = candidate.get("source_content_digest")
+                    if isinstance(revision, str) and isinstance(content_digest, str):
+                        explicit["ASTRID_VIBECOMFY_CANDIDATE_KIND"] = "local_snapshot"
+                        explicit["ASTRID_VIBECOMFY_CANDIDATE_REVISION"] = revision
+                        explicit["ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST"] = content_digest
+                if self._vibecomfy_requested_warmth_hint:
+                    from astrid.core.generation.backends.vibecomfy import (
+                        VIBECOMFY_WARMTH_HINT_ENV,
+                    )
 
-                explicit[VIBECOMFY_WARMTH_HINT_ENV] = (
-                    self._vibecomfy_requested_warmth_hint
+                    explicit[VIBECOMFY_WARMTH_HINT_ENV] = (
+                        self._vibecomfy_requested_warmth_hint
+                    )
+            explicit = _fixed_worker_environment(record, explicit, self.credential_source)
+            # Runtime-backed pack executors (notably timeline visualization) read
+            # workspace facts from their isolated child process.  The host already
+            # holds the explicit endpoint/worker credential used for task
+            # admission, so pass that connection across the same short-lived
+            # environment boundary instead of asking the child to rediscover it.
+            runtime_endpoint = getattr(self.client, "endpoint", None)
+            runtime_credential = getattr(self.client, "credential", None)
+            if allow_runtime_connection and runtime_endpoint and runtime_credential:
+                explicit["ASTRID_RUNTIME_ENDPOINT"] = str(runtime_endpoint)
+                secrets["ASTRID_RUNTIME_CREDENTIAL"] = str(runtime_credential)
+                declared_secrets = (*declared, "ASTRID_RUNTIME_CREDENTIAL")
+            else:
+                declared_secrets = declared
+            if isinstance(authority_context, Mapping):
+                authority_json = json.dumps(
+                    dict(authority_context), sort_keys=True, separators=(",", ":")
                 )
-        explicit = _fixed_worker_environment(record, explicit, self.credential_source)
-        # Runtime-backed pack executors (notably timeline visualization) read
-        # workspace facts from their isolated child process.  The host already
-        # holds the explicit endpoint/worker credential used for task
-        # admission, so pass that connection across the same short-lived
-        # environment boundary instead of asking the child to rediscover it.
-        runtime_endpoint = getattr(self.client, "endpoint", None)
-        runtime_credential = getattr(self.client, "credential", None)
-        if allow_runtime_connection and runtime_endpoint and runtime_credential:
-            explicit["ASTRID_RUNTIME_ENDPOINT"] = str(runtime_endpoint)
-            secrets["ASTRID_RUNTIME_CREDENTIAL"] = str(runtime_credential)
-            declared_secrets = (*declared, "ASTRID_RUNTIME_CREDENTIAL")
-        else:
-            declared_secrets = declared
-        if isinstance(authority_context, Mapping):
-            authority_json = json.dumps(
-                dict(authority_context), sort_keys=True, separators=(",", ":")
+                if len(authority_json) > 8192:
+                    authority_path = (attempt / "inputs" / "timeline-visualize-authority-context.json").resolve()
+                    authority_path.parent.mkdir(parents=True, exist_ok=True)
+                    authority_path.write_text(authority_json, encoding="utf-8")
+                    explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = str(authority_path)
+                else:
+                    explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = authority_json
+            support = process_control_support()
+            if support is not None:
+                explicit[PROCESS_CONTROL_SUPPORT_ENV] = support
+            env = build_child_subprocess_env(
+                explicit_env=explicit,
+                passthrough=record.definition.isolation.env_passthrough,
+                declared_passthrough=record.definition.isolation.env_passthrough,
+                secret_values=secrets,
+                declared_secrets=declared_secrets,
             )
-            if len(authority_json) > 8192:
-                authority_path = (attempt / "inputs" / "timeline-visualize-authority-context.json").resolve()
-                authority_path.parent.mkdir(parents=True, exist_ok=True)
-                authority_path.write_text(authority_json, encoding="utf-8")
-                explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = str(authority_path)
-            else:
-                explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = authority_json
-        support = process_control_support()
-        if support is not None:
-            explicit[PROCESS_CONTROL_SUPPORT_ENV] = support
-        env = build_child_subprocess_env(
-            explicit_env=explicit,
-            passthrough=record.definition.isolation.env_passthrough,
-            declared_passthrough=record.definition.isolation.env_passthrough,
-            secret_values=secrets,
-            declared_secrets=declared_secrets,
-        )
-        from astrid.packs.vibecomfy.endpoint_checkout import EXECUTION_REQUEST_ENV
-        env.pop(EXECUTION_REQUEST_ENV, None)
-        if record.id == "vibecomfy.run" and workflow_execution_request is not None:
-            env[EXECUTION_REQUEST_ENV] = json.dumps(
-                workflow_execution_request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-            )
-            env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
-        if not allow_runtime_connection:
-            # A parent has only its inherited three-operation channel.
-            # Also remove manifest passthrough aliases of the worker secret.
-            for name in ("ASTRID_NETWORK_ADMISSION", "ASTRID_NETWORK_BROKER_EVIDENCE",
-                         "ASTRID_NETWORK_ADMISSION_DIGEST", "ASTRID_NETWORK_NONCE",
-                         "ASTRID_NETWORK_BROKER_TOKEN"):
-                env.pop(name, None)
-            for name, value in tuple(env.items()):
-                if name in {"ASTRID_RUNTIME_ENDPOINT", "ASTRID_RUNTIME_CREDENTIAL"} or (
-                    runtime_credential and value == str(runtime_credential)
-                ):
-                    env.pop(name, None)
-        policy = network_broker.policy if network_broker is not None else (dict(network_policy) if network_policy is not None else _network_policy(record))
-        if policy is not None:
-            hook_root = attempt / ".astrid-network-hook"
-            hook_root.mkdir(parents=True, exist_ok=True)
-            (hook_root / "sitecustomize.py").write_bytes(
-                (
-                    _STRICT_NETWORK_HOOK_SOURCE
-                    if not allow_runtime_connection
-                    else "from astrid.core.execution.network_policy import install_from_environment\ninstall_from_environment()\n"
-                ).encode("utf-8")
-            )
-            evidence_path = attempt / "network-evidence.json"
-            env["ASTRID_NETWORK_POLICY"] = json.dumps(policy, sort_keys=True, separators=(",", ":"))
-            env["ASTRID_NETWORK_EVIDENCE"] = str(evidence_path)
-            # Only the broker authentication token crosses the process
-            # boundary.  The host/broker evidence signing key never does.
-            if network_broker is not None:
-                env["ASTRID_NETWORK_BROKER_TOKEN"] = network_broker.auth_token
+            from astrid.packs.vibecomfy.endpoint_checkout import EXECUTION_REQUEST_ENV
+            env.pop(EXECUTION_REQUEST_ENV, None)
+            if record.id == "vibecomfy.run" and workflow_execution_request is not None:
+                env[EXECUTION_REQUEST_ENV] = json.dumps(
+                    workflow_execution_request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                )
+                env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
             if not allow_runtime_connection:
+                # A parent has only its inherited three-operation channel.
+                # Also remove manifest passthrough aliases of the worker secret.
                 for name in ("ASTRID_NETWORK_ADMISSION", "ASTRID_NETWORK_BROKER_EVIDENCE",
-                             "ASTRID_NETWORK_ADMISSION_DIGEST", "ASTRID_NETWORK_NONCE"):
+                             "ASTRID_NETWORK_ADMISSION_DIGEST", "ASTRID_NETWORK_NONCE",
+                             "ASTRID_NETWORK_BROKER_TOKEN"):
                     env.pop(name, None)
+                for name, value in tuple(env.items()):
+                    if name in {"ASTRID_RUNTIME_ENDPOINT", "ASTRID_RUNTIME_CREDENTIAL"} or (
+                        runtime_credential and value == str(runtime_credential)
+                    ):
+                        env.pop(name, None)
+            policy = network_broker.policy if network_broker is not None else (dict(network_policy) if network_policy is not None else _network_policy(record))
+            if policy is not None:
+                hook_root = attempt / ".astrid-network-hook"
+                hook_root.mkdir(parents=True, exist_ok=True)
+                (hook_root / "sitecustomize.py").write_bytes(
+                    (
+                        _STRICT_NETWORK_HOOK_SOURCE
+                        if not allow_runtime_connection
+                        else "from astrid.core.execution.network_policy import install_from_environment\ninstall_from_environment()\n"
+                    ).encode("utf-8")
+                )
+                evidence_path = attempt / "network-evidence.json"
+                env["ASTRID_NETWORK_POLICY"] = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+                env["ASTRID_NETWORK_EVIDENCE"] = str(evidence_path)
+                # Only the broker authentication token crosses the process
+                # boundary.  The host/broker evidence signing key never does.
                 if network_broker is not None:
-                    env["ASTRID_NETWORK_ADMISSION_DIGEST"] = network_broker.broker.expected_admission_digest
-                    env["ASTRID_NETWORK_NONCE"] = network_broker.broker.expected_nonce
-                if isinstance(policy.get("broker"), Mapping):
-                    policy = {**dict(policy), "broker": {key: value for key, value in policy["broker"].items()
-                                                        if key != "evidence_path"}}
-                    env["ASTRID_NETWORK_POLICY"] = json.dumps(policy, sort_keys=True, separators=(",", ":"))
-            else:
-                env["ASTRID_NETWORK_ADMISSION"] = json.dumps(dict(admission or {}), sort_keys=True, separators=(",", ":"))
-            env["PYTHONPATH"] = str(hook_root) + os.pathsep + env.get("PYTHONPATH", "")
-            proxy = policy.get("proxy")
-            if isinstance(proxy, str) and proxy:
-                parsed_proxy = urlsplit(proxy)
-                if parsed_proxy.username or parsed_proxy.password:
-                    raise HostError("network policy proxy URL must not contain credentials")
-                # Ambient proxy settings are not inherited; only an admitted
-                # manifest proxy may be used by the child.
-                for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
-                    env[key] = proxy
-                no_proxy = policy.get("no_proxy")
-                if no_proxy:
-                    env["NO_PROXY"] = str(no_proxy)
-                # Native provider wrappers consume an explicit, host-issued
-                # name rather than trusting ambient proxy variables.
-                env["ASTRID_BROKER_PROXY"] = proxy
-            broker = policy.get("broker")
-            if allow_runtime_connection and isinstance(broker, Mapping) and broker.get("evidence_path"):
-                env["ASTRID_NETWORK_BROKER_EVIDENCE"] = str(broker["evidence_path"])
-        return env, secrets
+                    env["ASTRID_NETWORK_BROKER_TOKEN"] = network_broker.auth_token
+                if not allow_runtime_connection:
+                    for name in ("ASTRID_NETWORK_ADMISSION", "ASTRID_NETWORK_BROKER_EVIDENCE",
+                                 "ASTRID_NETWORK_ADMISSION_DIGEST", "ASTRID_NETWORK_NONCE"):
+                        env.pop(name, None)
+                    if network_broker is not None:
+                        env["ASTRID_NETWORK_ADMISSION_DIGEST"] = network_broker.broker.expected_admission_digest
+                        env["ASTRID_NETWORK_NONCE"] = network_broker.broker.expected_nonce
+                    if isinstance(policy.get("broker"), Mapping):
+                        policy = {**dict(policy), "broker": {key: value for key, value in policy["broker"].items()
+                                                            if key != "evidence_path"}}
+                        env["ASTRID_NETWORK_POLICY"] = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+                else:
+                    env["ASTRID_NETWORK_ADMISSION"] = json.dumps(dict(admission or {}), sort_keys=True, separators=(",", ":"))
+                env["PYTHONPATH"] = str(hook_root) + os.pathsep + env.get("PYTHONPATH", "")
+                proxy = policy.get("proxy")
+                if isinstance(proxy, str) and proxy:
+                    parsed_proxy = urlsplit(proxy)
+                    if parsed_proxy.username or parsed_proxy.password:
+                        raise HostError("network policy proxy URL must not contain credentials")
+                    # Ambient proxy settings are not inherited; only an admitted
+                    # manifest proxy may be used by the child.
+                    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+                        env[key] = proxy
+                    no_proxy = policy.get("no_proxy")
+                    if no_proxy:
+                        env["NO_PROXY"] = str(no_proxy)
+                    # Native provider wrappers consume an explicit, host-issued
+                    # name rather than trusting ambient proxy variables.
+                    env["ASTRID_BROKER_PROXY"] = proxy
+                broker = policy.get("broker")
+                if allow_runtime_connection and isinstance(broker, Mapping) and broker.get("evidence_path"):
+                    env["ASTRID_NETWORK_BROKER_EVIDENCE"] = str(broker["evidence_path"])
+            ready = True
+            return env, secrets
+        finally:
+            explicit.clear()
+            if not ready:
+                env.clear()
+                secrets.clear()
 
     @staticmethod
     def _scrub_secret_text(value: str, secrets: Mapping[str, str]) -> str:
@@ -8640,111 +8648,14 @@ class GenericPackHost:
                 "ASTRID_PROGRESS_PATH": str(attempt / ".astrid-progress.json"),
             },
         )
-        review_session = record.id == "editorial.human_review" and child_bridge is not None
-        review_nonce = secrets_module.token_hex(32) if review_session else None
-        if review_nonce is not None:
-            # This is launch-scoped observation authority, never process cleanup
-            # authority. Keep it out of diagnostics emitted from child output.
-            env[_REVIEW_LAUNCH_NONCE_ENV] = review_nonce
-            secrets[_REVIEW_LAUNCH_NONCE_ENV] = review_nonce
-        # Pack runtime modules reserve their direct module entry points for
-        # the canonical runner.  GenericPackHost is that runner's process
-        # boundary, so mark the child invocation just as executor_runner does.
-        # An external pack's ``python -m`` command executes directly in this
-        # host path (command manifests do not go through the registry runner).
-        # Carry the pinned pack root and parent explicitly so a command can
-        # import its own ``executors`` package without falling back to an
-        # unrelated same-named checkout in ambient site-packages. The parent
-        # remains available for packs whose source package uses the checkout
-        # directory name as its import root.
-        env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
-        cwd = _confined_cwd(
-            binding.cwd,
-            attempt=attempt,
-            source_root=record.source_root,
-            values=values,
-        )
-        broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
-        inherited_fds = ()
-        if child_bridge is not None:
-            # Bootstrap in the action interpreter before pack code. Private
-            # launch arguments contain a descriptor and command, no authority.
-            if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
-                raise HostError("delegating commands require the admitted Python interpreter")
-            arguments = argv[1:]
-            flags = []
-            utf8_flag = False
-            while arguments:
-                if arguments[0] in {"-u", "-B"}:
-                    flags.append(arguments[0])
-                    arguments = arguments[1:]
-                elif arguments[:2] == ["-X", "utf8"]:
-                    flags.extend(arguments[:2])
-                    arguments = arguments[2:]
-                    utf8_flag = True
-                else:
-                    break
-            if (not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}
-                    or arguments[0] in {"-c", "-m"} and len(arguments) < 2):
-                raise HostError("unsupported delegating Python command flags")
-            inherited_fds = (child_bridge.inherited_fd(),)
-            if not utf8_flag:
-                flags = ["-X", "utf8", *flags]
-            argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
-                    "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+        process = None
+        output_capture = None
         remotion_lease = None
-        if record.id == "rendering.timeline_visualize":
-            if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
-                raise HostError("renderer command requires the admitted Python interpreter")
-            remotion_lease = self._renderer_task_lease(env, attempt)
+        stream_secrets = {}
         import_receipt = None
-        if record.id in {"h3_av.transform", "vibecomfy.validate"}:
-            from ._child_import_receipt import ChildImportReceipt
-
-            import_receipt = ChildImportReceipt(self, record.id, import_binding)
-            inherited_fds += import_receipt.prepare(env)
-        try:
-            if remotion_lease is not None:
-                inherited_fds += (remotion_lease.inherited_fd(),)
-                argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
-                        "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
-            if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
-                argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
-            # Rendering can create native descendants that change groups.
-            # Retain their incarnation-bound custody while the leader runs;
-            # a group-only census after it exits cannot own those processes.
-            render_scope = record.id == "rendering.render"
-            if render_scope:
-                env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
-            launch = popen_owned_group if render_scope else spawn_task_scope
-            process = launch(
-                _network_sandbox_argv(argv, attempt, broker_endpoint), cwd=str(cwd), env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=inherited_fds,
-            )
-        except BaseException as exc:
-            if import_receipt is not None:
-                exc.child_import_receipt = import_receipt.finish()
-                if exc.child_import_receipt["persistence"] == "failed":
-                    _LOGGER.warning("child import receipt persistence failed launch_id=%s",
-                                    exc.child_import_receipt["launch_id"])
-            if remotion_lease is not None:
-                remotion_lease.close()
-            retained = getattr(exc, "process", None)
-            if retained is not None:
-                self._track_process(retained)
-                self._latch_cleanup_uncertainty(str(exc))
-                raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
-            raise
-        if import_receipt is not None:
-            import_receipt.launched(process)
-        self._track_process(process)
-        stream_secrets = dict(secrets)
-        stream_secrets.update({
-            key: value for key, value in env.items()
-            if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
-        })
-        output_capture = _TaskOutputCapture(attempt, stream_secrets, self._scrub_secret_text)
-        output_capture.start(process)
+        import_reference = None
+        import_finished = False
+        review_session = False
         review_snapshot = None
         execution_error = None
         cleanup_attempted = False
@@ -8754,7 +8665,7 @@ class GenericPackHost:
 
         def cleanup_once() -> None:
             nonlocal cleanup_attempted, teardown_complete, process_proven_gone, review_snapshot
-            if cleanup_attempted:
+            if cleanup_attempted or process is None:
                 return
             cleanup_attempted = True
             try:
@@ -8774,20 +8685,122 @@ class GenericPackHost:
                     _retire_owned_review_session(attempt, review_snapshot)
                 teardown_complete = True
             except TaskScopeUnresolved as exc:
-                teardown_complete = True
+                with self._handoff_condition:
+                    self._handoff_observation_known = False
                 self._unresolved_task_scopes.append(exc.report.describe())
                 detail = f"task scope cleanup unresolved: {exc}"
                 if execution_error is not None:
                     detail += f"; original execution failure: {type(execution_error).__name__}: {self._scrub_secret_text(str(execution_error), secrets)}"
                 raise CommandCleanupUnresolved(self._scrub_secret_text(detail, secrets), execution_error=execution_error) from exc
             except BaseException as exc:
-                self._latch_cleanup_uncertainty(str(exc))
+                with self._handoff_condition:
+                    self._handoff_observation_known = False
+                try:
+                    self._latch_cleanup_uncertainty(type(exc).__name__)
+                except BaseException:
+                    pass
                 detail = f"owned command cleanup uncertain: {exc}"
                 if execution_error is not None:
                     detail += f"; original execution failure: {type(execution_error).__name__}: {self._scrub_secret_text(str(execution_error), secrets)}"
                 raise CommandCleanupUnresolved(self._scrub_secret_text(detail, secrets), execution_error=execution_error) from exc
 
         try:
+            review_session = record.id == "editorial.human_review" and child_bridge is not None
+            review_nonce = secrets_module.token_hex(32) if review_session else None
+            if review_nonce is not None:
+                # This is launch-scoped observation authority, never process cleanup
+                # authority. Keep it out of diagnostics emitted from child output.
+                env[_REVIEW_LAUNCH_NONCE_ENV] = review_nonce
+                secrets[_REVIEW_LAUNCH_NONCE_ENV] = review_nonce
+            # Pack runtime modules reserve their direct module entry points for
+            # the canonical runner.  GenericPackHost is that runner's process
+            # boundary, so mark the child invocation just as executor_runner does.
+            # An external pack's ``python -m`` command executes directly in this
+            # host path (command manifests do not go through the registry runner).
+            # Carry the pinned pack root and parent explicitly so a command can
+            # import its own ``executors`` package without falling back to an
+            # unrelated same-named checkout in ambient site-packages. The parent
+            # remains available for packs whose source package uses the checkout
+            # directory name as its import root.
+            env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
+            cwd = _confined_cwd(
+                binding.cwd,
+                attempt=attempt,
+                source_root=record.source_root,
+                values=values,
+            )
+            broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
+            inherited_fds = ()
+            if child_bridge is not None:
+                # Bootstrap in the action interpreter before pack code. Private
+                # launch arguments contain a descriptor and command, no authority.
+                if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                    raise HostError("delegating commands require the admitted Python interpreter")
+                arguments = argv[1:]
+                flags = []
+                utf8_flag = False
+                while arguments:
+                    if arguments[0] in {"-u", "-B"}:
+                        flags.append(arguments[0])
+                        arguments = arguments[1:]
+                    elif arguments[:2] == ["-X", "utf8"]:
+                        flags.extend(arguments[:2])
+                        arguments = arguments[2:]
+                        utf8_flag = True
+                    else:
+                        break
+                if (not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}
+                        or arguments[0] in {"-c", "-m"} and len(arguments) < 2):
+                    raise HostError("unsupported delegating Python command flags")
+                inherited_fds = (child_bridge.inherited_fd(),)
+                if not utf8_flag:
+                    flags = ["-X", "utf8", *flags]
+                argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
+                        "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+            if record.id == "rendering.timeline_visualize":
+                if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                    raise HostError("renderer command requires the admitted Python interpreter")
+                remotion_lease = self._renderer_task_lease(env, attempt)
+            if record.id in {"h3_av.transform", "vibecomfy.validate"}:
+                from ._child_import_receipt import ChildImportReceipt
+
+                import_receipt = ChildImportReceipt(self, record.id, import_binding)
+                inherited_fds += import_receipt.prepare(env)
+            try:
+                if remotion_lease is not None:
+                    inherited_fds += (remotion_lease.inherited_fd(),)
+                    argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
+                            "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
+                if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
+                    argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
+                # Rendering can create native descendants that change groups.
+                # Retain their incarnation-bound custody while the leader runs;
+                # a group-only census after it exits cannot own those processes.
+                render_scope = record.id == "rendering.render"
+                if render_scope:
+                    env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
+                if cancelled is not None and cancelled():
+                    raise HostCancelled("capability cancelled before launch")
+                launch = popen_owned_group if render_scope else spawn_task_scope
+                process = launch(
+                    _network_sandbox_argv(argv, attempt, broker_endpoint), cwd=str(cwd), env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=inherited_fds,
+                )
+            except BaseException as exc:
+                process = getattr(exc, "process", None)
+                if process is not None:
+                    self._track_process(process)
+                raise
+            self._track_process(process)
+            if import_receipt is not None:
+                import_receipt.launched(process)
+            stream_secrets = dict(secrets)
+            stream_secrets.update({
+                key: value for key, value in env.items()
+                if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
+            })
+            output_capture = _TaskOutputCapture(attempt, stream_secrets, self._scrub_secret_text)
+            output_capture.start(process)
             if child_bridge is not None:
                 child_bridge.launched()
             if remotion_lease is not None:
@@ -8814,8 +8827,8 @@ class GenericPackHost:
                         raise HostCancelled(f"capability {record.id!r} cancelled")
                 time.sleep(0.05)
             cleanup_once()
-            output_capture.finish()
             output_finished = True
+            output_capture.finish()
             output_capture.persist()
             stdout, stderr = output_capture.tails()
             if output_capture.error:
@@ -8855,6 +8868,13 @@ class GenericPackHost:
                 )
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
+            if import_receipt is not None:
+                import_finished = True
+                try:
+                    import_reference = import_receipt.finish()
+                except BaseException as exc:
+                    import_reference = {"observation": "unavailable", "persistence": "failed"}
+                    _LOGGER.warning("child import receipt unavailable: %s", type(exc).__name__)
             return SimpleNamespace(
                 outputs=outputs,
                 output_root=output_root,
@@ -8862,7 +8882,7 @@ class GenericPackHost:
                     "returncode": returncode,
                     "capability_digest": record.capability_digest,
                     "process_id": process_id,
-                    **({"child_import_receipt": import_receipt.finish()}
+                    **({"child_import_receipt": import_reference}
                        if import_receipt is not None else {}),
                 },
                 returncode=returncode,
@@ -8876,27 +8896,54 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty(str(exc))
             raise
         finally:
+            primary_error = sys.exc_info()[1]
+            cleanup_error = None
+            finalizer_errors = []
             try:
                 cleanup_once()
-            finally:
-                if not output_finished:
+            except BaseException as exc:
+                cleanup_error = exc
+            if output_capture is not None and not output_finished:
+                try:
                     output_capture.finish()
-                if teardown_complete or process_proven_gone:
+                except BaseException as exc:
+                    finalizer_errors.append(type(exc).__name__)
+            if process is not None and (teardown_complete or process_proven_gone):
+                try:
                     self._untrack_process(process)
-                if remotion_lease is not None:
+                except BaseException as exc:
+                    finalizer_errors.append(type(exc).__name__)
+            if remotion_lease is not None:
+                try:
                     remotion_lease.close()
-                if import_receipt is not None:
-                    reference = import_receipt.finish()
+                except BaseException as exc:
+                    finalizer_errors.append(type(exc).__name__)
+            if import_receipt is not None:
+                try:
+                    reference = import_reference if import_finished else import_receipt.finish()
                     if reference["persistence"] == "failed":
                         _LOGGER.warning("child import receipt persistence failed launch_id=%s",
-                                        reference["launch_id"])
-                    error = sys.exc_info()[1]
-                    if error is not None:
-                        error.child_import_receipt = reference
-                    if execution_error is not None:
-                        execution_error.child_import_receipt = reference
-                env.clear()
-                secrets.clear()
+                                        reference.get("launch_id", "unavailable"))
+                    if primary_error is not None:
+                        primary_error.child_import_receipt = reference
+                except BaseException as exc:
+                    # Observation is diagnostic; it cannot change execution.
+                    _LOGGER.warning("child import receipt unavailable: %s", type(exc).__name__)
+            env.clear()
+            stream_secrets.clear()
+            secrets.clear()
+            if cleanup_error is not None or finalizer_errors:
+                with self._handoff_condition:
+                    self._handoff_observation_known = False
+                try:
+                    self._latch_cleanup_uncertainty("launch finalization unresolved: " +
+                        ", ".join(finalizer_errors or [type(cleanup_error).__name__]))
+                except BaseException:
+                    pass
+                if cleanup_error is not None:
+                    raise cleanup_error
+                if primary_error is None:
+                    raise HostError("launch finalization unresolved: " + ", ".join(finalizer_errors))
 
     def invoke_capability(
         self,
@@ -8966,74 +9013,10 @@ class GenericPackHost:
         env = dict(child_env or build_child_subprocess_env(
             explicit_env={ASTRID_INTERNAL_INVOCATION: "1"},
         ))
-        env[ASTRID_INTERNAL_INVOCATION] = "1"
-        # The attempt directory is the child cwd; the host worker itself uses
-        # this checkout, while external source-pack imports use only the
-        # explicitly admitted import parents validated against source roots.
-        package_parent = str(Path(__file__).resolve().parents[3])
-        import_roots: list[str] = []
-        if isinstance(admission, Mapping):
-            raw_import_roots = admission.get("python_path_roots")
-            if isinstance(raw_import_roots, (list, tuple)):
-                source_roots = tuple(
-                    Path(str(value)).expanduser().resolve()
-                    for value in admission.get("source_roots", ())
-                    if value
-                )
-                for raw_root in raw_import_roots:
-                    import_root = Path(str(raw_root)).expanduser().resolve()
-                    if not import_root.is_dir() or (
-                        source_roots
-                        and not any(import_root.is_relative_to(source_root) for source_root in source_roots)
-                    ):
-                        raise HostError("admitted Python import root is outside the source fence")
-                    import_roots.append(str(import_root))
-        # Preserve the host-created sitecustomize hook when replacing the
-        # worker import path; arbitrary child PYTHONPATH is still excluded.
-        network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
-        env["PYTHONPATH"] = os.pathsep.join(
-            dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
-        )
-        env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
-        secret_values = {
-            key: value for key, value in env.items()
-            if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
-        }
-        broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
-        argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
-        inherited_fds = ()
-        try:
-            if capability_kind == "executor" and capability_id == "rendering.timeline_visualize":
-                remotion_lease = self._renderer_task_lease(env, attempt_path)
-                inherited_fds = (remotion_lease.inherited_fd(),)
-                payload["remotion_host_fd"] = remotion_lease.inherited_fd()
-            request_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-            if child_bridge is not None:
-                bridge_fd = child_bridge.inherited_fd()
-                inherited_fds += (bridge_fd,)
-                argv.extend(("--child-bridge", str(bridge_fd)))
-            if require_network_startup:
-                argv = _network_startup_argv(argv, attempt_path, env, broker_required=network_broker_required)
-            render_scope = capability_id == "rendering.render"
-            if render_scope:
-                env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
-            launch = popen_owned_group if render_scope else spawn_task_scope
-            process = launch(
-                _network_sandbox_argv(argv, attempt_path, broker_endpoint), cwd=str(attempt_path), env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=inherited_fds,
-            )
-        except BaseException as exc:
-            if remotion_lease is not None:
-                remotion_lease.close()
-            retained = getattr(exc, "process", None)
-            if retained is not None:
-                self._track_process(retained)
-                self._latch_cleanup_uncertainty(str(exc))
-                raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
-            raise
-        self._track_process(process)
-        output_capture = _TaskOutputCapture(attempt_path, secret_values, self._scrub_secret_text)
-        output_capture.start(process)
+        process = None
+        output_capture = None
+        remotion_lease = None
+        secret_values = {}
         execution_error = None
         cleanup_attempted = False
         teardown_complete = False
@@ -9042,7 +9025,7 @@ class GenericPackHost:
 
         def cleanup_once() -> None:
             nonlocal cleanup_attempted, teardown_complete, process_proven_gone
-            if cleanup_attempted:
+            if cleanup_attempted or process is None:
                 return
             cleanup_attempted = True
             try:
@@ -9050,20 +9033,92 @@ class GenericPackHost:
                 process_proven_gone = True
                 teardown_complete = True
             except TaskScopeUnresolved as exc:
-                teardown_complete = True
+                with self._handoff_condition:
+                    self._handoff_observation_known = False
                 self._unresolved_task_scopes.append(exc.report.describe())
                 detail = f"capability {capability_id!r}: {exc}"
                 if execution_error is not None:
                     detail += f"; original execution failure: {type(execution_error).__name__}"
                 raise CommandCleanupUnresolved(detail, execution_error=execution_error) from exc
             except BaseException as exc:
-                self._latch_cleanup_uncertainty(str(exc))
+                with self._handoff_condition:
+                    self._handoff_observation_known = False
+                try:
+                    self._latch_cleanup_uncertainty(type(exc).__name__)
+                except BaseException:
+                    pass
                 detail = f"capability {capability_id!r} cleanup unresolved: {exc}"
                 if execution_error is not None:
                     detail += f"; original execution failure: {type(execution_error).__name__}"
                 raise CommandCleanupUnresolved(detail, execution_error=execution_error) from exc
 
         try:
+            env[ASTRID_INTERNAL_INVOCATION] = "1"
+            # The attempt directory is the child cwd; the host worker itself uses
+            # this checkout, while external source-pack imports use only the
+            # explicitly admitted import parents validated against source roots.
+            package_parent = str(Path(__file__).resolve().parents[3])
+            import_roots: list[str] = []
+            if isinstance(admission, Mapping):
+                raw_import_roots = admission.get("python_path_roots")
+                if isinstance(raw_import_roots, (list, tuple)):
+                    source_roots = tuple(
+                        Path(str(value)).expanduser().resolve()
+                        for value in admission.get("source_roots", ())
+                        if value
+                    )
+                    for raw_root in raw_import_roots:
+                        import_root = Path(str(raw_root)).expanduser().resolve()
+                        if not import_root.is_dir() or (
+                            source_roots
+                            and not any(import_root.is_relative_to(source_root) for source_root in source_roots)
+                        ):
+                            raise HostError("admitted Python import root is outside the source fence")
+                        import_roots.append(str(import_root))
+            # Preserve the host-created sitecustomize hook when replacing the
+            # worker import path; arbitrary child PYTHONPATH is still excluded.
+            network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
+            env["PYTHONPATH"] = os.pathsep.join(
+                dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
+            )
+            env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
+            secret_values = {
+                key: value for key, value in env.items()
+                if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
+            }
+            broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
+            argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
+            inherited_fds = ()
+            try:
+                if capability_kind == "executor" and capability_id == "rendering.timeline_visualize":
+                    remotion_lease = self._renderer_task_lease(env, attempt_path)
+                    inherited_fds = (remotion_lease.inherited_fd(),)
+                    payload["remotion_host_fd"] = remotion_lease.inherited_fd()
+                request_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+                if child_bridge is not None:
+                    bridge_fd = child_bridge.inherited_fd()
+                    inherited_fds += (bridge_fd,)
+                    argv.extend(("--child-bridge", str(bridge_fd)))
+                if require_network_startup:
+                    argv = _network_startup_argv(argv, attempt_path, env, broker_required=network_broker_required)
+                render_scope = capability_id == "rendering.render"
+                if render_scope:
+                    env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
+                if cancelled is not None and cancelled():
+                    raise HostCancelled("capability cancelled before launch")
+                launch = popen_owned_group if render_scope else spawn_task_scope
+                process = launch(
+                    _network_sandbox_argv(argv, attempt_path, broker_endpoint), cwd=str(attempt_path), env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=inherited_fds,
+                )
+            except BaseException as exc:
+                process = getattr(exc, "process", None)
+                if process is not None:
+                    self._track_process(process)
+                raise
+            self._track_process(process)
+            output_capture = _TaskOutputCapture(attempt_path, secret_values, self._scrub_secret_text)
+            output_capture.start(process)
             if child_bridge is not None:
                 child_bridge.launched()
             if remotion_lease is not None:
@@ -9083,8 +9138,8 @@ class GenericPackHost:
                         raise HostCancelled(f"capability {capability_id!r} cancelled")
                 time.sleep(0.05)
             cleanup_once()
-            output_capture.finish()
             output_finished = True
+            output_capture.finish()
             output_capture.persist()
             stdout, stderr = output_capture.tails()
             if output_capture.error:
@@ -9128,18 +9183,47 @@ class GenericPackHost:
             execution_error = exc
             raise
         finally:
+            primary_error = sys.exc_info()[1]
+            cleanup_error = None
+            finalizer_errors = []
             try:
                 cleanup_once()
-            finally:
-                if not output_finished:
+            except BaseException as exc:
+                cleanup_error = exc
+            if output_capture is not None and not output_finished:
+                try:
                     output_capture.finish()
-                if teardown_complete or process_proven_gone:
+                except BaseException as exc:
+                    finalizer_errors.append(type(exc).__name__)
+            if process is not None and (teardown_complete or process_proven_gone):
+                try:
                     self._untrack_process(process)
-                if remotion_lease is not None:
+                except BaseException as exc:
+                    finalizer_errors.append(type(exc).__name__)
+            if remotion_lease is not None:
+                try:
                     remotion_lease.close()
-                env.clear()
-                request_path.unlink(missing_ok=True)
-                result_path.unlink(missing_ok=True)
+                except BaseException as exc:
+                    finalizer_errors.append(type(exc).__name__)
+            for path in (request_path, result_path):
+                try:
+                    path.unlink(missing_ok=True)
+                except BaseException as exc:
+                    finalizer_errors.append(type(exc).__name__)
+            env.clear()
+            secret_values.clear()
+            if cleanup_error is not None or finalizer_errors:
+                with self._handoff_condition:
+                    self._handoff_observation_known = False
+                try:
+                    self._latch_cleanup_uncertainty("launch finalization unresolved: " +
+                        ", ".join(finalizer_errors or [type(cleanup_error).__name__]))
+                except BaseException:
+                    pass
+                if cleanup_error is not None:
+                    raise cleanup_error
+                if primary_error is None:
+                    raise HostError("launch finalization unresolved: " + ", ".join(finalizer_errors))
 
     def _publish_assembled_timeline(
         self,
@@ -9441,6 +9525,14 @@ class GenericPackHost:
         from astrid.sdk.results import InvocationResult
 
         if terminal.get("receipt_final"):
+            with terminal["completion_lock"]:
+                if terminal.get("completion_state") == "acknowledged":
+                    path = terminal["root"] / "result.json"
+                    receipt = json.loads(path.read_text(encoding="utf-8"))
+                    receipt["publication"] = {"status": "settled" if terminal.get("settled") else "not_settled",
+                                              "receipt": terminal.get("settlement"), "effect": terminal.get("effect")}
+                    receipt.pop("completion_diagnostic", None)
+                    write_json_atomic(path, receipt)
             return
         terminal["write_attempted"] = True
         minimal = _minimal or terminal.get("minimal", False)
@@ -9574,6 +9666,7 @@ class GenericPackHost:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
         if terminal.get("completion_state") in {"in_flight", "unknown"}:
             receipt["completion_diagnostic"] = {"status": "unconfirmed"}
+            receipt["publication"]["status"] = "unconfirmed"
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -9623,33 +9716,64 @@ class GenericPackHost:
         if self.attempt_root is not None:
             terminal["root"] = self.attempt_root
 
+        completion_done = threading.Event()
+
         def completion_call(operation, *args, **kwargs):
             if operation == self.client.settle:
                 valid_until = terminal.get("lease_valid_until")
                 if lifetime.expired() or (valid_until is not None and time.monotonic() >= valid_until):
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
+            # Snapshot outside the lock; reservation rechecks abort afterwards.
+            arguments, options = copy.deepcopy(args), copy.deepcopy(kwargs)
             with completion_lock:
-                if terminal.get("forced") and operation == self.client.settle:
-                    raise HostCancelled("attempt already terminated by its lifecycle guard")
                 state = terminal.get("completion_state", "open")
-                if state != "open":
-                    # Do not return a competing operation's receipt as if it
-                    # acknowledged this call, or wait here while a guard must
-                    # remain free to contain the process.
-                    raise HostError("attempt completion is already reserved or unconfirmed")
-                terminal.update(completion_state="in_flight", completion_operation=operation)
+                owner = state == "open"
+                if owner:
+                    if terminal.get("forced") and operation == self.client.settle:
+                        raise HostCancelled("attempt already terminated by its lifecycle guard")
+                    terminal.update(completion_state="in_flight", completion_operation=operation,
+                                    completion_args=arguments, completion_kwargs=options)
+            if not owner:
+                # Join the one reserved decision without holding the observer lock.
+                # A guard never joins here: it records abort intent immediately.
+                if not completion_done.wait(timeout=2):
+                    raise HostError("attempt completion is still in flight")
+                with completion_lock:
+                    if terminal["completion_state"] == "unknown":
+                        raise HostError("attempt completion is unconfirmed")
+                    if operation == self.client.settle and terminal["completion_operation"] != operation:
+                        raise HostCancelled("attempt already completed without success")
+                    return terminal.get("completion")
             try:
-                result = self._handoff_settlement_call(operation, *args, **kwargs)
+                result = self._handoff_settlement_call(operation, *arguments, **options)
             except BaseException:
-                # A transport exception does not prove that Runtime did not
-                # commit. Task.result is worker-controlled, so task readback
-                # cannot authenticate this particular completion request.
+                # Current task/attempt state cannot authenticate this request.
+                # Keep unknown rather than issuing an opposite terminal mutation.
                 with completion_lock:
                     terminal["completion_state"] = "unknown"
+                with self._handoff_condition:
+                    self._handoff_observation_known = False
                 raise
-            with completion_lock:
-                terminal.update(recorded=True, completion=result, completion_state="acknowledged")
-            return result
+            else:
+                resource = result
+                if isinstance(resource, Mapping):
+                    resource = resource.get("task", resource.get("data", resource))
+                state = (resource.get("state", resource.get("status")) if isinstance(resource, Mapping)
+                         else getattr(resource, "state", getattr(resource, "status", None)))
+                cancellation_pending = (operation == getattr(self.client, "cancel", None)
+                                        and state == "cancel_requested")
+                with completion_lock:
+                    terminal.update(recorded=not cancellation_pending, completion=result,
+                                    completion_state="unknown" if cancellation_pending else "acknowledged")
+                    if operation == self.client.settle:
+                        terminal.update(settled=True, settlement=result, effect=options.get("effect"))
+                if cancellation_pending:
+                    # An acknowledged stop request is not terminal cleanup proof.
+                    with self._handoff_condition:
+                        self._handoff_observation_known = False
+                return result
+            finally:
+                completion_done.set()
 
         def lease_call(operation, *args, **kwargs):
             # The adapter bounds each transport and lock wait by the remaining
@@ -9673,7 +9797,8 @@ class GenericPackHost:
                     "attempt_id": value("attempt_id", exact_attempt),
                     "fence": value("fence", value("lease_fence", exact_fence)),
                     "lease_deadline_present": lease_deadline_present,
-                    "lease_expires_at": value("lease_expires_at")}
+                    "lease_expires_at": value("lease_expires_at"),
+                    "lease_id": value("lease_id"), "runtime_epoch": value("runtime_epoch")}
 
         def safe_lease_value(value, *, limit=96):
             """Keep observer evidence to small printable identifiers/timestamps."""
@@ -9812,7 +9937,9 @@ class GenericPackHost:
                 for name, expected in (("attempt_id", exact_attempt), ("fence", exact_fence),
                                        ("task_id", str(data["id"])), ("lease_id", lease_token),
                                        ("runtime_epoch", data.get("runtime_epoch"))):
-                    if field(name) is not None and expected is not None and field(name) != expected:
+                    observed = field(name)
+                    if (observed is not None and expected is not None
+                            and (type(observed) is not type(expected) or observed != expected)):
                         raise HostError("heartbeat acknowledgement changed attempt ownership")
                 expiry = field("lease_expires_at")
                 acknowledged_until = None
@@ -9856,7 +9983,17 @@ class GenericPackHost:
                 terminal.update(forced=code, error=error, status="timeout" if code == "timeout" else
                                 "cancelled" if code == "cancelled" else "failed", minimal=True)
                 abort.set()
+                reserved = terminal.get("completion_state", "open") != "open"
+            with self._process_lock:
+                bridges = tuple(self._child_bridges)
+            for bridge in bridges:
+                try:
+                    bridge.revoke()
+                except BaseException as exc:
+                    terminal["reporting_error"] = exc
             try:
+                if reserved:
+                    return
                 if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
                     completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
                                     fence=exact_fence, lease_id=lease_token)
@@ -9931,6 +10068,13 @@ class GenericPackHost:
                     record_lease_diagnostic("fence_changed", current=current)
                     force_abort("lease_lost")
                     return
+                for name, expected in (("lease_id", lease_token), ("runtime_epoch", data.get("runtime_epoch"))):
+                    observed = current.get(name)
+                    if (observed is not None and expected is not None
+                            and (type(observed) is not type(expected) or observed != expected)):
+                        record_lease_diagnostic("lease_metadata_invalid", current=current)
+                        force_abort("lease_lost")
+                        return
                 # Main execution/child guards validate full interactive
                 # authority. The observer must keep its deadline clock
                 # available if those authority reads themselves stall.
@@ -10015,12 +10159,24 @@ class GenericPackHost:
                 raise HostError("executor exited without completing its task") from exc
             raise
         finally:
+            primary_error = sys.exc_info()[1]
             try:
+                if terminal.get("completion_state") in {"in_flight", "unknown"}:
+                    with self._handoff_condition:
+                        self._handoff_observation_known = False
+                    try:
+                        self._latch_cleanup_uncertainty("Runtime completion unconfirmed; attempt retained")
+                    except BaseException as exc:
+                        terminal["completion_latch_error"] = exc
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
                     if (self.attempt_root is None and not keep_attempt
                             and terminal.get("completion_state") not in {"in_flight", "unknown"}):
                         self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
+            except BaseException as exc:
+                terminal["reporting_error"] = exc
+                if primary_error is None:
+                    raise
             finally:
                 stop.set()
                 if pump_thread is not None and pump_thread.ident is not None:
@@ -10365,27 +10521,11 @@ class GenericPackHost:
             return state in {"cancel_requested", "cancelled"}
 
         def terminalize_deadline() -> None:
-            """Fence a deadline expiry at Runtime before returning to the worker."""
             nonlocal deadline_failed
-            try:
-                completion_call(self.client.fail,
-                    task_id,
-                    lease_token,
-                    "execution deadline exceeded",
-                    structured_error={"code": "timeout"},
-                    retryable=False,
-                    attempt_id=attempt_id,
-                    fence=fence,
-                )
-                deadline_failed = True
-            except Exception as exc:
-                try:
-                    state = current_task_state()
-                except Exception as status_exc:
-                    raise HostError("deadline cancellation could not be verified") from status_exc
-                if state not in {"cancelled", "failed"}:
-                    raise HostError("deadline terminalization was not accepted by Runtime") from exc
-                deadline_failed = state == "failed"
+            completion_call(self.client.fail, task_id, lease_token,
+                            "execution deadline exceeded", structured_error={"code": "timeout"},
+                            retryable=False, attempt_id=attempt_id, fence=fence)
+            deadline_failed = True
 
         def handle_guard_abort() -> None:
             if _terminal.get("forced") == "lease_lost":
@@ -11233,6 +11373,7 @@ class GenericPackHost:
         finally:
             # Keep the lease pump alive through harvesting, upload, and
             # settlement; only stop it once the claimed attempt is terminal.
+            primary_error = sys.exc_info()[1]
             cleanup_errors: list[str] = []
             if not _terminal.get("forced"):
                 _terminal.update(
@@ -11250,15 +11391,25 @@ class GenericPackHost:
             try:
                 self._write_task_result(_terminal)
             except BaseException as receipt_error:
+                cleanup_errors.append("terminal result: " + type(receipt_error).__name__)
                 _terminal.update(minimal=True, write_attempted=False)
-                self._write_task_result(_terminal)
+                try:
+                    self._write_task_result(_terminal)
+                except BaseException:
+                    pass
             if _terminal.get("recorded"):
                 pump_stop.set()
                 pump_thread.join(timeout=2)
             if child_bridge is not None:
-                child_bridge.revoke()
-                with self._process_lock:
-                    self._child_bridges.discard(child_bridge)
+                try:
+                    child_bridge.revoke()
+                except BaseException as exc:
+                    cleanup_errors.append("child bridge: " + type(exc).__name__)
+                    with self._handoff_condition:
+                        self._handoff_observation_known = False
+                else:
+                    with self._process_lock:
+                        self._child_bridges.discard(child_bridge)
             retain_for_unresolved_scope = (command_cleanup_error is not None
                                            or _terminal.get("completion_state") in {"in_flight", "unknown"})
             if command_cleanup_error is not None:
@@ -11267,6 +11418,8 @@ class GenericPackHost:
             if _terminal.get("completion_state") in {"in_flight", "unknown"}:
                 # Retain the evidence without masking the original transport
                 # or execution error.
+                with self._handoff_condition:
+                    self._handoff_observation_known = False
                 try:
                     self._latch_cleanup_uncertainty("Runtime completion unconfirmed; attempt retained")
                 except Exception as exc:
@@ -11333,7 +11486,10 @@ class GenericPackHost:
             if endpoint_transport is not None and (
                 not managed_opened or self.managed_tool_session.current_adapter is not managed_adapter
             ):
-                endpoint_transport.close()
+                try:
+                    endpoint_transport.close()
+                except BaseException as exc:
+                    cleanup_errors.append("endpoint transport: " + type(exc).__name__)
             if capability_id == "vibecomfy.run" and not settled:
                 self._vibecomfy_warmth_hint = None
                 self._vibecomfy_current_warmth_hint = None
@@ -11404,10 +11560,13 @@ class GenericPackHost:
                     cleanup_errors.append(f"caller-owned attempt disappeared: {root}")
             if cleanup_errors:
                 cleanup_receipt.update({"status": "uncertain", "errors": list(cleanup_errors)})
-                self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
+                try:
+                    self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
+                except BaseException:
+                    pass
             self._last_cleanup_receipt = cleanup_receipt
             self._publish_evidence_status()
-            if cleanup_errors:
+            if cleanup_errors and primary_error is None:
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
             self._record_native_cpu_handoff(
                 self.managed_tool_session.current_adapter, managed_token,

@@ -352,3 +352,23 @@ def test_doctor_preserves_supervision_warning_when_runtime_is_unavailable(tmp_pa
     monkeypatch.setattr(service, "supervision_warning", lambda *_args: service.UNSUPERVISED_WARNING)
     assert dispatch._dispatch_doctor(["--json"]) == 1
     assert json.loads(capsys.readouterr().out)["warnings"] == [service.UNSUPERVISED_WARNING]
+
+
+def test_doctor_custody_union_handles_unavailable_runtime(tmp_path, monkeypatch, capsys):
+    import astrid.installer.service as service
+    import astrid.runtime_cli as runtime_cli
+    import astrid.sdk.storage_root as storage_root
+
+    def unavailable():
+        raise runtime_cli.RuntimeCLIError("Runtime is unavailable")
+
+    monkeypatch.setattr(runtime_cli, "RuntimeCLI", unavailable)
+    monkeypatch.setattr(storage_root, "resolve_runtime_data_root", lambda: tmp_path)
+    monkeypatch.setattr(service, "supervision_warning", lambda *_args: service.UNSUPERVISED_WARNING)
+    assert dispatch._dispatch_doctor(["--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["state"] == "runtime_unavailable"
+    assert report["effects"] == ["observe"]
+    assert report["warnings"] == [service.UNSUPERVISED_WARNING]
+    assert dispatch._dispatch_doctor([]) == 1
+    assert service.UNSUPERVISED_WARNING in capsys.readouterr().err

@@ -103,8 +103,16 @@ def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
     else:
         monkeypatch.setattr(case.host, "_run_command_definition", broken)
     started = time.monotonic()
-    with pytest.raises(AttributeError if fault == "normalized_attributes" else (OSError, HostError)):
+    expected_error = BrokenProperties if fault == "error_properties" else (OSError, HostError)
+    with pytest.raises(expected_error):
         case.host.run_task(case.task, lease_token="lease-result")
+    if fault == "failure_rpc":
+        assert len(failures) == 1
+        assert case.runtime.failures == []
+        assert receipt(case)["publication"]["status"] == "unconfirmed"
+        assert receipt(case)["completion_diagnostic"]["status"] == "unconfirmed"
+        assert not case.host._handoff_observation_known
+        return
     assert_failed(case, started)
     assert len(case.runtime.failures) == 1
     binding = case.runtime.failures[0][3]
@@ -1034,7 +1042,8 @@ def test_hung_command_is_stopped_and_reaped_by_unchanged_absolute_deadline(case,
         output_root.mkdir()
 
         def cancelled():
-            terminal["pump_thread"].target()
+            if process in case.host._active_processes:
+                terminal["pump_thread"].target()
             return terminal["cancel_signal"].is_set()
 
         with pytest.raises(HostCancelled):
