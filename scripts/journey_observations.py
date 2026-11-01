@@ -48,6 +48,21 @@ class ObservationParseError(ValueError):
 
 
 @dataclass(frozen=True)
+class ParsedProducerEnvelope:
+    """A structurally linked R-30 export and collector seal.
+
+    This is deliberately not an authentication result.  M-CI must establish
+    the export/seal's provenance, signature roles, selected attempt, and
+    immutable transport before this object can be considered by a predicate.
+    """
+
+    export_sha256: str
+    export: dict[str, object]
+    seal_sha256: str
+    seal: dict[str, object]
+
+
+@dataclass(frozen=True)
 class ParsedEvidence:
     """One selected receipt plus the index entries that its contract requires."""
 
@@ -55,6 +70,8 @@ class ParsedEvidence:
     candidate: dict[str, object] | None
     receipt: dict[str, object]
     files: dict[str, dict[str, object]]
+    producer: ParsedProducerEnvelope | None
+    producer_supplied: bool
 
 
 def _reject_constant(value: str) -> object:
@@ -139,6 +156,318 @@ def parse_json_object(raw: bytes, expected_sha256: str) -> dict[str, object]:
     return value
 
 
+def canonical_json_sha256(value: object) -> str:
+    """Return the R30-CJSON-1 digest for an already decoded JSON value.
+
+    This is used only for R-30 relational checks such as ``files_sha256``.
+    It deliberately does not turn decoded JSON into a substitute for the raw
+    artifact digest, which M-CI must compute before parsing.
+    """
+    _validate_json_values(value)
+    try:
+        encoded = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError) as exc:  # defensive for non-JSON callers
+        raise ObservationParseError("value is not R-30 canonical JSON") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+_R30_BINDING_FIELDS = {
+    "qualification_id", "tuple_sha256", "inventory_sha256", "obligation_id",
+    "attempt_id", "nonce", "origin_sha256", "execution_sha256",
+}
+_R30_EXPORT_FIELDS = {
+    "kind", "version", "binding", "contract_sha256", "owner_kind", "session_id",
+    "status", "checks", "observations", "continuity", "files",
+}
+_R30_SEAL_FIELDS = {
+    "kind", "version", "binding", "grant_sha256", "collector_profile_sha256",
+    "provider_contract_sha256", "export_sha256", "claims_sha256", "files_sha256",
+    "result", "context_state",
+}
+_R30_FILE_FIELDS = {"path", "role", "sha256", "size"}
+_R30_OBSERVATION_FIELDS = {"id", "kind", "file", "sha256", "sequence"}
+_R30_CHECK_FIELDS = {"id", "result", "observations"}
+_R30_CONTINUITY_FIELDS = {
+    "source_profile_sha256", "first_sequence", "last_sequence", "event_count",
+    "gaps", "dropped", "terminal",
+}
+
+
+def _r30_id(value: object) -> bool:
+    return isinstance(value, str) and 1 <= len(value) <= 256 and bool(value.strip())
+
+
+def _r30_exact_object(
+    value: object, required: set[str], label: str, errors: list[str]
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        errors.append(f"{label}: object required")
+        return {}
+    unknown = set(value) - required
+    missing = required - set(value)
+    if unknown:
+        errors.append(f"{label}: unknown field(s): {', '.join(sorted(map(str, unknown)))}")
+    if missing:
+        errors.append(f"{label}: missing field(s): {', '.join(sorted(missing))}")
+    return value
+
+
+def _r30_digest(value: object, label: str, errors: list[str]) -> None:
+    if not isinstance(value, str) or _DIGEST.fullmatch(value) is None:
+        errors.append(f"{label}: lowercase SHA-256 required")
+
+
+def _r30_id_error(value: object, label: str, errors: list[str]) -> None:
+    if not _r30_id(value):
+        errors.append(f"{label}: nonempty bounded ID required")
+
+
+def _r30_positive_integer(value: object, label: str, errors: list[str]) -> None:
+    if type(value) is not int or not 1 <= value <= _MAX_SAFE_INTEGER:
+        errors.append(f"{label}: positive R-30 safe integer required")
+
+
+def _parse_r30_binding(value: object, label: str, errors: list[str]) -> dict[str, object]:
+    binding = _r30_exact_object(value, _R30_BINDING_FIELDS, label, errors)
+    for name in ("qualification_id", "obligation_id", "attempt_id"):
+        _r30_id_error(binding.get(name), f"{label}.{name}", errors)
+    for name in ("tuple_sha256", "inventory_sha256", "nonce", "origin_sha256", "execution_sha256"):
+        _r30_digest(binding.get(name), f"{label}.{name}", errors)
+    return binding
+
+
+def _parse_r30_files(value: object, errors: list[str]) -> dict[str, dict[str, object]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 1024:
+        errors.append("producer.export.files: 1..1024 declared files required")
+        return {}
+    files: dict[str, dict[str, object]] = {}
+    total_size = 0
+    paths: list[str] = []
+    for number, item in enumerate(value):
+        prefix = f"producer.export.files[{number}]"
+        row = _r30_exact_object(item, _R30_FILE_FIELDS, prefix, errors)
+        path = row.get("path")
+        if not safe_relative_path(path):
+            errors.append(f"{prefix}.path: safe relative path required")
+        elif path in files:
+            errors.append(f"{prefix}.path: duplicate declared path {path!r}")
+        else:
+            files[path] = row
+            paths.append(path)
+        _r30_id_error(row.get("role"), f"{prefix}.role", errors)
+        _r30_digest(row.get("sha256"), f"{prefix}.sha256", errors)
+        size = row.get("size")
+        if type(size) is not int or not 0 <= size <= 52_428_800:
+            errors.append(f"{prefix}.size: 0..52428800 integer required")
+        else:
+            total_size += size
+    if paths != sorted(paths):
+        errors.append("producer.export.files: paths must be sorted")
+    if total_size > 52_428_800:
+        errors.append("producer.export.files: declared payload exceeds 52428800 bytes")
+    return files
+
+
+def _parse_r30_observations(
+    value: object, files: Mapping[str, Mapping[str, object]], errors: list[str]
+) -> set[str]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 4096:
+        errors.append("producer.export.observations: 1..4096 observations required")
+        return set()
+    identities: set[str] = set()
+    sequences: list[int] = []
+    for number, item in enumerate(value):
+        prefix = f"producer.export.observations[{number}]"
+        row = _r30_exact_object(item, _R30_OBSERVATION_FIELDS, prefix, errors)
+        observation_id = row.get("id")
+        _r30_id_error(observation_id, f"{prefix}.id", errors)
+        if isinstance(observation_id, str):
+            if observation_id in identities:
+                errors.append(f"{prefix}.id: duplicate observation ID {observation_id!r}")
+            identities.add(observation_id)
+        _r30_id_error(row.get("kind"), f"{prefix}.kind", errors)
+        file_path = row.get("file")
+        if not isinstance(file_path, str) or file_path not in files:
+            errors.append(f"{prefix}.file: declared export file required")
+        _r30_digest(row.get("sha256"), f"{prefix}.sha256", errors)
+        if isinstance(file_path, str) and file_path in files and row.get("sha256") != files[file_path].get("sha256"):
+            errors.append(f"{prefix}.sha256: differs from declared file")
+        sequence = row.get("sequence")
+        _r30_positive_integer(sequence, f"{prefix}.sequence", errors)
+        if type(sequence) is int and 1 <= sequence <= _MAX_SAFE_INTEGER:
+            sequences.append(sequence)
+    if sequences != sorted(sequences):
+        errors.append("producer.export.observations: observations must be sorted by sequence")
+    if len(set(sequences)) != len(sequences):
+        errors.append("producer.export.observations: duplicate sequence")
+    return identities
+
+
+def _parse_r30_checks(value: object, observation_ids: set[str], errors: list[str]) -> None:
+    if not isinstance(value, list) or not 1 <= len(value) <= 256:
+        errors.append("producer.export.checks: 1..256 checks required")
+        return
+    check_ids: set[str] = set()
+    for number, item in enumerate(value):
+        prefix = f"producer.export.checks[{number}]"
+        row = _r30_exact_object(item, _R30_CHECK_FIELDS, prefix, errors)
+        check_id = row.get("id")
+        _r30_id_error(check_id, f"{prefix}.id", errors)
+        if isinstance(check_id, str):
+            if check_id in check_ids:
+                errors.append(f"{prefix}.id: duplicate check ID {check_id!r}")
+            check_ids.add(check_id)
+        if row.get("result") != "pass":
+            errors.append(f"{prefix}.result: pass required")
+        referenced = row.get("observations")
+        if not isinstance(referenced, list) or not 1 <= len(referenced) <= 256:
+            errors.append(f"{prefix}.observations: 1..256 observation IDs required")
+            continue
+        if any(not _r30_id(item) for item in referenced):
+            errors.append(f"{prefix}.observations: nonempty bounded IDs required")
+            continue
+        observation_references = [item for item in referenced if isinstance(item, str)]
+        if len(set(observation_references)) != len(observation_references):
+            errors.append(f"{prefix}.observations: duplicate observation ID")
+        for observation_id in observation_references:
+            if observation_id not in observation_ids:
+                errors.append(f"{prefix}.observations: dangling observation {observation_id!r}")
+
+
+def _parse_r30_continuity(value: object, observations: object, errors: list[str]) -> None:
+    continuity = _r30_exact_object(value, _R30_CONTINUITY_FIELDS, "producer.export.continuity", errors)
+    _r30_digest(continuity.get("source_profile_sha256"), "producer.export.continuity.source_profile_sha256", errors)
+    for name in ("first_sequence", "last_sequence", "event_count"):
+        _r30_positive_integer(continuity.get(name), f"producer.export.continuity.{name}", errors)
+    for name in ("gaps", "dropped"):
+        value = continuity.get(name)
+        if type(value) is not int or not 0 <= value <= _MAX_SAFE_INTEGER:
+            errors.append(f"producer.export.continuity.{name}: nonnegative R-30 safe integer required")
+        elif value != 0:
+            errors.append(f"producer.export.continuity.{name}: zero required")
+    if continuity.get("terminal") is not True:
+        errors.append("producer.export.continuity.terminal: true required")
+    sequence_values = [
+        row.get("sequence") for row in observations if isinstance(row, dict) and type(row.get("sequence")) is int
+    ] if isinstance(observations, list) else []
+    if sequence_values and all(
+        type(continuity.get(name)) is int for name in ("first_sequence", "last_sequence", "event_count")
+    ):
+        first, last, count = (
+            continuity["first_sequence"], continuity["last_sequence"], continuity["event_count"]
+        )
+        if first != sequence_values[0] or last != sequence_values[-1] or count != len(sequence_values):
+            errors.append("producer.export.continuity: sequence bounds or event count differs")
+        elif last - first + 1 != count:
+            errors.append("producer.export.continuity: observation sequence is not contiguous")
+
+
+def _parse_r30_export(value: object, errors: list[str]) -> dict[str, object]:
+    export = _r30_exact_object(value, _R30_EXPORT_FIELDS, "producer.export", errors)
+    if export.get("kind") != "r23-export":
+        errors.append("producer.export.kind: r23-export required")
+    if export.get("version") != 1:
+        errors.append("producer.export.version: version 1 required")
+    _parse_r30_binding(export.get("binding"), "producer.export.binding", errors)
+    _r30_digest(export.get("contract_sha256"), "producer.export.contract_sha256", errors)
+    if export.get("owner_kind") not in {"native", "pinokio"}:
+        errors.append("producer.export.owner_kind: native or pinokio required")
+    _r30_id_error(export.get("session_id"), "producer.export.session_id", errors)
+    if export.get("status") != "pass":
+        errors.append("producer.export.status: pass required")
+    files = _parse_r30_files(export.get("files"), errors)
+    observation_ids = _parse_r30_observations(export.get("observations"), files, errors)
+    _parse_r30_checks(export.get("checks"), observation_ids, errors)
+    _parse_r30_continuity(export.get("continuity"), export.get("observations"), errors)
+    return export
+
+
+def _parse_r30_seal(
+    value: object, export: Mapping[str, object], export_sha256: str, errors: list[str]
+) -> dict[str, object]:
+    seal = _r30_exact_object(value, _R30_SEAL_FIELDS, "producer.seal", errors)
+    if seal.get("kind") != "collector-seal":
+        errors.append("producer.seal.kind: collector-seal required")
+    if seal.get("version") != 1:
+        errors.append("producer.seal.version: version 1 required")
+    binding = _parse_r30_binding(seal.get("binding"), "producer.seal.binding", errors)
+    if binding != export.get("binding"):
+        errors.append("producer.seal.binding: differs from export binding")
+    for name in (
+        "grant_sha256", "collector_profile_sha256", "provider_contract_sha256", "export_sha256",
+        "claims_sha256", "files_sha256",
+    ):
+        _r30_digest(seal.get(name), f"producer.seal.{name}", errors)
+    if seal.get("export_sha256") != export_sha256:
+        errors.append("producer.seal.export_sha256: differs from indexed export")
+    try:
+        expected_files_sha256 = canonical_json_sha256(export.get("files"))
+    except ObservationParseError as exc:
+        errors.append(f"producer.export.files: cannot canonicalize ({exc})")
+    else:
+        if seal.get("files_sha256") != expected_files_sha256:
+            errors.append("producer.seal.files_sha256: differs from R30-CJSON-1 export files")
+    if seal.get("result") != "pass":
+        errors.append("producer.seal.result: pass required")
+    if seal.get("context_state") != "finalized":
+        errors.append("producer.seal.context_state: finalized required")
+    return seal
+
+
+def _producer_entry(value: object, label: str, errors: list[str]) -> tuple[str, dict[str, object]]:
+    entry = _r30_exact_object(value, {"sha256", "json"}, label, errors)
+    digest = entry.get("sha256")
+    if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
+        errors.append(f"{label}.sha256: lowercase SHA-256 required")
+        digest = ""
+    payload = entry.get("json")
+    if not isinstance(payload, dict):
+        errors.append(f"{label}.json: parsed JSON object required")
+        payload = {}
+    else:
+        try:
+            _validate_json_values(payload)
+        except ObservationParseError as exc:
+            errors.append(f"{label}.json: {exc}")
+    return digest, payload
+
+
+def parse_producer_envelope(value: object) -> tuple[ParsedProducerEnvelope | None, list[str]]:
+    """Parse the R-30 export/seal relation without authenticating it.
+
+    ``value`` is M-CI's already-indexed ``{"export": ..., "seal": ...}``
+    envelope.  The raw-byte digest in each member must have been checked by
+    :func:`parse_json_object` when M-CI built that index.  This parser verifies
+    only the approved structural and cross-record rules, never signatures,
+    trust roots, selection, replay, or finalization authority.
+    """
+    errors: list[str] = []
+    envelope = _r30_exact_object(value, {"export", "seal"}, "producer", errors)
+    export_sha256, export_value = _producer_entry(envelope.get("export"), "producer.export", errors)
+    seal_sha256, seal_value = _producer_entry(envelope.get("seal"), "producer.seal", errors)
+    export = _parse_r30_export(export_value, errors)
+    seal = _parse_r30_seal(seal_value, export, export_sha256, errors)
+    if errors:
+        return None, errors
+    return ParsedProducerEnvelope(export_sha256, export, seal_sha256, seal), errors
+
+
+def _producer_owner_errors(
+    producer: ParsedProducerEnvelope | None, expected_owner: str, label: str
+) -> list[str]:
+    if producer is None:
+        return []
+    if producer.export.get("owner_kind") != expected_owner:
+        return [f"producer.export.owner_kind: {label} requires {expected_owner!r} ownership"]
+    return []
+
+
 def safe_relative_path(value: object) -> bool:
     """Apply the portable R-30 artifact-member path restrictions."""
     if not isinstance(value, str) or not value or len(value) > 512:
@@ -209,7 +538,7 @@ def _parse_selected(
 ) -> tuple[ParsedEvidence | None, list[str]]:
     if not isinstance(evidence, dict):
         return None, ["evidence: index object required"]
-    allowed = {selector_name, "files"}
+    allowed = {selector_name, "files", "producer"}
     if require_candidate:
         allowed.add("candidate")
     errors = _unknown_fields(evidence, allowed, "evidence")
@@ -223,6 +552,11 @@ def _parse_selected(
         errors.extend(_candidate_errors(candidate_value))
         if isinstance(candidate_value, dict):
             candidate = candidate_value
+    producer_supplied = "producer" in evidence
+    producer: ParsedProducerEnvelope | None = None
+    if producer_supplied:
+        producer, producer_errors = parse_producer_envelope(evidence.get("producer"))
+        errors.extend(producer_errors)
     files, file_errors = index_files(evidence.get("files"))
     errors.extend(file_errors)
     for path in sorted(required_paths - files.keys()):
@@ -233,7 +567,7 @@ def _parse_selected(
     if not isinstance(receipt, dict):
         errors.append("receipt: parsed journey receipt is required")
         return None, errors
-    return ParsedEvidence(selector, candidate, receipt, files), errors
+    return ParsedEvidence(selector, candidate, receipt, files, producer, producer_supplied), errors
 
 
 _RELEASE1_FIELDS = {
@@ -356,6 +690,12 @@ def parse_release1_evidence(evidence: object) -> tuple[ParsedEvidence | None, li
     )
     if parsed is not None and parsed.candidate is not None:
         errors.extend(_release1_errors(parsed.receipt, parsed.candidate, parsed.selector))
+        try:
+            expected_owner = "native" if matrix.release1_job(parsed.selector)["mode"] == "direct" else "pinokio"
+        except ValueError:  # selector error is already reported above
+            pass
+        else:
+            errors.extend(_producer_owner_errors(parsed.producer, expected_owner, "Release-1"))
     return parsed, errors
 
 
@@ -378,6 +718,12 @@ def parse_m4_5_evidence(evidence: object) -> tuple[ParsedEvidence | None, list[s
         release2.validate_receipt(parsed.receipt)
     except (TypeError, ValueError, KeyError, AttributeError) as exc:
         errors.append(f"receipt: malformed M4-5 observation: {exc}")
+    try:
+        expected_owner = "native" if release2.scenario_definition(parsed.selector)["mode"] == "direct" else "pinokio"
+    except ValueError:  # selector error is already reported above
+        pass
+    else:
+        errors.extend(_producer_owner_errors(parsed.producer, expected_owner, "M4-5"))
     return parsed, errors
 
 
@@ -484,4 +830,10 @@ def parse_m4_6_evidence(evidence: object) -> tuple[ParsedEvidence | None, list[s
             errors.append(f"{path}: native observations differ from receipt")
     if seen_scenarios != set(failure.SCENARIOS):
         errors.append("receipt.evidence_files: all four distinct scenarios are required")
+    try:
+        expected_owner = "native" if failure.SLOT_CONTRACTS[parsed.selector]["mode"] == "direct" else "pinokio"
+    except KeyError:  # selector error is already reported above
+        pass
+    else:
+        errors.extend(_producer_owner_errors(parsed.producer, expected_owner, "M4-6"))
     return parsed, errors

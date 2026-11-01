@@ -11,7 +11,12 @@ import pytest
 
 from scripts import journey_failure_modes as failure
 from scripts import journey_predicates as predicates
-from tests.test_journey_observations import m4_5_index, m4_6_index, release1_index
+from tests.test_journey_observations import (
+    m4_5_index,
+    m4_6_index,
+    producer_envelope,
+    release1_index,
+)
 
 
 @pytest.mark.parametrize(
@@ -26,6 +31,58 @@ def test_every_available_predicate_remains_closed_without_independent_observatio
     ok, reasons = checker(factory())
     assert ok is False
     assert any(label in reason and "independent R-30 section 5" in reason for reason in reasons)
+    assert any("authenticated producer export and collector seal are absent" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize(
+    ("checker", "factory", "owner_kind", "label"),
+    [
+        (predicates.check_release1, release1_index, "native", "Release-1"),
+        (predicates.check_m4_5, m4_5_index, "native", "M4-5"),
+        (predicates.check_m4_6, m4_6_index, "native", "M4-6"),
+    ],
+)
+def test_structural_producer_export_still_refuses_without_mci_finalization(
+    checker, factory, owner_kind: str, label: str
+) -> None:
+    index = factory()
+    index["producer"] = producer_envelope(owner_kind)
+    ok, reasons = checker(index)
+    assert ok is False
+    assert not any("producer export or collector seal is structurally invalid" in reason for reason in reasons)
+    assert any(label in reason and "M-CI authenticated finalization" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize(
+    ("slot", "owner_kind"),
+    [
+        ("direct-linux", "native"),
+        ("pinokio-backend-linux", "pinokio"),
+        ("pinokio-fully-local-linux", "pinokio"),
+    ],
+)
+def test_m4_6_dispatches_direct_and_pinokio_producer_owners_then_refuses(slot: str, owner_kind: str) -> None:
+    index = m4_6_index(slot)
+    index["producer"] = producer_envelope(owner_kind)
+    ok, reasons = predicates.check_m4_6(index)
+    assert ok is False
+    assert not any("requires" in reason and "ownership" in reason for reason in reasons)
+    assert any("M-CI authenticated finalization" in reason for reason in reasons)
+
+
+def test_predicates_reject_foreign_producer_owner_and_malformed_producer_envelope() -> None:
+    foreign = m4_6_index("direct-linux")
+    foreign["producer"] = producer_envelope("pinokio")
+    reasons = predicates.check_m4_6(foreign)[1]
+    assert any("requires 'native' ownership" in reason for reason in reasons)
+    assert any("M-CI authenticated finalization" in reason for reason in reasons)
+
+    malformed = m4_6_index()
+    malformed["producer"] = producer_envelope()
+    malformed["producer"]["export"]["json"]["checks"][0]["observations"] = ["missing"]
+    reasons = predicates.check_m4_6(malformed)[1]
+    assert any("dangling observation" in reason for reason in reasons)
+    assert any("structurally invalid" in reason for reason in reasons)
 
 
 @pytest.mark.parametrize("slot", failure.REQUIRED_SLOT_IDS)

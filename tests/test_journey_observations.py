@@ -19,10 +19,82 @@ def _entry(path: str, payload: dict) -> dict:
     return {"path": path, "sha256": hashlib.sha256(raw).hexdigest(), "json": payload}
 
 
+def _producer_record(payload: dict) -> dict:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    return {"sha256": hashlib.sha256(raw).hexdigest(), "json": payload}
+
+
+def producer_envelope(owner_kind: str = "native") -> dict:
+    """A shape-only R-30 export/seal pair, never authenticated evidence."""
+    binding = {
+        "qualification_id": "qualification-r37",
+        "tuple_sha256": "a" * 64,
+        "inventory_sha256": "b" * 64,
+        "obligation_id": "journey-slot-1",
+        "attempt_id": "attempt-1",
+        "nonce": "c" * 64,
+        "origin_sha256": "d" * 64,
+        "execution_sha256": "e" * 64,
+    }
+    files = [
+        {
+            "path": "observations/terminal.json",
+            "role": "machine-observation",
+            "sha256": "f" * 64,
+            "size": 2,
+        }
+    ]
+    export = {
+        "kind": "r23-export",
+        "version": 1,
+        "binding": binding,
+        "contract_sha256": "1" * 64,
+        "owner_kind": owner_kind,
+        "session_id": "session-1",
+        "status": "pass",
+        "checks": [{"id": "terminal", "result": "pass", "observations": ["terminal"]}],
+        "observations": [
+            {
+                "id": "terminal",
+                "kind": "terminal-observation",
+                "file": "observations/terminal.json",
+                "sha256": "f" * 64,
+                "sequence": 1,
+            }
+        ],
+        "continuity": {
+            "source_profile_sha256": "2" * 64,
+            "first_sequence": 1,
+            "last_sequence": 1,
+            "event_count": 1,
+            "gaps": 0,
+            "dropped": 0,
+            "terminal": True,
+        },
+        "files": files,
+    }
+    export_entry = _producer_record(export)
+    seal = {
+        "kind": "collector-seal",
+        "version": 1,
+        "binding": copy.deepcopy(binding),
+        "grant_sha256": "3" * 64,
+        "collector_profile_sha256": "4" * 64,
+        "provider_contract_sha256": "5" * 64,
+        "export_sha256": export_entry["sha256"],
+        "claims_sha256": "6" * 64,
+        "files_sha256": observations.canonical_json_sha256(files),
+        "result": "pass",
+        "context_state": "finalized",
+    }
+    return {"export": export_entry, "seal": _producer_record(seal)}
+
+
 def release1_index(slot: str = "direct-linux") -> dict:
     contract = next(row for row in failure.SLOT_CONTRACTS.values() if row["job_id"] == slot)
     _os_name, runner_os, image_os = failure.RUNNER_PROVENANCE[contract["runner"]]
     candidate = copy.deepcopy(PROVISIONAL_CANDIDATE)
+    direct = contract["mode"] == "direct"
     receipt = {
         "receipt_kind": "release1-installed-lifecycle",
         "job_id": slot,
@@ -39,7 +111,11 @@ def release1_index(slot: str = "direct-linux") -> dict:
         "sources": {name: {"sha": candidate[name]} for name in ("app", "agent", "runtime")},
         "installed_tuple": {name: candidate[name] for name in ("app", "agent", "runtime")},
         "import_origins": {"runtime": "/owned/runtime"},
-        "service_manager_prerequisite": {"required": True, "outcome": "pass", "manager": "native", "version": "1", "foreground_fallback": False},
+        "service_manager_prerequisite": (
+            {"required": True, "outcome": "pass", "manager": "native", "version": "1", "foreground_fallback": False}
+            if direct else
+            {"required": False, "outcome": "explicit-owner", "managed_by": "pinokio", "foreground_fallback": False}
+        ),
         "service_manager": {"manager": "native", "foreground_fallback": False},
         "release_transition": {"from": 0, "to": 1, "harness_override": "frozen-release0-direct-to-release1"},
         "release0_fixture": {
@@ -81,6 +157,26 @@ def m4_5_index(scenario_id: str = "release2-install-line-direct-linux") -> dict:
         "execution_boundary": {},
         "final_cleanup": "pass",
     }
+    if row["channel"] == "pinokio-update":
+        receipt["service_manager_prerequisite"] = {
+            "required": False,
+            "outcome": "explicit-owner",
+            "managed_by": "pinokio",
+            "foreground_fallback": False,
+        }
+        receipt["trigger"] = {
+            "channel": "pinokio-update",
+            "entrypoint": "pinokio-update",
+            "managed_by": "pinokio",
+            "mode": row["mode"],
+            "route": "backend-adapter" if row["mode"] == "pinokio-backend" else "existing-fully-local",
+            "foreground_fallback": False,
+            "action_provenance": {
+                "pinokio_sha": release2.RELEASE1_CANDIDATE["pinokio"],
+                "action_sha256": "b" * 64,
+            },
+        }
+        receipt["checks"]["pinokio_update"] = "pass"
     return {"scenario_id": scenario_id, "files": [_entry("journey-result.json", receipt)]}
 
 
@@ -119,6 +215,37 @@ def test_raw_parser_binds_the_exact_raw_digest() -> None:
     assert observations.parse_json_object(raw, hashlib.sha256(raw).hexdigest()) == {"valid": True}
 
 
+def test_r30_producer_parser_accepts_only_a_complete_linked_export_and_seal() -> None:
+    parsed, errors = observations.parse_producer_envelope(producer_envelope())
+    assert parsed is not None and errors == []
+
+    duplicate = producer_envelope()
+    duplicate["export"]["json"]["observations"].append(
+        copy.deepcopy(duplicate["export"]["json"]["observations"][0])
+    )
+    _parsed, errors = observations.parse_producer_envelope(duplicate)
+    assert any("duplicate observation ID" in error for error in errors)
+    assert any("duplicate sequence" in error for error in errors)
+
+    wrong_hash = producer_envelope()
+    wrong_hash["seal"]["json"]["files_sha256"] = "0" * 64
+    _parsed, errors = observations.parse_producer_envelope(wrong_hash)
+    assert any("R30-CJSON-1" in error for error in errors)
+
+
+def test_r30_producer_parser_rejects_malformed_undeclared_and_unsettled_fields() -> None:
+    malformed = producer_envelope()
+    malformed["export"]["json"]["unexpected"] = True
+    malformed["export"]["json"]["checks"][0]["result"] = "not-run"
+    malformed["export"]["json"]["continuity"]["dropped"] = 1
+    malformed["seal"]["json"]["context_state"] = "aborted"
+    _parsed, errors = observations.parse_producer_envelope(malformed)
+    assert any("unknown field" in error for error in errors)
+    assert any("pass required" in error for error in errors)
+    assert any("dropped: zero required" in error for error in errors)
+    assert any("finalized required" in error for error in errors)
+
+
 @pytest.mark.parametrize("path", ["../escape.json", "/absolute.json", "evidence\\bad.json", "NUL.json", "evidence/%2e.json", "dot./x.json"])
 def test_portable_path_parser_rejects_unsafe_paths(path: str) -> None:
     assert observations.safe_relative_path(path) is False
@@ -129,6 +256,30 @@ def test_release1_and_m4_5_parsers_accept_their_checked_in_structural_contracts(
     m4_5, m4_5_errors = observations.parse_m4_5_evidence(m4_5_index())
     assert release1 is not None and release1_errors == []
     assert m4_5 is not None and m4_5_errors == []
+
+
+@pytest.mark.parametrize(
+    ("factory", "parser", "selector", "owner_kind"),
+    [
+        (release1_index, observations.parse_release1_evidence, "direct-linux", "native"),
+        (release1_index, observations.parse_release1_evidence, "pinokio-backend-linux", "pinokio"),
+        (release1_index, observations.parse_release1_evidence, "pinokio-fully-local-linux", "pinokio"),
+        (m4_5_index, observations.parse_m4_5_evidence, "release2-install-line-direct-linux", "native"),
+        (m4_5_index, observations.parse_m4_5_evidence, "release2-pinokio-update-pinokio-backend-linux", "pinokio"),
+        (m4_5_index, observations.parse_m4_5_evidence, "release2-pinokio-update-pinokio-fully-local-linux", "pinokio"),
+    ],
+)
+def test_direct_and_pinokio_legacy_shapes_require_the_matching_r30_owner_kind(
+    factory, parser, selector: str, owner_kind: str
+) -> None:
+    index = factory(selector)
+    index["producer"] = producer_envelope(owner_kind)
+    parsed, errors = parser(index)
+    assert parsed is not None and errors == []
+
+    index["producer"] = producer_envelope("pinokio" if owner_kind == "native" else "native")
+    _parsed, errors = parser(index)
+    assert any("requires" in error and "ownership" in error for error in errors)
 
 
 @pytest.mark.parametrize(
