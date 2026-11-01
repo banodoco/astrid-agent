@@ -241,11 +241,6 @@ def _setup(tmp_path: Path, sources: Mapping[str, Any]) -> dict[str, Any]:
     python_link = runtime / "venv" / "bin" / "python"
     python_link.parent.mkdir(parents=True)
     python_link.symlink_to(Path(sys.executable).resolve())
-    launcher = runtime / "launch-comfy.sh"
-    launcher.parent.mkdir(parents=True, exist_ok=True)
-    launcher.write_text("#!/bin/sh\nexec python ComfyUI/main.py\n", encoding="utf-8")
-    launcher.chmod(0o755)
-
     comfy = runtime / "ComfyUI"
     comfy.mkdir(parents=True)
     (comfy / ".gitignore").write_text("custom_nodes\n", encoding="utf-8")
@@ -306,7 +301,6 @@ def _setup(tmp_path: Path, sources: Mapping[str, Any]) -> dict[str, Any]:
             "output_root": str(output_root),
             "python_executable": str(python_link),
             "comfy_root": str(comfy),
-            "launcher_path": str(launcher),
         }
     }
     lock_sha = hashlib.sha256(lock.read_bytes()).hexdigest()
@@ -334,7 +328,6 @@ def _setup(tmp_path: Path, sources: Mapping[str, Any]) -> dict[str, Any]:
             "vibecomfy_source_commit": sources["vibe_commit"],
             "vibecomfy": sources["vibe_version"],
             "venv": "runtime/venv",
-            "launcher": "runtime/launch-comfy.sh",
             "custom_nodes_lock_sha256": lock_sha,
             **node_commits,
         },
@@ -367,7 +360,6 @@ def _setup(tmp_path: Path, sources: Mapping[str, Any]) -> dict[str, Any]:
         "lock": str(lock),
         "node_roots": node_roots,
         "python": str(python_link),
-        "launcher": str(launcher),
         "model_root": model_root,
         "output_root": output_root,
         "readiness": readiness,
@@ -428,6 +420,10 @@ def test_preparation_runs_real_child_probe_and_reuses_verified_content(
     assert result["release_state"] == "ready_for_gpu_qualification"
     assert result["qualification_scope"] == "cpu_only_ready_for_gpu_qualification"
     assert result["cpu_readiness"]["status"] == "cpu_ready"
+    assert not (setup["candidate"] / "runtime" / "launch-comfy.sh").exists()
+    assert "launcher_path" not in result["cpu_readiness"]["effective_paths"]
+    assert "launcher_path" not in result["cpu_readiness"]["release_facts"]
+    assert "launcher_sha256" not in result["cpu_readiness"]["release_facts"]
     assert result["cpu_readiness"]["workflow_preflight"]["phase"] == "preparation"
     assert result["cpu_readiness"]["release_facts"]["custom_nodes_lock_sha256"] == "sha256:" + hashlib.sha256(Path(setup["lock"]).read_bytes()).hexdigest()
     assert result["cpu_readiness"]["release_facts"]["required_custom_nodes"] == [

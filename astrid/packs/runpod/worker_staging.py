@@ -147,12 +147,6 @@ candidate=candidate_path.resolve(strict=True)
 if not candidate.is_dir() or not comfy_root.is_relative_to(candidate): raise RuntimeError("selected Comfy root is outside the manifest candidate namespace")
 if Path(cfg["candidate_namespace"]).resolve(strict=True)!=candidate: raise RuntimeError("effective candidate namespace differs from the selected manifest")
 if Path(cfg["python_executable"]).resolve(strict=True)!=candidate.joinpath(*contract["venv_path"].split("/")).joinpath("bin/python").resolve(strict=True): raise RuntimeError("selected interpreter is not the manifest runtime.venv interpreter")
-launcher=candidate.joinpath(*contract["launcher_path"].split("/"))
-if Path(cfg["launcher_path"]).resolve(strict=True)!=launcher.resolve(strict=True): raise RuntimeError("effective launcher differs from the selected manifest")
-reject_shadow(launcher,"Comfy launcher")
-if not launcher.is_file() or not os.access(launcher,os.X_OK): raise RuntimeError("manifest-selected Comfy launcher is missing or not executable")
-syntax=subprocess.run(["sh","-n",str(launcher)],capture_output=True,text=True,check=False)
-if syntax.returncode!=0: raise RuntimeError("manifest-selected Comfy launcher has invalid shell syntax")
 def git_fact(root,label,expected):
  revision=subprocess.run(["git","-C",str(root),"rev-parse","HEAD"],capture_output=True,text=True,check=False)
  if revision.returncode!=0 or revision.stdout.strip()!=expected: raise RuntimeError(label+" checkout differs from the selected release manifest")
@@ -281,7 +275,7 @@ for pack_name in required:
  bindings=[fact for fact in custom_node_facts.values() if norm_pack(fact["pack_name"])==norm_pack(pack_name)]
  if len(bindings)!=1: raise RuntimeError("selected workflow requires a custom-node pack without exactly one manifest-pinned checkout/root: "+pack_name)
  if bindings[0]["lock_entry"]!=table_name or lock_row_commit(table_name,lock_row)!=bindings[0]["commit"]: raise RuntimeError("selected workflow custom-node pack is not bound to its pinned lock entry and observed checkout: "+pack_name)
-print(json.dumps({"schema_version":1,"status":"cpu_ready","gpu_qualified":False,"capability_id":request["capability_id"],"python_executable":str(Path(sys.executable).resolve()),"python_version":sys.version.split()[0],"imports":{"astrid":astrid_import,"model_root_verifier":model_import,"vibecomfy_preflight":preflight_import,"vibecomfy":vibe_import},"effective_paths":{"astrid_root":str(astrid_root),"vibecomfy_root":str(vibe_root),"comfy_root":str(comfy_root),"model_root":str(binding.path),"output_root":str(output_root.resolve(strict=True)),"candidate_namespace":str(candidate),"launcher_path":str(launcher)},"release_facts":{"release_id":cfg["comfy_release_id"],"manifest_state":contract["manifest_state"],"candidate_namespace":str(candidate),"comfyui_commit":comfy_commit,"comfy_tree_digest":comfy_tree_digest,"comfy_file_count":comfy_file_count,"launcher_path":str(launcher),"launcher_sha256":"sha256:"+hashlib.sha256(launcher.read_bytes()).hexdigest(),"custom_nodes_lock_sha256":lock_digest,"custom_node_commits":custom_node_facts,"custom_node_trees":custom_node_tree_facts,"required_custom_nodes":sorted(required)},"tree_facts":tree_facts,"model_root":binding.as_dict(),"workflow_preflight":compiled},sort_keys=True,separators=(",",":")))
+print(json.dumps({"schema_version":1,"status":"cpu_ready","gpu_qualified":False,"capability_id":request["capability_id"],"python_executable":str(Path(sys.executable).resolve()),"python_version":sys.version.split()[0],"imports":{"astrid":astrid_import,"model_root_verifier":model_import,"vibecomfy_preflight":preflight_import,"vibecomfy":vibe_import},"effective_paths":{"astrid_root":str(astrid_root),"vibecomfy_root":str(vibe_root),"comfy_root":str(comfy_root),"model_root":str(binding.path),"output_root":str(output_root.resolve(strict=True)),"candidate_namespace":str(candidate)},"release_facts":{"release_id":cfg["comfy_release_id"],"manifest_state":contract["manifest_state"],"candidate_namespace":str(candidate),"comfyui_commit":comfy_commit,"comfy_tree_digest":comfy_tree_digest,"comfy_file_count":comfy_file_count,"custom_nodes_lock_sha256":lock_digest,"custom_node_commits":custom_node_facts,"custom_node_trees":custom_node_tree_facts,"required_custom_nodes":sorted(required)},"tree_facts":tree_facts,"model_root":binding.as_dict(),"workflow_preflight":compiled},sort_keys=True,separators=(",",":")))
 '''
 
 
@@ -824,7 +818,6 @@ def _release_contract(
         raise WorkerPreparationError("selected VibeComfy source does not match the manifest commit")
     candidate = _remote_absolute(manifest["candidate_namespace"], label="release candidate_namespace")
     venv_path = _safe_relative_path(runtime.get("venv"), label="runtime.venv")
-    launcher_path = _safe_relative_path(runtime.get("launcher"), label="runtime.launcher")
     selected_comfy_root = _remote_absolute(comfy_root, label="selected Comfy root")
     selected_lock = _remote_absolute(custom_nodes_lock_path, label="custom_nodes_lock_path")
     for label, path in (("Comfy root", selected_comfy_root), ("custom-node lock", selected_lock)):
@@ -910,7 +903,6 @@ def _release_contract(
         "manifest_state": manifest_state.strip(),
         "candidate_namespace": candidate,
         "venv_path": venv_path,
-        "launcher_path": launcher_path,
         "custom_nodes_lock_path": selected_lock,
         "custom_nodes_lock_sha256": _SHA256_PREFIX + lock_digest,
         "custom_node_roots": node_roots,
@@ -1004,9 +996,6 @@ def _build_plan(
     )
     if python != expected_python:
         raise WorkerPreparationError("python_executable differs from the selected manifest runtime.venv")
-    expected_launcher = str(
-        PurePosixPath(release_contract["candidate_namespace"]) / release_contract["launcher_path"]
-    )
     workflow_local = workflow_path.expanduser().resolve(strict=True)
     bundle_plan = None
     if workflow_bundle_path is None:
@@ -1049,11 +1038,10 @@ def _build_plan(
         "engine_mode": engine_mode,
         "comfy_release_id": release_id,
         "candidate_namespace": release_contract["candidate_namespace"],
-        "launcher_path": expected_launcher,
     }
     # The old selected paths, if present, are authority. A new plan may not
     # silently redirect a worker away from the selected readiness profile.
-    for field in ("python_executable", "astrid_root", "vibecomfy_root", "comfy_root", "output_root", "launcher_path"):
+    for field in ("python_executable", "astrid_root", "vibecomfy_root", "comfy_root", "output_root"):
         selected = readiness["launch"].get(field)
         if selected is not None and selected != config[field]:
             raise WorkerPreparationError(f"effective {field} differs from the selected readiness profile")
@@ -1203,7 +1191,7 @@ async def _verify_remote_cpu_evidence(
     expected_paths = {
         key: str(Path(value))
         for key, value in plan["effective_config"].items()
-        if key in {"astrid_root", "vibecomfy_root", "comfy_root", "model_root", "output_root", "candidate_namespace", "launcher_path"}
+        if key in {"astrid_root", "vibecomfy_root", "comfy_root", "model_root", "output_root", "candidate_namespace"}
     }
     if observed.get("effective_paths") != expected_paths:
         raise WorkerPreparationError("child effective paths differ from the selected configuration")
