@@ -12,6 +12,7 @@ from pathlib import Path
 
 if __package__:
     from .journey_matrix import (
+        GPU_MATRIX,
         M4_4A_BACKEND_MATRIX,
         M4_4A_BACKEND_SIDECARS,
         M4_4A_OLD_LAUNCHER_REF,
@@ -28,6 +29,7 @@ if __package__:
 else:
     try:
         from journey_matrix import (
+            GPU_MATRIX,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
             M4_4A_OLD_LAUNCHER_REF,
@@ -43,6 +45,7 @@ else:
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
+            GPU_MATRIX,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
             M4_4A_OLD_LAUNCHER_REF,
@@ -144,7 +147,8 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
         provenance = row.get("runner_provenance")
         expected_os = {"ubuntu-24.04": "Linux", "ubuntu-22.04": "Linux",
                        "windows-2022": "Windows", "macos-14": "macOS",
-                       "local": {"Darwin": "macOS"}.get(platform.system(), platform.system())}[expected_runner]
+                       "local": {"Darwin": "macOS"}.get(platform.system(), platform.system()),
+                       "runpod": "Linux"}[expected_runner]
         if expected_runner != "local":
             if not isinstance(provenance, dict):
                 errors.append(f"{name}: runner provenance is missing")
@@ -152,7 +156,8 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
                 if provenance.get("RUNNER_OS") != expected_os:
                     errors.append(f"{name}: runner OS provenance does not match {expected_os}")
                 expected_image_os = {"ubuntu-24.04": "ubuntu24", "ubuntu-22.04": "ubuntu22",
-                                     "windows-2022": "win22", "macos-14": "macos14"}[expected_runner]
+                                     "windows-2022": "win22", "macos-14": "macos14",
+                                     "runpod": "runpod"}[expected_runner]
                 if provenance.get("ImageOS") != expected_image_os:
                     errors.append(f"{name}: ImageOS provenance does not match {expected_image_os}")
                 for field in ("ImageOS", "ImageVersion"):
@@ -675,6 +680,71 @@ def evaluate_m4_6_local_matrix(results, candidate):
     return errors
 
 
+def evaluate_gpu_matrix(candidate, manifest, results, required=None):
+    """Check RunPod receipts with the ordinary journey gate and extra row assertions."""
+    expected = {row["scenario_id"]: row for row in GPU_MATRIX}
+    required = tuple(expected) if required is None else tuple(required)
+    errors = []
+    if not required or len(set(required)) != len(required) or any(name not in expected for name in required):
+        return ["GPU required scenarios are empty, duplicated or unknown"]
+    # Duplicate JSON members are ambiguous, including nested members. Do not let
+    # the JSON parser silently retain only the last value.
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON field {key}")
+            result[key] = value
+        return result
+    found = {}
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique)
+            if not isinstance(row, dict):
+                raise ValueError("expected object")
+            name = row.get("scenario")
+            if name not in expected:
+                errors.append(f"{path}: unknown or missing GPU scenario")
+            elif name in found:
+                errors.append(f"{name}: duplicate GPU receipt")
+            else:
+                found[name] = row
+        except (OSError, ValueError, TypeError) as exc:
+            errors.append(f"{path}: {exc}")
+    try:
+        errors.extend(evaluate(candidate, manifest, results, required, "runpod", "sh"))
+    except (TypeError, AttributeError, KeyError, ValueError) as exc:
+        errors.append(f"malformed journey receipt: {exc}")
+    for name in required:
+        row = found.get(name)
+        if row is None:
+            continue
+        contract = expected[name]
+        for key, value in (("schema_version", 2), ("receipt_kind", "gpu-installed-journey"),
+                           ("mode", contract["mode"])):
+            if type(row.get(key)) is not type(value) or row.get(key) != value:
+                errors.append(f"{name}: {key} is not {value!r}")
+        if not DIGEST.fullmatch(str(row.get("manifest_sha256", ""))) or row.get("manifest_sha256") != candidate.get("manifest_sha256"):
+            errors.append(f"{name}: manifest digest is absent or differs from frozen candidate")
+        checkouts = row.get("candidate_checkouts")
+        for key in ("app", "agent", "runtime", "pinokio"):
+            entry = checkouts.get(key) if isinstance(checkouts, dict) else None
+            if not isinstance(entry, dict) or entry.get("sha") != candidate.get(key) or not SHA.fullmatch(str(entry.get("sha", ""))):
+                errors.append(f"{name}: {key} checkout is absent or differs from frozen candidate")
+        schema = (manifest.get("runtime") or {}).get("schema_digest")
+        if not isinstance(schema, str) or not schema.strip():
+            errors.append(f"{name}: manifest runtime schema digest is absent")
+        checks = row.get("checks")
+        for key in contract["checks"]:
+            if not isinstance(checks, dict) or checks.get(key) != "pass":
+                errors.append(f"{name}: {key} assertion did not pass")
+        exits = row.get("inner_exits")
+        for key in contract["inner_exits"]:
+            if not isinstance(exits, dict) or type(exits.get(key)) is not int or exits[key] != 0:
+                errors.append(f"{name}: {key} inner exit is missing or nonzero")
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", type=Path)
@@ -696,11 +766,13 @@ def main():
                         help="require one local-process M4-4b smoke receipt; never hosted evidence")
     parser.add_argument("--aggregate-m4-6-local", action="store_true",
                         help="require all nine separately retained local-disposable M4-6 outputs")
+    parser.add_argument("--aggregate-gpu", action="store_true",
+                        help="require all RunPod GPU journey receipts")
     args = parser.parse_args()
     errors = []
     try:
         aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
-                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local))
+                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
         if args.aggregate_m4_4b_local:
@@ -716,7 +788,11 @@ def main():
                 raise ValueError("--candidate and --app-checkout are required for hosted Release-1/M4 aggregates")
             candidate = read(args.candidate)
             manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
-        if not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
+        if args.aggregate_gpu:
+            if args.results is None or args.allow_source_override or args.required or args.prepare_only:
+                raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
+            errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))
+        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
             errors.extend(evaluate_release1_matrix(candidate, args.results))
