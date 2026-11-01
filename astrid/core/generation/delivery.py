@@ -29,12 +29,27 @@ def deliver_generation(result: Any, *, client: Any, out: str | Path | None, proj
     payload = result.to_dict() if hasattr(result, 'to_dict') else result
     if not isinstance(payload, dict):
         return payload
+    # The tracked H3 parent returns an InvocationResult, whose Runtime-owned
+    # associations include its universal manifest and final media separately.
+    # Project those references into the same delivery path as image results.
+    if payload.get('capability_id') == 'h3_av.transform':
+        associations = (payload.get('outputs') or {}).get('managed_outputs') or []
+        associations = [row for row in associations if isinstance(row, Mapping)]
+        manifests = [row for row in associations if row.get('output_port', row.get('name')) == 'manifest']
+        media = [row for row in associations if row.get('role', 'result') == 'result'
+                 and str(row.get('media_type') or '').startswith(('video/', 'audio/'))]
+        media.sort(key=lambda row: not str(row.get('media_type')).startswith('video/'))
+        payload = {**payload, 'task_id': payload.get('kernel_task_id'),
+                   'manifest_ref': (manifests[0].get('object_id') or manifests[0].get('digest'))
+                   if len(manifests) == 1 else None,
+                   'manifest': {'outputs': media}}
     manifest = payload.get('manifest') or {}
     rows = manifest.get('outputs', []) if isinstance(manifest, Mapping) else []
     rows = [row for row in rows if isinstance(row, Mapping)
             and row.get('role', 'result') == 'result']
     managed = bool(payload.get('manifest_ref') or any(row.get('object_id') for row in rows))
-    if not managed:
+    is_h3 = payload.get('capability_id') == 'h3_av.transform'
+    if not managed and not is_h3:
         # Older in-process providers already return caller-local media. Route
         # their files through the same export path when an export is requested.
         from .backends.base import GenerationResult
@@ -43,6 +58,10 @@ def deliver_generation(result: Any, *, client: Any, out: str | Path | None, proj
         if not rows:
             rows = [{'path': path} for path in payload.get('image_paths', [])]
     try:
+        if is_h3 and (len(manifests) != 1 or not payload['manifest_ref']):
+            raise ValueError('completed H3 generation has no unique Runtime manifest')
+        if is_h3 and not rows:
+            raise ValueError('completed H3 generation has no deliverable media')
         return _deliver(payload, rows, client=client, out=out, managed=managed, project=project)
     except Exception as exc:
         from .preflight import generation_error
@@ -106,8 +125,10 @@ def _deliver(payload, rows, *, client, out, managed, project):
                 digest = _sha256(digest_value)
                 if sealed_outputs is not None and not any(
                     isinstance(item, Mapping)
-                    and _sha256(item.get('sha256') or item.get('digest') or item.get('object_id')) == digest
+                    and _sha256(item.get('sha256') or item.get('digest') or item.get('content_hash') or item.get('object_id')) == digest
                     and item.get('bytes', item.get('size')) == size
+                    and (payload.get('capability_id') != 'h3_av.transform'
+                         or item.get('name') == row.get('output_port', row.get('name')))
                     for item in sealed_outputs
                 ):
                     raise ValueError('Runtime output is absent from the generation manifest')
@@ -126,8 +147,9 @@ def _deliver(payload, rows, *, client, out, managed, project):
             if name in {'', '.', '..'}:
                 name = f'output-{index}'
             if file_destination:
+                suffix = Path(name).suffix or destination.suffix
                 path = destination if index == 0 else destination.with_name(
-                    f'{destination.stem}-{index + 1}{destination.suffix}')
+                    f'{destination.stem}-{index + 1}{suffix}')
             else:
                 path = root / name
                 while path in used:
