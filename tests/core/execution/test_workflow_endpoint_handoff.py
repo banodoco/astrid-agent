@@ -38,6 +38,7 @@ from astrid.sdk.execution_request import normalize_execution_request
 from runpod_lifecycle.pod_agent import AgentServer
 # Reuse the delivered session owner's real native CPU engine, not a fake adapter.
 from tests.core.generation.test_engine_custody import installed_consumer, session, native_scratch
+from tests._checkouts import runtime_checkout, vibecomfy_checkout
 
 pytestmark = pytest.mark.integration
 
@@ -316,7 +317,7 @@ def installed_agent(tmp_path_factory):
         destination = source / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(selected, destination)
-    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PIP_CACHE_DIR="/home/user/proof/.pip-cache")
+    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PIP_CACHE_DIR=str(build / "pip-cache"))
     commands = [
         [sys.executable, "-m", "pip", "wheel", "--no-cache-dir", "--no-deps", "--no-build-isolation",
          "--wheel-dir", str(build / "wheels"), str(source)],
@@ -423,9 +424,10 @@ def test_installed_host_argv_env_and_separate_action_main_refusal(installed_agen
     # read-only dependencies; lifecycle uses this candidate's own source.
     environment = {key: value for key, value in os.environ.items() if not key.startswith("ASTRID_")}
     environment.update({"PYTHONPATH": os.pathsep.join((str(installed_agent),
-        str(Path(__file__).resolve().parents[4] / "lifecycle/src"), "/home/user/proof/src/astrid-runtime")),
-        "PYTHONDONTWRITEBYTECODE": "1", "ASTRID_RUNTIME_CHECKOUT": "/home/user/proof/src/astrid-runtime",
-        "ASTRID_VIBECOMFY_CHECKOUT": "/home/user/proof/src/VibeComfy"})
+        str(Path(__file__).resolve().parents[4] / "lifecycle/src"), str(runtime_checkout()),
+        str(vibecomfy_checkout()))),
+        "PYTHONDONTWRITEBYTECODE": "1", "ASTRID_RUNTIME_CHECKOUT": str(runtime_checkout()),
+        "ASTRID_VIBECOMFY_CHECKOUT": str(vibecomfy_checkout())})
     completed = subprocess.run([sys.executable, str(driver), str(config_path)], cwd=tmp_path,
                                env=environment, capture_output=True, text=True, timeout=90)
     (tmp_path / "installed-driver.log").write_text(completed.stdout + completed.stderr)
