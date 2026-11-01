@@ -5,12 +5,9 @@ name: Release-1 direct lifecycle receipts
   workflow_dispatch: {}
   push:
     branches:
-    - lane/M-QUAL/direct-journey
-    paths:
-    - .github/workflows/journey-direct.yml
-    - scripts/journey_version_jumps.py
+    - venue/M-QUAL-R-05-1
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: journey-direct-${{ github.ref }}
   cancel-in-progress: false
@@ -55,14 +52,14 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: banodoco/astrid-app
-        ref: a55bec9ff384b5bbfee5535962880084ab2adb1b
+        ref: 9d3ccda1e81383082258943207745086da2aabe4
         path: app
         persist-credentials: false
     - name: Check out frozen Agent candidate
       uses: actions/checkout@v4
       with:
         repository: banodoco/astrid-agent
-        ref: af5ae8afdb9829beb2bba4f811dbe97765bd72b2
+        ref: 020877f12ea490308a9e5f9564c8f4a4bf77ede1
         path: candidate-agent
         fetch-depth: 0
         persist-credentials: false
@@ -102,16 +99,17 @@ jobs:
     - name: Freeze and validate candidate inputs
       shell: bash
       env:
-        CANDIDATE: '{"app":"a55bec9ff384b5bbfee5535962880084ab2adb1b","agent":"af5ae8afdb9829beb2bba4f811dbe97765bd72b2","runtime":"47e5949465cb6f3afdfd1cb8a0e90009fd9d4020","pinokio":"89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4","manifest_sha256":"ced136903a7319e78a0be7db0cc1709c0663eaf7d567c040fe1812a916693874","artifacts":{"public/install":"100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d","public/install.sh":"591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285","public/install.ps1":"bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"}}'
+        CANDIDATE: '{"app":"9d3ccda1e81383082258943207745086da2aabe4","agent":"020877f12ea490308a9e5f9564c8f4a4bf77ede1","runtime":"47e5949465cb6f3afdfd1cb8a0e90009fd9d4020","pinokio":"89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4","manifest_sha256":"a63d9bdac6dfcb22e4f4516f2d92f4c880477076512b5115f0cd8f415f34a9ef","artifacts":{"public/install":"100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d","public/install.sh":"591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285","public/install.ps1":"bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"}}'
       run: |
         printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
         python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
     - name: Run authentic direct release-0 to release-1 lifecycle
+      id: journey
       env:
         ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
       run: |
         $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
-        python -u agent/scripts/ci_journey.py `
+        python -u agent/scripts/ci_journey_venue.py run python -u agent/scripts/ci_journey.py `
           --job-id '${{ matrix.job_id }}' --mode direct --leg release0-to-release1 `
           --candidate "$env:RUNNER_TEMP/candidate.json" `
           --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
@@ -166,3 +164,15 @@ jobs:
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/driver-identity.json
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/artifact-size.txt
         if-no-files-found: error
+    - name: Publish this row to git results
+      if: always() && github.event_name == 'push' && github.ref == 'refs/heads/venue/M-QUAL-R-05-1'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        ROW_ID: ${{ matrix.job_id }}
+        ROW_RUNNER: ${{ matrix.runner }}
+        JOURNEY_OUTCOME: ${{ steps.journey.outcome }}
+        EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+        EVIDENCE_OVERSIZE: ${{ steps.evidence.outputs.oversize }}
+      run: |
+        python agent/scripts/ci_journey_venue.py publish
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
