@@ -353,7 +353,7 @@ def _managed_install_fix() -> ReadinessFix | None:
         return None
     try:
         candidates = [row for row in load_recipe_index().entries
-                      if row.engine in {'vibecomfy-h3', 'vibecomfy'}
+                      if row.engine == 'comfyui'
                       and row.platform.startswith('linux-x86_64-')]
         if len(candidates) != 1:
             return None
