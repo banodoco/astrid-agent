@@ -1,7 +1,7 @@
-# Broker step-isolation relay-fix retrigger 2026-11-01T17:15Z; request semantics and pinned inputs unchanged.
+# CP3 R4 exact-head proof: re-pinned to published Runtime 1e6d899e; selector inventory and relay-safe steps retained.
 repos:
-  astrid-agent: 591cf1e629fa316885859e6fec3f4af9c2a6e6ba
-  astrid-runtime: bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf
+  astrid-agent: c90394d30911e5d5cea5f5cf1a0e9fc68de679da
+  astrid-runtime: 1e6d899efa77a2d6ec247c38250f9748330bb587
 producer_authorities:
   vibecomfy: 2967033970cbb5884651c9565265778482d3b44e
   lifecycle: 96360a27a53c4608f780f7b370f747a2aa3c7ca8
@@ -36,9 +36,9 @@ run:
       lock_sha=$(/workspace/venv/bin/python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')
       echo "runtime_lock_source_commit=$lock_sha"
       echo "runtime_checked_out_head=$(git -C /workspace/astrid-runtime rev-parse HEAD)"
-      test "$(git rev-parse HEAD)" = 591cf1e629fa316885859e6fec3f4af9c2a6e6ba
-      test "$lock_sha" = bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf
-      test "$(git -C /workspace/astrid-runtime rev-parse HEAD)" = bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf
+      test "$(git rev-parse HEAD)" = c90394d30911e5d5cea5f5cf1a0e9fc68de679da
+      test "$lock_sha" = 1e6d899efa77a2d6ec247c38250f9748330bb587
+      test "$(git -C /workspace/astrid-runtime rev-parse HEAD)" = 1e6d899efa77a2d6ec247c38250f9748330bb587
       git diff --check
       git -C /workspace/astrid-runtime diff --check
       /workspace/venv/bin/python scripts/vendor_lock.py check runtime.lock.json --producer /workspace/astrid-runtime
