@@ -382,6 +382,27 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 raise RuntimeError("The selected Python resolves Astrid code outside its installed product tree.")
         return product_root
 
+    @staticmethod
+    def _verify_local_timeline_schema(agent: Path, product_root: Path | None = None) -> None:
+        """Admit the source pin and, after installation, the product copy."""
+        relative = Path("astrid/core/timeline/schema/timeline-config.schema.json")
+        schema = agent / relative
+        if not schema.is_file() or schema.is_symlink():
+            raise ValueError("staged Agent is missing the local canonical timeline schema")
+        lock = read_json(agent / "runtime.lock.json")
+        files = lock.get("files") if isinstance(lock, dict) else None
+        pin = files.get(relative.as_posix()) if isinstance(files, dict) else None
+        if not isinstance(pin, dict) or pin.get("from") != "contract/schemas/timeline-config.schema.json":
+            raise ValueError("staged Agent has no approved Runtime source pin for the local timeline schema")
+        expected = pin.get("sha256")
+        if expected != "sha256:" + hashlib.sha256(schema.read_bytes()).hexdigest():
+            raise ValueError("staged Agent local timeline schema does not match its Runtime source pin")
+        if product_root is not None:
+            installed = product_root / relative
+            if (not installed.is_file() or installed.is_symlink()
+                    or "sha256:" + hashlib.sha256(installed.read_bytes()).hexdigest() != expected):
+                raise ValueError("installed timeline schema does not match the admitted schema")
+
     def workspace(self, version: Version | None, data: Path) -> dict:
         interpreter = version if version is not None and version.python.is_file() else None
         value = self.runtime(interpreter, data, "workspace", "inspect")
@@ -858,6 +879,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                          **({"repo": manifest["runtime"]["repo"]} if "repo" in manifest["runtime"] else {}))
         vibecomfy = source("vibecomfy", manifest["vibecomfy"]["sha"], folder / "v",
                           **({"repo": manifest["vibecomfy"]["repo"]} if "repo" in manifest["vibecomfy"] else {}))
+        self._verify_local_timeline_schema(agent)
         environment = folder / "py"
         self.run([self.uv, "venv", "--python", manifest["tools"]["python"]["version"], environment])
         python = venv_python(environment)
@@ -885,6 +907,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             schema_python = agent / "remotion" / "node_modules" / "@banodoco" / "timeline-schema" / "python"
             self.run([self.uv, "pip", "install", "--python", python, "--no-deps", schema_python])
         product_root = self._installed_product_root(python, env)
+        self._verify_local_timeline_schema(agent, product_root)
         # Python files execute from the selected venv's noneditable install.
         # Keep source-only resources explicit because they are not wheel data.
         env["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
