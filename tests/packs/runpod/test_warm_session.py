@@ -389,3 +389,19 @@ def test_park_and_restore_cannot_bypass_retained_expiry(warm_case, monkeypatch, 
         c.preparer._prepare_locked(SimpleNamespace(reference=c.case.reference), record, -1)
     with pytest.raises(RunPodWorkerOwnerError, match="active unexpired exact-task"):
         c.preparer._restore_locked(c.case.reference, record)
+
+
+def test_next_run_can_request_zero_idle_on_the_retained_owner(warm_case, monkeypatch):
+    c = warm_case
+    fake_retirement(c, monkeypatch)
+    owner = c.fresh(requested_idle_seconds=10)
+    owner.begin(c.case.reference)
+    retire(owner, c)
+    record = c.read()
+    record["paid_limits"]["invocation_id"] = "run-consent-2"
+    worker_preparation.write_target_record(c.case.path, record)
+    owner.begin(c.case.reference, requested_idle_seconds=0)
+    retire(owner, c)
+    assert c.read()["warm_session"]["idle_seconds"] == 0
+    c.clock.advance(0)
+    assert len(c.requests) == 1 and c.read()["state"] == "cleanup_complete"

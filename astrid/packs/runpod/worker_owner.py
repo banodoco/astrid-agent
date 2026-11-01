@@ -165,8 +165,9 @@ class RunPodWarmSessionOwner:
             raise RunPodWorkerOwnerError("retained warm-session custody is invalid or foreign")
         return dict(warm)
 
-    def begin(self, reference: Any) -> None:
+    def begin(self, reference: Any, *, requested_idle_seconds: float | None = None) -> None:
         """Lease only after R02 has recorded fresh paid consent for this run."""
+        selected_idle = self.idle if requested_idle_seconds is None else runpod_idle_seconds(requested=requested_idle_seconds)
         with self.lock, target_owner(self.preparer.claim_handle_path):
             record = self._read()
             self.preparer._binding(reference)
@@ -180,14 +181,14 @@ class RunPodWarmSessionOwner:
                 if invocation == previous["invocation_id"]:
                     raise RunPodWorkerOwnerError("fresh per-run paid consent is required")
                 expiry = min(expiry, previous["paid_expires_at"])
-            if self.clock() >= expiry or self.idle > disclosed_idle:
+            if self.clock() >= expiry or selected_idle > disclosed_idle:
                 raise RunPodWorkerOwnerError("paid lifetime or disclosed idle cannot cover retention")
             warm = {
                 "schema": "astrid.runpod.warm-session.v1", "identity": self.identity,
                 "generation": 1 if previous is None else previous["generation"] + 1,
                 "state": "active", "task_id": reference.task_id, "run_id": reference.run_id,
                 "deployment_digest": reference.digest(), "invocation_id": invocation,
-                "paid_expires_at": expiry, "idle_seconds": self.idle,
+                "paid_expires_at": expiry, "idle_seconds": selected_idle,
             }
             self._save(record, warm)
             self._arm(warm)

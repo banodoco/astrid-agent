@@ -158,3 +158,39 @@ def test_h3_provider_no_longer_collapses_error_to_absence(tmp_path, monkeypatch)
         provider.pod_exists("pod-exact")
     monkeypatch.setattr(preparation, "read_exact_pod", lambda *args: (404, None))
     assert provider.pod_exists("pod-exact") is False
+
+
+def test_real_lifecycle_delete404_fast_path_is_independently_verified(tmp_path, monkeypatch):
+    from runpod_lifecycle import api
+    path = tmp_path / "claim.json"
+    record = _claim_handle()
+    preparation.write_target_record(path, record)
+    calls = []
+
+    def listed(key):
+        calls.append("list")
+        return [_pod()] if calls.count("list") == 1 else []
+
+    def delete(url, **kwargs):
+        assert url.endswith("/pod-exact")
+        calls.append("delete404")
+        return httpx.Response(404)
+
+    def get(url, **kwargs):
+        assert url.endswith("/pod-exact")
+        calls.append("get404")
+        return httpx.Response(404)
+
+    async def quiesce(current):
+        return _quiescence(current)
+
+    monkeypatch.setattr(httpx, "delete", delete)
+    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setattr(api, "list_pods", listed)
+    monkeypatch.setattr(api, "get_network_volumes", lambda key: [_volume()])
+    monkeypatch.setattr(api, "reconcile_pod_cleanup", lambda *args, **kwargs: pytest.fail("DELETE404 returns early"))
+    result = asyncio.run(preparation._release_exact_target_after_quiescence(
+        SimpleNamespace(api_key="fake"), handle_path=path, attempt=record, quiesce_worker=quiesce,
+    ))
+    assert calls == ["list", "delete404", "get404", "list"]
+    assert result["cleanup"]["absence"]["exact_get_status"] == 404
