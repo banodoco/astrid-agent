@@ -114,12 +114,90 @@ def test_terminal_admission_receipt_skips_activation_but_retires_after_readback(
     ]
 
 
+def test_no_wait_activates_the_admitted_task_before_returning_its_receipt() -> None:
+    client = _Client([_task()])
+    wrapper = PreparedRunPodTaskClient(client, _Runtime(client.events))
+    kwargs = {**_kwargs(), "wait": False}
+    assert wrapper.invoke_result("vibecomfy.run", kind="executor", **kwargs) is client.first
+    assert [event[0] for event in client.events] == ["invoke", "show", "activate"]
+    assert client.events[-1] == ("activate", _task())
+
+
+def test_no_wait_terminal_receipt_retires_without_another_activation() -> None:
+    client = _Client([_task(state="succeeded")])
+    wrapper = PreparedRunPodTaskClient(client, _Runtime(client.events))
+    assert wrapper.invoke_result("vibecomfy.run", kind="executor", **{**_kwargs(), "wait": False}) is client.first
+    assert [event[0] for event in client.events] == ["invoke", "show", "retire"]
+
+
+@pytest.mark.parametrize("state,action", [("queued", "activate"), ("succeeded", "retire"),
+                                         ("failed", "retire"), ("cancelled", "retire")])
+def test_follow_owner_tick_reconciles_exact_task_without_invoking(state, action):
+    task = _task(state=state)
+    client = _Client([task])
+    wrapper = PreparedRunPodTaskClient(client, _Runtime(client.events))
+    wrapper.monitor_task(task)
+    assert client.events == [("show", "task-1"), (action, task)]
+
+
+def test_follow_owner_tick_refuses_changed_execution_binding():
+    client = _Client([_task(execution_binding={"target": {"kind": "runpod", "pod_id": "other"}})])
+    wrapper = PreparedRunPodTaskClient(client, _Runtime(client.events))
+    with pytest.raises(PreparedWorkerError, match="binding changed"):
+        wrapper.monitor_task(_task())
+    assert client.events == [("show", "task-1")]
+
+
+def test_expired_ordinary_claim_blocks_activation_before_components_or_credentials(tmp_path):
+    runtime = object.__new__(_ProductionPreparedTaskRuntime)
+    claim_path = tmp_path / "claim.json"
+    claim_path.write_text(json.dumps({
+        "state": "claimed", "ordinary_preparation": {},
+        "paid_limits": {"hourly_usd": 1.0, "max_usd": 1.0,
+                        "expires_at": "2000-01-01T00:00:00Z", "deadline": "2000-01-01T00:00:00Z"},
+    }))
+    runtime.selection = SimpleNamespace(claim_handle_path=claim_path)
+    runtime._components = lambda task: pytest.fail("expired claim reached provider or credential boundary")
+    with pytest.raises(PreparedWorkerError, match="remaining paid lifetime"):
+        runtime.ensure_for_task(_task())
+
+
+def test_prepared_selection_rejects_changed_claim_and_conflicting_mount(tmp_path: Path) -> None:
+    from astrid.packs.runpod.prepared_task import PreparedWorkerSelection, _claim_target
+
+    claim_path = tmp_path / "claim.json"
+    claim = {"state": "claimed", "pod_id": "pod-1", "provider_account_ref": "account-1",
+             "network_volume_id": "volume-1", "volume_mount_path": "/workspace"}
+    claim_path.write_text(json.dumps(claim))
+    selected = PreparedWorkerSelection(claim_path, tmp_path / "profile", tmp_path / "staging",
+                                       tmp_path / "journal", _claim_target(claim), {}, {})
+    target = dict(selected.target)
+    assert selected.execution_request(None)["target"]["mounts"][0]["target"] == "/workspace"
+    with pytest.raises(PreparedWorkerError, match="mount differs"):
+        selected.execution_request({"target": {**target, "mounts": [
+            {"source": "volume-1", "target": "/wrong", "read_only": False},
+        ]}})
+    claim_path.write_text(json.dumps({**claim, "pod_id": "other-pod"}))
+    with pytest.raises(PreparedWorkerError, match="identity changed"):
+        selected.execution_request(None)
+
+
+def test_existing_installed_runpod_transport_blocks_unverified_live_session() -> None:
+    from astrid.packs.runpod.installed_session import RunPodInstalledVibeComfySessionTransport
+    from astrid.packs.runpod.worker_session import ManagedSessionError
+
+    # This is the real production verification method with fake identity,
+    # demonstrating the missing capability without a provider or a process.
+    transport = RunPodInstalledVibeComfySessionTransport(SimpleNamespace(id="fake-pod"))
+    with pytest.raises(ManagedSessionError, match="lacks live installer session composite verification"):
+        transport._verify_live(SimpleNamespace(pod_id="fake-pod"), {})
+
+
 @pytest.mark.parametrize("capability_id,changes", [
     ("pack.render", {}),
     ("vibecomfy.run", {"execution_request": {"remote_activation_required": False}}),
-    ("vibecomfy.run", {"wait": False}),
 ])
-def test_non_prepared_or_non_waiting_calls_pass_through(
+def test_non_prepared_calls_pass_through(
     capability_id: str, changes: dict[str, object],
 ) -> None:
     client = _Client([])
@@ -287,7 +365,10 @@ def test_completed_explicit_release_receipt_resumes_without_provider_access(tmp_
         },
         "release_quiescence": quiescence,
         "cleanup": {"pod_id": "pod-1", "backup_volume_id": "volume-1",
-                    "backup_volume_preserved": True, "status": "terminated"},
+                    "backup_volume_preserved": True, "status": "terminated",
+                    "absence": {"provider_account_ref": "account-1", "pod_id": "pod-1",
+                                "exact_get_status": 404, "account_list_succeeded": True,
+                                "account_list_absent": True}},
         "cleanup_status": "complete", "reconciliation_required": False,
     }
     claim_path.write_text(json.dumps(released), encoding="utf-8")
@@ -371,14 +452,33 @@ def test_restart_retires_pre_readiness_generation_before_replacement(tmp_path: P
     assert events == ["retire-uncommitted", "park", "relinquish-local", "activate"]
 
 
-def test_restart_reconciles_ready_generation_without_rotating_or_replacing_it(tmp_path: Path):
+@pytest.mark.parametrize("state", ["ready", "committed"])
+def test_restart_reconciles_ready_generation_without_rotating_or_replacing_it(tmp_path: Path, state: str):
     managed = {
-        "state": "ready",
+        "state": state,
         "activation_qualification": {"task_id": "task-1", "run_id": "run-1", "activation_id": "old"},
     }
     runtime, events = _production_runtime(tmp_path, managed)
     runtime.ensure_for_task(_task())
     assert events == ["restore-activation", "reconcile-activation"]
+
+
+def test_no_wait_then_same_host_follow_reconciles_without_second_submission(tmp_path):
+    runtime, events = _production_runtime(tmp_path, {"state": "stopped"})
+    client = _Client([_task(), _task()])
+    first = PreparedRunPodTaskClient(client, runtime)
+    assert first.invoke_result("vibecomfy.run", kind="executor", **{**_kwargs(), "wait": False}) is client.first
+    assert events == ["restore-local", "park", "relinquish-local", "activate"]
+    # The activation owner persists its qualification before no-wait returns.
+    # A fresh same-host owner tick recovers that exact generation.
+    qualification = {"task_id": "task-1", "run_id": "run-1", "activation_id": "activation-1"}
+    recovered, recovered_events = _production_runtime(tmp_path, {
+        "state": "committed", "activation_qualification": qualification,
+    })
+    follow = PreparedRunPodTaskClient(client, recovered)
+    follow.monitor_task(_task())
+    assert recovered_events == ["restore-activation", "reconcile-activation"]
+    assert len([event for event in client.events if event[0] == "invoke"]) == 1
 
 
 def test_local_worker_is_not_restarted_when_runtime_generation_is_unobservable():
@@ -401,14 +501,14 @@ def test_installed_attachment_cannot_forge_quiescence_or_transfer_provider_relea
     import asyncio
     from dataclasses import asdict, replace
     from astrid.packs.runpod.worker_preparation import write_target_record
-    from astrid.packs.runpod.worker_session import ManagedSessionError
+    from astrid.packs.runpod.worker_owner import RunPodWorkerOwnerError
     from tests.test_runpod_managed_worker_session import _owner
 
     case = release_case
     session_owner, transport, selected, _ = _owner()
     receipt = session_owner.start(selected)
-    selected = replace(selected, session_ref="vibecomfy-h3")
-    receipt = replace(receipt, session_ref="vibecomfy-h3")
+    selected = replace(selected, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
+    receipt = replace(receipt, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
     record = {**case.record, "managed_session": {
         "schema": "astrid.runpod.managed-session.v1",
         "claim_operation_id": case.record["operation_id"],
@@ -419,7 +519,7 @@ def test_installed_attachment_cannot_forge_quiescence_or_transfer_provider_relea
     preparer = case.fresh()
     preparer.session_owner = session_owner
     transport.calls.clear()
-    with pytest.raises(ManagedSessionError, match="original supervisor stop"):
+    with pytest.raises(RunPodWorkerOwnerError, match="original installation supervisor stop"):
         asyncio.run(preparer.release(case.reference, runtime_owner=case.runtime))
     saved = json.loads(case.path.read_bytes())
     assert "delete" not in case.calls
