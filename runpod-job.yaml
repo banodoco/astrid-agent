@@ -1,0 +1,38 @@
+stream: QUAL
+image: default
+cpu: {vcpu: 8}
+needs: {python: '3.11', node: '20.19'}
+steps:
+  - run: |
+      set -Eeuo pipefail
+      export G01_ROOT=/workspace/g01-subsets
+      export G01_OUT=/workspace/out
+      mkdir -p "$G01_ROOT" "$G01_OUT" "$G01_ROOT/scratch"
+      export TMPDIR="$G01_ROOT/scratch" TMP="$G01_ROOT/scratch" TEMP="$G01_ROOT/scratch"
+      exec >"$G01_OUT/setup-run.log" 2>&1
+      finish() {
+        code=$?
+        printf 'step_inner_exit=%s\n' "$code" > "$G01_OUT/step-exit.txt"
+        cd "$G01_OUT"
+        sha256sum -- * 2>/dev/null > "$G01_ROOT/hosted-hashes.sha256" || true
+        cp "$G01_ROOT/hosted-hashes.sha256" "$G01_OUT/hosted-hashes.sha256"
+      }
+      trap finish EXIT
+      df -Pk "$G01_ROOT"
+      git clone -q https://github.com/banodoco/astrid-agent.git "$G01_ROOT/support-source"
+      git -C "$G01_ROOT/support-source" checkout -q c2c4ac6a18d793faf02c9bab0a383c40e2e448fd
+      test "$(git -C "$G01_ROOT/support-source" rev-parse HEAD)" = c2c4ac6a18d793faf02c9bab0a383c40e2e448fd
+      for item in 'agent banodoco/astrid-agent ddd5d278796641901bd11508863a8ea21e6c9697' 'runtime banodoco/astrid-runtime 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' 'lifecycle banodoco/runpod-lifecycle 96360a27a53c4608f780f7b370f747a2aa3c7ca8'; do
+        read -r name repo pin <<< "$item"
+        git init -q "$G01_ROOT/$name"
+        git -C "$G01_ROOT/$name" fetch -q --depth=1 "https://github.com/$repo.git" "$pin"
+        git -C "$G01_ROOT/$name" checkout -q --detach FETCH_HEAD
+      done
+      python3.11 -m venv "$G01_ROOT/.venv"
+      "$G01_ROOT/.venv/bin/python" -m pip install --upgrade pip
+      "$G01_ROOT/.venv/bin/python" -m pip install 'setuptools==80.9.0' 'wheel==0.46.3' build -e "$G01_ROOT/agent" -e "$G01_ROOT/runtime/packages/python" -e "$G01_ROOT/lifecycle" -e "$G01_ROOT/runtime[test]"
+      "$G01_ROOT/.venv/bin/python" "$G01_ROOT/support-source/ci/g01-subsets-r4-r1/run_subsets.py"
+    timeout: 60m
+download:
+  - from: /workspace/out/
+    to: /home/user/merge/ws/M-QUAL/queue/running/G-01-Q-SUBSETS-R4-R1/runpod/out/
