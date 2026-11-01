@@ -827,6 +827,15 @@ def _finish_semantic(data: Path, before: dict) -> dict:
     return _semantic_after(data, before)
 
 
+def _verify_recovery_journal(pending: Mapping[str, Any], terminal: Mapping[str, Any]) -> str:
+    """Require the terminal record to belong to the interrupted operation."""
+    operation_id = pending.get("operation_id")
+    if (not operation_id or terminal.get("operation_id") != operation_id
+            or terminal.get("step") not in {"complete", "rolled_back"}):
+        raise ValueError("recovery did not complete the interrupted operation")
+    return operation_id
+
+
 def run_interruption(
     root: Path,
     fixture: Path,
@@ -886,6 +895,8 @@ def run_interruption(
         selected = current(root)
         if selected is None or selected.root != old.root:
             raise RuntimeError("interruption recovery did not reselect release-0")
+        terminal = json.loads((root / "update-transaction.json").read_text(encoding="utf-8"))
+        _verify_recovery_journal(pending, terminal)
         terminal_identity = _identity(old, "release0", backend.live, failure.RELEASE0_REFS)
         result = {
             "status": "pass",
@@ -894,9 +905,10 @@ def run_interruption(
             "injected": injected,
             "first_request": {"interrupted": True, "journal_state": "switched"},
             "recovery_request": {"explicit": True, "operation_id": operation_id},
-            "terminal_state": json.loads((root / "update-transaction.json").read_text())["step"],
+            "terminal_state": terminal["step"],
+            "terminal_operation_id": terminal["operation_id"],
             "duplicate_operation": False,
-            "recovery_verified": pending["operation_id"] == operation_id,
+            "recovery_verified": terminal["operation_id"] == operation_id,
             "terminal_identity": terminal_identity,
             "semantic_data": _finish_semantic(data, before),
             "update_mutation": _bytes_snapshot(

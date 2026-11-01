@@ -23,6 +23,19 @@ from tests.failure_mode_fixtures import PROVISIONAL_CANDIDATE
 FIXTURE = Path(__file__).parent / "fixtures" / "release0"
 
 
+def test_recovery_requires_the_same_operation_in_a_terminal_journal() -> None:
+    pending = {"operation_id": "original", "step": "switched"}
+    for step in ("complete", "rolled_back"):
+        assert executor_module._verify_recovery_journal(
+            pending, {"operation_id": "original", "step": step}
+        ) == "original"
+    for terminal in ({"operation_id": "other", "step": "complete"},
+                     {"operation_id": "original", "step": "switched"},
+                     {"step": "complete"}):
+        with pytest.raises(ValueError, match="interrupted operation"):
+            executor_module._verify_recovery_journal(pending, terminal)
+
+
 def test_executor_runs_real_boundaries_but_local_receipt_is_not_hosted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
