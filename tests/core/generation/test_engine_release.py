@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -12,8 +13,14 @@ from pathlib import Path
 import pytest
 
 from astrid.core.generation import engine_release as release
+from tests._checkouts import (
+    agent_checkout,
+    runpod_checkout,
+    runpod_lifecycle_checkout,
+    runtime_checkout,
+)
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = agent_checkout()
 BASES = {
     'astrid': 'e9340851c165a157a2dbdd4764cc446e44e3b69f',
     'astrid-runtime': '470f6f4f49de3318e0e57cda19ca6dd666cd5cc4',
@@ -22,17 +29,42 @@ BASES = {
 }
 
 
+def test_checkout_resolvers_name_required_overrides_when_packages_are_unavailable(monkeypatch):
+    import tests._checkouts as checkouts
+
+    cases = (
+        (checkouts.agent_checkout, 'ASTRID_AGENT_CHECKOUT'),
+        (lambda: checkouts.runtime_checkout(require_git=True), 'ASTRID_RUNTIME_CHECKOUT'),
+        (checkouts.runpod_lifecycle_checkout, 'ASTRID_RUNPOD_LIFECYCLE_CHECKOUT'),
+        (checkouts.runpod_checkout, 'ASTRID_RUNPOD_CHECKOUT'),
+    )
+    monkeypatch.setattr(checkouts.importlib.util, 'find_spec', lambda _name: None)
+    for resolver, env_var in cases:
+        monkeypatch.delenv(env_var, raising=False)
+        with pytest.raises(AssertionError, match=re.escape(env_var)):
+            resolver()
+
+
 @pytest.fixture(scope='module')
 def wheel_inputs(tmp_path_factory):
     work = tmp_path_factory.mktemp('whole-wheel-inputs')
-    local = {'astrid': REPO, 'astrid-runtime': REPO.parent / 'runtime',
-             'runpod-lifecycle': REPO.parent / 'lifecycle', 'runpod': REPO.parent / 'sdk'}
-    conventional = {'astrid-runtime': 'astrid-runtime', 'runpod-lifecycle': 'runpod-lifecycle',
-                    'runpod': 'runpod-python'}
-    for name in conventional:
-        if not (local[name] / 'pyproject.toml').exists():
-            local[name] = REPO.parent / conventional[name]
-    assert all((p / 'pyproject.toml').is_file() for p in local.values()), 'frozen sibling source checkouts required'
+    local = {
+        'astrid': REPO,
+        'astrid-runtime': runtime_checkout(require_git=True),
+        'runpod-lifecycle': runpod_lifecycle_checkout(),
+        'runpod': runpod_checkout(),
+    }
+    required_env = {
+        'astrid': 'ASTRID_AGENT_CHECKOUT',
+        'astrid-runtime': 'ASTRID_RUNTIME_CHECKOUT',
+        'runpod-lifecycle': 'ASTRID_RUNPOD_LIFECYCLE_CHECKOUT',
+        'runpod': 'ASTRID_RUNPOD_CHECKOUT',
+    }
+    for name, checkout in local.items():
+        assert (checkout / 'pyproject.toml').is_file(), (
+            f"The {name} source checkout must contain pyproject.toml; "
+            f"set {required_env[name]} to that checkout."
+        )
     wheel_dir = work / 'wheels'
     wheel_dir.mkdir()
     env = dict(os.environ, UV_CACHE_DIR=str(work / 'uv-cache'),
