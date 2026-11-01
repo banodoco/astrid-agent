@@ -202,12 +202,20 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
             assert len(data) == asset["size"] == source.stat().st_size
             expected = json.loads(comfy.expected_path.read_text())
             expected["basename"] = Path(asset["member"]).name
-            workflow_inputs = json.loads(spec["spec"]["inputs"]["workflow_inputs"])
-            expected["generated_seconds"] = workflow_inputs["duration"]
+            outputs = daemon.service.managed_output_page(binding["producer_task_id"])["items"]
+            (compiled,) = [row for row in outputs if row["output_port"] == "compilation"
+                           and row["attempt_id"] == binding["producer_attempt_id"]]
+            compilation_bytes = daemon.service.cas.path_for(compiled["object_id"].removeprefix("sha256:")).read_bytes()
+            assert "sha256:" + hashlib.sha256(compilation_bytes).hexdigest() == compiled["object_id"]
+            compilation = json.loads(compilation_bytes)
+            assert "sha256:" + compilation["managed_assets"]["sha256"] == binding["object_id"]
+            timing = compilation["continuation_timing"]
+            expected["generated_seconds"] = timing["expected_graph_output_frames"] / timing["fps"]
             comfy.expected_path.write_text(json.dumps(expected), encoding="utf-8")
             (tmp_path / "h3-compiled-source-binding.json").write_text(json.dumps({
                 "task_id": result["task_id"], "managed_assets": binding, "source": asset,
                 "generated_seconds": expected["generated_seconds"],
+                "compilation": compiled["object_id"], "continuation_timing": timing,
             }, indent=2), encoding="utf-8")
         return result
 
