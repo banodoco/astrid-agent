@@ -11,12 +11,13 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping
+from importlib import resources
 from pathlib import Path
 
 def _policy():
     """Load the closed, shipped predecessor list; malformed data refuses admission."""
     try:
-        rows = json.loads(Path(__file__).with_name("predecessors.json").read_text(encoding="utf-8"))
+        rows = json.loads(resources.files("astrid.installer").joinpath("predecessors.json").read_text(encoding="utf-8"))
         if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
             return None
         return rows[0]
