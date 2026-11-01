@@ -51,7 +51,7 @@ dev = [
     "mutagen>=1.47",
     # The RunPod claim script is exercised by unit and Darwin CI tests. Pin
     # the lifecycle implementation because it is not published on PyPI.
-    "runpod-lifecycle @ git+https://github.com/banodoco/runpod-lifecycle.git@db79345536985c701b7aff2eb5eec36667aae204",
+    "runpod-lifecycle @ git+https://github.com/banodoco/runpod-lifecycle.git@96360a27a53c4608f780f7b370f747a2aa3c7ca8",
     "mypy==1.17.0",
     "pytest==9.0.2",
     "pytest-cov==7.1.0",

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -37,7 +38,7 @@ from typing import Any
 from astrid.core.cli.domain_product import family_parsers
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
-EXCLUDED = {("preferences", "checkin"), ("preferences", "edit"), ("tasks", "follow")}
+EXCLUDED = {("preferences", "checkin"), ("preferences", "edit")}
 TIMEOUT = float(os.environ.get("ASTRID_MCP_TIMEOUT", "900"))
 
 
@@ -75,6 +76,8 @@ def _schema(action: argparse.Action) -> dict[str, Any]:
         item = {"type": "integer"}
     elif action.type is float:
         item = {"type": "number"}
+    elif getattr(action.type, "__name__", "") == "_positive_float":
+        item = {"type": "number", "exclusiveMinimum": 0}
     if action.choices is not None:
         item["enum"] = [c for c in action.choices]
     if isinstance(action, argparse._AppendAction) or action.nargs in ("*", "+") or isinstance(action.nargs, int) and action.nargs > 1:
@@ -229,12 +232,19 @@ def _text(text: str, *, error: bool = False, structured: Any = None) -> dict[str
     return result
 
 
-def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess | dict[str, Any]:
+def _run(argv: list[str], cwd: Path, *, timeout: float | None = None,
+         install: bool = False) -> subprocess.CompletedProcess | dict[str, Any]:
+    if timeout is None:
+        timeout = TIMEOUT
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT, cwd=cwd,
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd,
                               stdin=subprocess.DEVNULL, env=_astrid_env())
     except subprocess.TimeoutExpired:
-        return _text(f"{' '.join(argv[-4:])} timed out after {TIMEOUT:.0f}s", error=True)
+        if install:
+            payload = {"error": {"code": "ENGINE_INSTALL_STILL_RUNNING_OR_TIMED_OUT",
+                                 "message": "Install outcome is uncertain. Check astrid engines status and the .astrid-engine/install.json receipt."}}
+            return _text(json.dumps(payload), error=True, structured=payload)
+        return _text(f"{' '.join(argv[-4:])} timed out after {timeout:.0f}s", error=True)
 
 
 def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -283,7 +293,14 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
             return _text(f"invalid arguments: {exc}", error=True)
         executable = Path(sys.executable).with_name("astrid-tools")
         command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
-        done = _run([*command, *argv], Path.cwd())
+        if tool["path"] == ("engines", "install"):
+            deadline = arguments.get("deadline")
+            if (isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+                    or not math.isfinite(deadline) or deadline <= 0 or deadline > 604800):
+                deadline = 3600
+            done = _run([*command, *argv], Path.cwd(), timeout=deadline + 120, install=True)
+        else:
+            done = _run([*command, *argv], Path.cwd())
         if isinstance(done, dict):
             return done
         result = _cli_result(done)
@@ -508,7 +525,14 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"document": document,
               "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
              ["document", "idempotency_key"], kind="timeline_document", command="publish"),
-    ]), **_generation_tools()}
+    ]), **_generation_tools(), **_engine_install_tools()}
+
+
+def _engine_install_tools():
+    from astrid.core.engine_cli import _parser
+
+    tools = _tools_for_parsers({'engines': _parser()})
+    return {'engines_install': tools['engines_install']}
 
 
 def _generation_tools():

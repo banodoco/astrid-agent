@@ -1,4 +1,4 @@
-"""Attach one compiled H3 task to an already claimed RunPod worker.
+"""Attach one ordinary VibeComfy task to an already claimed RunPod worker.
 
 This is a thin caller adapter: Runtime still admits and owns the task receipt,
 the Runtime deployment binding supplies task identity, and the RunPod P1/P2
@@ -13,6 +13,7 @@ import json
 import os
 import stat
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
@@ -56,12 +57,36 @@ def _claim_target(claim: Mapping[str, Any]) -> dict[str, Any]:
     storage = {"network_volume_id": claim["network_volume_id"]}
     if isinstance(claim.get("network_volume_name"), str) and claim["network_volume_name"]:
         storage["name"] = claim["network_volume_name"]
-    return {
+    target = {
         "kind": "runpod",
         "pod_id": claim["pod_id"],
         "provider_account_ref": claim["provider_account_ref"],
         "storage": storage,
     }
+    mount_path = claim.get("volume_mount_path")
+    if mount_path is not None:
+        if (not isinstance(mount_path, str) or not mount_path.startswith("/")
+                or ".." in Path(mount_path).parts):
+            raise PreparedWorkerError("P1 claim has an invalid network volume mount")
+        target["mounts"] = [{"source": claim["network_volume_id"], "target": mount_path, "read_only": False}]
+    return target
+
+
+def _require_paid_lifetime(claim: Mapping[str, Any], *, now: datetime | None = None) -> None:
+    """Ordinary preparation cannot authorize activation past its paid bounds."""
+    if "ordinary_preparation" not in claim:
+        return
+    from .target_selection import _number, _utc
+
+    try:
+        limits = claim["paid_limits"]
+        _number(limits["hourly_usd"], "hourly USD rate")
+        _number(limits["max_usd"], "USD cap")
+        expires = min(_utc(limits["expires_at"]), _utc(limits["deadline"]))
+        if (now or datetime.now(timezone.utc)) >= expires:
+            raise ValueError()
+    except Exception:
+        raise PreparedWorkerError("ordinary prepared claim has no verified remaining paid lifetime") from None
 
 
 @dataclass(frozen=True)
@@ -78,11 +103,14 @@ class PreparedWorkerSelection:
     def execution_request(
         self, supplied: Mapping[str, Any] | None
     ) -> dict[str, Any]:
-        """Bind H3's ordinary request to this exact claim and defer claims until activation."""
+        """Bind an ordinary request to this exact claim and defer claims until activation."""
 
         claim = _read_mapping(self.claim_handle_path, label="P1 claim")
         if claim.get("state") != "claimed":
-            raise PreparedWorkerError("prepared H3 tasks require an actively claimed RunPod target")
+            raise PreparedWorkerError("prepared tasks require an actively claimed RunPod target")
+        _require_paid_lifetime(claim)
+        if _claim_target(claim) != dict(self.target):
+            raise PreparedWorkerError("P1 claim identity changed after worker selection")
         request = dict(normalize_execution_request(supplied) or {}) if supplied else {}
         target = dict(self.target)
         if request.get("target") is not None:
@@ -91,17 +119,19 @@ class PreparedWorkerSelection:
             if (existing.get("kind") != "runpod"
                     or existing.get("pod_id") != expected["pod_id"]
                     or existing.get("provider_account_ref") != expected["provider_account_ref"]):
-                raise PreparedWorkerError("supplied H3 target differs from the exact P1 claim")
+                raise PreparedWorkerError("supplied target differs from the exact P1 claim")
             storage = existing.get("storage")
             if (not isinstance(storage, Mapping)
                     or storage.get("network_volume_id", storage.get("volume_id", storage.get("id")))
                     != expected["storage"]["network_volume_id"]):
-                raise PreparedWorkerError("supplied H3 target does not pin the exact P1 network volume")
+                raise PreparedWorkerError("supplied target does not pin the exact P1 network volume")
             expected_volume_name = expected["storage"].get("name")
             supplied_volume_name = storage.get("name")
             if (supplied_volume_name is not None and expected_volume_name is not None
                     and supplied_volume_name != expected_volume_name):
-                raise PreparedWorkerError("supplied H3 target volume name differs from the exact P1 claim")
+                raise PreparedWorkerError("supplied target volume name differs from the exact P1 claim")
+            if existing.get("mounts") is not None and existing["mounts"] != expected.get("mounts"):
+                raise PreparedWorkerError("supplied target mount differs from the exact P1 claim")
             # Keep the P1 claim's canonical target (including its optional
             # volume label) so admission, selection, and Runtime binding use
             # one byte-for-byte representation after identity is validated.
@@ -213,12 +243,9 @@ class PreparedRunPodTaskClient:
         prepared = isinstance(request, Mapping) and request.get("remote_activation_required") is True
         if capability_id != "vibecomfy.run" or not prepared:
             return self._client.invoke_result(capability_id, kind=kind, **kwargs)
-        if kwargs.get("wait") is not True:
-            return self._client.invoke_result(capability_id, kind=kind, **kwargs)
-
         recovery_path = kwargs.get("recovery_path")
         if recovery_path is None:
-            raise PreparedWorkerError("prepared H3 execution requires the ordinary SDK recovery receipt path")
+            raise PreparedWorkerError("prepared execution requires the ordinary SDK recovery receipt path")
         first_args = dict(kwargs)
         first_args["wait"] = False
         first = self._client.invoke_result(capability_id, kind=kind, **first_args)
@@ -234,6 +261,10 @@ class PreparedRunPodTaskClient:
         if state not in {"succeeded", "completed", "failed", "cancelled", "canceled"}:
             self._runtime.ensure_for_task(task)
             activated = True
+        if kwargs.get("wait") is not True:
+            if not activated:
+                self._runtime.retire_after_task(task)
+            return first
 
         finish_args = dict(kwargs)
         finish_args["wait"] = True
@@ -251,6 +282,24 @@ class PreparedRunPodTaskClient:
         }):
             self._runtime.retire_after_task(settled)
         return result
+
+    def monitor_task(self, task: Mapping[str, Any]) -> None:
+        """A10 owner tick: reconcile/retire the same admission without invoking it.
+
+        The SDK restores workflow/source inputs and this bound client from its
+        existing recovery receipt before installing this callback on follow.
+        """
+        task_id, run_id = task.get("task_id"), task.get("run_id")
+        if not isinstance(task_id, str) or not isinstance(run_id, str):
+            raise PreparedWorkerError("prepared owner monitor requires exact task/run identity")
+        current = self._get_exact_task(task_id, run_id, "vibecomfy.run")
+        if current.get("execution_binding") != task.get("execution_binding"):
+            raise PreparedWorkerError("prepared owner monitor binding changed")
+        state = str(current.get("state") or current.get("status") or "").casefold()
+        if state in {"succeeded", "completed", "failed", "cancelled", "canceled"}:
+            self._runtime.retire_after_task(current)
+        else:
+            self._runtime.ensure_for_task(current)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
@@ -786,10 +835,11 @@ class _ProductionPreparedTaskRuntime:
 
     def ensure_for_task(self, task: Mapping[str, Any]) -> None:
         self._task = dict(task)
-        reference, preparer, runtime_owner, launcher, _pod = self._components(task)
         claim = _read_mapping(self.selection.claim_handle_path, label="P1 claim")
         if claim.get("state") != "claimed":
             raise PreparedWorkerError("prepared activation requires the same active P1 claim")
+        _require_paid_lifetime(claim)
+        reference, preparer, runtime_owner, launcher, _pod = self._components(task)
         managed = claim.get("managed_worker")
         if isinstance(managed, Mapping) and managed.get("state") not in {"stopped", "released"}:
             state = str(managed.get("state") or "")

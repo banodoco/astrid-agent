@@ -185,7 +185,7 @@ def test_shipped_graph_assets_match_indexed_recipe_lock(model, mode, template):
         assert asset['url'] == f'https://huggingface.co/{row.repository}/resolve/{row.revision}/{row.path}'
 
 
-def test_generate_pin_and_h3_pin_are_independent():
+def test_generate_and_h3_share_vibecomfy_pin():
     from astrid.core.generation.engine_recipe import load_recipe
 
     generate = load_recipe('vibecomfy', 'windows-x86_64-cu130')
@@ -195,15 +195,17 @@ def test_generate_pin_and_h3_pin_are_independent():
     assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
     assert generate_sources['vibecomfy'] == (
-        'https://github.com/AstridPseudon/vibecomfy-proof', '3bebae39655eb460454885040be4d3aefaf2ef31')
+        'https://github.com/banodoco/VibeComfy.git', '2967033970cbb5884651c9565265778482d3b44e')
     assert h3_sources['vibecomfy'] == (
-        'https://github.com/peteromallet/VibeComfy.git', 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6')
+        'https://github.com/banodoco/VibeComfy.git', '2967033970cbb5884651c9565265778482d3b44e')
     assert {k: v for k, v in generate_sources.items() if k not in {'comfyui', 'vibecomfy'}} == {
         k: v for k, v in h3_sources.items() if k not in {'comfyui', 'vibecomfy'}}
 
     root = Path(__file__).parents[4] / 'astrid/packs/vibecomfy'
     env = json.loads((root / 'environment.windows-nvidia.json').read_text())
     assert env['pins']['sha256'] == hashlib.sha256((root / 'pins.json').read_bytes()).hexdigest()
+    legacy_pin = json.loads((root / 'pins.json').read_text())['sources']['vibecomfy']
+    assert (legacy_pin['repository'], legacy_pin['revision']) == generate_sources['vibecomfy']
     requirements = (root / 'requirements.windows-nvidia.txt').read_text().splitlines()
     constraints = generate.environments[0].requirements.constraints
     for requirement in ('comfy-kitchen==0.2.40', 'comfy-aimdo==0.6.0'):

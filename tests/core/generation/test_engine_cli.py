@@ -45,8 +45,8 @@ def test_packaged_vibecomfy_checkout_supports_generate_list_json(tmp_path):
     repo = Path(__file__).resolve().parents[3]
     recipe = load_recipe('comfyui', 'linux-x86_64-cu130')
     source = next(s for s in recipe.sources if s.name == 'vibecomfy')
-    assert source.pin.repository == 'https://github.com/AstridPseudon/vibecomfy-proof'
-    assert source.pin.revision == '3bebae39655eb460454885040be4d3aefaf2ef31'
+    assert source.pin.repository == 'https://github.com/banodoco/VibeComfy.git'
+    assert source.pin.revision == '2967033970cbb5884651c9565265778482d3b44e'
     source_checkout = Path(os.environ['ASTRID_VIBECOMFY_CHECKOUT'])
     packaged = tmp_path / 'packaged-vibecomfy'
     for argv in (
@@ -94,6 +94,39 @@ finally:
     templates = [row for row in rows if row['source'] == 'ready-template']
     assert any(row['id'] == 'audio/ace_step_1_5_t2a_song' for row in templates)
     assert all(Path(row['template']).is_relative_to(packaged) for row in templates)
+
+
+@pytest.fixture(autouse=True)
+def ample_disk(monkeypatch):
+    monkeypatch.setattr(engine_cli, '_disk_anchor', lambda root: ('/', 1, 1, 10**15))
+
+
+@pytest.mark.parametrize(('free', 'status'), [(10**15, 'ok'), (1, 'blocked')])
+def test_install_disk_check_is_read_only_on_refusal(tmp_path, monkeypatch, capsys, free, status):
+    root = tmp_path / 'new' / 'engine'
+    from astrid.core.generation import engine_runner
+    monkeypatch.setattr(engine_cli, '_disk_anchor', engine_runner._disk_anchor)
+    monkeypatch.setattr(engine_runner.os, 'fstatvfs', lambda fd: SimpleNamespace(f_bavail=free, f_frsize=1))
+    seen = []
+    monkeypatch.setattr(engine_cli, 'install_engine', lambda *a, **kw: seen.append('install') or InstallResult('installed'))
+    def backend(**kwargs):
+        seen.append('backend')
+        return object(), object()
+    monkeypatch.setattr('astrid.core.generation.engine_local_endpoint.record_engine_root', lambda *a: None)
+    rc, out, err = invoke(['install', 'vibecomfy-h3', '--root', str(root)], capsys, backend_factory=backend)
+    if status == 'blocked':
+        error = json.loads(err)['error']
+        assert rc == 1 and not out and not seen and not root.exists()
+        assert error['code'] == 'ENGINE_INSTALL_INSUFFICIENT_DISK'
+        assert error['free_bytes'] == free and error['required_bytes'] > free
+        assert '--root' in error['message']
+    else:
+        assert rc == 0 and seen == ['backend', 'install'] and not err
+    rc, out, err = invoke(['install', 'vibecomfy-h3', '--root', str(root), '--dry-run'], capsys)
+    disk = json.loads(out)['disk_check']
+    assert rc == 0 and not err and disk == {'required_bytes': disk['required_bytes'], 'free_bytes': free,
+                                           'status': status, 'basis': 'locked_model_bytes'}
+    assert disk['required_bytes'] > 0 and not root.exists()
 
 
 def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
