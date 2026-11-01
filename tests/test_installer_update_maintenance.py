@@ -191,7 +191,7 @@ def test_missing_bundle_and_foreign_or_unsafe_paths_never_start_apply(tmp_path, 
     with pytest.raises(maintenance.MaintenanceRefusal) as unsafe:
         maintenance.plan_update_recovery(root, data)
     assert unsafe.value.reason == "unsafe-path"
-    assert (root / "install.json").read_bytes() != marker  # only test setup changed it
+    assert (root / "install.json").read_bytes() == marker
     assert (root / "update-transaction.json").read_bytes() == journal
 
 
@@ -215,6 +215,33 @@ def test_interrupted_and_partial_copy_leave_originals_and_use_a_new_attempt(tmp_
     assert interrupted_failure.value.reason == "copy-interrupted"
     _assert_source_unchanged(root, data, selection, marker, journal, data_files)
     assert calls and (calls[0] / "partial").exists()
+
+    monkeypatch.setattr(maintenance, "_copy_tree", original_copy)
+    result = maintenance.apply_update_recovery(root, data, plan["plan_sha256"], backend=backend)
+    assert result["state"] == "restored-working-installation"
+    assert "attempt-2" in result["receipt_path"]
+
+
+def test_partial_copy_verification_refuses_without_clearing_then_resumes(tmp_path, monkeypatch):
+    root, data, selection, journal, backend = _fixture(tmp_path, monkeypatch)
+    marker = (root / "install.json").read_bytes()
+    data_files = _files(data)
+    plan = maintenance.plan_update_recovery(root, data)
+    original_copy = maintenance._copy_tree
+    copies = 0
+
+    def partial_copy(source, destination):
+        nonlocal copies
+        copies += 1
+        original_copy(source, destination)
+        if copies == 2:
+            (destination / "partial-copy-marker").write_text("not a verified data copy", encoding="utf-8")
+
+    monkeypatch.setattr(maintenance, "_copy_tree", partial_copy)
+    with pytest.raises(maintenance.MaintenanceRefusal) as partial:
+        maintenance.apply_update_recovery(root, data, plan["plan_sha256"], backend=backend)
+    assert partial.value.reason == "copy-verification-failed"
+    _assert_source_unchanged(root, data, selection, marker, journal, data_files)
 
     monkeypatch.setattr(maintenance, "_copy_tree", original_copy)
     result = maintenance.apply_update_recovery(root, data, plan["plan_sha256"], backend=backend)
