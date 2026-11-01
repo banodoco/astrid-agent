@@ -202,9 +202,10 @@ def _dispatch_doctor(args: list[str]) -> int:
     parsed = parser.parse_args(args)
     support_root = None
     warning = None
+    from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
+
     try:
         from astrid.core.gateway.diagnostics import collect_diagnostic
-        from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
         from astrid.sdk.storage_root import resolve_runtime_data_root
 
         support_root = resolve_runtime_data_root()
