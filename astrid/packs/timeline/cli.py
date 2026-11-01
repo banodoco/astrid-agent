@@ -129,6 +129,7 @@ def _add_json_flag(subparser: argparse.ArgumentParser, *, default: bool = True) 
     subparser.add_argument(
         "--json",
         action=_JsonFlag,
+        nargs=0,
         default=default,
         help=(
             "Print the exact SDK envelope (ok/data/error/receipt/idempotency_key)."
