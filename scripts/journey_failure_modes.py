@@ -18,12 +18,12 @@ from pathlib import Path, PurePosixPath
 from typing import Final, Mapping
 
 if __package__:
-    from .journey_matrix import RELEASE1_MATRIX
+    from .journey_matrix import M4_6_MATRIX
 else:
     try:
-        from journey_matrix import RELEASE1_MATRIX
+        from journey_matrix import M4_6_MATRIX
     except ModuleNotFoundError:  # importlib-loaded tests run from the repository root
-        from scripts.journey_matrix import RELEASE1_MATRIX
+        from scripts.journey_matrix import M4_6_MATRIX
 
 
 SCHEMA_VERSION: Final = 1
@@ -58,7 +58,7 @@ RUNNER_PROVENANCE: Final = {
     "ubuntu-24.04": ("linux", "Linux", "ubuntu24"),
     "windows-2022": ("windows", "Windows", "win22"),
 }
-SLOT_CONTRACTS: Final = {row["job_id"]: dict(row) for row in RELEASE1_MATRIX}
+SLOT_CONTRACTS: Final = {row["job_id"]: dict(row) for row in M4_6_MATRIX}
 REQUIRED_SLOT_IDS: Final = tuple(SLOT_CONTRACTS)
 
 

@@ -181,8 +181,15 @@ M4_4B_LOCAL_SMOKE: Final = {
 # job_id for each OS.  M4-6 reuses the nine Release-1 ownership/OS tuples.
 M4_5_MATRIX: Final = RELEASE2_SCENARIOS
 M4_5_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in M4_5_MATRIX)
-M4_6_MATRIX: Final = RELEASE1_MATRIX
-M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
+# Freeze the legacy executor's ownership/OS slots independently of additional
+# Release-1 scenario rows. The row contracts still come from the one inventory.
+M4_6_SLOT_IDS: Final = (
+    "direct-macos", "direct-linux", "direct-windows",
+    "pinokio-backend-macos", "pinokio-backend-linux", "pinokio-backend-windows",
+    "pinokio-fully-local-macos", "pinokio-fully-local-linux", "pinokio-fully-local-windows",
+)
+_RELEASE1_ROWS_BY_JOB_ID = {row["job_id"]: row for row in RELEASE1_MATRIX}
+M4_6_MATRIX: Final = tuple(_RELEASE1_ROWS_BY_JOB_ID[slot_id] for slot_id in M4_6_SLOT_IDS)
 
 # One independent installed-App guard scenario, co-owned with M-APP.  Its
 # inventory contract is not evidence that an installed journey has run.

@@ -5,7 +5,50 @@ import copy
 import pytest
 
 from scripts import journey_failure_modes as failure
+from scripts import journey_matrix as matrix
 from tests.failure_mode_fixtures import PROVISIONAL_CANDIDATE, valid_observation
+
+
+def test_m4_6_slots_exclude_canonical_fault_scenarios() -> None:
+    original_ids = tuple(
+        f"{mode}-{os_name}"
+        for mode in ("direct", "pinokio-backend", "pinokio-fully-local")
+        for os_name in ("macos", "linux", "windows")
+    )
+    fault_ids = {
+        f"direct-{os_name}-{scenario}"
+        for os_name in ("macos", "linux", "windows")
+        for scenario in ("interrupted-update", "rollback")
+    }
+
+    assert matrix.M4_6_SLOT_IDS == failure.REQUIRED_SLOT_IDS == original_ids
+    assert tuple(row["job_id"] for row in matrix.M4_6_MATRIX) == original_ids
+    assert tuple(failure.SLOT_CONTRACTS) == original_ids
+    for slot_id in original_ids:
+        assert matrix.validate_m4_6_slot(slot_id) == matrix.release1_job(slot_id)
+        assert failure.SLOT_CONTRACTS[slot_id] == matrix.release1_job(slot_id)
+
+    for fault_id in fault_ids:
+        assert sum(row["job_id"] == fault_id for row in matrix.RELEASE1_MATRIX) == 1
+        assert matrix.release1_job(fault_id)["scenario_id"] == fault_id
+        with pytest.raises(ValueError, match="Unknown M4-6 failure-mode slot"):
+            matrix.validate_m4_6_slot(fault_id)
+        receipt = failure.create_receipt(
+            fault_id, PROVISIONAL_CANDIDATE, valid_observation("direct-linux")
+        )
+        assert receipt["status"] == "fail"
+        assert any(
+            "unknown Release-1 slot" in error
+            for error in receipt["verification"]["failed_assertions"]
+        )
+        with pytest.raises(SystemExit) as exc:
+            failure.main([
+                "--slot-id", fault_id, "--candidate", "unused",
+                "--observation", "unused", "--output", "unused",
+            ])
+        assert exc.value.code == 2
+
+    assert matrix.APP_UPDATE_GUARD_SCENARIO["scenario_id"] == "installed-app-update-guard-linux"
 
 
 @pytest.mark.parametrize("slot_id", failure.REQUIRED_SLOT_IDS)
