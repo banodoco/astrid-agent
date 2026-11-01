@@ -166,6 +166,13 @@ def test_matching_unfinished_recovery_returns_i3_and_ends_this_update_request(tm
     assert result["message"] == "Recovered your previous version — run Update again"
     assert recovery_calls == [journal["operation_id"]]
     assert read_json(root / "install.json")["update_job"]["operation_id"] == previous["operation_id"]
+    route = result["route_disposition"]
+    assert route["disposition"] == "recovered-this-request"
+    assert route["blocker"] == "cleared"
+    assert route["confirmation"]["confirmed"] is True
+    helper = update_job._helper_result(result)
+    assert helper["new_admission"] is False
+    assert helper["next_action"] == "observe"
 
 
 @pytest.mark.parametrize("active_result", [True, "unreadable"])
@@ -406,7 +413,7 @@ def test_real_selected_readiness_verifier_rejects_wrong_selected_version(tmp_pat
         update_job._verify_selected_ready(root, data, wrong, {"release": 99, "managed_by": None})
 
 
-def test_helper_serializes_busy_refusal_and_exits_nonzero(tmp_path, monkeypatch, capsys):
+def test_h4_helper_serializes_held_busy_refusal_and_exits_nonzero(tmp_path, monkeypatch, capsys):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     previous = update_job.accept(request)
     marker = read_json(root / "install.json")
@@ -421,7 +428,47 @@ def test_helper_serializes_busy_refusal_and_exits_nonzero(tmp_path, monkeypatch,
     result = json.loads(capsys.readouterr().out)
     assert result["reason"] == "busy"
     assert result["state"] == "recovery-needed"
+    assert result["disposition"] == "refused"
+    assert result["blocker"] == "held"
+    assert result["operation_id"] == previous["operation_id"]
     assert read_json(root / "install.json")["update_job"]["operation_id"] == previous["operation_id"]
+
+
+def test_h5_helper_serializes_lost_launch_acknowledgement_as_observe_only(tmp_path, monkeypatch, capsys):
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    job = update_job.accept(request)
+    descriptor = _descriptor(job)
+
+    class Adapter:
+        def describe(self, _job, command):
+            return {**descriptor, "command": command}
+
+        def launch(self, *_args):
+            raise RuntimeError("native acknowledgement lost")
+
+        def is_active(self, _descriptor):
+            raise OSError("native liveness is unknown")
+
+    monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
+    monkeypatch.setattr(update_job.sys, "stdin", io.StringIO(json.dumps({
+        "action": "launch", "root": str(root), "operation_id": job["operation_id"],
+    })))
+
+    update_job.main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["operation_id"] == job["operation_id"]
+    assert result["state"] == "launching"
+    assert result["launch_status"] == "unknown"
+    assert result["disposition"] == "acknowledgement-unknown"
+    assert result["blocker"] == "held"
+    assert result["next_action"] == "observe"
+    saved = read_json(root / "install.json")["update_job"]
+    assert saved["route_disposition"]["disposition"] == "acknowledgement-unknown"
+    assert saved["route_disposition"]["blocker"] == "held"
+    before = (root / "install.json").read_bytes()
+    assert update_job.read_job(root)["operation_id"] == job["operation_id"]
+    assert (root / "install.json").read_bytes() == before
 
 
 def test_successful_empty_systemd_state_is_unknown_liveness(tmp_path, monkeypatch):
@@ -537,7 +584,7 @@ def test_terminal_rollback_can_admit_one_newer_operation_on_later_update(tmp_pat
 
 
 @pytest.mark.parametrize("prepared", [True, False], ids=["same-release", "no-target"])
-def test_confirmed_terminal_result_with_no_newer_target_returns_without_admission(tmp_path, monkeypatch, prepared):
+def test_h3_confirmed_terminal_result_with_no_newer_target_returns_without_admission(tmp_path, monkeypatch, prepared):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     previous = update_job.accept(request)
     descriptor = _descriptor(previous)
@@ -571,6 +618,16 @@ def test_confirmed_terminal_result_with_no_newer_target_returns_without_admissio
     assert verified[0][2] == candidate.document()
     assert verified[0][3] == {"release": 8, "managed_by": None}
     assert read_json(root / "install.json")["update_job"]["operation_id"] == previous["operation_id"]
+    route = result["route_disposition"]
+    assert route["disposition"] == "confirmed-prior"
+    assert route["blocker"] == "cleared"
+    assert route["confirmation"]["outcome"] == "updated"
+    assert route["confirmation"]["confirmed"] is True
+    helper = update_job._helper_result(result)
+    assert helper["disposition"] == "confirmed-prior"
+    assert helper["confirmed"] is True
+    assert helper["new_admission"] is False
+    assert helper["next_action"] == "observe"
 
 
 def test_recovery_result_cannot_be_mistaken_for_new_operation_launch(tmp_path, monkeypatch):

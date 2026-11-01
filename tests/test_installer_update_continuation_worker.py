@@ -1,11 +1,18 @@
 """Worker-produced evidence at the claim/bootstrap interruption boundaries."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from astrid.installer import update_job
 from astrid.installer.core import Version, read_json, write_json
-from tests.test_installer_update_continuation import _ContinuationAdapter
+from tests.test_installer_update_continuation import (
+    _assert_lock_busy,
+    _ContinuationAdapter,
+    _descriptor,
+    _set_unresolved,
+)
 from tests.test_installer_update_job import _fixture
 from tests.test_installer_update_reconcile import _unfinished_journal
 
@@ -176,3 +183,81 @@ def test_preexisting_terminal_journal_requires_exact_accepted_snapshot(tmp_path,
         assert result["launch_status"] == "acknowledged"
         assert adapter.events.count("launch") == 1
     assert journal_path.read_bytes() == before_journal
+
+
+def test_orphan_native_submission_after_replacement_is_fenced(tmp_path, monkeypatch):
+    """A delayed old submitter and old wrapper cannot adopt a new attempt."""
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    original = update_job.accept(request)
+    old_epoch, old_nonce = update_job._attempt_tuple(original)
+    old_command = update_job._expected_worker_command(Version.load(original["old_version"]), original)
+    old_descriptor = _descriptor(original, old_command)
+    _set_unresolved(root, original, "never-entered", old_descriptor)
+
+    adapter = _ContinuationAdapter(root, registered=True)
+    monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
+    replacement = update_job.accept(request)
+
+    assert replacement["operation_id"] == original["operation_id"]
+    assert replacement["attempt"]["epoch"] == old_epoch + 1
+    assert replacement["attempt"]["nonce"] != old_nonce
+    assert replacement["retired_attempts"][-1]["nonce"] == old_nonce
+    assert adapter.events == ["registration", "liveness", "retire", "registration", "launch"]
+
+    before_marker = (root / "install.json").read_bytes()
+    before_events = list(adapter.events)
+    with pytest.raises(ValueError) as delayed_submitter:
+        update_job._submit_native_attempt(
+            root, original["operation_id"], old_epoch, old_nonce, adapter,
+            old_descriptor, old_command, Path(original["log_path"]),
+        )
+    assert delayed_submitter.value.reason == "busy"
+    assert adapter.events == before_events  # no old manager API call
+    assert (root / "install.json").read_bytes() == before_marker
+
+def test_replacement_requires_a_positive_native_retirement_barrier(tmp_path, monkeypatch):
+    """An inactive-looking registration cannot be replaced until it is absent."""
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    original = update_job.accept(request)
+    command = update_job._expected_worker_command(Version.load(original["old_version"]), original)
+    _set_unresolved(root, original, "never-entered", _descriptor(original, command))
+    before_marker = (root / "install.json").read_bytes()
+
+    class UnsettledAdapter(_ContinuationAdapter):
+        def cleanup(self, descriptor):
+            assert descriptor == self.expected
+            _assert_lock_busy(root)
+            self.events.append("retire")
+            # The manager call returned, but the native authority remains.
+
+        def launch(self, *_args):
+            pytest.fail("an unsettled old registration must block replacement")
+
+    adapter = UnsettledAdapter(root, registered=True)
+    monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
+    with pytest.raises(ValueError) as refusal:
+        update_job.accept(request)
+    assert refusal.value.reason == "busy"
+    assert adapter.events == ["registration", "liveness", "retire", "registration"]
+    assert (root / "install.json").read_bytes() == before_marker
+
+
+def test_queued_old_wrapper_nonce_is_denied_before_claim_or_job_write(tmp_path, monkeypatch):
+    """A queued wrapper must not adopt the replacement epoch at claim time."""
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    original = update_job.accept(request)
+    old_epoch, old_nonce = update_job._attempt_tuple(original)
+    old_command = update_job._expected_worker_command(Version.load(original["old_version"]), original)
+    _set_unresolved(root, original, "never-entered", _descriptor(original, old_command))
+    adapter = _ContinuationAdapter(root, registered=True)
+    monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
+    replacement = update_job.accept(request)
+    assert replacement["attempt"]["epoch"] == old_epoch + 1
+
+    before_marker = (root / "install.json").read_bytes()
+    before_events = list(adapter.events)
+    with pytest.raises(ValueError) as queued_old_wrapper:
+        update_job.run_job(root, original["operation_id"], old_epoch, old_nonce)
+    assert queued_old_wrapper.value.reason == "busy"
+    assert adapter.events == before_events
+    assert (root / "install.json").read_bytes() == before_marker
