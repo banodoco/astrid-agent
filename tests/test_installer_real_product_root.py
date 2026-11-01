@@ -22,6 +22,7 @@ Left out on purpose:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -66,6 +67,54 @@ def _vibecomfy_stand_in(root: Path) -> tuple[Path, str]:
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _runpod_source_standins(root: Path) -> tuple[dict, dict]:
+    """Two tagged, immutable source repos exercising the production manifest install path."""
+    lifecycle = root / "runpod-lifecycle-source"
+    (lifecycle / "src" / "runpod_lifecycle").mkdir(parents=True)
+    (lifecycle / "src" / "runpod_lifecycle" / "__init__.py").write_text("\n", encoding="utf-8")
+    (lifecycle / "src" / "runpod_lifecycle" / "pod_agent.py").write_text("SOURCE = 'lifecycle'\n",
+                                                                            encoding="utf-8")
+    (lifecycle / "src" / "runpod_lifecycle" / "https.py").write_text("SOURCE = 'lifecycle'\n",
+                                                                         encoding="utf-8")
+    (lifecycle / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools==80.9.0", "wheel==0.46.3"]\n'
+        'build-backend = "setuptools.build_meta"\n\n'
+        '[project]\nname = "runpod-lifecycle"\nversion = "0.3.1.dev0"\n'
+        'requires-python = ">=3.10"\n\n'
+        '[tool.setuptools]\npackage-dir = {"" = "src"}\n\n'
+        '[tool.setuptools.packages.find]\nwhere = ["src"]\n', encoding="utf-8")
+    _git(lifecycle, "init", "--quiet")
+    _git(lifecycle, "add", ".")
+    _git(lifecycle, "commit", "--quiet", "-m", "lifecycle source")
+    _git(lifecycle, "tag", "v0.3.1")
+
+    sdk = root / "runpod-sdk-source"
+    (sdk / "src" / "runpod").mkdir(parents=True)
+    (sdk / "src" / "runpod" / "__init__.py").write_text("SOURCE = 'sdk'\n", encoding="utf-8")
+    (sdk / "requirements.txt").write_text("", encoding="utf-8")
+    (sdk / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools>=80.9.0", "wheel>=0.46.3", "setuptools_scm>=8.3.1"]\n'
+        'build-backend = "setuptools.build_meta"\n\n'
+        '[project]\nname = "runpod"\ndynamic = ["version", "dependencies"]\n'
+        'requires-python = ">=3.10"\n\n'
+        '[tool.setuptools]\npackage-dir = {"" = "src"}\n\n'
+        '[tool.setuptools.packages.find]\nwhere = ["src"]\n\n'
+        '[tool.setuptools.dynamic]\ndependencies = {file = ["requirements.txt"]}\n\n'
+        '[tool.setuptools_scm]\nversion_file = "src/runpod/_version.py"\n'
+        'local_scheme = "no-local-version"\n', encoding="utf-8")
+    _git(sdk, "init", "--quiet")
+    _git(sdk, "add", ".")
+    _git(sdk, "commit", "--quiet", "-m", "sdk source")
+    _git(sdk, "tag", "v1.12.0")
+
+    return (
+        {"repo": str(lifecycle), "sha": _git(lifecycle, "rev-parse", "HEAD"),
+         "version": "0.3.1.dev0"},
+        {"repo": str(sdk), "sha": _git(sdk, "rev-parse", "HEAD"),
+         "version": "1.12.1.dev4"},
+    )
+
+
 def _tool_stand_ins(root: Path) -> dict[str, str]:
     """Placeholders for install_tools' Node, npm and Bun downloads (out of scope for this proof)."""
     node = root / "node" / "bin" / "node"
@@ -93,6 +142,7 @@ def test_staged_product_root_is_admitted_by_validate_candidate(tmp_path, monkeyp
         pytest.fail("This proof stages the pinned agent commit, so the agent checkout must be a Git repository.")
     runtime = runtime_checkout()
     vibecomfy, vibecomfy_sha = _vibecomfy_stand_in(tmp_path)
+    lifecycle, runpod = _runpod_source_standins(tmp_path)
     uv_version = subprocess.run([uv, "--version"], check=True, capture_output=True, text=True).stdout.split()[1]
 
     program = tmp_path / "program"
@@ -105,6 +155,8 @@ def test_staged_product_root_is_admitted_by_validate_candidate(tmp_path, monkeyp
         "agent": {"sha": _git(checkout, "rev-parse", "HEAD"), "repo": str(checkout)},
         "runtime": {"sha": _git(runtime, "rev-parse", "HEAD"), "repo": str(runtime)},
         "vibecomfy": {"sha": vibecomfy_sha, "repo": str(vibecomfy)},
+        "lifecycle": lifecycle,
+        "runpod": runpod,
         "tools": {
             "uv": {"version": uv_version},
             "python": {"version": f"{sys.version_info.major}.{sys.version_info.minor}"},
@@ -132,6 +184,41 @@ def test_staged_product_root_is_admitted_by_validate_candidate(tmp_path, monkeyp
     assert product_root.is_relative_to(version_root), (product_root, version_root)
     assert product_root == Path(purelib).resolve(), (product_root, purelib)
     assert product_root == backend._installed_product_root(version.python, version.env)
+
+    import_check = """
+import importlib.metadata as metadata
+import json
+import pathlib
+import sys
+import sysconfig
+import runpod
+import runpod_lifecycle.pod_agent
+import runpod_lifecycle.https
+purelib = pathlib.Path(sysconfig.get_path('purelib')).resolve()
+modules = [runpod, runpod_lifecycle.pod_agent, runpod_lifecycle.https]
+origins = {module.__name__: str(pathlib.Path(module.__file__).resolve()) for module in modules}
+assert all(pathlib.Path(origin).is_relative_to(purelib) for origin in origins.values()), origins
+assert pathlib.Path(sys.executable).resolve() == pathlib.Path(sys.argv[1]).resolve()
+assert metadata.version('runpod') == sys.argv[2]
+assert metadata.version('runpod-lifecycle') == sys.argv[3]
+print(json.dumps({'python': sys.executable, 'purelib': str(purelib), 'origins': origins,
+                  'versions': {'runpod': metadata.version('runpod'),
+                               'runpod-lifecycle': metadata.version('runpod-lifecycle')}}))
+"""
+    imports = subprocess.run([str(version.python), "-I", "-c", import_check,
+                               str(version.python), runpod["version"], lifecycle["version"]],
+                             check=True, capture_output=True, text=True)
+    import_result = json.loads(imports.stdout)
+    assert set(import_result["origins"]) == {
+        "runpod", "runpod_lifecycle.pod_agent", "runpod_lifecycle.https"}
+    assert all(Path(origin).is_relative_to(Path(import_result["purelib"]))
+               for origin in import_result["origins"].values())
+    assert import_result["versions"] == {
+        "runpod": runpod["version"], "runpod-lifecycle": lifecycle["version"]}
+    for source_name, pin in (("lifecycle", lifecycle), ("runpod", runpod)):
+        checkout = version.root / source_name
+        assert _git(checkout, "rev-parse", "HEAD") == pin["sha"]
+        assert _git(checkout, "tag", "--list")
 
     realm = backend.create(version, data)
     assert realm["realm_id"] and realm["realm_root"]
