@@ -439,15 +439,15 @@ def test_recovery_rechecks_exact_stale_pid_absence_at_final_fence(tmp_path, monk
     _publish_owner(paths)
     boundary.live = True
     bootstrap = importlib.import_module("astrid_runtime.bootstrap")
-    mutex = bootstrap._bootstrap_mutex
+    fence = bootstrap.interruption_fence
 
     @contextmanager
-    def replacement_after_absence(paths_arg):
-        with mutex(paths_arg):
-            _publish_owner(paths_arg, pid=887, birth="replacement-birth")
+    def replacement_after_absence(realm_root):
+        with fence(realm_root):
+            _publish_owner(paths, pid=887, birth="replacement-birth")
             yield
 
-    monkeypatch.setattr(bootstrap, "_bootstrap_mutex", replacement_after_absence)
+    monkeypatch.setattr(bootstrap, "interruption_fence", replacement_after_absence)
     journal = backend.root / "update-transaction.json"
     before = journal.read_bytes()
 

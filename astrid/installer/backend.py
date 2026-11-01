@@ -605,6 +605,20 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             boundary = getattr(self, "_stop_boundary", None)
             if boundary is None:
                 boundary = self._stop_boundary = LocalRuntimeBoundary()
+            # The published Runtime tuple handles the authoritative C1 fence,
+            # but its stale-PID branch cannot reject a positively observed
+            # different incarnation.  Never hand that owner to a manager: a
+            # proven birth mismatch is an installer-side refusal before any
+            # stop, workspace, or selection mutation.
+            discovery = read_json(paths.discovery_path)
+            if isinstance(discovery, dict):
+                pid, expected_birth = discovery.get("pid"), discovery.get("process_birth_id")
+                observe_birth = getattr(boundary, "process_birth_identity", None)
+                if type(pid) is int and pid > 0 and isinstance(expected_birth, str) and callable(observe_birth):
+                    observed_birth = observe_birth(pid)
+                    if (observed_birth is not None
+                            and platform.process_birth_matches(expected_birth, str(observed_birth)) is False):
+                        raise ValueError("Runtime owner process identity changed; refusing the stop.")
             restore_selection = self._pending_restore_selection(data)
             foreground = (record or {}).get("foreground")
             if foreground is not None and not isinstance(foreground, dict):
