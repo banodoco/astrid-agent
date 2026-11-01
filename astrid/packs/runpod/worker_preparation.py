@@ -34,6 +34,12 @@ class AcquisitionUnresolvedError(TargetObservationError):
     """An earlier create/attach may have succeeded and must be reconciled."""
 
 
+class CapacityExhaustedError(TargetObservationError):
+    """The bounded, safe capacity retry policy was exhausted."""
+
+    code = "capacity_exhausted"
+
+
 @dataclass(frozen=True)
 class RunPodTargetContract:
     pod_id: str
@@ -951,6 +957,7 @@ async def acquire_target(
     retry_interval_seconds: int,
     ready_timeout_seconds: int,
     allow_capacity_retry: bool = False,
+    max_create_attempts: int | None = None,
 ) -> AcquiredRunPodTarget:
     """Allocate from a fresh/safe intent or attach to one exact pod.
 
@@ -960,6 +967,7 @@ async def acquire_target(
     in-flight attempt must go through :func:`reconcile_target` first.
     """
     from runpod_lifecycle import AllocationUnknown, LaunchFailure, get_pod, launch_when_available
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
 
     operation_id = str(attempt["operation_id"])
     mode = "attach" if pod_id is not None else "allocate"
@@ -1041,6 +1049,14 @@ async def acquire_target(
             raise AcquisitionUnresolvedError(
                 "allocation journal does not prove the prior capacity response was safe to retry"
             )
+        if max_create_attempts is not None:
+            # One lifecycle launch can otherwise walk a GPU x RAM x storage
+            # matrix, issuing multiple POSTs without returning to this journal.
+            storages = {name for name in [config.storage_name, *config.storage_volumes] if name}
+            if (max_create_attempts < 1 or capacity_window_seconds < 60
+                    or retry_interval_seconds < 15 or len(config.gpu_type_candidates) != 1
+                    or config.ram_tiers_enabled or len(storages) != 1):
+                raise ValueError("bounded capacity retries require one GPU, RAM tier and storage")
         expected_name = str(attempt.get("request_name") or "").strip()
         if not expected_name:
             raise ValueError("allocation attempt must have an exact request_name")
@@ -1050,6 +1066,11 @@ async def acquire_target(
             else None
         )
         while True:
+            if max_create_attempts is not None and attempt.get("create_attempts", 0) >= max_create_attempts:
+                exhausted = {**attempt, "state": "capacity_exhausted", "reconciliation_required": False,
+                             "safe_to_retry": True, "completed_at": utc_now_iso()}
+                replace_target_record(handle_path, exhausted, operation_id=operation_id)
+                raise CapacityExhaustedError("capacity_exhausted: create attempt limit reached")
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -1063,6 +1084,8 @@ async def acquire_target(
                     replace_target_record(
                         handle_path, exhausted, operation_id=operation_id
                     )
+                    if max_create_attempts is not None:
+                        raise CapacityExhaustedError("capacity_exhausted: capacity window elapsed")
                     raise TimeoutError(
                         f"capacity did not appear within {max_wait_seconds}s"
                     )
@@ -1084,7 +1107,9 @@ async def acquire_target(
                 pod = await launch_when_available(
                     config,
                     name=expected_name,
-                    max_wait_sec=window,
+                    # Zero asks lifecycle for one launch; the bounded loop
+                    # owns timing and persists each POST before it starts.
+                    max_wait_sec=0 if max_create_attempts is not None else window,
                     retry_interval_sec=retry_interval_seconds,
                 )
             except AllocationUnknown as exc:
@@ -1101,7 +1126,9 @@ async def acquire_target(
                 replace_target_record(handle_path, unknown, operation_id=operation_id)
                 raise
             except LaunchFailure as exc:
-                if not getattr(exc, "retryable", True):
+                if (not getattr(exc, "retryable", True) or
+                        (max_create_attempts is not None and
+                         not isinstance(exc.__cause__, ProviderCapacityUnavailable))):
                     known_pod_id = getattr(exc, "pod_id", None)
                     failed = {
                         **attempt,
@@ -1126,6 +1153,11 @@ async def acquire_target(
                     handle_path, retry_ready, operation_id=operation_id
                 )
                 attempt = retry_ready
+                if max_create_attempts is not None and attempt["create_attempts"] < max_create_attempts:
+                    delay = min(60.0, retry_interval_seconds * 1.5 ** (attempt["create_attempts"] - 1))
+                    if deadline is not None:
+                        delay = min(delay, max(0.0, deadline - time.monotonic()))
+                    await asyncio.sleep(delay)
                 continue
 
             allocated = {
