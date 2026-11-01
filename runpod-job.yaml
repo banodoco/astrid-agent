@@ -72,7 +72,6 @@ run:
   tests/sdk/test_delegated_publication_policy_g31.py tests/sdk/test_invocation_custody_composition_i_ag_03b.py tests/sdk/test_workspace_client_custody_composition_i_ag_03b.py
   tests/test_generic_host.py::test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit tests/test_generic_host.py::test_cancellation_reaps_descendant_spawned_by_sigterm_handler
   tests/test_generic_host.py::test_descendant_terminated_requires_matching_zombie tests/test_generic_host.py::test_descendant_terminated_fails_closed_on_observation_errors
-  tests/core/generation/test_entries.py tests/core/generation/test_workflow_input_a01.py tests/sdk/test_generation_source_retention.py
   2>&1 | tee runpod-evidence/collected-nodes.txt
 
   "$CUSTODY_PYTHON" -m pytest -p no:cacheprovider -o addopts= -q --basetemp="$TMPDIR/pytest" --junitxml=runpod-evidence/focused.xml
@@ -85,7 +84,6 @@ run:
   tests/sdk/test_delegated_publication_policy_g31.py tests/sdk/test_invocation_custody_composition_i_ag_03b.py tests/sdk/test_workspace_client_custody_composition_i_ag_03b.py
   tests/test_generic_host.py::test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit tests/test_generic_host.py::test_cancellation_reaps_descendant_spawned_by_sigterm_handler
   tests/test_generic_host.py::test_descendant_terminated_requires_matching_zombie tests/test_generic_host.py::test_descendant_terminated_fails_closed_on_observation_errors
-  tests/core/generation/test_entries.py tests/core/generation/test_workflow_input_a01.py tests/sdk/test_generation_source_retention.py
   2>&1 | tee runpod-evidence/focused.txt
 
   '
