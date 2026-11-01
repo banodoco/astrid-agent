@@ -105,8 +105,8 @@ Good: `State` is `Running`.
    ```
 
 3. Wait. The first install prepares Python, Bun, Node and Astrid itself, so it can take 10 minutes or more. This build
-   pins uv 0.11.32, Bun 1.3.14 and Node 20.19.4. It checks for FFmpeg and FFprobe on `PATH` first. If that build
-   passes Astrid’s required encoder and filter probe, it uses it; otherwise it downloads the pinned FFmpeg build.
+   pins uv 0.11.32, Bun 1.3.14, Node 20.19.4 and FFmpeg 7.0.2. It always downloads and verifies the manifest-pinned
+   FFmpeg and FFprobe build, even when qualified host tools are on `PATH`.
 4. When the browser opens, choose **Allow** when the browser asks about devices on your network.
 5. Run the same line a second time.
 
@@ -122,7 +122,7 @@ Good: `State` is `Running`.
 - The second run keeps the healthy Runtime running and prints `Using your workspace at …` and
   `Open https://astrid.haus`. The page connects again without reinstalling tools.
 - The two checks above both pass.
-- The install record and doctor bundle identify the FFmpeg source as `path` or `download`, along with its version.
+- The install record and doctor bundle identify the FFmpeg source as `download`, along with its manifest-pinned version.
 
 **It's a failure if**
 
