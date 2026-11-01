@@ -605,7 +605,7 @@ actions:
     - name: manifest
       type: file
       mode: create_or_replace
-      path_template: '{out}/manifest.json'
+      path_template: '{out}/parent-manifest.json'
       artifact_type: metadata/result-manifest
     graph:
       child_actions:
