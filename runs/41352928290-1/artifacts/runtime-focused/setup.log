@@ -1,0 +1,77 @@
+Obtaining file:///home/runner/work/astrid-agent/astrid-agent/runtime
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Collecting jsonschema>=4.18 (from astrid-runtime==0.1.0)
+  Downloading jsonschema-4.26.0-py3-none-any.whl.metadata (7.6 kB)
+Collecting referencing>=0.30 (from astrid-runtime==0.1.0)
+  Downloading referencing-0.37.0-py3-none-any.whl.metadata (2.8 kB)
+Collecting pytest>=8 (from astrid-runtime==0.1.0)
+  Downloading pytest-9.2.0-py3-none-any.whl.metadata (7.9 kB)
+Collecting pytest-timeout>=2.4 (from astrid-runtime==0.1.0)
+  Downloading pytest_timeout-2.4.0-py3-none-any.whl.metadata (20 kB)
+Collecting pytest-xdist>=3 (from astrid-runtime==0.1.0)
+  Downloading pytest_xdist-3.8.0-py3-none-any.whl.metadata (3.0 kB)
+Collecting PyYAML>=6 (from astrid-runtime==0.1.0)
+  Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+Collecting setuptools>=70.1 (from astrid-runtime==0.1.0)
+  Using cached setuptools-84.2.1-py3-none-any.whl.metadata (6.6 kB)
+Collecting attrs>=22.2.0 (from jsonschema>=4.18->astrid-runtime==0.1.0)
+  Downloading attrs-26.1.0-py3-none-any.whl.metadata (8.8 kB)
+Collecting jsonschema-specifications>=2023.03.6 (from jsonschema>=4.18->astrid-runtime==0.1.0)
+  Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting rpds-py>=0.25.0 (from jsonschema>=4.18->astrid-runtime==0.1.0)
+  Downloading rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
+Collecting iniconfig>=2 (from pytest>=8->astrid-runtime==0.1.0)
+  Downloading iniconfig-2.3.1-py3-none-any.whl.metadata (2.8 kB)
+Collecting packaging>=24 (from pytest>=8->astrid-runtime==0.1.0)
+  Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+Collecting pluggy<2,>=1.6 (from pytest>=8->astrid-runtime==0.1.0)
+  Downloading pluggy-1.7.0-py3-none-any.whl.metadata (5.0 kB)
+Collecting pygments>=2.15 (from pytest>=8->astrid-runtime==0.1.0)
+  Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting execnet>=2.1 (from pytest-xdist>=3->astrid-runtime==0.1.0)
+  Downloading execnet-2.1.2-py3-none-any.whl.metadata (2.9 kB)
+Collecting typing-extensions>=4.4.0 (from referencing>=0.30->astrid-runtime==0.1.0)
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Downloading jsonschema-4.26.0-py3-none-any.whl (90 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 90.6/90.6 kB 4.2 MB/s eta 0:00:00
+Downloading pytest-9.2.0-py3-none-any.whl (411 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 411.8/411.8 kB 17.2 MB/s eta 0:00:00
+Downloading pytest_timeout-2.4.0-py3-none-any.whl (14 kB)
+Downloading pytest_xdist-3.8.0-py3-none-any.whl (46 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 46.4/46.4 kB 16.7 MB/s eta 0:00:00
+Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 42.9 MB/s eta 0:00:00
+Downloading referencing-0.37.0-py3-none-any.whl (26 kB)
+Using cached setuptools-84.2.1-py3-none-any.whl (876 kB)
+Downloading attrs-26.1.0-py3-none-any.whl (67 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 67.5/67.5 kB 25.6 MB/s eta 0:00:00
+Downloading execnet-2.1.2-py3-none-any.whl (40 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 40.7/40.7 kB 14.6 MB/s eta 0:00:00
+Downloading iniconfig-2.3.1-py3-none-any.whl (7.6 kB)
+Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+Downloading packaging-26.3-py3-none-any.whl (129 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 130.0/130.0 kB 48.3 MB/s eta 0:00:00
+Downloading pluggy-1.7.0-py3-none-any.whl (27 kB)
+Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 140.6 MB/s eta 0:00:00
+Downloading rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (371 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 371.3/371.3 kB 83.1 MB/s eta 0:00:00
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 45.6/45.6 kB 13.5 MB/s eta 0:00:00
+Checking if build backend supports build_editable: started
+Checking if build backend supports build_editable: finished with status 'done'
+Building wheels for collected packages: astrid-runtime
+  Building editable for astrid-runtime (pyproject.toml): started
+  Building editable for astrid-runtime (pyproject.toml): finished with status 'done'
+  Created wheel for astrid-runtime: filename=astrid_runtime-0.1.0-0.editable-py3-none-any.whl size=4136 sha256=c8a0efc1d009cffe49c1a401a58463638a01ac29ee6630e7247eb997f725978c
+  Stored in directory: /tmp/pip-ephem-wheel-cache-u8dx82g9/wheels/77/b9/92/8387f27cb8372eb38081ae345b2b73fd2c62c79df949d12e56
+Successfully built astrid-runtime
+Installing collected packages: typing-extensions, setuptools, rpds-py, PyYAML, pygments, pluggy, packaging, iniconfig, execnet, attrs, referencing, pytest, pytest-xdist, pytest-timeout, jsonschema-specifications, jsonschema, astrid-runtime
+Successfully installed PyYAML-6.0.3 astrid-runtime-0.1.0 attrs-26.1.0 execnet-2.1.2 iniconfig-2.3.1 jsonschema-4.26.0 jsonschema-specifications-2025.9.1 packaging-26.3 pluggy-1.7.0 pygments-2.21.0 pytest-9.2.0 pytest-timeout-2.4.0 pytest-xdist-3.8.0 referencing-0.37.0 rpds-py-2026.9.1 setuptools-84.2.1 typing-extensions-4.16.0

@@ -1,0 +1,3 @@
+tests/test_update_jobs.py::test_authenticated_continuation_keeps_operation_and_journal
+
+1 test collected in 0.16s

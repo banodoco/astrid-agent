@@ -1,0 +1,3 @@
+tests/test_update_jobs.py::test_production_daemon_door_advertises_and_executes_selected_updater
+
+1 test collected in 0.64s

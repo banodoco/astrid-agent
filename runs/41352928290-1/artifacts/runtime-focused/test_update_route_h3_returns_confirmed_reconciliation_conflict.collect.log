@@ -1,0 +1,4 @@
+tests/test_update_jobs.py::test_update_route_h3_returns_confirmed_reconciliation_conflict[recovered-this-request-rolled_back-Recovered your previous version \u2014 run Update again]
+tests/test_update_jobs.py::test_update_route_h3_returns_confirmed_reconciliation_conflict[confirmed-prior-updated-Astrid updated. Reload to continue.]
+
+2 tests collected in 0.16s
