@@ -9,7 +9,7 @@ on:
         type: string
   push:
     # Existing supported branches remain: branches: [main, release-1, "windows/**"]
-    branches: [main, release-1, int/r1, "windows/**"]
+    branches: [main, release-1, int/r1, "windows/**", "venue/**"]
   pull_request:
     branches: [main]
 
@@ -32,12 +32,14 @@ jobs:
     steps:
       - name: Check out this Agent commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ startsWith(github.ref, 'refs/heads/venue/') && '3693e6c8b5bb9c83588f1e65d1dc8495f6145f84' || github.sha }}
 
       - name: Resolve App ref
         id: app-ref
         shell: pwsh
         env:
-          INPUT_APP_REF: ${{ inputs.app_ref }}
+          INPUT_APP_REF: ${{ inputs.app_ref || (startsWith(github.ref, 'refs/heads/venue/') && '9d3ccda1e81383082258943207745086da2aabe4') || '' }}
         run: |
           $appRef = if ([string]::IsNullOrWhiteSpace($env:INPUT_APP_REF)) { "main" } else { $env:INPUT_APP_REF.Trim() }
           if (-not [string]::IsNullOrWhiteSpace($env:INPUT_APP_REF) -and $appRef -notmatch '^[0-9a-fA-F]{40}$') {
@@ -260,3 +262,73 @@ jobs:
           name: Windows-task-host-journey-${{ matrix.installer-shell }}
           path: ${{ runner.temp }}/X5-windows-journey/
           if-no-files-found: error
+
+  publish-venue-results:
+    name: Publish venue results
+    if: ${{ always() && startsWith(github.ref, 'refs/heads/venue/') }}
+    needs: [windows-journey]
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out workflow commit
+        uses: actions/checkout@v4
+      - name: Download matrix evidence
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Windows-task-host-journey-*
+          path: ${{ runner.temp }}/venue-evidence/artifacts
+      - name: Capture Actions identities and completed job logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+          MATRIX_RESULT: ${{ needs.windows-journey.result }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/venue-evidence/api" "$RUNNER_TEMP/venue-evidence/logs"
+          python3 - <<'PYTHON'
+          import json, os, pathlib, urllib.error, urllib.request
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'venue-evidence'
+          base = os.environ['GITHUB_API_URL'] + '/repos/' + os.environ['GITHUB_REPOSITORY']
+          run = os.environ['GITHUB_RUN_ID']
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          errors = []
+          def fetch(path, dest):
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers), timeout=90) as response:
+                      data = response.read()
+                  dest.write_bytes(data)
+                  return data
+              except Exception as exc:
+                  errors.append({'path': path, 'error': str(exc)})
+                  return None
+          attempt = os.environ['GITHUB_RUN_ATTEMPT']
+          jobs = fetch(f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100', root / 'api/jobs.json')
+          fetch(f'/actions/runs/{run}/artifacts?per_page=100', root / 'api/artifacts.json')
+          fetch(f'/actions/runs/{run}', root / 'api/run.json')
+          if jobs:
+              for job in json.loads(jobs).get('jobs', []):
+                  if job.get('name', '').startswith('Windows task host journey ('):
+                      fetch(f"/actions/jobs/{job['id']}/logs", root / 'logs' / f"job-{job['id']}.log")
+          (root / 'api/publisher.json').write_text(json.dumps({'matrix_result': os.environ['MATRIX_RESULT'], 'download_outcome': os.environ['DOWNLOAD_OUTCOME'], 'errors': errors}, indent=2) + '\n')
+          PYTHON
+      - name: Commit checksummed evidence to results branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_branch="venue-results/M-VENUE-V-10-WINDOWS-SIGNAL-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          result_path="runs/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --orphan "$result_branch"
+          git rm -rf . >/dev/null
+          mkdir -p "$result_path"
+          cp -a "$RUNNER_TEMP/venue-evidence/." "$result_path/"
+          (cd "$result_path" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          git add "$result_path"
+          git commit -m "Retain Windows task-host evidence for run ${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT}"
+          git push origin "HEAD:refs/heads/$result_branch"
+          echo "Results branch: $result_branch" >> "$GITHUB_STEP_SUMMARY"
