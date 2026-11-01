@@ -1,3 +1,4 @@
+# Broker resubmission trigger; request semantics and pinned inputs unchanged.
 repos:
   astrid-agent: 591cf1e629fa316885859e6fec3f4af9c2a6e6ba
   astrid-runtime: bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf
