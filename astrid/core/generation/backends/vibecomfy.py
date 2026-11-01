@@ -1461,6 +1461,154 @@ class _EndpointArtifacts:
         return {"status": "retrieved", "local_root": str(local_root), **self.describe()}
 
 
+class ComfyHostHooks:
+    """F07 owner hooks for one selected Comfy binding (docs/F07-HOOKS.md).
+
+    Fail closed: every method returns ``ok: False`` (or raises) rather than
+    report success on missing or uncertain evidence.  ``cancel`` and attached
+    ``release`` stay unproven until the owner-lane reconciliation lands.
+    """
+
+    def __init__(
+        self,
+        *,
+        binding: Any,
+        hc03_profile: Mapping[str, Any],
+        endpoint_transport: Any,
+        verified: Mapping[str, Any],
+        expected_comfyui_version: str | None,
+        host: Any = None,
+    ) -> None:
+        self._binding = binding
+        self._host = host
+        self._generation: int | None = None
+        self._profile = hc03_profile
+        self._endpoint_transport = endpoint_transport
+        self._verified = dict(verified)
+        self._expected_comfyui_version = expected_comfyui_version
+        self._fenced = False
+        self._fence_reason: str | None = None
+
+    def invoke(self, *, token: Any, model_id: str, template_id: str) -> dict[str, Any]:
+        from astrid.core.execution.managed_tool_session import AdmissionToken
+
+        if not isinstance(token, AdmissionToken):
+            return {"ok": False, "reason": "invoke requires an AdmissionToken"}
+        if self._fenced:
+            return {"ok": False, "reason": f"slot is fenced: {self._fence_reason}"}
+        _require_identity(model_id, "model_id")
+        _require_identity(template_id, "template_id")
+        if token.session_id != self._binding.session_id:
+            return {"ok": False, "reason": "token session does not match the bound owner"}
+        if tuple(token.binding_identity) != self._binding_identity():
+            return {"ok": False, "reason": "token binding identity does not match the bound owner"}
+        observed = self.observe(binding=self._binding)
+        if not observed.get("ok"):
+            return {"ok": False, "reason": f"owner binding revalidation failed: {observed.get('reason')}"}
+        self._generation = token.generation
+        context = {
+            "token_id": token.token_id,
+            "invocation_id": token.invocation_id,
+            "generation": token.generation,
+            "binding_identity": list(token.binding_identity),
+        }
+        return {"ok": True, "child_context": context}
+
+    def observe(self, *, binding: Any) -> dict[str, Any]:
+        if binding != self._binding:
+            return {"ok": False, "reason": "binding does not match the bound owner"}
+        try:
+            verified = CheckoutServerAdapter._verify_host_session(
+                hc03_profile=self._profile,
+                expected_comfyui_version=self._expected_comfyui_version,
+                endpoint_transport=self._endpoint_transport,
+            )
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": f"live evidence changed: {exc}"}
+        mismatch = _binding_mismatch(self._binding, verified, self._profile)
+        if mismatch is not None:
+            return {"ok": False, "reason": mismatch}
+        return {"ok": True, "observed": True, "fenced": self._fenced}
+
+    def fence(self, *, reason: str) -> dict[str, Any]:
+        self._fenced = True
+        self._fence_reason = str(reason)
+        return {"ok": True, "fenced": True, "reason": self._fence_reason}
+
+    def cancel(self, *, reason: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "cancelled": False,
+            "reason": "cancel is fail-closed until owner-lane reconciliation of attached cancellation",
+        }
+
+    def release(self, *, reason: str) -> dict[str, Any]:
+        """Managed release routes to the host; attached release stays fail-closed.
+
+        ``release_managed_session`` enforces quiescence internally, so no extra
+        argument is passed.  The expected generation is the one last accepted
+        by ``invoke``; with none, release refuses.
+        """
+        closed = {"ok": False, "released": False, "release_requested": False,
+                  "memory_observed_returned": False}
+        if self._host is None:
+            return {**closed, "reason": "no managed host handle"}
+        if self._generation is None:
+            return {**closed, "reason": "no accepted generation for this binding"}
+        result = self._host.release_managed_session(
+            expected_binding=self._binding,
+            expected_generation=self._generation,
+            reason=str(reason),
+        )
+        released = bool(result.get("ok")) and result.get("released") is True
+        return {
+            "ok": released,
+            "released": released,
+            "release_requested": True,
+            "memory_observed_returned": False,
+            "reason": "" if released else str(result.get("reason", "release_pending")),
+        }
+
+    def _binding_identity(self) -> tuple[Any, ...]:
+        b = self._binding
+        return (
+            b.session_id, b.runtime_instance_id, b.process_birth_id, b.endpoint,
+            b.source_digest, b.config_digest, b.execution_identity,
+            b.runtime_epoch, b.launch_generation, b.engine_birth_id,
+        )
+
+
+def _binding_mismatch(binding: Any, verified: Mapping[str, Any], profile: Mapping[str, Any]) -> str | None:
+    """Return the first mismatch between a SessionBinding and verified facts, or None.
+
+    Mapping (F07 rule): engine_birth_id and launch_generation both equal the
+    comfy process birth id; execution_identity must equal the profile's
+    residency digest, and when no residency digest exists the binding is
+    refused.  launch_token is a credential and is never compared.
+    """
+    expected = {
+        "session_id": str(verified["session_dir"]),
+        "runtime_instance_id": str(verified["runtime_instance_id"]),
+        "process_birth_id": str(verified["process_birth_id"]),
+        "endpoint": str(verified["server_url"]),
+        "source_digest": str(verified["source_content_digest"]),
+        "config_digest": str(verified["config_digest"]),
+        "engine_birth_id": str(verified["comfy_process_birth_id"]),
+        "launch_generation": str(verified["comfy_process_birth_id"]),
+    }
+    for name, value in expected.items():
+        if getattr(binding, name) != value:
+            return f"binding {name} does not match verified evidence"
+    if binding.runtime_epoch is not None:
+        return "runtime_epoch is not verifiable on the attached path"
+    residency = profile.get("residency_digest")
+    if not isinstance(residency, str) or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", residency):
+        return "execution_identity unavailable: no residency digest in hc03 profile"
+    if binding.execution_identity != residency:
+        return "binding execution_identity does not match the residency digest"
+    return None
+
+
 class CheckoutServerAdapter(VibeComfyBackend):
     """Submit pinned workflows to an already-running host-owned server."""
 
@@ -1525,6 +1673,113 @@ class CheckoutServerAdapter(VibeComfyBackend):
         and listener URL.  A reachable listener without those facts is not an
         admissible checkout server.
         """
+        model_name = _require_identity(model_id, "model_id")
+        template_name = _require_identity(template_id, "template_id")
+        invocation = _require_identity(invocation_identity, "invocation_identity")
+        verified = cls._verify_host_session(
+            hc03_profile=hc03_profile,
+            expected_comfyui_version=expected_comfyui_version,
+            endpoint_transport=endpoint_transport,
+        )
+        server_url = verified['server_url']
+        expected_comfyui_version = verified['expected_comfyui_version']
+        facts_digest = verified['facts_digest']
+        runtime_instance_id = verified['runtime_instance_id']
+        output_root = verified['output_root']
+        session_dir = verified['session_dir']
+        pid = verified['pid']
+        comfy_pid = verified['comfy_pid']
+        launch_token = verified['launch_token']
+        process_birth_id = verified['process_birth_id']
+        comfy_process_birth_id = verified['comfy_process_birth_id']
+        source_revision = verified['source_revision']
+        source_content_digest = verified['source_content_digest']
+        config_digest = verified['config_digest']
+        model_bytes_digest = verified['model_bytes_digest']
+        model_root_binding = verified['model_root_binding']
+        session_output_directory = verified['session_output_directory']
+        session_input_directory = verified['session_input_directory']
+        transport_kwargs = verified['transport_kwargs']
+        adapter = cls(
+            server_url,
+            environment_fingerprint=str(facts_digest),
+            expected_comfyui_version=expected_comfyui_version,
+            **transport_kwargs,
+        )
+        adapter._host_session = {
+            "session_dir": str(session_dir),
+            "pid": pid,
+            "comfy_pid": comfy_pid,
+            "server_url": server_url,
+            "launch_token": launch_token,
+            "process_birth_id": process_birth_id,
+            "comfy_process_birth_id": comfy_process_birth_id,
+            "source_revision": source_revision,
+            "source_content_digest": source_content_digest,
+            "config_digest": config_digest,
+            "model_bytes_digest": model_bytes_digest,
+            "model_root": str(model_root_binding.path),
+            "model_root_binding": model_root_binding.as_dict(),
+            "output_directory": (
+                str(session_output_directory)
+                if session_output_directory is not None
+                else None
+            ),
+            "input_directory": session_input_directory,
+        }
+        adapter._host_profile = hc03_profile
+        adapter._bound_model_id = model_name
+        adapter._bound_template_id = template_name
+        adapter._invocation_identity = invocation
+        adapter._runtime_instance_id = runtime_instance_id
+        adapter._output_root = output_root
+        adapter._bound_fingerprint = adapter.session_fingerprint(
+            model_fingerprint=model_name,
+            model_bytes_digest=model_bytes_digest,
+            environment_fingerprint=str(facts_digest),
+            server_url=server_url,
+            runtime_instance_id=runtime_instance_id,
+            comfyui_version=adapter._expected_comfyui_version,
+        )
+        adapter._bound_warmth_identity = (
+            f"{model_name}:{model_bytes_digest}:{facts_digest}"
+        )
+        # GenericPackHost passes this only after a prior successful settlement
+        # for the exact verified session/process/model binding.  It lets a new
+        # command child reuse the server's resident weights without treating a
+        # fresh Python wrapper as proof that the server is cold.
+        expected_warmth_hint = vibecomfy_warmth_hint(
+            session_id=str(session_dir),
+            process_birth_id=process_birth_id,
+            comfy_process_birth_id=comfy_process_birth_id,
+            runtime_instance_id=runtime_instance_id,
+            model_id=model_name,
+            model_bytes_digest=model_bytes_digest,
+            facts_digest=str(facts_digest),
+            source_revision=source_revision,
+            source_content_digest=source_content_digest,
+            config_digest=config_digest,
+        )
+        if os.environ.get(VIBECOMFY_WARMTH_HINT_ENV) == expected_warmth_hint:
+            adapter._engine.adopt_warmth(
+                fingerprint=adapter._bound_fingerprint,
+                warmth_identity=adapter._bound_warmth_identity,
+                model_bytes_digest=model_bytes_digest,
+                runtime_instance_id=runtime_instance_id,
+            )
+        adapter._probe_system_stats()
+        return adapter
+
+    @classmethod
+    def _verify_host_session(
+        cls, *, hc03_profile: Mapping[str, Any],
+        expected_comfyui_version: str | None = None,
+        endpoint_transport: Any = None,
+    ) -> dict[str, Any]:
+        """Verify the owner profile and session registry without a model binding.
+
+        Returns the verified facts that the build step and the host-hook surface consume.
+        """
         if not isinstance(hc03_profile, Mapping):
             raise ValueError("checkout_server requires a verified VibeComfy readiness profile")
         if hc03_profile.get("schema_version") != "hc03-worker-readiness.v1":
@@ -1582,9 +1837,6 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 if profile_version is not None:
                     expected_comfyui_version = profile_version
 
-        model_name = _require_identity(model_id, "model_id")
-        template_name = _require_identity(template_id, "template_id")
-        invocation = _require_identity(invocation_identity, "invocation_identity")
         runtime_instance_id = VibeComfyEngine._runtime_identity(
             runtime.get("runtime_instance_id")
         )
@@ -1727,75 +1979,65 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 raise ValueError("checkout_server endpoint differs from its bound readiness session")
             session_input_directory = _endpoint_session_input_directory(session_config, recipe)
             transport_kwargs["endpoint_transport"] = endpoint_transport
-        adapter = cls(
-            server_url,
-            environment_fingerprint=str(facts_digest),
-            expected_comfyui_version=expected_comfyui_version,
-            **transport_kwargs,
-        )
-        adapter._host_session = {
-            "session_dir": str(session_dir),
-            "pid": pid,
-            "comfy_pid": comfy_pid,
-            "server_url": server_url,
-            "launch_token": launch_token,
-            "process_birth_id": process_birth_id,
-            "comfy_process_birth_id": comfy_process_birth_id,
-            "source_revision": source_revision,
-            "source_content_digest": source_content_digest,
-            "config_digest": config_digest,
-            "model_bytes_digest": model_bytes_digest,
-            "model_root": str(model_root_binding.path),
-            "model_root_binding": model_root_binding.as_dict(),
-            "output_directory": (
-                str(session_output_directory)
-                if session_output_directory is not None
-                else None
-            ),
-            "input_directory": session_input_directory,
+        return {
+            'server_url': server_url,
+            'expected_comfyui_version': expected_comfyui_version,
+            'facts_digest': facts_digest,
+            'runtime_instance_id': runtime_instance_id,
+            'output_root': output_root,
+            'session_dir': session_dir,
+            'pid': pid,
+            'comfy_pid': comfy_pid,
+            'launch_token': launch_token,
+            'process_birth_id': process_birth_id,
+            'comfy_process_birth_id': comfy_process_birth_id,
+            'source_revision': source_revision,
+            'source_content_digest': source_content_digest,
+            'config_digest': config_digest,
+            'model_bytes_digest': model_bytes_digest,
+            'model_root_binding': model_root_binding,
+            'session_output_directory': session_output_directory,
+            'session_input_directory': session_input_directory,
+            'transport_kwargs': transport_kwargs,
         }
-        adapter._host_profile = hc03_profile
-        adapter._bound_model_id = model_name
-        adapter._bound_template_id = template_name
-        adapter._invocation_identity = invocation
-        adapter._runtime_instance_id = runtime_instance_id
-        adapter._output_root = output_root
-        adapter._bound_fingerprint = adapter.session_fingerprint(
-            model_fingerprint=model_name,
-            model_bytes_digest=model_bytes_digest,
-            environment_fingerprint=str(facts_digest),
-            server_url=server_url,
-            runtime_instance_id=runtime_instance_id,
-            comfyui_version=adapter._expected_comfyui_version,
+
+    @classmethod
+    def open_host_session(
+        cls,
+        *,
+        binding: Any,
+        hc03_profile: Mapping[str, Any],
+        endpoint_transport: Any = None,
+        host: Any = None,
+    ) -> ComfyHostHooks:
+        """Bind an existing selected owner; never start or replace an engine.
+
+        ``host`` is the managed GenericPackHost object (optional). With it,
+        managed release routes through its release_managed_session.
+
+        Refuses (ValueError) on any missing or mismatched evidence.  A listener
+        URL alone is never ownership evidence.
+        """
+        from astrid.core.execution.managed_tool_session import SessionBinding
+
+        if not isinstance(binding, SessionBinding):
+            raise ValueError("open_host_session requires a SessionBinding")
+        verified = cls._verify_host_session(
+            hc03_profile=hc03_profile,
+            expected_comfyui_version=None,
+            endpoint_transport=endpoint_transport,
         )
-        adapter._bound_warmth_identity = (
-            f"{model_name}:{model_bytes_digest}:{facts_digest}"
+        mismatch = _binding_mismatch(binding, verified, hc03_profile)
+        if mismatch is not None:
+            raise ValueError(f"open_host_session refused: {mismatch}")
+        return ComfyHostHooks(
+            binding=binding,
+            hc03_profile=hc03_profile,
+            endpoint_transport=endpoint_transport,
+            verified=verified,
+            expected_comfyui_version=None,
+            host=host,
         )
-        # GenericPackHost passes this only after a prior successful settlement
-        # for the exact verified session/process/model binding.  It lets a new
-        # command child reuse the server's resident weights without treating a
-        # fresh Python wrapper as proof that the server is cold.
-        expected_warmth_hint = vibecomfy_warmth_hint(
-            session_id=str(session_dir),
-            process_birth_id=process_birth_id,
-            comfy_process_birth_id=comfy_process_birth_id,
-            runtime_instance_id=runtime_instance_id,
-            model_id=model_name,
-            model_bytes_digest=model_bytes_digest,
-            facts_digest=str(facts_digest),
-            source_revision=source_revision,
-            source_content_digest=source_content_digest,
-            config_digest=config_digest,
-        )
-        if os.environ.get(VIBECOMFY_WARMTH_HINT_ENV) == expected_warmth_hint:
-            adapter._engine.adopt_warmth(
-                fingerprint=adapter._bound_fingerprint,
-                warmth_identity=adapter._bound_warmth_identity,
-                model_bytes_digest=model_bytes_digest,
-                runtime_instance_id=runtime_instance_id,
-            )
-        adapter._probe_system_stats()
-        return adapter
 
     def _restart_owned_session(self) -> dict[str, Any]:
         """Restart exactly the owner daemon, then require a fresh binding."""
