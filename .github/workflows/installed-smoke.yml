@@ -1,0 +1,104 @@
+name: Installed product checkpoint smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_ref:
+        required: true
+        type: string
+      runtime_ref:
+        required: true
+        type: string
+      app_ref:
+        required: true
+        type: string
+      pinokio_ref:
+        required: true
+        type: string
+      vibecomfy_ref:
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      agent_ref:
+        required: true
+        type: string
+      runtime_ref:
+        required: true
+        type: string
+      app_ref:
+        required: true
+        type: string
+      pinokio_ref:
+        required: true
+        type: string
+      vibecomfy_ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installed-smoke-${{ inputs.agent_ref }}-${{ inputs.runtime_ref }}
+  cancel-in-progress: false
+
+jobs:
+  installed-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 29
+    steps:
+      - name: Check out Agent
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.agent_ref }}
+          path: agent
+          persist-credentials: false
+      - name: Check out Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ inputs.runtime_ref }}
+          path: runtime
+          persist-credentials: false
+      - name: Check out App manifest template
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ${{ inputs.app_ref }}
+          path: app
+          persist-credentials: false
+      - name: Check out Pinokio identity
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ inputs.pinokio_ref }}
+          path: pinokio
+          persist-credentials: false
+      - name: Run the installed product smoke
+        shell: bash
+        env:
+          AGENT_REF: ${{ inputs.agent_ref }}
+          RUNTIME_REF: ${{ inputs.runtime_ref }}
+          APP_REF: ${{ inputs.app_ref }}
+          PINOKIO_REF: ${{ inputs.pinokio_ref }}
+          VIBECOMFY_REF: ${{ inputs.vibecomfy_ref }}
+        run: |
+          set -euo pipefail
+          unset PYTHONPATH PYTHONHOME
+          python3 agent/scripts/ci/installed_smoke.py run \
+            --agent "$AGENT_REF" --runtime "$RUNTIME_REF" --app "$APP_REF" \
+            --pinokio "$PINOKIO_REF" --vibecomfy "$VIBECOMFY_REF" \
+            --agent-checkout "$GITHUB_WORKSPACE/agent" \
+            --runtime-checkout "$GITHUB_WORKSPACE/runtime" \
+            --app-checkout "$GITHUB_WORKSPACE/app" \
+            --pinokio-checkout "$GITHUB_WORKSPACE/pinokio" \
+            --output "$RUNNER_TEMP/installed-smoke"
+      - name: Upload installed-smoke receipt and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/installed-smoke/
+          if-no-files-found: error
+          retention-days: 30
