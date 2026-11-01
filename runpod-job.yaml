@@ -1,0 +1,68 @@
+repos:
+  astrid-agent: 290791ea967892cae3b69c556714643a1d2d25dd
+  astrid-runtime: ecc9f1533234d33bfc082b34e1dc4e18a22e3f3d
+cpu:
+  vcpu: 8
+gpu: false
+max_minutes: 30
+setup:
+- 'set -euo pipefail
+
+  mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"
+
+  export TMPDIR="$PWD/runpod-tmp"
+
+  python3 -m venv "$PWD/runpod-tmp/venv"
+
+  CUSTODY_PYTHON="$PWD/runpod-tmp/venv/bin/python"
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation . ../astrid-runtime
+  ../astrid-runtime/packages/python
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "banodoco-timeline-schema @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python"
+
+  "$CUSTODY_PYTHON" -m pip install --disable-pip-version-check --no-deps "git+https://github.com/peteromallet/VibeComfy.git@ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+
+  "$CUSTODY_PYTHON" -m pip freeze > runpod-evidence/environment.txt
+
+  '
+run:
+- 'set -euo pipefail
+
+  mkdir -p "$PWD/runpod-evidence" "$PWD/runpod-tmp"
+
+  trap ''code=$?; printf "%s\n" "$code" > runpod-evidence/exit-code.txt'' EXIT
+
+  export TMPDIR="$PWD/runpod-tmp" PYTHONDONTWRITEBYTECODE=1
+
+  export ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)"
+
+  export PYTHONPATH="$PWD:$ASTRID_RUNTIME_CHECKOUT:$ASTRID_RUNTIME_CHECKOUT/packages/python"
+
+  CUSTODY_PYTHON="$PWD/runpod-tmp/venv/bin/python"
+
+  test "$(git rev-parse HEAD)" = 290791ea967892cae3b69c556714643a1d2d25dd
+
+  test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = ecc9f1533234d33bfc082b34e1dc4e18a22e3f3d
+
+  git rev-parse HEAD > runpod-evidence/agent-head.txt
+
+  git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
+
+  "$CUSTODY_PYTHON" --version > runpod-evidence/python.txt
+
+  "$CUSTODY_PYTHON" -m pytest --version > runpod-evidence/pytest.txt
+
+  uname -a > runpod-evidence/platform.txt
+
+  "$CUSTODY_PYTHON" -m pytest -p no:cacheprovider -o addopts= -q --basetemp="$TMPDIR/pytest" --junitxml=runpod-evidence/focused.xml
+  tests/core/execution/test_stop_evidence_i_ag_03b_r7.py tests/core/execution/test_fail_closed_g28.py::test_cancel_completion_error_propagates_and_retains_pending_evidence
+  tests/core/execution/test_terminal_evidence_transport_f05.py::test_cancel_evidence_carries_complete_fence_and_unknown_stop
+  tests/core/execution/test_terminal_evidence_transport_f05.py::test_cancel_replay_reads_durable_result_after_observed_stop_clears_attempt
+  2>&1 | tee runpod-evidence/focused.txt
+
+  '
+artifacts:
+- runpod-evidence/**
