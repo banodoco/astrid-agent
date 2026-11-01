@@ -520,10 +520,12 @@ def prepare_release_python(*, archive, sha256, retain, root, seconds=1800, engin
     # Exact verified retained helper; the same file LinuxPlatformAdapter imports.
     helper = runpy.run_path(str(release / 'site/astrid/core/generation/_engine_python_bootstrap.py'))
     try:
+        bootstrap_uv = os.environ.get('ASTRID_INSTALL_UV') or None
         commands = helper['linux_bootstrap_commands'](
             install_root=root, uv_version=environment['uv_version'],
             python_version=environment['python_version'],
-            venv_relative_path=environment['relative_path'])
+            venv_relative_path=environment['relative_path'],
+            bootstrap_uv=bootstrap_uv, bootstrap_python=sys.executable if bootstrap_uv else None)
         paths = helper['linux_bootstrap_paths'](install_root=root,
                                                 venv_relative_path=environment['relative_path'])
         overlay = helper['linux_bootstrap_environment'](install_root=root)
@@ -534,7 +536,7 @@ def prepare_release_python(*, archive, sha256, retain, root, seconds=1800, engin
     env.update(overlay)
     pip_env = dict(env, **helper['linux_bootstrap_pip_environment']())
     # Refuse before any mutation when the system interpreter cannot run pip.
-    if _bounded((commands[0][0], '-m', 'pip', '--version'), env=env, end=end, capture=True).returncode:
+    if not bootstrap_uv and _bounded((commands[0][0], '-m', 'pip', '--version'), env=env, end=end, capture=True).returncode:
         raise ReleaseError('system python3 with pip is required by the recipe bootstrap')
     if _bounded(commands[0], env=pip_env, end=end).returncode:
         raise ReleaseError('pinned uv bootstrap failed')

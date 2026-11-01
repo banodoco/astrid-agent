@@ -109,8 +109,12 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
             registry=ModelRegistry.load_default(), model=None, mode=mode, modality='image',
             target=client.target.url, execution='local', inputs=params, dry_run=True,
         )
-        assert selected['entry'] == model
-        assert selected['approval']['status'] == 'approved'
+        assert selected['entry']['model'] == model
+        if mode == 'edit':
+            # Media must be staged before a final executable projection is approved.
+            assert 'approval' not in selected['entry']
+        else:
+            assert selected['entry']['approval']['status'] == 'approved'
         assert requests == ['/object_info', '/object_info', '/system_stats', '/object_info']
     finally:
         server.shutdown(); server.server_close(); thread.join()
@@ -172,9 +176,9 @@ def test_generate_and_h3_share_vibecomfy_pin():
     assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
     assert generate_sources['vibecomfy'] == (
-        'https://github.com/banodoco/VibeComfy.git', '8cf4c758c3f1f2473f2094478edc8696bb5bf5c0')
+        'https://github.com/banodoco/VibeComfy.git', 'b2123edfbe7b950848b5c98d575fd9554302fc73')
     assert h3_sources['vibecomfy'] == (
-        'https://github.com/banodoco/VibeComfy.git', '8cf4c758c3f1f2473f2094478edc8696bb5bf5c0')
+        'https://github.com/banodoco/VibeComfy.git', 'b2123edfbe7b950848b5c98d575fd9554302fc73')
     assert {k: v for k, v in generate_sources.items() if k not in {'comfyui', 'vibecomfy'}} == {
         k: v for k, v in h3_sources.items() if k not in {'comfyui', 'vibecomfy'}}
 

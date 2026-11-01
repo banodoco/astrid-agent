@@ -41,8 +41,39 @@ _SCHEMA = "astrid.engine-service.v1"
 _FRAME_LIMIT = 16 * 1024 * 1024
 _OUTPUT_LIMIT = 1024 * 1024
 _CLEANUP_SECONDS = 8.0
+_CAUSE_LIMIT = 600
+_CLEANUP_STAGES = {"terminate", "verify", "stdout_drain", "stderr_drain",
+                   "stdout_close", "stderr_close", "drain"}
+_SECRET_KEY = re.compile(r"token|secret|password|authorization|credential|bearer|key$|owner_id", re.I)
 _ERRORS = {e.code: e for e in (CustodyUnresolved, DeadlineExceeded, EndpointHealthError,
            EndpointOwnershipError, IntegrityError, RecipeValidationError, UnsafePathError)}
+
+
+def _cleanup_failure(stage, exc, secrets=()):
+    """Only bounded diagnostic text crosses the owner boundary, never env/argv."""
+    try:
+        message = str(exc)
+    except BaseException:
+        message = "exception message unavailable"
+    for value in sorted(set(secrets), key=len, reverse=True):
+        if value:
+            message = message.replace(value, "<redacted>")
+    message = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1<redacted>@", message)
+    message = re.sub(
+        r'''(?i)(\b[\w-]*(?:token|secret|password|authorization|credential|api[_-]?key|owner_id|key)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:bearer\s+)?[^\s,;&}]+)''',
+        r"\1<redacted>", message)
+    message = re.sub(r'''(?i)(\bbearer\s+)[^\s,;"'&}]+''', r"\1<redacted>", message)
+    # Also suppress unlabelled opaque tokens, including launch IDs and JWTs.
+    message = re.sub(r"\b[A-Za-z0-9_-]{24,}(?:\.[A-Za-z0-9_-]+)*\b", "<redacted>", message)
+    message = " ".join(message.split())[:_CAUSE_LIMIT]
+    return {"stage": stage, "exception_type": type(exc).__name__[:80], "message": message}
+
+
+def _valid_cleanup_failure(value):
+    return (isinstance(value, dict) and set(value) == {"stage", "exception_type", "message"}
+            and isinstance(value["stage"], str) and value["stage"] in _CLEANUP_STAGES
+            and isinstance(value["exception_type"], str) and 0 < len(value["exception_type"]) <= 80
+            and isinstance(value["message"], str) and len(value["message"]) <= _CAUSE_LIMIT)
 
 
 def _remaining(deadline):
@@ -254,13 +285,22 @@ class LinuxEngineServiceClient:
                     _send(channel, {"identity": self.identity, "operation": operation, "payload": payload,
                                     "remaining_seconds": _remaining(deadline)}, deadline)
                     # Keep the connection open while target deadline cleanup is verified.
-                    response = _receive(channel, deadline + _CLEANUP_SECONDS)
+                    response = _receive(channel, deadline if operation == "stop" else deadline + _CLEANUP_SECONDS)
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
-                        or set(response) not in ({"identity", "result"}, {"identity", "error"})):
+                        or set(response) not in ({"identity", "result"}, {"identity", "error"},
+                                                 {"identity", "error", "cleanup_failure"})):
                     raise IntegrityError("unbound supervisor response")
                 if "error" in response:
                     code = response["error"]
-                    raise _ERRORS.get(code, CustodyUnresolved)("engine supervisor: " + str(code))
+                    cause = response.get("cleanup_failure")
+                    if "cleanup_failure" in response and not _valid_cleanup_failure(cause):
+                        raise IntegrityError("invalid supervisor cleanup diagnostic")
+                    message = "engine supervisor: " + str(code)
+                    if cause is not None:
+                        message += f" ({cause['stage']}: {cause['exception_type']}: {cause['message']})"
+                    error = _ERRORS.get(code, CustodyUnresolved)(message)
+                    error.cleanup_failure = cause
+                    raise error
                 return response["result"]
         except FileNotFoundError:
             if not start:
@@ -282,9 +322,9 @@ class LinuxEngineServiceClient:
         self._request("stop", {}, deadline, start=False)
         # Successful explicit stop includes retirement of the ephemeral marker.
         while Path(self.control, "session.json").exists():
-            time.sleep(min(0.02, _remaining(deadline + _CLEANUP_SECONDS)))
+            time.sleep(min(0.02, _remaining(deadline)))
         if self._spawned is not None:
-            self._spawned.wait(timeout=_remaining(deadline + _CLEANUP_SECONDS))
+            self._spawned.wait(timeout=_remaining(deadline))
 
 
 class _Output:
@@ -309,7 +349,7 @@ class _Output:
 
 
 class _Owned:
-    def __init__(self, request):
+    def __init__(self, request, *, secrets=()):
         from astrid.core.execution.process_group import popen_owned_group
         # The caller's library path is never inherited; request.env (built by
         # engine_child_env) is the only source.
@@ -319,6 +359,14 @@ class _Owned:
                 env.pop(key, None)
             else:
                 env[key] = value
+        self.cleanup_failure = None
+        self._cleanup_secrets = tuple(secrets) + tuple(v for k, v in env.items() if _SECRET_KEY.search(k))
+        for index, arg in enumerate(request.argv):
+            if arg.startswith("-") and _SECRET_KEY.search(arg.partition("=")[0]):
+                if "=" in arg:
+                    self._cleanup_secrets += (arg.partition("=")[2],)
+                elif index + 1 < len(request.argv):
+                    self._cleanup_secrets += (request.argv[index + 1],)
         self.process = None
         try:
             self.process = popen_owned_group(list(request.argv), cwd=request.cwd, env=env,
@@ -337,18 +385,29 @@ class _Owned:
 
     def stop(self, deadline):
         from astrid.core.execution.process_group import terminate_tree, verify_tree_absent
+        stage = "terminate"
         try:
             terminate_tree(self.process, grace_seconds=0.1, cleanup_deadline=deadline)
-            verify_tree_absent(self.process)
-            for output in (getattr(self, "stdout", None), getattr(self, "stderr", None)):
+            stage = "verify"
+            verify_tree_absent(self.process, deadline=deadline)
+            for name in ("stdout", "stderr"):
+                output = getattr(self, name, None)
                 if output is None:
                     continue
+                stage = name + "_drain"
                 output.thread.join(timeout=max(0, deadline - time.monotonic()))
                 if output.thread.is_alive():
                     raise CustodyUnresolved("owned output drain unresolved")
+                stage = name + "_close"
                 output.stream.close()
         except BaseException as exc:
-            raise CustodyUnresolved("native owned process cleanup unresolved") from exc
+            if self.cleanup_failure is None:
+                self.cleanup_failure = _cleanup_failure(stage, exc, self._cleanup_secrets)
+            cause = self.cleanup_failure
+            error = CustodyUnresolved(f"native owned process cleanup unresolved "
+                                     f"({cause['stage']}: {cause['exception_type']}: {cause['message']})")
+            error.cleanup_failure = cause
+            raise error from exc
 
 
 def _command(value, deadline):
@@ -461,7 +520,11 @@ class _Supervisor:
         self.commands = []  # Retain uncertain handles; never reconstruct them from disk.
         self.stopping = threading.Event()
         self.finished = threading.Event()
+        self.finished_deadline = None
+        self.stop_deadlines = {}
+        self.stop_lock = threading.Lock()
         self.unresolved = False
+        self.cleanup_failure = None
         self.work = threading.Lock()
         self.registry = self.root + "/runtime/out/sessions/" + identity["engine"]
         self.registry_names = []
@@ -488,7 +551,7 @@ class _Supervisor:
         owned = _Owned.__new__(_Owned)
         self.commands.append(owned)
         try:
-            owned.__init__(self.child_request(request))
+            owned.__init__(self.child_request(request), secrets=(self.token,))
         except BaseException as exc:
             if getattr(owned, "process", None) is not None:
                 self.unresolved = True
@@ -502,26 +565,45 @@ class _Supervisor:
     def drain(self, owned, deadline):
         try:
             owned.stop(deadline)
-        except BaseException:
+        except BaseException as exc:
             self.unresolved = True
+            if self.cleanup_failure is None:
+                self.cleanup_failure = getattr(owned, "cleanup_failure", None) or _cleanup_failure("drain", exc, (self.token,))
+                try:
+                    with _directory(self.control) as fd:
+                        _write(fd, "cleanup-failure.json", _json(self.cleanup_failure).encode())
+                except (OSError, EngineError):
+                    pass  # The in-memory first cause still survives a persistence failure.
             raise
         self.commands.remove(owned)
+
+    def cleanup_deadline(self, deadline=None):
+        # An explicit stop also owns cleanup in an interrupted run/start thread.
+        with self.stop_lock:
+            if self.stop_deadlines:
+                return min(self.stop_deadlines.values())
+        return deadline if deadline is not None else time.monotonic() + _CLEANUP_SECONDS
 
     def run(self, value, deadline, channel):
         request = _command(value, deadline)
         started = time.monotonic()
         owned = self.spawn(request)
         timed_out = False
+        cleanup_deadline = deadline
         try:
             while owned.live():
                 try:
                     self.check(channel, deadline)
                 except DeadlineExceeded:
                     timed_out = True
+                    cleanup_deadline = None
                     break
                 time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+        except BaseException:
+            cleanup_deadline = None
+            raise
         finally:
-            self.drain(owned, time.monotonic() + _CLEANUP_SECONDS)
+            self.drain(owned, self.cleanup_deadline(cleanup_deadline))
         return asdict(CommandResult(None if timed_out else owned.process.returncode,
                       owned.stdout.text(), owned.stderr.text(), timed_out,
                       time.monotonic() - started, uuid.uuid4().hex,
@@ -564,9 +646,10 @@ class _Supervisor:
                         pass
             self.registry_names.clear()
 
-    def stop_engine(self):
+    def stop_engine(self, deadline=None):
+        deadline = self.cleanup_deadline(deadline)
         if self.engine is not None:
-            self.drain(self.engine, time.monotonic() + _CLEANUP_SECONDS)
+            self.drain(self.engine, deadline)
             self.engine = None
         self.clear_registry()
 
@@ -646,7 +729,7 @@ class _Supervisor:
                 or payload["poll_interval_seconds"] != self.recipe.health.poll_interval_seconds):
             raise EndpointOwnershipError("service request differs from bound recipe or owner")
         if self.engine is not None and not self.engine.live():
-            self.stop_engine()
+            self.stop_engine(deadline)
         if self.engine is None:
             # Availability is observational only. Never adopt or signal a port owner.
             with socket.socket() as probe:
@@ -672,10 +755,13 @@ class _Supervisor:
             return self.health(channel, deadline)
         return self.facts("owned")
 
-    def stop(self):
-        self.stop_engine()
+    def stop(self, deadline=None):
+        deadline = self.cleanup_deadline(deadline)
         for owned in list(self.commands):
-            self.drain(owned, time.monotonic() + _CLEANUP_SECONDS)
+            if owned is not self.engine:
+                self.drain(owned, deadline)
+        # Retire engine/registry only after every other owned drain is certified.
+        self.stop_engine(deadline)
 
     def connection(self, channel):
         operation = None
@@ -690,14 +776,18 @@ class _Supervisor:
             deadline = time.monotonic() + remaining
             operation = value["operation"]
             if operation == "stop":
-                self.stopping.set()
-            if not self.work.acquire(timeout=_remaining(deadline + _CLEANUP_SECONDS)):
+                with self.stop_lock:
+                    self.stop_deadlines[channel] = deadline
+                    self.stopping.set()
+            response_deadline = deadline if operation == "stop" else deadline + _CLEANUP_SECONDS
+            if not self.work.acquire(timeout=_remaining(response_deadline)):
                 raise CustodyUnresolved("active supervisor operation did not drain")
             engine_before = self.engine
             try:
                 if operation == "stop":
-                    self.stop()
+                    self.stop(deadline)
                     result = {"stopped": True}
+                    self.finished_deadline = deadline
                     self.finished.set()
                 else:
                     self.check(channel, deadline)
@@ -707,7 +797,7 @@ class _Supervisor:
                         result = self.service(operation, value["payload"], deadline, channel)
                     else:
                         raise RecipeValidationError("unsupported supervisor operation")
-                _send(channel, {"identity": self.identity, "result": result}, deadline + _CLEANUP_SECONDS)
+                _send(channel, {"identity": self.identity, "result": result}, response_deadline)
             except (OSError, EOFError):
                 if operation == "start" and self.engine is not engine_before:
                     self.stop_engine()
@@ -715,16 +805,21 @@ class _Supervisor:
             finally:
                 self.work.release()
         except BaseException as exc:
-            if operation == "stop" and not self.finished.is_set():
-                # Keep this live owner and its handles available for explicit
-                # recovery; a failed stop never retires its session marker.
-                self.stopping.clear()
             try:
-                _send(channel, {"identity": self.identity, "error": exc.code if isinstance(exc, EngineError)
-                               else CustodyUnresolved.code}, time.monotonic() + 1)
+                response = {"identity": self.identity, "error": exc.code if isinstance(exc, EngineError)
+                            else CustodyUnresolved.code}
+                if self.cleanup_failure is not None:
+                    response["cleanup_failure"] = self.cleanup_failure
+                _send(channel, response, time.monotonic() + 1)
             except (OSError, EngineError):
                 pass
         finally:
+            if operation == "stop":
+                # Failed stops retain this live owner and its marker for recovery.
+                with self.stop_lock:
+                    self.stop_deadlines.pop(channel, None)
+                    if not self.finished.is_set() and not self.stop_deadlines:
+                        self.stopping.clear()
             channel.close()
 
 
@@ -775,7 +870,7 @@ def _serve(identity, recipe, lock_fd, token):
                     thread.join(timeout=_CLEANUP_SECONDS + 5)
                 if not any(t.is_alive() for t in threads):
                     with owner.work:
-                        owner.stop()
+                        owner.stop(owner.finished_deadline)
                         clean = True
                 if clean:
                     os.unlink("control.sock", dir_fd=fd)
