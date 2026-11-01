@@ -10,6 +10,15 @@ from astrid.core.generation import gpu_environment as gpu
 from tests.test_generic_host import FakeRuntime, _write_manifest
 
 
+def _mock_vibecomfy_identity_preflight(monkeypatch):
+    # These tests cover Windows GPU admission and host settlement, not workflow
+    # parsing; VibeComfy's canonical input preflight has its own focused tests.
+    monkeypatch.setattr(
+        "astrid.core.execution.generic_host._prepare_vibecomfy_execution_identity",
+        lambda *_args: ("fixture-identity", "vibecomfy", "fixture-template", {}),
+    )
+
+
 @pytest.fixture
 def windows_gpu(monkeypatch):
     original = gpu.windows_gpu_status
@@ -72,6 +81,7 @@ def test_unqualified_label_survives_other_readiness_failures(tmp_path, monkeypat
 
 @pytest.mark.parametrize("opted_in", [False, True])
 def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypatch, windows_gpu, opted_in):
+    _mock_vibecomfy_identity_preflight(monkeypatch)
     packs = tmp_path / "packs"
     _write_manifest(packs / "comfy", capability_id="vibecomfy.run")
     runtime = FakeRuntime()
@@ -114,6 +124,7 @@ def test_vibecomfy_remains_ready_when_nvidia_detection_is_lost(tmp_path, monkeyp
 
 
 def test_failed_opt_in_run_retains_unqualified_label(tmp_path, monkeypatch, windows_gpu):
+    _mock_vibecomfy_identity_preflight(monkeypatch)
     _write_manifest(tmp_path / "comfy", capability_id="vibecomfy.run")
     monkeypatch.setenv(gpu.ALLOW_UNQUALIFIED_ENV, "1")
     runtime = FakeRuntime()
