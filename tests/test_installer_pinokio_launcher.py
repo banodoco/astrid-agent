@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import json
 import os
 import runpy
 import sys
 from pathlib import Path
 from types import ModuleType
+from types import SimpleNamespace
 
 import pytest
 
@@ -214,6 +216,7 @@ def _second_version(root: Path, name: str = "candidate") -> Version:
 
 def test_foreground_binds_migration_journal_to_exact_retained_session(tmp_path, monkeypatch):
     from runtime_protocol import platform
+    from astrid.installer.custody import stopped_custody
 
     root, data, old = _installation(tmp_path)
     candidate = _second_version(root)
@@ -229,13 +232,48 @@ def test_foreground_binds_migration_journal_to_exact_retained_session(tmp_path, 
         pass
 
     monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "not-used")
-    monkeypatch.setattr(foreground.os, "execvpe", lambda *_args: (_ for _ in ()).throw(ExecCalled()))
+    observed = []
+
+    def capture(_file, arguments, environment):
+        observed.append((arguments, environment))
+        raise ExecCalled
+
+    monkeypatch.setattr(foreground.os, "execvpe", capture)
     app_lock = root / ".app-update.lock"
-    with app_lock.open("a+b") as update_lock, (tmp_path / "installer.lock").open("a+b") as lock:
+    backend = SimpleNamespace(service=SimpleNamespace(home=Path.home(), system="linux"))
+    with app_lock.open("a+b") as update_lock, stopped_custody(root, backend) as custody:
+        assert custody is not None
         platform.lock_file(update_lock.fileno(), blocking=False)
         try:
+            # A held operation lock and the selected journal do not authorize Start.
+            with pytest.raises(ValueError, match="Choose Update to finish"):
+                foreground.launch(root, [], system="linux")
+            assert not observed
+
+            ticket = custody.arm(candidate, data)
+            assert ticket["binding"]["operation_id"] == "1" * 32
+            assert ticket["binding"]["step"] == "switched"
+            assert ticket["binding"]["version"] == candidate.document()
+            altered = dict(ticket, binding=dict(ticket["binding"], operation_id="2" * 32))
+            monkeypatch.setenv("ASTRID_INSTALL_CUSTODY", json.dumps(altered))
+            with pytest.raises(ValueError, match="activation identity changed"):
+                foreground.launch(root, [], system="linux")
+            assert not observed
+
+            monkeypatch.setenv("ASTRID_INSTALL_CUSTODY", json.dumps(ticket))
             with pytest.raises(ExecCalled):
-                foreground._run(root, [], "linux", lock.fileno())
+                foreground.launch(root, [], system="linux")
+            arguments, environment = observed[0]
+            assert arguments[0] == str(candidate.python)
+            assert _runtime_args(arguments) == [
+                "run", "--profile", "astrid", "--data-root", str(data),
+                "--source-manifest", str(candidate.profile),
+            ]
+            assert environment["ASTRID_INSTALLER_OPERATION_ID"] == "not-used"
+            monkeypatch.setenv("ASTRID_INSTALL_CUSTODY", json.dumps(ticket))
+            with pytest.raises(ValueError, match="ticket was refused"):
+                foreground.launch(root, [], system="linux")
+            assert len(observed) == 1
         finally:
             platform.unlock_file(update_lock.fileno())
 

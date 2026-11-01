@@ -87,6 +87,41 @@ def test_foreground_run_is_refused_while_an_installer_holds_the_lock(tmp_path, m
         platform.unlock_file(held.fileno())
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux XDG filtering")
+def test_foreground_refuses_existing_custom_xdg_owner_after_filtering(tmp_path, monkeypatch):
+    from runtime_protocol import platform
+
+    home = _set_home(tmp_path, monkeypatch)
+    root = tmp_path / "pinokio-app"
+    data = tmp_path / "workspace"
+    folder = root / "versions" / "old"
+    folder.mkdir(parents=True)
+    python, profile = folder / "bin" / "python", folder / "profile.json"
+    python.parent.mkdir()
+    python.write_text("placeholder", encoding="utf-8")
+    profile.write_text("{}\n", encoding="utf-8")
+    version = Version(folder, python, profile, {}, managed_by="pinokio")
+    write_json(folder / "version.json", version.document())
+    switch(root, version)
+    write_json(root / "install.json", {
+        "owner": LABEL, "managed_by": "pinokio", "data_root": str(data),
+    })
+    path = installer_lock_path(home, "linux")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as held:
+        platform.lock_file(held.fileno(), blocking=False)
+        identity = os.fstat(held.fileno())
+        monkeypatch.delenv("XDG_DATA_HOME")
+        monkeypatch.setattr(foreground.os, "execvpe", lambda *_args: pytest.fail("launched under held L"))
+        try:
+            with pytest.raises(ValueError, match="already running or being installed"):
+                foreground.launch(root, [], system="linux")
+            assert os.stat(path).st_ino == identity.st_ino
+            assert os.stat(path).st_dev == identity.st_dev
+        finally:
+            platform.unlock_file(held.fileno())
+
+
 @pytest.mark.parametrize("mode", ["install", "update", "uninstall"])
 def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, monkeypatch, capsys, mode):
     from runtime_protocol import platform
