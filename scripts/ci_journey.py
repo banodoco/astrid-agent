@@ -55,7 +55,7 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
                      "release0-to-release1")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
-                 "windows-2022": "win32", "macos-14": "darwin"}
+                 "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
 

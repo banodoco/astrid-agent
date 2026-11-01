@@ -304,6 +304,27 @@ def test_tst_b1_hosted_runner_label_requires_matching_os_and_raw_image_fields(mo
         journey.assert_runner_identity(journey.runner_identity())
 
 
+@pytest.mark.parametrize("label", ["macos-14", "macos-15"])
+def test_tst_b1_macos_runner_requires_observed_darwin(monkeypatch, label):
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", label)
+    monkeypatch.setenv("RUNNER_OS", "macOS")
+    monkeypatch.setenv("ImageOS", label.replace("-", ""))
+    monkeypatch.setenv("ImageVersion", "20261028.1")
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    identity = journey.runner_identity()
+    assert identity["runner_provenance"]["observed_os_family"] == "darwin"
+    journey.assert_runner_identity(identity)
+
+    monkeypatch.setenv("RUNNER_OS", "Linux")
+    with pytest.raises(RuntimeError, match="RUNNER_OS Linux disagrees with observed darwin"):
+        journey.assert_runner_identity(journey.runner_identity())
+
+    monkeypatch.setenv("RUNNER_OS", "macOS")
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match=f"Runner label {label} disagrees with observed linux"):
+        journey.assert_runner_identity(journey.runner_identity())
+
+
 def test_tst_b1_runner_mismatch_fails_before_host_or_installer(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     args = argparse.Namespace(run_root=run_root, root=run_root / "program",
