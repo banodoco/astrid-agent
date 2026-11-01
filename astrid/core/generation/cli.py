@@ -51,6 +51,7 @@ def _common_options(command):
     command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
     command.add_argument('--max-usd', action=_Once, type=float)
     command.add_argument('--deadline', action=_Once, help='Absolute UTC execution deadline.')
+    command.add_argument('--recovery-path', action=_Once, help='Save the exact Runtime admission receipt.')
 
 
 def _entry_help(description: dict[str, Any]) -> str:
@@ -160,6 +161,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('workflow', nargs='?')
     command.add_argument("--entry")
     command.add_argument("--mode")
+    command.add_argument('--target', action=_Once, help='Describe the retained RunPod target.')
+    command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
@@ -225,7 +228,7 @@ def _controls(parsed):
     controls = {}
     if parsed.no_wait:
         controls['wait'] = False
-    for name in ('engine', 'consent', 'max_usd', 'deadline'):
+    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path'):
         value = getattr(parsed, name, None)
         if value is not None and value != []:
             controls[name] = value
@@ -324,6 +327,13 @@ def _main(argv: list[str]) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if parsed.modality == "describe":
+        if parsed.target is not None:
+            if parsed.entry is not None or parsed.workflow is not None:
+                parser.error('target describe cannot also select an entry or workflow')
+            with _open_client() as client:
+                description = _generate_facade().describe(target=parsed.target, engine=parsed.engine, client=client)
+            print(json.dumps(description, indent=2, sort_keys=True))
+            return 0
         from astrid.core.generation.entries import describe_entry
         try:
             if bool(parsed.entry) == bool(parsed.workflow):
@@ -396,7 +406,7 @@ def _main(argv: list[str]) -> int:
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
     try:
         generate = getattr(_generate_facade(), parsed.modality)
-        if parsed.dry_run or (description is not None and description["source"] == "action"):
+        if parsed.dry_run or (description is not None and description["source"] == "action" and parsed.target != 'runpod'):
             result = generate(**kwargs)
         else:
             with _open_client() as client:
