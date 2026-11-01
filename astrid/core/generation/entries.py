@@ -750,7 +750,7 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
         return None
     from types import SimpleNamespace
     from astrid.core.generation.backends.comfy_target import _resolve_roles
-    from vibecomfy.schema.provider import TargetSchemaProvider
+    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     observed = client.object_info()
     if not isinstance(observed, dict):
         raise ValueError("target model inventory is malformed")

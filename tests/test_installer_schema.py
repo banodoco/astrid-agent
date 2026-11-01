@@ -214,6 +214,7 @@ def test_staging_verifies_the_local_schema_before_declaring_services(tmp_path, m
         str(version.root / "v"),
     ]
     assert len(python_installs) == 2
+    assert version.env["ASTRID_INSTALL_UV"] == str(backend.uv)
     assert npm_index < calls.index(["declare-services"])
     assert schema_path == version.env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"]
     assert schema_path.endswith("/site-packages/astrid/core/timeline/schema/timeline-config.schema.json")

@@ -1050,7 +1050,11 @@ def _host_idle(pid: int, support_root: Path | None = None) -> bool:
 
 
 def _execution_profile() -> str:
-    profile = os.environ.get("ASTRID_HOST_EXECUTION_PROFILE", "source").strip()
+    default = ("installed" if "ASTRID_INSTALL_RELEASE" in os.environ
+               or "ASTRID_INSTALL_MANAGED_BY" in os.environ
+               or not (Path(__file__).resolve().parents[2] / ".git").exists()
+               else "source")
+    profile = os.environ.get("ASTRID_HOST_EXECUTION_PROFILE", default).strip()
     if profile not in {"source", "installed"}:
         raise PackHostBootstrapError("host execution profile must be source or installed")
     return profile
@@ -1062,7 +1066,10 @@ def _capability_matrix_path(source_path: Path) -> Path:
 
     raw = os.environ.get(ASTRID_CAPABILITY_MATRIX_PATH, "").strip()
     if not raw:
-        return source_path / "config" / "astrid-beta-capabilities.json"
+        from astrid.core.product_resources import product_resource
+        return product_resource("astrid-beta-capabilities.json",
+                                source=source_path / "config" / "astrid-beta-capabilities.json",
+                                package_root=source_path / "astrid/resources")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise PackHostBootstrapError("installed capability matrix path must be absolute")
@@ -1237,7 +1244,7 @@ def _prepare_render_validation(source_path: Path, env: dict[str, str],
     if pack_roots:
         from astrid.core.execution.generic_host import _launch_worker_probe_environments
 
-        matrix = source_path / "config" / "astrid-beta-capabilities.json"
+        matrix = _capability_matrix_path(source_path)
         workers = _launch_worker_probe_environments(
             pack_roots, env, matrix if matrix.is_file() else None,
             remotion_only=True,

@@ -67,7 +67,7 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
 def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
-    from vibecomfy.schema.provider import TargetSchemaProvider
+    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from vibecomfy.schema.validate import (
         _choice_scope,
         validate_api_against_schema,

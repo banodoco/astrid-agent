@@ -479,7 +479,7 @@ def _catalog_alternative_is_executable(spec: BackendSpec, roles: Mapping[str, st
                                        object_info: dict[str, Any], server_url: str) -> bool:
     """Only advertise a role match whose pinned graph crosses canonical approval."""
     try:
-        from vibecomfy.schema.provider import TargetSchemaProvider
+        from .comfy_schema import TargetSchemaProvider
         from vibecomfy.workflow_bundle import load_bundle
 
         workflow = _load_pinned_catalog_workflow(spec)
@@ -674,7 +674,7 @@ class VibeComfyBackend(BackendAdapter):
         plan, target_schema = None, None
         if resolve_target or (backend_spec.model_roles and self._model_resolution_client() is not None):
             from astrid.core.model_catalog.registry import ModelRegistry
-            from vibecomfy.schema.provider import TargetSchemaProvider
+            from .comfy_schema import TargetSchemaProvider
 
             client = self._model_resolution_client()
             if client is None:

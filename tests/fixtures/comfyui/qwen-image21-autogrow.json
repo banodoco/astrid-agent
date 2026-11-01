@@ -1,0 +1,125 @@
+{
+  "TextEncodeQwenImage21": {
+    "api_node": false,
+    "category": "model/conditioning/qwen image",
+    "deprecated": false,
+    "description": "",
+    "dev_only": false,
+    "display_name": "Text Encode Qwen Image 2.1",
+    "essentials_category": null,
+    "experimental": false,
+    "has_intermediate_output": false,
+    "input": {
+      "optional": {
+        "vae": [
+          "VAE",
+          {}
+        ]
+      },
+      "required": {
+        "clip": [
+          "CLIP",
+          {}
+        ],
+        "images": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "input": {
+                "required": {
+                  "image": [
+                    "IMAGE",
+                    {}
+                  ]
+                }
+              },
+              "min": 0,
+              "names": [
+                "image_1",
+                "image_2",
+                "image_3",
+                "image_4",
+                "image_5",
+                "image_6",
+                "image_7",
+                "image_8",
+                "image_9",
+                "image_10",
+                "image_11",
+                "image_12",
+                "image_13",
+                "image_14",
+                "image_15",
+                "image_16"
+              ]
+            },
+            "tooltip": "Reference images, seen by the text encoder and spliced into the sequence as VAE latents."
+          }
+        ],
+        "negative_prompt": [
+          "STRING",
+          {
+            "dynamicPrompts": true,
+            "multiline": true
+          }
+        ],
+        "prompt": [
+          "STRING",
+          {
+            "dynamicPrompts": true,
+            "multiline": true
+          }
+        ],
+        "resolution": [
+          "INT",
+          {
+            "default": 1024,
+            "max": 4096,
+            "min": 0,
+            "step": 32,
+            "tooltip": "Reference images are resized to about resolution x resolution pixels, at multiples of 32, preserving aspect ratio. 0 keeps each reference at its own size, rounded to a multiple of 32. "
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "optional": [
+        "vae"
+      ],
+      "required": [
+        "clip",
+        "prompt",
+        "negative_prompt",
+        "resolution",
+        "images"
+      ]
+    },
+    "is_input_list": false,
+    "name": "TextEncodeQwenImage21",
+    "output": [
+      "CONDITIONING",
+      "CONDITIONING",
+      "LATENT"
+    ],
+    "output_is_list": [
+      false,
+      false,
+      false
+    ],
+    "output_matchtypes": null,
+    "output_name": [
+      "positive",
+      "negative",
+      "latent"
+    ],
+    "output_node": false,
+    "output_tooltips": [
+      null,
+      null,
+      "Empty latent on the first reference image's size, to match with sampling as any other size shifts the edit."
+    ],
+    "price_badge": null,
+    "python_module": "comfy_extras.nodes_qwen",
+    "search_aliases": null
+  }
+}

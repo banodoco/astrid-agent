@@ -77,12 +77,14 @@ def test_missing_vibecomfy_is_actionable_and_does_not_probe_comfyui(
     assert checked == ["vibecomfy"]
 
 
+@pytest.mark.parametrize('entry_id', ['z-image', 'qwen-image-2.1-turbo'])
 def test_missing_comfyui_runtime_is_actionable(
-    z_image_entry: Any,
+    entry_id: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     from astrid.core.generation import preflight
+    entry = ModelRegistry.load_default().get(entry_id)
 
     monkeypatch.setattr(
         preflight,
@@ -96,13 +98,13 @@ def test_missing_comfyui_runtime_is_actionable(
     monkeypatch.setattr(platform, 'machine', lambda: 'x86_64')
     monkeypatch.setattr(engine_local_endpoint, 'default_engine_root', lambda engine: str(tmp_path / engine))
 
-    result = check_local_generation_readiness(z_image_entry, "t2i")
+    result = check_local_generation_readiness(entry, "t2i")
 
     assert result.ready is False
     assert "ComfyUI runtime" in result.reason
     assert "existing ComfyUI" in result.recovery_command
-    assert "astrid engines install vibecomfy-h3 --platform linux-x86_64-cu130 --placement local" in result.recovery_command
-    assert f"installs Astrid-managed ComfyUI under {tmp_path / 'vibecomfy-h3'}; user scope; no system changes" in result.recovery_command
+    assert "astrid engines install comfyui --platform linux-x86_64-cu130 --placement local" in result.recovery_command
+    assert f"installs Astrid-managed ComfyUI under {tmp_path / 'comfyui'}; user scope; no system changes" in result.recovery_command
     assert "bytes of locked models; additional runtime download size unknown" in result.recovery_command
     assert "astrid generate image --target http://127.0.0.1:8188" in result.recovery_command
     assert "ComfyUI version provenance is unknown until the selected runtime is observed" in result.recovery_command
@@ -110,18 +112,18 @@ def test_missing_comfyui_runtime_is_actionable(
 
     # The public blocked envelope must retain both runnable alternatives.
     with pytest.raises(preflight.GenerationReadinessError) as caught:
-        preflight.require_generation_target_readiness(z_image_entry, "t2i", None)
+        preflight.require_generation_target_readiness(entry, "t2i", None)
     fixes = caught.value.to_envelope()['fixes']
-    assert fixes[0]['argv'] == ['astrid', 'engines', 'install', 'vibecomfy-h3',
+    assert fixes[0]['argv'] == ['astrid', 'engines', 'install', 'comfyui',
                                '--platform', 'linux-x86_64-cu130', '--placement', 'local']
     assert fixes[0]['scope'] == 'managed_write'
     from astrid.core.generation.engine_recipe import load_recipe_model_lock
     assert fixes[0]['details']['bytes'] == sum(model.bytes for model in load_recipe_model_lock(
-        'vibecomfy-h3', 'linux-x86_64-cu130').models)
+        'comfyui', 'linux-x86_64-cu130').models)
     assert fixes[0]['details']['size_scope'] == 'locked_models'
     assert fixes[0]['details']['additional_bytes'] is None
     assert fixes[0]['details']['scope'] == (
-        f"installs Astrid-managed ComfyUI under {tmp_path / 'vibecomfy-h3'}; user scope; no system changes")
+        f"installs Astrid-managed ComfyUI under {tmp_path / 'comfyui'}; user scope; no system changes")
     assert fixes[1]['argv'] == ['astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
     assert caught.value.recovery_command == ' '.join(fixes[0]['argv'])
 
