@@ -11309,6 +11309,7 @@ class GenericPackHost:
                     task_id,
                     lease_token,
                     _evidence_cap_message(evidence_failure_message),
+                    structured_error={"code": "evidence_cap"},
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,

@@ -4110,8 +4110,17 @@ def test_materialization_rejects_above_persisted_retention_budget_before_reread(
         size=len(payload), digest=oid, object_id=oid)
     reads = []
     monkeypatch.setattr(world.client, "get_object", lambda oid: reads.append(oid) or payload)
-    public = b.dispatch({"v": 1, "request_id": b._sequence + 1, "op": "outputs",
-        "child_key": "child", "task_id": child["task_id"]})[0]
+    frame = {"v": 1, "request_id": b._sequence + 1, "op": "outputs",
+             "child_key": "child", "task_id": child["task_id"]}
+    # The publication guard now refuses this size before reading CAS. Check it
+    # independently, then seed a verified descriptor under a sufficient fixture
+    # allowance to exercise the later retention guard with the original limit.
+    with pytest.raises(ChildBridgeError, match="invalid child output byte identity"):
+        b.dispatch(frame)
+    assert reads == [] and _retained_usage(b) == (0, 0)
+    b.policy["limits"]["max_derived_bytes"] = limit + 1
+    public = b.dispatch({**frame, "request_id": b._sequence + 1})[0]
+    b.policy["limits"]["max_derived_bytes"] = limit
     assert public["size"] == limit + 1 and reads == [oid[7:]]
     assert b.policy["limits"]["max_derived_bytes"] == limit
     reads.clear()
@@ -4252,7 +4261,7 @@ def _f05_runtime_review_pair(world, *, timeout=0, runtime_limit=None, before_chi
         admitted = resource(world.client.generated.admit_delegated_task(authority=receipt["authority"],
             task={"capability_id": child_id, "capability_digest": child_digest, "input_object_ids": [],
                   "spec": {"capability_id": child_id, "kind": "action", "inputs": {"timeout": timeout}},
-                  "execution_request": {"schema_version": 1, "target": {"kind": "default"},
+                  "execution_request": {"schema_version": 1, "target": target,
                                         "limits": {"max_runtime_seconds": runtime_limit}}}, idempotency_key=review_wire_id))
     # The child has its own worker actor on the same verified machine.
     world.identity["actor"] = "child-worker"
@@ -4533,6 +4542,16 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
         timeout=12 if mode == "finite_timeout" else 0, runtime_limit=7200 if mode == "absolute_cap" else None)
     now = [100.0]
     monkeypatch.setattr(generic_host.time, "monotonic", lambda: now[0])
+    actual_heartbeat = host.client.heartbeat
+
+    def heartbeat_for_execution_clock(*args, **kwargs):
+        # Runtime's wall clock does not advance with this synthetic execution
+        # clock. Keep its real fenced RPC, and omit the unrelated wall-clock
+        # expiry from the acknowledgement so a virtual hour is not lease loss.
+        value = resource(actual_heartbeat(*args, **kwargs))
+        return {key: item for key, item in value.items() if key != "lease_expires_at"}
+
+    monkeypatch.setattr(host.client, "heartbeat", heartbeat_for_execution_clock)
     if mode == "evidence": host.execution_policy = ExecutionGuardPolicy(evidence_cap_bytes=65536)
     checks = []
     def execute(record, inputs, output_root, attempt, *, cancelled, **kwargs):
@@ -4544,7 +4563,10 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
             if mode == "evidence" and elapsed == 3601:
                 (output_root / "too-large.bin").write_bytes(b"x" * 65537)
             checks.append(cancelled())
-            if checks[-1]: break
+            if checks[-1]:
+                # Production command containment raises this after observing
+                # the guard; a fake successful return would enter collection.
+                raise generic_host.HostCancelled("execution guard stopped fixture command")
         if mode == "heartbeat":
             (attempt / ".astrid-progress.json").write_text('{"phase":"done"}')
             def heartbeat(*args, **kwargs): raise OSError("lease heartbeat lost")
@@ -4553,9 +4575,16 @@ def test_f05_host_execution_uses_one_lifetime_through_collection(world, monkeypa
     monkeypatch.setattr(host, "_run_command_definition", execute)
     task = {**child, "id": child["task_id"], "capability": child["capability_id"], "fence": cc["fence"],
             "lease_id": cc["lease_id"], "executor_id": "child-worker"}
+    task.pop("lease_expires_at", None)
     if mode == "evidence":
         with pytest.raises(HostError, match="evidence cap"):
             host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
+    elif mode == "heartbeat":
+        # The adopted lease guard raises after the failed attempt is recorded;
+        # it cannot return a successful cancellation acknowledgement.
+        with pytest.raises(HostError, match="^execution lease lost$"):
+            host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
+        assert world.service.task(child["task_id"])["task"]["status"] == "failed"
     else:
         result = host.run_task({"task": task}, lease_token=cc["lease_id"], attempt_id=cc["attempt_id"], fence=cc["fence"])
         if mode == "interactive":
