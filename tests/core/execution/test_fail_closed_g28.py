@@ -37,7 +37,7 @@ def case(host_case, monkeypatch):
         assert kwargs["fence"] == data["fence"]
         assert kwargs["lease_id"] == "lease-result"
         assert kwargs["runtime_epoch"] == data["runtime_epoch"]
-        assert kwargs["stop_observed"] is True
+        assert kwargs["stop_observed"] is False
         assert isinstance(kwargs["outputs"], list)
         assert isinstance(kwargs["result"], dict)
         data["status"] = "cancelled"

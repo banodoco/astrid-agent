@@ -10627,16 +10627,17 @@ class GenericPackHost:
                 abort.set()
             try:
                 if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
-                    # Admission shutdown happens before the producer starts.
-                    # During execution the observer cannot claim the child
-                    # stopped until the local execution path returns.
+                    # Neither admission state nor local cleanup proves an
+                    # independently observed executor/provider stop for this
+                    # fenced attempt. Keep terminal evidence, but leave
+                    # release authority with the Runtime.
                     completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
                                     fence=exact_fence, lease_id=lease_token,
                                     runtime_epoch=data.get("runtime_epoch"), outputs=[],
                                     result={"status": "cancelled",
                                             "error": {"code": "cancelled",
                                                       "message": "execution cancelled"}},
-                                    stop_observed=terminal.get("stage") == "admission")
+                                    stop_observed=False)
                 elif code == "cancelled":
                     # Local containment cannot turn an unacknowledged Runtime
                     # cancellation into a failed task. Keep cancellation as
@@ -11341,7 +11342,9 @@ class GenericPackHost:
                     "attempt_id": attempt_id, "fence": fence, "lease_id": lease_token,
                     "runtime_epoch": task_data.get("runtime_epoch"),
                     "outputs": evidence_outputs, "result": evidence_result,
-                    "stop_observed": True,
+                    # Local cleanup is not independent executor/provider stop
+                    # evidence. The fenced terminal result remains attached.
+                    "stop_observed": False,
                 }
                 try:
                     completion_call(self.client.cancel, task_id, **cancel_kwargs)
