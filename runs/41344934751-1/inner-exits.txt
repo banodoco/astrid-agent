@@ -1,0 +1,8 @@
+composition_identity=0
+apt_install=0
+build_wheel=0
+install_noneditable=0
+npm_ci=0
+registry_generate=0
+registry_verify=1
+pytest_selector=skipped
