@@ -1,0 +1,15 @@
+{
+  "status": 200,
+  "headers": {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Disposition": "filename=\"Qwen_image_2.1_astrid_600d5a93f03747788ff193e8b4370ab3_00001_.png\"",
+    "Content-Type": "image/png",
+    "Etag": "\"18e3f5253800d19c-40bf0\"",
+    "Last-Modified": "Sun, 01 Nov 2026 15:23:37 GMT",
+    "Content-Length": "265200",
+    "Accept-Ranges": "bytes",
+    "Date": "Sun, 01 Nov 2026 15:33:23 GMT",
+    "Server": "Python/3.12 aiohttp/3.14.5",
+    "Connection": "close"
+  }
+}
