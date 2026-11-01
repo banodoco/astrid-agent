@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "collection": "P4 early case collection",
+  "execution": {
+    "status": "pending",
+    "reason": "The v2 commit provider, document-to-patch emitter, and guarded step undo are G2/G3/R2 seams; C0c root addressing is also pending.",
+    "do_not_claim": ["accepted", "merged", "conflict", "undo", "rerun"]
+  },
+  "sources": [
+    {
+      "id": "sheet",
+      "kind": "sheet",
+      "path": "tests/fixtures/timeline_editing/tiny.sheet",
+      "api": "astrid.sdk.timeline_sheet.parse_sheet",
+      "validates": ["version", "narration lines", "two cuts", "sound row"]
+    },
+    {
+      "id": "cli",
+      "kind": "cli",
+      "path": "tests/packs/timeline/test_cli_commit_move.py",
+      "symbol": "test_ordinary_edit_literal_move_uses_commit_outbox",
+      "edit_operation": "move",
+      "commands": [
+        "timelines edit t --clip a --on 5 --json"
+      ]
+    },
+    {
+      "id": "python",
+      "kind": "python",
+      "path": "tests/sdk/test_timeline_sync.py",
+      "symbol": "test_failed_ack_write_recovers_the_original_flight",
+      "edit_operation": "move",
+      "api": "astrid.sdk.timeline.sync.TimelineSession.move"
+    },
+    {
+      "id": "document",
+      "kind": "editing-conformance",
+      "path": "tests/editing_conformance/fixtures/recipe_m2_clip_trim.json",
+      "loader": "tests.editing_conformance.fixture_loader.load_fixture",
+      "api": "astrid.sdk.timeline.commit.bundle_from_document"
+    }
+  ],
+  "cases": [
+    {
+      "id": "single-real-edit",
+      "purpose": "One existing CLI/Python edit, with the sheet grammar retained as a second front door.",
+      "sources": ["cli", "python", "sheet"],
+      "base": {"revision_id": "r0", "publication_id": "pub0"},
+      "commands": [
+        {
+          "op": "native.pending",
+          "source_command": "clip.move",
+          "select": "parent/clip:a",
+          "args": {"on": 5}
+        }
+      ],
+      "field_deltas": [
+        {
+          "ref": "parent",
+          "path": ["clips", "id:clip-a", "at"],
+          "before": {"state": "present", "value": 0},
+          "after": 5
+        }
+      ],
+      "readback": {
+        "show": {"must_include": ["parent/clip:a", "at=5"]},
+        "history": {"must_include": ["label", "step", "accepted head"]}
+      },
+      "execution": "pending-contract-dependent"
+    },
+    {
+      "id": "ten-notes-one-commit",
+      "purpose": "Ten independently addressable metadata notes in one ordered commit.",
+      "sources": ["document", "python"],
+      "base": {"revision_id": "parent-1", "publication_id": "publication-1"},
+      "commit": {
+        "label": "Add ten review notes",
+        "merge": "fields",
+        "command_count": 10,
+        "step_count": 10,
+        "commands_are": "one doc.patch per note",
+        "steps_are": "ordered note-01 through note-10, one command ordinal each"
+      },
+      "notes": [
+        {"id": "note-01", "text": "Confirm opening timing", "ordinal": 0},
+        {"id": "note-02", "text": "Check first clip framing", "ordinal": 1},
+        {"id": "note-03", "text": "Review source trim", "ordinal": 2},
+        {"id": "note-04", "text": "Verify dialogue level", "ordinal": 3},
+        {"id": "note-05", "text": "Confirm cut continuity", "ordinal": 4},
+        {"id": "note-06", "text": "Check transition intent", "ordinal": 5},
+        {"id": "note-07", "text": "Review asset provenance", "ordinal": 6},
+        {"id": "note-08", "text": "Confirm end timing", "ordinal": 7},
+        {"id": "note-09", "text": "Check caption wording", "ordinal": 8},
+        {"id": "note-10", "text": "Ready for review", "ordinal": 9}
+      ],
+      "patch_template": {
+        "op": "set",
+        "ref": "parent",
+        "path_prefix": ["clips", "id:clip-a", "app", "org.example", "p4_note"],
+        "before": {"state": "absent"}
+      },
+      "field_deltas": [
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-01"], "before": {"state": "absent"}, "after": "Confirm opening timing"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-02"], "before": {"state": "absent"}, "after": "Check first clip framing"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-03"], "before": {"state": "absent"}, "after": "Review source trim"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-04"], "before": {"state": "absent"}, "after": "Verify dialogue level"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-05"], "before": {"state": "absent"}, "after": "Confirm cut continuity"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-06"], "before": {"state": "absent"}, "after": "Check transition intent"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-07"], "before": {"state": "absent"}, "after": "Review asset provenance"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-08"], "before": {"state": "absent"}, "after": "Confirm end timing"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-09"], "before": {"state": "absent"}, "after": "Check caption wording"},
+        {"ref": "parent", "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-10"], "before": {"state": "absent"}, "after": "Ready for review"}
+      ],
+      "readback": {
+        "show": {
+          "must_include": ["all ten note ids", "all ten note values"],
+          "must_exclude_changes": "clip timing, asset, track, and neighboring opaque fields"
+        },
+        "history": {
+          "must_include": ["Add ten review notes", "ten ordered steps", "authoritative step patches"]
+        }
+      },
+      "independent_step_undo": {
+        "targets": "each note-01 through note-10 independently",
+        "guard": "previous-value and later-commit scan",
+        "after_each": "target note is absent; the other nine notes remain unchanged",
+        "execution": "pending-contract-dependent"
+      },
+      "conflict": {
+        "kind": "same-field concurrent edit",
+        "base": "parent-1/publication-1",
+        "peer_edit": {
+          "ref": "parent",
+          "path": ["clips", "id:clip-a", "app", "org.example", "p4_note", "note-04"],
+          "before": {"state": "absent"},
+          "value": "Peer reviewer owns this note"
+        },
+        "our_edit": "note-04 from the ten-note commit",
+        "expected": "conflict",
+        "reason": "the same absent field changed at the head"
+      },
+      "rerun": {
+        "kind": "bounded Python function re-run",
+        "function": "read note-04, append a review suffix, commit the resulting field patch",
+        "attempts": [
+          {"number": 1, "base": "parent-1/publication-1", "outcome": "conflict"},
+          {"number": 2, "base": "peer-revision/peer-publication", "outcome": "retry with fresh key"}
+        ],
+        "max_attempts": 3,
+        "unknown_outcome_is_not_a_rerun_trigger": true,
+        "execution": "pending-contract-dependent"
+      }
+    }
+  ]
+}

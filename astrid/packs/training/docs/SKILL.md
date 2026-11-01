@@ -10,7 +10,7 @@ description: >
 # Training
 
 The training pack assembles video training datasets and runs LoRA training jobs.
-It builds clip pools, merges them, searches Hugging Face for LoRAs, and
+It builds clip pools, adds available generative effects to a pool, searches Hugging Face for LoRAs, and
 orchestrates end-to-end training runs on RunPod GPUs. Media inputs must first
 be admitted by the runtime; this pack does not own a URL or filesystem cache.
 
@@ -19,7 +19,7 @@ be admitted by the runtime; this pack does not own a URL or filesystem cache.
 | Action | What it does |
 |---|---|
 | `training.pool_build` | Build the candidate clip pool from triaged source-video scenes. Pipeline step 7. |
-| `training.pool_merge` | Merge multiple candidate clip pools into a unified pool for arrangement. Pipeline step 8. |
+| `training.pool_merge` | Update the candidate clip pool with available generative effect entries. Pipeline step 8. |
 | `training.search_loras` | Search Hugging Face Hub for LoRAs associated with a base model. |
 
 The former executor/orchestrator split is represented by the unified v3 action
@@ -64,10 +64,10 @@ result = sdk.invoke(
     out="./out",
 )
 
-# Merge pools (pipeline step 8)
+# Update the pool with available generative effects (pipeline step 8)
 result = sdk.invoke(
     "training.pool_merge",
-    inputs={"pools": ["./pool1.json", "./pool2.json"]},
+    inputs={"pool": "./pool1.json"},
     out="./out/unified_pool.json",
 )
 
@@ -81,14 +81,14 @@ result = sdk.invoke(
 # Build a training dataset
 result = sdk.invoke(
     "training.dataset_build",
-    inputs={"sources": "./sources.json"},
+    inputs={"config": "./dataset-config.yaml", "out": "./dataset"},
     out="./dataset",
 )
 
 # Run a LoRA training job
 result = sdk.invoke(
     "training.training_run",
-    inputs={"dataset": "./dataset/manifest.json"},
+    inputs={"config": "./training-config.yaml"},
     out="./training_output",
 )
 ```

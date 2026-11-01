@@ -9,6 +9,7 @@ class _Generated:
     def __init__(self) -> None:
         self.epochs = [3]
         self.heartbeats: list[dict[str, object]] = []
+        self.settlements: list[dict[str, object]] = []
 
     def health(self):
         return {"runtime_epoch": self.epochs[-1]}
@@ -24,6 +25,10 @@ class _Generated:
 
     def heartbeat_attempt(self, attempt_id, **kwargs):
         self.heartbeats.append({"attempt_id": attempt_id, **kwargs})
+        return {"ok": True}
+
+    def settle_attempt(self, attempt_id, settlement, **kwargs):
+        self.settlements.append({"attempt_id": attempt_id, **settlement, **kwargs})
         return {"ok": True}
 
 
@@ -58,3 +63,24 @@ def test_claim_epoch_is_reused_and_not_replaced_after_runtime_restart() -> None:
             fence=2,
         )
     assert client.generated.heartbeats == []
+
+
+def test_successful_settlement_keeps_claim_epoch_after_health_refresh() -> None:
+    client = _client()
+    claim = client.claim_next(
+        executor_id="worker-1",
+        capability_ids=["render.basic"],
+        idempotency_key="claim-1",
+    )
+    assert claim["runtime_epoch"] == 3
+
+    client.generated.epochs.append(4)
+    assert client.health()["runtime_epoch"] == 4
+    with pytest.raises(HostError, match="epoch changed after claim"):
+        client.settle(
+            "task-1", "lease-1", attempt_id="attempt-1", fence=2,
+            result={"status": "completed"}, outputs=[], effect=None,
+        )
+    assert client.generated.settlements == []
+    assert client._attempt_runtime_epochs == {"attempt-1": 3}
+    assert client._runtime_epoch == 4

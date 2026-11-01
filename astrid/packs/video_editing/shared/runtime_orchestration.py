@@ -429,37 +429,37 @@ def publish_stitched_render(
     project: str,
     timeline_ref: str,
     expected_version: int,
-    config: Mapping[str, Any],
-    registry: Mapping[str, Any],
+    config: Mapping[str, Any] | None = None,
+    registry: Mapping[str, Any] | None = None,
+    proposal: Mapping[str, Any] | None = None,
+    requester_session=None,
+    label="Assemble timeline", steps=None, merge="fields", reads=None, dry_run=False,
+    group_id=None,
     output_name: str = "hype.mp4",
     selector: str = "rendering.ffmpeg",
     runtime_attempt: Mapping[str, Any] | None = None,
     render_capability_digest: str | None = None,
     idempotency_key: str,
 ) -> Any:
-    """Publish a timeline proposal through the fenced Runtime checkpoint.
-
-    ``project`` remains in the signature for compatibility with callers that
-    already carry project scope. Runtime derives the project from the leased
-    authoring task, so this function never performs a second client-side save
-    or renderer invocation.
-    """
-    del project
-    if runtime_attempt is None:
-        raise OrchestrationContractError("runtime_attempt is required for Runtime-owned publication")
+    """Publish a settled registered assembler proposal as its original requester."""
+    if requester_session is None:
+        if runtime_attempt is None:
+            raise OrchestrationContractError("runtime_attempt is required for legacy publication; use its original requester_session")
+        raise OrchestrationContractError("runtime_attempt alone cannot authorize publication; requester_session is required")
+    if project != requester_session.project_id:
+        raise OrchestrationContractError("assembly publication belongs to a different project")
+    if proposal is None:
+        raise OrchestrationContractError("read the settled native assembly proposal before publication")
+    if config is not None or registry is not None:
+        raise OrchestrationContractError("native assembly publication uses its captured commands and managed media")
     if render_capability_digest is None:
         raise OrchestrationContractError("render_capability_digest is required for Runtime-owned publication")
     from astrid.packs.rendering.shared.runtime_stitch import publish_authoring_proposal
     return publish_authoring_proposal(
         client,
-        proposal={
-            "timeline": config,
-            "registry": registry,
-            "publication": {
-                "authority": "workspace_runtime",
-                "render_capability": "rendering.render",
-            },
-        },
+        proposal=proposal,
+        requester_session=requester_session,
+        label=label, steps=steps, merge=merge, reads=reads, group_id=group_id, dry_run=dry_run,
         timeline_id=timeline_ref,
         expected_version=expected_version,
         runtime_attempt=runtime_attempt,

@@ -276,7 +276,7 @@ def test_managed_output_retrieval_reads_object_and_verifies_digest(tmp_path: Pat
     assert media.calls == [digest]
 
 
-def _lanpaint_preparation(tmp_path: Path) -> dict[str, object]:
+def _native_edit_preparation(tmp_path: Path) -> dict[str, object]:
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source-video")
     request = normalize_request(
@@ -285,10 +285,10 @@ def _lanpaint_preparation(tmp_path: Path) -> dict[str, object]:
             "operation": "edit",
             "source": {"asset": "source", "range": [0, 4]},
             "output": {"duration": 4},
-            "content": {"prompt": "Replace the spoken line."},
+            "content": {"prompt": "Replace the selected picture region."},
             "changes": {
                 "video": [{"during": [1, 3], "area": {"full_frame": True}, "action": "generate"}],
-                "audio": [{"during": [1, 2], "action": "generate", "dialogue": "Say hello."}],
+                "audio": [],
             },
             "references": [],
             "overrides": {"seed": 7, "steps": 12},
@@ -308,7 +308,7 @@ class _FakeManagedMedia:
 
 
 def _compile_result_with_managed_bundle(tmp_path: Path):
-    compiled = compile_preparation(_lanpaint_preparation(tmp_path), out_dir=tmp_path / "compiled")
+    compiled = compile_preparation(_native_edit_preparation(tmp_path), out_dir=tmp_path / "compiled")
     objects: dict[str, bytes] = {}
     rows: list[dict[str, object]] = []
     outputs = {
@@ -325,7 +325,7 @@ def _compile_result_with_managed_bundle(tmp_path: Path):
     return compiled, SimpleNamespace(capability_id="h3_av.compile", outputs={"managed_outputs": rows}, raw_result={}), _FakeManagedMedia(objects)
 
 
-def test_connected_client_uses_selected_lanpaint_bundle_and_attests_provenance(tmp_path: Path) -> None:
+def test_connected_client_uses_selected_native_edit_bundle_and_attests_provenance(tmp_path: Path) -> None:
     compiled, result, media = _compile_result_with_managed_bundle(tmp_path)
 
     inputs = _retrieve_compiled_workflow(
@@ -336,7 +336,7 @@ def test_connected_client_uses_selected_lanpaint_bundle_and_attests_provenance(t
     )
 
     assert set(inputs) == {"python", "companion", "source"}
-    assert b"LanPaint_VideoMaskEditor" in media.objects[inputs["python"]["object_id"]]
+    assert b"H3V2VGranularFractionalDenoise" in media.objects[inputs["python"]["object_id"]]
     assert media.reads == [
         inputs["python"]["object_id"],
         inputs["companion"]["object_id"],
@@ -350,7 +350,7 @@ def test_connected_client_fails_closed_on_workflow_hash_or_provenance_mismatch(t
     compilation = json.loads(Path(compiled["manifest_path"]).read_text(encoding="utf-8"))
     if mismatch == "payload":
         python_digest = next(row["object_id"] for row in result.outputs["managed_outputs"] if row["name"] == "python")
-        media.objects[python_digest] = b"tampered-lanpaint-workflow"
+        media.objects[python_digest] = b"tampered-native-edit-workflow"
     else:
         compilation["workflow"]["workflow.py"]["sha256"] = "0" * 64
 
@@ -376,7 +376,7 @@ def test_interval_lists_cannot_certify_a_copied_non_media_candidate(tmp_path: Pa
             }
         },
     )
-    with pytest.raises(VerificationError, match="byte-identical|decodable media|protected_samples"):
+    with pytest.raises(VerificationError, match="ffprobe|byte-identical|decodable media|protected_samples"):
         verify_candidate(preparation=preparation, composition=composition, source=source)
 
 
@@ -385,11 +385,11 @@ def test_composition_carries_provenance_and_decoded_protected_samples(tmp_path: 
     source = tmp_path / "source.mp4"
     generated = tmp_path / "generated.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
         check=True,
     )
     preparation = prepare_request(_request(), asset_map={"source": str(source)})
@@ -410,11 +410,11 @@ def test_full_replacement_composition_trims_generated_av_to_request_duration(tmp
     source = tmp_path / "silent-source.mp4"
     generated = tmp_path / "overlong-generated.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=24:d=2", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24:d=2", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)],
         check=True,
     )
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=24:d=2.083333333", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=2.1", "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=1024x576:r=24:d=2.083333333", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=2.1", "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
         check=True,
     )
     request = normalize_request({
@@ -455,11 +455,11 @@ def test_protected_audio_witness_tolerates_aac_to_pcm_roundtrip(tmp_path: Path) 
     source = tmp_path / "source-32k-aac.mp4"
     generated = tmp_path / "generated-32k-aac.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=32000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=32000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=32000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=32000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
         check=True,
     )
     preparation = prepare_request(_request(), asset_map={"source": str(source)})
@@ -482,11 +482,11 @@ def test_composition_normalizes_generated_working_resolution_to_source(tmp_path:
     source = tmp_path / "source.mp4"
     generated = tmp_path / "generated.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=8", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=24", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
         check=True,
     )
     preparation = prepare_request(_request(), asset_map={"source": str(source)})
@@ -505,7 +505,7 @@ def test_composition_normalizes_generated_working_resolution_to_source(tmp_path:
         ).stdout
     )
     stream = probe["streams"][0]
-    assert (stream["width"], stream["height"]) == (64, 64)
+    assert (stream["width"], stream["height"]) == (1024, 576)
 
 
 def test_input_bundle_contains_only_declared_source_refs_and_masks(tmp_path: Path):
@@ -623,11 +623,14 @@ def test_missing_dependency_stops_transform_before_any_import_or_submission(tmp_
     request_path.write_text(json.dumps(_request().value))
     asset_map = tmp_path / "asset-map.json"
     asset_map.write_text("{}")
+    execution_request = tmp_path / "execution-request.json"
+    execution_request.write_text(json.dumps({"target": {"kind": "runpod", "pod_id": "pod-test"}}))
     client = Mock()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
     with pytest.raises(ValueError, match="needs a file in asset_map"):
         transform.run_transform(transform.build_parser().parse_args([
             "--request", str(request_path), "--asset-map", str(asset_map), "--out", str(tmp_path / "out"),
+            "--execution-request", str(execution_request),
         ]))
     client.invoke_result.assert_not_called()
     client.media.import_file.assert_not_called()
@@ -668,7 +671,7 @@ def test_input_bundle_rejects_tampering_before_materialization(tmp_path: Path, m
 def _synthetic_av(path: Path, duration: float, *, color: str, muxed=True):
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
+        "-f", "lavfi", "-i", f"color=c={color}:s=1024x576:r=24",
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
         "-t", str(duration), "-c:v", "libx264", "-pix_fmt", "yuv420p",
         *(["-c:a", "aac"] if muxed else ["-an"]), str(path),
@@ -709,19 +712,39 @@ def test_generation_prompt_socket_type_survives_canonical_reload(tmp_path: Path,
         assert graph.inputs["prompt"].field == "prompt"
 
 
-@pytest.mark.parametrize(("operation", "finalizer_state"), [
-    ("continue", "passed"), ("edit", "passed"), ("generate", "passed"),
-    ("continue", "rejected"), ("continue", "unclaimed"), ("character", "passed"),
+@pytest.mark.parametrize(("operation", "finalizer_state", "placement", "verification_fault"), [
+    ("continue", "passed", "runpod", None),
+    ("edit", "passed", "runpod", None),
+    ("generate", "passed", "runpod", None),
+    ("continue", "rejected", "runpod", None),
+    ("continue", "unclaimed", "runpod", None),
+    ("character", "passed", "runpod", None),
+    ("generate", "passed", "local", None),
+    *[("generate", "passed", "local", fault) for fault in (
+        "ffprobe_missing", "candidate",
+        "forged_verify_status", "forged_verify_request", "forged_verify_candidate",
+        "candidate_after_verify",
+    )],
+    *[("continue", "passed", "local", fault) for fault in (
+        "ffprobe_missing", "ffprobe_exit", "ffprobe_empty", "ffprobe_garbled", "ffprobe_unusable",
+        "forged_witness_method", "forged_witness_digest", "schedule", "candidate",
+    )],
+    ("edit", "passed", "local", "mask"),
+    ("ordered", "passed", "local", None),
+    ("ordered-overlap", "passed", "local", None),
+    ("ordered", "passed", "local", "candidate"),
 ])
 @pytest.mark.integration
 @pytest.mark.ffmpeg
 def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, finalizer_state: str,
+    placement: str, verification_fault: str | None, request: pytest.FixtureRequest,
 ):
     """Run the real H3 stages through admission/materialization; fake only CAS
     transport and GPU generation. No preceding directory survives a handoff.
     """
     import yaml
+    from astrid.core.contracts.errors import AstridError
     from astrid.core.execution.generic_host import GenericPackHost
     from astrid.packs.h3_av.actions.transform import run as transform
     from astrid.sdk.invocation import _kernel_invoke
@@ -729,13 +752,32 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     caller = tmp_path / "caller"
     caller.mkdir()
     source = caller / "source.mp4"
-    _synthetic_av(source, 2 if operation == "edit" else 1, color="blue")
+    ordered = operation.startswith("ordered")
+    _synthetic_av(source, 2 if operation == "edit" or ordered else 1, color="blue")
     source_bytes = source.read_bytes()
     raw = _request().value
-    raw["operation"] = operation
+    raw["operation"] = "edit" if ordered else operation
     if operation == "edit":
         raw["source"]["range"] = [0, 2]
+        raw["changes"]["audio"] = []
     asset_map = {"source": str(source)}
+    if ordered:
+        raw["source"]["range"] = [0, 2]
+        raw["changes"] = {"video": [
+            {"during": [0.5, 1], "area": {"rectangle": [0, 0, 256, 288]}, "action": "generate"},
+            {"during": [0, 0.5], "area": {"full_frame": True}, "action": "preserve"},
+            {"during": [1, 2], "area": {"rectangle": [512, 288, 256, 288]}, "action": "generate"},
+        ], "audio": []}
+        if operation == "ordered-overlap":
+            raw["changes"]["video"][2].update(during=[0.5, 2], area={"rectangle": [128, 144, 640, 432]})
+    if verification_fault == "mask":
+        from PIL import Image
+        mask = caller / "region.png"
+        Image.new("L", (1024, 576), 255).save(mask)
+        raw["changes"]["video"][0].update(
+            area={"rectangle": [0, 0, 1024, 576]}, mask_asset=mask.name,
+        )
+        asset_map[mask.name] = str(mask)
     if operation == "character":
         from PIL import Image
         _synthetic_av(source, 15, color="blue")
@@ -776,6 +818,7 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     objects: dict[str, bytes] = {}
     calls = []
     attempts = []
+    pass_sources, pass_verifications, fake_submissions, pass_preparations = [], [], [], []
     pack = Path(transform.__file__).resolve().parents[2]
 
     # The real validator now requires the worker-attested model-root binding
@@ -1019,6 +1062,11 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                     "outputs": {"artifacts": [final_row]},
                     "managed_outputs": [managed],
                 }
+                if verification_fault == "candidate_after_verify":
+                    candidates = [path for path in (tmp_path / "parent/05-compose/retrieved").iterdir()
+                                  if path.suffix != ".json"]
+                    assert len(candidates) == 1
+                    candidates[0].write_bytes(b"changed after successful verification")
                 shutil.rmtree(attempt)
                 return InvocationResult(
                     capability_id=capability_id,
@@ -1049,7 +1097,8 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                 assert "/Users/" not in json.dumps(inputs)
                 assert all(isinstance(value, dict) and value.get("digest") for value in inputs.values())
                 if stage == "prepare":
-                    shutil.rmtree(caller)
+                    if caller.exists():
+                        shutil.rmtree(caller)
                 command = manifest["invocation"]["command"]
                 bindings = {**localized, "out": str(out), "python_exec": "unused"}
                 argv = [value.format_map(bindings) for value in command["argv"][3:]]
@@ -1057,14 +1106,90 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                     if arg["input"] in localized:
                         argv.extend([arg["flag"], str(localized[arg["input"]])])
                 module = importlib.import_module(f"astrid.packs.h3_av.actions.{stage}.run")
+                if stage == "verify" and verification_fault and verification_fault.startswith("ffprobe_"):
+                    # Break only the external probe at the real verification
+                    # boundary; compose and the verifier itself remain real.
+                    from astrid.packs.h3_av.actions.verify import verify as verifier
+                    real_which, real_run = shutil.which, subprocess.run
+                    with monkeypatch.context() as probe_patch:
+                        if verification_fault == "ffprobe_missing":
+                            probe_patch.setattr(verifier.shutil, "which", lambda name: (
+                                None if name == "ffprobe" else real_which(name)
+                            ))
+                        else:
+                            def failed_probe(command, *args, **kwargs):
+                                if Path(command[0]).name != "ffprobe":
+                                    return real_run(command, *args, **kwargs)
+                                if verification_fault == "ffprobe_exit":
+                                    raise subprocess.CalledProcessError(1, command)
+                                output = {
+                                    "ffprobe_empty": "", "ffprobe_garbled": "{not json",
+                                    "ffprobe_unusable": '{"streams": []}',
+                                }[verification_fault]
+                                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+                            probe_patch.setattr(verifier.subprocess, "run", failed_probe)
+                        module.main(argv)
+                    pytest.fail("verification accepted an unusable ffprobe")
                 assert module.main(argv) == 0
+                if stage == "verify" and verification_fault and verification_fault.startswith("forged_verify_"):
+                    report_path = out / "verification.json"
+                    report = json.loads(report_path.read_text())
+                    field, value = {
+                        "forged_verify_status": ("status", "failed"),
+                        "forged_verify_request": ("request_digest", "sha256:" + "0" * 64),
+                        "forged_verify_candidate": ("candidate_sha256", "0" * 64),
+                    }[verification_fault]
+                    report[field] = value
+                    report_path.write_text(json.dumps(report))
+                if stage == "compose" and verification_fault:
+                    composition_path = out / "composition-manifest.json"
+                    composition = json.loads(composition_path.read_text())
+                    if verification_fault.startswith("forged_witness_"):
+                        witness = composition["preservation_evidence"]["protected_samples"]["video"][0]
+                        if verification_fault == "forged_witness_method":
+                            witness.update(method="custom-self-attested-v1", witness_digest="deadbeef")
+                        else:
+                            witness["source_sha256"] = witness["candidate_sha256"] = "0" * 64
+                    elif verification_fault == "schedule":
+                        composition["schedule_digest"] = "0" * 64
+                    elif verification_fault == "candidate":
+                        composition["candidate"]["sha256"] = "0" * 64
+                    elif verification_fault == "mask":
+                        segment = next(item for item in composition["composition"]["video_segments"]
+                                       if item.get("mask_asset") == "region.png")
+                        segment["mask_sha256"] = "0" * 64
+                    composition_path.write_text(json.dumps(composition))
                 if stage == "prepare":
                     preparation = json.loads((out / "preparation.json").read_text())
                     assert all("path" not in row for row in preparation["assets"])
+                    if ordered and preparation["request_digest"] != normalize_request(raw).digest:
+                        from astrid.packs.h3_av.shared.spec import canonical_spec
+                        from astrid.packs.h3_av.shared.request_v2 import read_prepared_request
+                        spec = canonical_spec(read_prepared_request(
+                            preparation["request"], preparation["request_digest"], require_normalized_v2=True,
+                        ))
+                        assert len(spec.sampling_passes()) == 1
+                        assert len(spec.sampling_passes()[0].preserves) == 1
+                        pass_preparations.append(spec)
                 if stage == "compile":
                     self.compilation = json.loads((out / "compilation.json").read_text())
+                if stage == "verify" and ordered:
+                    pass_verifications.append(json.loads((out / "verification.json").read_text()))
                 if stage in {"compose", "verify"}:
-                    if operation == "generate":
+                    if ordered:
+                        current_source = Path(localized["source"]).read_bytes()
+                        original_digest = normalize_request(raw).digest
+                        cumulative = json.loads(Path(localized["preparation"]).read_text())["request_digest"] == original_digest
+                        if cumulative:
+                            assert current_source == source_bytes
+                        elif stage == "compose":
+                            if pass_sources:
+                                assert pass_verifications[-1]["status"] == "verified"
+                                assert hashlib.sha256(current_source).hexdigest() == pass_verifications[-1]["candidate_sha256"]
+                            else:
+                                assert current_source == source_bytes
+                            pass_sources.append(current_source)
+                    elif operation == "generate":
                         assert "source" not in localized
                     else:
                         assert Path(localized["source"]).read_bytes() == source_bytes
@@ -1114,7 +1239,57 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                 rows = [settle(report_path, "validation")]
             else:
                 assert capability_id == "vibecomfy.run"
-                if operation in {"continue", "generate", "character"}:
+                if placement == "local" and (operation == "generate" or ordered):
+                    from astrid.packs.vibecomfy.shared.python_execution_consent import confirmed_python_execution_scope
+                    from vibecomfy import workflow_bundle
+                    for name, filename in (("python", "workflow.py"), ("companion", "workflow.vibe.json"),
+                                           ("source", "source.json")):
+                        (out / filename).write_bytes(objects[inputs[name]["object_id"]])
+                    with confirmed_python_execution_scope("confirmed"):
+                        bundle = workflow_bundle.load_bundle(out / "workflow.py")
+                        graph = bundle.workflow.compile("api", run_inputs=json.loads(inputs["workflow_inputs"]))
+                    expected = json.loads(fake_comfy.expected.read_text())
+                    if ordered:
+                        import io
+                        archive = zipfile.ZipFile(io.BytesIO(objects[inputs["managed_assets"]["object_id"]]))
+                        expected = {"native_masked_edit": True, "asset_files": {}}
+                        for member in archive.namelist():
+                            if member.startswith("assets/") and not member.endswith("/"):
+                                payload = archive.read(member)
+                                basename = Path(member).name
+                                (fake_comfy.input_dir / basename).write_bytes(payload)
+                                expected["asset_files"][basename] = {
+                                    "sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload),
+                                }
+                        source_node = next(node for node in graph.values() if node["class_type"] == "VHS_LoadVideoFFmpeg")
+                        submitted_source = (fake_comfy.input_dir / source_node["inputs"]["video"]).read_bytes()
+                        if not fake_submissions:
+                            assert submitted_source == source_bytes
+                        if fake_submissions:
+                            assert len(pass_verifications) == 1 and pass_verifications[0]["status"] == "verified"
+                            assert hashlib.sha256(submitted_source).hexdigest() == pass_verifications[0]["candidate_sha256"]
+                        fake_submissions.append(source_node["inputs"]["video"])
+                    expected["generated_seconds"] = self.compilation["capabilities"]["generation_timing"]["raw_frames"] / 24
+                    fake_comfy.expected.write_text(json.dumps(expected))
+                    status, body = fake_comfy.post(graph)
+                    assert status == 200 and body["node_errors"] == {}, body
+                    prompt_id = body["prompt_id"]
+                    history = json.loads(fake_comfy.get(f"/history/{prompt_id}"))[prompt_id]
+                    assert history["status"]["status_str"] == "success"
+                    (output,) = history["outputs"].values()
+                    (item,) = output["gifs"]
+                    generated = out / "generated.mp4"
+                    generated.write_bytes(fake_comfy.get(
+                        f"/view?filename={item['filename']}&subfolder=&type=output"
+                    ))
+                    rows = [settle(generated, "video", media_type="video/mp4")]
+                elif self.compilation["capabilities"]["output_contract"] == "muxed_av_full_timeline" and operation == "edit":
+                    # B6's native edit graph returns one muxed result. Keep the
+                    # synthetic worker faithful to its declared output contract.
+                    generated = out / "generated.mp4"
+                    _synthetic_av(generated, 2, color="red")
+                    rows = [settle(generated, "video", media_type="video/mp4")]
+                elif operation in {"continue", "generate", "character"}:
                     duration = (self.compilation["generation_timing"]["raw_frames"] / 24
                                 if operation == "character" else
                                 self.compilation["capabilities"]["generation_timing"]["raw_frames"] / 24
@@ -1238,17 +1413,175 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                 kernel_attempt_id="attempt-cpu",
             )
 
+    from unittest.mock import Mock
+    workflow_facade = Mock(wraps=transform.generate.workflow)
+    monkeypatch.setattr(transform, "generate", SimpleNamespace(workflow=workflow_facade))
     client = Client()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
-    result = transform.run_transform(transform.build_parser().parse_args([
+    if placement == "local":
+        from astrid.core.generation.engine_contracts import HealthEvidence, LocalAttestation
+        health = HealthEvidence("healthy", "2026-10-28T00:00:00Z", "ab" * 32, True)
+        attestation = LocalAttestation("local-engine.v1", "/cpu/install.json", "cd" * 32, health, "ab" * 32)
+        engine = SimpleNamespace(
+            endpoint=SimpleNamespace(url="http://127.0.0.1:8188", attestation=attestation),
+            comfy_output_dir="/cpu/ComfyUI/output",
+        )
+        if operation == "generate" or ordered:
+            from tests.packs.h3_av.test_cpu_rehearsal import _FakeComfy
+            server_root = tmp_path / "fake-comfy"
+            server_root.mkdir()
+            fake_comfy = _FakeComfy(server_root, source=source, basename=source.name)
+            request.addfinalizer(fake_comfy.close)
+            engine.endpoint.url = fake_comfy.url
+            engine.comfy_output_dir = str(fake_comfy.output_dir)
+        monkeypatch.setattr(transform, "_resolve_local_engine", lambda: engine)
+    execution_request = tmp_path / "execution-request.json"
+    execution_request.write_text(json.dumps({"target": {
+        "kind": "runpod", "pod_id": "pod-cpu-test", "provider_account_ref": "account-cpu-test",
+        "storage": {"network_volume_id": "volume-cpu-test"},
+    }}))
+    arguments = [
         "--request", str(caller / "request.json"), "--asset-map", str(caller / "asset-map.json"),
         "--out", str(tmp_path / "parent"), "--project", "cpu-test",
-    ]))
+        "--placement", placement,
+    ]
+    if placement == "runpod":
+        arguments.extend(["--execution-request", str(execution_request)])
+    if operation == "generate" and placement == "local" and verification_fault is None:
+        # Exercise planning and execution in the same operation directory.
+        # Planning must leave execution and its durable journal untouched.
+        plan = transform.run_transform(transform.build_parser().parse_args([
+            *arguments, "--dry-run",
+        ]))
+        assert plan["status"] == "planned"
+        assert plan["runtime_submission"] == "eligible"
+        assert plan["request_digest"] == normalize_request(raw).digest
+        assert plan["pass_count"] == 1
+        assert json.loads((tmp_path / "parent/plan.json").read_text())["request_digest"] == plan["request_digest"]
+        assert calls == []
+        assert not (tmp_path / "parent/operation-state.json").exists()
+        assert not (tmp_path / "parent/result.json").exists()
+    if verification_fault:
+        expected_error = {
+            "forged_witness_method": "cannot be recomputed",
+            "forged_witness_digest": "does not match candidate",
+            "schedule": "schedule provenance",
+            "candidate": "candidate digest",
+            "mask": "regional mask provenance",
+            "forged_verify_status": "does not certify",
+            "forged_verify_request": "does not certify",
+            "forged_verify_candidate": "does not certify",
+            "candidate_after_verify": "candidate digest",
+        }.get(verification_fault, "ffprobe")
+        parent_fault = verification_fault.startswith("forged_verify_") or verification_fault == "candidate_after_verify"
+        with pytest.raises(AstridError if parent_fault else VerificationError, match=expected_error):
+            transform.run_transform(transform.build_parser().parse_args(arguments))
+        assert calls[-1][0] == ("h3_av.publication_finalizer" if verification_fault == "candidate_after_verify"
+                                else "h3_av.verify")
+        if verification_fault != "candidate_after_verify":
+            assert not any(name == "h3_av.publication_finalizer" for name, _ in calls)
+        assert not (tmp_path / "parent/08-final-receipt.json").exists()
+        if not parent_fault:
+            assert not (attempts[-1] / "outputs/verification.json").exists()
+            assert not (attempts[-1] / "outputs/manifest.json").exists()
+        if ordered:
+            assert [name for name, _ in calls].count("vibecomfy.run") == 1
+            assert [name for name, _ in calls].count("h3_av.compile") == 1
+            assert len(fake_submissions) == 1
+            terminal = json.loads((tmp_path / "parent/result.json").read_text())
+            assert terminal["status"] == "failed" and terminal["ok"] is False
+            assert terminal["request_digest"] == normalize_request(raw).digest
+            assert terminal["outputs"]["artifacts"] == []
+            journal = json.loads((tmp_path / "parent/operation-state.json").read_text())
+            assert journal["events"][-1]["status"] == "failed"
+            assert not pass_verifications
+            ledger = json.loads((tmp_path / "parent/ordered-passes.json").read_text())
+            assert ledger["pass_count"] == 2
+            assert len(ledger["passes"]) == 1
+            assert ledger["passes"][0]["status"] != "verified"
+            return
+        # A settled child generation is independent of final composition success.
+        child_result = json.loads((tmp_path / "parent/04-run/run-result.json").read_text())["result"]
+        assert child_result["ok"] is True
+        assert child_result["capability_id"] == "vibecomfy.run"
+        terminal = json.loads((tmp_path / "parent/result.json").read_text())
+        assert terminal["capability_id"] == "h3_av.transform"
+        assert terminal["status"] == "failed" and terminal["ok"] is False
+        assert terminal["request_digest"] == normalize_request(raw).digest
+        assert terminal["resolved_options"]["placement"] == "local"
+        assert terminal["outputs"]["artifacts"] == []
+        assert terminal["manifest_path"] is None
+        assert expected_error in terminal["error"]["message"]
+        journal = json.loads((tmp_path / "parent/operation-state.json").read_text())
+        assert journal["events"][-1]["phase"] == "operation"
+        assert journal["events"][-1]["status"] == "failed"
+        if not parent_fault:
+            assert journal["events"][-2]["phase"] == "verify"
+            assert journal["events"][-2]["status"] == "uncertain"
+        return
+    result = transform.run_transform(transform.build_parser().parse_args(arguments))
     assert result["status"] == "candidate_verified"
     assert Path(result["candidate"]).is_file()
     assert Path(result["final_receipt"]).is_file()
     final_receipt = json.loads(Path(result["final_receipt"]).read_text())
     assert final_receipt["overall_status"] == "candidate_verified"
+    if ordered:
+        names = [name for name, _ in calls]
+        pass_stages = ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify"]
+        # Cumulative compose/verify measures original->final preservation and
+        # never creates an additional modifying invocation.
+        assert names.count("h3_av.prepare") == 3
+        assert [name for name in names if name != "h3_av.prepare"] == [
+            name for name in pass_stages * 2 if name != "h3_av.prepare"
+        ] + ["h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"]
+        assert [spec.sampling_passes()[0].operation.during for spec in pass_preparations] == [
+            (0.5, 1.0), (0.5 if operation == "ordered-overlap" else 1.0, 2.0),
+        ]
+        assert workflow_facade.call_count == len(fake_submissions) == 2
+        ledger = json.loads((tmp_path / "parent/ordered-passes.json").read_text())
+        assert ledger["pass_count"] == len(ledger["passes"]) == 2
+        first, second = ledger["passes"]
+        assert first["status"] == second["status"] == "verified"
+        assert first["output"]["sha256"] == second["input"]["sha256"]
+        assert len(first["preserves"]) == len(second["preserves"]) == 1
+        for entry in ledger["passes"]:
+            events = json.loads(Path(entry["journal"]).read_text())["events"]
+            assert [row["phase"] for row in events if row["status"] == "completed"] == [
+                "prepare", "compile", "validate", "run", "pullback", "compose", "verify",
+            ]
+        assert ledger["cumulative"]["verification_result"]["status"] == "verified"
+        assert len(pass_sources) == 2
+        assert pass_sources[0] == source_bytes
+        assert pass_sources[1] != source_bytes
+        assert len(pass_verifications) == 3
+        assert all(row["status"] == "verified" for row in pass_verifications)
+        assert hashlib.sha256(pass_sources[1]).hexdigest() == pass_verifications[0]["candidate_sha256"]
+        for report in pass_verifications:
+            assert report["preservation"]["spatial_complement"]
+            assert report["preservation"]["audio"] == [[0, 2]]
+        assert pass_verifications[-1]["request_digest"] == normalize_request(raw).digest
+        assert pass_verifications[-1]["candidate_sha256"] == hashlib.sha256(Path(result["candidate"]).read_bytes()).hexdigest()
+        # Independent decoded samples confirm both edits survive chaining,
+        # the explicit preserve interval and pixels outside masks stay blue.
+        import numpy as np
+        def pixel(seconds, x, y):
+            decoded = subprocess.run([
+                "ffmpeg", "-v", "error", "-ss", str(seconds), "-i", result["candidate"],
+                "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+            ], capture_output=True, check=True).stdout
+            return np.frombuffer(decoded, dtype=np.uint8).reshape(576, 1024, 3)[y, x]
+        for seconds, x, y in [(0.25, 100, 100), (0.75, 800, 100), (1.5, 100, 100)]:
+            red, green, blue = pixel(seconds, x, y)
+            assert blue > 200 and red < 20 and green < 20
+        for seconds, x, y in [(0.75, 100, 100), (1.5, 600, 400)]:
+            red, green, blue = pixel(seconds, x, y)
+            assert red > 200 and blue < 20 and green < 20
+        assert not caller.exists() and all(not attempt.exists() for attempt in attempts)
+        terminal = json.loads((tmp_path / "parent/result.json").read_text())
+        assert terminal["status"] == "succeeded" and terminal["ok"] is True
+        assert terminal["request_digest"] == normalize_request(raw).digest
+        assert terminal["outputs"]["artifacts"][0]["digest"] == "sha256:" + pass_verifications[-1]["candidate_sha256"]
+        return
     assert final_receipt["states"]["raw_managed_publication"]["status"] == ("failed" if finalizer_state == "unclaimed" else "passed")
     if finalizer_state == "passed":
         assert final_receipt["states"]["raw_managed_publication"]["status"] == "passed"
@@ -1270,6 +1603,21 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
         expected_calls.append("h3_av.publication_finalizer")
     assert [name for name, _ in calls] == expected_calls
     call_inputs = {name: inputs for name, inputs in calls}
+    workflow_facade.assert_called_once()
+    forwarded = workflow_facade.call_args.kwargs
+    assert forwarded["client"] is client
+    assert forwarded["placement"] == placement
+    assert {name: forwarded[name] for name in call_inputs["vibecomfy.run"]} == call_inputs["vibecomfy.run"]
+    assert forwarded["workflow_inputs"] == json.dumps(client.compilation["workflow_inputs"], sort_keys=True, separators=(",", ":"))
+    assert all(event["workflow_route"] == f"generation.workflow.v1/{placement}"
+               for event in journal["events"] if event["phase"] == "run")
+    if placement == "local":
+        assert forwarded["comfy_url"] == engine.endpoint.url
+        assert forwarded["comfy_output_dir"] == engine.comfy_output_dir
+        assert final_receipt["placement"] == "local"
+        evidence = json.loads(fake_comfy.evidence.read_text())
+        assert evidence["prompt_id"] and evidence["node_id"] == ""
+        assert (fake_comfy.output_dir / evidence["output_filename"]).is_file()
     # VibeComfy's source port is workflow provenance, not the source video.
     assert call_inputs["vibecomfy.run"]["source"]["filename"] == "source.json"
     intent = call_inputs["vibecomfy.run"]["generation_intent"]
@@ -1306,6 +1654,59 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     # Relocation cannot weaken the candidate hash check.
     composition = json.loads(Path(result["composition"]).read_text())
     preparation = json.loads(Path(result["preparation"]).read_text())
+    if placement == "local":
+        terminal = json.loads((tmp_path / "parent/result.json").read_text())
+        serialized_keys = InvocationResult(
+            capability_id="h3_av.transform", capability_type="orchestrator",
+            native_kind="orchestrator", ok=True,
+        ).to_dict().keys()
+        assert terminal.keys() == set(serialized_keys) | {
+            "status", "task_id", "attempt_id", "parent_task_id", "parent_attempt_id",
+            "request_digest", "resolved_options", "cost", "warnings", "publication",
+        }
+        assert terminal["capability_id"] == "h3_av.transform"
+        assert terminal["capability_type"] == terminal["native_kind"] == "orchestrator"
+        assert terminal["status"] == "succeeded" and terminal["ok"] is True
+        assert terminal["raw_result"] == result
+        assert terminal["request_digest"] == preparation["request_digest"]
+        assert terminal["run_root"] == str(tmp_path / "parent")
+        assert terminal["manifest_path"] is None
+        assert all(terminal[key] is None for key in (
+            "task_id", "attempt_id", "parent_task_id", "parent_attempt_id",
+            "kernel_task_id", "kernel_run_id", "kernel_attempt_id",
+        ))
+        assert terminal["resolved_options"]["placement"] == "local"
+        assert terminal["resolved_options"]["project"] == "cpu-test"
+        assert terminal["cost"] == "unknown" and terminal["warnings"] == []
+        assert terminal["publication"]["status"] == "not_settled"
+        candidate = terminal["outputs"]["artifacts"][0]
+        assert candidate["name"] == "candidate" and candidate["role"] == "result"
+        assert candidate["ordinal"] == 0
+        assert candidate["digest"] == "sha256:" + composition["candidate"]["sha256"]
+        assert candidate["digest"] == "sha256:" + hashlib.sha256(Path(result["candidate"]).read_bytes()).hexdigest()
+        assert candidate["size"] == Path(result["candidate"]).stat().st_size
+        assert candidate["path"] == result["candidate"]
+        assert candidate["media_type"] == "video/mp4"
     Path(result["candidate"]).write_bytes(b"tampered")
     with pytest.raises(VerificationError, match="digest"):
         verify_candidate(preparation=preparation, composition=composition, candidate=result["candidate"])
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+def test_connected_client_uses_selected_lanpaint_bundle_and_attests_provenance(tmp_path: Path) -> None:
+    compiled, result, media = _compile_result_with_managed_bundle(tmp_path)
+
+    inputs = _retrieve_compiled_workflow(
+        SimpleNamespace(media=media),
+        result,
+        json.loads(Path(compiled["manifest_path"]).read_text(encoding="utf-8")),
+        tmp_path / "retrieved",
+    )
+
+    assert set(inputs) == {"python", "companion", "source"}
+    assert b"LanPaint_VideoMaskEditor" in media.objects[inputs["python"]["object_id"]]
+    assert media.reads == [
+        inputs["python"]["object_id"],
+        inputs["companion"]["object_id"],
+        inputs["source"]["object_id"],
+    ]

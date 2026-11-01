@@ -93,6 +93,27 @@ def test_receipt_persists_capture_provenance_and_exact_sampling(tmp_path):
     assert len(environment["digest"]) == 71
 
 
+def test_receipt_keeps_event_omission_counts_and_window_details(tmp_path):
+    snapshot = {"project_slug": "demo", "timeline_id": "main", "render_run_id": "run",
+                "video_digest": "sha256:video", "fps_rational": [24, 1], "duration_frames": 96}
+    receipt = compact_render_receipt({
+        "cards": [], "sampling": {},
+        "coverage": {"event_moments": {
+            "event_count": 1, "sampled_event_moment_count": 2,
+            "omitted_event_moment_count": 1, "omitted_event_count": 1,
+            "clipped_event_count": 1,
+            "omissions": [{"id": "clip:fade_in:1:2", "clip_id": "clip", "kind": "fade_in",
+                           "sampled_moments": 2, "omitted_moments": 1, "clipped": True,
+                           "requested_window_frames": [24, 48]}],
+        }},
+    }, snapshot, tmp_path)
+
+    event_coverage = receipt["coverage"]["event_moments"]
+    assert event_coverage["omitted_event_moment_count"] == 1
+    assert event_coverage["clipped_event_count"] == 1
+    assert event_coverage["omissions"][0]["requested_window_frames"] == [24, 48]
+
+
 def test_receipt_keeps_component_and_paired_surface_settings(tmp_path):
     snapshot = {
         "project_slug": "demo", "timeline_id": "main", "render_run_id": "run",

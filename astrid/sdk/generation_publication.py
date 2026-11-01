@@ -182,7 +182,7 @@ def _validate_params(raw: Any) -> dict[str, Any]:
     return normalized
 
 
-def _stable_generation_intent(count: int) -> dict[str, Any]:
+def _stable_generation_intent(count: int, *, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Build the sole GEN-owned group and its explicit output identities."""
     selectors = []
     for ordinal in range(count):
@@ -202,6 +202,8 @@ def _stable_generation_intent(count: int) -> dict[str, Any]:
         "partial_success_policy": PARTIAL_SUCCESS_POLICY,
         "groups": [{"group_key": GROUP_KEY, "selectors": selectors}],
     }
+    if metadata is not None:
+        intent["metadata"] = metadata
     return _validate_generation_intent(intent, modality="image")
 
 
@@ -307,7 +309,21 @@ def compose_image_publication_request(request: Mapping[str, Any]) -> dict[str, A
             + ", ".join(unsupported_controls)
         )
 
-    generation_intent = _stable_generation_intent(params["count"])
+    # These are admitted request facts. Runtime owns task/run identities and
+    # completed cost/duration, so composition leaves those fields absent.
+    gen = {
+        "kind": "image",
+        "origin": "generated",
+        "generator": CAPABILITY_ID,
+        "model": params["model"],
+        "mode": params["mode"],
+        "backend": params["execution"],
+        "target": "fal",
+        "tags": [],
+    }
+    if "seed" in params:
+        gen["seed"] = params["seed"]
+    generation_intent = _stable_generation_intent(params["count"], metadata={"gen": gen})
     effect = _generation_publish_effect(
         capability,
         project=project,

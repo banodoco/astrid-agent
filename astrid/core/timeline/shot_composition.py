@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, Protocol, Sequence, runtime_checkable
 from urllib.parse import quote
 
+from astrid.core.timeline.validators.meta import validate_meta, validate_timeline_meta_locations
+
 SCHEMA_VERSION = 1
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -530,6 +532,11 @@ def validate_shot_composition(raw: Mapping[str, Any]) -> dict[str, Any]:
     for index, raw_revision in enumerate(revisions):
         path = f"shot_revisions[{index}]"
         revision = _mapping(raw_revision, path)
+        if "meta" in revision:
+            validate_meta(revision["meta"], path=f"{path}.meta")
+        shot_payload = revision.get("payload")
+        if isinstance(shot_payload, Mapping) and "meta" in shot_payload:
+            validate_meta(shot_payload["meta"], path=f"{path}.payload.meta")
         shot_id = _string(revision.get("shot_id"), f"{path}.shot_id")
         revision_id = _string(revision.get("revision_id"), f"{path}.revision_id")
         key = (shot_id, revision_id)
@@ -546,6 +553,10 @@ def validate_shot_composition(raw: Mapping[str, Any]) -> dict[str, Any]:
         timeline = _mapping(internal.get("timeline"), f"{path}.internal_timeline_revision.timeline")
         if not isinstance(timeline.get("tracks"), list) or not isinstance(timeline.get("clips"), list):
             _fail(f"{path}.internal_timeline_revision.timeline", "tracks and clips must be lists")
+        validate_timeline_meta_locations(
+            timeline,
+            path=f"{path}.internal_timeline_revision.timeline",
+        )
         timing = _mapping(revision.get("timing"), f"{path}.timing")
         _int(timing.get("duration_ms"), f"{path}.timing.duration_ms")
         audio = _mapping(revision.get("audio"), f"{path}.audio")
@@ -603,6 +614,8 @@ def validate_shot_composition(raw: Mapping[str, Any]) -> dict[str, Any]:
     for index, raw_occurrence in enumerate(occurrences):
         path = f"occurrences[{index}]"
         occurrence = _mapping(raw_occurrence, path)
+        if "meta" in occurrence:
+            validate_meta(occurrence["meta"], path=f"{path}.meta")
         occurrence_id = _string(occurrence.get("occurrence_id"), f"{path}.occurrence_id")
         if occurrence_id in occurrence_ids:
             _fail(path, "duplicate occurrence_id")

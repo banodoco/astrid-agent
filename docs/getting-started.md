@@ -67,4 +67,6 @@ for the Astrid toolkit, capability packs, and Runtime integration. These are
 for building or contributing to Astrid; they are not user installation
 instructions. Start with [AGENTS.md](../AGENTS.md) for repository guidance,
 [creating packs](packs/creating-packs.md) for pack development, and the
-[architecture documentation](architecture/) for system design.
+[architecture documentation](architecture/) for system design. For a
+disposable source Runtime used during CLI development, see the
+[scratch Runtime recipe](development/journeys.md#scratch-runtime-for-cli-work).

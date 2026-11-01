@@ -80,6 +80,7 @@ class PipelineDispatchAliasTest(unittest.TestCase):
                 "media",
                 "tasks",
                 "runs",
+                "generate",
                 "documents",
                 "preferences",
                 "dev",

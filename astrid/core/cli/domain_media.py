@@ -159,7 +159,19 @@ def _cmd_import(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_list(parsed: argparse.Namespace) -> int:
-    result = parsed.client.media.list(parsed.project)
+    result = parsed.client.media.list(
+        parsed.project,
+        **{
+            name: value
+            for name, value in (
+                ("kind", parsed.kind),
+                ("model", parsed.model),
+                ("target", parsed.target),
+                ("tag", parsed.tag),
+            )
+            if value is not None
+        },
+    )
     return print_result(result, as_json=parsed.json)
 
 
@@ -273,6 +285,10 @@ def _configure_import(subparser: argparse.ArgumentParser) -> None:
 
 def _configure_list(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
+    subparser.add_argument("--kind", default=None, help="Exact generation kind filter.")
+    subparser.add_argument("--model", default=None, help="Exact generation model filter.")
+    subparser.add_argument("--target", default=None, help="Exact generation target filter.")
+    subparser.add_argument("--tag", default=None, help="Exact generation tag filter.")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_list)
 

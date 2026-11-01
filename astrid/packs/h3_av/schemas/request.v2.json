@@ -21,7 +21,7 @@
       ]
     },
     "at": {"type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 1, "properties": {"frame": {"type": "integer", "minimum": 0}, "seconds": {"type": ["number", "string"], "minimum": 0}}},
-    "edit": {"type": "object", "additionalProperties": false, "required": ["stream"], "properties": {"stream": {"enum": ["video", "audio"]}, "during": {"type": "array", "minItems": 2, "maxItems": 2}, "mask": {}, "guides": {}, "text": {"type": "string"}, "dialogue": {"type": "string"}, "channels": {}, "action": {"enum": ["generate", "preserve"]}, "keep": {"type": "boolean"}}},
+    "edit": {"type": "object", "additionalProperties": false, "required": ["stream"], "properties": {"stream": {"enum": ["video", "audio"]}, "during": {"type": "array", "minItems": 2, "maxItems": 2}, "mask": {}, "guides": {}, "text": {"type": "string"}, "dialogue": {"type": "string"}, "channels": {}, "action": {"enum": ["generate", "preserve"]}, "keep": {"type": "boolean"}, "strength": {"type": "number", "minimum": 0, "maximum": 1}, "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615}}},
     "media": {"type": "object", "additionalProperties": false, "required": ["asset", "role"], "properties": {"id": {"type": "string", "minLength": 1}, "asset": {"$ref": "#/$defs/asset"}, "role": {"enum": ["timeline", "reference"]}, "modality": {"enum": ["image", "video", "audio"]}, "at": {"$ref": "#/$defs/at"}, "range": {"type": "array", "minItems": 2, "maxItems": 2}, "edit": {"type": "array", "items": {"$ref": "#/$defs/edit"}}, "audio": {"type": "boolean"}, "hard": {"type": "boolean"}, "latent_pin": {"type": "boolean"}}},
     "settings": {
       "type": "object",

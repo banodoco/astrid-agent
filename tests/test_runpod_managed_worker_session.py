@@ -224,3 +224,32 @@ def test_cpu_selection_and_reference_digest_are_exact():
     reference.session_config_digest = "sha256:" + "0" * 64
     with pytest.raises(ManagedSessionError, match="SessionConfig"):
         owner.select(reference, readiness, port=8188)
+
+
+def test_engine_id_selection_cannot_use_legacy_transport():
+    reference, readiness, _ = _selected()
+    reference.session_ref = "vibecomfy-h3"
+    transport = SessionTransport()
+    owner = RunPodManagedVibeComfySessionOwner(transport, session_config_type=ConfigFactory)
+    with pytest.raises(ManagedSessionError, match="installed registry observation"):
+        owner.select(reference, readiness, port=8188)
+    assert transport.calls == []
+
+
+def test_engine_id_absence_never_starts_legacy_daemon_even_with_old_selection():
+    from dataclasses import replace
+
+    owner, transport, selection, _ = _owner()
+    selected = replace(selection, session_ref="vibecomfy-h3")
+    with pytest.raises(ManagedSessionError, match="legacy start is forbidden"):
+        owner.start(selected)
+    assert transport.calls == [("session status", "vibecomfy-h3")]
+
+
+def test_original_composition_keeps_legacy_nonproof_mode():
+    from astrid.packs.runpod.worker_session import create_managed_session_owner, RunPodVibeComfySessionTransport
+
+    preparation = object()
+    owner = create_managed_session_owner(object(), session_ref="legacy-session", preparation_transport=preparation)
+    assert isinstance(owner.transport, RunPodVibeComfySessionTransport)
+    assert owner.transport.preparation_transport is preparation

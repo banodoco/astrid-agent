@@ -25,6 +25,7 @@ from astrid.core.pack import PackValidationError
 from astrid.core.pack.validate import (
     PackValidator,
     validate_first_party_packs_root,
+    validate_first_party_packs_root_report,
     validate_pack,
 )
 from astrid.core.pack.validate_layout import parse_layout_exceptions
@@ -1424,6 +1425,43 @@ class TestFirstPartyPacksRootValidation(MinimalPackTestCase):
         self.assertEqual(errors, [], f"Unexpected errors: {errors}")
         self.assertIsInstance(warnings, list)
 
+    def test_declared_extra_skill_is_accepted(self) -> None:
+        packs_root = self.make_pack_root("packs")
+        pack_root = packs_root / "timeline"
+        pack_root.mkdir()
+        _write(
+            pack_root / "pack.yaml",
+            """schema_version: 3
+id: timeline
+name: Astrid Timeline
+version: 1.0.0
+documentation:
+  kind: skill
+  path: docs/SKILL.md
+resources:
+  - kind: skill
+    path: docs/extra/SKILL.md
+""",
+        )
+        _write(
+            pack_root / "docs" / "SKILL.md",
+            "---\nname: timeline\ndescription: Main timeline skill.\n---\nMain.\n",
+        )
+        _write(
+            pack_root / "docs" / "extra" / "SKILL.md",
+            "---\nname: extra\ndescription: Extra timeline skill.\n---\nExtra.\n",
+        )
+
+        report = validate_first_party_packs_root_report(
+            packs_root, pack_roots=[pack_root]
+        )
+
+        self.assertEqual(report.errors, [])
+        self.assertEqual(
+            report.results[0].skill_exports,
+            ("docs/SKILL.md", "docs/extra/SKILL.md"),
+        )
+
     def test_inventory_and_layout_fail_under_one_aggregate_surface(self) -> None:
         root = self.make_pack_root() / "packs"
         root.mkdir()
@@ -2602,6 +2640,145 @@ metadata:
             any("twice with conflicting" in error for error in errors),
             f"expected runtime-validator rejection, got: {errors}",
         )
+
+
+class TestV3AuthoringAdvisories(MinimalPackTestCase):
+    def write_v3_pack(self, root: Path, *, manifest: str) -> None:
+        _write(root / "pack.yaml", manifest)
+        _write(root / "actions" / "run.py", "def run(value=None):\n    return value\n")
+
+    def test_incomplete_optional_authoring_metadata_is_actionable_warning(self) -> None:
+        root = self.make_pack_root()
+        self.write_v3_pack(
+            root,
+            manifest="""schema_version: 3
+id: test_pack
+name: Test Pack
+version: 0.1.0
+actions:
+  run:
+    description: Return the supplied value.
+    invocation: {kind: python, path: actions/run.py, function: run}
+    inputs:
+      - name: value
+    outputs:
+      - name: result
+agent:
+  purpose: 12
+  do_not_use_for: ''
+  normal_entrypoints: [test_pack.missing, '']
+  unknown_future_key: keep-me
+""",
+        )
+
+        errors, warnings = validate_pack(root)
+
+        self.assertEqual(errors, [])
+        joined = "\n".join(warnings)
+        for expected in (
+            "pack.yaml: add a useful pack.yaml description or agent.purpose",
+            "agent.purpose should be non-blank text",
+            "agent.do_not_use_for should be non-blank text",
+            "agent.normal_entrypoints[0] 'test_pack.missing' does not resolve",
+            "agent.normal_entrypoints[1] should be a non-blank public contribution id",
+            "actions.run.inputs[0].type is missing",
+            "actions.run.inputs[0].description is missing",
+            "actions.run.inputs[0].required is missing",
+            "actions.run.outputs[0].type is missing",
+            "actions.run.outputs[0].description is missing",
+        ):
+            self.assertIn(expected, joined)
+        self.assertNotIn("unknown_future_key", joined)
+
+    def test_schema_contract_empty_inputs_and_support_only_stay_valid(self) -> None:
+        root = self.make_pack_root()
+        self.write_v3_pack(
+            root,
+            manifest="""schema_version: 3
+id: test_pack
+name: Test Pack
+version: 0.1.0
+description: A pack with a schema-defined contract.
+actions:
+  run:
+    description: Accept a schema-defined value.
+    invocation: {kind: python, path: actions/run.py, function: run}
+    inputs:
+      type: object
+      properties:
+        value:
+          type: string
+          description: Value consumed by the action.
+      required: [value]
+    outputs: {type: string}
+""",
+        )
+        errors, warnings = validate_pack(root)
+        self.assertEqual(errors, [])
+        self.assertFalse(any("actions.run.inputs" in warning for warning in warnings))
+
+        _write(
+            root / "pack.yaml",
+            """schema_version: 3
+id: test_pack
+name: Test Pack
+version: 0.1.0
+description: A pack with a referenced schema contract.
+actions:
+  run:
+    description: Accept a referenced schema-defined value.
+    invocation: {kind: python, path: actions/run.py, function: run}
+    inputs: schemas/input.json
+    outputs: {type: string}
+""",
+        )
+        _write(
+            root / "schemas" / "input.json",
+            '{"type":"object","properties":{"value":{"type":"string","description":"Input value."}},"required":["value"]}\n',
+        )
+        reference_errors, reference_warnings = validate_pack(root)
+        self.assertEqual(reference_errors, [])
+        self.assertFalse(any("actions.run.inputs" in warning for warning in reference_warnings))
+
+        _write(
+            root / "pack.yaml",
+            """schema_version: 3
+id: test_pack
+name: Test Pack
+version: 0.1.0
+description: A pack with an intentionally empty input contract.
+actions:
+  run:
+    description: Return no data.
+    invocation: {kind: python, path: actions/run.py, function: run}
+    inputs: []
+    outputs: []
+""",
+        )
+        empty_errors, empty_warnings = validate_pack(root)
+        self.assertEqual(empty_errors, [])
+        self.assertFalse(any("actions.run.inputs" in warning for warning in empty_warnings))
+
+        support = self.make_pack_root("support_pack")
+        _write(
+            support / "pack.yaml",
+            """schema_version: 3
+id: support_pack
+name: Support Pack
+version: 0.1.0
+documentation: {kind: none, reason: Internal support pack.}
+""",
+        )
+        support_errors, support_warnings = validate_pack(support)
+        self.assertEqual(support_errors, [])
+        self.assertFalse(any("normal_entrypoints" in warning for warning in support_warnings))
+
+    def test_v2_legacy_validation_does_not_gain_v3_advisories(self) -> None:
+        root = self.make_pack_root()
+        self.write_valid_pack(root)
+        errors, warnings = validate_pack(root)
+        self.assertEqual(errors, [])
+        self.assertFalse(any("agent.normal_entrypoints" in warning for warning in warnings))
 
 
 if __name__ == "__main__":

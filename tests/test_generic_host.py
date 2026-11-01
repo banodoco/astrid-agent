@@ -2853,7 +2853,8 @@ def test_unavailable_reason_reports_the_gpu_gate_not_the_task_gated_remotion_che
 REMOTION_FAULT = "fixture Remotion install is broken"
 
 
-def _selected_render_host(tmp_path, monkeypatch, *, remotion_ok: bool, argv_exit: int = 0, stderr: str = "") -> SimpleNamespace:
+def _selected_render_host(tmp_path, monkeypatch, *, remotion_ok: bool, argv_exit: int = 0, stderr: str = "",
+                          remotion_reason: str = REMOTION_FAULT) -> SimpleNamespace:
     """A leased ``remotion == 'selected'`` render fake whose child records its argv."""
     from astrid.core.rendering import remotion_runtime
 
@@ -2881,7 +2882,7 @@ def _selected_render_host(tmp_path, monkeypatch, *, remotion_ok: bool, argv_exit
 
     def status(*, require_explicit_project=False):
         return remotion_runtime.RemotionRuntimeStatus(
-            remotion_ok, tmp_path, reason=None if remotion_ok else REMOTION_FAULT)
+            remotion_ok, tmp_path, reason=None if remotion_ok else remotion_reason)
 
     monkeypatch.setattr(remotion_runtime, "remotion_runtime_status", status)
     runtime = FakeRuntime()
@@ -2968,6 +2969,50 @@ def test_a_timeline_ffmpeg_refuses_still_fails_with_both_reasons_when_the_host_c
     assert refusal in error
     assert "chose rendering.ffmpeg because rendering.remotion is unavailable on this host: " + REMOTION_FAULT in error
     assert not world.runtime.settlements
+
+
+@pytest.mark.parametrize("install_kind", ["source", "installer", "pinokio"])
+def test_missing_remotion_is_the_headline_and_recovery_matches_the_install(tmp_path, monkeypatch, install_kind):
+    from astrid.core.rendering import node_pin, remotion_runtime
+
+    project = tmp_path / "checkout with spaces" / "remotion"
+    project.mkdir(parents=True)
+    (project / "package.json").write_text('{"engines":{"node":"=20.19.4"}}')
+    node = tmp_path / "tools" / "node-v20.19.4" / "bin" / "node"
+    monkeypatch.setattr(node_pin, "resolve_pinned_node", lambda *a, **kw: SimpleNamespace(path=node))
+    monkeypatch.setattr(remotion_runtime, "REPO_ROOT", project.parent)
+    monkeypatch.delenv("ASTRID_REMOTION_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("ASTRID_INSTALL_PROGRAM_ROOT", raising=False)
+    monkeypatch.delenv("ASTRID_INSTALL_MANAGED_BY", raising=False)
+    if install_kind != "source":
+        monkeypatch.setenv("ASTRID_INSTALL_PROGRAM_ROOT", str(tmp_path / "program"))
+    if install_kind == "pinokio":
+        monkeypatch.setenv("ASTRID_INSTALL_MANAGED_BY", "pinokio")
+    fault = ("ASTRID_REMOTION_PROJECT_DIR must point to the server-owned Remotion project; "
+             f"Remotion node_modules is missing: {project / 'node_modules'}; "
+             f"run `npm ci` in {project} with Node v20.19.4 on PATH")
+    refusal = ("rendering.ffmpeg does not support this render request reason: "
+               "Clip 'clip-0' has unsupported clip kind 'hold' reason: "
+               "rendering.ffmpeg requires exactly one visual track carrying media clips")
+    world = _selected_render_host(tmp_path, monkeypatch, remotion_ok=False, argv_exit=1,
+                                 stderr=refusal, remotion_reason=fault)
+
+    with pytest.raises(HostError):
+        world.run()
+
+    message = world.runtime.failures[0][2]
+    headline, rest = message.split("\nDetail: ", 1)
+    detail, fix = rest.split("\nFix: ", 1)
+    assert headline == "Headline: Remotion isn't installed on this machine"
+    assert refusal in detail and "Remotion node_modules is missing" in detail
+    if install_kind == "source":
+        assert "npm ci" in fix and str(node.parent) in fix and str(project) in fix
+        assert "v20.19.4" in fix
+    else:
+        assert "https://astrid.haus/install" in fix and str(tmp_path / "program") in fix
+        assert "npm ci" not in message
+        if install_kind == "pinokio":
+            assert "Stop Astrid in Pinokio" in fix and "--managed-by pinokio" in fix and "choose Start" in fix
 
 
 @pytest.mark.parametrize(("remotion_ok", "selector"), [(True, None), (False, "rendering.ffmpeg")])
@@ -4170,6 +4215,26 @@ def test_fake_listener_exit_v2_conflicting_replay_cannot_replace_persisted_wait(
 
 
 
+def test_installed_worker_registry_projection_matches_host_without_second_root(tmp_path, monkeypatch):
+    from astrid.core.execution.generic_host import _launch_worker_probe_environments
+    from astrid.core.rendering import remotion_runtime
+
+    manifest = _write_manifest(tmp_path / 'installed-worker')
+    environment = {
+        'HOME': str(tmp_path), 'LANG': 'C', 'PATH': '/usr/bin',
+        'ASTRID_HOST_EXECUTION_PROFILE': 'installed',
+    }
+    monkeypatch.setenv('ASTRID_HOST_EXECUTION_PROFILE', 'installed')
+    candidates = _launch_worker_probe_environments((tmp_path,), environment)
+
+    contexts = [remotion_runtime._registry_context(candidate, generator=False)
+                for candidate in candidates]
+    assert all('ASTRID_PACKS_PATH' not in candidate for candidate in candidates)
+    assert all('PYTHONPATH' not in candidate for candidate in candidates)
+    assert contexts[1:] == [contexts[0]] * (len(contexts) - 1)
+    assert manifest.is_file()
+
+
 def test_readiness_preserves_network_guard_in_final_command_popen_environment(tmp_path, monkeypatch):
     _write_manifest(tmp_path / 'guarded-command')
     host = GenericPackHost(pack_roots=[tmp_path])
@@ -4275,17 +4340,26 @@ class _IdleReadinessRuntime(FakeRuntime):
 @pytest.fixture
 def idle_remotion_host(tmp_path, monkeypatch):
     from astrid.core.rendering import remotion_runtime as runtime
+    from runtime_protocol import platform
+
     project, schema = tmp_path / "native-project", tmp_path / "schema"
     project.mkdir(); schema.mkdir()
     node = tmp_path / "node"
     node.write_bytes(b"fixture node identity")
     node.chmod(0o700)
+    # The merged host binds idle reuse to the successful launch reference as
+    # well as these tool paths. Native validation itself is faked below.
+    reference = tmp_path / "launch-validation.json"
+    reference.write_bytes(b'{"fixture":"idle-readiness-launch"}')
+    platform.owner_only(reference)
     values = {
         "HOME": str(tmp_path), "TMPDIR": str(tmp_path),
         "ASTRID_REMOTION_PROJECT_DIR": str(project), "ASTRID_NODE_EXECUTABLE": str(node),
         "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": str(schema),
         "ASTRID_SOURCE_STATE": str(tmp_path / "source-state"),
         "XDG_STATE_HOME": str(tmp_path / "state"), "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        **dict(zip(runtime._REF_ENV_KEYS, (str(reference), hashlib.sha256(reference.read_bytes()).hexdigest(),
+                                          "idle-launch", "host"))),
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -4812,3 +4886,150 @@ def test_attempt_cleanup_failure_fails_that_task_and_next_task_runs(tmp_path, mo
     assert any("injected attempt cleanup failure" in note for note in host._unresolved_task_scopes)
     # The host keeps accepting work; only the affected task failed.
     assert host.run_task(task(2), lease_token="lease-2")["task"]["status"] == "completed"
+
+
+def test_runtime_failure_preserves_coded_error_and_guard_diagnostic() -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.execution.generic_host import _structured_failure_kwargs
+
+    class Generated:
+        def health(self):
+            return {"runtime_epoch": 7}
+
+        def fail_attempt(self, attempt_id, **kwargs):
+            self.error = kwargs["error"]
+
+    generated = Generated()
+    client = object.__new__(RuntimeProtocolClient)
+    client.generated = generated
+    client._runtime_epoch = None
+    client._attempt_runtime_epochs = {"attempt-1": 7}
+    error = AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt")
+    client.fail(
+        "task-1", "lease-1", str(error), attempt_id="attempt-1", fence=3,
+        retryable=True, failure_diagnostic={"guard": "test"},
+        **_structured_failure_kwargs(error),
+    )
+    assert generated.error == {
+        "code": "invalid_input", "message": "bad input", "field": "prompt",
+        "fix": "supply a prompt", "retryable": True, "diagnostic": {"guard": "test"},
+    }
+
+
+def test_host_carries_coded_admission_failure_to_client(tmp_path, monkeypatch) -> None:
+    from astrid.core.contracts.errors import AstridError
+
+    _write_manifest(tmp_path / "echo")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+    host.discover()
+    task = {"task": {
+        "id": "task-coded", "capability": "test.echo", "project_id": "demo",
+        "attempt_id": "attempt-coded", "fence": 1, "spec": {"spec": {"inputs": {}}},
+    }}
+    runtime.tasks["task-coded"] = task
+
+    def reject(_metadata):
+        raise AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt")
+
+    monkeypatch.setattr(generic_host, "_storage_input_limits", reject)
+    with pytest.raises(HostError, match="bad input"):
+        host.run_task(task, lease_token="lease-coded")
+    assert not runtime.settlements
+    assert runtime.failures[0][2] == "bad input"
+    assert runtime.failures[0][3]["structured_error"] == {
+        "code": "invalid_input", "field": "prompt", "fix": "supply a prompt",
+    }
+
+
+@pytest.mark.parametrize("kind", ["astrid", "exec", "sdk", "service", "unknown"])
+def test_runtime_failure_coerces_error_objects_without_changing_fencing(kind) -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.contracts.exec_error import ExecError
+    from astrid.sdk.exceptions import CapabilityValidationError, ServiceValidationError
+
+    errors = {
+        "astrid": AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt"),
+        "exec": ExecError("missing_binaries", "precondition", "ffmpeg missing", "install ffmpeg"),
+        "sdk": CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+        "service": ServiceValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+        "unknown": RuntimeError("unexpected"),
+    }
+    expected = {
+        "astrid": {"code": "invalid_input", "message": "bad input", "field": "prompt", "fix": "supply a prompt"},
+        "exec": {"code": "missing_binaries", "message": "ffmpeg missing", "field": None, "fix": "install ffmpeg"},
+        "sdk": {"code": "validation", "message": "bad mode", "field": "mode", "fix": "choose fast"},
+        "service": {"code": "validation_error", "message": "bad mode", "field": "mode", "fix": "choose fast"},
+        "unknown": {"code": "executor_failed", "message": "unexpected"},
+    }
+
+    class Generated:
+        def health(self):
+            return {"runtime_epoch": 7}
+
+        def fail_attempt(self, attempt_id, **kwargs):
+            self.attempt_id = attempt_id
+            self.kwargs = kwargs
+            return {"status": "failed"}
+
+    generated = Generated()
+    client = object.__new__(RuntimeProtocolClient)
+    client.generated = generated
+    client._runtime_epoch = None
+    client._attempt_runtime_epochs = {"attempt-1": 7}
+
+    assert client.fail("task-1", "lease-1", errors[kind], attempt_id="attempt-1", fence=3) == {"status": "failed"}
+    assert generated.attempt_id == "attempt-1"
+    assert generated.kwargs == {
+        "lease_id": "lease-1", "fence": 3, "runtime_epoch": 7,
+        "idempotency_key": "fail-attempt-1-3", "error": {**expected[kind], "retryable": False},
+    }
+
+
+@pytest.mark.parametrize("kind", ["astrid", "exec", "sdk"])
+def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkeypatch, kind) -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.contracts.exec_error import ExecAstridError, ExecError
+    from astrid.sdk.exceptions import CapabilityValidationError
+
+    _write_manifest(tmp_path / "echo")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+    host.discover()
+    task = {"task": {
+        "id": "task-coded", "capability": "test.echo", "project_id": "demo",
+        "attempt_id": "attempt-coded", "fence": 1, "spec": {"spec": {"inputs": {}}},
+    }}
+    runtime.tasks["task-coded"] = task
+    errors = {
+        "astrid": AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt", recovery_command="astrid doctor"),
+        "exec": ExecAstridError("ffmpeg missing", exec_error=ExecError("missing_binaries", "precondition", "ffmpeg missing", "install ffmpeg")),
+        "sdk": CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+    }
+    expected = {
+        "astrid": {"code": "invalid_input", "field": "prompt", "fix": "supply a prompt"},
+        "exec": {"code": "missing_binaries", "field": None, "fix": "install ffmpeg"},
+        "sdk": {"code": "validation", "field": "mode", "fix": "choose fast"},
+    }
+
+    def reject(*args, **kwargs):
+        raise errors[kind]
+
+    # This boundary test stops before child launch; host identity is fixture data.
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    monkeypatch.setattr(host, "_materialize_inputs", reject)
+    with pytest.raises(type(errors[kind])) as raised:
+        host.run_task(task, lease_token="lease-coded")
+
+    assert raised.value is errors[kind]
+    assert not runtime.settlements
+    assert len(runtime.failures) == 1
+    task_id, lease_id, message, kwargs = runtime.failures[0]
+    assert (task_id, lease_id) == ("task-coded", "lease-coded")
+    assert message.startswith(str(errors[kind]))
+    if kind == "astrid":
+        assert message.endswith(" Next: astrid doctor")
+    assert kwargs == {
+        "attempt_id": "attempt-coded", "fence": 1, "retryable": False,
+        "failure_diagnostic": None, "structured_error": expected[kind],
+    }

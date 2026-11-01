@@ -23,7 +23,7 @@
 | moirae | Moirae pack — renders YAML screenplays into terminal-as-cinema videos via asciinema, agg, and ffmpeg.  External pack ... | `astrid/packs/moirae/docs/SKILL.md` |
 | music | Analyze imported music alignment, loudness and beat grids, and bake speech-keyed music ducking for timeline editing. | `astrid/packs/music/docs/SKILL.md` |
 | pixel | Turn generated images into true pixel-art sprites: pixel.sprites cuts a generated sheet into pieces at the density it... | `astrid/packs/pixel/docs/SKILL.md` |
-| rendering | Author, inspect, edit, preview, render, and open runtime-owned Astrid timelines, including Remotion output, explorabl... | `astrid/packs/rendering/docs/SKILL.md` |
+| rendering | Render timelines, inspect render output, author worlds and effects, and add generated visual elements. | `astrid/packs/rendering/docs/SKILL.md` |
 | runpod | RunPod pack — provision GPU pods, execute scripts remotely, pull artifacts, and tear down, including a guaranteed-cle... | `astrid/packs/runpod/docs/SKILL.md` |
 | seedance_local | Run one temporary personal Seedance 2.0 reference-media generation through fal.ai as an experiment-ready Astrid run. | `astrid/packs/seedance_local/docs/SKILL.md` |
 | stream_content | Distill long event or stream recordings into content blocks and clip candidates. | `astrid/packs/stream_content/docs/SKILL.md` |

@@ -134,3 +134,59 @@ def test_cli_writes_timeline_registry_proposal_and_manifest(tmp_path: Path):
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["kind"] == "rendering.assemble_timeline"
     assert {entry["path"] for entry in manifest["outputs"]} == {"timeline.json", "assets.json", "authoring-proposal.json"}
+
+
+
+def test_native_cli_keeps_timeline_and_assets_outputs_with_settled_proposal(tmp_path: Path):
+    from astrid.sdk.timeline.commands import execute
+    from tests.editing_conformance.test_producer_insertion import (
+        MEDIA,
+        assembled_inputs,
+        target_bundle,
+    )
+
+    payload = _payload()
+    assembled, pins, verified = assembled_inputs()
+    bundle = target_bundle()
+    payload['spec']['runtime_dependencies']['aggregation']['order'] = [MEDIA, MEDIA]
+    children, associations = [], []
+    for ordinal, pin in enumerate(pins):
+        output = next(row for row in payload['resolved_children'] if row['ordinal'] == ordinal)['outputs'][0]
+        output.update(object_id=MEDIA, media_id=MEDIA, content_sha256=MEDIA, size=123)
+        verified[ordinal]['duration_seconds'] = output['duration']
+        association = {'association_id': 'association-' + str(ordinal),
+                       'task_id': 'child-' + str(ordinal + 1), 'project_id': bundle['project_id'],
+                       'object_id': MEDIA, 'generation_id': pin['generation_id'],
+                       'lifecycle': {'state': 'available', 'version': 1}, 'durability': 'durable',
+                       'output_port': 'output', 'group_key': 'default', 'variant_key': '0',
+                       'ordinal': 0, 'role': 'primary_visual', 'size': 123, 'media_type': 'video/mp4'}
+        associations.append(association)
+        children.append({'ordinal': ordinal, 'task_id': association['task_id'],
+                         'association': {'association_id': association['association_id'],
+                                         'object_id': MEDIA, 'version': 1},
+                         'media': pin, 'verified_media': verified[ordinal]})
+    target = {'project_id': bundle['project_id'], 'timeline_id': bundle['timeline_id'],
+              'base_revision_id': bundle['base_parent']['revision_id'],
+              'base_publication_id': 'original-publication'}
+    payload.update(capture={'admitted_target': target, 'bundle': bundle, 'children': children,
+                            'replace_clips': [], 'rationale': 'Preserve opaque target fields'},
+                   associations=associations, producer={'task_id': payload['continuation_id'],
+                       'attempt_id': 'attempt', 'executor_id': 'worker', 'fence': 1, 'runtime_epoch': 2})
+    source = tmp_path / 'native.json'
+    source.write_text(json.dumps(payload))
+    out = tmp_path / 'out'
+    assert main(['--resolved-children', str(source), '--out', str(out)]) == 0
+    proposal = json.loads((out / 'authoring-proposal.json').read_text())
+    assert proposal['admitted_target'] == target
+    assert proposal['producer'] == payload['producer']
+    assert [command['op'] for command in proposal['commands']] == [
+        'timeline.assembled-target', 'clip.add-media', 'clip.add-media']
+    assert json.loads((out / 'timeline.json').read_text()) == assembled['timeline']
+    assert json.loads((out / 'assets.json').read_text()) == assembled['registry']
+    after = execute(bundle, proposal['commands'], verified_media=verified).bundle
+    assert after['parent']['unknown'] == bundle['parent']['unknown']
+    assert after['parent']['config']['output'] == bundle['parent']['config']['output']
+    assert [(clip['at'], clip['from'], clip['to'], clip['hold']) for clip in after['parent']['clips']] == [
+        (0, 0, 1.5, 1.5), (1.5, 0, 2.5, 2.5)]
+    manifest = json.loads((out / 'manifest.json').read_text())
+    assert {entry['name'] for entry in manifest['outputs']} == {'timeline', 'assets', 'authoring_proposal'}
