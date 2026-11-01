@@ -874,6 +874,55 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict |
         raise _BusyRefusal("The unresolved update evidence could not be safely reconciled.") from failure
 
 
+def reconcile(request: dict) -> dict:
+    """Run P1 under the installer lock before Runtime prepares new inputs.
+
+    This is deliberately separate from ``accept``: a new manifest/bootstrap
+    download is not evidence that it is safe to replace an interrupted job.
+    A continued operation has already spent its native submission in this
+    function, so its caller must only report the returned operation and never
+    invoke ``launch`` a second time.
+    """
+    _require_update_job_available()
+    root = absolute(request.get("root", ""))
+    stream = _locked(root)
+    try:
+        marker_path = root / "install.json"
+        marker = read_json(marker_path)
+        prior = marker.get("update_job")
+        if prior is not None and (not isinstance(prior, dict)
+                                  or prior.get("format") != JOB_FORMAT
+                                  or prior.get("state") not in JOB_STATES):
+            _busy("The prior update operation is unreadable or has an unknown state.")
+        pending_path = root / "update-transaction.json"
+        if pending_path.is_symlink():
+            _busy("The installer journal path cannot be trusted.")
+        try:
+            pending = read_json(pending_path) if pending_path.exists() else None
+        except (OSError, ValueError, TypeError) as failure:
+            raise _BusyRefusal("The installer journal cannot be read.") from failure
+        unresolved = (isinstance(prior, dict) and prior.get("state") in
+                      {"accepted", "launching", "active", "recovery-needed"})
+        recovered_unfinished = bool(unresolved and isinstance(pending, dict)
+                                    and pending.get("step") not in TERMINAL_STEPS)
+        if pending and pending.get("step") not in TERMINAL_STEPS and not unresolved:
+            _busy("The installer must recover its pending update first.")
+        reconciled, continued = _reconcile_existing(root, marker, request)
+        if continued:
+            if reconciled is None:
+                _busy("The accepted update continuation could not be confirmed.")
+            return {"disposition": "continued-existing", "job": reconciled}
+        if recovered_unfinished:
+            if reconciled is None:
+                _busy("The unfinished update could not be reconciled.")
+            return {"disposition": "recovered-this-request", "job": reconciled}
+        if reconciled is not None:
+            return {"disposition": "confirmed-prior", "job": reconciled}
+        return {"disposition": "prepare-new"}
+    finally:
+        _unlock(stream)
+
+
 def accept(request: dict) -> dict:
     """Durably accept one already-prepared request under the normal install lock."""
     _require_update_job_available()
@@ -1704,6 +1753,12 @@ def main():
     action = value.get("action", "prepare")
     if action == "availability":
         print(json.dumps(update_job_availability()))
+    elif action == "reconcile":
+        try:
+            print(json.dumps(reconcile(value)))
+        except (_UnsupportedServiceManager, _BusyRefusal) as failure:
+            print(json.dumps({"reason": failure.reason, "message": _one_line(failure)}))
+            raise SystemExit(1)
     elif action == "prepare":
         metadata = fetch_update_inputs(Path(value["directory"]), manifest_url=value["manifest_url"],
                                        bootstrap_url=value["bootstrap_url"],
