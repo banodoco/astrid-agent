@@ -10,7 +10,9 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -206,6 +208,197 @@ def test_failed_stop_reaps_original_child_without_retiring_custody(tmp_path, mon
         for output in (owned.stdout, owned.stderr):
             output.thread.join(timeout=5)
             output.stream.close()
+
+
+@pytest.mark.parametrize("stage", ["terminate", "verify", "stdout_drain", "stderr_drain", "stdout_close", "stderr_close"])
+def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_path, monkeypatch, stage):
+    from astrid.core.execution import process_group as groups
+
+    token, env_secret, arg_secret = "owner-launch-token-value", "private-env-value", "private-arg-value"
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), token)
+    # Exercise secret capture at the real spawn boundary without starting a process.
+    process = SimpleNamespace(stdout=None, stderr=None)
+    monkeypatch.setattr(groups, "popen_owned_group", lambda *args, **kwargs: process)
+    monkeypatch.setattr(custody, "_Output", lambda *args: None)
+    owned = supervisor.spawn(CommandRequest((sys.executable, "--token", arg_secret), str(tmp_path),
+                                           {"SERVICE_API_KEY": env_secret}, time.monotonic() + 5, 1024))
+    supervisor.engine = owned
+    message = (f"injected {stage}; token={token}; env={env_secret}; arg={arg_secret}; "
+               "authorization=Bearer labelled-value; https://user:private-url@example.test; "
+               "sk-abcdefghijklmnopqrstuvwx; " + "detail " * 150)
+    failure = OSError(message)
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(groups, "terminate_tree", fail if stage == "terminate" else lambda *args, **kwargs: None)
+    monkeypatch.setattr(groups, "verify_tree_absent", fail if stage == "verify" else lambda *args, **kwargs: None)
+    for name in ("stdout", "stderr"):
+        setattr(owned, name, SimpleNamespace(
+            thread=SimpleNamespace(join=fail if stage == name + "_drain" else lambda **kwargs: None,
+                                   is_alive=lambda: False),
+            stream=SimpleNamespace(close=fail if stage == name + "_close" else lambda: None)))
+    with custody._directory(supervisor.control) as fd:
+        custody._write(fd, "session.json", b"retained marker")
+    with custody._directory(supervisor.registry) as fd:
+        custody._write(fd, "launch.json", b"retained registry")
+    supervisor.registry_names = ["launch.json"]
+    client = _client(supervisor.identity)
+    threads = []
+
+    def connect(*args, **kwargs):
+        local, remote = socket.socketpair()
+        thread = threading.Thread(target=supervisor.connection, args=(remote,))
+        threads.append(thread)
+        thread.start()
+        return local
+
+    monkeypatch.setattr(client, "_connect", connect)
+    try:
+        with pytest.raises(CustodyUnresolved) as error:
+            client.stop_owned(deadline=time.monotonic() + 5)
+        cause = error.value.cleanup_failure
+        assert error.value.code == "custody_unresolved"
+        assert cause["stage"] == stage and cause["exception_type"] == "OSError"
+        assert f"injected {stage}" in cause["message"] and len(cause["message"]) <= 600
+        record = Path(supervisor.control, "cleanup-failure.json")
+        assert json.loads(record.read_bytes()) == cause == owned.cleanup_failure
+        assert record.stat().st_mode & 0o777 == 0o600
+        assert cause["message"] in str(error.value)
+        for secret in (token, env_secret, arg_secret, "labelled-value", "private-url", "sk-abcdefghijklmnopqrstuvwx"):
+            assert secret not in record.read_text() + str(error.value)
+
+        # A later failed stop cannot replace the original stage/type/message.
+        def later_failure(*args, **kwargs):
+            raise RuntimeError("later cleanup error must not replace first cause")
+        monkeypatch.setattr(groups, "terminate_tree", later_failure)
+        with pytest.raises(CustodyUnresolved) as repeated:
+            client.stop_owned(deadline=time.monotonic() + 5)
+        assert repeated.value.cleanup_failure == cause
+        assert json.loads(record.read_bytes()) == cause
+        assert supervisor.unresolved and supervisor.engine is owned and supervisor.commands == [owned]
+        assert owned.process is process and not supervisor.finished.is_set()
+        assert Path(supervisor.control, "session.json").read_bytes() == b"retained marker"
+        assert Path(supervisor.registry, "launch.json").read_bytes() == b"retained registry"
+    finally:
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("fail_command", [False, True])
+def test_explicit_stop_shares_caller_budget_across_all_owned_drains(tmp_path, monkeypatch, fail_command):
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "owner")
+    now, calls, replies = [1000.0], [], []
+
+    def owned(name):
+        def stop(deadline):
+            calls.append((name, deadline))
+            now[0] += 20
+            if fail_command and name == "second-command":
+                raise CustodyUnresolved("injected command drain failure")
+        return SimpleNamespace(stop=stop)
+
+    engine, first, second = owned("engine"), owned("first-command"), owned("second-command")
+    supervisor.engine, supervisor.commands = engine, [engine, first, second]
+    with custody._directory(supervisor.registry) as fd:
+        custody._write(fd, "launch.json", b"retained registry")
+    supervisor.registry_names = ["launch.json"]
+    # Socket objects are hashable; use a real socket as the connection identity.
+    with socket.socket() as channel:
+        monkeypatch.setattr(custody.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(custody, "_receive", lambda *args: {
+            "identity": supervisor.identity, "operation": "stop", "payload": {}, "remaining_seconds": 120})
+        monkeypatch.setattr(custody, "_send", lambda channel, value, deadline: replies.append((value, deadline)))
+        supervisor.connection(channel)
+    assert calls[:2] == [("first-command", 1120.0), ("second-command", 1120.0)]
+    if fail_command:
+        assert replies[0][0]["error"] == "custody_unresolved"
+        assert supervisor.engine is engine and supervisor.commands == [engine, second]
+        assert supervisor.unresolved and not supervisor.finished.is_set()
+        assert Path(supervisor.registry, "launch.json").read_bytes() == b"retained registry"
+    else:
+        assert calls[2] == ("engine", 1120.0)
+        assert replies == [({"identity": supervisor.identity, "result": {"stopped": True}}, 1120.0)]
+        assert supervisor.finished.is_set() and supervisor.commands == [] and supervisor.engine is None
+        assert not Path(supervisor.registry, "launch.json").exists()
+
+
+@pytest.mark.parametrize("outcome", ["normal", "timeout", "disconnect", "explicit_stop"])
+def test_command_drain_uses_request_or_pending_stop_deadline_and_only_implicit_fallback(tmp_path, monkeypatch, outcome):
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "owner")
+    output = SimpleNamespace(text=lambda: "", truncated=lambda: False)
+    owned = SimpleNamespace(live=lambda: outcome != "normal", process=SimpleNamespace(returncode=0),
+                            stdout=output, stderr=output)
+    calls = []
+    monkeypatch.setattr(custody.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(supervisor, "spawn", lambda request: owned)
+    monkeypatch.setattr(supervisor, "drain", lambda owned, deadline: calls.append(deadline))
+
+    def check(*args):
+        if outcome == "explicit_stop":
+            supervisor.stop_deadlines["pending-stop"] = 1120.0
+            supervisor.stopping.set()
+        raise EOFError if outcome == "disconnect" else DeadlineExceeded("injected cancellation")
+
+    monkeypatch.setattr(supervisor, "check", check)
+    request = {"argv": [sys.executable], "cwd": str(tmp_path), "env": {}, "max_output_bytes": 1024}
+    if outcome == "disconnect":
+        with pytest.raises(EOFError):
+            supervisor.run(request, 1030.0, None)
+    else:
+        supervisor.run(request, 1030.0, None)
+    assert calls == [{"normal": 1030.0, "timeout": 1008.0, "disconnect": 1008.0, "explicit_stop": 1120.0}[outcome]]
+
+
+def test_owned_stop_spends_one_deadline_on_tree_verification_and_both_output_drains(monkeypatch):
+    from astrid.core.execution import process_group as groups
+
+    owned = custody._Owned.__new__(custody._Owned)
+    owned.process, owned.cleanup_failure = object(), None
+    now, calls = [1000.0], []
+    monkeypatch.setattr(custody.time, "monotonic", lambda: now[0])
+
+    def terminate(process, **kwargs):
+        calls.append(("terminate", kwargs["cleanup_deadline"]))
+        now[0] += 10
+
+    def verify(process, **kwargs):
+        calls.append(("verify", kwargs["deadline"]))
+        now[0] += 5
+
+    def join(name, timeout):
+        calls.append((name, timeout))
+        now[0] += 7
+
+    monkeypatch.setattr(groups, "terminate_tree", terminate)
+    monkeypatch.setattr(groups, "verify_tree_absent", verify)
+    for name in ("stdout", "stderr"):
+        setattr(owned, name, SimpleNamespace(
+            thread=SimpleNamespace(join=lambda timeout, name=name: join(name, timeout), is_alive=lambda: False),
+            stream=SimpleNamespace(close=lambda: None)))
+    owned.stop(1120.0)
+    assert calls == [("terminate", 1120.0), ("verify", 1120.0), ("stdout", 105.0), ("stderr", 98.0)]
+
+
+def test_stop_client_keeps_deadline_through_response_and_supervisor_wait(tmp_path, monkeypatch):
+    client = _client(_identity(tmp_path))
+    with custody._directory(client.control):
+        pass
+    now, calls = [1000.0], []
+    monkeypatch.setattr(custody.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(client, "_connect", lambda *args, **kwargs: socket.socket())
+    monkeypatch.setattr(custody, "_send", lambda *args: None)
+
+    def receive(channel, deadline):
+        calls.append(("receive", deadline))
+        now[0] += 20
+        return {"identity": client.identity, "result": {"stopped": True}}
+
+    monkeypatch.setattr(custody, "_receive", receive)
+    client._spawned = SimpleNamespace(wait=lambda timeout: calls.append(("wait", timeout)))
+    client.stop_owned(deadline=1120.0)
+    assert calls == [("receive", 1120.0), ("wait", 100.0)]
 
 
 def test_constructor_has_no_effects(tmp_path):
