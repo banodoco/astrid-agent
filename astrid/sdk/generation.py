@@ -967,7 +967,7 @@ class GenerationFacade:
                     approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
             except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError, ProductionEngineError) as exc:
                 if (model is not None or workflow_entry is not None
-                        or getattr(exc, "code", None) == "COMFY_TARGET_NOT_READY"):
+                        or getattr(exc, "code", None) in {"COMFY_TARGET_NOT_READY", "engine_not_found"}):
                     # Package/runtime prerequisites apply to every local
                     # candidate; retain their existing error and guidance.
                     if isinstance(exc, AstridError):
