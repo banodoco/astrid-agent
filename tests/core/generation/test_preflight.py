@@ -105,6 +105,7 @@ def test_missing_comfyui_runtime_is_actionable(
     assert f"installs Astrid-managed ComfyUI under {tmp_path / 'vibecomfy-h3'}; user scope; no system changes" in result.recovery_command
     assert "bytes of locked models; additional runtime download size unknown" in result.recovery_command
     assert "astrid generate image --target http://127.0.0.1:8188" in result.recovery_command
+    assert "ComfyUI version provenance is unknown until the selected runtime is observed" in result.recovery_command
     assert "pip" not in result.recovery_command
 
     # The public blocked envelope must retain both runnable alternatives.
