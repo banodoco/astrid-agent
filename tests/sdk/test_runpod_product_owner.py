@@ -85,6 +85,67 @@ def test_describe_unclaimed_writes_nothing(product):
     assert snapshot(product.tmp) == before and not product.path.parent.exists()
 
 
+def test_public_release_verb_dispatches_to_bound_runpod_owner(product):
+    before = snapshot(product.tmp)
+    result = product.client.release_generation(engine="comfyui", target="runpod", wait=True)
+    assert result["state"] == "unclaimed" and result["released"] is False
+    assert snapshot(product.tmp) == before
+
+
+def test_original_https_token_reference_survives_lost_create_reconnect(product, monkeypatch):
+    from astrid.packs.runpod.target_selection import RunPodOffer, read_runpod_preferences
+    from astrid.packs.runpod.worker_preparation import target_owner
+
+    raw = read_runpod_preferences().as_mapping()
+    raw["credential_ref"] = "env:FAKE_PRODUCT_RUNPOD_CREDENTIAL"
+    monkeypatch.setenv("FAKE_PRODUCT_RUNPOD_CREDENTIAL", "product-test-value")
+    save_runpod_preferences(raw)
+    preferences = read_runpod_preferences()
+    offer = RunPodOffer("account", "gpu", 1, "test-offer")
+    first = product.owner._provider_config(preferences, offer)
+    with target_owner(product.path):
+        metadata = product.owner._transport_metadata(preferences, first)
+        write_target_record(product.path, {**product.claim, **metadata,
+            "state": "allocation_unknown", "schema_version": "astrid.runpod.allocation-attempt.v1"})
+    before = snapshot(product.tmp)
+    second = product.owner._provider_config(preferences, offer)
+    with target_owner(product.path):
+        assert product.owner._transport_metadata(preferences, second) == metadata
+    assert first.https_token == second.https_token
+    assert snapshot(product.tmp) == before
+    assert first.api_key not in product.path.read_text()
+
+
+def test_cold_public_image_planning_is_read_only_and_has_no_endpoint_approval(product, monkeypatch):
+    from astrid.core.generation import entries
+    from vibecomfy.nodes.core import EmptyImage, SaveImage
+    from vibecomfy.templates import ReadyMetadata, new_workflow
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    source = product.tmp / "cold-image.py"
+    workflow = new_workflow(ReadyMetadata.build(capability="runtime_smoke"), source_path=str(source))
+    image = EmptyImage(_id="1", width=64, height=64, batch_size=1, color=16711680)
+    save = SaveImage(_id="2", images=image, filename_prefix="runpod-cold-image")
+    workflow.finalize({}, output_node=save, output_type="SaveImage", name="image",
+        artifact_kind="image", mime_type="image/png", expected_cardinality="one",
+        filename_prefix="runpod-cold-image")
+    bundle = emit_bundle(workflow, source, {"operation": "authored"})
+    (source.parent / "source.json").write_text(json.dumps(bundle.materialize_ui(
+        schema_provider=entries._schema_provider(), strict=True)))
+    entry = {"id": workflow.id, "kind": "image", "modes": ["t2i"], "bundle": str(source),
+             "binds": {}, "defaults": {}, "needs": []}
+    monkeypatch.setattr(entries, "user_entries", lambda: [entry])
+    monkeypatch.setattr(entries, "ready_entries", lambda: [])
+    monkeypatch.setattr(entries, "action_entries", lambda: [])
+    before = snapshot(product.tmp)
+    result = GenerationFacade().image(entry=workflow.id, target="runpod", client=product.client,
+        dry_run=True, consent=("paid",), max_usd=2, deadline="2099-01-01T00:00:00Z")
+    assert result["status"] in {"ready", "ready_with_warnings"}
+    assert result["target"]["placement"] == "runpod"
+    assert "approval" not in result["entry"]
+    assert snapshot(product.tmp) == before and not product.path.parent.exists()
+
+
 def test_describe_claim_never_exposes_transport_or_credential_paths(product):
     claim = {**product.claim, "https_token_file": "/private/secret", "api_key_ref": "PRIVATE_KEY"}
     write_target_record(product.path, claim)
@@ -124,6 +185,81 @@ def test_completed_release_needs_all_existing_proofs(product):
     assert snapshot(product.tmp) == before
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("active", [False, True])
+def test_paid_expiry_cancels_exact_runtime_task_before_release_attempt(product, real_runtime, active):
+    from datetime import datetime, timedelta, timezone
+    from runtime_protocol.errors import AuthorizationError, ConflictError
+    from runtime_protocol.remote_worker_deployment import deployment_binding_from_task
+    from astrid.packs.runpod.prepared_task import _claim_target
+    from astrid.sdk.workspace_client import PROTOCOL
+
+    daemon = real_runtime()
+    service = daemon.service
+    digest = "sha256:" + "b" * 64
+    service.register_capability({"capability_id": "vibecomfy.run", "definition_digest": digest})
+    service.register_executor({"executor_id": "pod-test-host", "capabilities": ["vibecomfy.run"],
+                               "max_concurrency": 1}, idempotency_key="register-test-host")
+    admitted = service.create_task({"capability_id": "vibecomfy.run", "capability_digest": digest,
+        "input_object_ids": [], "spec": {"inputs": {}}, "execution_request": {
+            "target": _claim_target(product.claim), "remote_activation_required": True,
+            "lifecycle": {"mode": "leave_running"}}, "idempotency_key": "expiry-task"},
+        enforce_readiness=True)
+    task_id, run_id = admitted["task"]["id"], admitted["run"]["id"]
+    if active:
+        target = _claim_target(product.claim)
+        binding = deployment_binding_from_task(service._task_resource(service.task(task_id)))
+        epoch = service.health()["runtime_epoch"]
+        evidence = "sha256:" + "c" * 64
+        qualification = service.record_remote_activation(task_id, {
+            "activation_id": "expiry-activation", "task_id": task_id, "run_id": run_id,
+            "credential_actor": "pod-test-host", "binding_digest": binding.digest(),
+            "deployment_digest": digest, "evidence_digest": evidence, "observation_digest": digest,
+            "effective_target": target, "executor_incarnation": "pod-test-incarnation",
+            "runtime_session_id": service.runtime_session_id, "runtime_epoch": epoch,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            "authorized_child_lineage": {"parent_task_id": task_id, "parent_run_id": run_id,
+                "max_depth": 1, "placement_version": 0, "effective_target": target},
+        }, identity={"actor": "owner", "scopes": ["admin"]})
+        identity = {"actor": "pod-test-host", "scopes": ["worker:execute"],
+            "qualified_activation": qualification, "execution_binding": {
+                "actual": target, "executor_incarnation": "pod-test-incarnation", "verification": {
+                    "method": "credential_claim", "verified": True, "evidence_digest": evidence}}}
+        attempt = service.claim_next({"executor_id": "pod-test-host", "capability_ids": ["vibecomfy.run"],
+            "runtime_epoch": epoch, "target": target}, idempotency_key="expiry-claim", identity=identity)
+        assert service._task_resource(service.task(task_id))["state"] == "running"
+    write_target_record(product.path, {**product.claim, "managed_worker": {
+        "activation_qualification": {"task_id": task_id, "run_id": run_id}}})
+    with AstridClient.open(endpoint=daemon.endpoint, credential=daemon.credential_path,
+            realm_id=service.realm["id"], actor_id="owner", client_name="expiry-test",
+            client_version="stage1", protocol_version=PROTOCOL) as client:
+        owner = runpod_generation_owner(client)
+        request = {**product.claim, "task_id": task_id, "run_id": run_id,
+                   "idempotency_key": "runpod-release:" + product.claim["operation_id"]}
+        # No selection was published in this test. That blocks the provider
+        # release, after Runtime has fenced/cancelled the exact admission.
+        with pytest.raises(GenerationReadinessError) as raised:
+            owner._expire(request)
+        assert raised.value.to_envelope()["issues"][0]["code"] == "missing_dependency"
+        task = client.tasks.show(task_id).data
+        if active:
+            assert task["state"] == "failed" and task["result"]["disposition"] == "lost"
+            assert task["result"]["remote_stop_confirmed"] is False
+            assert task["result"]["billing_stop_confirmed"] is False
+        else:
+            assert task["state"] == "cancelled"
+            assert task["result"]["attempted"] is False
+            assert task["result"]["cancel"]["requested"] is True
+        assert not task["result"].get("outputs")
+        if active:
+            with pytest.raises((AuthorizationError, ConflictError)):
+                service.heartbeat_attempt(attempt["attempt_id"],
+                    {key: attempt[key] for key in ("lease_id", "fence", "runtime_epoch")},
+                    idempotency_key="expiry-stale-heartbeat", identity=identity)
+    saved = json.loads(product.path.read_bytes())
+    assert saved["state"] == "cleanup_pending" and saved["reconciliation_required"] is True
+
+
 @pytest.mark.parametrize("missing", ["release_quiescence", "cleanup", "get404", "list_absence", "volume", "pod"])
 def test_completed_state_or_admission_is_never_release_proof(product, missing):
     record = completed(product.claim)
@@ -144,15 +280,15 @@ def test_completed_state_or_admission_is_never_release_proof(product, missing):
     assert snapshot(product.tmp) == before
 
 
-def test_missing_f07_preparation_fails_before_claim_install_or_warm_hold(product):
+def test_missing_prepared_artifact_fails_before_claim_install_or_warm_hold(product):
     before = snapshot(product.tmp)
     with pytest.raises(GenerationReadinessError) as raised:
         product.owner.prepare(workflow=object(), inputs={}, consent=("paid",),
                               max_usd=2, deadline="2099-01-01T00:00:00Z")
     issue = raised.value.to_envelope()["issues"][0]
     assert issue["code"] == "missing_dependency"
-    assert issue["details"]["missing_symbols"] == [
-        "build_prepared_worker_selection", "GenerationReleaseOwner.release_generation"]
+    assert issue["details"]["required_artifact"] == "prepared-worker.json"
+    assert issue["details"]["consumer"] == "astrid.packs.runpod.prepared_task.load_prepared_worker_selection"
     assert snapshot(product.tmp) == before and not product.path.parent.exists()
 
 

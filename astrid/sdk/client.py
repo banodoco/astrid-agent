@@ -710,6 +710,10 @@ class AstridClient:
         if engine != "comfyui":
             raise generation_error(ValueError("release supports only comfyui"),
                                    details={"field": "engine"}, code="unsupported_engine")
+        if target == "runpod":
+            from astrid.core.generation.preflight import call_runpod_owner, runpod_generation_owner
+
+            return call_runpod_owner(runpod_generation_owner(self).release, wait=wait)
         if target != "managed":
             raise generation_error(
                 ValueError("release refuses attached or unmanaged targets; only the managed engine can be released"),

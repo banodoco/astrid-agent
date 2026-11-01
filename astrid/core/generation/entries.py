@@ -750,6 +750,10 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
             raise ValueError(f"entry requires review: {need['ambiguity']}")
     if client is None:
         return None
+    from astrid.packs.runpod.generation_owner import RunPodPlanningTarget
+    if isinstance(client, RunPodPlanningTarget):
+        client.validate_workflow(entry, workflow)
+        return None  # Cold planning carries no live-target approval witness.
     from types import SimpleNamespace
     from astrid.core.generation.backends.comfy_target import _resolve_roles
     from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider

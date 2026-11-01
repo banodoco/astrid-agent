@@ -255,7 +255,7 @@ class WorkspaceClient:
                 "import_project_media", "get_project_media_import",
                 "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
                 "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
-                "cancel_task", "retry_task", "cancel_run", "retry_run", "get_run",
+                "cancel_task", "abandon_task", "retry_task", "cancel_run", "retry_run", "get_run",
                 "list_project_runs", "list_run_events", "list_managed_outputs",
                 "list_events",  # Includes the from_=latest polling cursor.
                 "get_managed_output", "list_generations",
@@ -1098,6 +1098,10 @@ class WorkspaceClient:
 
     def cancel_task(self, task_id: str, *, idempotency_key: str) -> Any:
         return self._call_generated("cancel_task", task_id, idempotency_key=idempotency_key)
+
+    def abandon_task(self, task_id: str, body: Mapping[str, Any], *, idempotency_key: str) -> Any:
+        """Fence an exact unresolved external attempt; this is never stop proof."""
+        return self._call_generated("abandon_task", task_id, body, idempotency_key=idempotency_key)
 
     def retry_task(
         self,

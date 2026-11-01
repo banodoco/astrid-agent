@@ -906,6 +906,9 @@ class _ProductionPreparedTaskRuntime:
             self._reference = reference
         elif getattr(reference, "session_ref", None) is not None:
             raise PreparedWorkerError("prepared workflow requires the original installed vibecomfy-h3 session")
+        on_prepared = getattr(self, "on_prepared", None)
+        if callable(on_prepared):
+            on_prepared()
         try:
             parked = launcher.park(reference, target=reference.effective_target)
             self._relinquish_local_worker(preparer, reference)
@@ -1034,9 +1037,13 @@ class _ProductionPreparedTaskRuntime:
                 self._restore_local_worker()
                 return
 
-        _run_sync(preparer.retire_task(
-            reference, runtime_owner=runtime_owner, qualification=qualification,
-        ))
+        warm_owner = getattr(self, "warm_owner", None)
+        if warm_owner is None:
+            _run_sync(preparer.retire_task(
+                reference, runtime_owner=runtime_owner, qualification=qualification,
+            ))
+        else:
+            _run_sync(warm_owner.retire(reference, runtime_owner=runtime_owner, qualification=qualification))
         self._restore_local_worker()
 
 

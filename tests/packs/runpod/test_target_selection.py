@@ -143,6 +143,23 @@ def test_claim_namespaces_intent_before_provider_and_reuses_only_exact_journal(c
     assert case.creates == 1
 
 
+def test_product_transport_references_are_locked_and_durable_before_create(case, tmp_path):
+    metadata = {"transport": "https", "https_token_file": str(tmp_path / "private-agent.token"),
+                "api_key_ref": "FAKE_PRODUCT_RUNPOD_CREDENTIAL"}
+    def transport_metadata(config):
+        with pytest.raises(AcquisitionUnresolvedError):
+            with target_owner(case.owner.path):
+                pytest.fail("transport publication did not hold the account journal lock")
+        return metadata
+    case.owner.claim_metadata = transport_metadata
+    def before_create():
+        record = json.loads(case.owner.path.read_text())
+        assert all(record[key] == value for key, value in metadata.items())
+    case.before_create = before_create
+    record = asyncio.run(case.owner.select(case.grant))
+    assert all(record[key] == value for key, value in metadata.items())
+
+
 def test_denied_reuse_does_not_change_custody_or_extend_hold(case):
     asyncio.run(case.owner.select(case.grant))
     before = case.owner.path.read_bytes()

@@ -203,6 +203,7 @@ class RunPodSelectionOwner:
         self, preferences: RunPodPreferences, *, account_ref: str, config_factory: Callable[[RunPodOffer], Any],
         observe_offer: Callable[[], RunPodOffer], observed_hourly_usd: Callable[[str], float],
         data_root: Path | None = None, clock: Callable[[], datetime] | None = None,
+        claim_metadata: Callable[[Any], Mapping[str, Any]] | None = None,
     ) -> None:
         if account_ref != preferences.provider_account_ref:
             raise PaidSelectionError("authenticated account differs from selected preferences")
@@ -210,6 +211,7 @@ class RunPodSelectionOwner:
         self.observe_offer, self.observed_hourly_usd = observe_offer, observed_hourly_usd
         self.path = canonical_claim_path(account_ref, data_root=data_root)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.claim_metadata = claim_metadata
 
     def _read(self) -> dict[str, Any] | None:
         # Legacy sibling handles cannot quietly become a second product owner.
@@ -266,6 +268,16 @@ class RunPodSelectionOwner:
         self._read()  # Reject legacy/symlink custody before creating a lock file.
         with target_owner(self.path):
             record = self._read()
+            metadata = dict(self.claim_metadata(config)) if self.claim_metadata is not None else {}
+            if set(metadata) - {"transport", "https_token_file", "api_key_ref"}:
+                raise PaidSelectionError("claim transport metadata contains unsupported fields")
+            if metadata and (metadata.get("transport") != "https"
+                    or not isinstance(metadata.get("https_token_file"), str)
+                    or not Path(metadata["https_token_file"]).is_absolute()
+                    or not isinstance(metadata.get("api_key_ref"), str)):
+                raise PaidSelectionError("claim transport metadata must pin the original HTTPS credential references")
+            if record is not None and any(record.get(key) != value for key, value in metadata.items()):
+                raise AcquisitionUnresolvedError("RunPod claim transport references changed; retain the original custody")
             try:
                 observed_volume = await resolve_existing_volume(config.api_key, p.volume_id)
                 inspect_volume_records(RunPodTargetContract(
@@ -302,6 +314,7 @@ class RunPodSelectionOwner:
                     "network_volume_datacenter_id": p.datacenter_id,
                     "handle_path": str(self.path), "transport": "https",
                     "reconciliation_required": True,
+                    **metadata,
                 }
                 create_target_record_exclusive(self.path, record)
             volume = {"id": p.volume_id, "name": p.volume_name, "size": p.volume_size_gb,
