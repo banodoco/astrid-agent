@@ -576,7 +576,8 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
         return
-    nested_names = {"release0/release0-bootstrap.log", "release1/update-bootstrap.log"}
+    nested_names = {"release0/release0-bootstrap.log", "release1/update-bootstrap.log",
+                    "release1/update-transaction.json"}
     sources = list(evidence.iterdir()) + [evidence / name for name in sorted(nested_names)]
     for source in sorted(sources, key=lambda path: str(path)):
         name = source.name

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import sys
 
 if __package__:
@@ -32,6 +33,70 @@ RELEASE0_REQUIRED = frozenset({
     "provenance.json", "served/install", "served/install.ps1", "served/install-manifest.json",
 })
 CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
+
+
+def observe_installed_transaction(root: Path, data: Path, *, expected_step: str,
+                                  expected_operation_id: str | None = None) -> dict:
+    """Read a particular durable transaction without manufacturing recovery evidence.
+
+    Hashes identify the journal and the manifests it names; they do not on
+    their own authenticate installed code, native manager ownership or tuples.
+    Callers must retain and independently authenticate those observations.
+    """
+    root, data = Path(root), Path(data)
+    if not root.is_absolute() or not data.is_absolute():
+        raise ValueError("Installed program and data roots must be absolute")
+
+    def no_links(path: Path) -> None:
+        for part in (path, *path.parents):
+            info = part.lstat()
+            if (part.is_symlink() or getattr(info, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                raise ValueError("Installed transaction paths cannot contain links")
+
+    no_links(root)
+    no_links(data)
+    if not root.is_dir() or not data.is_dir():
+        raise ValueError("Installed program and data roots must be directories")
+    journal_path = root / "update-transaction.json"
+    no_links(journal_path)
+    if not journal_path.is_file():
+        raise ValueError("Installed transaction journal must be a file")
+    journal_bytes = journal_path.read_bytes()
+    journal = json.loads(journal_bytes)
+    if not isinstance(journal, dict) or journal.get("format") != "astrid-install-update/v1":
+        raise ValueError("Invalid installed transaction journal")
+    operation_id = journal.get("operation_id")
+    if (not isinstance(operation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", operation_id)
+            or (expected_operation_id is not None and operation_id != expected_operation_id)
+            or journal.get("step") != expected_step
+            or journal.get("data_root") != str(data)):
+        raise ValueError("Installed transaction operation, step or data root differs")
+    versions = root / "versions"
+    no_links(versions)
+    manifests = {}
+    paths = []
+    for name in ("old", "candidate"):
+        record = journal.get(name)
+        if not isinstance(record, dict) or not isinstance(record.get("root"), str):
+            raise ValueError(f"Installed transaction {name} version is missing")
+        version = Path(record["root"])
+        if (not version.is_absolute() or version.parent != versions
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version.name)):
+            raise ValueError(f"Installed transaction {name} version is outside the installation")
+        no_links(version)
+        if not version.is_dir():
+            raise ValueError(f"Installed transaction {name} version is not a directory")
+        manifest = version / "manifest.json"
+        no_links(manifest)
+        if not manifest.is_file():
+            raise ValueError(f"Installed transaction {name} manifest is missing")
+        manifests[name] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        paths.append(version)
+    if paths[0] == paths[1]:
+        raise ValueError("Installed transaction candidate and predecessor coincide")
+    return {"journal": journal, "journal_sha256": hashlib.sha256(journal_bytes).hexdigest(),
+            "manifest_sha256": manifests}
 
 
 def workspace(version: dict, data: Path, evidence: Path, action: str, request: dict) -> dict:
@@ -277,6 +342,21 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         version_path, selected_data, version = journey.installation(root, data)
         if selected_data != old_data or version_path == old_path:
             raise RuntimeError("Release-1 update did not retain data and activate a new version")
+        transaction = observe_installed_transaction(root, data, expected_step="complete")
+        if (transaction["journal"]["old"]["root"] != old["root"]
+                or transaction["journal"]["candidate"]["root"] != version["root"]):
+            raise RuntimeError("Completed update journal does not identify the installed transition")
+        journal_copy = evidence / "release1" / "update-transaction.json"
+        journal_copy.write_bytes((root / "update-transaction.json").read_bytes())
+        if fixture_digest(journal_copy) != transaction["journal_sha256"]:
+            raise RuntimeError("Update journal changed while recording evidence")
+        result["update_transaction"] = {
+            "operation_id": transaction["journal"]["operation_id"],
+            "step": transaction["journal"]["step"],
+            "journal_sha256": transaction["journal_sha256"],
+            "manifest_sha256": transaction["manifest_sha256"],
+            "evidence": str(journal_copy.relative_to(evidence)),
+        }
         selected = selected_candidate(manifest, version, old_tuple)
         if installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not select release 1")
