@@ -1,0 +1,154 @@
+name: R51 Windows module version diagnostic
+on:
+  push:
+    branches: ["venue/M-VENUE-R51-WIN-MODULE-VERSION-1"]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: pwsh to Python to Windows PowerShell module and ACL observation
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\probe" | Out-Null
+          @'
+          import os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'isolated-r51'
+          home, local, tmp = root/'home', root/'localappdata', root/'tmp'
+          for p in (home, local, tmp): p.mkdir(parents=True, exist_ok=True)
+          env = dict(os.environ)
+          inherited_psmodulepath = next((v for k, v in os.environ.items() if k.casefold() == 'psmodulepath'.casefold()), None)
+          env.update({'HOME':str(home), 'USERPROFILE':str(home), 'LOCALAPPDATA':str(local), 'APPDATA':str(root/'appdata'), 'TMP':str(tmp), 'TEMP':str(tmp), 'TMPDIR':str(tmp), 'XDG_DATA_HOME':str(home/'.local'/'share'), 'XDG_STATE_HOME':str(home/'.local'/'state'), 'XDG_CONFIG_HOME':str(home/'.config'), 'ASTRID_RUNTIME_DATA_ROOT':str(root/'data'), 'ASTRID_CI_PROGRAM_ROOT':str(root/'program'), 'ASTRID_CI_DATA_ROOT':str(root/'data'), 'R51_INHERITED_PSMODULEPATH': inherited_psmodulepath if inherited_psmodulepath is not None else '<unset>'})
+          script = pathlib.Path(os.environ['RUNNER_TEMP'])/'probe'/'child.ps1'
+          fixture = pathlib.Path('tests/fixtures/release0/served/install.ps1').read_text(encoding='utf-8')
+          # Retain the exact historical implementation of creation and validation.
+          function = fixture[fixture.index('    function Initialize-PrivateDirectory'):fixture.index('\n    try {', fixture.index('    function Initialize-PrivateDirectory'))]
+          cs = fixture[fixture.index("            Add-Type -TypeDefinition @'"):fixture.index("\n'@", fixture.index("            Add-Type -TypeDefinition @'"))+3]
+          script.write_text('''$ErrorActionPreference = 'Stop'
+          Write-Output "PSVersion: $($PSVersionTable.PSVersion)"
+          Write-Output "PSEdition: $($PSVersionTable.PSEdition)"
+          Write-Output "inherited PSModulePath: $env:R51_INHERITED_PSMODULEPATH"
+          Write-Output "effective child PSModulePath: $env:PSModulePath"
+          Write-Output "Get-Module -ListAvailable Microsoft.PowerShell.Security:"
+          try {
+              $available = @(Get-Module -ListAvailable Microsoft.PowerShell.Security -ErrorAction Stop | Select-Object Name,Version,ModuleBase)
+              if ($available.Count -eq 0) { Write-Output 'module_listing: no matching modules' }
+              else { $available | Format-List Name,Version,ModuleBase | Out-String -Width 4096 | Write-Output }
+              Write-Output "module_listing_exit: 0"
+          } catch {
+              Write-Output "module_listing_exit: 1"
+              $_ | Format-List * -Force | Out-String -Width 4096 | Write-Output
+              $_.Exception | Format-List * -Force | Out-String -Width 4096 | Write-Output
+          }
+          try {
+              Import-Module Microsoft.PowerShell.Security -Verbose -ErrorAction Stop 4>&1 | Out-String -Width 4096 | Write-Output
+              Write-Output "import_exit: 0"
+              Get-Module Microsoft.PowerShell.Security | Select-Object Name,Version,Path | Format-List | Out-String -Width 4096 | Write-Output
+          } catch {
+              Write-Output "import_exit: 1"
+              $_ | Format-List * -Force | Out-String -Width 4096 | Write-Output
+              $_.Exception | Format-List * -Force | Out-String -Width 4096 | Write-Output
+          }
+          ''' + cs + '\n' + function + '''
+          $path = Join-Path $env:TEMP 'owned-private'
+          try {
+              Initialize-PrivateDirectory $path
+              $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+              Write-Output "Get-Acl_exit: 0"
+              $acl | Format-List Owner,AreAccessRulesProtected,Sddl,Access | Out-String -Width 4096 | Write-Output
+              Write-Output "private_owner_protected_full_check_exit: 0"
+          } catch {
+              Write-Output "Get-Acl_exit: 1"
+              Write-Output "private_owner_protected_full_check_exit: 1"
+              $_ | Format-List * -Force | Out-String -Width 4096 | Write-Output
+              $_.Exception | Format-List * -Force | Out-String -Width 4096 | Write-Output
+              exit 1
+          }
+          ''', encoding='utf-8')
+          argv = ['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(script)]
+          print('parent pwsh -> Python:', sys.version, flush=True)
+          print('command: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <probe>', flush=True)
+          proc = subprocess.run(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+          print(proc.stdout, flush=True)
+          print('child_exit:', proc.returncode, flush=True)
+          '@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\probe\driver.py"
+          python -u "$env:RUNNER_TEMP\probe\driver.py" *> "$env:RUNNER_TEMP\probe\windows.log"
+          Add-Content "$env:RUNNER_TEMP\probe\windows.log" "python_exit: $LASTEXITCODE"
+          Get-Content "$env:RUNNER_TEMP\probe\windows.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-probe
+          path: ${{ runner.temp }}/probe/windows.log
+          if-no-files-found: error
+  publish:
+    if: always()
+    needs: [windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-probe
+          path: ${{ runner.temp }}/results/runs/${{ github.run_id }}-${{ github.run_attempt }}/probes
+      - name: Create canonical receipt and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/results/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$ROOT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" > "$ROOT/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > "$ROOT/jobs.json"
+          python3 - "$ROOT" <<'PY'
+          import hashlib, json, pathlib, subprocess, sys
+          root = pathlib.Path(sys.argv[1])
+          run = json.loads((root/'run.json').read_text())
+          jobs = json.loads((root/'jobs.json').read_text())['jobs']
+          job = next(j for j in jobs if j['name'] == 'windows')
+          workflow = '.github/workflows/r51-windows-module-version.yml'
+          blob = subprocess.check_output(['git', 'rev-parse', f"{run['head_sha']}:{workflow}"], text=True).strip()
+          workflow_sha = hashlib.sha256(pathlib.Path(workflow).read_bytes()).hexdigest()
+          log = root/'probes'/'windows.log'
+          body = {
+            'schema_version': 1,
+            'repository': run['repository']['full_name'],
+            'source_commit': run['head_sha'],
+            'source_branch': run['head_branch'],
+            'workflow': run['path'],
+            'workflow_ref': run['head_repository']['full_name'] + '/' + run['head_branch'],
+            'workflow_blob': blob,
+            'workflow_sha256': workflow_sha,
+            'run_id': run['id'],
+            'run_attempt': run['run_attempt'],
+            'run_url': run['html_url'],
+            'run_status': run['conclusion'],
+            'job': {'name': job['name'], 'id': job['id'], 'status': job['conclusion'], 'started_at': job['started_at'], 'completed_at': job['completed_at'], 'runner_name': job.get('runner_name'), 'runner_id': job.get('runner_id')},
+            'inner_exits': {key: next((line.split(':',1)[1].strip() for line in log.read_text(errors='replace').splitlines() if line.startswith(key + ':')), None) for key in ('module_listing_exit','import_exit','Get-Acl_exit','private_owner_protected_full_check_exit','child_exit','python_exit')},
+            'sha256': {'probes/windows.log': hashlib.sha256(log.read_bytes()).hexdigest()}
+          }
+          (root/'receipt.json').write_text(json.dumps(body, indent=2, sort_keys=True) + '\n')
+          PY
+          (cd "$ROOT" && sha256sum probes/windows.log receipt.json > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - name: Publish evidence ref
+        env:
+          RESULTS_DIR: ${{ runner.temp }}/results
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --orphan r51-win-module-results
+          git rm -r -q --ignore-unmatch .
+          cp -a "$RESULTS_DIR/runs" ./runs
+          git add runs
+          git commit -m "Publish R51 Windows module diagnostic ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git push origin HEAD:refs/heads/venue-results/M-VENUE-R51-WIN-MODULE-VERSION-1
