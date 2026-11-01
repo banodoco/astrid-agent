@@ -1552,6 +1552,12 @@ def _pinokio_semantic_errors(
         _require_id(engine.get(name), f"Pinokio observation.engine.{name}", errors)
     if engine.get("pinokio_sha") != parsed.candidate.get("pinokio"):
         errors.append("Pinokio observation.engine.pinokio_sha: differs from selected candidate")
+    if (
+        _r30_id(engine.get("instance_id"))
+        and _r30_id(engine.get("boot_id"))
+        and engine.get("instance_id") == engine.get("boot_id")
+    ):
+        errors.append("Pinokio observation.engine: instance and boot identities must be distinct")
     settlement = _exact_fields(
         row.get("settlement"),
         {
@@ -1563,6 +1569,11 @@ def _pinokio_semantic_errors(
     )
     for name in ("request_id", "execution_id", "operation_id"):
         _require_id(settlement.get(name), f"Pinokio observation.settlement.{name}", errors)
+    settlement_ids = [
+        settlement.get("request_id"), settlement.get("execution_id"), settlement.get("operation_id")
+    ]
+    if all(_r30_id(value) for value in settlement_ids) and len(set(settlement_ids)) != len(settlement_ids):
+        errors.append("Pinokio observation.settlement: request, execution, and operation identities must be distinct")
     for name in ("journal_sha256", "readiness_sha256", "process_census_sha256"):
         _require_digest(settlement.get(name), f"Pinokio observation.settlement.{name}", errors)
     events = settlement.get("events")
@@ -1608,6 +1619,12 @@ def _pinokio_semantic_errors(
     )
     errors.extend(_pinokio_stop_case_errors(stop_safety.get("refused"), "refused", "Pinokio observation.stop_safety.refused"))
     errors.extend(_pinokio_stop_case_errors(stop_safety.get("unknown"), "unknown", "Pinokio observation.stop_safety.unknown"))
+    if (
+        isinstance(stop_safety.get("refused"), dict)
+        and isinstance(stop_safety.get("unknown"), dict)
+        and _same_json(stop_safety["refused"], stop_safety["unknown"])
+    ):
+        errors.append("Pinokio observation.stop_safety: refused and unknown wires must be distinct cases")
     restoration = _exact_fields(
         row.get("restoration"),
         {
@@ -1631,6 +1648,22 @@ def _pinokio_semantic_errors(
     if restoration.get("cleanup") != "pass":
         errors.append("Pinokio observation.restoration.cleanup: pass required")
     errors.extend(_custody_errors(row.get("custody"), engine.get("principal_id"), "Pinokio observation.custody"))
+    custody = row.get("custody")
+    custody_controller = (
+        custody.get("controller", {}).get("incarnation")
+        if isinstance(custody, dict) and isinstance(custody.get("controller"), dict)
+        else None
+    )
+    if restoration.get("controller_incarnation") != custody_controller:
+        errors.append(
+            "Pinokio observation.restoration.controller_incarnation: custody controller identity required"
+        )
+    for outcome in ("refused", "unknown"):
+        stop_case = stop_safety.get(outcome)
+        if isinstance(stop_case, dict) and stop_case.get("controller_incarnation") != custody_controller:
+            errors.append(
+                f"Pinokio observation.stop_safety.{outcome}.controller_incarnation: custody controller identity required"
+            )
     errors.extend(_m4_6_semantic_errors(row.get("m4_6"), "Pinokio observation.m4_6"))
     m4_6 = row.get("m4_6")
     if not isinstance(m4_6, dict) or not _same_json(m4_6.get("stop_safety"), row.get("stop_safety")):

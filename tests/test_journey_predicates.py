@@ -194,6 +194,35 @@ def test_pinokio_semantics_refuse_duplicate_terminal_and_unrestored_unknown_case
     assert any("no_retry" in reason for reason in reasons)
 
 
+def test_pinokio_semantics_refuse_missing_identity_replay_stop_wire_and_custody_loss() -> None:
+    missing_identity = authenticated_index("m4_6", "pinokio-backend-linux")
+    missing_identity["producer_files"][0]["json"]["engine"].pop("boot_id")
+    reasons = predicates.check_m4_6(missing_identity)[1]
+    assert any("engine.boot_id" in reason for reason in reasons)
+
+    replay = authenticated_index("m4_6", "pinokio-backend-linux")
+    payload = replay["producer_files"][0]["json"]
+    settlement = payload["settlement"]
+    settlement["execution_id"] = settlement["request_id"]
+    settlement["terminal"]["execution_id"] = settlement["request_id"]
+    for event in settlement["events"]:
+        event["execution_id"] = settlement["request_id"]
+    reasons = predicates.check_m4_6(replay)[1]
+    assert any("identities must be distinct" in reason for reason in reasons)
+
+    stop_wire = authenticated_index("m4_6", "pinokio-backend-linux")
+    stop_payload = stop_wire["producer_files"][0]["json"]
+    stop_payload["stop_safety"]["unknown"]["controller_incarnation"] = "replayed-controller"
+    reasons = predicates.check_m4_6(stop_wire)[1]
+    assert any("custody controller identity" in reason for reason in reasons)
+
+    custody_loss = authenticated_index("m4_6", "pinokio-backend-linux")
+    custody_payload = custody_loss["producer_files"][0]["json"]
+    custody_payload["restoration"]["controller_incarnation"] = "lost-controller"
+    reasons = predicates.check_m4_6(custody_loss)[1]
+    assert any("custody controller identity" in reason for reason in reasons)
+
+
 def test_predicates_refuse_malformed_index_unsafe_paths_and_extra_context_fields() -> None:
     ok, reasons = predicates.check_m4_6({"slot_id": [], "candidate": [], "files": [None]})
     assert ok is False and reasons
