@@ -406,6 +406,18 @@ class _FakeClient:
         )
 
 
+def _enable_visualize_revision_pin(client: _FakeClient) -> None:
+    def open_bundle(project, ref, **kwargs):
+        client.calls.append((
+            "timelines.open_bundle", {"project": project, "ref": ref, **kwargs},
+        ))
+        return DomainResult.success({
+            "bundle": {"base_parent": {"revision_id": "head-1"}},
+        })
+
+    client.timelines.open_bundle = open_bundle
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -2081,6 +2093,7 @@ def test_timelines_diff_is_one_sdk_call(capsys) -> None:
 
 def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) -> None:
     client = _FakeClient()
+    _enable_visualize_revision_pin(client)
     rc = _run(
         "timelines",
         [
@@ -2094,8 +2107,11 @@ def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) ->
         client=client,
     )
     assert rc == 0
-    assert len(client.calls) == 1
-    verb, kwargs = client.calls[0]
+    assert client.calls[0] == (
+        "timelines.open_bundle", {"project": "demo", "ref": "01TIMELINE"},
+    )
+    assert len(client.calls) == 2
+    verb, kwargs = client.calls[1]
     assert verb == "invoke_result"
     assert kwargs["capability_id"] == "rendering.timeline_visualize"
     assert kwargs["kind"] == "executor"
@@ -2107,6 +2123,7 @@ def test_timelines_visualize_routes_public_sdk_and_normalizes_formats(capsys) ->
         "timeline_slug": "01TIMELINE",
         "view": "contact",
         "resolution": "480x270",
+        "revision_id": "head-1",
     }
     envelope = json.loads(capsys.readouterr().out)
     assert set(envelope) == ENVELOPE_KEYS
@@ -2675,18 +2692,22 @@ def test_timelines_render_review_is_public_admitted_input(capsys):
 
 def test_timelines_visualize_forwards_filmstrip_options(capsys) -> None:
     client = _FakeClient()
+    _enable_visualize_revision_pin(client)
     rc = _run('timelines', [
         'visualize', '--project', 'demo', 'main', '--view', 'filmstrip',
         '--sample', 'cuts', '--render-run', '01EXACT', '--every-frames', '12',
         '--columns', '4', '--page-size', '40', '--range', '10..20', '--json',
     ], client=client)
     assert rc == 0
-    assert len(client.calls) == 1
-    assert client.calls[0][1]["wait"] is True
-    assert client.calls[0][1]['inputs'] == {
+    assert client.calls[0] == (
+        "timelines.open_bundle", {"project": "demo", "ref": "main"},
+    )
+    assert len(client.calls) == 2
+    assert client.calls[1][1]["wait"] is True
+    assert client.calls[1][1]['inputs'] == {
         'formats': ['png', 'md'], 'timeline_slug': 'main', 'view': 'filmstrip',
         'sample': 'cuts', 'render_run': '01EXACT', 'every_frames': 12,
-        'columns': 4, 'page_size': 40, 'range': '10..20',
+        'columns': 4, 'page_size': 40, 'range': '10..20', 'revision_id': 'head-1',
     }
     capsys.readouterr()
 
@@ -2744,6 +2765,8 @@ def test_projects_list_default_matches_explicit_json(capsys) -> None:
     client = _FakeClient()
     assert _run("projects", ["list"], client=client) == 0
     default = capsys.readouterr().out
+    assert "Demo" in default and "demo" in default
     assert _run("projects", ["list", "--json"], client=client) == 0
-    assert default == capsys.readouterr().out
-    assert json.loads(default)["ok"] is True
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["ok"] is True
+    assert envelope["data"] == [{"slug": "demo", "name": "Demo"}]

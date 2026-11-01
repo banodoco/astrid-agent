@@ -253,7 +253,10 @@ def test_manifest_inventory_allows_target_revision_difference_for_unpinned_eleme
 def test_prepare_import_builds_fresh_children_and_target_transcript_ids(monkeypatch):
     source = _chapter_bundle()
     source_project = source["project_id"]
-    first_shot_id = source["placements"][0]["shot_id"]
+    # Use the chapter whose selected internal media is singular, so the new
+    # shot-item mirror names the same selected media rather than competing
+    # with a cross-chapter piece.
+    first_shot_id = source["placements"][-1]["shot_id"]
     first_shot = source["shots"][first_shot_id]
     media_id = next(iter(first_shot["internal_timeline"]["registry"]["assets"].values()))["media_id"]
     source_document_id = _document_id(source_project, media_id, "default")
@@ -273,7 +276,6 @@ def test_prepare_import_builds_fresh_children_and_target_transcript_ids(monkeypa
     first_shot["payload"]["items"] = [{
         "item_id": "source-item",
         "media_id": media_id,
-        "selected_item_id": "source-item",
         "metadata": {"role": "primary_visual"},
     }]
     _inventory(monkeypatch, [])
@@ -310,7 +312,8 @@ def test_prepare_import_builds_fresh_children_and_target_transcript_ids(monkeypa
     copied_item = next(row["payload"]["items"][0] for row in result["publication"]["shot_revisions"]
                        if row["payload"].get("items"))
     assert copied_item["item_id"] != "source-item"
-    assert copied_item["selected_item_id"] == copied_item["item_id"]
+    assert copied_item["media_id"] == media_id
+    assert "selected_item_id" not in copied_item
     assert source_project != "target-project"
 
 
