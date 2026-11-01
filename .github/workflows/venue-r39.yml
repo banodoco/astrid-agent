@@ -1,0 +1,135 @@
+name: R-39 RC-0 hosted journey venue (blocked)
+
+on:
+  push:
+    branches: [venue/M-QUAL-R-39-1]
+
+permissions: {}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Reject incomplete native journey bindings
+        shell: bash
+        env:
+          R0_PROVENANCE: ${{ vars.R39_R0_PROVENANCE }}
+          NATIVE_BINDINGS: ${{ vars.R39_NATIVE_BINDINGS }}
+          EXECUTOR_CONFIGS: ${{ vars.R39_M4_4A_EXECUTOR_CONFIGS }}
+        run: |
+          {
+            echo '### R-39 AWAITING_EVIDENCE — no journey has run'
+            echo 'Required: authenticated Release-0 artifacts, hashes and provenance; complete RC-0 native adapters, fault/restoration and independent observation bindings; verified clean RunPod user-systemd route and Windows Task Scheduler route; complete M4-4a executor configs.'
+            echo 'This base workflow does not accept those native routes or the ordered interruption/rollback inputs, and does not expose every inner exit or artifact ID. Producer data alone cannot resolve the interface gap. A reviewed compatible workflow and publisher are required before enabling this caller.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for key in R0_PROVENANCE NATIVE_BINDINGS EXECUTOR_CONFIGS; do
+            if [ -z "${!key}" ]; then echo "Missing: $key"; fi
+          done
+          exit 1
+
+  journey:
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ./.github/workflows/journey.yml
+    with:
+      candidate: '{"runtime":"47e5949465cb6f3afdfd1cb8a0e90009fd9d4020","agent":"af5ae8afdb9829beb2bba4f811dbe97765bd72b2","app":"a55bec9ff384b5bbfee5535962880084ab2adb1b","pinokio":"89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4","manifest_sha256":"ced136903a7319e78a0be7db0cc1709c0663eaf7d567c040fe1812a916693874","artifacts":{"public/install":"100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d","public/install.sh":"591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285","public/install.ps1":"bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"}}'
+      old_launcher_ref: bbba620e3d89eeff8021417f365e6ea584203105
+      stopped_path_agent_ref: af5ae8afdb9829beb2bba4f811dbe97765bd72b2
+      m4_4a_executor_configs: ${{ vars.R39_M4_4A_EXECUTOR_CONFIGS }}
+      m4_4a_backend_only: false
+      m4_5_enabled: false
+      m4_5_only: false
+      m4_4b_enabled: false
+      m4_6_enabled: false
+
+  publish:
+    # Never create a result receipt for a blocked or skipped invocation.
+    if: ${{ always() && needs.preflight.result == 'success' && needs.journey.result != 'skipped' }}
+    needs: [preflight, journey]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download all available source artifacts
+        id: download
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/r39-evidence/artifacts
+      - name: Check out publisher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: publisher
+          persist-credentials: true
+      - name: Record available evidence and publish through git
+        shell: bash
+        env:
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_HEAD: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          JOURNEY_RESULT: ${{ needs.journey.result }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = banodoco/astrid-agent
+          test "$SOURCE_REF" = refs/heads/venue/M-QUAL-R-39-1
+          result_ref=refs/heads/venue-results/M-QUAL-R-39-1
+          export EVIDENCE_DIR="$RUNNER_TEMP/r39-evidence"
+          mkdir -p "$EVIDENCE_DIR"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['EVIDENCE_DIR'])
+          artifacts = root / 'artifacts'
+          rows = ['direct-macos', 'direct-linux', 'direct-windows',
+                  'pinokio-backend-macos', 'pinokio-backend-linux', 'pinokio-backend-windows',
+                  'pinokio-fully-local-macos', 'pinokio-fully-local-linux', 'pinokio-fully-local-windows']
+          inventory = []
+          for p in sorted(artifacts.rglob('*')) if artifacts.exists() else []:
+              if p.is_file():
+                  inventory.append({'path': p.relative_to(root).as_posix(), 'size': p.stat().st_size,
+                                    'sha256': hashlib.sha256(p.read_bytes()).hexdigest()})
+          receipt = {'qualification': 'unqualified', 'reason': 'The called workflow does not export per-row inner exits or artifact IDs/digests.',
+                     'repository': os.environ['GITHUB_REPOSITORY'], 'event': os.environ['GITHUB_EVENT_NAME'],
+                     'run_id': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                     'source_ref': os.environ['SOURCE_REF'], 'source_head': os.environ['SOURCE_HEAD'],
+                     'workflow_ref': os.environ['WORKFLOW_REF'], 'workflow_sha': os.environ['WORKFLOW_SHA'],
+                     'journey_result': os.environ['JOURNEY_RESULT'], 'download_outcome': os.environ['DOWNLOAD_OUTCOME'],
+                     'rows': {name: {'artifact_name': 'journey-receipt-' + name,
+                                     'artifact_present': (artifacts / ('journey-receipt-' + name)).is_dir(),
+                                     'artifact_id': None, 'artifact_digest': None, 'inner_exit_code': None} for name in rows},
+                     'files': inventory}
+          (root / 'receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+          files = sorted(p for p in root.rglob('*') if p.is_file() and p != root / 'SHA256SUMS')
+          (root / 'SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}\n' for p in files))
+          PY
+          cd publisher
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          set +e
+          git ls-remote --exit-code --heads origin "$result_ref" > /dev/null
+          remote_status=$?
+          set -e
+          if [ "$remote_status" -eq 0 ]; then
+            git fetch --no-tags origin "$result_ref:refs/remotes/origin/r39-result"
+            git switch --detach refs/remotes/origin/r39-result
+          elif [ "$remote_status" -eq 2 ]; then
+            git switch --orphan r39-result
+          else
+            exit "$remote_status"
+          fi
+          run_dir="runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$run_dir"
+          mkdir -p "$run_dir"
+          cp -a "$EVIDENCE_DIR/." "$run_dir/"
+          git add -f "$run_dir"
+          git commit -m "R-39 evidence $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
+          git push origin "HEAD:$result_ref"
+          # Incomplete bindings are never a successful publication of qualification evidence.
+          echo '::error::Source workflow does not expose required inner exits and artifact IDs/digests.'
+          exit 1
