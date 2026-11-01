@@ -405,7 +405,10 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
         ModelRootBinding, validate_model_root_binding,
     )
     from astrid.core.model_catalog import registry as catalog
-    from astrid.core.model_catalog.schema import validate_registry
+    from astrid.core.model_catalog.schema import validate_registry_with_backends
+    from astrid.core.model_catalog.taxonomy import GenerationTaxonomyRegistry
+    from astrid.core.generation.features import backend_descriptors_from_pack
+    from astrid.core.pack import load_pack_manifest
     from vibecomfy.model_assets import _referenced_model_values
     from vibecomfy.workflow_bundle import emit_bundle
 
@@ -444,10 +447,16 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     if type(target_client) is not ComfyTargetClient or type(model_root) is not ModelRootBinding:
         raise CapabilityValidationError("private image preparation requires retained host target and model root")
     bound_root = validate_model_root_binding(model_root.as_dict(), verify_files=True)
-    # Read only the shipped catalog; do not assemble user/project pack metadata.
-    registry = catalog.ModelRegistry(validate_registry(catalog._load_yaml(
+    # Read only shipped metadata; do not discover user/project pack extensions.
+    shipped_generation = load_pack_manifest(
+        Path(__file__).resolve().parents[1] / "packs" / "generation" / "pack.yaml"
+    )
+    taxonomy = GenerationTaxonomyRegistry(
+        backend_descriptors=backend_descriptors_from_pack(shipped_generation)
+    )
+    registry = catalog.ModelRegistry(validate_registry_with_backends(catalog._load_yaml(
         Path(catalog.__file__).with_name("models.yaml"),
-    )))
+    ), taxonomy_registry=taxonomy))
     preferred = ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512")
     candidates = [entry for entry in registry.list_by_modality("image")
                   if "t2i" in entry.modes and getattr(entry.modes["t2i"].backends.get("local"), "template", "")]

@@ -39,6 +39,7 @@ def test_sigterm_during_replace_restores_source_and_runs_private_cleanup(
     realm.mkdir(parents=True)
     runtime_checkout = tmp_path / "runtime-checkout"
     runtime_checkout.mkdir()
+    monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", str(runtime_checkout))
 
     private_root = tmp_path / "private-journey"
     private_root.mkdir()
@@ -96,6 +97,36 @@ def test_sigterm_during_replace_restores_source_and_runs_private_cleanup(
     if restore_fails:
         assert "source_change: injected source restore failure" in report["error"]
     assert all(signal.getsignal(signum) == handler for signum, handler in previous_handlers.items())
+
+
+def test_mismatched_declared_runtime_refuses_before_source_change(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "checkout" / "astrid" / "core" / "dev" / "journey.py"
+    source.parent.mkdir(parents=True)
+    original = b"# temporary journey source\n"
+    source.write_bytes(original)
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    runtime_checkout = tmp_path / "runtime-checkout"
+    runtime_checkout.mkdir()
+    declared_runtime = tmp_path / "declared-runtime"
+    declared_runtime.mkdir()
+    summary = tmp_path / "summary.json"
+    calls: list[str] = []
+
+    monkeypatch.setattr(journey, "__file__", str(source))
+    monkeypatch.setattr(journey, "runtime_checkout_path", lambda: runtime_checkout)
+    monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", str(declared_runtime))
+    monkeypatch.setattr(journey.shutil, "disk_usage", lambda _path: SimpleNamespace(free=10**12))
+    monkeypatch.setattr(journey, "disk_preflight", lambda *_args: {"ok": True})
+    monkeypatch.setattr(journey.Runner, "command", lambda *_args, **_kwargs: calls.append("command"))
+
+    assert journey.run(reference, "journey/main", summary, backend=journey.FFMPEG_BACKEND,
+                       start=2.0, end=6.0) == 1
+    assert source.read_bytes() == original
+    assert calls == []
+    report = json.loads(summary.read_text(encoding="utf-8"))
+    assert report["ok"] is False
+    assert "does not match imported Runtime" in report["error"]
 
 
 @pytest.mark.posix_native  # POSIX-only process-group API

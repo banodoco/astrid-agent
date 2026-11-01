@@ -21,13 +21,18 @@ import runtime_protocol.daemon as _runtime_daemon  # noqa: E402
 
 assert Path(_runtime_daemon.__file__).resolve().parents[1] == _runtime
 
-# Load the current Runtime-generated source explicitly. Other collected SDK
-# tests may already have imported Astrid's bundled package under its normal name.
-_generated_path = _runtime / "packages/python/astrid_runtime_client/generated.py"
-_spec = importlib.util.spec_from_file_location("_admission_recovery_runtime_generated", _generated_path)
-_current_generated = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = _current_generated
-_spec.loader.exec_module(_current_generated)
+# Load the current Runtime client package explicitly, so its relative imports resolve.
+# Other collected SDK tests may already have imported Astrid's bundled package under its normal name.
+_client_dir = _runtime / "packages/python/astrid_runtime_client"
+_generated_path = _client_dir / "generated.py"
+_spec = importlib.util.spec_from_file_location(
+    "_admission_recovery_runtime_client", _client_dir / "__init__.py",
+    submodule_search_locations=[str(_client_dir)],
+)
+_client_package = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _client_package
+_spec.loader.exec_module(_client_package)
+_current_generated = importlib.import_module(f"{_spec.name}.generated")
 
 from astrid.sdk import invocation
 from astrid.sdk.recovery import AdmissionReceipt

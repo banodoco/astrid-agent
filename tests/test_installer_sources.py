@@ -2,6 +2,7 @@
 
 import io
 import json
+import shutil
 import os
 import subprocess
 import sys
@@ -222,6 +223,13 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
         if name == "agent":
             (destination / "remotion/node_modules").mkdir(parents=True)
             (destination / "remotion/package-lock.json").write_text("{}\n")
+            canonical = Path(__file__).parents[1] / "astrid/core/timeline/schema/timeline-config.schema.json"
+            staged_canonical = destination / canonical.relative_to(Path(__file__).parents[1])
+            staged_canonical.parent.mkdir(parents=True)
+            staged_canonical.write_bytes(canonical.read_bytes())
+            (destination / "runtime.lock.json").write_bytes(
+                (Path(__file__).parents[1] / "runtime.lock.json").read_bytes()
+            )
         return destination
 
     monkeypatch.setattr("astrid.installer.backend.source", materialize)
@@ -231,7 +239,16 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     monkeypatch.setattr("astrid.installer.backend.binary", lambda *_args: tmp_path / "npm-cli.js")
     monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: "uv 1.2.3")
     monkeypatch.setattr(backend, "existing", lambda _data: None)
-    monkeypatch.setattr(backend, "_installed_product_root", lambda python, _env: python.parent / "Lib/site-packages")
+    def installed_root(python, _env):
+        product = python.parent / "Lib/site-packages"
+        source = python.parent.parent.parent / "a"
+        for relative in ("astrid/core/timeline/schema/timeline-config.schema.json",):
+            target = product / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / relative, target)
+        return product
+
+    monkeypatch.setattr(backend, "_installed_product_root", installed_root)
     monkeypatch.setattr(backend, "_declare_services", lambda **kwargs: kwargs["folder"] / "services.json")
 
     version = backend.stage(value, tmp_path / "program", tmp_path / "data")
@@ -372,6 +389,12 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         if name == "agent":
             (destination / "remotion/node_modules").mkdir(parents=True)
             (destination / "remotion/package-lock.json").write_text("{}\n")
+            checkout = Path(__file__).resolve().parents[1]
+            schema = Path("astrid/core/timeline/schema/timeline-config.schema.json")
+            target = destination / schema
+            target.parent.mkdir(parents=True)
+            shutil.copyfile(checkout / schema, target)
+            shutil.copyfile(checkout / "runtime.lock.json", destination / "runtime.lock.json")
         materialized.append((name, destination))
         return destination
 
@@ -390,6 +413,10 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
             py = Path(args[0]).parent.parent
             purelib = py / "lib/site-packages"
             purelib.mkdir(parents=True, exist_ok=True)
+            schema = Path("astrid/core/timeline/schema/timeline-config.schema.json")
+            target = purelib / schema
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(py.parent / "a" / schema, target)
             origins = {}
             for key in ("host", "child", "action", "client", "sdk"):
                 origin = purelib / f"{key}.py"

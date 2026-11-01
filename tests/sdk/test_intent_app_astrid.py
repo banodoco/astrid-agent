@@ -12,7 +12,7 @@ from pathlib import Path
 
 from astrid.core.timeline import astrid_ns as ns
 from astrid.sdk import timeline_intent as intent
-from astrid.sdk.timeline.store import three_way
+from astrid.sdk.timeline_checkout import Checkout
 
 TINY = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing" / "tiny.json"
 LEGACY_CLIP_KEYS = ns.CLIP_INTENT_KEYS
@@ -112,13 +112,19 @@ def test_normalized_leaves_the_published_input_untouched():
     assert _flat_legacy_keys(out) == []
 
 
-def test_three_way_legacy_head_is_not_a_conflict_and_keeps_intent():
+def test_three_way_legacy_head_is_not_a_conflict_and_keeps_intent(tmp_path):
     base = _legacy_bundle()
     head = copy.deepcopy(base)
     candidate = copy.deepcopy(base)
     intent.migrate(candidate)  # the working copy was migrated on checkout
     intent.set_chapters(candidate, [{"name": "01 OPEN", "from": "c1"}, {"name": "02 NEXT", "from": "c2"}])
-    merged, _lines = three_way(base, head, candidate)
+    path = tmp_path / "legacy.json"
+    Checkout(base).save(path, quiet=True)
+    local = Checkout.load(path)
+    Checkout(head).save(path, quiet=True)
+    local.bundle = candidate
+    local.save(quiet=True)
+    merged = Checkout.load(path).bundle
     assert [r["name"] for r in intent.chapters(merged)] == ["01 OPEN", "02 NEXT"]
     assert intent.slots(copy.deepcopy(merged)) == {"hero": {"kind": "footage"}}
     assert intent.cut_notes(merged) == {"c1": {"why": "the opener"}}
@@ -159,16 +165,25 @@ def test_onscreen_address_reads_a_migrated_clip():
     assert "cut" not in clip["app"] and _address(clip) == "c41.sparks"
 
 
-def test_merge_keeps_a_film_namespace_key_outside_the_known_list_in_the_namespace():
+def test_merge_keeps_a_film_namespace_key_outside_the_known_list_in_the_namespace(tmp_path):
     base = json.loads(TINY.read_text(encoding="utf-8"))
     head = copy.deepcopy(base)
     candidate = copy.deepcopy(base)
     candidate.setdefault("parent", {}).setdefault("config", {}).setdefault("app", {}).setdefault("astrid", {})["groups"] = {"g": ["c1"]}
-    merged, lines = three_way(base, head, candidate)
+    path = tmp_path / "namespace.json"
+    Checkout(base).save(path, quiet=True)
+    local = Checkout.load(path)
+    Checkout(head).save(path, quiet=True)
+    local.bundle = candidate
+    local.save(quiet=True)
+    merged, lines = Checkout.load(path).bundle, local.merged
     assert lines == []
     assert ns.film_intent(merged["parent"]["config"])["groups"] == {"g": ["c1"]}
     assert "groups" not in merged["parent"]["config"]
     newer = copy.deepcopy(candidate)
     newer["parent"]["config"]["app"]["astrid"]["groups"] = {"g": ["c1", "c2"]}
-    merged2, _ = three_way(candidate, merged, newer)
+    local = Checkout.load(path)
+    local.bundle = newer
+    local.save(quiet=True)
+    merged2 = Checkout.load(path).bundle
     assert ns.film_intent(merged2["parent"]["config"])["groups"] == {"g": ["c1", "c2"]}

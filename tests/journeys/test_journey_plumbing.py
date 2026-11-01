@@ -99,15 +99,67 @@ def test_journey_render_calls_use_the_backend_and_kill_render_drops_review_for_f
     assert argv[argv.index("--backend") + 1] == backend and ("--review" in argv) is review
 
 
+def test_full_journey_commits_the_checked_named_draft(tmp_path: Path, monkeypatch) -> None:
+    from astrid.packs.timeline import cli
+    from astrid.sdk import timeline_checkout
+
+    document = {"project_id": "p", "timeline_id": "main",
+                "base_parent": {"revision_id": "r", "publication_id": "receipt"},
+                "parent": {}, "placements": [], "shots": {}}
+    drafts = []
+    monkeypatch.setattr(timeline_checkout, "find_draft", lambda *args: drafts.append(args) or tmp_path / "draft.json")
+    monkeypatch.setattr(timeline_checkout.Checkout, "load", lambda path: SimpleNamespace(document=lambda: document))
+
+    class FullRunner(RecordingRunner):
+        def phase(self, name, operation):
+            return operation() if name == "edit" else name + "-run"
+
+        def command(self, phase, argv, env, **kwargs):
+            super().command(phase, argv, env, **kwargs)
+            if argv[1:2] == ["-c"]:
+                monkeypatch.setattr(sys, "argv", ["-c", *argv[3:]])
+                exec(argv[2], {})
+                return ""
+            parsed = cli.build_parser(SimpleNamespace()).parse_args(argv[argv.index("timelines") + 1:])
+            if parsed.command == "commit":
+                assert json.loads(parsed.file.read_text()) == document
+                assert parsed.idempotency_key == drafts[0][2]
+                assert parsed.message == "journey " + parsed.idempotency_key
+                assert kwargs.get("json_result", True) is True
+            else:
+                assert parsed.draft.startswith("v6-")
+                assert kwargs["json_result"] is False
+
+    runner = FullRunner()
+    j = journey.Journey(runner=runner, root=tmp_path, env={}, project="p", timeline="main", start=0, end=6,
+                        kill_start=0, checkout=tmp_path)
+    j.full("BUGNET", None)
+    assert [argv[argv.index("timelines") + 1] for argv in runner.calls if "timelines" in argv] == [
+        "checkout", "edit", "check", "commit"]
+    assert drafts == [("p", "main", drafts[0][2])]
+
+
 def test_renderer_install_problem_names_the_missing_install_and_the_fix(tmp_path: Path) -> None:
-    from astrid.core.rendering.remotion_runtime import REMOTION_CLI_RELATIVE_PATH
+    from astrid.core.rendering import remotion_runtime
+
     assert "npm ci" in journey.renderer_install_problem(tmp_path)
-    for name in ("timeline-composition", "timeline-schema", "timeline-theme-2rp"):
-        package = tmp_path / "node_modules" / "@banodoco" / name
-        package.mkdir(parents=True)
-        (package / "package.json").write_text("{}")
+
+    package = tmp_path / "node_modules" / "@banodoco" / "timeline-composition"
+    package.mkdir(parents=True)
+    exports = {}
+    for export in remotion_runtime._REQUIRED_COMPOSITION_EXPORTS:
+        filename = "index" if export == "." else export.removeprefix("./")
+        exports[export] = {"import": f"./dist/{filename}.js"}
+        (package / "dist" / f"{filename}.js").parent.mkdir(parents=True, exist_ok=True)
+        (package / "dist" / f"{filename}.js").write_text("export {};\n")
+    (package / "package.json").write_text(json.dumps({
+        "name": "@banodoco/timeline-composition",
+        "version": remotion_runtime._COMPOSITION_PACKAGE_VERSION,
+        "exports": exports,
+    }))
+
     assert "remotion-cli" in journey.renderer_install_problem(tmp_path)
-    cli = tmp_path / REMOTION_CLI_RELATIVE_PATH
+    cli = tmp_path / remotion_runtime.REMOTION_CLI_RELATIVE_PATH
     cli.parent.mkdir(parents=True)
     cli.write_text("")
     assert journey.renderer_install_problem(tmp_path) is None
