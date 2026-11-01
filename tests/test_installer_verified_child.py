@@ -160,6 +160,21 @@ def test_ordinary_installed_host_admits_and_claims_h3_prepare(tmp_path, monkeypa
     monkeypatch.setattr(backend_module, "binary", lambda *_args: tmp_path / "unused-npm")
     monkeypatch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
     version = backend.stage(manifest, program, data)
+    for name, staged in (("agent", "a"), ("runtime", "r"), ("vibecomfy", "v")):
+        assert _pin(version.root / staged) == manifest[name]["sha"]
+    smoke = json.loads(_run([version.python, "-I", "-c", '''
+import importlib, importlib.metadata, json, pathlib, sysconfig
+root = pathlib.Path(sysconfig.get_path('purelib')).resolve()
+origins = {}
+for name in ('astrid', 'astrid_runtime', 'runtime_protocol', 'astrid_runtime_client', 'vibecomfy'):
+    origin = pathlib.Path(importlib.import_module(name).__file__).resolve()
+    assert origin.is_relative_to(root), (name, str(origin))
+    origins[name] = str(origin)
+print(json.dumps({'origins': origins, 'versions': {name: importlib.metadata.version(name)
+    for name in ('astrid', 'astrid-runtime', 'astrid-runtime-client', 'vibecomfy')}}))
+''']))
+    print(json.dumps({"staged_sources": {name: manifest[name]["sha"]
+        for name in ("agent", "runtime", "vibecomfy")}, "installed_smoke": smoke}), flush=True)
     profile = read_json(version.profile)
     assert profile["worker_profile"] == str(version.root / "worker-profile.json")
     worker = read_json(Path(profile["worker_profile"]))
@@ -189,8 +204,8 @@ def test_ordinary_installed_host_admits_and_claims_h3_prepare(tmp_path, monkeypa
     started = False
     try:
         backend.register(version, data)
-        backend.start(version, data)
         started = True
+        backend.start(version, data)
         ready_path = data / "runtime/worker-astrid-ready.json"
         deadline = time.monotonic() + 120
         while not ready_path.is_file() and time.monotonic() < deadline:
@@ -221,7 +236,12 @@ assert metadata['scopes'] == sorted(PACK_HOST_SCOPES)
 binding = metadata['execution_binding']
 assert binding['actual']['kind'] == 'machine' and binding['verification']['verified'] is True
 assert binding['verification']['method'] == 'credential_claim'
-assert metadata['local_launch_receipt']['execution_mode'] == 'host_only_cpu'
+receipt = metadata['local_launch_receipt']
+assert receipt['execution_mode'] == 'host_only_cpu'
+ready = json.loads((support / 'worker-astrid-ready.json').read_text())
+assert binding['actual']['id'] == receipt['machine_id']
+assert binding['executor_incarnation'] == receipt['executor_incarnation'] == ready['activation']['executor_incarnation']
+assert binding['verification']['evidence_digest'] == receipt['evidence_digest'] == ready['activation']['evidence_digest']
 owner = WorkspaceClient(discovery['endpoint'], Path(discovery['credential_file']).read_text().strip())
 project = resource(owner.create_project('Installed CPU canary', slug='installed-canary', idempotency_key='project'))
 project_id = project.get('project_id') or project['id']
@@ -270,6 +290,7 @@ lineage = child['spec']['delegated_parent']
 assert lineage['project_id'] == project_id and lineage['stage'] == 'prepare'
 assert lineage['parent_placement'] == binding
 assert child['execution_binding']['actual_target']['kind'] == 'machine'
+assert child['execution_binding']['actual_target'] == binding['actual']
 assert child['execution_binding']['verification']['verified'] is True
 assert child['input_object_ids'] == list(objects.values())
 assert child['spec']['delegated_parent']['parent_placement']['actual'] == binding['actual']
@@ -280,6 +301,7 @@ print(json.dumps({'cpu_only': True, 'h3_prepare_admitted': True, 'h3_prepare_cla
                       env={key: value for key, value in os.environ.items()
                            if not key.startswith(("ASTRID_", "VIBECOMFY_")) and key != "PYTHONPATH"})
         assert json.loads(result)["h3_prepare_claimed"] is True
+        print(result, flush=True)
     finally:
         if started:
             backend.stop(version, data)
