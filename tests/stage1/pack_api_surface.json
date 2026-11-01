@@ -1,0 +1,580 @@
+{
+  "1.0": {
+    "ARRANGEMENT_VERSION": {
+      "kind": "value",
+      "signature": null
+    },
+    "AssetRegistry": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "AstridArgumentError": {
+      "kind": "class",
+      "signature": "(message: 'str', argument_name: 'str', invalid_value: 'str', valid_options: 'tuple[str, ...]', catalog: 'str | None' = None) -> None"
+    },
+    "AstridError": {
+      "kind": "class",
+      "signature": "(cause: 'str', *, valid_options: 'object' = (), recovery_command: 'str | None' = None, state_snapshot: 'object | None' = None, code: 'str | None' = None, field: 'str | None' = None, fix: 'str | None' = None, degraded: 'bool' = False, source_type: 'str | None' = None) -> 'None'"
+    },
+    "AstridValueError": {
+      "kind": "class",
+      "signature": "(cause: 'str', *, valid_options: 'object' = (), recovery_command: 'str | None' = None, state_snapshot: 'object | None' = None, code: 'str | None' = None, field: 'str | None' = None, fix: 'str | None' = None, degraded: 'bool' = False, source_type: 'str | None' = None) -> 'None'"
+    },
+    "AuditContext": {
+      "kind": "class",
+      "signature": "(run_dir: 'Path', enabled: 'bool' = True) -> None"
+    },
+    "CARRY_FORWARD_SOURCE_FIELDS": {
+      "kind": "value",
+      "signature": null
+    },
+    "CapabilityDescriptor": {
+      "kind": "class",
+      "signature": "(capability_id: 'str', ownership_mode: 'str' = 'manager_owned', terminate_authority: 'str' = 'generic_pack_host', residency_support: 'str' = 'observable_releasable', admission_capacity: 'str' = 'serial', cancellation_strength: 'str' = 'fenced', uncertain_cancellation: 'str' = 'reconcile_before_settlement', resources_claimed: 'tuple[str, ...]' = ('gpu', 'ports', 'files'), warm_reuse_expected: 'bool' = False) -> None"
+    },
+    "CapabilityIdentity": {
+      "kind": "class",
+      "signature": "(capability_id: 'str', capability_digest: 'str') -> None"
+    },
+    "Checkout": {
+      "kind": "class",
+      "signature": "(bundle: 'dict[str, Any]', *, path: 'Path | None' = None)"
+    },
+    "ClaudeClient": {
+      "kind": "class",
+      "signature": "(*args, **kwargs)"
+    },
+    "CredentialsScope": {
+      "kind": "class",
+      "signature": "(provider: 'str', value: 'str') -> None"
+    },
+    "DEFAULT_OUTPUT_MAX_BYTES": {
+      "kind": "value",
+      "signature": null
+    },
+    "ENSURE_STORAGE_HINT": {
+      "kind": "value",
+      "signature": null
+    },
+    "ExperimentValidationError": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "FalBackend": {
+      "kind": "class",
+      "signature": "(env_file: 'Path | None' = None, client: 'HttpClient | None' = None) -> 'None'"
+    },
+    "GeminiClient": {
+      "kind": "class",
+      "signature": "(*args, **kwargs)"
+    },
+    "HttpClient": {
+      "kind": "class",
+      "signature": "(transport: 'Transport | None' = None, default_timeout: 'int' = 60) -> 'None'"
+    },
+    "MAX_VISUAL_HOLD_RATIO": {
+      "kind": "value",
+      "signature": null
+    },
+    "METADATA_VERSION": {
+      "kind": "value",
+      "signature": null
+    },
+    "MIN_OVERLAY_COVERAGE_SEC": {
+      "kind": "value",
+      "signature": null
+    },
+    "ManagedToolSession": {
+      "kind": "class",
+      "signature": "(*, manager_id: 'str' = 'generic-pack-host') -> 'None'"
+    },
+    "ModelRegistry": {
+      "kind": "class",
+      "signature": "(entries: 'list[ModelEntry]') -> 'None'"
+    },
+    "OrchestrationContractError": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "PARENT_IDS_ENV": {
+      "kind": "value",
+      "signature": null
+    },
+    "PipeReader": {
+      "kind": "class",
+      "signature": "(stream, *, chunk_size=65536, events=None, name=None, sink=None)"
+    },
+    "PipeWriter": {
+      "kind": "class",
+      "signature": "(stream)"
+    },
+    "PipelineMetadata": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "ProjectRuntimeError": {
+      "kind": "class",
+      "signature": "(cause: 'str', *, valid_options: 'object' = (), recovery_command: 'str | None' = None, state_snapshot: 'object | None' = None, code: 'str | None' = None, field: 'str | None' = None, fix: 'str | None' = None, degraded: 'bool' = False, source_type: 'str | None' = None) -> 'None'"
+    },
+    "ROLE_DURATION_BOUNDS": {
+      "kind": "value",
+      "signature": null
+    },
+    "RecoverableArgumentParser": {
+      "kind": "class",
+      "signature": "(*args: 'Any', **kwargs: 'Any') -> 'None'"
+    },
+    "RunStatus": {
+      "kind": "class",
+      "signature": "(*values)"
+    },
+    "RuntimeAdmission": {
+      "kind": "class",
+      "signature": "(body: 'Mapping[str, Any]', idempotency_key: 'str') -> None"
+    },
+    "SCHEMA_VERSION": {
+      "kind": "value",
+      "signature": null
+    },
+    "STITCH_CAPABILITIES": {
+      "kind": "value",
+      "signature": null
+    },
+    "STITCH_FAMILY": {
+      "kind": "value",
+      "signature": null
+    },
+    "SessionBinding": {
+      "kind": "class",
+      "signature": "(session_id: 'str', runtime_instance_id: 'str', process_birth_id: 'str', endpoint: 'str', source_digest: 'str', config_digest: 'str', execution_identity: 'str' = '', runtime_epoch: 'int | None' = None, launch_generation: 'str' = '', engine_birth_id: 'str' = '') -> None"
+    },
+    "StaleAdmissionError": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "StaleStateConflict": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "StaticChoices": {
+      "kind": "class",
+      "signature": "(values: 'Iterable[str]', *, catalog: 'str | None' = None) -> 'None'"
+    },
+    "TOTAL_DURATION_BOUNDS": {
+      "kind": "value",
+      "signature": null
+    },
+    "TRIM_BOUND_EXTENSION_SEC": {
+      "kind": "value",
+      "signature": null
+    },
+    "TimelineConfig": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "TimelineEditError": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "UncertainCancellation": {
+      "kind": "class",
+      "signature": "<unavailable>"
+    },
+    "add_choice_arg": {
+      "kind": "callable",
+      "signature": "(parser: 'argparse.ArgumentParser', *name_or_flags: 'str', values: 'Iterable[str]', catalog: 'str | None' = None, **kwargs: 'Any') -> 'argparse.Action'"
+    },
+    "admit_orchestrator_project_run": {
+      "kind": "callable",
+      "signature": "(*, project: 'str', tool_id: 'str', argv: 'list[str]', client: 'Any | None' = None) -> 'KernelAdmissionContext'"
+    },
+    "apply_experiment_review_save": {
+      "kind": "callable",
+      "signature": "(state_path: 'Path', body: 'dict[str, Any]', *, lock: 'threading.Lock | None' = None) -> 'dict[str, Any]'"
+    },
+    "build_claude_client": {
+      "kind": "callable",
+      "signature": "(env_file: 'Path | None' = None) -> 'ClaudeClient'"
+    },
+    "build_diagnostics": {
+      "kind": "callable",
+      "signature": "(review: 'Mapping[str, Any]') -> 'dict[str, Any]'"
+    },
+    "build_gemini_client": {
+      "kind": "callable",
+      "signature": "(env_file: 'Path | None' = None) -> 'GeminiClient'"
+    },
+    "build_manifest": {
+      "kind": "callable",
+      "signature": "(*, kind: 'str', inputs: 'Mapping[str, Any]', outputs: 'Sequence[Mapping[str, Any]]', created: 'str', schema_version: 'int' = 1, warnings: 'list[str] | None' = None, **extras: 'Any') -> 'dict[str, Any]'"
+    },
+    "build_normalized_review": {
+      "kind": "callable",
+      "signature": "(*, experiment: 'Mapping[str, Any]', cases_with_manifests: 'Sequence[tuple[Mapping[str, Any], str, Path]]') -> 'dict[str, Any]'"
+    },
+    "build_rubric_response_schema": {
+      "kind": "callable",
+      "signature": "(experiment: 'Mapping[str, Any]', *, case_ids: 'Sequence[str] | None' = None) -> 'dict[str, Any]'"
+    },
+    "bundle_fps": {
+      "kind": "callable",
+      "signature": "(bundle: 'Mapping[str, Any]') -> 'float'"
+    },
+    "canonical_event_json": {
+      "kind": "callable",
+      "signature": "(event: 'dict[str, Any]') -> 'str'"
+    },
+    "canonical_runtime_entrypoint": {
+      "kind": "callable",
+      "signature": "(capability_id: 'str') -> 'Iterator[None]'"
+    },
+    "canonical_timeline_config": {
+      "kind": "callable",
+      "signature": "(config: 'Any') -> 'TimelineConfig'"
+    },
+    "close_pipe_workers": {
+      "kind": "callable",
+      "signature": "(*workers, timeout=1.0)"
+    },
+    "compile_arrangement_plan": {
+      "kind": "callable",
+      "signature": "(arrangement: 'dict[str, Any]', pool: 'dict[str, Any]') -> 'list[dict[str, Any]]'"
+    },
+    "default_client": {
+      "kind": "callable",
+      "signature": "() -> 'HttpClient'"
+    },
+    "derive_ulid": {
+      "kind": "callable",
+      "signature": "(seed: 'str') -> 'str'"
+    },
+    "download_output": {
+      "kind": "callable",
+      "signature": "(client: 'HttpClient', url: 'str', destination: 'Path', *, timeout: 'int', max_bytes: 'int' = 536870912, fallback_suffix: 'str' = '.png', unique: 'bool' = False, validate: 'Callable[[bytes], object] | None' = None, infer_suffix: 'bool' = True) -> 'tuple[Path, bytes]'"
+    },
+    "executor_argv": {
+      "kind": "callable",
+      "signature": "(executor_id: 'str', python_exec: 'str') -> 'list[str]'"
+    },
+    "fal_storage_upload": {
+      "kind": "callable",
+      "signature": "(client: 'HttpClient', file_path: 'Path', api_key: 'str') -> 'str'"
+    },
+    "fal_submit_and_poll": {
+      "kind": "callable",
+      "signature": "(client: 'HttpClient', model_id: 'str', payload: 'dict[str, Any]', api_key: 'str', *, max_wait_sec: 'int' = 300, max_response_bytes: 'int | None' = None, submit_timeout: 'int | None' = None) -> 'dict[str, Any]'"
+    },
+    "ffprobe_duration_seconds": {
+      "kind": "callable",
+      "signature": "(media_path: 'str | Path', *, runner: 'Runner' = <function run>, env: 'Mapping[str, str] | None' = None) -> 'float'"
+    },
+    "group_exists": {
+      "kind": "callable",
+      "signature": "(process: 'subprocess.Popen') -> 'bool'"
+    },
+    "guard_canonical_entrypoint": {
+      "kind": "callable",
+      "signature": "(pack_id: 'str') -> 'None'"
+    },
+    "has_url_scheme": {
+      "kind": "callable",
+      "signature": "(value: 'str') -> 'bool'"
+    },
+    "hash_artifact": {
+      "kind": "callable",
+      "signature": "(path: 'Path') -> 'str'"
+    },
+    "init_experiment_review_state": {
+      "kind": "callable",
+      "signature": "(state_path: 'Path', experiment_id: 'str') -> 'dict[str, Any]'"
+    },
+    "is_all_generative_arrangement": {
+      "kind": "callable",
+      "signature": "(arrangement: 'Any', pool: 'Any') -> 'bool'"
+    },
+    "is_experiment_review_save": {
+      "kind": "callable",
+      "signature": "(body: 'Any') -> 'bool'"
+    },
+    "is_valid_content_hash": {
+      "kind": "callable",
+      "signature": "(value: 'str') -> 'bool'"
+    },
+    "load_arrangement": {
+      "kind": "callable",
+      "signature": "(path: 'Path', pool_ids: 'set[str] | None' = None, *, assign_missing_uuids: 'bool' = False) -> 'Arrangement'"
+    },
+    "load_default_registry": {
+      "kind": "callable",
+      "signature": "(banodoco_config: \"'BanodocoCatalogConfig | None'\" = None, *, project_root: 'str | Path' = <project root>, extra_pack_roots: 'tuple[str, ...]' = (), additional_executors: 'Iterable[ExecutorDefinition | dict[str, Any]]' = ()) -> 'ExecutorRegistry'"
+    },
+    "load_experiment_review_state": {
+      "kind": "callable",
+      "signature": "(state_path: 'Path', *, expected_experiment_id: 'str') -> 'dict[str, Any]'"
+    },
+    "load_local_api_key_with_source": {
+      "kind": "callable",
+      "signature": "(name: 'str', *, explicit: 'str | None' = None, env_file: 'Path | None' = None, environ: 'Mapping[str, str] | None' = None) -> 'tuple[str, str]'"
+    },
+    "load_metadata": {
+      "kind": "callable",
+      "signature": "(path: 'Path') -> 'PipelineMetadata'"
+    },
+    "load_pool": {
+      "kind": "callable",
+      "signature": "(path: 'Path') -> 'Pool'"
+    },
+    "load_provider_key": {
+      "kind": "callable",
+      "signature": "(provider: 'str', *, env_file: 'Path | None' = None, explicit: 'str | None' = None) -> 'str'"
+    },
+    "load_registry": {
+      "kind": "callable",
+      "signature": "(path: 'Path') -> 'AssetRegistry'"
+    },
+    "load_theme": {
+      "kind": "callable",
+      "signature": "(path: 'str | Path') -> 'dict[str, Any]'"
+    },
+    "load_timeline": {
+      "kind": "callable",
+      "signature": "(path: 'Path') -> 'TimelineConfig'"
+    },
+    "log_and_swallow": {
+      "kind": "callable",
+      "signature": "(exc: 'BaseException', *, level: 'int' = 10, context: 'str', logger: 'logging.Logger | None' = None) -> 'None'"
+    },
+    "managed_file_digest": {
+      "kind": "callable",
+      "signature": "(value: 'Any', name: 'str') -> 'str'"
+    },
+    "materialize_output": {
+      "kind": "callable",
+      "signature": "(config: 'Any', theme: 'Any') -> 'dict[str, Any]'"
+    },
+    "observe_tree": {
+      "kind": "callable",
+      "signature": "(process: 'subprocess.Popen', *, deadline: 'float | None' = None) -> 'dict[int, str]'"
+    },
+    "occurrences_from_bundle": {
+      "kind": "callable",
+      "signature": "(bundle: 'Mapping[str, Any]') -> 'list[dict[str, Any]]'"
+    },
+    "owned_by_current_user": {
+      "kind": "callable",
+      "signature": "(path_or_fd, metadata, *, mode: 'int | None' = None, forbidden: 'int' = 0) -> 'bool'"
+    },
+    "pack_die": {
+      "kind": "callable",
+      "signature": "(message: 'str', *, recovery_command: 'str | None' = None, valid_options: 'list[str] | None' = None, state_snapshot: 'dict | None' = None) -> 'NoReturn'"
+    },
+    "page_pair": {
+      "kind": "callable",
+      "signature": "(value: 'Any') -> 'tuple[list[Any], str | None] | None'"
+    },
+    "picture_cuts": {
+      "kind": "callable",
+      "signature": "(occurrences: 'Iterable[Mapping[str, Any]]', *, fps: 'float' = 30.0) -> 'list[dict[str, Any]]'"
+    },
+    "popen_owned_group": {
+      "kind": "callable",
+      "signature": "(argv: 'list[str]', **kwargs: 'Any') -> 'subprocess.Popen'"
+    },
+    "popen_owned_process": {
+      "kind": "callable",
+      "signature": "(argv: 'list[str]', **kwargs: 'Any') -> 'subprocess.Popen'"
+    },
+    "process_birth_identity": {
+      "kind": "callable",
+      "signature": "(pid: 'int | None' = None) -> 'str'"
+    },
+    "project_dir": {
+      "kind": "callable",
+      "signature": "(slug: 'str', *, root: 'str | Path | None' = None) -> 'Path'"
+    },
+    "project_run_env": {
+      "kind": "callable",
+      "signature": "(project_slug: 'str | None' = None) -> 'dict[str, str]'"
+    },
+    "read_json": {
+      "kind": "callable",
+      "signature": "(path: 'str | Path') -> 'Any'"
+    },
+    "read_result_json": {
+      "kind": "callable",
+      "signature": "(path: 'Path') -> 'dict[str, Any] | None'"
+    },
+    "register_outputs": {
+      "kind": "callable",
+      "signature": "(*, stage: 'str', outputs: 'Iterable[tuple[str, Path | str, str]]', parents: 'Iterable[str]' = (), metadata: 'dict[str, Any] | None' = None) -> 'list[str]'"
+    },
+    "registry": {
+      "kind": "callable",
+      "signature": "() -> 'dict[str, dict[str, float | str]]'"
+    },
+    "reject_project_with_out": {
+      "kind": "callable",
+      "signature": "(project: 'str | None', out: 'str | Path | None') -> 'None'"
+    },
+    "release_group": {
+      "kind": "callable",
+      "signature": "(process: 'subprocess.Popen') -> 'None'"
+    },
+    "render_astrid_error": {
+      "kind": "callable",
+      "signature": "(error: 'AstridError') -> 'int'"
+    },
+    "require_action_available": {
+      "kind": "callable",
+      "signature": "(action_id: 'str') -> 'None'"
+    },
+    "require_project_owned_artifact": {
+      "kind": "callable",
+      "signature": "(project_slug: 'str', artifact_type: 'str', value: 'str | Path', *, root: 'str | Path | None' = None) -> 'Path'"
+    },
+    "require_runtime_materialized_file": {
+      "kind": "callable",
+      "signature": "(value: 'str | Path', *, label: 'str' = 'media input') -> 'Path'"
+    },
+    "resolve_manifest_path": {
+      "kind": "callable",
+      "signature": "(run_path: 'Path', manifest_path: 'str') -> 'tuple[Path | None, str | None]'"
+    },
+    "resolve_media_handle": {
+      "kind": "callable",
+      "signature": "(client: 'Any', project: 'str', value: 'Any') -> 'tuple[dict[str, Any], dict[str, Any]]'"
+    },
+    "resolve_projects_root": {
+      "kind": "callable",
+      "signature": "(root: 'str | Path | None' = None) -> 'Path'"
+    },
+    "resolve_remotion_project_dir": {
+      "kind": "callable",
+      "signature": "(*, environment: 'Mapping[str, str] | None' = None) -> 'Path'"
+    },
+    "resolve_runtime_data_root": {
+      "kind": "callable",
+      "signature": "() -> 'Path'"
+    },
+    "run_pack_main": {
+      "kind": "callable",
+      "signature": "(capability_id: 'str', runner: 'Callable[[], int]', *, argv: 'list[str] | None' = None, recovery_command: 'str | None' = None) -> 'int'"
+    },
+    "run_subprocess": {
+      "kind": "callable",
+      "signature": "(cmd: 'list[str]', *, label: 'str', orchestrator: 'str | None' = None, **kwargs: 'Any') -> 'str'"
+    },
+    "sanitize_portable": {
+      "kind": "callable",
+      "signature": "(value: 'Any', *, forbidden_paths: 'tuple[str, ...]' = ()) -> 'Any'"
+    },
+    "save_arrangement": {
+      "kind": "callable",
+      "signature": "(arrangement: 'Arrangement', path: 'Path', pool_ids: 'set[str] | None' = None) -> 'None'"
+    },
+    "save_media": {
+      "kind": "callable",
+      "signature": "(client: 'Any', digest: 'str', to: 'str | Path', *, overwrite: 'bool' = False, project: 'str' = '') -> 'Path'"
+    },
+    "save_metadata": {
+      "kind": "callable",
+      "signature": "(meta: 'PipelineMetadata', path: 'Path') -> 'None'"
+    },
+    "save_registry": {
+      "kind": "callable",
+      "signature": "(registry: 'AssetRegistry', path: 'Path') -> 'None'"
+    },
+    "save_timeline": {
+      "kind": "callable",
+      "signature": "(config: 'TimelineConfig', path: 'Path') -> 'None'"
+    },
+    "select_capability_row": {
+      "kind": "callable",
+      "signature": "(rows: 'Iterable[Any]', capability_id: 'str') -> 'Mapping[str, Any] | None'"
+    },
+    "selected_project": {
+      "kind": "callable",
+      "signature": "(explicit_project: 'str | None', *, runtime_client: 'object | None' = None) -> 'tuple[str | None, str]'"
+    },
+    "sha256_file": {
+      "kind": "callable",
+      "signature": "(path: 'Path') -> 'str'"
+    },
+    "signal_group": {
+      "kind": "callable",
+      "signature": "(process: 'subprocess.Popen', sig: 'int') -> 'None'"
+    },
+    "synthesize_discord_manifest": {
+      "kind": "callable",
+      "signature": "(*, result: 'Mapping[str, Any]', run_dir: 'Path', subdir_name: 'str') -> 'dict[str, Any]'"
+    },
+    "terminate_group": {
+      "kind": "callable",
+      "signature": "(process: 'subprocess.Popen', *, grace_seconds: 'float' = 1.0) -> 'None'"
+    },
+    "terminate_tree": {
+      "kind": "callable",
+      "signature": "(process: 'subprocess.Popen', *, grace_seconds: 'float' = 1.0) -> 'None'"
+    },
+    "utc_now_iso": {
+      "kind": "callable",
+      "signature": "(*, timespec: 'TimeSpec' = 'auto') -> 'str'"
+    },
+    "utc_now_seconds": {
+      "kind": "callable",
+      "signature": "() -> 'str'"
+    },
+    "validate_arrangement": {
+      "kind": "callable",
+      "signature": "(arrangement: 'Any', pool_ids: 'set[str] | None' = None) -> 'None'"
+    },
+    "validate_arrangement_duration_window": {
+      "kind": "callable",
+      "signature": "(arrangement: 'Any', *, min_sec: 'float' = 75.0, max_sec: 'float' = 90.0) -> 'None'"
+    },
+    "validate_conclusions": {
+      "kind": "callable",
+      "signature": "(payload: 'Mapping[str, Any]', *, case_ids: 'Sequence[str] | None' = None, experiment: 'Mapping[str, Any] | None' = None, experiment_id: 'str | None' = None) -> 'dict[str, Any]'"
+    },
+    "validate_diagnostics": {
+      "kind": "callable",
+      "signature": "(diag: 'Mapping[str, Any]') -> 'dict[str, Any]'"
+    },
+    "validate_experiment": {
+      "kind": "callable",
+      "signature": "(experiment: 'Mapping[str, Any]') -> 'dict[str, Any]'"
+    },
+    "validate_import_report": {
+      "kind": "callable",
+      "signature": "(report: 'Mapping[str, Any]') -> 'dict[str, Any]'"
+    },
+    "validate_review": {
+      "kind": "callable",
+      "signature": "(review: 'Mapping[str, Any]') -> 'dict[str, Any]'"
+    },
+    "validate_review_final": {
+      "kind": "callable",
+      "signature": "(payload: 'Mapping[str, Any]', *, experiment: 'Mapping[str, Any]', case_ids: 'Sequence[str]') -> 'dict[str, Any]'"
+    },
+    "verify_tree_absent": {
+      "kind": "callable",
+      "signature": "(process: 'subprocess.Popen', *, deadline: 'float | None' = None) -> 'None'"
+    },
+    "write_journal_atomic": {
+      "kind": "callable",
+      "signature": "(path: 'str | Path', payload: 'object') -> 'None'"
+    },
+    "write_json_atomic": {
+      "kind": "callable",
+      "signature": "(path: 'str | Path', payload: 'Any') -> 'None'"
+    },
+    "write_manifest": {
+      "kind": "callable",
+      "signature": "(path: 'str | Path', manifest: 'Mapping[str, Any]') -> 'dict[str, Any]'"
+    },
+    "write_transcript": {
+      "kind": "callable",
+      "signature": "(client: 'Any', project: 'str', media_id: 'str', source: 'str', content: 'Mapping[str, Any]') -> 'str'"
+    }
+  }
+}
