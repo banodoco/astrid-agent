@@ -109,11 +109,34 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
             registry=ModelRegistry.load_default(), model=None, mode=mode, modality='image',
             target=client.target.url, execution='local', inputs=params, dry_run=True,
         )
-        assert selected['entry'] == model
-        assert selected['approval']['status'] == 'approved'
+        assert selected['entry']['id'] == model
+        assert selected['entry']['model'] == model
+        if mode == 'edit':
+            # The graph was compiled above; facade approval must wait for
+            # the caller's image to be staged and the final graph sealed.
+            assert 'approval' not in selected['entry']
+            assert selected['entry']['effective_values']['image'] == 'input.png'
+            assert 'image_ref' in selected['entry']['accepted_inputs']
+        else:
+            assert selected['entry']['approval']['status'] == 'approved'
         assert requests == ['/object_info', '/object_info', '/system_stats', '/object_info']
     finally:
         server.shutdown(); server.server_close(); thread.join()
+
+
+@pytest.mark.parametrize('invalid', [42, True, {'path': 'input.png'}])
+def test_qwen_edit_image_requires_a_string_reference(invalid):
+    from astrid.core.generation.entries import _workflow_inputs, validate_inputs
+
+    workflow = workflow_from_ready('edit/qwen_image_2_1_turbo_edit')
+    fields = _workflow_inputs({'binds': {}, 'defaults': {}}, 'edit', workflow=workflow)
+    image = next(field for field in fields if field['name'] == 'image')
+    assert (image['type'], image['media_semantics']) == ('string', 'image')
+    assert validate_inputs({'inputs': fields}, {'image': 'input.png'}, required=False) == {'image': 'input.png'}
+    with pytest.raises(ValueError, match="entry input 'image' requires a string"):
+        validate_inputs({'inputs': fields}, {'image': invalid}, required=False)
+    with pytest.raises(ValueError, match='no declared scalar type'):
+        validate_inputs({'inputs': [{'name': 'other', 'type': 'image'}]}, {'other': 'input.png'}, required=False)
 
 
 def test_public_lock_matches_workflow_assets():
