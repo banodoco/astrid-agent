@@ -324,7 +324,6 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch --orphan "$result_branch"
-          git rm -rf . >/dev/null
           mkdir -p "$result_path"
           cp -a "$RUNNER_TEMP/venue-evidence/." "$result_path/"
           (cd "$result_path" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
