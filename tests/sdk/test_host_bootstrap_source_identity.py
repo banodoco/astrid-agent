@@ -166,8 +166,10 @@ def test_capability_matrix_default_uses_packaged_resource(tmp_path, monkeypatch)
     monkeypatch.delenv("ASTRID_CAPABILITY_MATRIX_PATH", raising=False)
     monkeypatch.delenv("ASTRID_SOURCE_PROVENANCE_ROOT", raising=False)
     source = tmp_path / "checkout"
-    from astrid.core.product_resources import product_resource
-    assert host_bootstrap._capability_matrix_path(source) == product_resource("astrid-beta-capabilities.json")
+    packaged = source / "astrid/resources/astrid-beta-capabilities.json"
+    packaged.parent.mkdir(parents=True)
+    packaged.write_text("{}")
+    assert host_bootstrap._capability_matrix_path(source) == packaged
 
 
 def test_selected_python_matches_its_live_process_executable(tmp_path) -> None:

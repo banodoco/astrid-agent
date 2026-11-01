@@ -31,3 +31,21 @@ def test_resource_layouts_and_release_data(tmp_path, monkeypatch, name, source_n
     source.unlink()
     with pytest.raises(FileNotFoundError, match="reinstall or update"):
         resolve()
+
+
+def test_generic_host_selects_matrix_only_for_its_own_installed_packs(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.execution import generic_host
+
+    root = tmp_path / "site-packages"
+    module = root / "astrid/core/execution/generic_host.py"
+    module.parent.mkdir(parents=True)
+    module.touch()
+    matrix = root / "astrid/resources/astrid-beta-capabilities.json"
+    matrix.parent.mkdir(parents=True)
+    matrix.write_text("{}")
+    monkeypatch.setattr(generic_host, "__file__", str(module))
+    assert generic_host.GenericPackHost._default_matrix_path(
+        SimpleNamespace(pack_roots=[root / "astrid/packs"])) == matrix
+    assert generic_host.GenericPackHost._default_matrix_path(
+        SimpleNamespace(pack_roots=[tmp_path / "other"])) is None

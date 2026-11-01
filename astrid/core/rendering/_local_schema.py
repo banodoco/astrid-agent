@@ -27,7 +27,8 @@ def verified_schema_path(source_root: Path, configured: str) -> Path:
     if configured != str(expected):
         raise ValueError("local timeline schema origin differs from selected Agent source")
     lock_path = product_resource("runtime.lock.json", installed=root / "runtime.lock.json",
-                                 source=root / "runtime.lock.json")
+                                 source=root / "runtime.lock.json",
+                                 package_root=root / "astrid/resources")
     for leaf in (expected, lock_path, *(root / p for p in READER_INPUTS)):
         if leaf.resolve(strict=True) != leaf:
             raise ValueError("local timeline schema source is aliased")

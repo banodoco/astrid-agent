@@ -1068,7 +1068,8 @@ def _capability_matrix_path(source_path: Path) -> Path:
     if not raw:
         from astrid.core.product_resources import product_resource
         return product_resource("astrid-beta-capabilities.json",
-                                source=source_path / "config" / "astrid-beta-capabilities.json")
+                                source=source_path / "config" / "astrid-beta-capabilities.json",
+                                package_root=source_path / "astrid/resources")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise PackHostBootstrapError("installed capability matrix path must be absolute")

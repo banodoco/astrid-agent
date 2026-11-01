@@ -406,7 +406,8 @@ def _runtime_inputs(project_dir: Path, environment: Mapping[str, str], python: s
     roots.extend(Path(p) for p in closure.get("package_roots", []))
     from astrid.core.product_resources import product_resource
     lock_path = product_resource("runtime.lock.json", installed=REPO_ROOT / "runtime.lock.json",
-                                 source=REPO_ROOT / "runtime.lock.json")
+                                 source=REPO_ROOT / "runtime.lock.json",
+                                 package_root=REPO_ROOT / "astrid/resources")
     paths = [node, Path(python), cli, project / "package.json", project / "package-lock.json", Path(__file__),
              Path(_remotion_package.__file__), Path(_local_schema.__file__),
              lock_path, schema,

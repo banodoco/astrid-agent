@@ -6812,11 +6812,16 @@ class GenericPackHost:
 
     def _default_matrix_path(self) -> Path | None:
         checkout = Path(__file__).resolve().parents[3]
-        candidate = checkout / "config" / "astrid-beta-capabilities.json"
         source_pack_root = checkout / "astrid" / "packs"
-        if candidate.is_file() and any(root == source_pack_root for root in self.pack_roots):
-            return candidate
-        return None
+        if not any(root == source_pack_root for root in self.pack_roots):
+            return None
+        from astrid.core.product_resources import product_resource
+        try:
+            return product_resource("astrid-beta-capabilities.json",
+                                    package_root=checkout / "astrid/resources",
+                                    source=checkout / "config/astrid-beta-capabilities.json")
+        except FileNotFoundError:
+            return None
 
     @staticmethod
     def _load_matrix(path: Path | None) -> dict[str, dict[str, Any]]:
