@@ -10310,16 +10310,15 @@ class GenericPackHost:
                 if reserved:
                     return
                 if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
-                    # Admission shutdown happens before the producer starts.
-                    # During execution the observer cannot claim the child
-                    # stopped until the local execution path returns.
+                    # Neither the local stage nor cleanup proves an independent
+                    # executor/provider stop for the fenced attempt.
                     completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
                                     fence=exact_fence, lease_id=lease_token,
                                     runtime_epoch=data.get("runtime_epoch"), outputs=[],
                                     result={"status": "cancelled",
                                             "error": {"code": "cancelled",
                                                       "message": "execution cancelled"}},
-                                    stop_observed=terminal.get("stage") == "admission")
+                                    stop_observed=False)
                 else:
                     ensure_failure(error)
             except BaseException as reporting_error:
@@ -11016,7 +11015,8 @@ class GenericPackHost:
                     "attempt_id": attempt_id, "fence": fence, "lease_id": lease_token,
                     "runtime_epoch": task_data.get("runtime_epoch"),
                     "outputs": evidence_outputs, "result": evidence_result,
-                    "stop_observed": True,
+                    # Local cleanup is not independent executor/provider stop evidence.
+                    "stop_observed": False,
                 }
                 try:
                     completion_call(self.client.cancel, task_id, **cancel_kwargs)
