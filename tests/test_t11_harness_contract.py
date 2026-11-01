@@ -32,7 +32,7 @@ def _refusal_receipt() -> dict:
             "schema_consumption": "unobserved",
             "composition_execution": "unobserved",
             "same_process_observer": {
-                "status": "refused-no-product-seam",
+                "status": "refused-no-authenticated-collection",
                 "qualification": False,
                 "same_process_observation": {
                     "schema_consumption": {"status": "unobserved"},
@@ -77,6 +77,13 @@ class T11HarnessContractTests(unittest.TestCase):
         # process/run correlation, or loaded-bundle identity.
         with self.assertRaises(jsonschema.ValidationError):
             self.validator.validate(receipt)
+
+    def test_observed_schema_requires_event_and_receipt_bindings(self):
+        receipt = _refusal_receipt()
+        receipt["observations"]["timeline_schema"] = {"status": "observed"}
+        with self.assertRaises(jsonschema.ValidationError):
+            self.validator.validate(receipt)
+        self.assertFalse(receipt["qualification"])
 
     def test_harness_requires_the_observer_and_all_four_tuple_members(self):
         source = HARNESS_PATH.read_text(encoding="utf-8")

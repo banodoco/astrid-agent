@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import importlib.util
 import json
+import os
+import time
 from pathlib import Path
 import tarfile
 import tempfile
@@ -88,57 +90,100 @@ class T11ObserverTests(unittest.TestCase):
                     "--profile", str(profile), "--example-receipt", str(example), "--receipt", str(receipt),
                     "--agent-sha", PUBLISHED_AGENT_SHA, "--runtime-sha", PUBLISHED_RUNTIME_SHA,
                     "--app-sha", PUBLISHED_APP_SHA, "--pinokio-sha", PUBLISHED_PINOKIO_SHA,
-                    "--schema-sha256", "a" * 64,
+                    "--schema-sha256", self.observer.sha256_file(REPO_ROOT / "astrid/core/timeline/schema/timeline-config.schema.json"),
                     "--composition-archive-sha256", self.observer.sha256_file(archive),
                     "--composition-archive", str(archive),
                 ])
             self.assertEqual(result, self.observer.EXIT_OBSERVATION_UNAVAILABLE)
             observed = json.loads(receipt.read_text(encoding="utf-8"))
-            self.assertEqual(observed["status"], "refused-no-product-seam")
+            self.assertEqual(observed["status"], "refused-no-authenticated-collection")
             self.assertFalse(observed["qualification"])
             self.assertEqual(observed["render_run_identity"]["run_id"], "run-t11-focused")
             self.assertEqual(observed["composition_input_identity"]["status"],
                              "unobserved-no-installed-package")
 
-    def test_direct_event_contract_rejects_missing_ambiguous_and_mismatched_observations(self):
-        process = {"pid": 71, "start_ticks": 123, "boot_id": "boot"}
-        archive_digest = "b" * 64
-        inputs_digest = "d" * 64
-        events = [
-            {
-                "event": "timeline_schema_consumed", "run_id": "run-1",
-                "observed_at_monotonic_ns": 100, "process": process,
-                "schema": {"canonical_json_sha256": "a" * 64, "reader_origin_sha256": "e" * 64},
-            },
-            {
-                "event": "composition_executed", "run_id": "run-1",
-                "observed_at_monotonic_ns": 101, "process": process,
-                "composition": {
-                    "archive_sha256": archive_digest,
-                    "resolved_input_inventory_sha256": inputs_digest,
-                    "loaded_bundle_sha256": "c" * 64,
-                },
-            },
-        ]
-        outcome = self.observer.validate_direct_events(
-            events, run_id="run-1", schema_sha256="a" * 64,
-            composition_archive_sha256=archive_digest,
-            composition_input_inventory_sha256=inputs_digest, known_processes=[process],
-        )
-        self.assertEqual(outcome, {"schema_consumption": "observed", "composition_execution": "observed"})
-        for bad_events in (
-            [],
-            events + [events[0]],
-            [{**events[0], "run_id": "wrong-run"}, events[1]],
-            [events[0], {**events[1], "composition": {**events[1]["composition"],
-                                                        "resolved_input_inventory_sha256": "f" * 64}}],
+    def test_schema_event_maps_producer_fields_and_binds_canonical_digest(self):
+        raw = b'{"z": [2, 1], "name": "\\u00e9"}\n'
+        digest = self.observer.canonical_schema_digest(raw)
+        self.assertNotEqual(digest, self.observer.sha256_bytes(raw))
+        event, context = self._schema_event(digest)
+        result = self.observer.schema_observation([event], context=context)
+        self.assertEqual(result["status"], "observed")
+        self.assertEqual(result["consumed_document_sha256"], digest)
+        self.assertEqual(result["consuming_process"], context["known_processes"][0])
+        self.assertEqual(result["event"], event)
+        canonical = json.dumps(event, sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(result["event_sha256"], self.observer.sha256_bytes(canonical))
+        self.assertEqual(self.observer.schema_observation([], context=None)["status"], "unobserved")
+
+    def test_producer_event_roundtrip_is_bound_and_remains_unqualified(self):
+        producer_path = REPO_ROOT / "astrid/core/rendering/_schema_observation.py"
+        spec = importlib.util.spec_from_file_location("t11_schema_producer_test", producer_path)
+        producer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(producer)
+        read_fd, write_fd = os.pipe()
+        os.set_blocking(write_fd, False)
+        try:
+            origin = "/installed/astrid/core/timeline/banodoco_schema.py"
+            document = {"title": "Schéma", "value": [1, 2]}
+            start = time.monotonic_ns()
+            with mock.patch.dict(os.environ, {
+                producer.RENDER_ENV: "1", producer.RUN_ENV: "1" * 32,
+                producer.FD_ENV: str(write_fd),
+            }):
+                producer.emit_schema_consumed(document, origin)
+            end = time.monotonic_ns()
+            event = json.loads(os.read(read_fd, 4096))
+        finally:
+            os.close(read_fd)
+            os.close(write_fd)
+        process = {key: event[key] for key in ("pid", "start_ticks", "boot_id")}
+        context = {"run_id": "1" * 32,
+                   "schema_sha256": self.observer.canonical_schema_digest(
+                       json.dumps(document, ensure_ascii=False).encode()),
+                   "reader_origin_sha256": self.observer.sha256_bytes(origin.encode()),
+                   "known_processes": [process], "start_monotonic_ns": start,
+                   "end_monotonic_ns": end}
+        result = self.observer.schema_observation([event], context=context)
+        self.assertEqual(result["event"], event)
+        # This fixture supplies simulated trusted context, not a qualification.
+        self.assertNotIn("qualification", result)
+
+    def _schema_event(self, digest="a" * 64):
+        process = {"pid": 71, "start_ticks": 123,
+                   "boot_id": "12345678-1234-4234-8234-123456789abc"}
+        event = {"event": "timeline_schema_consumed", "run_id": "1" * 32,
+                 "monotonic_ns": 150, **process, "schema_sha256": digest,
+                 "schema_reader_origin_sha256": "e" * 64}
+        context = {"run_id": "1" * 32, "schema_sha256": digest,
+                   "reader_origin_sha256": "e" * 64, "known_processes": [process],
+                   "start_monotonic_ns": 100, "end_monotonic_ns": 200}
+        return event, context
+
+    def test_schema_event_refuses_absent_malformed_mismatched_and_ambiguous(self):
+        event, context = self._schema_event()
+        cases = [[], [event, event]]
+        for key, value in (
+            ("event", "composition_executed"), ("run_id", "2" * 32),
+            ("run_id", "RUN"), ("monotonic_ns", True), ("monotonic_ns", 99),
+            ("monotonic_ns", 201), ("pid", True), ("pid", 72),
+            ("start_ticks", 0), ("start_ticks", 124), ("boot_id", "boot"),
+            ("boot_id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            ("schema_sha256", "b" * 64), ("schema_sha256", "A" * 64),
+            ("schema_reader_origin_sha256", "f" * 64),
+            ("schema_reader_origin_sha256", None),
         ):
-            with self.subTest(events=bad_events), self.assertRaises(self.observer.ObservationContractError):
-                self.observer.validate_direct_events(
-                    bad_events, run_id="run-1", schema_sha256="a" * 64,
-                    composition_archive_sha256=archive_digest,
-                    composition_input_inventory_sha256=inputs_digest, known_processes=[process],
-                )
+            cases.append([{**event, key: value}])
+        cases.extend([[{k: v for k, v in event.items() if k != key}] for key in event])
+        cases.append([{**event, "unknown": "field"}])
+        for bad in cases:
+            with self.subTest(events=bad), self.assertRaises(self.observer.ObservationContractError):
+                self.observer.schema_observation(bad, context=context)
+        for override in ({"run_id": "bad"}, {"known_processes": []},
+                         {"start_monotonic_ns": 0}, {"end_monotonic_ns": 99},
+                         {"reader_origin_sha256": "e" * 63}):
+            with self.subTest(context=override), self.assertRaises(self.observer.ObservationContractError):
+                self.observer.schema_observation([event], context={**context, **override})
 
     def test_mismatched_archive_digest_writes_an_unqualified_contract_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -157,7 +202,7 @@ class T11ObserverTests(unittest.TestCase):
                     "--profile", str(profile), "--example-receipt", str(example), "--receipt", str(receipt),
                     "--agent-sha", PUBLISHED_AGENT_SHA, "--runtime-sha", PUBLISHED_RUNTIME_SHA,
                     "--app-sha", PUBLISHED_APP_SHA, "--pinokio-sha", PUBLISHED_PINOKIO_SHA,
-                    "--schema-sha256", "a" * 64, "--composition-archive-sha256", "0" * 64,
+                    "--schema-sha256", self.observer.sha256_file(REPO_ROOT / "astrid/core/timeline/schema/timeline-config.schema.json"), "--composition-archive-sha256", "0" * 64,
                     "--composition-archive", str(archive),
                 ])
             self.assertEqual(result, self.observer.EXIT_CONTRACT_FAILURE)

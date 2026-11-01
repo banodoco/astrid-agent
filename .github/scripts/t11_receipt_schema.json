@@ -19,11 +19,12 @@
         "requested_tuple": {"$ref": "#/$defs/tuple"},
         "schema_consumption": {"enum": ["observed", "unobserved", "ambiguous", "unavailable"]},
         "composition_execution": {"enum": ["observed", "unobserved", "ambiguous", "unavailable"]},
+        "timeline_schema": {"$ref": "#/$defs/timelineSchema"},
         "same_process_observer": {
           "type": "object",
           "required": ["status", "qualification", "same_process_observation"],
           "properties": {
-            "status": {"enum": ["observed", "refused-no-product-seam", "observer-failed"]},
+            "status": {"enum": ["observed", "refused-no-product-seam", "refused-no-authenticated-collection", "observer-failed"]},
             "qualification": {"type": "boolean"},
             "same_process_observation": {
               "type": "object",
@@ -46,7 +47,8 @@
               "type": "object",
               "required": ["status", "run_id"]
             },
-            "direct_event_evidence": {"$ref": "#/$defs/directEvents"}
+            "direct_event_evidence": {"$ref": "#/$defs/directEvents"},
+            "timeline_schema": {"$ref": "#/$defs/timelineSchema"}
           }
         }
       }
@@ -69,32 +71,46 @@
       "required": ["pid", "start_ticks", "boot_id"],
       "properties": {
         "pid": {"type": "integer", "minimum": 1},
-        "start_ticks": {"type": "integer", "minimum": 0},
-        "boot_id": {"type": "string", "minLength": 1}
+        "start_ticks": {"type": "integer", "minimum": 1},
+        "boot_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
       }
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "schemaEvent": {
+      "type": "object",
+      "required": ["event", "run_id", "monotonic_ns", "pid", "start_ticks", "boot_id", "schema_sha256", "schema_reader_origin_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "event": {"const": "timeline_schema_consumed"},
+        "run_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "monotonic_ns": {"type": "integer", "minimum": 1},
+        "pid": {"type": "integer", "minimum": 1},
+        "start_ticks": {"type": "integer", "minimum": 1},
+        "boot_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+        "schema_sha256": {"$ref": "#/$defs/digest"},
+        "schema_reader_origin_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "timelineSchema": {
+      "type": "object", "required": ["status"],
+      "properties": {
+        "status": {"enum": ["observed", "unobserved"]},
+        "consumed_document_sha256": {"$ref": "#/$defs/digest"},
+        "consuming_process": {"$ref": "#/$defs/process"},
+        "schema_reader_origin_sha256": {"$ref": "#/$defs/digest"},
+        "event_sha256": {"$ref": "#/$defs/digest"},
+        "event": {"$ref": "#/$defs/schemaEvent"}
+      },
+      "allOf": [{
+        "if": {"properties": {"status": {"const": "observed"}}, "required": ["status"]},
+        "then": {"required": ["consumed_document_sha256", "consuming_process", "schema_reader_origin_sha256", "event_sha256", "event"]}
+      }]
     },
     "directEvents": {
       "type": "object",
       "required": ["schema_event", "composition_event"],
       "properties": {
-        "schema_event": {
-          "type": "object",
-          "required": ["event", "run_id", "observed_at_monotonic_ns", "process", "schema"],
-          "properties": {
-            "event": {"const": "timeline_schema_consumed"},
-            "run_id": {"type": "string", "minLength": 1},
-            "observed_at_monotonic_ns": {"type": "integer", "minimum": 0},
-            "process": {"$ref": "#/$defs/process"},
-            "schema": {
-              "type": "object",
-              "required": ["canonical_json_sha256", "reader_origin_sha256"],
-              "properties": {
-                "canonical_json_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                "reader_origin_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-              }
-            }
-          }
-        },
+        "schema_event": {"$ref": "#/$defs/schemaEvent"},
         "composition_event": {
           "type": "object",
           "required": ["event", "run_id", "observed_at_monotonic_ns", "process", "composition"],

@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Fail closed T-11 same-process observation gate.
 
-This program is deliberately *not* a profiler, preload, wrapper, or debugger.
-Those mechanisms would alter the installed product's process launch.  Instead it
-records the exact source seam which prevents an in-process observation and exits
-2 (not qualified).  A future product-owned seam must emit the two direct events
-validated by :func:`validate_direct_events`; an arbitrary file-open, package
-hash, probe result, or process census is never treated as consumption evidence.
+The schema validator accepts only records provided by an authenticated host
+collector with independently bound run, process, time and installed identities.
+The current harness cannot yet provide that context and exits 2 (not qualified).
+An arbitrary file-open, event file, probe or process census is not evidence.
 """
 
 from __future__ import annotations
@@ -20,6 +18,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import uuid
 from typing import Any, Iterable, Mapping
 
 
@@ -200,22 +199,17 @@ def inspect_missing_product_seam(agent_source: Path) -> dict[str, Any]:
             "schema_consumption": {
                 "status": "unobserved",
                 "reason": (
-                    "load_verified_schema is called by the isolated validation probe; "
-                    "the product exposes no hook in the actual host/render consumer to "
-                    "record its returned object with process and run identity"
+                    "no authenticated schema event and run/process binding was collected"
                 ),
                 "required_product_seam": (
-                    "an in-process event emitted by the actual schema consumer after "
-                    "load_verified_schema returns, including canonical document digest, "
-                    "PID/start identity, and render run identity"
+                    "host-authenticated collection of the installed consumer event and "
+                    "independent run, process, time, schema and origin binding"
                 ),
             },
             "composition_execution": {
                 "status": "unobserved",
                 "reason": (
-                    "the host launches the Node worker with a fixed, preload-free "
-                    "environment, and the worker exposes no module-resolution or "
-                    "browser-loaded-bundle event tied to the render run"
+                    "no authenticated Composition execution event was collected"
                 ),
                 "required_product_seam": (
                     "a bundler/browser event from the actual frame worker that binds the "
@@ -329,51 +323,82 @@ def _read_run_identity(path: Path) -> str | None:
     return run_id if isinstance(run_id, str) and run_id else None
 
 
-def validate_direct_events(
-    events: Iterable[Mapping[str, Any]], *, run_id: str, schema_sha256: str,
-    composition_archive_sha256: str, composition_input_inventory_sha256: str,
-    known_processes: Iterable[Mapping[str, Any]],
-) -> dict[str, str]:
-    """Validate future product-emitted events; reject gaps and ambiguity.
+def canonical_schema_digest(document: bytes) -> str:
+    """Match the producer's serialization of the verified schema object."""
+    def reject_constant(value: str) -> None:
+        raise ValueError("non-finite JSON value")
+    obj = json.loads(document, parse_constant=reject_constant)
+    if not isinstance(obj, dict):
+        raise ObservationContractError("schema document is not an object")
+    return sha256_bytes(json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                                   allow_nan=False).encode("utf-8"))
 
-    This validator is intentionally not enabled by the current harness: current
-    product code has no authenticated, inherited event endpoint.  It exists so
-    a reviewed product seam has an exact fail-closed contract to target.
+
+def validate_schema_event(
+    events: Iterable[Mapping[str, Any]], *, run_id: str, schema_sha256: str,
+    reader_origin_sha256: str, known_processes: Iterable[Mapping[str, Any]],
+    start_monotonic_ns: int, end_monotonic_ns: int,
+) -> dict[str, Any]:
+    """Validate records *already authenticated* by the host-owned collector.
+
+    The caller must independently bind the pipe, run, process ancestry and time
+    bounds. A descriptor number, environment marker, or event file is not such a
+    binding. No caller in the current harness can supply that context yet.
     """
-    known = {(item.get("pid"), item.get("start_ticks"), item.get("boot_id"))
-             for item in known_processes}
-    expected = {"timeline_schema_consumed", "composition_executed"}
-    seen: dict[str, Mapping[str, Any]] = {}
-    for event in events:
-        kind = event.get("event")
-        if kind not in expected or kind in seen:
-            raise ObservationContractError("event kind is missing, unsupported, or duplicated")
-        if event.get("run_id") != run_id or not isinstance(event.get("observed_at_monotonic_ns"), int):
-            raise ObservationContractError("event has no unambiguous render run identity")
-        process = event.get("process")
-        if not isinstance(process, Mapping) or (
-            process.get("pid"), process.get("start_ticks"), process.get("boot_id")
-        ) not in known:
-            raise ObservationContractError("event process identity is absent or was not observed")
-        seen[kind] = event
-    if set(seen) != expected:
-        raise ObservationContractError("both direct consumption events are required")
-    schema = seen["timeline_schema_consumed"].get("schema")
-    composition = seen["composition_executed"].get("composition")
-    if (not isinstance(schema, Mapping)
-            or schema.get("canonical_json_sha256") != schema_sha256
-            or not isinstance(schema.get("reader_origin_sha256"), str)
-            or not SHA256_RE.fullmatch(schema["reader_origin_sha256"])):
-        raise ObservationContractError("schema event does not name the verified document")
-    if (not isinstance(composition, Mapping)
-            or composition.get("archive_sha256") != composition_archive_sha256
-            or composition.get("resolved_input_inventory_sha256") != composition_input_inventory_sha256):
-        raise ObservationContractError("composition event does not name the recorded archive")
-    if not isinstance(composition.get("loaded_bundle_sha256"), str) or not SHA256_RE.fullmatch(
-        composition["loaded_bundle_sha256"]
-    ):
-        raise ObservationContractError("composition event has no loaded-bundle identity")
-    return {"schema_consumption": "observed", "composition_execution": "observed"}
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise ObservationContractError("invalid admitted run identity")
+    if any(not isinstance(x, str) or not SHA256_RE.fullmatch(x)
+           for x in (schema_sha256, reader_origin_sha256)):
+        raise ObservationContractError("invalid expected digest")
+    if (type(start_monotonic_ns) is not int or type(end_monotonic_ns) is not int
+            or start_monotonic_ns <= 0 or end_monotonic_ns < start_monotonic_ns):
+        raise ObservationContractError("invalid trusted render time bounds")
+    records = list(events)
+    if len(records) != 1 or not isinstance(records[0], Mapping):
+        raise ObservationContractError("exactly one schema event is required")
+    event = records[0]
+    if event.get("event") != "timeline_schema_consumed" or event.get("run_id") != run_id:
+        raise ObservationContractError("wrong event or render run")
+    timestamp, pid, ticks, boot = (event.get(k) for k in
+                                    ("monotonic_ns", "pid", "start_ticks", "boot_id"))
+    if (type(timestamp) is not int or not start_monotonic_ns <= timestamp <= end_monotonic_ns
+            or type(pid) is not int or pid <= 0 or type(ticks) is not int or ticks <= 0
+            or not isinstance(boot, str)):
+        raise ObservationContractError("malformed process identity or event time")
+    try:
+        if str(uuid.UUID(boot)) != boot:
+            raise ValueError("noncanonical UUID")
+    except ValueError as exc:
+        raise ObservationContractError("invalid boot identity") from exc
+    process = {"pid": pid, "start_ticks": ticks, "boot_id": boot}
+    if not any(isinstance(item, Mapping) and all(item.get(k) == v for k, v in process.items())
+               for item in known_processes):
+        raise ObservationContractError("process is not bound to the admitted render")
+    for key, expected in (("schema_sha256", schema_sha256),
+                          ("schema_reader_origin_sha256", reader_origin_sha256)):
+        actual = event.get(key)
+        if not isinstance(actual, str) or not SHA256_RE.fullmatch(actual) or actual != expected:
+            raise ObservationContractError("schema document or reader origin mismatch")
+    # Store precisely the validated producer fields and hash their canonical JSON.
+    keys = ("event", "run_id", "monotonic_ns", "pid", "start_ticks", "boot_id",
+            "schema_sha256", "schema_reader_origin_sha256")
+    if set(event) != set(keys):
+        raise ObservationContractError("unexpected or missing schema event fields")
+    accepted = {key: event[key] for key in keys}
+    event_digest = sha256_bytes(json.dumps(accepted, sort_keys=True, separators=(",", ":"),
+                                          allow_nan=False).encode("utf-8"))
+    return {
+        "status": "observed", "consumed_document_sha256": schema_sha256,
+        "consuming_process": process, "schema_reader_origin_sha256": reader_origin_sha256,
+        "event_sha256": event_digest, "event": accepted,
+    }
+
+
+def schema_observation(events: Iterable[Mapping[str, Any]], *, context: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Map authenticated collector output into the receipt, otherwise refuse."""
+    if context is None:
+        return {"status": "unobserved", "reason": "authenticated collector context unavailable"}
+    return validate_schema_event(events, **context)
 
 
 def _git_head(agent_source: Path) -> str:
@@ -448,6 +473,11 @@ def main(argv: list[str] | None = None) -> int:
         source = args.agent_source.resolve(strict=True)
         if _git_head(source) != tuple_identity["agent_sha"]:
             raise ObservationContractError("selected Agent source differs from requested tuple")
+        schema_path = source / "astrid/core/timeline/schema/timeline-config.schema.json"
+        schema_bytes = schema_path.read_bytes()
+        if sha256_bytes(schema_bytes) != schema_sha:
+            raise ObservationContractError("Timeline schema differs from the tuple digest")
+        canonical_sha = canonical_schema_digest(schema_bytes)
         installed_source_root = (args.installed_source_root.resolve(strict=True)
                                  if args.installed_source_root is not None else None)
         profile_sha = sha256_file(args.profile.resolve(strict=True))
@@ -475,13 +505,15 @@ def main(argv: list[str] | None = None) -> int:
             "correlated_run_id": None,
         })
         run_id = _read_run_identity(args.example_receipt)
+        timeline_schema = schema_observation([], context=None)
         receipt = {
             "schema_version": 1,
-            "status": "refused-no-product-seam",
+            "status": "refused-no-authenticated-collection",
             "qualification": False,
             "tuple": tuple_identity,
             "expected_static_digests": {
                 "timeline_schema_sha256": schema_sha,
+                "timeline_schema_canonical_json_sha256": canonical_sha,
                 "composition_archive_sha256": archive_sha,
                 "source_profile_sha256": profile_sha,
             },
@@ -492,17 +524,17 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "unobserved",
                 "run_id": run_id,
                 "reason": (
-                    "the current product does not emit a same-render-run event from the "
-                    "schema consumer or frame worker with a stable process-start identity"
+                    "the host did not supply an authenticated pipe and render-process correlation"
                 ),
             },
+            "timeline_schema": timeline_schema,
             "same_process_observation": seam["missing_seams"],
             "direct_event_contract": {
-                "status": "unavailable-no-product-endpoint",
+                "status": "unavailable-no-authenticated-collector",
                 "required_events": {
                     "timeline_schema_consumed": [
-                        "run_id", "observed_at_monotonic_ns", "process(pid,start_ticks,boot_id)",
-                        "schema.canonical_json_sha256", "schema.reader_origin_sha256",
+                        "run_id", "monotonic_ns", "pid", "start_ticks", "boot_id",
+                        "schema_sha256", "schema_reader_origin_sha256",
                     ],
                     "composition_executed": [
                         "run_id", "observed_at_monotonic_ns", "process(pid,start_ticks,boot_id)",
@@ -517,10 +549,10 @@ def main(argv: list[str] | None = None) -> int:
                 "frame_worker": seam["frame_worker"],
             },
             "refusal": {
-                "code": "missing-product-instrumentation",
+                "code": "missing-authenticated-observation",
                 "detail": (
-                    "No approved same-process schema-return or Composition-resolution/"
-                    "browser-bundle observation seam exists in this selected Agent source. "
+                    "No authenticated, run-correlated schema observation or Composition execution "
+                    "event was collected. "
                     "The receipt is not qualified even if installation and render succeeded."
                 ),
             },

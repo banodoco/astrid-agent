@@ -161,10 +161,8 @@ def main():
             obs['example_render'] = json.loads(example_receipt.read_text())
         obs['example_render_exit_code'] = completed.returncode
 
-        # The helper may have completed a real render, but that does not expose
-        # the object returned by the actual schema consumer or the module graph
-        # executed by the bundler/browser.  The isolated observer records the
-        # exact selected-source seam and must return its deliberate refusal.
+        # This harness has no authenticated host-owned collector context yet.
+        # The observer must keep the result unqualified until one is available.
         receipt['phase'] = 'same-process-observation'
         observer_receipt = root / 't11-observer-receipt.json'
         observer = Path(__file__).with_name('t11_observer.py')
@@ -185,13 +183,15 @@ def main():
         if not observer_receipt.is_file():
             raise RuntimeError('same-process observer did not retain a receipt')
         obs['same_process_observer'] = json.loads(observer_receipt.read_text())
+        obs['timeline_schema'] = obs['same_process_observer'].get(
+            'timeline_schema', {'status': 'unobserved'})
+        obs['schema_consumption'] = obs['timeline_schema']['status']
         obs['same_process_observer_exit_code'] = observed.returncode
         if observed.returncode != 2:
             raise RuntimeError('same-process observer did not fail closed with its expected refusal')
         receipt['phase'] = 'live-observation-unavailable'
         receipt['gap'] = ('Durable example/render evidence is partial operational evidence only. '
-                          'The source-hashed observer refusal retains the missing in-process seams; '
-                          'schema consumption and Composition execution remain unobserved.')
+                          'Authenticated collection and Composition execution remain unavailable.')
         return 2
     except Exception as exc:
         # Do not upload command output, environment, paths or exception text that may contain private state.
