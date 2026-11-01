@@ -30,10 +30,8 @@ ASTRID_OPENROUTER_DEFAULT_MODEL: str | None = "openrouter/deepseek/deepseek-v4.1
 _AGENT_PROFILE_FILE = Path(__file__).resolve().parent / "agent_profiles" / "astrid.md"
 _AGENT_IDENTITY_FILE = Path(__file__).resolve().parent / "agent_profiles" / "astrid.identity.json"
 
-# ``astrid`` is the single user-facing command. Product families are stable
-# core routes. Pack routes are discovered from installed manifests at dispatch
-# time; a pack does not need a second launcher allowlist entry. Reserved
-# conversational/auth words stay blocked so they cannot be claimed by a pack.
+# Preserve the existing launcher help census; dispatch itself uses the gateway
+# registry below. Pack routes are discovered from installed manifests.
 _PRODUCT_TOOLKIT_FAMILIES = frozenset(
     {"projects", "timelines", "media", "tasks", "runs", "documents", "preferences", "doctor", "backup", "skills"}
 )
@@ -58,6 +56,13 @@ def _installed_pack_families() -> frozenset[str]:
 
 def _toolkit_families() -> frozenset[str]:
     return _PRODUCT_TOOLKIT_FAMILIES | _installed_pack_families()
+
+
+def _gateway_commands() -> frozenset[str]:
+    """Read the gateway's registered core commands without starting a session."""
+    from astrid.core.gateway.dispatch import _top_level_commands
+
+    return _top_level_commands()
 
 
 # Kept as a compatibility view for callers/tests that import the old name.
@@ -729,8 +734,8 @@ def main(argv: list[str] | None = None) -> int:
     if rest and rest[0] in _AUTH_ALIASES:
         return run_auth(rest)
     if rest and (
-        rest[0] in _PRODUCT_TOOLKIT_FAMILIES
-        or rest[0] in _installed_pack_families()
+        not rest[0].startswith("-")
+        and (rest[0] in _gateway_commands() or rest[0] in _installed_pack_families())
     ):
         return _dispatch_toolkit(rest)
     if rest and rest[0] == "agent":
