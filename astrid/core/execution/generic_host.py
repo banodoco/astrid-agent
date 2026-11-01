@@ -2502,56 +2502,6 @@ def _enforceable_network_gateway(policy: Mapping[str, Any] | None) -> bool:
     return bool(policy.get("proxy_enforced")) and bool(policy.get("proxy_observable")) and bool(policy.get("proxy"))
 
 
-def _hivemind_source_preflight(record: "CapabilityRecord") -> dict[str, Any] | None:
-    """Require Hivemind to come from a clean, revision-pinned checkout.
-
-    Hivemind is an external provider pack.  Its public read key must not turn
-    an arbitrary dirty install into an advertised capability.  The managed
-    source inventory performs the immutable revision/digest admission; this
-    boundary rechecks checkout cleanliness immediately before readiness.
-    """
-    if str(record.definition.metadata.get("source_pack") or "") != "hivemind":
-        return None
-    raw_root = record.definition.metadata.get("pack_root")
-    pack_root = Path(str(raw_root)).expanduser().resolve() if raw_root else None
-    if pack_root is None or not pack_root.is_dir():
-        return {"ok": False, "reason": "hivemind source root is unavailable"}
-    checkout = next((candidate for candidate in (pack_root, *pack_root.parents) if (candidate / ".git").exists()), None)
-    if checkout is None:
-        return {"ok": False, "reason": "hivemind source is not a Git checkout"}
-    try:
-        status = subprocess.run(
-            ["git", "-C", str(checkout), "status", "--porcelain=v1"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=True,
-            timeout=5,
-        )
-        revision = subprocess.run(
-            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=True,
-            timeout=5,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return {"ok": False, "reason": "hivemind source pin could not be verified"}
-    if status.stdout.strip():
-        return {"ok": False, "reason": "hivemind source checkout is dirty"}
-    if not revision:
-        return {"ok": False, "reason": "hivemind source checkout has no pinned revision"}
-    expected_revision = str(record.definition.metadata.get("commit_sha") or "")
-    if expected_revision and revision != expected_revision:
-        return {"ok": False, "reason": "hivemind source revision does not match pinned commit", "revision": revision, "expected_revision": expected_revision}
-    return {"ok": True, "checkout": str(checkout), "revision": revision}
-
-
 _TASK_OUTPUT_TAIL_BYTES = 64 * 1024
 _TASK_OUTPUT_TAIL_NAMES = {"stdout": "task-stdout-tail.log", "stderr": "task-stderr-tail.log"}
 _TASK_OUTPUT_METADATA_NAME = "task-output-capture.json"
@@ -5718,7 +5668,7 @@ class RuntimeProtocolClient:
 
 
 _LOGGER = logging.getLogger(__name__)
-_OPTIONAL_EXTERNAL_MATRIX_PREFIXES = ("discord_local.", "hivemind.", "seedance_local.")
+_OPTIONAL_EXTERNAL_MATRIX_PREFIXES = ("discord_local.", "seedance_local.")
 
 
 def _unapproved_reason(capability_id: str, matrix_path: Path | None) -> str:
@@ -7300,9 +7250,6 @@ class GenericPackHost:
                     "ok": sandbox_available,
                     **({} if sandbox_available else {"reason": "host-managed provider broker requires macOS sandbox-exec"}),
                 }
-            pack_source = _hivemind_source_preflight(record)
-            if pack_source is not None:
-                checks["pack_source"] = pack_source
             if _is_withdrawn(record):
                 checks["disposition"] = {
                     "ok": False,
