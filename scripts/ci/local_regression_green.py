@@ -121,7 +121,9 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                 obligations.add((scenario, slot))
                 core.require(key in lane_keys, 'feature references unknown lane')
                 candidate = feature['candidate']
-                core.require(isinstance(candidate, dict) and all(candidate.get(r) == shas[r] for r in shas), 'feature candidate tuple mismatch')
+                # Additional candidate identities need their own approved binding;
+                # merely placing one in reviewed inventory cannot bind it to T.
+                core.require(isinstance(candidate, dict) and candidate == shas, 'feature candidate tuple mismatch or unbound candidate fields')
                 paths = feature['files']
                 core.require(isinstance(paths, list) and paths and len(set(map(safe_path, paths))) == len(paths), 'missing or duplicate feature files')
                 core.require(type(feature['attempt']) is int and feature['attempt'] > 0, 'invalid selected attempt')
@@ -284,8 +286,9 @@ def main():
         print('RETIREMENT:', item)
     for item in errors:
         print('ERROR:', item, file=sys.stderr)
-    print('int/regression-green:', 'FAIL' if errors else 'PASS')
-    return bool(errors)
+    print('Ledger/provenance diagnostic:', 'FAIL' if errors else 'PASS')
+    print('Feature inventory was not evaluated; use regression_aggregate.py for int/regression-green.', file=sys.stderr)
+    return True
 
 
 if __name__ == '__main__':

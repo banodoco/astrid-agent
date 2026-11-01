@@ -148,7 +148,7 @@ def main():
         print("RETIREMENT:", item)
     for item in errors:
         print("ERROR:", item, file=sys.stderr)
-    print("int/regression-green:", "FAIL" if errors else "PASS")
+    print("Ledger diagnostic:", "FAIL" if errors else "PASS")
     return bool(errors)
 
 

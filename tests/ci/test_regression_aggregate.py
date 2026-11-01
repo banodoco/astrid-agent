@@ -93,6 +93,9 @@ class AggregateTests(unittest.TestCase):
                 return original(*a, now=dt.datetime(2026, 10, 31, 23, 40, tzinfo=dt.timezone.utc), **kw)
             with mock.patch.object(aggregate, 'REVIEW', review), mock.patch.object(aggregate, 'COVERAGE', coverage_path), mock.patch.object(local, 'PREDICATE_MODULE', 'synthetic_predicates'), mock.patch.object(local, 'local_evaluate', side_effect=evaluate_at_fixed_time), mock.patch.object(sys, 'path', [str(p)] + sys.path):
                 self.assertEqual(aggregate.evaluate(args), ([], []))
+                with mock.patch.object(local, 'PREDICATE_MODULE', 'missing_qual_predicates'):
+                    errors, _ = aggregate.evaluate(args)
+                    self.assertTrue(any('predicate module import failed' in e for e in errors), errors)
                 reviewed['features'] = []
                 write(review, reviewed)
                 with self.assertRaisesRegex(ValueError, 'feature'):

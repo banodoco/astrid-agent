@@ -1,11 +1,9 @@
 """Synthetic evaluator-path tests; these files are never qualification receipts."""
 import hashlib
-import importlib.util
-import os
 import json
 from pathlib import Path
 import sys
-from unittest import mock, skipUnless
+from unittest import mock
 
 from test_local_regression_green import LocalEvidenceTests
 import local_regression_green as local
@@ -173,22 +171,59 @@ class FeatureEvidenceTests(LocalEvidenceTests):
             errors = self.feature_check()
         self.assertTrue(any('predicate module import failed: RuntimeError: broken import' in e for e in errors), errors)
 
-    @skipUnless(os.environ.get('C06E_QUAL_PREDICATE'), 'unpublished QUAL module not supplied')
-    def test_unpublished_qual_predicate_refuses_authenticated_synthetic_input(self):
-        # Optional integration check for the separately owned, unpublished module.
-        spec = importlib.util.spec_from_file_location(
-            'scripts.journey_predicates', os.environ['C06E_QUAL_PREDICATE'])
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+    def test_missing_predicate_module_rejected(self):
         self.configure('hosted')
-        self.feature['scenario'] = 'm4_6'
-        self.feature['slot_id'] = 'direct-linux'
-        self.feature['candidate']['manifest_sha256'] = 'a' * 64
+        with mock.patch.object(local, 'PREDICATE_MODULE', 'missing_qual_predicates'):
+            self.assertTrue(any('predicate module import failed' in e for e in self.feature_check()))
+
+    def test_missing_predicate_function_rejected(self):
+        self.configure('hosted')
+        with mock.patch.object(local.importlib, 'import_module', return_value=object()):
+            self.assertTrue(any('missing predicate: demo' in e for e in self.feature_check()))
+
+    def test_missing_receipt_rejected(self):
+        self.configure('hosted')
+        (self.base / 'manifest.json').unlink()
+        self.assertTrue(self.feature_check())
+
+    def test_skipped_receipt_rejected(self):
+        self.configure('hosted')
+        (self.base / 'junit.xml').write_bytes(b'<testsuite><testcase><skipped/></testcase></testsuite>')
+        self.authenticate()
+        self.assertTrue(any('feature job failed or skipped' in e for e in self.feature_check()))
+
+    def test_forged_artifact_hash_rejected_before_predicate(self):
+        self.configure('hosted')
+        (self.base / 'feature.json').write_text('{"observation":"fail"}')
+        with mock.patch.object(local.importlib, 'import_module') as imported:
+            self.assertTrue(any('hash or size mismatch' in e for e in self.feature_check()))
+            imported.assert_not_called()
+
+    def test_duplicate_receipt_and_attempt_rejected(self):
+        self.configure('hosted')
         manifest_path = self.base / 'manifest.json'
         manifest = json.loads(manifest_path.read_text())
-        manifest['feature_bindings'][0].update(scenario='m4_6', slot_id='direct-linux')
+        manifest['feature_bindings'].append(dict(manifest['feature_bindings'][0]))
         manifest_path.write_text(json.dumps(manifest))
         self.authenticate()
-        with mock.patch.object(local.importlib, 'import_module', return_value=module):
-            errors = self.feature_check()
-        self.assertTrue(any('independent section 5 observation proofs' in e for e in errors), errors)
+        self.assertTrue(any('feature binding or attempt mismatch' in e for e in self.feature_check()))
+        self.assertTrue(any('duplicate or missing feature obligation' in e for e in self.feature_check([self.feature, self.feature])))
+
+    def test_wrong_tuple_receipt_rejected(self):
+        self.configure('hosted')
+        manifest_path = self.base / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['tuple_digest'] = 'f' * 64
+        manifest_path.write_text(json.dumps(manifest))
+        self.authenticate()
+        self.assertTrue(any('wrong tuple/lane evidence' in e for e in self.feature_check()))
+
+    def test_absent_required_evidence_rejected(self):
+        self.configure('hosted')
+        self.feature['files'].append('required.json')
+        self.assertTrue(any('missing authenticated feature file: required.json' in e for e in self.feature_check()))
+
+    def test_unbound_candidate_field_rejected(self):
+        self.configure('hosted')
+        self.feature['candidate']['manifest_sha256'] = 'a' * 64
+        self.assertTrue(any('unbound candidate fields' in e for e in self.feature_check()))
