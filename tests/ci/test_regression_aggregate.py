@@ -1,8 +1,10 @@
 import json
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +51,36 @@ class AggregateTests(unittest.TestCase):
         features = self.root / "features.json"
         features.write_text(json.dumps([]), encoding="utf-8")
         self.assertIn("unapproved", aggregate._validate_features(features, predicate, "0" * 64, {"generated": {}})[0])
+
+    def test_qual_package_relative_import_and_frozen_m4_6_candidate_binding(self):
+        predicate = self.root / "journey_predicates.py"
+        support = self.root / "support.py"
+        support.write_text(
+            "def check(evidence):\n"
+            "    candidate = evidence['candidate']\n"
+            "    expected = {'app': 'a' * 40, 'agent': 'b' * 40, 'runtime': 'c' * 40, 'pinokio': 'd' * 40, 'manifest_sha256': 'e' * 64}\n"
+            "    return candidate == expected, [] if candidate == expected else ['candidate differs']\n",
+            encoding="utf-8",
+        )
+        predicate.write_text(
+            "from .support import check\n\n"
+            "def check_m4_6(evidence):\n"
+            "    return check(evidence)\n",
+            encoding="utf-8",
+        )
+        candidate = {"app": "a" * 40, "agent": "b" * 40, "runtime": "c" * 40,
+                     "pinokio": "d" * 40, "manifest_sha256": "e" * 64}
+        features = self.root / "features.json"
+        features.write_text(json.dumps([{"scenario": "m4_6", "slot_id": "direct-linux", "candidate": candidate, "files": []}]), encoding="utf-8")
+        frozen_tuple = {"repos": {name: {"sha": value} for name, value in candidate.items() if name != "manifest_sha256"},
+                        "generated": {"manifest_sha256": candidate["manifest_sha256"]}}
+        predicate_sha256 = hashlib.sha256(predicate.read_bytes()).hexdigest()
+        with mock.patch.object(aggregate, "QUAL_PREDICATE_SHA256", predicate_sha256):
+            self.assertEqual(aggregate._validate_features(features, predicate, predicate_sha256, frozen_tuple), [])
+            candidate["agent"] = "f" * 40
+            features.write_text(json.dumps([{"scenario": "m4_6", "slot_id": "direct-linux", "candidate": candidate, "files": []}]), encoding="utf-8")
+            errors = aggregate._validate_features(features, predicate, predicate_sha256, frozen_tuple)
+        self.assertIn("not derived", errors[0])
 
 
 if __name__ == "__main__":

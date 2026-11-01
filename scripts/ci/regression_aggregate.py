@@ -9,8 +9,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+import threading
 from typing import Any
+import types
 
 import regression_green as ledger
 
@@ -19,6 +22,7 @@ STATUS_VERSION = "c06-host-verdict/v1"
 CHECK = "int/regression-green"
 QUAL_PREDICATE_SHA256 = "6ef495007d3f815eaad52c61d2ec7e86f8abca9e4287a48321c64f119e7021f4"
 TERMINAL = frozenset(("completed", "infrastructure_failed", "unstartable", "skipped", "cancelled", "timed_out", "missing_at_deadline", "collection_failed"))
+_PREDICATE_IMPORT_LOCK = threading.RLock()
 
 
 def _sha256(path: str | Path) -> str:
@@ -45,6 +49,60 @@ def _atomic_json(path: str | Path, value: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
+def _load_qual_predicate(predicate_path: str | Path, predicate_sha256: str):
+    """Load an approved QUAL module with its reviewed sibling imports.
+
+    QUAL's authority module uses package-relative imports.  Loading it under a
+    throwaway, digest-derived package keeps those imports relative to the
+    configured immutable QUAL checkout rather than to the evaluator's own
+    module path.  The caller verifies the authority module's bytes before this
+    function runs; M-INT owns the immutable checkout containing its siblings.
+    """
+    source = Path(predicate_path).resolve()
+    package_name = "_c06_qual_" + predicate_sha256
+    module_name = package_name + "." + source.stem
+    with _PREDICATE_IMPORT_LOCK:
+        for name in tuple(sys.modules):
+            if name == package_name or name.startswith(package_name + "."):
+                del sys.modules[name]
+        package = types.ModuleType(package_name)
+        package.__file__ = str(source.parent / "__init__.py")
+        package.__package__ = package_name
+        package.__path__ = [str(source.parent)]
+        sys.modules[package_name] = package
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, source)
+            if spec is None or spec.loader is None:
+                raise ValueError("predicate module is unavailable")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            return module
+        except Exception:
+            for name in tuple(sys.modules):
+                if name == package_name or name.startswith(package_name + "."):
+                    del sys.modules[name]
+            raise
+
+
+def _m4_6_candidate(tuple_value: dict[str, object]) -> dict[str, str]:
+    repos = tuple_value.get("repos")
+    generated = tuple_value.get("generated")
+    if not isinstance(repos, dict) or not isinstance(generated, dict):
+        raise ValueError("frozen tuple lacks M4-6 candidate bindings")
+    candidate: dict[str, str] = {}
+    for repository in ("app", "agent", "runtime", "pinokio"):
+        binding = repos.get(repository)
+        if not isinstance(binding, dict) or not isinstance(binding.get("sha"), str):
+            raise ValueError("frozen tuple lacks M4-6 " + repository + " SHA")
+        candidate[repository] = binding["sha"]
+    manifest_sha256 = generated.get("manifest_sha256")
+    if not isinstance(manifest_sha256, str):
+        raise ValueError("frozen tuple lacks M4-6 manifest_sha256")
+    candidate["manifest_sha256"] = manifest_sha256
+    return candidate
+
+
 def _validate_features(path: str | Path, predicate_path: str | Path, predicate_sha256: str, tuple_value: dict[str, object]) -> list[str]:
     """Run optional reviewed feature predicates only after input provenance passed."""
     if predicate_sha256 != QUAL_PREDICATE_SHA256:
@@ -57,11 +115,7 @@ def _validate_features(path: str | Path, predicate_path: str | Path, predicate_s
     if not isinstance(features, list):
         return ["feature bindings are malformed"]
     try:
-        spec = importlib.util.spec_from_file_location("c06_qual_predicates", predicate_path)
-        if spec is None or spec.loader is None:
-            raise ValueError("predicate module is unavailable")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = _load_qual_predicate(predicate_path, predicate_sha256)
     except Exception as exc:
         return [f"predicate import failed: {type(exc).__name__}: {exc}"]
     errors: list[str] = []
@@ -70,12 +124,11 @@ def _validate_features(path: str | Path, predicate_path: str | Path, predicate_s
             if not isinstance(feature, dict):
                 raise ValueError("feature is not an object")
             scenario, slot_id, candidate, files = (feature.get(name) for name in ("scenario", "slot_id", "candidate", "files"))
-            if not all(isinstance(value, str) and value for value in (scenario, slot_id, candidate)) or not isinstance(files, list):
+            if not all(isinstance(value, str) and value for value in (scenario, slot_id)) or not isinstance(candidate, dict) or not isinstance(files, list):
                 raise ValueError("invalid feature binding")
             if scenario == "m4_6":
-                generated = tuple_value.get("generated")
-                if not isinstance(generated, dict) or candidate != generated.get("manifest_sha256"):
-                    raise ValueError("m4_6 candidate is not derived from frozen tuple manifest_sha256")
+                if candidate != _m4_6_candidate(tuple_value):
+                    raise ValueError("m4_6 candidate is not derived from the frozen tuple")
             predicate = getattr(module, "check_" + scenario, None)
             if not callable(predicate):
                 raise ValueError("missing predicate: " + scenario)
