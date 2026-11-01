@@ -1300,7 +1300,12 @@ def _worker_command_source(old: Version, job: dict) -> str:
             path = absolute(value)
             if path.is_dir():
                 source_paths.append(str(path))
-    environment = canonical_environment(old.env, absolute(job["data_root"]))
+    # The accepted update-job schema always supplies ``data_root``.  Keep the
+    # private helper compatible with descriptorless legacy callers, whose
+    # worker source historically received the stored Version environment.
+    data_root = job.get("data_root")
+    environment = (canonical_environment(old.env, absolute(data_root))
+                   if isinstance(data_root, str) and data_root else dict(old.env))
     return (
         "import os,sys; "
         f"_log=open({job['log_path']!r},'a',encoding='utf-8',buffering=1); sys.stdout=sys.stderr=_log; "

@@ -67,6 +67,12 @@ def _environment(job: dict) -> dict[str, str]:
     from .core import Version
     from .environment import canonical_environment
 
+    # ``describe`` predates the durable update-job record and is also used by
+    # ownership-query callers that only supply the platform fields.  A real
+    # update record is validated to contain ``old_version`` before it can be
+    # launched; retain the old descriptor-only behaviour for those callers.
+    if "old_version" not in job:
+        return {}
     old = Version.load(job["old_version"])
     return canonical_environment(old.env, Path(job["data_root"]))
 
@@ -181,7 +187,9 @@ def _launch_failure(result: subprocess.CompletedProcess) -> UpdateJobLaunchError
     return UpdateJobLaunchError(f"Could not launch update job: {detail}")
 
 
-def _plist(descriptor: dict, command: list[str], log_path: Path, environment: dict[str, str]) -> bytes:
+def _plist(descriptor: dict, command: list[str], log_path: Path,
+           environment: dict[str, str] | None = None) -> bytes:
+    environment = dict(environment if environment is not None else descriptor.get("environment") or {})
     root = ET.Element("plist", version="1.0")
     dictionary = ET.SubElement(root, "dict")
     values = [("Label", descriptor["label"]), ("ProgramArguments", command),
