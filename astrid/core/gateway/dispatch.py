@@ -719,7 +719,7 @@ def compose_profile_handoff(
         stamp_boot_manifest,
         validate_manifest_path,
     )
-    from astrid.packs.shots.conformance import (
+    from astrid.core.gateway.boot_conformance import (
         VIBE_PROFILE_REGISTRY,
         vibe_profile_specs,
     )
