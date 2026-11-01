@@ -1,22 +1,23 @@
-"""Discover the one authored skill declared by each pack manifest.
+"""Discover authored skills declared by each pack manifest.
 
 A ``SkillDescriptor`` is a Claude-style frontmatter document (``name`` and
 ``description``) plus the directory it lives in.  The pack's singular
 ``documentation: {kind: skill, path: ...}`` declaration chooses the source;
 supporting files beside it remain available through the existing directory-link
-sync.  Nested component guides are ordinary linked documentation, never extra
-skills.  Hermes-only extras live under an optional ``metadata.hermes.*`` block
-in the same file; Claude/Codex ignore unknown keys.
+sync. Additional skills are discovered only from declared ``kind: skill``
+resources under ``docs/<name>/SKILL.md``. Hermes-only extras live under an
+optional ``metadata.hermes.*`` block in the same file; Claude/Codex ignore
+unknown keys.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from astrid.core.foundation.paths import REPO_ROOT
-from astrid.core.pack import load_pack_manifest, pack_manifest_path
+from astrid.core.pack import PackValidationError, load_pack_manifest, pack_manifest_path
 from astrid.core.search import short_description_or_truncated
 
 PACKS_DIR = REPO_ROOT / "astrid" / "packs"
@@ -38,6 +39,12 @@ class SkillDescriptor:
     skill_dir: Path
     skill_md: Path
     hermes_metadata: dict = field(default_factory=dict)
+    skill: str | None = None
+
+    @property
+    def skill_id(self) -> str:
+        """Return the stable id used for a main skill or declared extra."""
+        return f"{self.pack_id}-{self.skill}" if self.skill else self.pack_id
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -250,6 +257,106 @@ def list_skills(packs_dir: Path | None = None) -> list[SkillDescriptor]:
     return descriptors
 
 
+_EXTRA_SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def list_extras(mains: list[SkillDescriptor]) -> list[SkillDescriptor]:
+    """Discover manifest-declared extra skills belonging to *mains*.
+
+    Extras are resources with ``kind: skill`` at exactly
+    ``docs/<name>/SKILL.md``. They use strict skill frontmatter and must remain
+    within their declared directory after resolving symlinks.
+    """
+    extras: list[SkillDescriptor] = []
+    for main in mains:
+        pack_dir = main.skill_md.parent.parent
+        manifest_path = pack_manifest_path(pack_dir)
+        if manifest_path is None:
+            continue
+        try:
+            pack = load_pack_manifest(manifest_path)
+        except PackValidationError:
+            continue
+        if str(getattr(pack, "schema_version", "")) != "3":
+            continue
+        import yaml
+
+        try:
+            manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        resources = manifest.get("resources", []) if isinstance(manifest, dict) else []
+        if not isinstance(resources, list):
+            continue
+        for resource in resources:
+            if not isinstance(resource, dict) or resource.get("kind") != "skill":
+                continue
+            raw_path = resource.get("path")
+            if not isinstance(raw_path, str):
+                continue
+            match = re.fullmatch(r"docs/([a-z0-9][a-z0-9-]*)/SKILL\.md", raw_path)
+            if not match or not _EXTRA_SKILL_NAME.fullmatch(match.group(1)):
+                continue
+            skill_name = match.group(1)
+            skill_dir = pack_dir / "docs" / skill_name
+            skill_md = skill_dir / "SKILL.md"
+            pack_root = pack_dir.resolve()
+            resolved_dir = skill_dir.resolve()
+            resolved_skill = skill_md.resolve()
+            if (
+                (pack_dir / "docs").is_symlink()
+                or skill_dir.is_symlink()
+                or skill_md.is_symlink()
+                or not resolved_dir.is_relative_to(pack_root)
+                or resolved_skill.parent != resolved_dir
+            ):
+                continue
+            found: list[SkillDescriptor] = []
+            if _try_add_skill(found, skill_md, main.pack_id, strict_frontmatter=True):
+                extras.append(replace(found[0], skill=skill_name))
+    return extras
+
+
+def unit_digest(descriptor: SkillDescriptor, extras: list[SkillDescriptor]) -> str:
+    """Hash the files copied for one main or extra skill, deterministically."""
+    import hashlib
+
+    if descriptor.skill is None:
+        root = descriptor.skill_dir
+        extra_roots = {
+            extra.skill_dir.resolve()
+            for extra in extras
+            if extra.pack_id == descriptor.pack_id and extra.skill is not None
+        }
+        files = [
+            path for path in root.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and "__pycache__" not in path.relative_to(root).parts
+            and path.suffix != ".pyc"
+            and not any(path.resolve().is_relative_to(extra_root) for extra_root in extra_roots)
+        ]
+    else:
+        root = descriptor.skill_dir
+        files = [
+            path for path in root.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and "__pycache__" not in path.relative_to(root).parts
+            and path.suffix != ".pyc"
+        ]
+
+    digest = hashlib.sha256()
+    for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
 def lint_shared_skill_md(text: str) -> list[str]:
     """Return human-readable findings if `text` contains forbidden tokens."""
     findings: list[str] = []
@@ -273,5 +380,7 @@ __all__ = [
     "discovery_problems",
     "get",
     "lint_shared_skill_md",
+    "list_extras",
     "list_skills",
+    "unit_digest",
 ]

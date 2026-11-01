@@ -1,0 +1,424 @@
+{
+  "False-False": {
+    "order": [
+      "clip-a",
+      "clip-b",
+      "clip-c"
+    ],
+    "registry": {
+      "assets": {
+        "picture": {
+          "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "type": "video"
+        },
+        "pool-b": {
+          "generationId": "generation-b",
+          "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "type": "image",
+          "variantId": "variant-b"
+        },
+        "pool-c": {
+          "generationId": "generation-c",
+          "media_id": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "type": "image",
+          "variantId": "variant-c"
+        },
+        "reserved-new": {
+          "generationId": "generation-new",
+          "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "opaque": {
+            "keep": [
+              null,
+              false
+            ]
+          },
+          "type": "video",
+          "variantId": "variant-new"
+        }
+      }
+    },
+    "row": {
+      "asset": "reserved-new",
+      "at": 9.017,
+      "clipType": "video",
+      "from": 0,
+      "hold": 4,
+      "id": "placed",
+      "opaque": {
+        "clear": null,
+        "literal": "occurrence:occ-a/clip:placed",
+        "values": [
+          false,
+          0,
+          {}
+        ]
+      },
+      "speed": 1,
+      "to": 4,
+      "track": "picture"
+    },
+    "writes": [
+      [
+        {
+          "after": {
+            "state": "absent"
+          },
+          "before": {
+            "state": "present",
+            "value": {
+              "asset": "reserved-new",
+              "at": 9.017,
+              "clipType": "video",
+              "from": 0,
+              "hold": 4,
+              "id": "placed",
+              "opaque": {
+                "clear": null,
+                "literal": "occurrence:occ-a/clip:placed",
+                "values": [
+                  false,
+                  0,
+                  {}
+                ]
+              },
+              "speed": 1,
+              "to": 4,
+              "track": "picture"
+            }
+          },
+          "path": [],
+          "ref": "occurrence:occ-a/clip:placed"
+        }
+      ]
+    ]
+  },
+  "False-True": {
+    "order": [
+      "clip-a",
+      "clip-b",
+      "clip-c"
+    ],
+    "registry": {
+      "assets": {
+        "picture": {
+          "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "type": "video"
+        },
+        "pool-b": {
+          "generationId": "generation-b",
+          "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "type": "image",
+          "variantId": "variant-b"
+        },
+        "pool-c": {
+          "generationId": "generation-c",
+          "media_id": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "type": "image",
+          "variantId": "variant-c"
+        },
+        "reserved-new": {
+          "generationId": "generation-new",
+          "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "opaque": {
+            "keep": [
+              null,
+              false
+            ]
+          },
+          "type": "video",
+          "variantId": "variant-new"
+        }
+      }
+    },
+    "row": {
+      "asset": "reserved-new",
+      "at": 9.017,
+      "clipType": "video",
+      "from": 0,
+      "hold": 4,
+      "id": "placed",
+      "opaque": {
+        "clear": null,
+        "literal": "occurrence:occ-a/clip:placed",
+        "values": [
+          false,
+          0,
+          {}
+        ]
+      },
+      "speed": 1,
+      "to": 4,
+      "track": "picture"
+    },
+    "writes": [
+      [
+        {
+          "after": {
+            "state": "absent"
+          },
+          "before": {
+            "state": "present",
+            "value": {
+              "asset": "reserved-new",
+              "at": 9.017,
+              "clipType": "video",
+              "from": 0,
+              "hold": 4,
+              "id": "placed",
+              "opaque": {
+                "clear": null,
+                "literal": "occurrence:occ-a/clip:placed",
+                "values": [
+                  false,
+                  0,
+                  {}
+                ]
+              },
+              "speed": 1,
+              "to": 4,
+              "track": "picture"
+            }
+          },
+          "path": [],
+          "ref": "occurrence:occ-a/clip:placed"
+        }
+      ],
+      [
+        {
+          "after": {
+            "state": "present",
+            "value": [
+              "pool-b",
+              "pool-c",
+              "reserved-new"
+            ]
+          },
+          "before": {
+            "state": "present",
+            "value": [
+              "pool-b",
+              "pool-c"
+            ]
+          },
+          "path": [
+            "app",
+            "astrid",
+            "pool"
+          ],
+          "ref": "occurrence:occ-a/source"
+        }
+      ]
+    ]
+  },
+  "True-False": {
+    "order": [
+      "clip-a",
+      "clip-b",
+      "clip-c"
+    ],
+    "registry": {
+      "assets": {
+        "picture": {
+          "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "type": "video"
+        },
+        "pool-b": {
+          "generationId": "generation-b",
+          "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "type": "image",
+          "variantId": "variant-b"
+        },
+        "pool-c": {
+          "generationId": "generation-c",
+          "media_id": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "type": "image",
+          "variantId": "variant-c"
+        },
+        "reserved-new": {
+          "generationId": "generation-new",
+          "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "opaque": {
+            "keep": [
+              null,
+              false
+            ]
+          },
+          "type": "video",
+          "variantId": "variant-new"
+        }
+      }
+    },
+    "row": {
+      "asset": "reserved-new",
+      "at": 9.017,
+      "clipType": "video",
+      "from": 2,
+      "hold": 4,
+      "id": "placed",
+      "opaque": {
+        "clear": null,
+        "literal": "occurrence:occ-a/clip:placed",
+        "values": [
+          false,
+          0,
+          {}
+        ]
+      },
+      "speed": 2,
+      "to": 6,
+      "track": "picture"
+    },
+    "writes": [
+      [
+        {
+          "after": {
+            "state": "absent"
+          },
+          "before": {
+            "state": "present",
+            "value": {
+              "asset": "reserved-new",
+              "at": 9.017,
+              "clipType": "video",
+              "from": 2,
+              "hold": 4,
+              "id": "placed",
+              "opaque": {
+                "clear": null,
+                "literal": "occurrence:occ-a/clip:placed",
+                "values": [
+                  false,
+                  0,
+                  {}
+                ]
+              },
+              "speed": 2,
+              "to": 6,
+              "track": "picture"
+            }
+          },
+          "path": [],
+          "ref": "occurrence:occ-a/clip:placed"
+        }
+      ]
+    ]
+  },
+  "True-True": {
+    "order": [
+      "clip-a",
+      "clip-b",
+      "clip-c"
+    ],
+    "registry": {
+      "assets": {
+        "picture": {
+          "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "type": "video"
+        },
+        "pool-b": {
+          "generationId": "generation-b",
+          "media_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "type": "image",
+          "variantId": "variant-b"
+        },
+        "pool-c": {
+          "generationId": "generation-c",
+          "media_id": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "type": "image",
+          "variantId": "variant-c"
+        },
+        "reserved-new": {
+          "generationId": "generation-new",
+          "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "opaque": {
+            "keep": [
+              null,
+              false
+            ]
+          },
+          "type": "video",
+          "variantId": "variant-new"
+        }
+      }
+    },
+    "row": {
+      "asset": "reserved-new",
+      "at": 9.017,
+      "clipType": "video",
+      "from": 2,
+      "hold": 4,
+      "id": "placed",
+      "opaque": {
+        "clear": null,
+        "literal": "occurrence:occ-a/clip:placed",
+        "values": [
+          false,
+          0,
+          {}
+        ]
+      },
+      "speed": 2,
+      "to": 6,
+      "track": "picture"
+    },
+    "writes": [
+      [
+        {
+          "after": {
+            "state": "absent"
+          },
+          "before": {
+            "state": "present",
+            "value": {
+              "asset": "reserved-new",
+              "at": 9.017,
+              "clipType": "video",
+              "from": 2,
+              "hold": 4,
+              "id": "placed",
+              "opaque": {
+                "clear": null,
+                "literal": "occurrence:occ-a/clip:placed",
+                "values": [
+                  false,
+                  0,
+                  {}
+                ]
+              },
+              "speed": 2,
+              "to": 6,
+              "track": "picture"
+            }
+          },
+          "path": [],
+          "ref": "occurrence:occ-a/clip:placed"
+        }
+      ],
+      [
+        {
+          "after": {
+            "state": "present",
+            "value": [
+              "pool-b",
+              "pool-c",
+              "reserved-new"
+            ]
+          },
+          "before": {
+            "state": "present",
+            "value": [
+              "pool-b",
+              "pool-c"
+            ]
+          },
+          "path": [
+            "app",
+            "astrid",
+            "pool"
+          ],
+          "ref": "occurrence:occ-a/source"
+        }
+      ]
+    ]
+  }
+}

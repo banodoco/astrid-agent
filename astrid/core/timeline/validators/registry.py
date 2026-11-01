@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from astrid.core.timeline.banodoco_schema import _ASSET_ENTRY_ALLOWED, _raise_unknown_keys
+from astrid.core.timeline.validators.meta import validate_meta
 from astrid.core.timeline.validators.metadata import _validate_generated_at
 
 
@@ -37,6 +38,8 @@ def validate_registry(registry: Any) -> None:
         if not isinstance(entry, dict):
             raise ValueError(f"Asset registry.assets[{key!r}] must be an object")
         _raise_unknown_keys(f"Asset registry.assets[{key!r}]", entry, _ASSET_ENTRY_ALLOWED)
+        if "meta" in entry:
+            validate_meta(entry["meta"], path=f"Asset registry.assets[{key!r}].meta")
         media_id = entry.get("media_id")
         if media_id is not None and (
             not isinstance(media_id, str) or not media_id.strip()

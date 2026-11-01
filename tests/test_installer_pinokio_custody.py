@@ -51,6 +51,17 @@ def _assert_lock_free(path):
         pass
 
 
+def test_custody_identity_requires_the_same_user_process_incarnation():
+    from astrid.installer.custody import _same_process_identity
+
+    receipt = {"pid": 12, "uid": 34, "birth_id": "born", "parent_pid": 1,
+               "process_group": 12, "session_id": 12}
+    assert _same_process_identity(receipt, {**receipt, "parent_pid": 99,
+                                            "process_group": 99, "session_id": 99})
+    assert not _same_process_identity(receipt, {**receipt, "birth_id": "reused"})
+    assert not _same_process_identity(receipt, {**receipt, "uid": 35})
+
+
 @contextlib.contextmanager
 def _custody(root, backend):
     # Production update owns this operation lock while it arms activation.
@@ -90,7 +101,7 @@ def test_custody_arm_and_attach_cover_candidate_and_rollback(tmp_path, step, sel
         attached.close()
 
 
-@pytest.mark.parametrize("field", ["token", "binding"])
+@pytest.mark.parametrize("field", ["token", "binding", "lock"])
 def test_attach_rejects_tampered_ticket(tmp_path, field):
     from astrid.installer.custody import attach
 

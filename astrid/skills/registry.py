@@ -19,7 +19,7 @@ from pathlib import Path
 from astrid.core.foundation.paths import REPO_ROOT
 
 from .commands import rewrite_commands
-from .discovery import SkillDescriptor, list_skills
+from .discovery import SkillDescriptor, list_extras, list_skills
 
 BEGIN_MARKER = "<!-- PACKS:BEGIN (managed by `astrid skills sync`) -->"
 END_MARKER = "<!-- PACKS:END -->"
@@ -52,9 +52,10 @@ def _registry_descriptors(descriptors: list[SkillDescriptor] | None = None) -> l
     itself. The result is sorted by pack id for a byte-stable block.
     """
     if descriptors is None:
-        descriptors = list_skills()
+        mains = list_skills()
+        descriptors = mains + list_extras(mains)
     rows = [d for d in descriptors if d.pack_id != "_core"]
-    rows.sort(key=lambda d: d.pack_id)
+    rows.sort(key=lambda d: (d.pack_id, d.skill or ""))
     return rows
 
 
@@ -63,6 +64,7 @@ def render_registry_block(
     *,
     deep: bool = False,
     view_root: Path | None = None,
+    selected: set[str] | None = None,
 ) -> str:
     """Render the managed registry block (markers included, no trailing newline).
 
@@ -89,13 +91,21 @@ def render_registry_block(
 
     for descriptor in rows:
         summary = (descriptor.short_description or descriptor.description or "").replace("|", "\\|")
+        if descriptor.skill is not None:
+            status = "selected" if selected and descriptor.skill_id in selected else (
+                f"available: `astrid skills install {descriptor.pack_id} --skill {descriptor.skill}`"
+            )
+            summary = f"{summary}; {status}"
         skill_path = _repo_relative(descriptor.skill_md, view_root=view_root)
         path_cell = f"`{skill_path}`"
         if deep:
-            skill_name = f"`astrid-{descriptor.pack_id}`"
+            skill_name = f"`astrid-{descriptor.skill_id}`"
             lines.append(f"| {descriptor.pack_id} | {skill_name} | {summary} | {path_cell} |")
         else:
-            lines.append(f"| {descriptor.pack_id} | {summary} | {path_cell} |")
+            pack_cell = descriptor.pack_id
+            if descriptor.skill is not None:
+                pack_cell = f"{pack_cell} / {descriptor.skill}"
+            lines.append(f"| {pack_cell} | {summary} | {path_cell} |")
 
     lines.append("")
     lines.append(END_MARKER)
@@ -145,6 +155,7 @@ def regenerate(
     deep: bool = False,
     view_root: Path | None = None,
     dry_run: bool = False,
+    selected: set[str] | None = None,
 ) -> bool:
     """Regenerate the managed registry block in *skill_md_path*.
 
@@ -153,7 +164,7 @@ def regenerate(
     """
     target = skill_md_path or CORE_SKILL_MD
     original = target.read_text(encoding="utf-8")
-    block = render_registry_block(descriptors, deep=deep, view_root=view_root)
+    block = render_registry_block(descriptors, deep=deep, view_root=view_root, selected=selected)
     updated = _splice_block(original, block)
     if updated == original:
         return False
@@ -168,6 +179,7 @@ def is_current(
     descriptors: list[SkillDescriptor] | None = None,
     deep: bool = False,
     view_root: Path | None = None,
+    selected: set[str] | None = None,
 ) -> bool:
     """Return ``True`` when the registry block is already up to date."""
     return not regenerate(
@@ -175,6 +187,7 @@ def is_current(
         descriptors=descriptors,
         deep=deep,
         view_root=view_root,
+        selected=selected,
         dry_run=True,
     )
 

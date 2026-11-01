@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "assessment": "PASS for bounded source checks; not a whole-repository semantic certification",
+  "upstream": "886a3183bd4a4a44f0a2c08fabec4e8edcbf7b55",
+  "preserved": [
+    "Upstream first20 chat additions and behavior tests remain in the final source.",
+    "Upstream skills route remains registered at the top-level gateway.",
+    "The approved doctor RuntimeCLI import relocation remains present.",
+    "Upstream installer command-shim and recipe-refresh behavior remains present.",
+    "Both platform assertion forms remain present.",
+    "The upstream 18.12.6 OMP release procedure and ledger remain present.",
+    "service.mjs is generated from final service.ts rather than hand-composed."
+  ],
+  "production_commit_wiring": {
+    "provider_factory": "astrid/sdk/timeline/commit.py:1472 create_runtime_commit_service",
+    "runtime_registration": "tests/sdk/test_timeline_commit_provider_runtime.py:137,182,217,273 register the factory with RuntimeService",
+    "caller": "astrid/core/timeline/authoring_bundle.py:1884 invokes writer.commit_timeline",
+    "result": "PASS: registered commitTimeline/provider path remains wired in source and runtime-provider tests."
+  },
+  "post_harness_ancestry": "PENDING: MERGE_HEAD is recorded and exact, but the worker must not commit; harness must verify git merge-base --is-ancestor 886a3183bd4a4a44f0a2c08fabec4e8edcbf7b55 HEAD after its commit.",
+  "silent_revert_assessment": "No bounded source check found an upstream-only revert in the resolved conflict paths. Full final review remains downstream work."
+}

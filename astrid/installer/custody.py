@@ -33,6 +33,13 @@ def _send(stream, value):
     stream.flush()
 
 
+def _same_process_identity(expected, observed):
+    """Compare the immutable process incarnation rather than mutable topology."""
+    return (isinstance(expected, dict) and isinstance(observed, dict)
+            and all(expected.get(field) == observed.get(field)
+                    for field in ("pid", "uid", "birth_id")))
+
+
 def _binding(root, version, data):
     from astrid.installer.core import absolute, current, read_json
     from astrid.installer.service import launch_admission
@@ -72,12 +79,10 @@ def attach(ticket, root, version, data):
         receipt = json.loads((Path(root) / ".app-update-custody.json").read_text(encoding="utf-8"))
         from runtime_protocol import platform
 
-        from astrid.installer.service import installer_lock_path
-
-        expected_lock = installer_lock_path(Path.home(), sys.platform)
+        observed = platform.process_identity(receipt["identity"]["pid"])
         if (receipt["port"] != ticket["port"] or receipt["root"] != str(Path(root).resolve())
-                or receipt["lock"] != str(expected_lock.resolve())
-                or platform.process_identity(receipt["identity"]["pid"]) != receipt["identity"]):
+                or receipt["lock"] != ticket["lock"]
+                or not _same_process_identity(receipt["identity"], observed)):
             raise ValueError("The stopped-update lock owner identity changed.")
         challenge = secrets.token_hex(32)
         connection = socket.create_connection(("127.0.0.1", ticket["port"]), timeout=10)
@@ -118,8 +123,8 @@ def keeper(fd):
 
 
 class Custody:
-    def __init__(self, process, root):
-        self.process, self.root = process, root
+    def __init__(self, process, root, lock):
+        self.process, self.root, self.lock = process, root, Path(lock).resolve()
 
     def check(self):
         if self.process.poll() is not None:
@@ -135,7 +140,8 @@ class Custody:
         reply = _receive(self.process.stdout)
         if reply.get("armed") is not True:
             raise ValueError("The previous foreground owner has not released update custody.")
-        return {"port": reply["port"], "token": token, "binding": binding}
+        return {"port": reply["port"], "token": token, "binding": binding,
+                "lock": str(self.lock)}
 
     def close(self):
         if self.process.stdin is not None:
@@ -161,7 +167,7 @@ def stopped_custody(root, backend):
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    custody = Custody(process, root)
+    custody = Custody(process, root, path)
     try:
         if process.stdout is None:
             raise ValueError("The stopped-update lock owner disconnected.")

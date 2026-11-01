@@ -228,11 +228,12 @@ def test_a_track_change_never_moves_the_clip():
 
 
 def test_a_picture_gap_blocks_publishing_and_says_what_is_left_on_screen():
-    """(c): check validates the picture, not only the structure: a span with no plate is a blocking gap."""
+    """(c): check reports the picture, not only the structure: a span with no plate is an advisory gap."""
     tl = Checkout(film())
     tl.resolve()
     assert tl.picture_gaps() == []
     tl.clip("c2.field").remove()
     gaps = tl.picture_gaps()
     assert len(gaps) == 1 and gaps[0].startswith("4.000–6.000 s") and "c2.live" in gaps[0]
-    assert any(line.startswith("picture") for line in tl.check().blocking)
+    report = tl.check()
+    assert any(line.startswith("picture") for line in report.problems) and not report.blocking
