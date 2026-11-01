@@ -17,6 +17,8 @@ modules; retired parser compatibility helpers are intentionally not exposed.
 
 from __future__ import annotations
 
+from astrid.core.pack.identity import pack_digest, read_pin, write_pin
+
 from astrid.core.pack._common import (
     _PACK_ID_RE,
     ELEMENT_KINDS,
@@ -114,6 +116,9 @@ __all__ = [
     "ELEMENT_KIND_REGISTRY",
     "PackDefinition",
     "PackValidationError",
+    "pack_digest",
+    "read_pin",
+    "write_pin",
     "discover_packs",
     "element_kind_registry_for_pack",
     "iter_element_roots",
