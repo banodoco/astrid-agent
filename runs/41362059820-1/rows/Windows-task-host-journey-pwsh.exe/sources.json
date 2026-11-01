@@ -1,0 +1,14 @@
+{
+  "agent": {
+    "sha": "d6793181ee7a6c035c6e8580b815db8edc3094e4",
+    "repo": "D:\\a\\astrid-agent\\astrid-agent"
+  },
+  "runtime": {
+    "sha": "1e6d899efa77a2d6ec247c38250f9748330bb587",
+    "repo": "D:\\a\\astrid-agent\\astrid-agent\\journey-runtime"
+  },
+  "app": {
+    "sha": "36ff224e3c9ad862e3f807e2548b997a36799543",
+    "repo": "D:\\a\\astrid-agent\\astrid-agent\\journey-app"
+  }
+}

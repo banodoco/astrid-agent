@@ -1,0 +1,56 @@
+{
+  "app-ref": {
+    "outputs": {
+      "ref": "36ff224e3c9ad862e3f807e2548b997a36799543"
+    },
+    "outcome": "success",
+    "conclusion": "success"
+  },
+  "runtime-ref": {
+    "outputs": {
+      "ref": "1e6d899efa77a2d6ec247c38250f9748330bb587"
+    },
+    "outcome": "success",
+    "conclusion": "success"
+  },
+  "install": {
+    "outputs": {},
+    "outcome": "failure",
+    "conclusion": "failure"
+  },
+  "start": {
+    "outputs": {},
+    "outcome": "skipped",
+    "conclusion": "skipped"
+  },
+  "health": {
+    "outputs": {},
+    "outcome": "skipped",
+    "conclusion": "skipped"
+  },
+  "host": {
+    "outputs": {},
+    "outcome": "skipped",
+    "conclusion": "skipped"
+  },
+  "task": {
+    "outputs": {},
+    "outcome": "skipped",
+    "conclusion": "skipped"
+  },
+  "down": {
+    "outputs": {},
+    "outcome": "success",
+    "conclusion": "success"
+  },
+  "stopped": {
+    "outputs": {},
+    "outcome": "success",
+    "conclusion": "success"
+  },
+  "collect": {
+    "outputs": {},
+    "outcome": "success",
+    "conclusion": "success"
+  }
+}

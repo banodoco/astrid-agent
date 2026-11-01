@@ -1,0 +1,8 @@
+{
+  "job": "windows-journey",
+  "run_id": "41362059820",
+  "caller": "5cbfcbe9c516816817dd298e9910fe2b24408e8c",
+  "attempt": "1",
+  "shell": "powershell.exe",
+  "job_status": "failure"
+}

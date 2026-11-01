@@ -1,0 +1,22 @@
+{
+  "installer_pid": 3448,
+  "python": "D:\\a\\_temp\\owner-caller-temp\\astrid-install-9c2659507b1849c08622b9d045f743ff\\venv\\Scripts\\python.exe",
+  "root": "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\d6793181-1e6d899e-6bee91a7\\py\\Lib\\site-packages",
+  "backend": "D:\\a\\_temp\\owner-caller-temp\\astrid-install-9c2659507b1849c08622b9d045f743ff\\venv\\Lib\\site-packages\\astrid\\installer\\backend.py",
+  "backend_sha256": "79e2a0a6054708fe8a5ee3a0e9da38cf43b11de9e41c603b0d40a803aa88d12c",
+  "installer_token": {
+    "token_id": [
+      0,
+      2769236
+    ],
+    "authentication_id": [
+      0,
+      718396
+    ],
+    "type": 1,
+    "impersonation": 0,
+    "groups": 14,
+    "privileges": 24
+  },
+  "helper_exit": 0
+}

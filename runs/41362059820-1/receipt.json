@@ -1,0 +1,15 @@
+{
+  "run_id": "41362059820",
+  "run_attempt": "1",
+  "caller_sha": "5cbfcbe9c516816817dd298e9910fe2b24408e8c",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/owner-caller.yml@refs/heads/venue/M-R1FIX-R-26-WINDOWS-ACL-R1-1",
+  "workflow_sha": "5cbfcbe9c516816817dd298e9910fe2b24408e8c",
+  "matrix_result": "failure",
+  "requested": {
+    "agent": "d6793181ee7a6c035c6e8580b815db8edc3094e4",
+    "runtime": "1e6d899efa77a2d6ec247c38250f9748330bb587",
+    "app": "36ff224e3c9ad862e3f807e2548b997a36799543",
+    "manifest_sha256": "b78ae7e74188f6e0bbf01950b0d388d4cf36ea990c9bb574fd8aef57a8782777",
+    "source_override": true
+  }
+}
