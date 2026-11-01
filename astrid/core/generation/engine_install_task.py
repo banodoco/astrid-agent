@@ -114,14 +114,7 @@ def recheck_install(binding: InstallBinding):
     return disk
 
 
-def recheck_install_under_custody(binding: InstallBinding, *, root_identity=None):
-    """Recheck an admitted binding after the installer lock creates its root.
-
-    The caller must hold the install lock throughout this check and the work
-    it protects.  The original admission anchor must retain its identity;
-    unlike the read-only admission check, newly created descendants are
-    expected.  Return the root identity to pin on all subsequent checks.
-    """
+def _recheck_install_static(binding):
     if not isinstance(binding, InstallBinding):
         raise TypeError('an exact install binding is required')
     if binding.anchor != '/' and not (binding.root == binding.anchor
@@ -132,6 +125,18 @@ def recheck_install_under_custody(binding: InstallBinding, *, root_identity=None
     if replace(current, anchor=binding.anchor, anchor_device=binding.anchor_device,
                anchor_inode=binding.anchor_inode) != binding:
         raise ValueError('managed install binding changed; re-admit the task')
+    return current
+
+
+def recheck_install_under_custody(binding: InstallBinding, *, root_identity=None):
+    """Recheck an admitted binding after the installer lock creates its root.
+
+    The caller must hold the install lock throughout this check and the work
+    it protects.  The original admission anchor must retain its identity;
+    unlike the read-only admission check, newly created descendants are
+    expected.  Return the root identity to pin on all subsequent checks.
+    """
+    current = _recheck_install_static(binding)
     anchor, device, inode, _ = _disk_anchor(binding.anchor)
     if (anchor, device, inode) != (binding.anchor, binding.anchor_device, binding.anchor_inode):
         raise ValueError('managed install anchor changed; re-admit the task')

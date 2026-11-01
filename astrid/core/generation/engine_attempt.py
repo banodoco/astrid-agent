@@ -8,15 +8,17 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
+import os
 import socket
+import stat
 import threading
 import time
 
 from .engine_attempt_custody import AttemptIdentity, _settle_attempt, arm_attempt
-from .engine_contracts import DeadlineExceeded, IntegrityError
+from .engine_contracts import DeadlineExceeded, IntegrityError, UnsafePathError
 from .engine_custody import LinuxEngineServiceClient
 from .engine_execution import LocalLinuxExecutionContext
-from .engine_install_task import recheck_install_under_custody
+from .engine_install_task import _recheck_install_static, recheck_install_under_custody
 from .engine_recipe import load_recipe
 from .engine_runner import install_engine, plan_install
 
@@ -101,11 +103,16 @@ class _AttemptContext:
 
     @contextmanager
     def acquire_install_lock(self, root, *, deadline):
-        with self._context.acquire_install_lock(root, deadline=deadline):
+        identity = self._attempt.identity
+        lock = (_bound_install_lock(self._context, identity.binding, deadline)
+                if type(self._context) is LocalLinuxExecutionContext
+                else _ordinary_install_lock(self._context, root, deadline))
+        with lock as stale:
             identity = self._attempt.identity
             self._root_identity = recheck_install_under_custody(identity.binding)
             self._attempt._root_identity = self._root_identity
-            arm_attempt(self._context, identity, deadline=deadline, root_identity=self._root_identity)
+            arm_attempt(self._context, identity, deadline=deadline, root_identity=self._root_identity,
+                        reject_existing_descendants=stale)
             self._attempt._admitted.set()
             yield
             with self._attempt._gate:
@@ -148,6 +155,61 @@ class _AttemptContext:
         self._check_cancelled()
         with _cancellable_download(self._attempt._cancel_requested):
             return self._context.download_model(model, **kwargs)
+
+
+@contextmanager
+def _ordinary_install_lock(context, root, deadline):
+    with context.acquire_install_lock(root, deadline=deadline):
+        yield False
+
+
+@contextmanager
+def _bound_install_lock(context, binding, deadline):
+    """Create absent descendants once, pin them, then acquire the normal lock.
+
+    Existing post-admission descendants are remembered so an armed journal can
+    still refuse replay, but they cannot admit a new attempt on a stale binding.
+    """
+    from ._engine_target_files import _check
+    root, anchor = binding.root, binding.anchor
+    _recheck_install_static(binding)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    opened = []
+    try:
+        parent = os.open('/', flags)
+        opened.append((None, None, parent))
+        if anchor == '/':
+            info = os.fstat(parent)
+            if (info.st_dev, info.st_ino) != (binding.anchor_device, binding.anchor_inode):
+                raise ValueError('managed install anchor changed')
+        current = ''
+        stale = False
+        for name in root[1:].split('/'):
+            _check(deadline)
+            current += '/' + name
+            beyond_anchor = anchor == '/' or current.startswith(anchor + '/')
+            if beyond_anchor:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=parent)
+                    os.fsync(parent)
+                except FileExistsError:
+                    stale = True
+            child = os.open(name, flags, dir_fd=parent)
+            opened.append((parent, name, child))
+            parent = child
+            if current == anchor:
+                info = os.fstat(child)
+                if (info.st_dev, info.st_ino) != (binding.anchor_device, binding.anchor_inode):
+                    raise ValueError('managed install anchor changed')
+        with context.acquire_install_lock(root, deadline=deadline):
+            for parent, name, fd in opened[1:]:
+                entry, held = os.stat(name, dir_fd=parent, follow_symlinks=False), os.fstat(fd)
+                if not stat.S_ISDIR(entry.st_mode) or (entry.st_dev, entry.st_ino) != (held.st_dev, held.st_ino):
+                    raise UnsafePathError('installer binding path changed while acquiring custody')
+            yield stale
+    finally:
+        for _, _, fd in reversed(opened):
+            os.close(fd)
 
 
 class AttemptInstaller:

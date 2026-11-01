@@ -70,7 +70,8 @@ def _read(context, path, deadline):
     return value
 
 
-def arm_attempt(context, identity: AttemptIdentity, *, deadline, root_identity):
+def arm_attempt(context, identity: AttemptIdentity, *, deadline, root_identity,
+                reject_existing_descendants=False):
     """Durably arm a unique attempt under the already-held installer lock.
 
     The returned record is evidence of admission, not evidence of termination.
@@ -89,6 +90,8 @@ def arm_attempt(context, identity: AttemptIdentity, *, deadline, root_identity):
     record = _read(context, path, deadline)
     if any(entry['state'] == 'armed' for entry in record['attempts']):
         raise CustodyUnresolved('prior installer attempt requires explicit recovery')
+    if reject_existing_descendants:
+        raise ValueError('managed install binding changed before installer custody')
     if any(entry['identity']['attempt_id'] == identity.attempt_id
            or entry['identity']['receipt_id'] == identity.receipt_id for entry in record['attempts']):
         raise CustodyUnresolved('installer attempt or receipt was already used')

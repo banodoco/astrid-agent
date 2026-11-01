@@ -33,6 +33,19 @@ def _wait(predicate):
         time.sleep(0.02)
 
 
+def test_precreated_root_is_not_admitted_using_a_stale_binding(tmp_path, monkeypatch):
+    binding, _context, installer = _installer(tmp_path)
+    Path(binding.root).mkdir()
+    entered = []
+    def tiny_install(plan, *, context, adapter, deadline, _receipt_id):
+        with context.acquire_install_lock(plan.root, deadline=deadline):
+            entered.append(True)
+    monkeypatch.setattr(engine_attempt, 'install_engine', tiny_install)
+    with pytest.raises(ValueError, match='binding changed before installer custody'):
+        installer.begin_attempt('task', 'attempt', 1, binding)
+    assert entered == []
+
+
 def test_real_supervisor_cancellation_waits_for_owned_command_stop(tmp_path, monkeypatch):
     binding, context, installer = _installer(tmp_path)
     marker = tmp_path / 'engine/started'
