@@ -11,10 +11,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from astrid.core.contracts.errors import AstridError
-from astrid.packs.understanding.actions.visual_understand.run import (
-    OrderedImageEvidence,
-    _parse_ordered_answers,
-)
+from .run import OrderedImageEvidence, _parse_ordered_answers
 
 SESSION_PASS_THRESHOLD = 0.95
 REQUIRED_SESSION_COUNT = 3

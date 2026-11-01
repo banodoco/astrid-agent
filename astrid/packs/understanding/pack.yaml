@@ -191,6 +191,7 @@ actions:
     resources:
       - {kind: implementation, path: actions/visual_understand/__init__.py}
       - {kind: implementation, path: actions/visual_understand/run.py}
+      - {kind: implementation, path: actions/visual_understand/scorer.py}
       - {kind: documentation, path: actions/visual_understand/STAGE.md}
     scoped_configs: [credentials.openai]
     cache: {mode: none}
