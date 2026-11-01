@@ -7815,9 +7815,12 @@ class GenericPackHost:
             digest = hashlib.sha256(data).hexdigest()
             destination = output_root / "outputs" / "installed-product-manifest.json"
             destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
+                raise HostError("installed manifest evidence escapes output custody")
             if destination.exists() and destination.read_bytes() != data:
                 raise HostError("installed manifest evidence destination collides")
-            destination.write_bytes(data)
+            if not destination.exists():
+                destination.write_bytes(data)
             build = producer.setdefault("build", {})
             if build is None:
                 build = producer["build"] = {}
@@ -7843,29 +7846,30 @@ class GenericPackHost:
         payload["evidence"] = redact_evidence(payload["evidence"])
         receipt["managed_generation_result"] = payload
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        encoded_bytes = encoded.encode("utf-8")
+        digest = hashlib.sha256(encoded_bytes).hexdigest()
+        # Publish a new immutable spool object before atomically changing the
+        # universal receipt, so a crash never invalidates its prior hash.
+        destination = output_root / "outputs" / f"managed-generation-result-{digest}.json"
+        if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
+            raise HostError("managed result manifest escapes output custody")
+        if destination.exists() and destination.read_bytes() != encoded_bytes:
+            raise HostError("managed result manifest destination collides")
+        if not destination.exists():
+            destination.write_bytes(encoded_bytes)
         for row in receipt["outputs"]:
             if row.get("name") != "result_manifest":
                 continue
-            path = output_root / row["path"]
-            if path.is_symlink() or not path.resolve().is_relative_to(output_root.resolve()):
-                raise HostError("managed result manifest escapes output custody")
-            original = json.loads(path.read_text(encoding="utf-8"))
-            # Apart from the host observations above, the durable object and
-            # embedded projection must agree before either is rewritten.
-            if (original.get("task_id") != payload.get("task_id")
-                    or original.get("attempt_id") != payload.get("attempt_id")
-                    or original.get("outputs") != payload.get("outputs")
-                    or original.get("inputs") != payload.get("inputs")):
-                raise HostError("embedded producer result differs from durable manifest")
-            path.write_text(encoded, encoding="utf-8")
-            row["content_hash"] = "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-            row["bytes"] = len(encoded.encode("utf-8"))
+            row["path"] = destination.relative_to(output_root).as_posix()
+            row["content_hash"] = f"sha256:{digest}"
+            row["bytes"] = len(encoded_bytes)
             row.pop("sha256", None)
-        receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+            receipt["managed_generation_result_path"] = row["path"]
+        write_json_atomic(receipt_path, receipt)
 
     def _validate_producer_evidence(
         self, descriptors: Sequence[Mapping[str, Any]], *, output_root: Path,
-        task_id: str, attempt_id: str,
+        task_id: str, attempt_id: str, successful: bool = False,
     ) -> None:
         """Check the durable producer receipt before any terminal publication.
 
@@ -7888,6 +7892,12 @@ class GenericPackHost:
                 payload, staging_root=output_root,
                 expected_task_id=task_id, expected_attempt_id=attempt_id,
             )
+            if successful and any(
+                validated.outcomes[phase].status != expected
+                for phase, expected in (("execution", "succeeded"), ("retrieval", "succeeded"),
+                                        ("verification", "succeeded"), ("publication", "not_started"))
+            ):
+                raise HostError("successful publication requires a verified successful producer result")
             for output in validated.outputs:
                 matches = [row for row in descriptors
                            if Path(str(row.get("path", ""))).resolve() == (output_root / output.path).resolve()
@@ -11339,7 +11349,7 @@ class GenericPackHost:
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
             self._validate_producer_evidence(
-                harvested, output_root=output_root, task_id=task_id, attempt_id=attempt_id,
+                harvested, output_root=output_root, task_id=task_id, attempt_id=attempt_id, successful=True,
             )
             typed_outputs = self._typed_outputs(
                 record,

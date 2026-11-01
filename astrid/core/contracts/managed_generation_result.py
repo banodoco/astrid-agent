@@ -340,8 +340,8 @@ def redact_evidence(value: Any) -> Any:
     """Remove secrets from observations while retaining public correlation."""
     if isinstance(value, Mapping):
         return {key: redact_evidence(item) for key, item in value.items()
-                if key == "credential_actor" or not re.search(
-                    r"password|secret|authorization|api[_-]?key|credential|access_token|refresh_token|bearer_token",
+                if key in {"credential_actor", "token_id"} or not re.search(
+                    r"password|secret|token|authorization|api[_-]?key|credential",
                     key, re.I,
                 )}
     if isinstance(value, list):

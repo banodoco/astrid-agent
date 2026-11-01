@@ -3,20 +3,22 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-import os
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
-
-# The run action intentionally refuses an ordinary direct import.
-os.environ["ASTRID_INTERNAL_INVOCATION"] = "1"
 
 from astrid.core.contracts.managed_generation_result import (  # noqa: E402
     ManagedGenerationResultError,
     validate_managed_generation_result,
 )
 from astrid.packs.vibecomfy.production_engine import ProductionRunResult  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _internal_invocation(monkeypatch):
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
 
 
 def _sha256(data: bytes) -> str:
@@ -205,3 +207,102 @@ def test_materializer_retains_verified_partial_media_on_terminal_failure(tmp_pat
     assert (tmp_path / f"host-spool-{status}" / output["path"]).read_bytes() == b"partial-or-complete-media"
     assert output["is_primary"] is False
     assert manifest["managed_generation_result"]["outcomes"]["publication"]["status"] == "not_started"
+
+
+@pytest.mark.parametrize("error_type,status", [(RuntimeError, "failed"), (KeyboardInterrupt, "cancelled")])
+def test_run_failure_retains_original_source_before_conversion_and_preserves_error(tmp_path, monkeypatch, error_type, status):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    from astrid.core.generation.backends import registry
+
+    workflow = tmp_path / "submitted.json"
+    original = b'{ "exact": true }\r\n'
+    workflow.write_bytes(original)
+    error = error_type("producer stopped")
+
+    def execute(*args, **kwargs):
+        workflow.write_bytes(b"converted bytes")
+        raise error
+
+    adapter = SimpleNamespace(workflow=execute)
+    descriptor = SimpleNamespace(create=lambda **kwargs: adapter,
+                                 placement=SimpleNamespace(resolve=lambda placement: "local"))
+    monkeypatch.setattr(registry, "resolve_workflow_descriptor", lambda *args, **kwargs: descriptor)
+    spool = tmp_path / "spool"
+    with pytest.raises(error_type) as raised:
+        run._run_and_settle(workflow, spool, task_identity="task-1", attempt_identity="attempt-1", registry=object())
+    assert raised.value is error
+    manifest = json.loads((spool / "manifest.json").read_text())
+    managed = manifest["managed_generation_result"]
+    assert managed["outcomes"]["execution"]["status"] == status
+    assert managed["inputs"]["source"]["sha256"] == _sha256(original)
+    source_output = next(row for row in manifest["outputs"] if row["content_hash"] == "sha256:" + _sha256(original))
+    assert (spool / source_output["path"]).read_bytes() == original
+    if status == "cancelled":
+        assert managed["evidence"]["transport"]["cancel"]["stop_observed"] is None
+
+
+def test_model_identity_never_upgrades_an_observed_or_mismatched_digest(tmp_path):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer)
+    payload["evidence"]["producer"]["models"] = [
+        {"name": "lora", "recorded_sha256": None, "observed_sha256": "1" * 64, "identity_status": "verified"},
+        {"name": "vae", "recorded_sha256": "2" * 64, "observed_sha256": "3" * 64, "identity_status": "verified"},
+        {"name": "encoder", "recorded_sha256": "4" * 64, "observed_sha256": "4" * 64},
+    ]
+    manifest = run._materialize_managed_generation_result(
+        tmp_path / "spool", _write_production(producer, payload),
+        task_identity="task-1", attempt_identity="attempt-1", workflow_path=tmp_path / "unused.json",
+    )
+    assert [row["identity_status"] for row in manifest["managed_generation_result"]["evidence"]["producer"]["models"]] == [
+        "observed", "observed", "verified",
+    ]
+    assert any("vae" in warning for warning in manifest["warnings"])
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_returned_terminal_producer_result_never_becomes_successful_settlement(tmp_path, monkeypatch, status):
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.backends import registry
+
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer, execution_status=status)
+    production = _write_production(producer, payload)
+    adapter = SimpleNamespace(workflow=lambda *args, **kwargs: production)
+    descriptor = SimpleNamespace(create=lambda **kwargs: adapter,
+                                 placement=SimpleNamespace(resolve=lambda placement: "local"))
+    monkeypatch.setattr(registry, "resolve_workflow_descriptor", lambda *args, **kwargs: descriptor)
+    spool = tmp_path / "spool"
+    with pytest.raises(AstridError) as raised:
+        run._run_and_settle(tmp_path / "absent.json", spool, task_identity="task-1",
+                            attempt_identity="attempt-1", registry=object())
+    assert raised.value.code == f"producer_{status}"
+    manifest = json.loads((spool / "manifest.json").read_text())
+    assert manifest["managed_generation_result"]["outcomes"]["execution"]["status"] == status
+
+
+@pytest.mark.parametrize("field", ["source", "effective_settings"])
+def test_changed_local_evidence_bytes_are_rejected(tmp_path, field):
+    payload = _managed_payload(tmp_path)
+    (tmp_path / payload["inputs"][field]["path"]).write_bytes(b"changed")
+    with pytest.raises(ManagedGenerationResultError, match="hashes to"):
+        validate_managed_generation_result(payload, staging_root=tmp_path)
+
+
+def test_source_and_effective_settings_with_identical_bytes_share_one_artifact(tmp_path):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer)
+    payload["inputs"]["effective_settings"] = dict(payload["inputs"]["source"])
+    manifest = run._materialize_managed_generation_result(
+        tmp_path / "spool", _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "unused.json",
+    )
+    assert len(manifest["outputs"]) == 3
+    assert len({row["content_hash"] for row in manifest["outputs"]}) == 3
+    inputs = manifest["managed_generation_result"]["inputs"]
+    assert inputs["source"]["object_id"] == inputs["effective_settings"]["object_id"]

@@ -317,6 +317,8 @@ def _materialize_managed_generation_result(
     managed_root = output_root
     managed_storage_root = output_root / "managed-generation"
     outputs_root = output_root / "outputs"
+    if outputs_root.is_symlink() or managed_storage_root.is_symlink():
+        raise AstridValueError("managed output namespaces cannot be symlinks")
     outputs_root.mkdir(parents=True, exist_ok=True)
     rebased_payload = result.to_dict()
     rebased_outputs: list[dict[str, Any]] = []
@@ -348,6 +350,10 @@ def _materialize_managed_generation_result(
     evidence_outputs: list[dict[str, Any]] = []
     staged_digests = {output.sha256 for output in result.outputs}
     for key in ("source", "effective_settings"):
+        if key == "source" and source_snapshot and key in result.inputs:
+            declared = result.inputs[key]
+            if (declared["sha256"], declared["bytes"]) != (source_snapshot["sha256"], source_snapshot["bytes"]):
+                raise AstridValueError("producer source identity differs from submitted bytes")
         reference = source_snapshot if key == "source" and source_snapshot else result.inputs.get(key)
         if reference is None:
             rebased_payload["warnings"].append(f"{key} bytes were not reported by the producer")
@@ -413,6 +419,11 @@ def _materialize_managed_generation_result(
     transport.setdefault("execution_binding", context.get("execution_binding"))
     transport.setdefault("failure", None)
     transport.setdefault("cancel", None)
+    if execution_status in {"failed", "interrupted"} and transport["failure"] is None:
+        transport["failure"] = {"code": result.outcomes["execution"].code,
+                                "message": result.outcomes["execution"].message, "native": None}
+    if execution_status == "cancelled" and transport["cancel"] is None:
+        transport["cancel"] = {"requested": None, "stop_observed": None, "native": None}
     transport.setdefault("target_observed_at", datetime.now(timezone.utc).isoformat())
     transport["output_ports"] = [
         {"producer_output_id": output.producer_output_id, "producer_port": output.output_port,
@@ -445,8 +456,8 @@ def _materialize_managed_generation_result(
         outputs.append(
             {
                 # The host capability has one declared result port. The
-                # producer port remains authoritative in the preserved neutral
-                # envelope and the per-output producer metadata.
+                # original producer port is retained in transport.output_ports
+                # and the per-output producer metadata.
                 "path": (managed_root / output.path).relative_to(output_root).as_posix(),
                 "name": "vibecomfy_run",
                 "output_port": "vibecomfy_run",
@@ -633,6 +644,7 @@ def _run_and_settle(
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise AstridValueError("host-issued task identity is required")
     output_root = output_root.expanduser().resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
     # Canonical sibling source.json is the submitted source, not a re-emitted
     # UI graph. Save it before the backend can convert or delete its scratch.
     source_path = workflow_path.with_name("source.json") if workflow_path.suffix == ".py" else workflow_path
@@ -829,7 +841,7 @@ def _run_and_settle(
         raise
 
     if production_result.managed_generation_result_path is not None:
-        return _materialize_managed_generation_result(
+        manifest = _materialize_managed_generation_result(
             output_root,
             production_result,
             task_identity=task_identity,
@@ -838,6 +850,13 @@ def _run_and_settle(
             source_snapshot=source_snapshot,
             producer_context=producer_context,
         )
+        execution = manifest["managed_generation_result"]["outcomes"]["execution"]
+        if execution["status"] != "succeeded":
+            raise AstridError(
+                execution.get("message") or f"producer execution {execution['status']}",
+                code=execution.get("code") or f"producer_{execution['status']}",
+            )
+        return manifest
 
     inventory = production_result.outputs
     if comfy_url:
