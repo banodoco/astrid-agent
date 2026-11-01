@@ -419,3 +419,49 @@ def test_tst_b1_counts_all_runtime_owners_to_reject_duplicates(tmp_path, monkeyp
         "103 python -m astrid_runtime up\n"
     ))
     assert journey.runtime_processes(data) == [101, 102]
+
+
+def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp_path):
+    """Exercise the workflow's actual config program with each selection mode."""
+    import subprocess
+    import sys
+    import textwrap
+
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    program = textwrap.dedent(workflow.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+    (tmp_path / "driver").symlink_to(journey.ROOT, target_is_directory=True)
+    output = tmp_path / "output"
+    candidate = {key: char * 40 for key, char in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    env = dict(os.environ, CANDIDATE=json.dumps(candidate), DRIVER_AGENT_REF="e" * 40,
+               WORKFLOW_REPOSITORY="banodoco/astrid-agent",
+               OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
+               STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
+               DIRECT_ONLY="true", M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false",
+               M4_5_ONLY="false", M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]",
+               M4_4B_ENABLED="false", M4_6_ENABLED="false", M4_6_CANDIDATE="",
+               GITHUB_OUTPUT=str(output))
+    def config(**overrides):
+        output.write_text("")
+        proc = subprocess.run([sys.executable, "-c", program], cwd=tmp_path,
+                              env=dict(env, **overrides), text=True, capture_output=True)
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        return proc, values
+
+    proc, values = config()
+    assert proc.returncode == 0, proc.stderr
+    rows = json.loads(values["matrix"])["include"]
+    assert {(row["job_id"], row["runner"], row["leg"]) for row in rows} == {
+        ("direct-linux", "ubuntu-24.04", "release0-to-release1"),
+        ("direct-macos", "macos-14", "release0-to-release1"),
+        ("direct-windows", "windows-2022", "release0-to-release1"),
+    }
+    assert all(row["mode"] == "direct" for row in rows)
+    proc, values = config(DIRECT_ONLY="false")
+    assert proc.returncode == 0, proc.stderr
+    assert len(json.loads(values["matrix"])["include"]) == 9
+    proc, _ = config(M4_4A_BACKEND_ONLY="true")
+    assert proc.returncode != 0 and "direct_only cannot be combined" in proc.stderr
+    proc, _ = config(M4_5_ONLY="true")
+    assert proc.returncode != 0 and "direct_only cannot be combined" in proc.stderr
+    assert "--aggregate-release1" in workflow
+    assert "needs.config.outputs.m4_4a_backend_only != 'true'" in workflow

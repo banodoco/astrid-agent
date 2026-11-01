@@ -23,6 +23,11 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      direct_only:
+        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -80,6 +85,11 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      direct_only:
+        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -164,6 +174,7 @@ jobs:
           OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs }}
+          DIRECT_ONLY: ${{ inputs.direct_only }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled }}
           M4_5_ONLY: ${{ inputs.m4_5_only }}
@@ -208,7 +219,10 @@ jobs:
               raise SystemExit("m4_4a_executor_configs must contain exactly linux, macos and windows")
           if not m4_5_only and any(not isinstance(value, dict) for value in executor_configs.values()):
               raise SystemExit("each M4-4a executor config must be a JSON object")
+          direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
+          if direct_only and (backend_only or m4_5_only):
+              raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
           if m4_5_only and not m4_5_enabled:
               raise SystemExit("m4_5_only requires m4_5_enabled")
@@ -255,7 +269,9 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if backend_only:
+          if direct_only:
+              matrix = [row for row in matrix if row["mode"] == "direct"]
+          elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
