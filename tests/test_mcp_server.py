@@ -218,7 +218,7 @@ def test_every_tool_returns_without_following_long_running_work():
 def test_mcp_edit_forces_no_sweep_but_check_can_request_one():
     tools = mcp_server.build_tools()
     edit = mcp_server.argv_for(tools["timelines_edit"], {"ref": "film", "sweep": True})
-    assert edit[-1] == "--no-sweep"
+    assert edit[-2:] == ["--no-sweep", "--json"]
     assert edit.count("--no-sweep") == 1
     assert edit.index("--sweep") < edit.index("--no-sweep")
 
@@ -269,9 +269,11 @@ def test_shots_and_timeline_file_arguments_take_text(tmp_path):
     text_argv = mcp_server.argv_for(text_tool, {"text_file": "exact narration\n"}, tmp_path)
     sheet_argv = mcp_server.argv_for(sheet_tool, {"sheet_file": "00:00.000\t0\n"}, tmp_path)
     assert Path(text_argv[text_argv.index("--text-file") + 1]).read_text() == "exact narration\n"
-    assert Path(sheet_argv[-1]).read_text() == "00:00.000\t0\n"
+    sheet_file = sheet_argv[-2]
+    assert sheet_argv[-1] == "--json"
+    assert Path(sheet_file).read_text() == "00:00.000\t0\n"
     assert Path(text_argv[text_argv.index("--text-file") + 1]).is_absolute()
-    assert Path(sheet_argv[-1]).is_absolute()
+    assert Path(sheet_file).is_absolute()
 
 
 def test_invoke_returns_admission_and_task_refs(monkeypatch):
