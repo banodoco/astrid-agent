@@ -1,66 +1,66 @@
 repos:
-  astrid-agent: 97cf9fb4ca100a0256b5d20f6976565ea8f22e19
+  astrid-agent: 4f3af3646c38a429a85cc42c22fa4bff1eff1441
 cpu:
   vcpu: 8
 max_minutes: 30
 setup:
-- 'set -euo pipefail
-
-  mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence"
-
-  export TMPDIR="$PWD/runpod-tmp"
-
-  python3 -c ''import sys; assert sys.version_info >= (3,11)''
-
-  python3 -m venv "$PWD/runpod-tmp/venv"
-
-  PYTHON="$PWD/runpod-tmp/venv/bin/python"
-
-  "$PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
-
-  git clone --filter=blob:none --no-checkout https://github.com/banodoco/astrid-runtime.git "$PWD/runpod-tmp/runtime"
-
-  git -C "$PWD/runpod-tmp/runtime" checkout --detach 3b12fface79a3be029f3b6623765a7f3e1e5e24f
-
-  test -z "$(git -C "$PWD/runpod-tmp/runtime" status --porcelain)"
-
-  "$PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation "$PWD/runpod-tmp/runtime" "$PWD/runpod-tmp/runtime/packages/python"
-  .
-
-  "$PYTHON" -m pip freeze > runpod-evidence/environment.txt
-
-  uname -a > runpod-evidence/platform.txt
-
-  df -h . > runpod-evidence/disk.txt
-
-  '
+- "set -euo pipefail\nPROOF_ROOT=/workspace/I-AG-04-proof\nmkdir -p \"$PROOF_ROOT/tmp\" \"$PWD/runpod-evidence\" /workspace/out\nexport TMPDIR=\"$PROOF_ROOT/tmp\"\ntrap 'code=$?; printf \"%s\\n\" \"$code\" > runpod-evidence/payload-exit.txt; cp -a runpod-evidence/. /workspace/out/; exit \"$code\"' EXIT\npython3 -c 'import sys; assert sys.version_info >= (3,11)'\npython3 -m venv \"$PROOF_ROOT/venv\"\nTASK_PYTHON=\"$PROOF_ROOT/venv/bin/python\"\n\"$TASK_PYTHON\" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock\ngit clone --filter=blob:none --no-checkout https://github.com/banodoco/astrid-runtime.git \"$PROOF_ROOT/runtime\"\ngit -C \"$PROOF_ROOT/runtime\" checkout --detach 3b12fface79a3be029f3b6623765a7f3e1e5e24f\ntest -z \"$(git -C \"$PROOF_ROOT/runtime\" status --porcelain)\"\n\"$TASK_PYTHON\" -m pip install --disable-pip-version-check --no-deps --no-build-isolation \"$PROOF_ROOT/runtime\" \"$PROOF_ROOT/runtime/packages/python\" .\n\"$TASK_PYTHON\" -m pip freeze > runpod-evidence/environment.txt\nuname -a > runpod-evidence/platform.txt\ndf -h . > runpod-evidence/disk.txt\ncat > \"$PROOF_ROOT/capture_schema.py\" <<'SCHEMA_PLUGIN'\n\"\"\"Record the existing isolated wheel/schema probes without changing their results.\"\"\"\nimport json\nimport os\nimport subprocess\nfrom pathlib import Path\n\n_original_run = subprocess.run\n_output = Path(os.environ[\"INSTALLED_SCHEMA_PROBE_LOG\"])\n\ndef _capture(argv, *args, **kwargs):\n    result = _original_run(argv, *args, **kwargs)\n    command = list(map(str, argv)) if isinstance(argv, (list, tuple)) else []\n    script = command[command.index(\"-c\") + 1] if \"-c\" in command else \"\"\n    wheel = \"pip\" in command and \"--no-index\" in command and \"--ignore-installed\" in command\n    schema = \"source_checkout_digest\" in script and \"print(json.dumps\" in script\n    if wheel or schema:\n        record = {\"kind\": \"wheel-install\" if wheel else \"installed-schema\", \"returncode\": result.returncode,\n                  \"stdout\": result.stdout, \"stderr\": result.stderr, \"cwd\": str(kwargs.get(\"cwd\"))}\n        with _output.open(\"a\", encoding=\"utf-8\") as stream:\n            stream.write(json.dumps(record) + \"\\n\")\n    return result\n\nsubprocess.run = _capture\nSCHEMA_PLUGIN\n"
 run:
 - 'set -euo pipefail
 
-  export TMPDIR="$PWD/runpod-tmp" ASTRID_RUNTIME_CHECKOUT="$PWD/runpod-tmp/runtime"
+  PROOF_ROOT=/workspace/I-AG-04-proof
 
-  PYTHON="$PWD/runpod-tmp/venv/bin/python"
+  mkdir -p "$PROOF_ROOT/tmp" "$PWD/runpod-evidence" /workspace/out
 
-  test "$(git rev-parse HEAD)" = 97cf9fb4ca100a0256b5d20f6976565ea8f22e19
+  export TMPDIR="$PROOF_ROOT/tmp"
+
+  trap ''code=$?; printf "%s\n" "$code" > runpod-evidence/payload-exit.txt; cp -a runpod-evidence/. /workspace/out/; exit "$code"'' EXIT
+
+  TASK_PYTHON="$PROOF_ROOT/venv/bin/python"
+
+  export ASTRID_RUNTIME_CHECKOUT="$PROOF_ROOT/runtime"
+
+  export PYTHONPATH="$PROOF_ROOT"
+
+  export INSTALLED_SCHEMA_PROBE_LOG="$PWD/runpod-evidence/installed-schema-probes.jsonl"
+
+  test "$(git rev-parse HEAD)" = 4f3af3646c38a429a85cc42c22fa4bff1eff1441
 
   test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 3b12fface79a3be029f3b6623765a7f3e1e5e24f
 
   git rev-parse HEAD > runpod-evidence/head.txt
 
-  "$PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT" 2>&1 | tee runpod-evidence/vendor-check.txt
+  git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
 
-  sha256sum runtime.lock.json astrid/core/timeline/schema/timeline-config.schema.json astrid_runtime_client/*.py artifacts.json
-  > runpod-evidence/pinned-SHA256SUMS
+  "$TASK_PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT" 2>&1 | tee runpod-evidence/vendor-check.txt
 
-  "$PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/installer.xml tests/test_installer_schema.py tests/test_installer_bootstrap_schema.py
-  tests/test_installer_installed_schema.py tests/test_installer_candidate_validation.py tests/test_installer_backup.py tests/test_installer_current.py
-  tests/test_installer_service_env.py tests/test_services.py tests/test_installer_lifecycle.py tests/test_installer_startup_stop.py
-  tests/test_installer_platforms.py tests/test_installer_pinokio_locking.py tests/test_installer_transaction_authority.py
-  tests/test_installer_pre_stop_recovery.py tests/test_vendor_lock.py tests/core/rendering/test_local_schema.py tests/core/timeline/test_source_role_tracks.py
-  tests/timeline/test_meta_validator.py tests/test_schema_contract.py tests/test_installer_update_recovery.py::test_candidate_validation_failure_keeps_owner_pointer_and_workspace
-  2>&1 | tee runpod-evidence/installer.log
+  sha256sum runtime.lock.json astrid/core/timeline/schema/timeline-config.schema.json astrid_runtime_client/*.py artifacts.json > runpod-evidence/pinned-SHA256SUMS
 
-  sha256sum runpod-evidence/*.txt runpod-evidence/*.log runpod-evidence/*.xml > runpod-evidence/SHA256SUMS
+  "$TASK_PYTHON" -m pytest -p capture_schema -o addopts= -q --junitxml=runpod-evidence/installer.xml tests/test_installer_schema.py tests/test_installer_bootstrap_schema.py tests/test_installer_installed_schema.py tests/test_installer_candidate_validation.py tests/test_installer_backup.py tests/test_installer_current.py tests/test_installer_service_env.py tests/test_services.py tests/test_installer_lifecycle.py tests/test_installer_startup_stop.py tests/test_installer_platforms.py tests/test_installer_pinokio_locking.py tests/test_installer_transaction_authority.py tests/test_installer_pre_stop_recovery.py tests/test_vendor_lock.py tests/core/rendering/test_local_schema.py tests/core/timeline/test_source_role_tracks.py tests/timeline/test_meta_validator.py tests/test_schema_contract.py tests/test_installer_update_recovery.py::test_candidate_validation_failure_keeps_owner_pointer_and_workspace 2>&1 | tee runpod-evidence/installer.log
+
+  "$TASK_PYTHON" - <<''VERIFY_PROOF''
+
+  import json, os
+
+  from pathlib import Path
+
+  records=[json.loads(line) for line in Path(os.environ[''INSTALLED_SCHEMA_PROBE_LOG'']).read_text().splitlines()]
+
+  assert sum(r[''kind'']==''wheel-install'' and r[''returncode'']==0 for r in records)==7
+
+  probes=[json.loads(r[''stdout'']) for r in records if r[''kind'']==''installed-schema'' and r[''returncode'']==0]
+
+  assert len(probes)==1
+
+  assert probes[0][''producer'']==''3b12fface79a3be029f3b6623765a7f3e1e5e24f''
+
+  assert probes[0][''sha256'']==''f52b82024ecd44a5e6c9c68d5cb326d50d70efe9aaad6f8ac6352ea1c87b97b1''
+
+  print(''Installed reader/validator proof and 7 wheel installs recorded'')
+
+  VERIFY_PROOF
+
+  sha256sum runpod-evidence/*.txt runpod-evidence/*.log runpod-evidence/*.xml runpod-evidence/*.jsonl > runpod-evidence/SHA256SUMS
 
   '
 artifacts:
