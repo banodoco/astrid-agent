@@ -471,10 +471,12 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
                 first_action, expected_os=contract["os"], mode=contract["mode"])
             errors.extend(f"{job_id}: {error}" for error in action_errors)
             ordered = (action or {}).get("ordered_steps") or []
-            shape = [(step.get("kind"), step.get("bootstrap_action"))
-                     for step in ordered if isinstance(step, dict)]
+            shape = ([(step.get("kind"), step.get("bootstrap_action"))
+                      for step in ordered if isinstance(step, dict)]
+                     if isinstance(ordered, list) else [])
             if ((action or {}).get("built_before_ref_advance") is not True
                     or ((action or {}).get("launcher") or {}).get("ref") != M4_4A_OLD_LAUNCHER_REF
+                    or not isinstance(ordered, list) or len(shape) != len(ordered)
                     or shape != [("git-shell", None), ("shell", "update-app")]):
                 errors.append(f"{job_id}: first action is not the approved pre-self-pull H1 array")
         retry_action = sidecar_paths.get("action-array-retry.json")
@@ -484,6 +486,11 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
             errors.extend(f"{job_id}: {error}" for error in action_errors)
             if ((action or {}).get("launcher") or {}).get("sha") != candidate.get("pinokio"):
                 errors.append(f"{job_id}: retry action was not built from the frozen Pinokio candidate")
+            ordered = (action or {}).get("ordered_steps")
+            if (not isinstance(ordered, list) or not all(isinstance(step, dict) for step in ordered)
+                    or [(step.get("kind"), step.get("bootstrap_action")) for step in ordered] != [
+                        ("custom", "preflightStop"), ("git-shell", None), ("shell", "install")]):
+                errors.append(f"{job_id}: retry action is not the candidate backend action array")
         first = backend.get("first_click") or {}
         if first.get("outcome") not in {"refused", "succeeded"}:
             errors.append(f"{job_id}: first click has no contract-defined outcome")

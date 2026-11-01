@@ -60,7 +60,10 @@ def _hosted_receipts(tmp_path, *, first_click="refused"):
         }
         retry = {
             "schema_version": 1, "os": contract["os"], "mode": contract["mode"],
-            "launcher": {"sha": candidate["pinokio"]}, "ordered_steps": [],
+            "launcher": {"sha": candidate["pinokio"]}, "ordered_steps": [
+                {"kind": "custom", "bootstrap_action": "preflightStop"},
+                {"kind": "git-shell"}, {"kind": "shell", "bootstrap_action": "install"},
+            ],
         }
         sidecars["action-array-first.json"] = _write_sidecar(
             receipt_dir, "action-array-first.json", first)
@@ -216,7 +219,8 @@ def test_backend_source_plan_uses_schema_compatible_sidecar_refs(tmp_path, monke
     actions = iter((
         {"run": [{"kind": "git-shell", "bootstrap_action": None},
                  {"kind": "shell", "bootstrap_action": "update-app"}]},
-        {"run": [{"kind": "custom", "name": "preflightStop"}]},
+        {"run": [{"kind": "custom", "bootstrap_action": "preflightStop"},
+                 {"kind": "git-shell"}, {"kind": "shell", "bootstrap_action": "install"}]},
     ))
     monkeypatch.setattr(ci_journey, "build_pinokio_action", lambda *_args, **_kwargs: next(actions))
     receipt = ci_journey.prepare_pinokio_backend(args, tmp_path / "evidence")
@@ -256,6 +260,31 @@ def test_action_builder_uses_windows_powershell_51_route(tmp_path, monkeypatch):
 def test_m4_4a_aggregate_accepts_each_complete_contract_branch(tmp_path, first_click):
     candidate = _hosted_receipts(tmp_path, first_click=first_click)
     assert not check_journey_evidence.evaluate_m4_4a_backend_matrix(candidate, tmp_path)
+
+
+@pytest.mark.parametrize("steps", [
+    [{"kind": "custom", "name": "preflightStop"}, {"kind": "git-shell"},
+     {"kind": "shell", "bootstrap_action": "install"}],
+    [{"kind": "custom", "bootstrap_action": "unexpected"}, {"kind": "git-shell"},
+     {"kind": "shell", "bootstrap_action": "install"}],
+    [{"kind": "custom", "bootstrap_action": "preflightStop"},
+     {"kind": "shell", "bootstrap_action": "install"}, {"kind": "git-shell"}],
+    [{"kind": "custom", "bootstrap_action": "preflightStop"}, None,
+     {"kind": "git-shell"}, {"kind": "shell", "bootstrap_action": "install"}],
+])
+def test_m4_4a_aggregate_rejects_invalid_retry_action(tmp_path, steps):
+    candidate = _hosted_receipts(tmp_path)
+    receipt_dir = tmp_path / "pinokio-backend-linux"
+    receipt_path = receipt_dir / "journey-result.json"
+    row = json.loads(receipt_path.read_text(encoding="utf-8"))
+    sidecar_path = receipt_dir / "pinokio-backend" / "action-array-retry.json"
+    action = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    action["ordered_steps"] = steps
+    row["pinokio_backend"]["sidecars"]["action-array-retry.json"] = _write_sidecar(
+        receipt_dir, "action-array-retry.json", action)
+    receipt_path.write_text(json.dumps(row), encoding="utf-8")
+    assert any("retry action is not the candidate backend action array" in error
+               for error in check_journey_evidence.evaluate_m4_4a_backend_matrix(candidate, tmp_path))
 
 
 def test_m4_4a_aggregate_rejects_missing_skipped_and_incomplete_receipts(tmp_path):

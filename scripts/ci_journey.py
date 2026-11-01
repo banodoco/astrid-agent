@@ -122,7 +122,7 @@ const injectedRequire = (name) => name === './lib' ? app : require(name);
 vm.runInNewContext(sourceText, { module, exports: module.exports, require: injectedRequire }, { filename: source });
 Promise.resolve(module.exports({}, {})).then((action) => {
   const normalize = (value) => {
-    if (typeof value === 'function') return { kind: 'custom', name: value.name || 'anonymous' };
+    if (typeof value === 'function') return { kind: 'custom', bootstrap_action: value.name || null };
     if (Array.isArray(value)) return value.map(normalize);
     if (!value || typeof value !== 'object') return value;
     if (value.method === 'shell.run') {
@@ -131,7 +131,7 @@ Promise.resolve(module.exports({}, {})).then((action) => {
       return { kind: params.env?.ASTRID_PINOKIO_ENVIRONMENT === '1' ? 'git-shell' : 'shell',
         message, bootstrap_action: value.__bootstrap_action || null };
     }
-    if (typeof value.method === 'function') return { kind: 'custom', name: value.method.name || 'anonymous' };
+    if (typeof value.method === 'function') return { kind: 'custom', bootstrap_action: value.method.name || null };
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalize(item)]));
   };
   process.stdout.write(JSON.stringify({ run: normalize(action.run || []), on: normalize(action.on || null) }));
@@ -193,6 +193,13 @@ def build_pinokio_action(pinokio: Path, source_ref: str, *, mode: str = "backend
     if not isinstance(value, dict) or not isinstance(value.get("run"), list):
         raise RuntimeError("Pinokio action did not return a run array")
     return value
+
+
+def _validate_pinokio_retry_steps(steps: object) -> None:
+    if (not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps)
+            or [(step.get("kind"), step.get("bootstrap_action")) for step in steps] != [
+                ("custom", "preflightStop"), ("git-shell", None), ("shell", "install")]):
+        raise ValueError("candidate retry is not the expected Pinokio backend action array")
 
 
 def _write_sidecar(path: Path, value: object, *, receipt_root: Path) -> dict:
@@ -262,7 +269,7 @@ def prepare_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
         first_steps = first["run"]
         shape = [(step.get("kind"), step.get("bootstrap_action"))
                  for step in first_steps if isinstance(step, dict)]
-        if shape != [("git-shell", None), ("shell", "update-app")]:
+        if len(shape) != len(first_steps) or shape != [("git-shell", None), ("shell", "update-app")]:
             raise ValueError("approved old-launcher action is not the H1 backend update array")
         first_record = {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
                         "built_before_ref_advance": True, "launcher": provenance,
@@ -273,6 +280,7 @@ def prepare_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
                                        details={"launcher_ref": git_source(pinokio)["sha"]})
         retry_ref = git_source(pinokio)["sha"]
         retry = build_pinokio_action(pinokio, retry_ref, app_directory=pinokio)
+        _validate_pinokio_retry_steps(retry["run"])
         retry_record = {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
                         "launcher": git_source(pinokio), "ordered_steps": retry["run"]}
         retry_sidecar = _write_sidecar(
@@ -359,6 +367,7 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
     candidate_pinokio_ref = actual["pinokio"]["sha"]
     retry_steps = build_pinokio_action(args.pinokio_checkout, candidate_pinokio_ref,
                                        app_directory=args.pinokio_checkout)["run"]
+    _validate_pinokio_retry_steps(retry_steps)
     actions = config.get("actions") or {}
     if (not isinstance(actions.get("first"), dict)
             or actions["first"].get("steps") != first_steps

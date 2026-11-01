@@ -3,12 +3,57 @@
 import argparse
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import ci_journey as journey
+
+
+def test_pinokio_custom_step_serialization_uses_bootstrap_action(tmp_path):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required to build Pinokio actions")
+    pinokio = tmp_path / "pinokio"
+    pinokio.mkdir()
+    (pinokio / "lib.js").write_text(
+        "exports.createApp = () => ({bootstrapScript: () => '', shellStep: () => ({})});\n")
+    (pinokio / "update.js").write_text(
+        "async function preflightStop() {}\n"
+        "module.exports = async () => ({run: [preflightStop, {method: preflightStop}, "
+        "{method: (0, function() {})}]});\n")
+    result = subprocess.run(
+        [node, "-e", journey._PINOKIO_ACTION_SCRIPT, str(tmp_path), str(tmp_path), "backend"],
+        check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout)["run"] == [
+        {"kind": "custom", "bootstrap_action": "preflightStop"},
+        {"kind": "custom", "bootstrap_action": "preflightStop"},
+        {"kind": "custom", "bootstrap_action": None},
+    ]
+
+
+@pytest.mark.parametrize("steps", [
+    [{"kind": "custom", "name": "preflightStop"}, {"kind": "git-shell"},
+     {"kind": "shell", "bootstrap_action": "install"}],
+    [{"kind": "custom", "bootstrap_action": "unexpected"}, {"kind": "git-shell"},
+     {"kind": "shell", "bootstrap_action": "install"}],
+    [{"kind": "custom", "bootstrap_action": "preflightStop"},
+     {"kind": "shell", "bootstrap_action": "install"}, {"kind": "git-shell"}],
+    [{"kind": "custom", "bootstrap_action": "preflightStop"}, None,
+     {"kind": "git-shell"}, {"kind": "shell", "bootstrap_action": "install"}],
+])
+def test_pinokio_retry_step_validation_rejects_invalid_action_or_order(steps):
+    with pytest.raises(ValueError, match="candidate retry"):
+        journey._validate_pinokio_retry_steps(steps)
+
+
+def test_pinokio_retry_step_validation_accepts_pinned_schema():
+    journey._validate_pinokio_retry_steps([
+        {"kind": "custom", "bootstrap_action": "preflightStop"}, {"kind": "git-shell"},
+        {"kind": "shell", "bootstrap_action": "install"}])
 
 
 def app_checkout(tmp_path):
