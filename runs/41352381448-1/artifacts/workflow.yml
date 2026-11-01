@@ -1,0 +1,379 @@
+name: Venue C-07 installed wheel
+
+on:
+  push:
+    branches:
+      - venue/M-AG2-I-AG-10-R2-R1-HOSTED-1
+
+permissions:
+  contents: write
+
+concurrency:
+  group: venue-c07-installed-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installed-wheel:
+    name: C-07 installed wheel selector
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ASTRID_CI_JOB: lanes-installed
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
+      ASTRID_HOST_EXECUTION_PROFILE: installed
+      ASTRID_REMOTION_PROJECT_DIR: ${{ github.workspace }}/product/remotion
+    steps:
+      - name: Check out workflow and inputs
+        uses: actions/checkout@v4
+
+      - name: Validate requested tuple and command
+        id: inputs
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("inputs.json").read_text())
+          expected_command = '"$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py'
+          for key in ("agent_ref", "runtime_ref", "app_ref", "pinokio_ref"):
+              value = data.get(key)
+              if not isinstance(value, str) or not value or "\n" in value or "\r" in value:
+                  raise SystemExit(f"invalid {key}")
+          if data["agent_ref"] != "930311a46a211d5fe04e5105384f0933ffb63549":
+              raise SystemExit("Agent ref does not match the requested immutable product commit")
+          if data.get("command") != expected_command:
+              raise SystemExit("installed command differs from the requested selector")
+          if data.get("slot") != "1" or not data.get("artifact_paths"):
+              raise SystemExit("invalid venue artifact contract")
+          print(f"agent_ref={data['agent_ref']}")
+          print(f"runtime_ref={data['runtime_ref']}")
+          PY
+
+      - name: Check out exact Agent product source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.inputs.outputs.agent_ref }}
+          path: product
+
+      - name: Verify Runtime ref against the product lock
+        id: runtime-lock
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          requested = json.loads(Path("inputs.json").read_text())["runtime_ref"]
+          locked = json.loads(Path("product/runtime.lock.json").read_text())["source_commit"]
+          if requested != locked:
+              raise SystemExit(f"Runtime input {requested} does not match product lock {locked}")
+          print(f"commit={locked}")
+          PY
+
+      - name: Check out locked Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.runtime-lock.outputs.commit }}
+          path: astrid-runtime
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js from product .node-version
+        id: node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: product/.node-version
+
+      - name: Run bounded installed-wheel check
+        id: proof
+        shell: bash
+        env:
+          INPUT_AGENT_REF: ${{ steps.inputs.outputs.agent_ref }}
+          INPUT_RUNTIME_REF: ${{ steps.runtime-lock.outputs.commit }}
+        run: |
+          set -uo pipefail
+          RUN_DIR="$GITHUB_WORKSPACE/venue-c07-output/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          export RUN_DIR
+          mkdir -p "$RUN_DIR/artifacts" "$RUN_DIR/logs"
+          printf '%s\n' '"$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py' > "$RUN_DIR/command.txt"
+          : > "$RUN_DIR/logs/command.log"
+          : > "$RUN_DIR/inner-exits.txt"
+          overall=0
+          run_stage() {
+            name="$1"
+            shift
+            set +e
+            "$@" 2>&1 | tee -a "$RUN_DIR/logs/command.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            printf '%s=%s\n' "$name" "$rc" | tee -a "$RUN_DIR/inner-exits.txt"
+            if [ "$rc" -ne 0 ] && [ "$overall" -eq 0 ]; then overall="$rc"; fi
+            return 0
+          }
+          if [ "$overall" -eq 0 ]; then
+            set +e
+            python3 - <<'PY' 2>&1 | tee -a "$RUN_DIR/logs/command.log"
+          import hashlib, json, os
+          from pathlib import Path
+
+          root = Path("product")
+          artifact = root / "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz"
+          package_path = root / "remotion/package.json"
+          lock_path = root / "remotion/package-lock.json"
+          runtime_lock_path = root / "runtime.lock.json"
+          package = json.loads(package_path.read_text())
+          lock = json.loads(lock_path.read_text())
+          runtime_lock = json.loads(runtime_lock_path.read_text())
+          expected_sri = "sha512-BYZ/Zq5C00/ZDCunhPcBoS2l3LhdEIWlCsu/8ZWM3P0Mp46otQKVGeHrrwFjpc12KwDiQYD6OgTLKylsJAlGBA=="
+          dep = package.get("dependencies", {}).get("@banodoco/timeline-composition")
+          entry = lock.get("packages", {}).get("node_modules/@banodoco/timeline-composition", {})
+          digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+          assert digest == "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f", digest
+          assert dep == "file:artifacts/banodoco-timeline-composition-0.0.17.tgz", dep
+          assert entry.get("version") == "0.0.17", entry
+          assert entry.get("resolved") == dep, entry
+          assert entry.get("integrity") == expected_sri, entry
+          assert runtime_lock.get("source_commit") == os.environ["INPUT_RUNTIME_REF"], runtime_lock.get("source_commit")
+          identities = {
+              "composition_name": "@banodoco/timeline-composition",
+              "composition_version": entry["version"],
+              "composition_resolved": entry["resolved"],
+              "composition_integrity": entry["integrity"],
+              "composition_artifact_sha256": digest,
+              "package_json_sha256": hashlib.sha256(package_path.read_bytes()).hexdigest(),
+              "package_lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+              "artifacts_json_sha256": hashlib.sha256((root / "artifacts.json").read_bytes()).hexdigest(),
+              "runtime_lock_sha256": hashlib.sha256(runtime_lock_path.read_bytes()).hexdigest(),
+              "runtime_source_commit": runtime_lock["source_commit"],
+          }
+          (Path(os.environ["RUN_DIR"]) / "composition-identities.json").write_text(json.dumps(identities, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(identities, sort_keys=True))
+          PY
+            rc=${PIPESTATUS[0]}
+            set -e
+            printf 'composition_identity=%s\n' "$rc" | tee -a "$RUN_DIR/inner-exits.txt"
+            if [ "$rc" -ne 0 ] && [ "$overall" -eq 0 ]; then overall="$rc"; fi
+          else printf 'composition_identity=skipped\n' >> "$RUN_DIR/inner-exits.txt"; fi
+          run_stage apt_install bash -c 'sudo apt-get update && sudo apt-get install -y ffmpeg'
+          if [ "$overall" -eq 0 ]; then
+            run_stage build_wheel bash -c 'set -e; cd product; python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock; python -m build --wheel --no-isolation --outdir dist; count=$(find dist -maxdepth 1 -type f -name "*.whl" | wc -l); test "$count" -eq 1; wheel=$(find dist -maxdepth 1 -type f -name "*.whl"); sha256sum "$wheel" > "$RUN_DIR/wheel.sha256"'
+          else printf 'build_wheel=skipped\n' >> "$RUN_DIR/inner-exits.txt"; fi
+          if [ "$overall" -eq 0 ]; then
+            run_stage install_noneditable bash -c 'set -e; cd product; python -m venv "$RUNNER_TEMP/installed-venv"; wheel=$(find dist -maxdepth 1 -type f -name "*.whl"); "$RUNNER_TEMP/installed-venv/bin/python" -m pip install "${wheel}[dev]"; "$RUNNER_TEMP/installed-venv/bin/python" -m pip install --no-deps ./../astrid-runtime ./../astrid-runtime/packages/python'
+          else printf 'install_noneditable=skipped\n' >> "$RUN_DIR/inner-exits.txt"; fi
+          if [ "$overall" -eq 0 ]; then
+            run_stage npm_ci bash -c 'cd product && npm ci --prefix remotion'
+          else printf 'npm_ci=skipped\n' >> "$RUN_DIR/inner-exits.txt"; fi
+          if [ "$overall" -eq 0 ]; then
+            run_stage registry_generate bash -c '
+              set -e
+              package="$ASTRID_REMOTION_PROJECT_DIR/node_modules/@banodoco/timeline-composition"
+              test -d "$package"
+              if [ -e "$package/typescript/src" ] || [ -L "$package/typescript/src" ]; then
+                echo "Unexpected installed Composition source tree: $package/typescript/src" >&2
+                exit 1
+              fi
+              "$RUNNER_TEMP/installed-venv/bin/python" -I - <<PY
+          import os
+          from pathlib import Path
+          from astrid.packs.rendering.rendering.renderers.remotion import run
+
+          run._regenerate_element_registries(Path(os.environ["ASTRID_REMOTION_PROJECT_DIR"]), None)
+          PY
+            '
+            run_stage registry_verify bash -c '
+              set -uo pipefail
+              registry_dir="$ASTRID_REMOTION_PROJECT_DIR/src"
+              ls -la "$registry_dir" | tee "$RUN_DIR/artifacts/registry-listing.txt"
+              rc=${PIPESTATUS[0]}
+              : > "$RUN_DIR/artifacts/registry.sha256"
+              for name in effects.generated.ts animations.generated.ts transitions.generated.ts; do
+                if [ -s "$registry_dir/$name" ] && [ -f "$registry_dir/$name" ]; then
+                  sha256sum "$registry_dir/$name" | tee -a "$RUN_DIR/artifacts/registry.sha256"
+                  hash_rc=${PIPESTATUS[0]}
+                  if [ "$hash_rc" -ne 0 ]; then rc="$hash_rc"; fi
+                else
+                  printf "Missing or empty registry output: %s\n" "$registry_dir/$name" >&2
+                  rc=1
+                fi
+              done
+              package="$ASTRID_REMOTION_PROJECT_DIR/node_modules/@banodoco/timeline-composition"
+              if [ -e "$package/typescript/src" ] || [ -L "$package/typescript/src" ]; then
+                printf "Unexpected installed Composition source tree: %s\n" "$package/typescript/src" >&2
+                rc=1
+              else
+                printf "Installed Composition source tree absent: %s\n" "$package/typescript/src"
+              fi
+              state="$ASTRID_REMOTION_PROJECT_DIR/.astrid-registry-state.json"
+              if [ -s "$state" ] && [ -f "$state" ]; then
+                sha256sum "$state" | tee "$RUN_DIR/artifacts/registry-state.sha256"
+                hash_rc=${PIPESTATUS[0]}
+                if [ "$hash_rc" -ne 0 ]; then rc="$hash_rc"; fi
+              else
+                printf "Missing or empty registry state: %s\n" "$state" >&2
+                rc=1
+              fi
+              exit "$rc"
+            '
+          else
+            printf 'registry_generate=skipped\nregistry_verify=skipped\n' >> "$RUN_DIR/inner-exits.txt"
+          fi
+          if [ "$overall" -eq 0 ]; then
+            set +e
+            cd product
+            PYTEST_ADDOPTS="--junitxml=$RUN_DIR/selector.junit.xml" "$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py 2>&1 | tee -a "$RUN_DIR/logs/command.log"
+            test_rc=${PIPESTATUS[0]}
+            set -e
+            printf 'pytest_selector=%s\n' "$test_rc" | tee -a "$RUN_DIR/inner-exits.txt"
+            if [ "$test_rc" -ne 0 ] && [ "$overall" -eq 0 ]; then overall="$test_rc"; fi
+          else printf 'pytest_selector=skipped\n' >> "$RUN_DIR/inner-exits.txt"; fi
+          printf '%s\n' "$overall" > "$RUN_DIR/overall-exit.txt"
+          printf '%s\n' "${test_rc:-not-run}" > "$RUN_DIR/pytest-exit.txt"
+          cd "$GITHUB_WORKSPACE"
+          {
+            printf 'Agent requested/effective: %s / %s\n' "$INPUT_AGENT_REF" "$(git -C product rev-parse HEAD 2>/dev/null || printf unavailable)"
+            printf 'Runtime requested/effective: %s / %s\n' "$INPUT_RUNTIME_REF" "$(git -C astrid-runtime rev-parse HEAD 2>/dev/null || printf unavailable)"
+            printf 'Agent runtime.lock.json SHA-256: '; sha256sum product/runtime.lock.json | awk '{print $1}'
+            printf 'Composition artifact SHA-256: '; sha256sum product/remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz | awk '{print $1}'
+            printf 'Composition package.json SHA-256: '; sha256sum product/remotion/package.json | awk '{print $1}'
+            printf 'Composition package-lock.json SHA-256: '; sha256sum product/remotion/package-lock.json | awk '{print $1}'
+            printf 'Composition artifacts.json SHA-256: '; sha256sum product/artifacts.json | awk '{print $1}'
+            printf 'Node version: '; node --version
+            printf 'npm version: '; npm --version
+            printf 'Python version: '; python --version
+          } > "$RUN_DIR/effective-identities.txt" 2>&1
+          cp "$RUN_DIR/inner-exits.txt" "$RUN_DIR/artifacts/inner-exits.txt"
+          cp "$RUN_DIR/logs/command.log" "$RUN_DIR/artifacts/command.log"
+          cp "$RUN_DIR/selector.junit.xml" "$RUN_DIR/artifacts/selector.junit.xml" 2>/dev/null || true
+          cp "$RUN_DIR/effective-identities.txt" "$RUN_DIR/artifacts/effective-identities.txt"
+          cp "$RUN_DIR/composition-identities.json" "$RUN_DIR/artifacts/composition-identities.json" 2>/dev/null || true
+          cp "$RUN_DIR/wheel.sha256" "$RUN_DIR/artifacts/wheel.sha256" 2>/dev/null || true
+          cp "$RUN_DIR/pytest-exit.txt" "$RUN_DIR/artifacts/pytest-exit.txt"
+          cp "$RUN_DIR/overall-exit.txt" "$RUN_DIR/artifacts/overall-exit.txt"
+          echo "proof_exit=$overall" >> "$GITHUB_OUTPUT"
+
+      - name: Publish canonical checksummed result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_AGENT_REF: ${{ steps.inputs.outputs.agent_ref }}
+          INPUT_RUNTIME_REF: ${{ steps.runtime-lock.outputs.commit }}
+          PYTHON_OUTCOME: ${{ steps.python.outcome }}
+          NODE_OUTCOME: ${{ steps.node.outcome }}
+          PROOF_OUTCOME: ${{ steps.proof.outcome }}
+        run: |
+          set -euo pipefail
+          RUN_DIR="$GITHUB_WORKSPACE/venue-c07-output/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$RUN_DIR/artifacts" "$RUN_DIR/logs"
+          cp inputs.json "$RUN_DIR/requested-inputs.json"
+          cp "$GITHUB_WORKSPACE/product/runtime.lock.json" "$RUN_DIR/runtime.lock.json" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/product/remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz" "$RUN_DIR/artifacts/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/product/remotion/package.json" "$RUN_DIR/artifacts/remotion-package.json" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/product/remotion/package-lock.json" "$RUN_DIR/artifacts/remotion-package-lock.json" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/product/artifacts.json" "$RUN_DIR/artifacts/agent-artifacts.json" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/.github/workflows/venue-c07-installed.yml" "$RUN_DIR/artifacts/workflow.yml" 2>/dev/null || true
+          python3 - "$RUN_DIR" <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+
+          run_dir = Path(sys.argv[1])
+          def git_sha(path):
+              try:
+                  return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+              except Exception:
+                  return None
+          try:
+              requested = json.loads((run_dir / "requested-inputs.json").read_text())
+          except Exception:
+              requested = {}
+          workflow_sha = git_sha(Path(os.environ["GITHUB_WORKSPACE"]))
+          product_sha = git_sha(Path(os.environ["GITHUB_WORKSPACE"]) / "product")
+          runtime_sha = git_sha(Path(os.environ["GITHUB_WORKSPACE"]) / "astrid-runtime")
+          workflow_file = Path(os.environ["GITHUB_WORKSPACE"]) / ".github/workflows/venue-c07-installed.yml"
+          try:
+              workflow_file_sha = subprocess.check_output(["sha256sum", str(workflow_file)], text=True).split()[0]
+          except Exception:
+              workflow_file_sha = None
+          inner = (run_dir / "inner-exits.txt").read_text().splitlines() if (run_dir / "inner-exits.txt").exists() else []
+          try:
+              overall = int((run_dir / "overall-exit.txt").read_text().strip())
+          except Exception:
+              overall = None
+          try:
+              pytest_exit = (run_dir / "pytest-exit.txt").read_text().strip()
+          except Exception:
+              pytest_exit = "not-run"
+          tuple_data = {
+              "requested": requested,
+              "effective": {
+                  "agent": product_sha,
+                  "runtime": runtime_sha,
+                  "app": "not checked out; not required by installed-wheel job",
+                  "pinokio": "not checked out; not required by installed-wheel job",
+              },
+          }
+          (run_dir / "tuple.json").write_text(json.dumps(tuple_data, indent=2, sort_keys=True) + "\n")
+          (run_dir / "workflow-identity.json").write_text(json.dumps({
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "workflow_name": "Venue C-07 installed wheel",
+              "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF"),
+              "workflow_sha": workflow_sha,
+              "workflow_file_sha256": workflow_file_sha,
+              "source_event": os.environ.get("GITHUB_EVENT_NAME"),
+              "source_ref": os.environ.get("GITHUB_REF"),
+              "source_head_sha": os.environ.get("GITHUB_SHA"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "job": "C-07 installed wheel selector",
+              "python_setup_outcome": os.environ.get("PYTHON_OUTCOME"),
+              "node_setup_outcome": os.environ.get("NODE_OUTCOME"),
+              "proof_step_outcome": os.environ.get("PROOF_OUTCOME"),
+              "overall_inner_exit": overall,
+              "pytest_inner_exit": pytest_exit,
+              "stage_inner_exits": inner,
+          }, indent=2, sort_keys=True) + "\n")
+          receipt = {
+              "schema": "venue-c07-installed/v1",
+              "repository": os.environ.get("GITHUB_REPOSITORY"),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "workflow_sha": workflow_sha,
+              "workflow_file_sha256": workflow_file_sha,
+              "product_sha": product_sha,
+              "runtime_sha": runtime_sha,
+              "selector": requested.get("command"),
+              "pytest_inner_exit": pytest_exit,
+              "overall_inner_exit": overall,
+              "setup_outcomes": {"python": os.environ.get("PYTHON_OUTCOME"), "node": os.environ.get("NODE_OUTCOME")},
+              "stage_inner_exits": inner,
+          }
+          (run_dir / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+          PY
+          (cd "$RUN_DIR" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > "$RUN_DIR/SHA256SUMS"
+          (cd "$RUN_DIR" && sha256sum -c SHA256SUMS)
+          RESULTS_REPO="$RUNNER_TEMP/venue-c07-results-repo"
+          rm -rf "$RESULTS_REPO"
+          git init -q -b results "$RESULTS_REPO"
+          cd "$RESULTS_REPO"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://github.com/banodoco/astrid-agent.git"
+          if git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" ls-remote --heads origin refs/heads/venue-results/M-AG2-I-AG-10-R2-HOSTED-1 | grep -q 'refs/heads/venue-results/M-AG2-I-AG-10-R2-HOSTED-1$'; then
+            git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags origin refs/heads/venue-results/M-AG2-I-AG-10-R2-HOSTED-1:refs/remotes/origin/results
+            git reset --hard -q refs/remotes/origin/results
+          fi
+          mkdir -p "runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cp -a "$RUN_DIR/". "runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/"
+          git add "runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git commit -m "Add C-07 installed run $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin HEAD:refs/heads/venue-results/M-AG2-I-AG-10-R2-HOSTED-1
+          rc=0
+          if [ -f "$RUN_DIR/overall-exit.txt" ]; then rc=$(cat "$RUN_DIR/overall-exit.txt"); fi
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
