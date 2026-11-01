@@ -80,9 +80,8 @@ describe('ASTRID_ACP_CONTEXT_SYSTEM_PROMPT runtime commands', () => {
     expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).not.toContain('retime-clip');
   });
 
-  it('routes timeline editing through the rendering skill and omits the retired publish command', () => {
-    expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).toContain('rendering skill');
-    expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).toContain('Timeline editing');
+  it('loads the timeline skill for timeline editing and omits the retired publish command', () => {
+    expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).toContain('load the `timeline` skill');
     expect(ASTRID_ACP_CONTEXT_SYSTEM_PROMPT).not.toContain('astrid-tools timelines publish');
   });
 
