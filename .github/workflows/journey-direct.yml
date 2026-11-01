@@ -6,6 +6,7 @@ name: Release-1 direct lifecycle receipts
   push:
     branches:
     - lane/M-QUAL/direct-journey
+    - 'venue/**'
     paths:
     - .github/workflows/journey-direct.yml
     - scripts/journey_version_jumps.py
