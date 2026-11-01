@@ -13265,7 +13265,13 @@ class GenericPackHost:
                         slot.runtime_state = dict(self.runtime_state)
                         with self._handoff_condition:
                             slot._remotion_full_preflight = copy.deepcopy(self._remotion_full_preflight)
-                        slot.client.refresh_local_connection()
+                        try:
+                            slot.client.refresh_local_connection()
+                        except Exception as exc:
+                            failures[index] = failures.get(index, 0) + 1
+                            report_failure(exc, failures[index])
+                            retry_at[index] = now + backoff(failures[index])
+                            continue
                         slot._runtime_registration_fence = self._runtime_registration_fence
                         slot._registration_refresh_blocked = self._registration_refresh_blocked
                         worker = threading.Thread(target=serve, args=(index,),
