@@ -314,13 +314,13 @@ jobs:
           else:
               m4_6_candidate = {}
           matrix = [
-              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"direct-windows", "mode":"direct", "leg":"release0-to-release1", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"pinokio-backend-linux", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-backend-windows", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
