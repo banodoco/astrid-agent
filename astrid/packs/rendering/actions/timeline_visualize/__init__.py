@@ -5,6 +5,6 @@ collect duplicate-ID, dangling-track, and compositor timing errors. The former
 structural diagram is no longer a public visualization route.
 """
 
-from .validate import validate_structural
+from astrid.core.timeline.validate import validate_structural
 
 __all__ = ["validate_structural"]

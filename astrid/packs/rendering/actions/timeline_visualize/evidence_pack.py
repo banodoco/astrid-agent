@@ -52,7 +52,7 @@ from astrid.packs.rendering.actions.timeline_visualize.layout import (
     LayoutPage,
     serialize_view_map,
 )
-from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
+from astrid.core.timeline.snapshot_digest import (
     canonical_json_bytes,
 )
 

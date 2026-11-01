@@ -685,8 +685,6 @@ actions:
     - kind: implementation
       path: actions/timeline_visualize/shot_selector.py
     - kind: implementation
-      path: actions/timeline_visualize/snapshot_digest.py
-    - kind: implementation
       path: actions/timeline_visualize/speech_projection.py
     - kind: implementation
       path: actions/timeline_visualize/thumbnails.py
@@ -694,8 +692,6 @@ actions:
       path: actions/timeline_visualize/transcript_attach.py
     - kind: implementation
       path: actions/timeline_visualize/transcripts.py
-    - kind: implementation
-      path: actions/timeline_visualize/validate.py
   html_canvas_effect:
     name: HTML Canvas Effect
     version: '1.0'

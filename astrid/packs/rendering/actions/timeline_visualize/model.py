@@ -40,7 +40,7 @@ from astrid.core.timeline.duration import (
 )
 from astrid.core.timeline.resolution import AssetIntegrity, classify_registry
 from astrid.core.timeline.snapshot import TimelineSnapshot
-from astrid.packs.rendering.actions.timeline_visualize.validate import (
+from astrid.core.timeline.validate import (
     validate_structural,
 )
 
