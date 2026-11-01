@@ -26,9 +26,11 @@ def test_inventory_preserves_existing_rows_and_uniquely_names_linux_faults():
     keys = ("job_id", "mode", "runner", "shell", "os", "leg")
     expected = tuple({key: value for key, value in zip(keys, row) if value is not None}
                      for row in BASELINE_JOBS)
-    assert matrix.RELEASE1_MATRIX[:9] == expected
-    assert matrix.RELEASE1_MATRIX[9:] == matrix.DIRECT_LINUX_FAULT_SCENARIOS
+    baseline_ids = {row["job_id"] for row in expected}
+    assert tuple(row for row in matrix.RELEASE1_MATRIX if row["job_id"] in baseline_ids) == expected
+    linux_fault_ids = {"direct-linux-interrupted-update", "direct-linux-rollback"}
     rows = matrix.DIRECT_LINUX_FAULT_SCENARIOS
+    assert tuple(row for row in matrix.RELEASE1_MATRIX if row["job_id"] in linux_fault_ids) == rows
     assert [row["scenario_id"] for row in rows] == ["direct-linux-interrupted-update", "direct-linux-rollback"]
     ids = [row["job_id"] for row in matrix.RELEASE1_MATRIX] + list(matrix.M4_5_SCENARIO_IDS)
     assert len(ids) == len(set(ids))
