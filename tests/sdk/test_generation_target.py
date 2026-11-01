@@ -49,6 +49,189 @@ def attached_without_managed(monkeypatch):
     monkeypatch.setattr(preflight, "_comfyui_runtime_available", Mock(side_effect=AssertionError("managed installation probed")))
 
 
+@pytest.mark.parametrize('blocked_ids', [
+    ('qwen-image-2.1-turbo', 'last-blocked'), ('z-image', 'last-blocked'),
+])
+def test_auto_filters_before_probe_and_preparation_preserving_qualified_order(monkeypatch, blocked_ids):
+    import astrid.sdk.generation as generation
+    from astrid.core.generation import availability, entries
+    import astrid.sdk as sdk
+
+    order = ['qwen-image-2.1-turbo', 'z-image', 'qwen-image-2512', 'last-blocked']
+    entry = ModelRegistry.load_default().get('z-image')
+    registry = ModelRegistry([replace(entry, id=name, modes={'t2i': entry.modes['t2i']})
+                              for name in reversed(order)])
+    records = {name: {'available': name not in blocked_ids,
+        'error': {'code': 'generation_route_unqualified', 'message': f'{name} qualification missing'}}
+        for name in order}
+    monkeypatch.setattr(availability, 'availability_declaration', lambda: {'models': records})
+    checked = []
+    original = availability.model_availability
+    monkeypatch.setattr(availability, 'model_availability',
+                        lambda name, *args: checked.append(name) or original(name, *args))
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
+    monkeypatch.setattr(entries, 'user_entries', lambda: [])
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [])
+    events = []
+    def probe(*args, **kwargs):
+        assert checked == order  # Every declaration checked before the first target probe.
+        events.append('probe')
+        return None
+    monkeypatch.setattr(preflight, 'select_generation_target', probe)
+    def prepare(**kwargs):
+        assert checked == order
+        events.append(kwargs['candidate'].id)
+        raise ValueError('fake target missing candidate models')
+    monkeypatch.setattr(generation, '_prepare_catalog_target_workflow', prepare)
+    with pytest.raises(AstridError) as caught:
+        GenerationFacade().image(target='auto', prompt='boat', dry_run=True)
+    assert caught.value.code == 'missing_dependency'
+    assert caught.value.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_NO_MODEL'
+    assert events == ['probe', *[name for name in order if name not in blocked_ids]]
+
+
+def test_auto_all_unqualified_names_each_route_and_reason_without_probe(monkeypatch):
+    import astrid.sdk as sdk
+    from astrid.core.generation import availability, entries
+    entry = ModelRegistry.load_default().get('z-image')
+    registry = ModelRegistry([replace(entry, id=name) for name in ('blocked-a', 'blocked-b')])
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
+    monkeypatch.setattr(entries, 'user_entries', lambda: [])
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [{
+        'id': 'video/wan_fake', 'kind': 'image', 'modes': ['t2i']}])
+    monkeypatch.setattr(availability, 'availability_declaration', lambda: {
+        'models': {name: {'available': False, 'error': {'code': 'generation_route_unqualified',
+                   'message': reason}} for name, reason in [
+                       ('blocked-a', 'missing model qualification'), ('blocked-b', 'missing route evidence'),
+                       ('templates', 'missing template qualification')]},
+        'template_models': {'video/wan': 'templates'}})
+    probe = Mock(side_effect=AssertionError('unqualified candidates reached target probe'))
+    monkeypatch.setattr(preflight, 'select_generation_target', probe)
+    with pytest.raises(AstridError) as caught:
+        GenerationFacade().image(target='auto', prompt='boat', dry_run=True)
+    assert caught.value.code == 'generation_route_unqualified'
+    for text in ('blocked-a', 'blocked-b', 'video/wan_fake', 'missing model qualification',
+                 'missing route evidence', 'missing template qualification'):
+        assert text in str(caught.value)
+    assert 'qualified' in caught.value.fix
+    assert caught.value.to_envelope()['issues'][0]['details']['fix'] == caught.value.fix
+    probe.assert_not_called()
+
+
+def test_qualified_first_candidate_is_probed_and_prepared_first(network, monkeypatch):
+    import astrid.sdk as sdk
+    import astrid.sdk.generation as generation
+    from astrid.core.generation import availability, entries
+    client, requests = install_target(network, target_info())
+    attached_without_managed(monkeypatch)
+    entry = ModelRegistry.load_default().get('z-image')
+    registry = ModelRegistry([replace(entry, id='zz-blocked'), entry])
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
+    monkeypatch.setattr(entries, 'user_entries', lambda: [])
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [])
+    monkeypatch.setattr(availability, 'availability_declaration', lambda: {'models': {
+        'z-image': {'available': True}, 'zz-blocked': {'available': False, 'error': {
+            'code': 'generation_route_unqualified', 'message': 'missing qualification'}}}})
+    checked = []
+    decision = availability.model_availability
+    monkeypatch.setattr(availability, 'model_availability',
+        lambda name, *args: checked.append(name) or decision(name, *args))
+    request = ComfyTargetClient.request_json
+    def probe(self, *args, **kwargs):
+        assert checked[:2] == ['z-image', 'zz-blocked']
+        return request(self, *args, **kwargs)
+    monkeypatch.setattr(ComfyTargetClient, 'request_json', probe)
+    prepared = []
+    prepare = generation._prepare_catalog_target_workflow
+    def record_preparation(**kwargs):
+        prepared.append(kwargs['candidate'].id)
+        return prepare(**kwargs)
+    monkeypatch.setattr(generation, '_prepare_catalog_target_workflow', record_preparation)
+    plan = GenerationFacade().image(target=client.target.url, prompt='boat', dry_run=True)
+    assert plan['entry']['model'] == 'z-image'
+    assert prepared == ['z-image']
+    assert requests == [('GET', '/system_stats'), ('GET', '/object_info')]
+
+
+@pytest.mark.parametrize('target', ['auto', 'managed', 'http://127.0.0.1:8123'])
+def test_explicit_unqualified_catalog_is_refused_without_skipping_or_probe(monkeypatch, target):
+    probe = Mock(side_effect=AssertionError('explicit unqualified route probed'))
+    monkeypatch.setattr(preflight, 'select_generation_target', probe)
+    with pytest.raises(AstridError) as caught:
+        GenerationFacade().video(model='wan-2.2', mode='i2v', target=target,
+            prompt='boat', image_ref='start.png', dry_run=True)
+    assert caught.value.code == 'generation_route_unqualified'
+    assert 'wan-2.2' in str(caught.value) and 'not been qualified' in str(caught.value)
+    assert 'qualified' in caught.value.fix
+    probe.assert_not_called()
+
+
+def test_explicit_unqualified_entry_uses_coded_refusal(monkeypatch):
+    import astrid.sdk as sdk
+    from astrid.core.generation import availability, entries
+    entry = replace(ModelRegistry.load_default().get('z-image'), id='fake-unqualified')
+    registry = ModelRegistry([entry])
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: registry)
+    monkeypatch.setattr(entries, 'user_entries', lambda: [])
+    monkeypatch.setattr(entries, 'action_entries', lambda: [])
+    monkeypatch.setattr(availability, 'availability_declaration', lambda: {'models': {
+        entry.id: {'available': False, 'error': {'code': 'generation_route_unqualified',
+                   'message': 'synthetic entry qualification missing'}}}})
+    probe = Mock(side_effect=AssertionError('unqualified entry probed'))
+    monkeypatch.setattr(preflight, 'select_generation_target', probe)
+    with pytest.raises(AstridError) as caught:
+        GenerationFacade().image(entry=entry.id, target='auto', prompt='boat', dry_run=True)
+    assert caught.value.code == 'generation_route_unqualified'
+    assert entry.id in str(caught.value) and 'synthetic entry qualification missing' in str(caught.value)
+    assert caught.value.fix
+    probe.assert_not_called()
+
+
+@pytest.mark.parametrize('inputs,mode,match', [
+    ({'prompt': 'boat'}, 'i2v', 'image_ref'),
+    ({'prompt': 'boat', 'image_ref': 'start.png'}, 'flf', 'Available backends: cloud'),
+])
+def test_explicit_unqualified_keeps_input_validation_before_probe(monkeypatch, inputs, mode, match):
+    from astrid.sdk.exceptions import CapabilityValidationError, CapabilityMissingInputError
+    probe = Mock(side_effect=AssertionError('invalid request probed'))
+    monkeypatch.setattr(preflight, 'select_generation_target', probe)
+    with pytest.raises((CapabilityValidationError, CapabilityMissingInputError), match=match):
+        GenerationFacade().video(model='wan-2.2', mode=mode, target='auto', dry_run=True, **inputs)
+    probe.assert_not_called()
+
+
+def test_explicit_bundled_template_is_not_filtered_or_dispatched(monkeypatch):
+    from astrid.core.generation import entries
+    manifest = {'id': 'video/wan_fake', 'kind': 'video', 'modes': ['i2v'], 'source': 'ready-template'}
+    monkeypatch.setattr(entries, 'find_entry', lambda name: manifest)
+    probe = Mock(side_effect=AssertionError('unqualified template probed'))
+    monkeypatch.setattr(preflight, 'select_generation_target', probe)
+    with pytest.raises(AstridError) as caught:
+        GenerationFacade().video(model=manifest['id'], target='auto', mode='i2v', dry_run=True)
+    assert caught.value.code == 'generation_route_unqualified'
+    assert manifest['id'] in str(caught.value) and caught.value.fix
+    probe.assert_not_called()
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_user_entry_named_like_bundled_wan_is_not_filtered(monkeypatch, explicit):
+    from astrid.core.generation import entries
+    entry = {'id': 'video/wan_authored', 'kind': 'video', 'modes': ['i2v'],
+             'source': 'ready-template', 'bundle': 'authored.py'}
+    monkeypatch.setattr(entries, 'user_entries', lambda: [entry])
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [])
+    monkeypatch.setattr(entries, 'action_entries', lambda: [])
+    class Probed(Exception):
+        pass
+    probe = Mock(side_effect=Probed)
+    monkeypatch.setattr(preflight, 'select_generation_target', probe)
+    with pytest.raises(Probed):
+        GenerationFacade()._generate_on_target(registry=ModelRegistry([]),
+            model=entry['id'] if explicit else None, mode='i2v', modality='video',
+            target='auto', execution=None, inputs={}, dry_run=True)
+    probe.assert_called_once()
+
+
 def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(network, monkeypatch, tmp_path):
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
