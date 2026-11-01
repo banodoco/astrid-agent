@@ -219,6 +219,7 @@ def evaluate_windows_task_host_receipt(candidate, manifest, row, receipt_path,
             or workflow.get("commit") != candidate["agent"]
             or not isinstance(workflow.get("run_id"), str) or not workflow["run_id"].strip()
             or not isinstance(workflow.get("run_attempt"), str) or not workflow["run_attempt"].strip()
+            or not isinstance(workflow.get("workflow_ref"), str) or not workflow["workflow_ref"].strip()
             or not isinstance(workflow.get("workflow_sha"), str)
             or not SHA.fullmatch(workflow["workflow_sha"])):
         errors.append("windows-task-host: workflow identity is incomplete or stale")
