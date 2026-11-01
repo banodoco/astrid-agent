@@ -303,4 +303,5 @@ norecursedirs = [
 # tests/lanes.py, the single source for them.
 markers = [
     "timeout: per-test timeout marker used when pytest-timeout is installed",
+    "installed_smoke: CPU smoke test of a freshly built and installed wheel",
 ]
