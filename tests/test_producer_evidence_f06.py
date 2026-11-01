@@ -106,6 +106,43 @@ def test_contract_accepts_local_and_portable_source_and_settings_references(tmp_
     assert "path" not in portable_validated.inputs["effective_settings"]
 
 
+@pytest.mark.parametrize("identity", ["digest", "object_id"])
+def test_existing_cas_source_ref_projects_its_digest_as_sha256(tmp_path, identity):
+    payload = _managed_payload(tmp_path)
+    original = payload["inputs"]["source"]
+    payload["inputs"]["source"] = {
+        identity: "sha256:" + original["sha256"],
+        "bytes": original["bytes"], "filename": original["filename"],
+    }
+    result = validate_managed_generation_result(payload, staging_root=tmp_path)
+    assert result.inputs["source"][identity] == "sha256:" + original["sha256"]
+    assert result.inputs["source"]["sha256"] == original["sha256"]
+
+
+@pytest.mark.parametrize("portable", [False, True])
+def test_materializer_preserves_producer_source_ref_when_snapshot_matches(tmp_path, portable):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer)
+    source = payload["inputs"]["source"]
+    source.update(filename="original-name.json", digest="sha256:" + source["sha256"], marker="preserved")
+    if portable:
+        source.pop("path")
+    spool = tmp_path / "spool"
+    snapshot = _evidence_reference(spool, "snapshot/source.json", "source.json", b"\x00source\xff")
+    manifest = run._materialize_managed_generation_result(
+        spool, _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "source.json", source_snapshot=snapshot,
+    )
+    retained = manifest["managed_generation_result"]["inputs"]["source"]
+    assert retained["filename"] == "original-name.json"
+    assert retained["digest"] == source["digest"]
+    assert retained["marker"] == "preserved"
+    assert retained["object_id"] == source["digest"]
+    assert "path" not in retained
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -132,14 +169,106 @@ def test_contract_allows_verified_partial_outputs_without_publication(tmp_path: 
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled", "interrupted"])
-def test_contract_rejects_partial_outputs_without_verified_retrieval_or_no_publication(
+def test_contract_rejects_publication_of_partial_outputs(
     tmp_path: Path, status: str
 ) -> None:
-    for phase, invalid_status in (("retrieval", "failed"), ("verification", "failed"), ("publication", "succeeded")):
-        payload = _managed_payload(tmp_path, execution_status=status)
-        payload["outcomes"][phase]["status"] = invalid_status
-        with pytest.raises(ManagedGenerationResultError, match="partial outputs"):
-            validate_managed_generation_result(payload, staging_root=tmp_path)
+    # Failed retrieval or verification can now honestly accompany partial outputs.
+    payload = _managed_payload(tmp_path, execution_status=status)
+    payload["outcomes"]["publication"]["status"] = "succeeded"
+    with pytest.raises(ManagedGenerationResultError, match="partial outputs"):
+        validate_managed_generation_result(payload, staging_root=tmp_path)
+
+
+@pytest.mark.parametrize("status,retrieval", [("failed", "succeeded"), ("cancelled", "failed")])
+def test_terminal_partial_receipt_retains_each_hash_check_and_native_outcome(tmp_path, status, retrieval):
+    from astrid.core._shared.result_manifest import harvest_staged_outputs
+    from astrid.core.execution.generic_host import GenericPackHost, HostError
+
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer, execution_status=status)
+    original = payload["outputs"][0]
+    original["hash_check"] = {"status": "verified", "expected_sha256": original["sha256"]}
+    changed = b"bytes that failed the producer hash check"
+    (producer / "outputs" / "changed.mp4").write_bytes(changed)
+    payload["outputs"].append({**original, "producer_output_id": "engine:video:1", "ordinal": 1,
+        "path": "outputs/changed.mp4", "bytes": len(changed), "sha256": _sha256(changed),
+        "hash_check": {"status": "failed", "expected_sha256": _sha256(b"expected bytes")}})
+    payload["outcomes"]["retrieval"]["status"] = retrieval
+    payload["outcomes"]["verification"]["status"] = "failed"
+    payload["evidence"]["transport"]["native"] = {"outcome": status}
+    spool = tmp_path / "spool"
+    manifest = run._materialize_managed_generation_result(
+        spool, _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "unused.json")
+    receipt = manifest["managed_generation_result"]
+    assert receipt["outcomes"] == payload["outcomes"]
+    assert receipt["evidence"]["transport"]["native"] == {"outcome": status}
+    assert [row["hash_check"] for row in receipt["outputs"]] == [row["hash_check"] for row in payload["outputs"]]
+    assert (spool / receipt["outputs"][1]["path"]).read_bytes() == changed
+    assert all(not row["is_primary"] for row in manifest["outputs"])
+    descriptors = harvest_staged_outputs(spool)
+    host = GenericPackHost.__new__(GenericPackHost)
+    host._validate_producer_evidence(descriptors, output_root=spool, task_id="task-1", attempt_id="attempt-1")
+    with pytest.raises(HostError, match="successful publication"):
+        host._validate_producer_evidence(descriptors, output_root=spool, task_id="task-1",
+                                         attempt_id="attempt-1", successful=True)
+    (spool / receipt["outputs"][1]["path"]).write_bytes(b"changed after custody")
+    with pytest.raises(ManagedGenerationResultError, match="hashes to"):
+        host._validate_producer_evidence(descriptors, output_root=spool, task_id="task-1", attempt_id="attempt-1")
+
+
+def test_failed_receipt_without_outputs_keeps_downstream_not_run(tmp_path):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer, execution_status="failed")
+    payload["outputs"] = []
+    for phase in ("retrieval", "verification", "publication"):
+        payload["outcomes"][phase]["status"] = "not_started"
+    payload["evidence"]["transport"]["native"] = {"outcome": "failed"}
+    manifest = run._materialize_managed_generation_result(
+        tmp_path / "spool", _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "unused.json")
+    receipt = manifest["managed_generation_result"]
+    assert receipt["outputs"] == []
+    assert receipt["outcomes"] == payload["outcomes"]
+    assert receipt["evidence"]["transport"]["native"] == {"outcome": "failed"}
+    assert all(not row["is_primary"] for row in manifest["outputs"])
+
+
+def test_failed_retrieval_without_outputs_keeps_verification_not_run(tmp_path):
+    payload = _managed_payload(tmp_path, execution_status="failed")
+    payload["outputs"] = []
+    payload["outcomes"]["retrieval"]["status"] = "failed"
+    payload["outcomes"]["verification"]["status"] = "not_started"
+    result = validate_managed_generation_result(payload, staging_root=tmp_path).to_dict()
+    assert result["outcomes"] == payload["outcomes"]
+    assert result["outputs"] == []
+
+
+def test_success_receipt_remains_publishable_without_hash_check_extension(tmp_path):
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    payload = _managed_payload(producer)
+    assert validate_managed_generation_result(payload, staging_root=producer).to_dict() == payload
+    manifest = run._materialize_managed_generation_result(
+        tmp_path / "spool", _write_production(producer, payload), task_identity="task-1",
+        attempt_identity="attempt-1", workflow_path=tmp_path / "unused.json")
+    assert manifest["managed_generation_result"]["outcomes"] == payload["outcomes"]
+    assert next(row for row in manifest["outputs"] if row["role"] == "result")["is_primary"] is True
+
+
+def test_hash_check_cannot_claim_verification_for_a_mismatch(tmp_path):
+    payload = _managed_payload(tmp_path, execution_status="failed")
+    payload["outputs"][0]["hash_check"] = {"status": "verified", "expected_sha256": _sha256(b"other")}
+    with pytest.raises(ManagedGenerationResultError, match="disagrees with the hashes"):
+        validate_managed_generation_result(payload, staging_root=tmp_path)
+    payload["outputs"][0]["hash_check"]["status"] = "failed"
+    with pytest.raises(ManagedGenerationResultError, match="successful verification"):
+        validate_managed_generation_result(payload, staging_root=tmp_path)
 
 
 @pytest.mark.parametrize("created", ["2026-09-21T12:00:00", "2026-09-21T12:00:00+01:00", "not-a-time"])
@@ -209,15 +338,16 @@ def test_materializer_retains_verified_partial_media_on_terminal_failure(tmp_pat
     assert manifest["managed_generation_result"]["outcomes"]["publication"]["status"] == "not_started"
 
 
-@pytest.mark.parametrize("error_type,status", [(RuntimeError, "failed"), (KeyboardInterrupt, "cancelled")])
-def test_run_failure_retains_original_source_before_conversion_and_preserves_error(tmp_path, monkeypatch, error_type, status):
+@pytest.mark.parametrize("error,status", [(RuntimeError("producer stopped"), "failed"),
+                                           (KeyboardInterrupt(), "cancelled"),
+                                           (SystemExit(1), "failed"), (SystemExit(143), "cancelled")])
+def test_run_failure_retains_original_source_before_conversion_and_preserves_error(tmp_path, monkeypatch, error, status):
     run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
     from astrid.core.generation.backends import registry
 
     workflow = tmp_path / "submitted.json"
     original = b'{ "exact": true }\r\n'
     workflow.write_bytes(original)
-    error = error_type("producer stopped")
 
     def execute(*args, **kwargs):
         workflow.write_bytes(b"converted bytes")
@@ -228,7 +358,7 @@ def test_run_failure_retains_original_source_before_conversion_and_preserves_err
                                  placement=SimpleNamespace(resolve=lambda placement: "local"))
     monkeypatch.setattr(registry, "resolve_workflow_descriptor", lambda *args, **kwargs: descriptor)
     spool = tmp_path / "spool"
-    with pytest.raises(error_type) as raised:
+    with pytest.raises(type(error)) as raised:
         run._run_and_settle(workflow, spool, task_identity="task-1", attempt_identity="attempt-1", registry=object())
     assert raised.value is error
     manifest = json.loads((spool / "manifest.json").read_text())
@@ -239,6 +369,69 @@ def test_run_failure_retains_original_source_before_conversion_and_preserves_err
     assert (spool / source_output["path"]).read_bytes() == original
     if status == "cancelled":
         assert managed["evidence"]["transport"]["cancel"]["stop_observed"] is None
+
+
+def test_native_interruption_does_not_invent_cancel_request(tmp_path, monkeypatch):
+    from astrid.core.generation import producer_result
+
+    receipt = tmp_path / "native" / "attempt.json"
+    receipt.parent.mkdir()
+    receipt.write_text(json.dumps({"runtime_evidence": {"terminal": {"phase": "interrupted"}}}))
+    record = SimpleNamespace(to_dict=lambda: {"input_binding": {}})
+    monkeypatch.setattr(producer_result, "_projection", lambda runtime: record)
+    monkeypatch.setattr(producer_result, "stage_executed_settings", lambda record, root:
+                        _evidence_reference(root, "settings.json", "settings.json", b"{}"))
+    error = RuntimeError("interrupted")
+    producer_result._native_failure_result(
+        error, receipt, tmp_path, task_id="task-1", attempt_id="attempt-1",
+        source=None, workflow_path=None, transport=None,
+    )
+    payload = json.loads(error.managed_generation_result_path.read_bytes())
+    assert payload["outcomes"]["execution"]["status"] == "interrupted"
+    assert payload["evidence"]["transport"]["cancel"]["requested"] is None
+    assert payload["evidence"]["transport"]["cancel"]["observed_stop"] is None
+
+
+def test_native_failure_without_outputs_records_unstarted_phases(tmp_path, monkeypatch):
+    from astrid.core.generation import producer_result
+
+    receipt = tmp_path / "native" / "attempt.json"
+    receipt.parent.mkdir()
+    terminal = {"phase": "execution", "execution_state": "succeeded"}
+    receipt.write_text(json.dumps({"runtime_evidence": {"terminal": terminal}}))
+    monkeypatch.setattr(producer_result, "_projection", lambda runtime: SimpleNamespace(to_dict=lambda: {"input_binding": {}}))
+    monkeypatch.setattr(producer_result, "stage_executed_settings", lambda record, root:
+                        _evidence_reference(root, "settings.json", "settings.json", b"{}"))
+    error = RuntimeError("native failure")
+    producer_result._native_failure_result(error, receipt, tmp_path, task_id="task-1", attempt_id="attempt-1",
+                                           source=None, workflow_path=None, transport=None)
+    payload = json.loads(error.managed_generation_result_path.read_bytes())
+    assert payload["outcomes"] == {"execution": {"status": "failed"},
+        **{phase: {"status": "not_started"} for phase in ("retrieval", "verification", "publication")}}
+    assert payload["outputs"] == []
+    assert payload["evidence"]["producer"]["runtime"]["terminal"] == terminal
+    assert validate_managed_generation_result(payload, staging_root=tmp_path).outcomes["execution"].status == "failed"
+
+
+def test_native_pending_downstream_phase_is_recorded_as_not_started(tmp_path, monkeypatch):
+    from astrid.core.generation import producer_result
+
+    receipt = tmp_path / "native" / "attempt.json"
+    receipt.parent.mkdir()
+    terminal = {"phase": "retrieval", "execution_state": "succeeded",
+                "retrieval_state": "failed", "verification_state": "pending"}
+    receipt.write_text(json.dumps({"runtime_evidence": {"terminal": terminal}}))
+    monkeypatch.setattr(producer_result, "_projection", lambda runtime: SimpleNamespace(to_dict=lambda: {"input_binding": {}}))
+    monkeypatch.setattr(producer_result, "stage_executed_settings", lambda record, root:
+                        _evidence_reference(root, "settings.json", "settings.json", b"{}"))
+    error = RuntimeError("native retrieval failure")
+    producer_result._native_failure_result(error, receipt, tmp_path, task_id="task-1", attempt_id="attempt-1",
+                                           source=None, workflow_path=None, transport=None)
+    payload = json.loads(error.managed_generation_result_path.read_bytes())
+    assert payload["outcomes"] == {"execution": {"status": "failed"}, "retrieval": {"status": "failed"},
+                                   "verification": {"status": "not_started"}, "publication": {"status": "not_started"}}
+    assert payload["evidence"]["producer"]["runtime"]["terminal"] == terminal
+    assert validate_managed_generation_result(payload, staging_root=tmp_path).to_dict()["outcomes"] == payload["outcomes"]
 
 
 def test_model_identity_never_upgrades_an_observed_or_mismatched_digest(tmp_path):

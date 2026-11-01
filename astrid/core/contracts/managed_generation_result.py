@@ -59,6 +59,7 @@ _OUTPUT_FIELDS = frozenset(
         "media_type",
         "bytes",
         "sha256",
+        "hash_check",
     }
 )
 _OUTCOME_FIELDS = frozenset({"status", "code", "message"})
@@ -87,7 +88,7 @@ class ManagedGenerationPhaseOutcome:
 
 @dataclass(frozen=True, slots=True)
 class ManagedGenerationOutput:
-    """A verified output with producer identity and portable location."""
+    """A custody-checked output and its optional native hash comparison."""
 
     producer_output_id: str
     output_port: str
@@ -96,9 +97,10 @@ class ManagedGenerationOutput:
     media_type: str
     bytes: int
     sha256: str
+    hash_check: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "producer_output_id": self.producer_output_id,
             "output_port": self.output_port,
             "ordinal": self.ordinal,
@@ -107,6 +109,9 @@ class ManagedGenerationOutput:
             "bytes": self.bytes,
             "sha256": self.sha256,
         }
+        if self.hash_check is not None:
+            result["hash_check"] = dict(self.hash_check)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,20 +271,15 @@ def _validate_outcomes(
         raise ManagedGenerationResultError(
             "successful execution requires at least one output"
         )
-    if execution != "succeeded" and output_count and (
-        retrieval != "succeeded" or verification != "succeeded" or publication != "not_started"
-    ):
+    if execution != "succeeded" and publication != "not_started":
         raise ManagedGenerationResultError(
-            "partial outputs require successful retrieval/verification and no publication"
+            "partial outputs or execution failure require no publication"
         )
-    if execution != "succeeded" and not output_count and any(
-        status != "not_started"
-        for status in (retrieval, verification, publication)
-    ):
-        raise ManagedGenerationResultError(
-            "retrieval, verification, and publication must be not_started after execution failure"
-        )
-    if retrieval != "succeeded" and verification != "not_started":
+    if (retrieval != "succeeded" and verification != "not_started"
+            and not (execution != "succeeded"
+                     and ((retrieval == "failed" and verification == "failed")
+                          or (output_count and retrieval in {"failed", "not_started"}
+                              and verification in {"failed", "succeeded"})))):
         raise ManagedGenerationResultError(
             "verification must be not_started until retrieval succeeds"
         )
@@ -305,6 +305,11 @@ def validate_evidence_reference(
     """
     reference = dict(_require_mapping(value, field))
     digest = reference.get("sha256")
+    if digest is None:
+        identity = reference.get("digest", reference.get("object_id"))
+        if isinstance(identity, str):
+            digest = identity.removeprefix("sha256:")
+            reference["sha256"] = digest
     if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
         raise ManagedGenerationResultError(f"{field}.sha256 must be 64 lowercase hexadecimal characters")
     size = reference.get("bytes")
@@ -402,7 +407,7 @@ def validate_managed_generation_result(
             f"attempt_id {attempt_id!r} does not match expected attempt_id {expected_attempt_id!r}"
         )
 
-    inputs = _require_mapping(payload["inputs"], "inputs")
+    inputs = dict(_require_mapping(payload["inputs"], "inputs"))
     created = _require_text(payload["created"], "created")
     try:
         timestamp = datetime.fromisoformat(created.replace("Z", "+00:00"))
@@ -412,7 +417,9 @@ def validate_managed_generation_result(
         raise ManagedGenerationResultError("created must be a UTC timestamp") from exc
     for key in ("source", "effective_settings"):
         if key in inputs:
-            validate_evidence_reference(inputs[key], field=f"inputs.{key}", staging_root=staging_root)
+            inputs[key] = validate_evidence_reference(
+                inputs[key], field=f"inputs.{key}", staging_root=staging_root,
+            )
     warnings = payload["warnings"]
     if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
         raise ManagedGenerationResultError("warnings must be a list of strings")
@@ -427,7 +434,7 @@ def validate_managed_generation_result(
     for index, raw_output in enumerate(raw_outputs):
         output = _require_mapping(raw_output, f"outputs[{index}]")
         unknown = sorted(set(output) - _OUTPUT_FIELDS)
-        missing = sorted(_OUTPUT_FIELDS - set(output))
+        missing = sorted((_OUTPUT_FIELDS - {"hash_check"}) - set(output))
         if missing:
             raise ManagedGenerationResultError(
                 f"outputs[{index}] missing required fields: {', '.join(missing)}"
@@ -470,6 +477,20 @@ def validate_managed_generation_result(
             raise ManagedGenerationResultError(
                 f"outputs[{index}].sha256 must be 64 lowercase hexadecimal characters"
             )
+        hash_check = None
+        if "hash_check" in output:
+            check = _require_mapping(output["hash_check"], f"outputs[{index}].hash_check")
+            if set(check) != {"status", "expected_sha256"}:
+                raise ManagedGenerationResultError(f"outputs[{index}].hash_check must contain status and expected_sha256")
+            expected = check["expected_sha256"]
+            if expected is not None and (not isinstance(expected, str) or _SHA256_RE.fullmatch(expected) is None):
+                raise ManagedGenerationResultError(f"outputs[{index}].hash_check.expected_sha256 must be a sha256 or null")
+            actual_status = "not_checked" if expected is None else "verified" if expected == sha256 else "failed"
+            if check["status"] != actual_status:
+                raise ManagedGenerationResultError(f"outputs[{index}].hash_check.status disagrees with the hashes")
+            if actual_status == "failed" and outcomes["verification"].status == "succeeded":
+                raise ManagedGenerationResultError("failed output hash check cannot have successful verification")
+            hash_check = dict(check)
         profile_outputs.append(
             ManagedGenerationOutput(
                 producer_output_id=output_id,
@@ -479,6 +500,7 @@ def validate_managed_generation_result(
                 media_type=media_type,
                 bytes=size,
                 sha256=sha256,
+                hash_check=hash_check,
             )
         )
         universal_outputs.append(

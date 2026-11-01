@@ -175,6 +175,28 @@ def test_host_adds_installed_manifest_without_development_lookup(tmp_path, monke
     assert (spool / "manifest.json").read_bytes() == first
 
 
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_host_restores_admitted_source_identity_after_bundle_staging(tmp_path, monkeypatch, mismatch):
+    spool = _materialize(tmp_path, monkeypatch)
+    host = GenericPackHost.__new__(GenericPackHost)
+    host.boot_manifest_provenance = lambda: None
+    digest = hashlib.sha256(b"different" if mismatch else b"\x00source\xff").hexdigest()
+    source = {"digest": "sha256:" + digest, "sha256": digest,
+              "bytes": len(b"\x00source\xff"), "filename": "submitted-original.json"}
+    task = {"spec": {"spec": {"inputs": {"source": source}}}}
+    if mismatch:
+        with pytest.raises(HostError, match="differs from admitted source"):
+            host._prepare_producer_evidence(spool, task)
+        return
+    host._prepare_producer_evidence(spool, task)
+    receipt = json.loads((spool / "manifest.json").read_bytes())
+    retained = receipt["managed_generation_result"]["inputs"]["source"]
+    assert all(retained[key] == value for key, value in source.items())
+    assert retained["object_id"] == source["digest"]
+    host._validate_producer_evidence(harvest_staged_outputs(spool), output_root=spool,
+                                     task_id="task-1", attempt_id="attempt-1")
+
+
 def test_host_refuses_to_rehash_corrupt_producer_manifest(tmp_path, monkeypatch):
     spool = _materialize(tmp_path, monkeypatch)
     manifest = spool / "outputs" / "managed-generation-result.json"
