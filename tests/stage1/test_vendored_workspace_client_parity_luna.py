@@ -18,12 +18,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid_runtime_client import ManagedOutput, ObjectLocation, WorkspaceClient, generated
+from astrid_runtime_client import ApiError, ManagedOutput, ObjectLocation, WorkspaceClient, generated
 from astrid_runtime_client.contract_metadata import (
     COMPONENT_MANIFEST_SHA256,
     OPERATIONS,
     PROTOCOL,
     SCHEMA_DIGEST,
+)
+from astrid_runtime_client.timeline_commit_types import (
+    CommitAcceptedMutation,
+    CommitPreviewResponse,
+    CommitRequest,
+    HistoryPage,
+    TimelineCommitPage,
 )
 from astrid.sdk.workspace_client import WorkspaceClient as AstridWorkspaceClient
 
@@ -43,7 +50,8 @@ def _camel_to_snake(value: str) -> str:
 def test_vendored_client_is_the_locked_runtime_artifact() -> None:
     assert vendor_lock.check(LOCK) == []
     assert {name for name in json.loads(LOCK.read_text())["files"] if name.startswith("astrid_runtime_client/")} == {
-        f"astrid_runtime_client/{name}" for name in ("__init__.py", "generated.py", "contract_metadata.py")
+        f"astrid_runtime_client/{name}"
+        for name in ("__init__.py", "generated.py", "contract_metadata.py", "timeline_commit_types.py")
     }
 
 
@@ -66,6 +74,41 @@ def test_vendored_client_operation_catalog_matches_typed_methods() -> None:
     # resource-scoped method for product adapters.
     composed_helpers = {"update_timeline_document"}
     assert methods == operation_methods | composed_helpers
+
+
+def test_timeline_commit_methods_and_dtos_are_generated() -> None:
+    commit = inspect.signature(WorkspaceClient.commit_timeline)
+    assert list(commit.parameters) == ["self", "project_id", "timeline_id", "request", "idempotency_key"]
+    assert commit.parameters["request"].annotation == "CommitRequest"
+    assert commit.parameters["idempotency_key"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert commit.return_annotation == "CommitAcceptedMutation | CommitPreviewResponse"
+
+    history = inspect.signature(WorkspaceClient.list_timeline_commits)
+    assert list(history.parameters) == ["self", "project_id", "timeline_id", "cursor", "limit"]
+    assert history.return_annotation == "HistoryPage"
+    assert TimelineCommitPage is HistoryPage
+
+    # These are generated TypedDict DTOs, imported from the vendored companion
+    # module rather than recreated in Astrid.
+    assert CommitRequest.__name__ == "CommitRequest"
+    assert CommitAcceptedMutation.__name__ == "CommitAcceptedMutation"
+    assert CommitPreviewResponse.__name__ == "CommitPreviewResponse"
+
+
+def test_timeline_commit_response_union_requires_data_and_receipt_pair() -> None:
+    client = object.__new__(WorkspaceClient)
+    accepted = client._commit_response(
+        b'{"data":{"status":"accepted"},"receipt":{"receipt_id":"r1","command_kind":"timeline.commit","idempotency_key":"k1","request_hash":"sha256:0000000000000000000000000000000000000000000000000000000000000000","project_id":"p1","project_seq":[1,1],"event_ids":[],"result":{"status":"accepted"},"created_at":"2026-10-23T00:00:00Z"}}', preview=False
+    )
+    assert accepted["data"]["status"] == "accepted" and accepted["receipt"]["receipt_id"] == "r1"
+
+    preview = client._commit_response(b'{"data":{"status":"preview","would_status":"accepted"},"receipt":null}', preview=True)
+    assert preview == {"data": {"status": "preview", "would_status": "accepted"}, "receipt": None}
+
+    with pytest.raises(ApiError, match="preview requires"):
+        client._commit_response(b'{"data":{"status":"preview"},"receipt":{}}', preview=True)
+    with pytest.raises(ApiError, match="acceptance requires"):
+        client._commit_response(b'{"data":{"status":"accepted"},"receipt":null}', preview=False)
 
 
 def test_astrid_event_wrapper_passes_latest_to_generated_client() -> None:

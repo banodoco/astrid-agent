@@ -13,12 +13,17 @@ on:
         required: false
         type: string
   push:
-    branches: [main, release-1]
+    branches: [main, release-1, "int/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   integration:
     name: integration shard ${{ matrix.group }} / 4
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     env:
       # tests/lanes.py: a lane this job provides fails, not skips, when its dependency is missing.
       ASTRID_CI_JOB: lanes-integration
@@ -188,6 +193,7 @@ jobs:
   opt-in:
     name: opt-in
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     env:
       ASTRID_CI_JOB: lanes-opt-in
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
@@ -295,6 +301,7 @@ jobs:
   installed:
     name: installed wheel
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       ASTRID_CI_JOB: lanes-installed
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime

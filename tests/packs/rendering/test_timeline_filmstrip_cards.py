@@ -1,14 +1,18 @@
-from fractions import Fraction
 import copy
 import hashlib
 import json
-from pathlib import Path
 import subprocess
+from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
 from astrid.packs.rendering.actions.timeline_visualize import filmstrip_cards
-from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import plan_filmstrip, build_filmstrip_pack, _attach_input_navigation
+from astrid.packs.rendering.actions.timeline_visualize.filmstrip_cards import (
+    _attach_input_navigation,
+    build_filmstrip_pack,
+    plan_filmstrip,
+)
 from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import filmstrip_options
 
 
@@ -49,6 +53,66 @@ def test_cut_neighbors_are_opt_in_between_sparse_intervals():
 def test_explicit_interval_does_not_inject_clip_first_or_shot_midpoint():
     cards = plan_filmstrip(snapshot(duration_frames=240), {'every': 3})['cards']
     assert all(card['sample_reasons'] == ['interval'] for card in cards)
+
+
+def test_windowed_samples_include_transition_and_fade_boundary_and_interior_moments():
+    clip = dict(
+        id='effected', kind='video', at=0, duration=4,
+        transition_projection={'status': 'resolved', 'transition': {'id': 'cross-fade'},
+                               'start': [1, 1], 'end': [2, 1]},
+        timed_changes=[{'kind': 'fade_in', 'start': [1, 1], 'end': [2, 1]}],
+    )
+    index = plan_filmstrip(snapshot(clips=[clip]), {'range': [1, 2], 'every': 2})
+    frames = {card['frame']: card for card in index['cards']}
+
+    assert {24, 35, 47}.issubset(frames)
+    assert all('event_moment' in frames[frame]['sample_reasons'] for frame in (24, 35, 47))
+    assert index['coverage']['event_moments']['event_count'] == 2
+    assert index['coverage']['event_moments']['omitted_event_moment_count'] == 0
+    assert index['coverage']['event_moments']['clipped_event_count'] == 0
+
+    focused_clip = {**clip, 'at': 1, 'duration': 3}
+    focused = plan_filmstrip(snapshot(clips=[focused_clip]),
+                             {'clip': 'effected', 'range': [0.9, 2], 'every': 2})
+    assert 23 in {card['frame'] for card in focused['cards']}
+
+
+def test_overview_discloses_event_omissions_and_window_clipping():
+    clip = dict(
+        id='late-effect', kind='video', at=0, duration=4,
+        timed_changes=[{'kind': 'fade_out', 'start': [1, 1], 'end': [2, 1]}],
+    )
+    index = plan_filmstrip(snapshot(clips=[clip]), {'max_frames': 2})
+    coverage = index['coverage']['event_moments']
+
+    assert index['sampling']['overview'] is True
+    assert coverage['event_count'] == 1
+    assert coverage['omitted_event_moment_count'] > 0
+    assert coverage['omitted_event_count'] == 1
+
+    clipped = plan_filmstrip(snapshot(clips=[clip]), {'range': [1.5, 2.5], 'every': 0.5})
+    clipped_coverage = clipped['coverage']['event_moments']
+    assert clipped_coverage['clipped_event_count'] == 1
+    assert clipped_coverage['omissions'][0]['clipped'] is True
+
+    unresolved = plan_filmstrip(snapshot(clips=[dict(
+        id='unresolved', kind='video', at=0, duration=4,
+        transition_projection={'status': 'unresolved', 'transition': 'cross-fade',
+                               'reason': 'transition timing unavailable'},
+    )]), {'range': [0, 1]})
+    unresolved_event = unresolved['coverage']['event_moments']['omissions'][0]
+    assert unresolved_event['status'] == 'unresolved'
+    assert unresolved_event['reason'] == 'transition timing unavailable'
+
+
+def test_at_remains_one_exact_frame_inside_an_effect():
+    clip = dict(id='effected', kind='video', at=0, duration=4,
+                timed_changes=[{'kind': 'fade_in', 'start': [1, 1], 'end': [2, 1]}])
+    index = plan_filmstrip(snapshot(clips=[clip]), {'at': 1.25})
+
+    assert [card['frame'] for card in index['cards']] == [30]
+    assert index['sampling']['requested_at'] == 1.25
+    assert index['sampling']['resolved_at_frame'] == 30
 
 
 def test_explicit_half_second_is_not_adaptive_overview():
@@ -214,10 +278,22 @@ def test_shots_sample_authored_midpoint():
 
 
 @pytest.mark.ffmpeg
-def test_pack_uses_rendered_frames_without_html_artifact(tmp_path):
+def test_pack_uses_rendered_frames_without_html_artifact(tmp_path, monkeypatch):
+    drawn_text = []
+    draw_text = filmstrip_cards._png_draw_text
+
+    def record_text(*args, **kwargs):
+        if len(args) >= 3:
+            drawn_text.append(str(args[2]))
+        return draw_text(*args, **kwargs)
+
+    monkeypatch.setattr(filmstrip_cards, '_png_draw_text', record_text)
     video = tmp_path / 'render.mp4'
     subprocess.run(['ffmpeg', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=red:size=160x90:rate=24:duration=4', '-c:v', 'libx264', '-y', str(video)], check=True)
-    snap = snapshot(scripts=[dict(start=0, end=4, text='</script><script>alert("x")</script>')], metadata={'selection': 'explicit_render'})
+    snap = snapshot(
+        scripts=[dict(start=0, end=4, text='</script><script>alert("x")</script>')],
+        metadata={'selection': 'explicit_render', 'canonical_timeline': {'parent_revision_id': 'R1'}},
+    )
     result = build_filmstrip_pack(out_root=tmp_path / 'pack', video_path=video, snapshot=snap, options={'every': 2})
     assert set(result['paths']) == {'png', 'json', 'markdown'}
     assert not (tmp_path / 'pack' / 'filmstrip.html').exists()
@@ -230,6 +306,9 @@ def test_pack_uses_rendered_frames_without_html_artifact(tmp_path):
         assert r > 200 and g < 30 and b < 30
     assert Path(result['paths']['png'][0]).exists()
     markdown = Path(result['paths']['markdown']).read_text()
+    assert '# Rendered filmstrip · UNCERTIFIED preview (claimed revision R1)' in markdown
+    assert 'Revision: `UNCERTIFIED preview (claimed revision R1)`' in markdown
+    assert any('UNCERTIFIED preview (claimed revision R1)' in text for text in drawn_text)
     assert '</script><script>alert' not in markdown
     assert not list((tmp_path / 'pack').glob('*.svg'))
 
@@ -319,7 +398,7 @@ def test_float_arithmetic_noise_does_not_move_cut_boundary():
 
 @pytest.mark.parametrize('fps', [24, 30000 / 1001])
 def test_clip_labels_and_cuts_use_canonical_renderer_frames(fps):
-    from astrid.core.timeline.duration import clip_start_frame, clip_end_frame
+    from astrid.core.timeline.duration import clip_end_frame, clip_start_frame
     clip = dict(id='offset', kind='video', at=1.01, **{'from': 0, 'to': 1.02, 'speed': 1.3})
     rational = Fraction(str(fps)).limit_denominator(100000)
     start, end = clip_start_frame(clip, fps), clip_end_frame(clip, fps)
@@ -627,3 +706,24 @@ def test_png_font_loading_fails_closed_when_bundled_font_is_missing(tmp_path, mo
     monkeypatch.setattr(filmstrip_cards, '_PNG_FONT_PATH', tmp_path / 'missing.ttf')
     with pytest.raises(RuntimeError, match='Bundled PNG font is unavailable'):
         filmstrip_cards._png_font(12)
+
+
+@pytest.mark.ffmpeg
+def test_d69_upstream_pack_uses_rendered_frames_without_html_artifact(tmp_path):
+    video = tmp_path / 'render.mp4'
+    subprocess.run(['ffmpeg', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=red:size=160x90:rate=24:duration=4', '-c:v', 'libx264', '-y', str(video)], check=True)
+    snap = snapshot(scripts=[dict(start=0, end=4, text='</script><script>alert("x")</script>')], metadata={'selection': 'explicit_render'})
+    result = build_filmstrip_pack(out_root=tmp_path / 'pack', video_path=video, snapshot=snap, options={'every': 2})
+    assert set(result['paths']) == {'png', 'json', 'markdown'}
+    assert not (tmp_path / 'pack' / 'filmstrip.html').exists()
+    index = json.loads(Path(result['paths']['json']).read_text())
+    assert index['provenance']['render_run_id'] == 'run-exact'
+    assert '--render-run run-exact' in index['cards'][0]['actions']['focus_command']
+    from PIL import Image
+    with Image.open(tmp_path / 'pack' / index['cards'][0]['image']) as image:
+        r, g, b = image.getpixel((20, 20))
+        assert r > 200 and g < 30 and b < 30
+    assert Path(result['paths']['png'][0]).exists()
+    markdown = Path(result['paths']['markdown']).read_text()
+    assert '</script><script>alert' not in markdown
+    assert not list((tmp_path / 'pack').glob('*.svg'))

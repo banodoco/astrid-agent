@@ -136,7 +136,10 @@ def test_duplicate_ordinals_and_missing_port_are_rejected(tmp_path: Path) -> Non
             p["outcomes"]["verification"].update({"status": "failed"}),
             p["outcomes"]["publication"].update({"status": "succeeded"}),
         ),
-        lambda p: p["outcomes"]["execution"].update({"status": "failed"}),
+        lambda p: (
+            p["outcomes"]["execution"].update({"status": "failed"}),
+            p["outcomes"]["publication"].update({"status": "succeeded"}),
+        ),
     ],
 )
 def test_invalid_phase_outcome_combinations_are_rejected(tmp_path: Path, phase_mutation) -> None:

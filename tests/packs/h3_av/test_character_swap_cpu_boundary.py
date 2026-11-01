@@ -307,6 +307,17 @@ def test_public_cpu_boundary_preflight_does_not_require_a_prior_qualification_re
     assert _boundary_blockers() == []
 
 
+@pytest.mark.integration
+def test_h3_public_workspace_helper_pin_matches_current_shared_fixture() -> None:
+    from tests.helpers import h3_cpu_runtime
+
+    fixture = h3_cpu_runtime.PUBLIC_WORKSPACE_FIXTURE
+    assert fixture.is_file() and not fixture.is_symlink()
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == (
+        h3_cpu_runtime.PUBLIC_WORKSPACE_FIXTURE_SHA256
+    )
+
+
 def test_cpu_harness_asset_map_matches_public_transform_input_contract(tmp_path: Path) -> None:
     from tests.helpers.h3_cpu_runtime import _write_runtime_asset_map
 
@@ -446,6 +457,136 @@ def test_h3_synthetic_readiness_profile_uses_digest_bound_model_root(tmp_path: P
     assert binding.path == model_root.resolve()
     assert len(binding.inventory) == len(model_paths)
     assert binding.qualification_identity is None
+
+
+@pytest.mark.integration  # needs the Runtime and VibeComfy checkouts and the approved T9 readiness profile
+def test_character_swap_public_managed_cpu_boundary(tmp_path: Path) -> None:
+    blockers = _boundary_blockers()
+    if blockers:
+        unavailable("public managed CPU boundary is not qualified: " + "; ".join(blockers))
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        unavailable("public managed CPU boundary requires ffmpeg and ffprobe")
+
+    from PIL import Image
+
+    from tests.helpers.h3_cpu_runtime import (
+        APPROVED_CPU_MODEL_BOUNDARY,
+        H3CpuRuntime,
+    )
+
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    source = caller / "baseline.mp4"
+    performance = caller / "performance.mp4"
+    for path, color, tone in ((source, "blue", 440), (performance, "green", 660)):
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", f"color=c={color}:s=64x64:r=24:d=15",
+            "-f", "lavfi", "-i", f"sine=frequency={tone}:sample_rate=48000:duration=15",
+            "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-shortest", str(path),
+        ], check=True, capture_output=True, timeout=60)
+    replacement = caller / "replacement.png"
+    Image.new("RGB", (64, 64), (32, 96, 160)).save(replacement)
+
+    raw = {
+        "version": 2,
+        "prompt": "Replace the person in <Video 1> with the person in <Picture 1>.",
+        "duration": 15,
+        "media": [
+            {"id": "baseline", "asset": "baseline.mp4", "role": "timeline", "modality": "video",
+             "at": {"frame": 0}, "range": [0, 15],
+             "edit": [{"stream": "video", "during": [0, 15], "mask": {"full_frame": True}}]},
+            {"id": "performance", "asset": "performance.mp4", "role": "reference", "modality": "video",
+             "range": [0, 15], "audio": False},
+            {"id": "replacement", "asset": "replacement.png", "role": "reference", "modality": "image"},
+        ],
+        "settings": {"adapter": {"id": "character_swap_v1"}},
+    }
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+    request = normalize_request(raw)
+    bundle_path = tmp_path / "input-bundle.zip"
+    build_input_bundle(request, {
+        "baseline.mp4": str(source),
+        "performance.mp4": str(performance),
+        "replacement.png": str(replacement),
+    }, bundle_path)
+    input_digests = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (source, performance, replacement)}
+    for path in (source, performance, replacement):
+        path.unlink()
+
+    runtime = H3CpuRuntime(tmp_path / "runtime", cpu_model_boundary=APPROVED_CPU_MODEL_BOUNDARY)
+    try:
+        outcome = runtime.run_public_transform(
+            request_path, bundle_path, out=tmp_path / "public-transform", key="h3-character-swap-cpu-boundary",
+        )
+        assert outcome.ok, outcome.error
+        rows = paged_rows(runtime.owner.tasks.list, runtime.project_id, limit=100)
+        assert rows is not None
+        tasks = list(rows)
+        capabilities = [_field(task, "capability_id") for task in tasks]
+        for expected in (
+            "h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run",
+            "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer",
+        ):
+            assert expected in capabilities
+        boundary = runtime.read_cpu_model_boundary_evidence()
+        assert boundary["schema_version"] == "h3-character-swap-cpu-boundary.v2"
+        assert boundary["synthetic_inference"] is True
+        assert boundary["queued_to_comfy"] is False
+        assert boundary["production_model_bytes_observed"] is False
+        assert boundary["task_id"] and boundary["attempt_id"] and boundary["execution_id"]
+        assert boundary["child_pid"] != os.getpid()
+        marker = boundary["activation_marker"]
+        assert marker["schema_version"] == "h3-t9-child-activation.v1"
+        assert marker["child_pid"] == boundary["child_pid"]
+        assert marker["task_id"] == boundary["task_id"]
+        assert marker["attempt_id"] == boundary["attempt_id"]
+        assert marker["execution_id"] == boundary["execution_id"]
+        assert marker["synthetic_inference"] is True
+        assert marker["queued_to_comfy"] is False
+        assert marker["production_model_bytes_observed"] is False
+        assert marker["profile_sha256"] == runtime.readiness_profile_hash
+        assert marker["candidate_manifest_sha256"] == "sha256:" + hashlib.sha256(
+            runtime.candidate_manifest_path.read_bytes()
+        ).hexdigest()
+        calls = [
+            json.loads(line)
+            for line in runtime.t9_child_calls_path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        assert any(
+            call.get("task_id") == boundary["task_id"]
+            and call.get("attempt_id") == boundary["attempt_id"]
+            and call.get("execution_id") == boundary["execution_id"]
+            and call.get("child_pid") == boundary["child_pid"]
+            and call.get("evidence_path") == boundary["evidence_path"]
+            for call in calls
+        )
+        for output in boundary["outputs"]:
+            output_path = Path(output["path"])
+            assert output_path.is_file() and not output_path.is_symlink()
+            assert hashlib.sha256(output_path.read_bytes()).hexdigest() == output["sha256"]
+        observed = {row["member"]: row["sha256"] for row in boundary["managed_inputs"]}
+        for name in ("performance.mp4", "replacement.png"):
+            assert input_digests[name] in observed.values()
+        finalizer = next(task for task in tasks if _field(task, "capability_id") == "h3_av.publication_finalizer")
+        finalizer_result = _field(finalizer, "result", {}) or {}
+        outputs = _field(finalizer_result, "outputs", [])
+        assert any(row.get("name") == "verified_candidate" for row in outputs if isinstance(row, dict))
+    finally:
+        runtime.close()
+
+    workspace_provenance = json.loads(
+        runtime.public_workspace_provenance_path.read_text(encoding="utf-8")
+    )
+    assert workspace_provenance["profile"] == "astrid"
+    assert workspace_provenance["candidate_manifest_sha256"]
+    assert "execution_target" not in workspace_provenance
+    assert workspace_provenance["synthetic_inference"] is True
+    assert workspace_provenance["stop"]["owner_stopped"] is True
+    assert workspace_provenance["stop"]["runtime_pid"] == workspace_provenance["runtime_pid"]
 
 
 def test_candidate_manifest_resolves_from_environment_without_runtime_startup(

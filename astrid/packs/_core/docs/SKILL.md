@@ -1,7 +1,7 @@
 ---
 name: "astrid"
 short_description: "Astrid — the file-based toolkit for making video, image, and audio art alongside a human."
-description: "Use for Astrid orientation: connect to the workspace runtime, find or open project work, choose the creative-work route, and use Hivemind for shared knowledge."
+description: "Use for anything in Astrid: make, find, open and edit video timelines; list projects; import media; generate images, video and audio."
 ---
 
 # Astrid
@@ -22,16 +22,18 @@ Choose the route by the requested result. Read only that route's guidance:
 | --- | --- |
 | Generate with the user's own ComfyUI: "my ComfyUI", "my saved workflow", local generation | [Run on your own ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui) |
 | Find a project, inspect a run, or open a render | The CLI recipes below |
-| Change timing, text, layout, effects, or existing timeline clips, then publish and point the user to the editor (render only if asked) | [Timeline editing](../../rendering/docs/SKILL.md) |
+| **Edit a timeline** (clips, timing, text, layout, effects), then publish and point the user to the editor (render only if asked) | [Timeline editing](../../timeline/docs/SKILL.md) |
 | Generate images, video, or audio (including Foley); understand, assemble, compare, or publish work | [Creative work](creative-work/SKILL.md), then the relevant pack |
 | Reuse a character or other saved subject | [References](../../media/docs/references.md) |
 | Build your own reusable tool, workflow, or visual element | [Pack builder](pack-builder/SKILL.md) |
 | Find Banodoco advice, model settings, or workflow precedents | [Hivemind contract](../../../../docs/reference/hivemind-pack-contract.md) |
 
 For the exact distinction between managed setup, bring-your-own engines, and
-remote workers, see the [platform and execution matrix](../../../../docs/reference/where-things-run.md).
+remote workers, see the [platform and execution matrix](../../../../docs/reference/compute-profiles.md).
 Linux and macOS can use an existing ComfyUI through `vibecomfy.run` with
 `comfy_url`. H3 (`h3_av`) inference currently requires a RunPod worker.
+For batch timeline edits, narration and beats, or exact-value approval, load
+`timeline-series`, `timeline-narrated`, or `timeline-review` by skill name.
 
 Using an existing workflow and building a reusable extension are different
 requests: pack builder handles the latter, including deciding what to reuse.
@@ -64,9 +66,19 @@ commands work from a terminal without changing PATH.
 
 ## Start here
 
-Before acting on a project from a terminal, run `python3 -m astrid projects current`.
-If no project is selected, ask the user which project to use. Always name the
-project in your reply.
+Run Astrid commands and SDK scripts with the Python shown at the top of this
+synced skill. The Runtime owns all work; find it only through these commands.
+
+1. Run `astrid status` to see the Runtime, selected project and recent timelines.
+2. Find work with `astrid projects list` and `astrid timelines list --recent`.
+   If more than one timeline fits, ask the user and name the candidates. Never
+   guess from files. Switch projects with `astrid projects select <project>`.
+3. Start a project with `astrid projects create <slug> --name "<name>" --select`;
+   create its timeline with `astrid timelines create --name "<name>"`.
+4. Read [timeline editing](../../timeline/docs/SKILL.md) to edit and look.
+5. Name the project and timeline in your reply, with the editor link.
+
+If the Runtime is unavailable, run the Astrid install line again.
 
 ## Preferences and project documents
 
@@ -193,11 +205,13 @@ python3 -m astrid media references list --project <project> --include-archived -
 ```
 
 Use `timelines show`, `history`, `diff`, `visualize`, and `render` for
-timeline work; render and composed `visualize` frames only when the user asks,
-and otherwise point them to the editor link. Whole-document timeline saves are retired; edits are published
-through the detached authoring bundle. Read the [timeline editing skill](../../rendering/docs/SKILL.md)
-for the canonical authoring, Remotion, visualization, effects, and playback
-route. Use `tasks` and `runs` to inspect or manage admitted work:
+timeline work. Look at your visual edits with `visualize` as often as helps
+([how to look](../../timeline/docs/references/how-to-look.md)); render only
+when the user asks, and point them to the editor link. Whole-document timeline saves are retired; edits are published
+through the detached authoring bundle. Read the [timeline skill](../../timeline/docs/SKILL.md)
+for editing. Read the [rendering skill](../../rendering/docs/SKILL.md) for
+rendering, worlds, effects, and generated elements. Use `tasks` and `runs` to
+inspect or manage admitted work:
 
 ```bash
 python3 -m astrid tasks list --project demo --json

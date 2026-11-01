@@ -150,8 +150,6 @@ from astrid.sdk.timeline.store import current_draft  # noqa: F401
 from astrid.sdk.timeline.store import set_current_draft  # noqa: F401
 from astrid.sdk.timeline.store import fetch_bundle  # noqa: F401
 from astrid.sdk.timeline.store import _units  # noqa: F401
-from astrid.sdk.timeline.store import three_way  # noqa: F401
-from astrid.sdk.timeline.store import publish_bundle  # noqa: F401
 from astrid.sdk.timeline.store import import_media  # noqa: F401
 
 from astrid.sdk.timeline import store as _store  # noqa: F401

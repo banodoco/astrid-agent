@@ -109,6 +109,7 @@ def plan_motion_frames(
 def build_context(
     snapshot: Mapping[str, Any], cut: Mapping[str, Any], frames: Mapping[int, Path], *, fps: float,
     frame_size: tuple[int, int], beats: Mapping[str, Any] | None = None, layer_names: Sequence[str] = (),
+    frame_provider: Any | None = None,
 ) -> LayerContext:
     occurrences, elements = snapshot_elements(snapshot)
     cuts = picture_cuts(occurrences, fps=fps)
@@ -150,6 +151,41 @@ def build_context(
     ctx.shared["layer_names"] = tuple(layer_names)
     config = snapshot.get("config")
     ctx.shared["config"] = config if isinstance(config, Mapping) else {}
+    # Internal handoff only: facts come from the exact successful fresh Root
+    # callback or this owner's trusted cache entry. Bind the whole handoff to
+    # one evidence mode; a mixed batch must stay on the private fallback even
+    # when every individual row is valid.
+    public_scene = {}
+    public_scene_evidence_mode = None
+    if frame_provider is not None:
+        source_identity = getattr(frame_provider, "source_identity", "")
+        scene_for_frame = getattr(frame_provider, "scene_for_frame", None)
+        if source_identity and callable(scene_for_frame):
+            fresh_frames = getattr(frame_provider, "fresh_scene_frames", ())
+            cached_scenes = getattr(frame_provider, "_cached_scenes", {})
+            modes = set()
+            for frame in sorted(frames):
+                capture = scene_for_frame(frame)
+                facts = getattr(capture, "_frame_facts", None) if capture is not None else None
+                if not callable(facts):
+                    continue
+                if frame in fresh_frames:
+                    mode = "fresh_capture"
+                elif frame in cached_scenes:
+                    mode = "cache"
+                else:
+                    continue
+                try:
+                    public_scene[frame] = facts(frame, source_identity=source_identity)
+                    modes.add(mode)
+                except Exception:  # noqa: BLE001 - public facts are optional
+                    public_scene.pop(frame, None)
+            if len(modes) == 1 and len(public_scene) == len(frames):
+                public_scene_evidence_mode = modes.pop()
+            else:
+                public_scene.clear()
+    ctx.shared["public_scene"] = public_scene
+    ctx.shared["public_scene_evidence_mode"] = public_scene_evidence_mode
     return ctx
 
 

@@ -1,0 +1,573 @@
+{
+ "project_id": "p",
+ "timeline_id": "t",
+ "base_parent": {
+  "revision_id": "rev-0",
+  "content_digest": "sha256:tiny-publishable-rev-0"
+ },
+ "parent": {
+  "config": {
+   "theme_overrides": {
+    "visual": {
+     "canvas": {
+      "fps": 30,
+      "width": 1920,
+      "height": 1080
+     }
+    }
+   },
+   "slots": {}
+  },
+  "clips": []
+ },
+ "placements": [
+  {
+   "shot_id": "A",
+   "occurrence_id": "occ-A",
+   "placement": {
+    "start_ms": 0
+   },
+   "duration_ms": 4000
+  },
+  {
+   "shot_id": "B",
+   "occurrence_id": "occ-B",
+   "placement": {
+    "start_ms": 4000
+   },
+   "duration_ms": 4000
+  }
+ ],
+ "shots": {
+  "A": {
+   "payload": {
+    "name": "SHOT",
+    "text_bindings": [
+     {
+      "kind": "voiceover_script",
+      "content_hash": "sha256:291169f9e45c568edf1220494316ed22602231056e9b5ea86723f395eab39856",
+      "head": 1,
+      "shot_id": "A",
+      "text": "It went viral.\n"
+     }
+    ]
+   },
+   "internal_timeline": {
+    "tracks": [
+     {
+      "id": "type",
+      "kind": "visual"
+     },
+     {
+      "id": "sprite",
+      "kind": "visual"
+     },
+     {
+      "id": "plate",
+      "kind": "visual"
+     },
+     {
+      "id": "vo",
+      "kind": "audio"
+     },
+     {
+      "id": "music",
+      "kind": "audio"
+     }
+    ],
+    "clips": [
+     {
+      "id": "a-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "P",
+      "at": 0.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c1",
+       "layer": "plate",
+       "why": "the opener"
+      }
+     },
+     {
+      "id": "a-rocket",
+      "clipType": "am-sprite",
+      "track": "sprite",
+      "asset": "R",
+      "at": 1.3,
+      "hold": 2.7,
+      "params": {
+       "x": 10
+      },
+      "app": {
+       "cut": "c1",
+       "layer": "rocket",
+       "on": "\"viral\""
+      }
+     },
+     {
+      "id": "a-vo",
+      "clipType": "media",
+      "track": "vo",
+      "asset": "P",
+      "at": 0.5,
+      "from": 0.0,
+      "to": 2.0,
+      "app": {
+       "segment": "s1",
+       "words": [
+        [
+         0.1,
+         0.3,
+         "it"
+        ],
+        [
+         0.4,
+         0.6,
+         "went"
+        ],
+        [
+         0.8,
+         1.2,
+         "viral"
+        ]
+       ],
+       "text": "It went viral."
+      }
+     },
+     {
+      "id": "a-music",
+      "clipType": "media",
+      "track": "music",
+      "asset": "Q",
+      "at": 0.0,
+      "from": 0.0,
+      "to": 4.0
+     }
+    ],
+    "registry": {
+     "assets": {
+      "P": {
+       "media_id": "sha256:c57bc0c5ceafe2c7fff32d0d16a3a4b0b4bb7885238ac376c70dbf53bd669f44"
+      },
+      "R": {
+       "media_id": "sha256:7474f8a576b8a7b2da6b1e48dca004217b924a51c24424c072f57504dcfc35fb"
+      },
+      "Q": {
+       "media_id": "sha256:26ae3b4bffec466cdee5db4c6efcf5d1a3780b36d7449cf0b0952d71e2cf0b7d"
+      }
+     }
+    }
+   },
+   "base_payload": {
+    "name": "SHOT"
+   },
+   "base_internal_timeline": {
+    "tracks": [
+     {
+      "id": "type",
+      "kind": "visual"
+     },
+     {
+      "id": "sprite",
+      "kind": "visual"
+     },
+     {
+      "id": "plate",
+      "kind": "visual"
+     },
+     {
+      "id": "vo",
+      "kind": "audio"
+     },
+     {
+      "id": "music",
+      "kind": "audio"
+     }
+    ],
+    "clips": [
+     {
+      "id": "a-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "P",
+      "at": 0.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c1",
+       "layer": "plate",
+       "why": "the opener"
+      }
+     },
+     {
+      "id": "a-rocket",
+      "clipType": "am-sprite",
+      "track": "sprite",
+      "asset": "R",
+      "at": 1.3,
+      "hold": 2.7,
+      "params": {
+       "x": 10
+      },
+      "app": {
+       "cut": "c1",
+       "layer": "rocket",
+       "on": "\"viral\""
+      }
+     },
+     {
+      "id": "a-vo",
+      "clipType": "media",
+      "track": "vo",
+      "asset": "P",
+      "at": 0.5,
+      "from": 0.0,
+      "to": 2.0,
+      "app": {
+       "segment": "s1",
+       "words": [
+        [
+         0.1,
+         0.3,
+         "it"
+        ],
+        [
+         0.4,
+         0.6,
+         "went"
+        ],
+        [
+         0.8,
+         1.2,
+         "viral"
+        ]
+       ],
+       "text": "It went viral."
+      }
+     },
+     {
+      "id": "a-music",
+      "clipType": "media",
+      "track": "music",
+      "asset": "Q",
+      "at": 0.0,
+      "from": 0.0,
+      "to": 4.0
+     }
+    ],
+    "registry": {
+     "assets": {
+      "P": {
+       "media_id": "sha256:c57bc0c5ceafe2c7fff32d0d16a3a4b0b4bb7885238ac376c70dbf53bd669f44"
+      },
+      "R": {
+       "media_id": "sha256:7474f8a576b8a7b2da6b1e48dca004217b924a51c24424c072f57504dcfc35fb"
+      },
+      "Q": {
+       "media_id": "sha256:26ae3b4bffec466cdee5db4c6efcf5d1a3780b36d7449cf0b0952d71e2cf0b7d"
+      }
+     }
+    }
+   },
+   "shot_id": "A"
+  },
+  "B": {
+   "payload": {
+    "name": "SHOT",
+    "text_bindings": [
+     {
+      "kind": "voiceover_script",
+      "content_hash": "sha256:f45b60c7dffbc79e51d445942caabec122e16752d1f39d655f9e23f01aa701d4",
+      "head": 1,
+      "shot_id": "B",
+      "text": "Live now.\n"
+     }
+    ]
+   },
+   "internal_timeline": {
+    "tracks": [
+     {
+      "id": "type",
+      "kind": "visual"
+     },
+     {
+      "id": "sprite",
+      "kind": "visual"
+     },
+     {
+      "id": "plate",
+      "kind": "visual"
+     },
+     {
+      "id": "vo",
+      "kind": "audio"
+     },
+     {
+      "id": "music",
+      "kind": "audio"
+     }
+    ],
+    "clips": [
+     {
+      "id": "b-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "Q",
+      "at": 0.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c2",
+       "layer": "plate",
+       "why": "live"
+      }
+     },
+     {
+      "id": "b-type",
+      "clipType": "am-type",
+      "track": "type",
+      "at": 0.0,
+      "hold": 1.0,
+      "params": {
+       "text": "Live."
+      },
+      "app": {
+       "cut": "c2",
+       "layer": "card",
+       "for": 1.0
+      }
+     },
+     {
+      "id": "b-vo",
+      "clipType": "media",
+      "track": "vo",
+      "asset": "P",
+      "at": 1.9,
+      "from": 0.0,
+      "to": 1.0,
+      "app": {
+       "segment": "s2",
+       "words": [
+        [
+         0.1,
+         0.4,
+         "Live"
+        ],
+        [
+         0.5,
+         0.8,
+         "now"
+        ]
+       ],
+       "text": "Live now."
+      }
+     },
+     {
+      "id": "b-music",
+      "clipType": "media",
+      "track": "music",
+      "asset": "Q",
+      "at": 0.0,
+      "from": 0.0,
+      "to": 4.0
+     }
+    ],
+    "registry": {
+     "assets": {
+      "P": {
+       "media_id": "sha256:c57bc0c5ceafe2c7fff32d0d16a3a4b0b4bb7885238ac376c70dbf53bd669f44"
+      },
+      "R": {
+       "media_id": "sha256:7474f8a576b8a7b2da6b1e48dca004217b924a51c24424c072f57504dcfc35fb"
+      },
+      "Q": {
+       "media_id": "sha256:26ae3b4bffec466cdee5db4c6efcf5d1a3780b36d7449cf0b0952d71e2cf0b7d"
+      }
+     }
+    }
+   },
+   "base_payload": {
+    "name": "SHOT"
+   },
+   "base_internal_timeline": {
+    "tracks": [
+     {
+      "id": "type",
+      "kind": "visual"
+     },
+     {
+      "id": "sprite",
+      "kind": "visual"
+     },
+     {
+      "id": "plate",
+      "kind": "visual"
+     },
+     {
+      "id": "vo",
+      "kind": "audio"
+     },
+     {
+      "id": "music",
+      "kind": "audio"
+     }
+    ],
+    "clips": [
+     {
+      "id": "b-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "Q",
+      "at": 0.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c2",
+       "layer": "plate",
+       "why": "live"
+      }
+     },
+     {
+      "id": "b-type",
+      "clipType": "am-type",
+      "track": "type",
+      "at": 0.0,
+      "hold": 1.0,
+      "params": {
+       "text": "Live."
+      },
+      "app": {
+       "cut": "c2",
+       "layer": "card",
+       "for": 1.0
+      }
+     },
+     {
+      "id": "b-vo",
+      "clipType": "media",
+      "track": "vo",
+      "asset": "P",
+      "at": 1.9,
+      "from": 0.0,
+      "to": 1.0,
+      "app": {
+       "segment": "s2",
+       "words": [
+        [
+         0.1,
+         0.4,
+         "Live"
+        ],
+        [
+         0.5,
+         0.8,
+         "now"
+        ]
+       ],
+       "text": "Live now."
+      }
+     },
+     {
+      "id": "b-music",
+      "clipType": "media",
+      "track": "music",
+      "asset": "Q",
+      "at": 0.0,
+      "from": 0.0,
+      "to": 4.0
+     }
+    ],
+    "registry": {
+     "assets": {
+      "P": {
+       "media_id": "sha256:c57bc0c5ceafe2c7fff32d0d16a3a4b0b4bb7885238ac376c70dbf53bd669f44"
+      },
+      "R": {
+       "media_id": "sha256:7474f8a576b8a7b2da6b1e48dca004217b924a51c24424c072f57504dcfc35fb"
+      },
+      "Q": {
+       "media_id": "sha256:26ae3b4bffec466cdee5db4c6efcf5d1a3780b36d7449cf0b0952d71e2cf0b7d"
+      }
+     }
+    }
+   },
+   "shot_id": "B"
+  }
+ },
+ "schema_version": 1,
+ "base_parent_payload": {
+  "config": {
+   "theme_overrides": {
+    "visual": {
+     "canvas": {
+      "fps": 30,
+      "width": 1920,
+      "height": 1080
+     }
+    }
+   },
+   "slots": {}
+  },
+  "clips": []
+ },
+ "base_placements": {
+  "occ-A": {
+   "shot_id": "A",
+   "occurrence_id": "occ-A",
+   "placement": {
+    "start_ms": 0
+   },
+   "duration_ms": 4000
+  },
+  "occ-B": {
+   "shot_id": "B",
+   "occurrence_id": "occ-B",
+   "placement": {
+    "start_ms": 4000
+   },
+   "duration_ms": 4000
+  }
+ },
+ "source_mapping": {
+  "placements": {
+   "occ-A": {
+    "shot_id": "A",
+    "occurrence_id": "occ-A",
+    "placement": {
+     "start_ms": 0
+    },
+    "duration_ms": 4000
+   },
+   "occ-B": {
+    "shot_id": "B",
+    "occurrence_id": "occ-B",
+    "placement": {
+     "start_ms": 4000
+    },
+    "duration_ms": 4000
+   }
+  },
+  "shots": {
+   "A": {
+    "shot_id": "A",
+    "revision_id": "rev-shot-A",
+    "content_digest": "sha256:shot-A",
+    "internal_timeline_id": "it-A",
+    "internal_timeline_revision_id": "rev-it-A",
+    "internal_timeline_content_digest": "sha256:it-A",
+    "item_id_map": {}
+   },
+   "B": {
+    "shot_id": "B",
+    "revision_id": "rev-shot-B",
+    "content_digest": "sha256:shot-B",
+    "internal_timeline_id": "it-B",
+    "internal_timeline_revision_id": "rev-it-B",
+    "internal_timeline_content_digest": "sha256:it-B",
+    "item_id_map": {}
+   }
+  }
+ }
+}
