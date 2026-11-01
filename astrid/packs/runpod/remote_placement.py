@@ -44,6 +44,8 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from astrid.core.contracts.errors import AstridError
 
+from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
+
 PLACEMENT = "runpod"
 ENGINE_ID = "vibecomfy-h3"
 DATACENTER = "EUR-NO-1"
@@ -164,7 +166,7 @@ def sha256_file(path: Path) -> str:
 
 
 def source_digest(source_root: Path) -> str:
-    """Same digest ``scripts/pod_bootstrap.sh`` computes over the five source dirs."""
+    """Same digest the pack's bootstrap payload computes over the five source dirs."""
     lines: list[tuple[bytes, str]] = []
     for directory in SOURCE_DIRS:
         base = Path(source_root) / directory
@@ -522,11 +524,15 @@ class RemotePlacement:
         work = f"{BOOTSTRAP_ROOT}/upload-{digest}"
         archive = state.local_out / "bootstrap-sources.tar.gz"
         _build_source_archive(self.source_root, archive)
-        script = Path(__file__).resolve().parents[3] / "scripts" / "pod_bootstrap.sh"
-        self._exec_ok(state, f"mkdir -p {shlex.quote(work)}", "bootstrap directory")
-        state.claim.ops.put(archive, f"{work}/sources.tar.gz")
-        state.claim.ops.put(script, f"{work}/pod_bootstrap.sh")
-        archive.unlink(missing_ok=True)
+        script = state.local_out / "pod_bootstrap.sh"
+        script.write_text(POD_BOOTSTRAP_SCRIPT, encoding="utf-8")
+        try:
+            self._exec_ok(state, f"mkdir -p {shlex.quote(work)}", "bootstrap directory")
+            state.claim.ops.put(archive, f"{work}/sources.tar.gz")
+            state.claim.ops.put(script, f"{work}/pod_bootstrap.sh")
+        finally:
+            archive.unlink(missing_ok=True)
+            script.unlink(missing_ok=True)
         command = (
             f"set -eu; cd {shlex.quote(work)}; tar -xzf sources.tar.gz -C . ; "
             f"mkdir -p src; for d in runpod-python astrid-runtime runpod-lifecycle astrid-agent VibeComfy; do "
