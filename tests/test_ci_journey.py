@@ -114,7 +114,7 @@ def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
 def test_direct_journey_workflow_is_dispatchable_and_bound_to_published_tuple():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey-direct.yml").read_text()
     assert "workflow_dispatch: {}" in workflow
-    assert "venue/M-QUAL-R-05-1" in workflow
+    assert "venue/M-QUAL-R-05-FAILURES-REPIN-R1-1" in workflow
     assert "contents: write" in workflow
     assert "fail-fast: false" in workflow
     for job_id, runner in (
@@ -127,9 +127,9 @@ def test_direct_journey_workflow_is_dispatchable_and_bound_to_published_tuple():
     for sha in (
         "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
         "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
-        "9d3ccda1e81383082258943207745086da2aabe4",
+        "36ff224e3c9ad862e3f807e2548b997a36799543",
         "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
-        "a63d9bdac6dfcb22e4f4516f2d92f4c880477076512b5115f0cd8f415f34a9ef",
+        "b78ae7e74188f6e0bbf01950b0d388d4cf36ea990c9bb574fd8aef57a8782777",
     ):
         assert sha in workflow
     assert "before-cleanup/journey-result.json" in workflow

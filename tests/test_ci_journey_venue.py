@@ -33,7 +33,7 @@ def test_independent_rows_publish_and_hash_failures(tmp_path, monkeypatch):
     monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(global_config))
     for key, value in {
         'GITHUB_TOKEN': 'dummy', 'GITHUB_REPOSITORY': 'example/repo', 'GITHUB_RUN_ID': '42',
-        'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_REF': 'refs/heads/venue/M-QUAL-R-05-FAILURES-R1-1',
+        'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_REF': 'refs/heads/venue/M-QUAL-R-05-FAILURES-REPIN-R1-1',
         'GITHUB_SHA': 'head', 'GITHUB_WORKFLOW_REF': 'workflow', 'GITHUB_WORKFLOW_SHA': 'head',
         'ROW_RUNNER': 'runner', 'RUNNER_OS': 'Linux', 'JOURNEY_OUTCOME': 'failure',
         'EVIDENCE_OUTCOME': 'failure', 'EVIDENCE_OVERSIZE': '',

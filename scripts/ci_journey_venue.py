@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-RESULT_REF = 'refs/heads/venue-results/M-QUAL-R-05-FAILURES-R1-1'
+RESULT_REF = 'refs/heads/venue-results/M-QUAL-R-05-FAILURES-REPIN-R1-1'
 
 
 def run_row(args):

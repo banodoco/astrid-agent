@@ -5,7 +5,7 @@ name: Release-1 direct lifecycle receipts
   workflow_dispatch: {}
   push:
     branches:
-    - venue/M-QUAL-R-05-FAILURES-R1-1
+    - venue/M-QUAL-R-05-FAILURES-REPIN-R1-1
 permissions:
   contents: write
 concurrency:
@@ -52,7 +52,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: banodoco/astrid-app
-        ref: 9d3ccda1e81383082258943207745086da2aabe4
+        ref: 36ff224e3c9ad862e3f807e2548b997a36799543
         path: app
         persist-credentials: false
     - name: Check out frozen Agent candidate
@@ -99,7 +99,7 @@ jobs:
     - name: Freeze and validate candidate inputs
       shell: bash
       env:
-        CANDIDATE: '{"app":"9d3ccda1e81383082258943207745086da2aabe4","agent":"020877f12ea490308a9e5f9564c8f4a4bf77ede1","runtime":"47e5949465cb6f3afdfd1cb8a0e90009fd9d4020","pinokio":"89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4","manifest_sha256":"a63d9bdac6dfcb22e4f4516f2d92f4c880477076512b5115f0cd8f415f34a9ef","artifacts":{"public/install":"100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d","public/install.sh":"591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285","public/install.ps1":"bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"}}'
+        CANDIDATE: '{"app":"36ff224e3c9ad862e3f807e2548b997a36799543","agent":"020877f12ea490308a9e5f9564c8f4a4bf77ede1","runtime":"47e5949465cb6f3afdfd1cb8a0e90009fd9d4020","pinokio":"89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4","manifest_sha256":"b78ae7e74188f6e0bbf01950b0d388d4cf36ea990c9bb574fd8aef57a8782777","artifacts":{"public/install":"100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d","public/install.sh":"591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285","public/install.ps1":"bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"}}'
       run: |
         printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
         python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
@@ -165,7 +165,7 @@ jobs:
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/artifact-size.txt
         if-no-files-found: error
     - name: Publish this row to git results
-      if: always() && github.event_name == 'push' && github.ref == 'refs/heads/venue/M-QUAL-R-05-FAILURES-R1-1'
+      if: always() && github.event_name == 'push' && github.ref == 'refs/heads/venue/M-QUAL-R-05-FAILURES-REPIN-R1-1'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         ROW_ID: ${{ matrix.job_id }}
