@@ -583,3 +583,99 @@ def test_attached_fixture_repeats_owned_cleanup_and_rejects_unowned_controls(
     assert error.value.code == 400
     error.value.close()
     assert len(comfy.prompts) == 1
+
+
+@pytest.mark.parametrize("source", ["global", "repo", "env", "request"])
+def test_f02_sdk_bound_target_failure_is_read_only(source, tmp_path, monkeypatch):
+    """The public facade keeps the selected human target, including dry-run."""
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation import preflight, targets
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+    from astrid.sdk.generation import GenerationFacade
+
+    targets.save_target(targets.TargetRecord(endpoint="http://localhost:8199",
+        root=str(tmp_path), python=sys.executable, facts={"launch_argv": ["python", "main.py"]}))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "vibecomfy.toml").write_text('[comfyui]\nurl = "http://localhost:8200"\n')
+    if source == "env":
+        monkeypatch.setenv("VIBECOMFY_COMFYUI_URL", "http://localhost:8201")
+    observed = []
+
+    def offline(client, path, **kwargs):
+        observed.append((client.target.url, path))
+        raise OSError("selected server is offline")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("bound human target must fail before managed readiness or admission")
+
+    monkeypatch.setattr(ComfyTargetClient, "request_json", offline)
+    monkeypatch.setattr(preflight, "_comfyui_runtime_available", forbidden)
+    monkeypatch.setattr(GenerationFacade, "workflow", forbidden)
+    config = targets.config_path()
+    original, modified = config.read_bytes(), config.stat().st_mtime_ns
+    output = tmp_path / "absent-output"
+    with pytest.raises(AstridError) as error:
+        GenerationFacade().image(target="http://localhost:8202" if source == "request" else "auto",
+            project_root=repo if source == "repo" else None, prompt="one boat", out=output, dry_run=True)
+    assert error.value.code == "target_unreachable"
+    port = {"global": 8199, "repo": 8200, "env": 8201, "request": 8202}[source]
+    assert observed == [(f"http://127.0.0.1:{port}", "/system_stats")]
+    assert config.read_bytes() == original and config.stat().st_mtime_ns == modified
+    assert not output.exists()
+
+
+def test_f02_cli_dry_run_preserves_unreachable_saved_human_target(tmp_path, monkeypatch, capsys):
+    from astrid.core.generation import preflight, targets
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+
+    targets.save_target(targets.TargetRecord(endpoint="http://localhost:8199"))
+    config = targets.config_path()
+    original, modified = config.read_bytes(), config.stat().st_mtime_ns
+
+    def offline(*args, **kwargs):
+        raise OSError("selected server is offline")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("dry-run must fail before Runtime connection or managed fallback")
+
+    monkeypatch.setattr(ComfyTargetClient, "request_json", offline)
+    monkeypatch.setattr(preflight, "_comfyui_runtime_available", forbidden)
+    monkeypatch.setattr(cli, "_open_client", forbidden)
+    output = tmp_path / "absent-output"
+    assert console.main(["generate", "image", "one boat", "--dry-run", "--out", str(output)]) == 2
+    captured = capsys.readouterr()
+    assert "target_unreachable" in captured.err and ":8199" in captured.err
+    assert not captured.out and not output.exists()
+    assert config.read_bytes() == original and config.stat().st_mtime_ns == modified
+
+
+@pytest.mark.parametrize("source", ["global", "env", "request"])
+def test_f02_successful_dry_run_keeps_saved_identity_and_does_not_admit(
+    source, loopback_comfy, tmp_path, monkeypatch,
+):
+    from astrid.core.generation import preflight, targets
+    from astrid.sdk.generation import GenerationFacade
+
+    targets.save_target(targets.TargetRecord(
+        endpoint=loopback_comfy.url if source == "global" else "http://localhost:8199",
+        root=str(tmp_path), python=sys.executable, facts={"launch_argv": ["python", "main.py"]}))
+    config = targets.config_path()
+    original, modified = config.read_bytes(), config.stat().st_mtime_ns
+    targets.config_lock_path().unlink()
+    if source == "env":
+        monkeypatch.setenv("VIBECOMFY_COMFYUI_URL", loopback_comfy.url)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("dry-run on a human target must not admit a task or use managed readiness")
+
+    monkeypatch.setattr(preflight, "_comfyui_runtime_available", forbidden)
+    monkeypatch.setattr(GenerationFacade, "workflow", forbidden)
+    output = tmp_path / "absent-output"
+    plan = GenerationFacade().image(
+        prompt="one boat", target=loopback_comfy.url if source == "request" else "auto",
+        out=output, dry_run=True)
+    assert plan["target"]["endpoint"] == loopback_comfy.url
+    assert config.read_bytes() == original and config.stat().st_mtime_ns == modified
+    assert not targets.config_lock_path().exists() and not output.exists()
+    assert not loopback_comfy.prompts

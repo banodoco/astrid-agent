@@ -27,6 +27,10 @@ class VibeComfyWorkflowBackend(VibeComfyBackend):
         from astrid.packs.vibecomfy.production_engine import (
             ProductionEngineError, run_workflow_result_path,
         )
+        from astrid.core.generation.producer_result import (
+            complete_producer_result, preserve_result_on_error, source_input_ref, workflow_transport,
+        )
+        transport = workflow_transport(profile_id, comfy_url)
 
         if profile_id == "local_server":
             # Attached placement needs only its loopback URL. Output custody
@@ -44,10 +48,15 @@ class VibeComfyWorkflowBackend(VibeComfyBackend):
                 kwargs["expected_execution_identity"] = expected_execution_identity
             if workflow_input_bindings is not None:
                 kwargs["workflow_input_bindings"] = workflow_input_bindings
-            return run_workflow_result_path(
-                workflow_path, out_dir, profile_id="local_server",
-                comfy_url=comfy_url, **kwargs,
-            )
+            source = source_input_ref(workflow_path, out_dir)
+            with preserve_result_on_error(out_dir, task_id=task_identity, attempt_id=attempt_identity,
+                                          source=source, workflow_path=workflow_path, transport=transport):
+                result = run_workflow_result_path(
+                    workflow_path, out_dir, profile_id="local_server",
+                    comfy_url=comfy_url, **kwargs,
+                )
+                return complete_producer_result(result, out_dir, task_id=task_identity,
+                                                attempt_id=attempt_identity, source=source, transport=transport)
         if self._endpoint_checkout is None:
             # Local placement: embedded and host-session checkout profiles keep
             # the base behavior; the RunPod route always injects a checkout.
@@ -63,11 +72,16 @@ class VibeComfyWorkflowBackend(VibeComfyBackend):
             raise ProductionEngineError("RunPod workflow requires the original checkout readiness binding")
         if not expected_execution_identity or not attempt_identity:
             raise ProductionEngineError("RunPod workflow requires original execution and attempt identities")
-        return run_workflow_result_path(
-            workflow_path, out_dir, task_identity=task_identity,
-            attempt_identity=attempt_identity,
-            expected_execution_identity=expected_execution_identity,
-            workflow_input_bindings=workflow_input_bindings,
-            profile_id=profile_id, hc03_profile=hc03_profile,
-            endpoint_checkout=self._endpoint_checkout,
-        )
+        source = source_input_ref(workflow_path, out_dir)
+        with preserve_result_on_error(out_dir, task_id=task_identity, attempt_id=attempt_identity,
+                                      source=source, workflow_path=workflow_path, transport=transport):
+            result = run_workflow_result_path(
+                workflow_path, out_dir, task_identity=task_identity,
+                attempt_identity=attempt_identity,
+                expected_execution_identity=expected_execution_identity,
+                workflow_input_bindings=workflow_input_bindings,
+                profile_id=profile_id, hc03_profile=hc03_profile,
+                endpoint_checkout=self._endpoint_checkout,
+            )
+            return complete_producer_result(result, out_dir, task_id=task_identity,
+                                            attempt_id=attempt_identity, source=source, transport=transport)

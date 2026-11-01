@@ -27,9 +27,30 @@ class _Once(argparse.Action):
     """Reject repeated convenience flags instead of silently keeping the last."""
 
     def __call__(self, parser, namespace, value, option_string=None):
-        if getattr(namespace, self.dest, None) is not None:
+        seen = vars(namespace).setdefault('_supplied_once', set())
+        if self.dest in seen:
             raise argparse.ArgumentError(self, "specified more than once")
+        seen.add(self.dest)
         setattr(namespace, self.dest, value)
+
+
+class _GenerationParser(argparse.ArgumentParser):
+    json_errors = False
+
+    def error(self, message):
+        if self.json_errors:
+            from astrid.core.generation.preflight import generation_error
+            raise generation_error(ValueError(message), details={'constraint': message})
+        super().error(message)
+
+
+def _common_options(command):
+    command.add_argument('--input', action='append', default=[], metavar='NAME=VALUE')
+    command.add_argument('--engine', action=_Once)
+    command.add_argument('--no-wait', action='store_true', help='Return the admitted task; follow it separately.')
+    command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
+    command.add_argument('--max-usd', action=_Once, type=float)
+    command.add_argument('--deadline', action=_Once, help='Absolute UTC execution deadline.')
 
 
 def _entry_help(description: dict[str, Any]) -> str:
@@ -98,23 +119,27 @@ def _json_inputs(path: str) -> dict[str, Any]:
 
 
 def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _GenerationParser(
         prog="astrid generate",
         description="Generate media through the selected Comfy target and the Astrid runtime.",
     )
     sub = parser.add_subparsers(dest="modality", required=True)
+    command = sub.add_parser('list', help='List generation entries and readiness.')
+    command.add_argument('--kind', choices=('image', 'video', 'audio', 'generation', 'fixture'))
+    command.add_argument('--json', action='store_true')
     for modality in ("image", "video"):
         command = sub.add_parser(modality, help=f"Generate {'an image' if modality == 'image' else 'a video'}.",
             epilog=_entry_help(contextual) if contextual and contextual["kind"] == modality else None,
             formatter_class=argparse.RawDescriptionHelpFormatter)
         command.add_argument("prompt", nargs="?", help="Describe the media to generate.")
+        command.add_argument('--prompt', dest='named_prompt', action=_Once)
         command.add_argument("--model", action=_Once, help="Generation catalog entry ID (legacy selector).")
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
         command.add_argument("--mode", action=_Once, help="Generation mode; inferred from the supplied inputs by default.")
-        command.add_argument("--execution", help="Catalog execution backend, when explicitly selected.")
+        command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
-            "--target", default="auto", metavar="TARGET",
+            "--target", action=_Once, default="auto", metavar="TARGET",
             help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
@@ -130,30 +155,114 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--frames", action=_Once, type=int)
         command.add_argument("--fps", action=_Once, type=float)
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
+        _common_options(command)
     command = sub.add_parser("describe", help="Describe one entry without checking execution readiness.")
-    command.add_argument("--entry", required=True)
+    command.add_argument('workflow', nargs='?')
+    command.add_argument("--entry")
     command.add_argument("--mode")
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
     command.add_argument("--as-entry", help="Save the workflow as an entry before running it.")
-    command.add_argument("--target", default="auto")
-    command.add_argument("--mode", help="Workflow mode, when it cannot be inferred.")
+    command.add_argument('--replace', action='store_true')
+    command.add_argument('--inputs-json', action=_Once, metavar='FILE')
+    command.add_argument("--target", action=_Once, default="auto")
+    command.add_argument("--mode", action=_Once, help="Workflow mode, when it cannot be inferred.")
     command.add_argument("--project")
     command.add_argument("--out")
-    command.add_argument("--prompt")
-    command.add_argument("--negative-prompt")
-    command.add_argument("--edit", "--image-ref", dest="image_ref")
-    command.add_argument("--width", type=int)
-    command.add_argument("--height", type=int)
-    command.add_argument("--seed", type=int)
-    command.add_argument("--frames", type=int)
-    command.add_argument("--fps", type=float)
-    command.add_argument("--steps", type=int)
-    command.add_argument("--cfg", dest="guidance_scale", type=float)
+    command.add_argument("--prompt", action=_Once)
+    command.add_argument("--negative-prompt", action=_Once)
+    command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once)
+    command.add_argument("--width", action=_Once, type=int)
+    command.add_argument("--height", action=_Once, type=int)
+    command.add_argument("--seed", action=_Once, type=int)
+    command.add_argument("--frames", action=_Once, type=int)
+    command.add_argument("--fps", action=_Once, type=float)
+    command.add_argument("--steps", action=_Once, type=int)
+    command.add_argument("--cfg", '--guidance-scale', dest="guidance_scale", action=_Once, type=float)
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--json", action="store_true")
+    _common_options(command)
+    command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
+    command.add_argument('--target', default='auto')
+    command.add_argument('--engine', default='comfyui')
+    command.add_argument('--save', action='store_true')
+    command.add_argument('--input', action='append', default=[])
+    command.add_argument('--json', action='store_true')
+    command = sub.add_parser('release', help='Admit release through the current host owner.')
+    command.add_argument('--engine', required=True)
+    command.add_argument('--target', required=True)
+    command.add_argument('--no-wait', action='store_true')
+    command.add_argument('--json', action='store_true')
     return parser
+
+
+def _values(parsed):
+    from astrid.core.generation.entries import merge_input_values
+    common = {name: getattr(parsed, name, None) for name in (
+        'prompt', 'negative_prompt', 'image_ref', 'width', 'height', 'seed',
+        'frames', 'fps', 'steps', 'guidance_scale')}
+    common = {name: value for name, value in common.items() if value is not None}
+    named = getattr(parsed, 'named_prompt', None)
+    if named is not None:
+        if not named.strip():
+            raise ValueError('prompt must not be empty')
+        if 'prompt' in common:
+            raise ValueError('duplicate input values: positional prompt and --prompt')
+        common['prompt'] = named
+    structured = _json_inputs(parsed.inputs_json) if getattr(parsed, 'inputs_json', None) else {}
+    return merge_input_values(common, structured, assignments=parsed.input)
+
+
+def _controls(parsed):
+    controls = {}
+    if parsed.no_wait:
+        controls['wait'] = False
+    for name in ('engine', 'consent', 'max_usd', 'deadline'):
+        value = getattr(parsed, name, None)
+        if value is not None and value != []:
+            controls[name] = value
+    return controls
+
+
+def _targets_command(parsed):
+    from astrid.core.generation import targets
+    from astrid.core.generation.entries import merge_input_values
+    from astrid.core.generation.preflight import readiness_envelope
+    if targets.canonical_engine(parsed.engine) != 'comfyui':
+        raise ValueError('Phase 1 targets support only comfyui')
+    updates = merge_input_values(assignments=parsed.input)
+    if parsed.target == 'runpod':
+        if parsed.save:
+            allowed = {'gpu_types', 'datacenter_id', 'volume', 'image', 'idle_timeout_seconds',
+                       'provider_account_ref', 'credential_ref'}
+            if updates.keys() - allowed:
+                raise ValueError('unsupported RunPod preference: ' + ', '.join(sorted(updates.keys() - allowed)))
+            def save(document):
+                preferences = document.setdefault('runpod', {})
+                if not isinstance(preferences, dict):
+                    raise ValueError('runpod preferences must be a table')
+                for name, value in updates.items():
+                    if value is None:
+                        preferences.pop(name, None)
+                    else:
+                        preferences[name] = value
+            targets.update_config(save)
+        elif updates:
+            raise ValueError('provider inputs require --save')
+        payload = readiness_envelope()
+        payload['preferences'] = targets.read_config().get('runpod', {})
+    else:
+        selection = targets.resolve_target(parsed.target)
+        if updates:
+            raise ValueError('local target input updates are not supported; select an explicit URL')
+        if parsed.save:
+            if selection.record is None:
+                raise ValueError('select an explicit target before saving')
+            targets.save_target(selection.record)
+        payload = readiness_envelope(target=selection.record)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
 
 
 def _workflow_command(parsed: argparse.Namespace) -> int:
@@ -166,12 +275,29 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     from astrid.packs.vibecomfy.production_engine import load_workflow_path
     from vibecomfy.entries import draft_entry, import_as_entry
 
+    values = _values(parsed)
+    from astrid.sdk.generation import _generation_controls
+    _generation_controls(engine=parsed.engine, consent=parsed.consent,
+                         max_usd=parsed.max_usd, deadline=parsed.deadline)
     path = Path(parsed.workflow).expanduser()
     if path.is_dir():
         path = path / "workflow.py"
+    if parsed.replace and not parsed.as_entry:
+        raise ValueError('--replace requires --as-entry')
     if parsed.as_entry:
-        entry = import_as_entry(path, parsed.as_entry)
+        if parsed.dry_run:
+            raise ValueError('--as-entry writes an entry; omit it for a read-only dry-run')
+        if parsed.replace:
+            from inspect import signature
+            if 'replace' not in signature(import_as_entry).parameters:
+                from astrid.core.generation.preflight import generation_error
+                raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
+                                       code='missing_dependency', details={'field': 'replace'})
+        entry = import_as_entry(path, parsed.as_entry, **({'replace': True} if parsed.replace else {}))
     else:
+        # Validate all controls with offline facts before resolving/probing a
+        # target. The execution path revalidates the same native bindings.
+        description, values = entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
         target = select_generation_target(parsed.target)
         with TemporaryDirectory(prefix="astrid-workflow-inspect-") as scratch:
             loaded = load_workflow_path(path, scratch, comfy_url=target.target.url if target else "")
@@ -182,37 +308,59 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     if mode not in entry["modes"]:
         entry = dict(entry, modes=[mode], needs=[need for need in entry["needs"]
             if need.get("ambiguity") != "audio mode is unknown; choose tts, music, or sfx"])
-    values = {name: getattr(parsed, name, None) for name in
-              ("prompt", "negative_prompt", "image_ref", "width", "height", "seed", "frames", "fps", "steps", "guidance_scale")}
-    values = {key: value for key, value in values.items() if value is not None}
     def generate(client=None):
         from astrid.sdk.generation import _load_model_registry
         return astrid.generate._generate_on_target(registry=_load_model_registry(), model=None,
             mode=mode, modality=entry["kind"], target=parsed.target, execution=None,
             inputs=values, dry_run=parsed.dry_run, workflow_entry=entry,
-            client=client, project=parsed.project, out=parsed.out)
+            client=client, project=parsed.project, out=parsed.out, **_controls(parsed))
     if parsed.dry_run:
         result = generate()
     else:
         with _open_client() as client:
             result = generate(client)
-    from astrid.core.contracts.errors import error_from_result, AstridError
     if getattr(result, "ok", True) is False:
-        raise error_from_result(result) or AstridError("Workflow generation failed.")
+        from astrid.core.generation.preflight import generation_error
+        raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
+                               task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str]) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
-    argv = list(sys.argv[1:] if argv is None else argv)
     parser = _parser(_context_description(argv))
+    def configure(parser):
+        parser.json_errors = '--json' in argv
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    configure(child)
+    configure(parser)
     parsed = parser.parse_args(argv)
+    if parsed.modality == 'list':
+        from astrid.core.generation.listing import main as list_main
+        return list_main(argv)
+    if parsed.modality == 'targets':
+        return _targets_command(parsed)
+    if parsed.modality == 'release':
+        with _open_client() as client:
+            result = _generate_facade().release(engine=parsed.engine, target=parsed.target,
+                                               client=client, wait=not parsed.no_wait)
+        payload = result.to_dict() if hasattr(result, 'to_dict') else result
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
     if parsed.modality == "describe":
         from astrid.core.generation.entries import describe_entry
         try:
-            description = describe_entry(parsed.entry, mode=parsed.mode)
+            if bool(parsed.entry) == bool(parsed.workflow):
+                raise ValueError('describe requires a workflow path or --entry')
+            if parsed.workflow:
+                from astrid.core.generation.entries import describe_workflow
+                description = describe_workflow(Path(parsed.workflow), mode=parsed.mode)
+            else:
+                description = describe_entry(parsed.entry, mode=parsed.mode)
         except (ValueError, KeyError) as exc:
             parser.error(str(exc))
         print(json.dumps(description, indent=2, sort_keys=True) if parsed.json else _entry_help(description))
@@ -227,41 +375,38 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--width and --height must be supplied together")
     if parsed.width is not None and (parsed.width <= 0 or parsed.height <= 0):
         parser.error("--width and --height must be positive")
-    values = {name: getattr(parsed, name) for name in (
-        "prompt", "image_ref", "width", "height", "steps", "seed", "guidance_scale",
-        "negative_prompt", "frames", "fps") if getattr(parsed, name) is not None}
+    try:
+        values = _values(parsed)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     description = None
     if parsed.inputs_json:
         if not (parsed.entry or parsed.model):
             parser.error("--inputs-json requires --entry or --model")
-        try:
-            structured = _json_inputs(parsed.inputs_json)
-        except (OSError, ValueError) as exc:
-            parser.error(str(exc))
-        duplicate = sorted(set(values) & set(structured))
-        if duplicate:
-            parser.error("duplicate input values: " + ", ".join(duplicate))
-        values.update(structured)
     if parsed.entry or parsed.inputs_json:
         from astrid.core.generation.entries import resolve_entry_inputs
         try:
             description, values = resolve_entry_inputs(parsed.entry or parsed.model, values,
                 mode=parsed.mode, kind=parsed.modality)
         except (ValueError, KeyError, TypeError) as exc:
+            if parser.json_errors:
+                from astrid.core.generation.entries import describe_entry
+                from astrid.sdk.generation import GenerationInputError
+                try:
+                    context = describe_entry(parsed.entry or parsed.model, mode=parsed.mode)
+                except (ValueError, KeyError):
+                    context = None
+                raise GenerationInputError(str(exc), entry=context) from exc
             parser.error(str(exc))
-    elif parsed.prompt is None:
+    elif 'prompt' not in values:
         parser.error("prompt is required unless declared entry inputs are supplied")
-    from astrid.core.contracts.errors import (
-        AstridError,
-        coerce_astrid_error,
-        error_from_result,
-    )
     from astrid.sdk.exceptions import AstridSDKError
 
     kwargs: dict[str, Any] = {
         "target": parsed.target,
         "dry_run": parsed.dry_run,
         **values,
+        **_controls(parsed),
     }
     if parsed.entry:
         kwargs["entry"] = parsed.entry
@@ -287,13 +432,17 @@ def main(argv: list[str] | None = None) -> int:
     except AstridSDKError as exc:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
-        raise coerce_astrid_error(exc) from exc
+        from astrid.core.generation.preflight import generation_error
+        selector = ['--entry', parsed.entry or parsed.model] if parsed.entry or parsed.model else []
+        raise generation_error(exc, fixes=[{
+            'argv': ['astrid', 'generate', 'describe', *selector] if selector else
+                    ['astrid', 'generate', 'targets', '--target', parsed.target],
+            'scope': 'read_only', 'details': {'guidance': getattr(exc, 'fix', None)}}]) from exc
     if getattr(result, "ok", True) is False:
-        raise error_from_result(result) or AstridError(
-            "Generation did not succeed.",
-            code="generation_failed",
-            recovery_command="astrid tasks list",
-        )
+        from astrid.core.generation.preflight import generation_error
+        raise generation_error(getattr(result, 'error', None) or {
+            'code': 'generation_failed', 'message': 'Generation did not succeed.'},
+            task_id=getattr(result, 'kernel_task_id', None))
     payload = result.to_dict() if hasattr(result, "to_dict") else result
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -304,6 +453,19 @@ def main(argv: list[str] | None = None) -> int:
         if payload.get("run_dir"):
             print(f"run: {payload['run_dir']}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    from astrid.core.generation.preflight import generation_error
+    try:
+        return _main(argv)
+    except (RuntimeError, ValueError, OSError) as exc:
+        error = generation_error(exc)
+        if '--json' in argv:
+            print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
+            return 2
+        raise error from exc
 
 
 if __name__ == "__main__":
