@@ -1,0 +1,7 @@
+{
+  "command": "Get-ScheduledTask / Get-ScheduledTaskInfo",
+  "phase": "before-cleanup",
+  "platform": "win32",
+  "stdout": "not-found\n",
+  "unit_file": null
+}

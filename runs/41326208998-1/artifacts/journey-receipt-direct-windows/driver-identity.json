@@ -1,0 +1,7 @@
+{
+  "job_id": "direct-windows",
+  "driver_ref": "refs/heads/venue/M-VENUE-V-03-R05-GITONLY-1",
+  "driver_checkout_sha": "f02a92c1ca61b02070ba444dabb4c223f95640cf",
+  "run_id": "41326208998",
+  "workflow_sha": "f02a92c1ca61b02070ba444dabb4c223f95640cf"
+}

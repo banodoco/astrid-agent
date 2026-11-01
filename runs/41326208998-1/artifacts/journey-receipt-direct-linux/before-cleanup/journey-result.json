@@ -1,0 +1,106 @@
+{
+  "candidate_bootstrap": {
+    "artifacts": {
+      "public/install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+      "public/install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",
+      "public/install.sh": "591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285"
+    },
+    "manifest_sha256": "ced136903a7319e78a0be7db0cc1709c0663eaf7d567c040fe1812a916693874"
+  },
+  "candidate_checkouts": {
+    "agent": {
+      "repo": "/home/runner/work/astrid-agent/astrid-agent/candidate-agent",
+      "sha": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2"
+    },
+    "app": {
+      "repo": "/home/runner/work/astrid-agent/astrid-agent/app",
+      "sha": "a55bec9ff384b5bbfee5535962880084ab2adb1b"
+    },
+    "pinokio": {
+      "repo": "/home/runner/work/astrid-agent/astrid-agent/pinokio",
+      "sha": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4"
+    },
+    "runtime": {
+      "repo": "/home/runner/work/astrid-agent/astrid-agent/runtime",
+      "sha": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+    }
+  },
+  "checks": {
+    "health": "not-run",
+    "one_runtime": "not-run",
+    "release": "not-run",
+    "semantic_data": "not-run",
+    "service": "not-run",
+    "task_settled": "not-run",
+    "unrelated_sentinel": "not-run"
+  },
+  "error": "RuntimeError: Direct journey service is not owned by the expected systemd user unit",
+  "import_origins": null,
+  "installed_tuple": null,
+  "job_id": "direct-linux",
+  "mode": "direct",
+  "os_build": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39",
+  "receipt_kind": "release1-installed-lifecycle",
+  "release0_fixture": {
+    "bootstrap_sha256": {
+      "install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+      "install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"
+    },
+    "fixture_sums_sha256": "58221a50aa7940e3121d6239ddeb92d6409df3711096aac1161c7ec130b755c0",
+    "manifest_sha256": "fe12781e4da60d441595c08f84cb8d0390d840ab7c71227b8c4eff791553795e",
+    "provenance_sha256": "d87272d1d8638e8f7293fa9c728cfd8f6bfc63eeab0b7893324b6224c90787e5",
+    "sources": {
+      "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+      "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"
+    }
+  },
+  "release_transition": null,
+  "run_roots": {
+    "data": "/home/runner/work/_temp/astrid-r1-direct-linux/data",
+    "program": "/home/runner/work/_temp/astrid-r1-direct-linux/program"
+  },
+  "runner_image": "ubuntu-24.04",
+  "runner_provenance": {
+    "ImageOS": "ubuntu24",
+    "ImageVersion": "20261026.354.1",
+    "RUNNER_OS": "Linux",
+    "observed_os_family": "linux"
+  },
+  "scenario": "release0-to-release1",
+  "schema_version": 3,
+  "semantic_data": null,
+  "sentinel": {
+    "before_lifecycle": {
+      "alive": true,
+      "exit_code": null,
+      "observed_birth": "Sun Nov  1 16:25:22 2026",
+      "pid": 3268
+    },
+    "birth": "Sun Nov  1 16:25:22 2026",
+    "pid": 3268
+  },
+  "service_manager_prerequisite": {
+    "evidence": "/home/runner/work/_temp/astrid-r1-direct-linux/evidence/release0-to-release1/service-manager-prerequisite.log",
+    "foreground_fallback": false,
+    "manager": "systemd-user",
+    "outcome": "pass",
+    "required": true,
+    "version": "systemd 255 (255.4-1ubuntu8.18)"
+  },
+  "shell": "sh",
+  "source_override_test_mode": false,
+  "sources": {
+    "agent": {
+      "sha": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2"
+    },
+    "app": {
+      "repo": "/home/runner/work/astrid-agent/astrid-agent/app",
+      "sha": "a55bec9ff384b5bbfee5535962880084ab2adb1b"
+    },
+    "runtime": {
+      "schema_digest": "sha256:9628bb5fd6e1dbbec392dd39f2e01031622dcf52d7ccff7cd1f0ad10743dcb1c",
+      "sha": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+    }
+  },
+  "status": "fail"
+}

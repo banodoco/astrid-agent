@@ -1,0 +1,28 @@
+**********************
+PowerShell transcript start
+Start time: 20261101162523
+Username: runnervm48cm3\runner
+RunAs User: runnervm48cm3\runner
+Configuration Name: 
+Machine: runnervm48cm3 (Unix 7.0.0.1017)
+Host Application: /opt/microsoft/powershell/7/pwsh.dll -command . '/home/runner/work/_temp/bdda268c-6be6-4335-988d-420f5e725d9b.ps1'
+Process ID: 3237
+PSVersion: 7.6.9
+PSEdition: Core
+GitCommitId: 7.6.9
+OS: Ubuntu 24.04.5 LTS
+Platform: Unix
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.4
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+Transcript started, output file is /home/runner/work/_temp/journey-direct-linux.log
+Journey cleanup failed: RuntimeError: final-uninstall.log: exit 1; see /home/runner/work/_temp/astrid-r1-direct-linux/evidence/release0-to-release1/final-uninstall.log
+Journey cleanup failed: RuntimeError: final-uninstall.log: exit 1; see /home/runner/work/_temp/astrid-r1-direct-linux/evidence/release0-to-release1/final-uninstall.log
+Journey failed: [Errno 2] No such file or directory: '/home/runner/.config/systemd/user/astrid.service'
+Journey failed: [Errno 2] No such file or directory: '/home/runner/.config/systemd/user/astrid.service'
+**********************
+PowerShell transcript end
+End time: 20261101162708
+**********************
