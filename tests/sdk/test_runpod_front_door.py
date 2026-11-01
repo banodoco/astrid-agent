@@ -24,7 +24,6 @@ PAID = dict(consent=('paid',), max_usd=2.0, deadline='2099-01-01T00:00:00Z')
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    monkeypatch.setattr(socket, 'connect', lambda *a, **k: pytest.fail('network used'), raising=False)
     monkeypatch.setattr(socket.socket, 'connect', lambda *a, **k: pytest.fail('network used'))
     monkeypatch.setattr(socket, 'create_connection', lambda *a, **k: pytest.fail('network used'))
 
@@ -144,20 +143,36 @@ def route(request, tmp_path, monkeypatch):
         # F05 Runtime admission fake; F06 publication stays outside this unit.
         return invocation._observe_task_invocation(client, capability_id=capability_id,
             capability_type='executor', native_kind='command', task_id='task-a', run_id='run-a',
-            initial_task=task, initial_ok=True, wait=False, owner_tick=tick,
-            discover_managed_outputs=False)
+            initial_task=task, initial_ok=True, wait=kwargs['wait'], owner_tick=tick,
+            timeout_seconds=1, poll_seconds=0.001, discover_managed_outputs=False)
 
     client.invoke_result = invoke_result
     return SimpleNamespace(kind=kind, mode=mode, entry=entry, source=source, owner=owner,
                            client=client, calls=calls, tasks=tasks, tmp=tmp_path)
 
 
-def generate_route(route, *, raw=False, **kwargs):
+def generate_route(route, *, raw=False, wait=False, **kwargs):
     if raw:
         return GenerationFacade().workflow(workflow=route.source, target='runpod', inputs={},
-            client=route.client, project='demo', wait=False, **kwargs)
+            client=route.client, project='demo', wait=wait, **kwargs)
     return getattr(GenerationFacade(), route.kind)(entry=route.entry['id'], target='runpod',
-        client=route.client, project='demo', wait=False, **kwargs)
+        client=route.client, project='demo', wait=wait, **kwargs)
+
+
+@pytest.mark.parametrize('raw', [False, True])
+def test_waiting_route_activates_once_and_reconstructs_publication_fake(route, raw):
+    from astrid.core.generation import GENERATION_RESULT_KEY
+    from astrid.core.generation.backends.base import GenerationResult
+    monitor = route.owner.monitor
+    def settle(task):
+        monitor(task)
+        if task['state'] == 'queued':
+            route.tasks['task-a'].update(state='succeeded', result={
+                'outputs': [], 'payload': {GENERATION_RESULT_KEY: GenerationResult(run_dir=route.tmp).to_dict()}})
+    route.owner.monitor = settle
+    result = generate_route(route, raw=raw, wait=True, **PAID)
+    assert isinstance(result, GenerationResult) and result.task_id == 'task-a'
+    assert len(route.calls) == len(route.owner.activated) == len(route.owner.retired) == 1
 
 
 @pytest.mark.parametrize('raw', [False, True])
@@ -225,6 +240,13 @@ def test_cli_paid_flags_match_sdk_and_retain_admission(route, monkeypatch, capsy
     assert {key: preparation[key] for key in PAID} == PAID
 
 
+def test_cli_no_wait_text_returns_task_without_claiming_completion(route, monkeypatch, capsys):
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(route.client))
+    assert cli.main([route.kind, '--entry', route.entry['id'], '--target', 'runpod', '--project', 'demo',
+        '--consent', 'paid', '--max-usd', '2', '--deadline', PAID['deadline'], '--no-wait']) == 0
+    assert capsys.readouterr().out == 'task: task-a\n'
+
+
 def test_target_describe_and_release_use_typed_owner_without_claim(route, monkeypatch, capsys):
     monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(route.client))
     assert cli.main(['describe', '--target', 'runpod', '--json']) == 0
@@ -234,6 +256,16 @@ def test_target_describe_and_release_use_typed_owner_without_claim(route, monkey
     assert release['idempotency_key'] == 'runpod-release:operation-a'
     assert release['state'] == 'cleanup_pending'
     assert route.owner.events == ['describe', ('release', False)]
+
+
+def test_release_denial_keeps_the_runtime_task_and_blocked_envelope(route, monkeypatch, capsys):
+    route.owner.release = lambda **kwargs: InvocationResult('runpod.release', 'executor', 'command', False,
+        error={'code': 'cleanup_pending', 'message': 'drain is uncertain'}, kernel_task_id='release-task-a')
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(route.client))
+    assert cli.main(['release', '--engine', 'comfyui', '--target', 'runpod', '--json']) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result['status'] == 'blocked' and result['task_id'] == 'release-task-a'
+    assert result['issues'][0]['code'] == 'cleanup_pending'
 
 
 def test_absent_host_interface_is_a_blocked_sdk_and_cli_envelope(route, monkeypatch, capsys):
@@ -257,7 +289,53 @@ def test_foreign_binding_on_follow_never_reactivates(route):
     assert len(route.calls) == len(route.owner.activated) == 1
 
 
+def test_no_wait_retains_exact_custody_when_activation_is_uncertain(route):
+    def fail(task):
+        raise RuntimeError('activation response lost')
+    route.owner.monitor = fail
+    with pytest.raises(RuntimeError, match='activation response lost'):
+        generate_route(route, **PAID)
+    assert len(route.calls) == 1
+    assert route.owner.retained['task-a'] is route.client._generation_task_owners['task-a']
+    assert not route.owner.retired
+
+
+def test_same_host_h3_follow_retains_one_monitor_while_run_child_appears(tmp_path):
+    owner = FakeOwner(tmp_path, None)
+    client = SimpleNamespace()
+    child = {'present': False, 'ensured': False, 'ensure_count': 0}
+    def h3_monitor(parent):
+        # F07 fake has the same polling responsibility as PreparedH3OwnerMonitor:
+        # the run child may appear after the no-wait parent receipt is returned.
+        if child['present'] and not child['ensured']:
+            child['ensured'] = True
+            child['ensure_count'] += 1
+    tick = invocation.retain_prepared_owner(client, recovery_path=tmp_path / 'h3-receipt.json',
+        capability_id='h3_av.transform', monitor=h3_monitor, owner=owner)
+    parent = {'task_id': 'parent-a', 'run_id': 'run-a', 'capability_id': 'h3_av.transform', 'state': 'running'}
+    client.tasks = SimpleNamespace(show=lambda task_id: parent)
+    result = invocation._observe_task_invocation(client, capability_id='h3_av.transform',
+        capability_type='executor', native_kind='command', task_id='parent-a', run_id='run-a',
+        initial_task=parent, initial_ok=True, wait=False, owner_tick=tick, discover_managed_outputs=False)
+    assert result.ok and child['ensure_count'] == 0
+    child['present'] = True
+    owner.retained['parent-a'](parent)
+    owner.retained['parent-a'](parent)
+    parent.update(state='succeeded', result={'outputs': []})
+    followed = invocation.observe_task_invocation(client, capability_id='h3_av.transform',
+        capability_type='executor', native_kind='command', task_id='parent-a', run_id='run-a', wait=True)
+    assert followed.ok and child['ensure_count'] == 1
+    assert client._generation_task_owners['parent-a'] is tick
+
+
 def test_h3_no_wait_uses_prepared_child_and_preserves_parent_default(tmp_path, monkeypatch):
+    entry = {'id': 'h3', 'action': 'h3_av.transform', 'kind': 'video', 'modes': ['transform'],
+             'inputs': [{'name': 'request', 'type': 'file', 'required': True, 'file_custody': 'producer_local'},
+                        {'name': 'asset_map', 'type': 'file', 'required': True, 'file_custody': 'producer_local'}]}
+    monkeypatch.setattr(entries, 'find_entry', lambda name: entry if name == 'h3' else None)
+    monkeypatch.setattr(entries, 'describe_entry', lambda *a, **k: {**entry, 'source': 'action', 'mode': 'transform'})
+    import astrid.sdk as sdk
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **k: ModelRegistry([]))
     owner = FakeOwner(tmp_path, None)
     calls = []
     client = SimpleNamespace(runpod_generation_owner=owner,
@@ -292,6 +370,12 @@ def test_note_11_unqualified_wan_mcp_generate_and_generic_invoke_refuse_identica
     monkeypatch.setattr(mcp_server, '_run', run)
     result = mcp_server.call_tool(mcp_server._generation_tools()['generate_video'],
         {'model': 'wan-2.2', 'mode': 'i2v', 'prompt': 'boat', 'image_ref': 'start.png'})
+    # Stub only discovery. The model matrix, qualification gate, SDK invoke
+    # and MCP/CLI refusal projection remain production code.
+    monkeypatch.setattr(sdk, '_load_registries', lambda **k: (None, None, None))
+    monkeypatch.setattr(sdk, 'get_capability', lambda *a, **k: SimpleNamespace(
+        id='generation.generate_video', capability_type='executor', native_kind='command',
+        definition={}, inputs=(), outputs=()))
     with pytest.raises(Exception) as raised:
         sdk.invoke('generation.generate_video', kind='executor',
             inputs={'model': 'wan-2.2', 'mode': 'i2v', 'execution': 'local', 'prompt': 'boat', 'image_ref': 'start.png'},

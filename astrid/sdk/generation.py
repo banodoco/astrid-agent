@@ -204,6 +204,8 @@ def _generation_boundary(method):
             if canonical is exc:
                 raise
             raise canonical from exc
+        except (ValueError, RuntimeError, OSError) as exc:
+            raise generation_error(exc) from exc
         from .results import InvocationResult
         if isinstance(result, InvocationResult) and not result.ok and result.error is not None:
             from dataclasses import replace

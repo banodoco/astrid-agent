@@ -323,6 +323,10 @@ def _main(argv: list[str]) -> int:
         with _open_client() as client:
             result = _generate_facade().release(engine=parsed.engine, target=parsed.target,
                                                client=client, wait=not parsed.no_wait)
+        if getattr(result, 'ok', True) is False:
+            from astrid.core.generation.preflight import generation_error
+            raise generation_error(getattr(result, 'error', None) or ValueError('Release admission failed'),
+                                   task_id=getattr(result, 'kernel_task_id', None))
         payload = result.to_dict() if hasattr(result, 'to_dict') else result
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
@@ -428,6 +432,9 @@ def _main(argv: list[str]) -> int:
     payload = result.to_dict() if hasattr(result, "to_dict") else result
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
+    elif parsed.no_wait:
+        task_id = payload.get('kernel_task_id') or payload.get('task_id')
+        print(f'task: {task_id}' if task_id else json.dumps(payload, sort_keys=True))
     else:
         print(f"{parsed.modality} generation complete")
         for path in payload.get("image_paths", []):

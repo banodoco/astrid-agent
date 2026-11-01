@@ -14,6 +14,7 @@ import platform
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -66,8 +67,20 @@ class _RetainedPreparedOwner:
         self.retained = False
         self.activated = False
         self.retired = False
+        self._lock = threading.RLock()
 
     def __call__(self, task):
+        with self._lock:
+            try:
+                self._tick(task)
+            except Exception as exc:
+                error = exc if isinstance(exc, AstridSDKError) else CapabilityInvocationError(_redact_message(str(exc)))
+                error.task_id = task.get('task_id')
+                if error is exc:
+                    raise
+                raise error from exc
+
+    def _tick(self, task):
         identity = tuple(task.get(key) for key in ('task_id', 'run_id', 'capability_id'))
         if any(not isinstance(value, str) or not value for value in identity):
             raise CapabilityInvocationError('prepared owner requires exact task/run/capability identity')
@@ -107,6 +120,10 @@ def retain_prepared_owner(client, *, recovery_path, capability_id, monitor,
     key = (str(Path(recovery_path).expanduser().absolute()), capability_id)
     if key not in owners:
         owners[key] = _RetainedPreparedOwner(monitor, owner, execution_request, endpoint_checkout)
+    elif (owners[key].monitor is not monitor or owners[key].owner is not owner
+          or owners[key].execution_request != execution_request
+          or owners[key].endpoint_checkout is not endpoint_checkout):
+        raise CapabilityValidationError('prepared recovery path already belongs to another owner')
     return owners[key]
 
 
@@ -3476,7 +3493,8 @@ def _observe_task_invocation(
     locator's already-read task. When a legacy locator has no saved DTO, a
     non-waiting observation performs one authorized task read. Waiting always
     uses the same Runtime polling and result construction as fresh invocation.
-    This helper reads task/output state only; it never dispatches or settles.
+    A retained prepared owner may activate/retire its exact binding while
+    observing. This helper never admits, retries or settles a Runtime task.
     """
     retained = getattr(client, '_generation_task_owners', None)
     if retained is None and owner_tick is not None:
@@ -3588,7 +3606,6 @@ def _observe_task_invocation(
             task = getattr(observed, 'data', observed if isinstance(observed, Mapping) else None)
         if not isinstance(task, Mapping) or task.get('task_id') != task_id or task.get('run_id') != run_id:
             raise CapabilityInvocationError('prepared admission omitted its exact task readback')
-        owner_tick(task)
         if isinstance(owner_tick, _RetainedPreparedOwner) and not owner_tick.retained:
             retain = getattr(owner_tick.owner, 'retain', None)
             if not callable(retain):
@@ -3597,6 +3614,7 @@ def _observe_task_invocation(
                 raise CapabilityInvocationError('prepared no-wait requires the retained host owner dispatcher')
             retain(task, owner_tick)
             owner_tick.retained = True
+        owner_tick(task)
     if not wait:
         observed_task = raw_result.get("task")
         if isinstance(observed_task, Mapping):
@@ -4243,6 +4261,10 @@ def invoke(
                 owner_tick = retain_prepared_owner(client, recovery_path=recovery_path,
                     capability_id=capability_id,
                     monitor=PreparedH3OwnerMonitor(client, public_inputs["prepared_worker"]))
+    if owner_tick is not None and not wait and not dry_run:
+        if (not callable(getattr(getattr(owner_tick, 'owner', None), 'retain', None))
+                and not callable(getattr(client, 'retain_generation_owner', None))):
+            raise CapabilityPreconditionError('prepared no-wait requires the retained host owner dispatcher')
     if recovery_path is not None and _recovery is None:
         if dry_run:
             raise CapabilityValidationError("recovery is unavailable for dry-run previews")
