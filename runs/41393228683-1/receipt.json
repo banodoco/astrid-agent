@@ -1,0 +1,67 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "set -eu\nmkdir -p evidence\ngit -C agent fetch --no-tags --depth=1 origin 3204bb00135bec8ee2d2d3fb21eed5abfceca649\ngit -C agent cat-file -e 3204bb00135bec8ee2d2d3fb21eed5abfceca649^{commit}\npython3 -m venv .proof-venv\n.proof-venv/bin/python -m pip install 'pytest==9.0.2' 'pytest-timeout>=2.4' 'setuptools==80.9.0' 'wheel==0.46.3' build pyyaml jsonschema filelock python-dotenv uv Pillow\n.proof-venv/bin/python -m pip install --no-deps ./runtime ./agent\nexport PATH=\"$PWD/.proof-venv/bin:$PATH\"\nunset XDG_CONFIG_HOME\nexport PYTHONPATH=\"$PWD/agent:$PWD/runtime:$PWD/runtime/packages/python\"\nexport ASTRID_RUNTIME_CHECKOUT=\"$PWD/runtime\" PYTHONDONTWRITEBYTECODE=1\ncd agent\nset +e\n../.proof-venv/bin/python -m pytest --collect-only -q -o addopts= -m 'not integration and not darwin_native and not opt_in and not installed and not remotion and not chrome and not codex_cli and not workstation and not omp and not gpu and not app_checkout' tests/test_update_job_platform.py tests/test_installer_* tests/test_verify_installed.py tests/test_installer_pre_stop_recovery.py tests/test_installer_cli_recovery.py tests/test_installer_update_continuation.py tests/test_installer_update_reconcile.py tests/test_installer_update_job.py > ../evidence/collection.log 2>&1\ncollection=$?\npython3 -c 'import re,sys; s=open(\"../evidence/collection.log\").read(); m=re.search(r\"(\\d+)(?:/\\d+)? tests? collected\", s); sys.exit(0 if m and int(m.group(1)) > 0 else 1)'\nnonzero_collection=$?\nprintf 'collection=%s\\nnonzero_collection=%s\\n' \"$collection\" \"$nonzero_collection\" > ../evidence/inner-exit-codes.txt\n../.proof-venv/bin/python -m pytest -q -o addopts= -m 'not integration and not darwin_native and not opt_in and not installed and not remotion and not chrome and not codex_cli and not workstation and not omp and not gpu and not app_checkout' --timeout=90 tests/test_update_job_platform.py tests/test_installer_* tests/test_verify_installed.py tests/test_installer_pre_stop_recovery.py tests/test_installer_cli_recovery.py tests/test_installer_update_continuation.py tests/test_installer_update_reconcile.py tests/test_installer_update_job.py > ../evidence/focused.log 2>&1\nfocused=$?\nprintf 'focused=%s\\n' \"$focused\" >> ../evidence/inner-exit-codes.txt\ncat ../evidence/inner-exit-codes.txt\ntail -n 80 ../evidence/focused.log\nif [ \"$collection\" -ne 0 ] || [ \"$nonzero_collection\" -ne 0 ] || [ \"$focused\" -ne 0 ]; then exit 1; fi\n",
+  "effective_tuple": {
+    "agent": "7bff6d93fa1c6d06b3377e48b1caa7c065778aaf",
+    "app": "ae95eb455408b8c0e185bfded67798e2b307a6f6",
+    "pinokio": "2f085c5fc0cde192ac4a022065883c85dcccd0de",
+    "runtime": "8d3e3af4ede6e3579ac673ae77794464f693bf1b"
+  },
+  "event": "push",
+  "inner_exit_code": 1,
+  "inventory": [
+    {
+      "bytes": 194097,
+      "path": "artifacts/evidence/collection.log",
+      "sha256": "d7e0267c77540b8605cf2953b4861f4f8c1d1bfe26ebb42f82d995c1fd371aba"
+    },
+    {
+      "bytes": 76859,
+      "path": "artifacts/evidence/focused.log",
+      "sha256": "50830beb5e87a46fdf8cdc79f56c0e3b31375f4845fbe7ef212c00a541a7f592"
+    },
+    {
+      "bytes": 44,
+      "path": "artifacts/evidence/inner-exit-codes.txt",
+      "sha256": "0372d05810dd97abf98937f9f11cf21fe0c27158f1530feff146a3fa183a5680"
+    },
+    {
+      "bytes": 21639,
+      "path": "command.log",
+      "sha256": "f1b3b24ebf297998ac950242cb9923f19a5ae713fa11c660c8ae93a4794b683c"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 2803,
+      "path": "requested-inputs.json",
+      "sha256": "6c300c3d0aa48c26aaf4051a2100820cb901003dd186701d97a8c8e414acf954"
+    },
+    {
+      "bytes": 432,
+      "path": "tuple.txt",
+      "sha256": "918e3b31863efea18ce77cfe58f9c413b795b360ddc940336e89983e9b813a1f"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "7bff6d93fa1c6d06b3377e48b1caa7c065778aaf",
+    "app_ref": "ae95eb455408b8c0e185bfded67798e2b307a6f6",
+    "artifact_paths": "evidence/*.log\nevidence/inner-exit-codes.txt",
+    "command": "set -eu\nmkdir -p evidence\ngit -C agent fetch --no-tags --depth=1 origin 3204bb00135bec8ee2d2d3fb21eed5abfceca649\ngit -C agent cat-file -e 3204bb00135bec8ee2d2d3fb21eed5abfceca649^{commit}\npython3 -m venv .proof-venv\n.proof-venv/bin/python -m pip install 'pytest==9.0.2' 'pytest-timeout>=2.4' 'setuptools==80.9.0' 'wheel==0.46.3' build pyyaml jsonschema filelock python-dotenv uv Pillow\n.proof-venv/bin/python -m pip install --no-deps ./runtime ./agent\nexport PATH=\"$PWD/.proof-venv/bin:$PATH\"\nunset XDG_CONFIG_HOME\nexport PYTHONPATH=\"$PWD/agent:$PWD/runtime:$PWD/runtime/packages/python\"\nexport ASTRID_RUNTIME_CHECKOUT=\"$PWD/runtime\" PYTHONDONTWRITEBYTECODE=1\ncd agent\nset +e\n../.proof-venv/bin/python -m pytest --collect-only -q -o addopts= -m 'not integration and not darwin_native and not opt_in and not installed and not remotion and not chrome and not codex_cli and not workstation and not omp and not gpu and not app_checkout' tests/test_update_job_platform.py tests/test_installer_* tests/test_verify_installed.py tests/test_installer_pre_stop_recovery.py tests/test_installer_cli_recovery.py tests/test_installer_update_continuation.py tests/test_installer_update_reconcile.py tests/test_installer_update_job.py > ../evidence/collection.log 2>&1\ncollection=$?\npython3 -c 'import re,sys; s=open(\"../evidence/collection.log\").read(); m=re.search(r\"(\\d+)(?:/\\d+)? tests? collected\", s); sys.exit(0 if m and int(m.group(1)) > 0 else 1)'\nnonzero_collection=$?\nprintf 'collection=%s\\nnonzero_collection=%s\\n' \"$collection\" \"$nonzero_collection\" > ../evidence/inner-exit-codes.txt\n../.proof-venv/bin/python -m pytest -q -o addopts= -m 'not integration and not darwin_native and not opt_in and not installed and not remotion and not chrome and not codex_cli and not workstation and not omp and not gpu and not app_checkout' --timeout=90 tests/test_update_job_platform.py tests/test_installer_* tests/test_verify_installed.py tests/test_installer_pre_stop_recovery.py tests/test_installer_cli_recovery.py tests/test_installer_update_continuation.py tests/test_installer_update_reconcile.py tests/test_installer_update_job.py > ../evidence/focused.log 2>&1\nfocused=$?\nprintf 'focused=%s\\n' \"$focused\" >> ../evidence/inner-exit-codes.txt\ncat ../evidence/inner-exit-codes.txt\ntail -n 80 ../evidence/focused.log\nif [ \"$collection\" -ne 0 ] || [ \"$nonzero_collection\" -ne 0 ] || [ \"$focused\" -ne 0 ]; then exit 1; fi\n",
+    "pinokio_ref": "2f085c5fc0cde192ac4a022065883c85dcccd0de",
+    "runtime_ref": "8d3e3af4ede6e3579ac673ae77794464f693bf1b",
+    "slot": "5"
+  },
+  "run_attempt": "1",
+  "run_id": "41393228683",
+  "source_head": "3327d9b5dcf6bcb18a1542a58658b340626a54b2",
+  "source_ref": "refs/heads/venue/M-R1FIX-UPD-LEGACY-R9-R5-2",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-UPD-LEGACY-R9-R5-2",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "3327d9b5dcf6bcb18a1542a58658b340626a54b2"
+}

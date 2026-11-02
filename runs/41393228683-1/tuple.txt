@@ -1,0 +1,9 @@
+agent 7bff6d93fa1c6d06b3377e48b1caa7c065778aaf
+runtime 8d3e3af4ede6e3579ac673ae77794464f693bf1b
+app ae95eb455408b8c0e185bfded67798e2b307a6f6
+pinokio 2f085c5fc0cde192ac4a022065883c85dcccd0de
+workflow_repository banodoco/astrid-agent
+workflow_ref banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-UPD-LEGACY-R9-R5-2
+workflow_sha 3327d9b5dcf6bcb18a1542a58658b340626a54b2
+run_id 41393228683
+run_attempt 1
