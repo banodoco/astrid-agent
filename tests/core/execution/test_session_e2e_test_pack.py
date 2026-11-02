@@ -34,10 +34,10 @@ TAMPER = "TAMPER"
 # report for that production finding. Not xfailed: the repo forbids xfail.
 RUN_DEADLINE_SECONDS = 600.0
 
-# The action sees only the public surface: the error type from astrid.packs.session.
+# The action sees only the public surface: the error type from astrid.sdk.
 # It sends RAW inputs; the host profile compiles them and echoes compiled_settings.
 ACTION_SOURCE = '''
-from astrid.packs.session import SessionChannelError
+from astrid.sdk import SessionChannelError
 
 TAMPER = "TAMPER"
 

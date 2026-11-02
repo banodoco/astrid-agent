@@ -1,7 +1,9 @@
 """Public pack-facing surface for the M2-11a session channel.
 
-Pack actions import the error type and the client shape from here. Nothing
-else is exported: no broker, compile logic or transport internals.
+Pack actions reach these names through ``astrid.sdk`` (for example
+``from astrid.sdk import SessionChannelError``). This module is the lazy
+target of those exports. Nothing else is exported: no broker, compile logic
+or transport internals.
 """
 
 import typing

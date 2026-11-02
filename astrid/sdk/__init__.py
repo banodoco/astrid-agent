@@ -37,6 +37,8 @@ _EXPORTS = {
     "CapabilityValidationError": ("exceptions", "CapabilityValidationError"),
     "UnsupportedCapabilityError": ("exceptions", "UnsupportedCapabilityError"),
     "RenderContext": ("rendering", "RenderContext"),
+    "SessionChannelError": ("session", "SessionChannelError"),
+    "SessionClientProtocol": ("session", "SessionClientProtocol"),
     "renderer_main": ("rendering", "renderer_main"),
     "resolve_runtime_data_root": ("storage_root", "resolve_runtime_data_root"),
     "support": ("rendering", "support"),
