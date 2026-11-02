@@ -84,7 +84,8 @@ def test_official_managed_home_setup_is_exact_and_verified(tmp_path, monkeypatch
     )
     assert calls[0][0] == [
         str(roots["node"]),
-        str((roots["pinokiod"] / "script/install-mode.js").resolve()),
+        str((SCRIPT.parent / "pinokiod-install-mode.cjs").resolve()),
+        str(roots["pinokiod"]),
     ]
     assert calls[1][0][-1] == "--version"
     assert calls[2][0][-2:] == ["shell.bash", "hook"]
@@ -96,6 +97,15 @@ def test_official_managed_home_setup_is_exact_and_verified(tmp_path, monkeypatch
     assert receipt["setup_mode"] == "javascript"
     assert receipt["environment_boundary"]["home_inside_pinokio_home"] is False
     assert [row["exit"] for row in receipt["commands"]] == [0, 0, 0]
+
+
+def test_local_setup_driver_only_corrects_pinned_initialization_order():
+    raw = (SCRIPT.parent / "pinokiod-install-mode.cjs").read_text()
+    assert raw.index("await kernel.bin.init()") < raw.index("await kernel.shell.init()")
+    assert "kernel.bin.preset(mode)" in raw
+    assert "kernel.bin.check" in raw
+    assert "kernel.bin.install({ mode }" in raw
+    assert 'mode !== "javascript"' in raw
 
 
 def test_managed_home_setup_refuses_a_zero_exit_without_conda(tmp_path, monkeypatch):
