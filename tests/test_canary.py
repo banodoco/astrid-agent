@@ -1,6 +1,7 @@
 """CPU-only: real harness composition + files/Git, fakes at child/transport edges."""
 import copy
 import importlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -596,3 +597,69 @@ class CanaryTests(unittest.TestCase):
             main(['inventory', '--tuple', str(self.f.tuple), '--task-dir', str(self.f.task)])
         self.assertEqual(result.exception.code, 2)
         self.assertFalse((self.f.task / 'logs/installed-canary').exists())
+
+
+class DistributionRecordTests(unittest.TestCase):
+    """Optional `astrid[runpod]` distributions: verified when installed, recorded absent otherwise."""
+
+    def setUp(self):
+        self.purelib = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.purelib, ignore_errors=True)
+
+    def dist(self, root=None, record='a.py,sha256=x,1\n'):
+        root = root or self.purelib
+        return types.SimpleNamespace(version='1.0', locate_file=lambda _: root, read_text=lambda _: record)
+
+    def lookup(self, present):
+        from installed_canary.child import OPTIONAL_DISTRIBUTIONS, REQUIRED_DISTRIBUTIONS
+        def find(name):
+            if name in present:
+                return present[name]
+            raise importlib.metadata.PackageNotFoundError(name)
+        self.required = REQUIRED_DISTRIBUTIONS
+        self.optional = OPTIONAL_DISTRIBUTIONS
+        return find
+
+    def run_records(self, present, find_spec=lambda _: None):
+        from installed_canary.child import distribution_records
+        return distribution_records(self.purelib, lookup=self.lookup(present), find_spec=find_spec)
+
+    def test_optional_absent_recorded_not_installed(self):
+        from installed_canary.child import REQUIRED_DISTRIBUTIONS
+        records = self.run_records({name: self.dist() for name in REQUIRED_DISTRIBUTIONS})
+        self.assertFalse(records['runpod-lifecycle']['installed'])
+        self.assertFalse(records['runpod']['installed'])
+        self.assertTrue(all(records[name]['installed'] for name in REQUIRED_DISTRIBUTIONS))
+
+    def test_optional_present_is_verified_like_required(self):
+        from installed_canary.child import OPTIONAL_DISTRIBUTIONS, REQUIRED_DISTRIBUTIONS
+        names = REQUIRED_DISTRIBUTIONS + tuple(OPTIONAL_DISTRIBUTIONS)
+        records = self.run_records({name: self.dist() for name in names})
+        self.assertTrue(records['runpod-lifecycle']['installed'])
+        self.assertIn('RECORD_sha256', records['runpod'])
+
+    def test_optional_present_outside_purelib_refused(self):
+        from installed_canary.child import REQUIRED_DISTRIBUTIONS
+        present = {name: self.dist() for name in REQUIRED_DISTRIBUTIONS}
+        present['runpod'] = self.dist(root=self.purelib.parent)
+        with self.assertRaises(GateError):
+            self.run_records(present)
+
+    def test_optional_present_without_record_refused(self):
+        from installed_canary.child import REQUIRED_DISTRIBUTIONS
+        present = {name: self.dist() for name in REQUIRED_DISTRIBUTIONS}
+        present['runpod-lifecycle'] = self.dist(record='')
+        with self.assertRaises(GateError):
+            self.run_records(present)
+
+    def test_optional_module_importable_without_metadata_refused(self):
+        from installed_canary.child import REQUIRED_DISTRIBUTIONS
+        present = {name: self.dist() for name in REQUIRED_DISTRIBUTIONS}
+        with self.assertRaises(GateError):
+            self.run_records(present, find_spec=lambda name: object() if name == 'runpod_lifecycle' else None)
+
+    def test_required_absent_still_refused(self):
+        from installed_canary.child import REQUIRED_DISTRIBUTIONS
+        present = {name: self.dist() for name in REQUIRED_DISTRIBUTIONS if name != 'vibecomfy'}
+        with self.assertRaises(GateError):
+            self.run_records(present)

@@ -46,6 +46,38 @@ def api_check(ctx):
     require(passed, 'api-signatures', ctx.evidence / 'api.json', 'signature/origin/realm audit failed')
 
 
+REQUIRED_DISTRIBUTIONS = ('astrid', 'astrid-runtime', 'astrid-runtime-client', 'vibecomfy', 'opencv-python-headless')
+# The canonical core installer does not install the optional `astrid[runpod]` extra. These distributions are
+# verified exactly like the required ones when present; when absent they are recorded as not installed, and
+# their top-level modules must then not be importable from anywhere (no ambient copy may stand in for them).
+OPTIONAL_DISTRIBUTIONS = {'runpod-lifecycle': 'runpod_lifecycle', 'runpod': 'runpod'}
+
+
+def distribution_records(purelib, lookup=None, find_spec=None):
+    import hashlib
+    import importlib.metadata
+    import importlib.util
+    lookup = lookup or importlib.metadata.distribution
+    find_spec = find_spec or importlib.util.find_spec
+    records = {}
+    for name in REQUIRED_DISTRIBUTIONS + tuple(OPTIONAL_DISTRIBUTIONS):
+        try:
+            dist = lookup(name)
+        except importlib.metadata.PackageNotFoundError:
+            require(name in OPTIONAL_DISTRIBUTIONS, 'identity', name, 'required distribution missing')
+            spec = find_spec(OPTIONAL_DISTRIBUTIONS[name])
+            require(spec is None, 'identity', name, 'module importable without installed distribution metadata')
+            records[name] = {'installed': False, 'reason': 'optional extra not installed by canonical installer'}
+            continue
+        require(Path(dist.locate_file('')).resolve() == purelib,
+                'identity', name, 'distribution metadata outside installed purelib')
+        record = dist.read_text('RECORD')
+        require(bool(record), 'identity', name, 'distribution RECORD missing')
+        records[name] = {'installed': True, 'version': dist.version,
+                         'RECORD_sha256': hashlib.sha256(record.encode()).hexdigest()}
+    return records
+
+
 def identity(ctx):
     from astrid.installer.core import current
     version = current(ctx.install / 'program')
@@ -65,15 +97,7 @@ def identity(ctx):
         require(origin.read_bytes() == blob(ctx.payload['sources'][source], relative),
                 'identity', origin, 'module differs from selected Git blob')
         origins[name] = {'path': str(origin), 'sha256': hashlib.sha256(origin.read_bytes()).hexdigest()}
-    distributions = {}
-    for name in ('astrid', 'astrid-runtime', 'astrid-runtime-client', 'vibecomfy', 'opencv-python-headless',
-                 'runpod-lifecycle', 'runpod'):
-        dist = importlib.metadata.distribution(name)
-        require(Path(dist.locate_file('')).resolve() == ctx.purelib,
-                'identity', name, 'distribution metadata outside installed purelib')
-        record = dist.read_text('RECORD')
-        require(bool(record), 'identity', name, 'distribution RECORD missing')
-        distributions[name] = {'version': dist.version, 'RECORD_sha256': hashlib.sha256(record.encode()).hexdigest()}
+    distributions = distribution_records(ctx.purelib)
     save(ctx.evidence / 'identity.json', {'result': 'PASS', 'fingerprint': fingerprint(ctx),
          'origins': origins, 'distributions': distributions,
          'python': sys.executable, 'prefix': sys.prefix, 'base_prefix': sys.base_prefix})
