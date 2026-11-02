@@ -611,7 +611,16 @@ def _peer_token(connection: socket.socket) -> dict[str, object]:
 
 
 def current_process_audit_token(pid: int) -> dict[str, object]:
-    """Read one live process token through a retained Mach task-name port."""
+    """Read a live Linux process binding or a retained Darwin task-name token."""
+
+    if sys.platform.startswith("linux"):
+        # Use the same boot/pid-namespace/start-time binding as Runtime's
+        # designation writer and our authenticated Linux private peer.
+        from runtime_protocol import linux_process_binding
+        try:
+            return linux_process_binding.token(pid)
+        except linux_process_binding.LinuxBindingError as exc:
+            raise CustodyError("linux process identity is unavailable") from exc
 
     if sys.platform != "darwin" or int(pid) <= 0:
         raise CustodyError("Darwin audit-token custody is unavailable")
