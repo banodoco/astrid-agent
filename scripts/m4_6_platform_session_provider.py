@@ -76,8 +76,8 @@ class DirectCheckpointPlatformSession:
         if not rows or any(type(row) is not native.PlatformArtifactBinding for row in rows):
             raise TrustedPlatformContextUnavailable("immutable artifact binding is malformed")
         by_role = {row.role: row for row in rows}
-        if len(by_role) != len(rows) or set(by_role) != _REQUIRED_ARTIFACT_ROLES:
-            raise TrustedPlatformContextUnavailable("exact direct immutable artifact roles are required")
+        if len(by_role) != len(rows) or not _REQUIRED_ARTIFACT_ROLES.issubset(by_role):
+            raise TrustedPlatformContextUnavailable("required direct immutable artifact roles are absent")
         if len({row.path for row in rows}) != len(rows):
             raise TrustedPlatformContextUnavailable("immutable artifact paths must be unique")
         plan = self._custody.removal_plan if self._custody is not None else None

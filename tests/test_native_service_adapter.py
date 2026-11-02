@@ -499,7 +499,7 @@ class StatefulRunner:
 
 def hosted_environment(tmp_path: Path, os_name: str, powershell: Path | None) -> dict[str, str]:
     runner_os, image_os = {
-        "macos": ("macOS", "macos14"),
+        "macos": ("macOS", "macos15"),
         "linux": ("Linux", "ubuntu24"),
         "windows": ("Windows", "win22"),
     }[os_name]
