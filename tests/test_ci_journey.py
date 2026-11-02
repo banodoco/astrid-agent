@@ -65,6 +65,50 @@ def test_authentic_r0_capture_shared_route_does_not_select_release1_driver(monke
     assert calls == [["--fixture", "fixture"]]
 
 
+def test_authentic_r0_capture_executes_r0_seed_only_and_marks_receipt_ineligible(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    root, data, evidence = run_root / "program", run_root / "data", run_root / "evidence"
+    run_root.mkdir()
+    root.mkdir()
+    data.mkdir()
+    version_root = root / "versions" / "r0"
+    version_root.mkdir(parents=True)
+    version = {"root": str(version_root), "python": sys.executable, "env": {}}
+    args = argparse.Namespace(
+        run_root=run_root, root=root, data_root=data, shell="sh",
+        release0_fixture=tmp_path / "fixture", release0_agent_checkout=tmp_path / "agent",
+        release0_runtime_checkout=tmp_path / "runtime",
+    )
+    calls = []
+    fixture_receipt = {"sources": {"agent": "a" * 40, "runtime": "b" * 40}}
+    monkeypatch.setattr(journey, "run_scope", lambda *unused, **kwargs: (run_root, root, data, evidence))
+    monkeypatch.setattr(journey, "runner_identity", lambda: {"runner_image": "local", "runner_provenance": {}})
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "_capture_release0_sources", lambda *unused: {"agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40}})
+    monkeypatch.setattr(jumps, "verified_release0_fixture", lambda unused: (
+        tmp_path / "fixture", tmp_path / "release0-manifest.json", fixture_receipt))
+    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *unused: calls.append("release0-bootstrap"))
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *unused: calls.append("release0-start"))
+    monkeypatch.setattr(journey, "wait_ready", lambda *unused: None)
+    monkeypatch.setattr(journey, "installation", lambda *unused: (version_root / "version.json", data, version))
+    monkeypatch.setattr(jumps, "installed_release", lambda unused: 0)
+    monkeypatch.setattr(journey, "read_json", lambda path: {"release": 0, "agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40}})
+    monkeypatch.setattr(journey, "selected_tuple", lambda *unused: {"agent": "a" * 40, "runtime": "b" * 40})
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_authentic_r0_observation", lambda output, **kwargs: {"phase": kwargs["phase"]})
+    monkeypatch.setattr(jumps, "direct_workspace", lambda *unused: calls.append("release0-seed") or {})
+    monkeypatch.setattr(journey, "installed_cli", lambda *unused, **kwargs: calls.append("uninstall") or "")
+    monkeypatch.setattr(journey, "runtime_processes", lambda unused: [])
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    assert result["status"] == "captured"
+    assert result["qualification"]["eligible"] is False
+    assert result["r1_update_invoked"] is False
+    assert calls == ["release0-bootstrap", "release0-start", "release0-seed", "uninstall"]
+    assert (run_root / "capture-upload" / "capture-receipt.json").is_file()
+
+
 def test_tst_b1_local_sources_require_explicit_test_mode(tmp_path, monkeypatch):
     app, shipped = app_checkout(tmp_path)
     with pytest.raises(ValueError, match="--source-override"):
