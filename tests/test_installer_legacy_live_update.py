@@ -1,6 +1,7 @@
 """The frozen release-0 exception is confined to the live update gates."""
 import copy
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -127,6 +128,51 @@ def test_explicit_null_identity_is_refused_without_mutating_discovery(legacy, nu
         update_job._probe_selected_identity(data, old, root, target_release=1)
     assert path.read_bytes() == snapshot
     assert health == health_snapshot
+
+
+def test_legacy_refuses_valid_version_with_foreign_program_root(legacy, tmp_path):
+    root, data, health, discovery, _ = legacy
+    selected = current(root)
+    foreign_root = tmp_path / "foreign-program"
+    foreign_root.mkdir()
+
+    assert legacy_identity.admitted(selected, health, discovery, program_root=root)
+    assert not legacy_identity.admitted(selected, health, discovery, program_root=foreign_root)
+    with pytest.raises(ValueError):
+        update_job._probe_selected_identity(data, selected, foreign_root, target_release=1)
+
+
+def test_legacy_refuses_selected_version_under_foreign_program_root(legacy, tmp_path, monkeypatch):
+    root, data, health, discovery, contract = legacy
+    selected = current(root)
+    foreign_root = tmp_path / "foreign-program"
+    shutil.copytree(root, foreign_root)
+    foreign_folder = foreign_root / "versions" / selected.root.name
+
+    record_path = foreign_folder / "version.json"
+    record = json.loads(record_path.read_text())
+    for key in ("root", "python", "profile"):
+        record[key] = str(foreign_folder / Path(record[key]).relative_to(selected.root))
+    write_json(record_path, record)
+    profile_path = foreign_folder / "profile.json"
+    profile = json.loads(profile_path.read_text())
+    for key in ("runtime_checkout", "runtime_environment", "source_checkout", "service_declaration"):
+        profile[key] = str(foreign_folder / Path(profile[key]).relative_to(selected.root))
+    write_json(profile_path, profile)
+    foreign = current(foreign_root)
+    foreign_contract = {
+        key: (str(foreign.root / Path(value).relative_to(selected.root))
+              if key in {"python", "astrid", "astrid_runtime", "runtime_protocol", "astrid_runtime_client"}
+              else value)
+        for key, value in contract.items()
+    }
+    monkeypatch.setattr(legacy_identity, "_contract",
+                        lambda version: foreign_contract if version.root == foreign.root else contract)
+
+    assert legacy_identity.admitted(foreign, health, discovery, program_root=foreign_root)
+    assert not legacy_identity.admitted(foreign, health, discovery, program_root=root)
+    with pytest.raises(ValueError):
+        update_job._probe_selected_identity(data, foreign, root, target_release=1)
 
 
 
