@@ -25,6 +25,15 @@ EVIDENCE = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())) / "X5-wind
 HEALTH_URL = "http://127.0.0.1:17340/api/runtime/v1/health"
 TASK_OUTPUT_TAIL_BYTES = 65536
 TASK_OUTPUT_METADATA_BYTES = 2048
+OFFLINE_WORKSPACE_ACTIONS = frozenset({"seed", "snapshot", "busy", "release"})
+OFFLINE_WORKSPACE_STOP = (
+    "$ErrorActionPreference='Stop'; Stop-ScheduledTask "
+    "-TaskName 'Astrid Runtime' -TaskPath '\\'"
+)
+OFFLINE_WORKSPACE_START = (
+    "$ErrorActionPreference='Stop'; Start-ScheduledTask "
+    "-TaskName 'Astrid Runtime' -TaskPath '\\'"
+)
 
 
 def _powershell_quote(value):
@@ -66,7 +75,33 @@ def run(argv, name, *, env=None, timeout=300, show=True):
     return (EVIDENCE / name).read_text(encoding="utf-8-sig", errors="replace")
 
 
+def _offline_workspace_task_command(code, name):
+    """Keep a custody-verified task stopped across repeating triggers."""
+    matched = re.fullmatch(
+        rf"({'|'.join(sorted(OFFLINE_WORKSPACE_ACTIONS))})-(stop|start)-service\.log",
+        name,
+    )
+    if matched is None:
+        return code
+    _action, operation = matched.groups()
+    expected = OFFLINE_WORKSPACE_STOP if operation == "stop" else OFFLINE_WORKSPACE_START
+    if code != expected:
+        raise RuntimeError("Offline workspace service command differs from the protected task action")
+    if operation == "stop":
+        return (
+            "$ErrorActionPreference='Stop'; Disable-ScheduledTask "
+            "-TaskName 'Astrid Runtime' -TaskPath '\\' | Out-Null; "
+            "Stop-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'"
+        )
+    return (
+        "$ErrorActionPreference='Stop'; Enable-ScheduledTask "
+        "-TaskName 'Astrid Runtime' -TaskPath '\\' | Out-Null; "
+        "Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'"
+    )
+
+
 def powershell(code, name, *, show=True, timeout=300):
+    code = _offline_workspace_task_command(code, name)
     return run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                 "$ErrorActionPreference='Stop'; "
                 "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " + code], name,
