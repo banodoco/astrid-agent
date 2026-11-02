@@ -1,9 +1,11 @@
 name: R-01 artifact-cap measurement fixture
 
 # This is intentionally separate from Release-1 journey execution.  It is a
-# dispatch-only receipt fixture for measuring Actions' uploaded artifact bytes.
+# push-only receipt fixture for measuring Actions' uploaded artifact bytes.
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - lane/M-QUAL/R-01-HOSTED-CAP-MEASUREMENT-R2
 
 permissions:
   contents: read
@@ -11,7 +13,7 @@ permissions:
 jobs:
   measure:
     name: artifact-cap measurement
-    runs-on: ubuntu-24.04
+    runs-on: windows-2022
     timeout-minutes: 10
     steps:
       - name: Check out the requested measurement harness revision

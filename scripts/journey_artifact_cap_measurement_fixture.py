@@ -1,4 +1,4 @@
-"""Build a dispatch-only, non-qualifying fixture for the artifact-cap boundary.
+"""Build an isolated, non-qualifying fixture for the artifact-cap boundary.
 
 This never invokes an installer or a journey.  It writes the two named cleanup
 snapshots which a verbose Release-0 bootstrap failure would leave behind, so a
@@ -73,7 +73,7 @@ def build(root: Path, *, bootstrap_bytes: int = DEFAULT_BOOTSTRAP_BYTES) -> None
             "evidence_class": "synthetic-artifact-cap-measurement",
             "qualification": {
                 "eligible": False,
-                "reason": "dispatch-only artifact-cap fixture; not a direct journey",
+                "reason": "isolated artifact-cap fixture; not a direct journey",
             },
             "failure_diagnostics": {
                 phase: {

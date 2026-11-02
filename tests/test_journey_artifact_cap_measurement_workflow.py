@@ -6,11 +6,13 @@ REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "journey-artifact-cap-measurement.yml"
 
 
-def test_artifact_cap_measurement_is_dispatch_only_and_uploads_the_bounded_fixture():
+def test_artifact_cap_measurement_is_lane_push_only_and_uploads_the_bounded_fixture():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "workflow_dispatch:" in workflow
-    assert "push:" not in workflow
+    assert "workflow_dispatch:" not in workflow
+    assert "push:" in workflow
+    assert "lane/M-QUAL/R-01-HOSTED-CAP-MEASUREMENT-R2" in workflow
+    assert "runs-on: windows-2022" in workflow
     assert "journey_artifact_cap_measurement_fixture.py" in workflow
     assert "journey_artifact_boundary.py" in workflow
     assert "ref: ${{ github.workflow_sha }}" in workflow

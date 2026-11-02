@@ -1,4 +1,4 @@
-"""Focused coverage for the dispatch-only R-01 artifact-cap fixture."""
+"""Focused coverage for the isolated R-01 artifact-cap fixture."""
 from __future__ import annotations
 
 import hashlib
