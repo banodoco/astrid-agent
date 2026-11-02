@@ -64,6 +64,7 @@ _ORIGIN_FIELDS: Final = {
     "artifact_name",
 }
 _COLLECTOR_FIELDS: Final = {"agent_ref", "pinokio_ref", "sources"}
+_ACTION_BINDING_FIELDS: Final = {"action", "action_id", "action_sha256"}
 _MAX_OBSERVATION_BYTES: Final = 16 * 1024 * 1024
 
 
@@ -210,9 +211,38 @@ def _validate_collector(value: object) -> dict[str, Any]:
     return result
 
 
+def _validate_action_bindings(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) != len(REQUIRED_ACTIONS):
+        raise SnapshotCollectorError("actions must bind the exact six action boundaries")
+    result: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, row in enumerate(value):
+        if not isinstance(row, Mapping) or set(row) != _ACTION_BINDING_FIELDS:
+            raise SnapshotCollectorError(f"actions[{index}] fields differ")
+        item = dict(row)
+        expected = REQUIRED_ACTIONS[index]
+        if item.get("action") != expected:
+            raise SnapshotCollectorError("actions are missing, duplicated, or out of order")
+        action_id = _safe_label(item.get("action_id"), f"actions[{index}].action_id")
+        if action_id in seen_ids:
+            raise SnapshotCollectorError("action IDs must be unique within the run")
+        seen_ids.add(action_id)
+        _digest(item.get("action_sha256"), f"actions[{index}].action_sha256")
+        result.append(item)
+    return result
+
+
 def validate_request(value: object) -> dict[str, Any]:
     """Validate the exact request without treating it as external authority."""
-    required = {"schema", "slot_id", "tuple", "origin", "collector", "targets"}
+    required = {
+        "schema",
+        "slot_id",
+        "tuple",
+        "origin",
+        "collector",
+        "actions",
+        "targets",
+    }
     if not isinstance(value, Mapping) or set(value) != required:
         raise SnapshotCollectorError("request fields differ")
     result = dict(value)
@@ -228,6 +258,7 @@ def validate_request(value: object) -> dict[str, Any]:
     _validate_tuple(result.get("tuple"))
     _validate_origin(result.get("origin"), str(slot_id))
     _validate_collector(result.get("collector"))
+    _validate_action_bindings(result.get("actions"))
     _canonical(targets)
     return result
 
@@ -332,6 +363,7 @@ class SnapshotSession:
             "origin": self.request["origin"],
             "collector": self.request["collector"],
             "action": context.name,
+            "action_binding": self.request["actions"][context.action_index],
             "action_index": context.action_index,
             "phase": phase,
             "sample": sample,
@@ -369,6 +401,7 @@ class SnapshotSession:
             self._actions.append(
                 {
                     "action": context.name,
+                    "binding": self.request["actions"][context.action_index],
                     "index": context.action_index,
                     "poll_interval_seconds": context.interval,
                     "max_poll_samples": context.max_samples,

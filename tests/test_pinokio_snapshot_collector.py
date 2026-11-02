@@ -53,6 +53,14 @@ def _request(*, artifact_id: int | None = 42) -> dict:
             "pinokio_ref": "4" * 40,
             "sources": {"scripts/pinokio_snapshot_collector.py": "5" * 64},
         },
+        "actions": [
+            {
+                "action": action,
+                "action_id": f"m46-{action}-303-1",
+                "action_sha256": f"{index + 6:x}" * 64,
+            }
+            for index, action in enumerate(collector.REQUIRED_ACTIONS)
+        ],
         "targets": {"os": "macos", "launchd_targets": ["gui/501/haus.astrid.runtime"]},
     }
 
@@ -90,6 +98,7 @@ def test_exact_six_actions_write_bound_hashed_receipts(tmp_path: Path) -> None:
         assert value["binding_sha256"] == session.binding_digest
         assert value["origin"] == _request()["origin"]
         assert value["tuple"] == _request()["tuple"]
+        assert value["action_binding"] == _request()["actions"][value["action_index"]]
 
 
 def test_missing_duplicate_and_out_of_order_actions_fail_closed(tmp_path: Path) -> None:
@@ -133,6 +142,11 @@ def test_request_rejects_wrong_tuple_slot_artifact_and_duplicate_json(tmp_path: 
     request = _request()
     request["origin"]["artifact_name"] = "unbound-artifact"
     with pytest.raises(collector.SnapshotCollectorError, match="selected slot"):
+        collector.validate_request(request)
+
+    request = _request()
+    request["actions"][1]["action_id"] = request["actions"][0]["action_id"]
+    with pytest.raises(collector.SnapshotCollectorError, match="action IDs"):
         collector.validate_request(request)
 
     path = (tmp_path / "request.json").resolve()
