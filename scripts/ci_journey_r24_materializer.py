@@ -45,6 +45,10 @@ class MaterializerError(RuntimeError):
     pass
 
 
+class DiscoveryMissing(MaterializerError):
+    """The discovery file is not present yet during Runtime startup."""
+
+
 def _sha(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -68,6 +72,20 @@ def _read(path: Path) -> Any:
     if path.is_symlink() or not path.is_file():
         raise MaterializerError(f"missing regular file: {path}")
     return json.loads(path.read_bytes())
+
+
+def _read_discovery(path: Path) -> Any:
+    """Read discovery, distinguishing startup absence from invalid content."""
+    if path.is_symlink():
+        raise MaterializerError(f"missing regular file: {path}")
+    try:
+        if not path.is_file():
+            raise DiscoveryMissing(f"discovery file not available yet: {path}")
+        return json.loads(path.read_bytes())
+    except FileNotFoundError as exc:
+        # The Runtime may remove or replace the file between the type check and
+        # the read.  Treat that narrow race like initial startup absence.
+        raise DiscoveryMissing(f"discovery file not available yet: {path}") from exc
 
 
 def _vibecomfy_identity(value: Any, *, label: str) -> dict[str, str]:
@@ -396,7 +414,9 @@ def _wait_runtime(data: Path, start: subprocess.Popen[bytes], timeout: int = 900
         if start.poll() is not None:
             raise MaterializerError(f"Pinokio Start client exited early: {start.returncode}")
         try:
-            value = _read(discovery)
+            value = _read_discovery(discovery)
+            if not isinstance(value, dict):
+                raise MaterializerError("Runtime discovery is malformed")
             endpoint = _loopback_endpoint(value.get("endpoint"))
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             request = urllib.request.Request(endpoint + "/v1/health")
@@ -405,7 +425,7 @@ def _wait_runtime(data: Path, start: subprocess.Popen[bytes], timeout: int = 900
             if (response.status == 200 and health.get("status") == "ok"
                     and health.get("runtime_instance_id") == value.get("runtime_instance_id")):
                 return value
-        except (OSError, ValueError, KeyError):
+        except (DiscoveryMissing, OSError):
             pass
         time.sleep(2)
     raise MaterializerError("installed Runtime readiness timeout")
