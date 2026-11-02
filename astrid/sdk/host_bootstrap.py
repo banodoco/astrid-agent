@@ -746,7 +746,7 @@ def _windows_process_argv(pid: int) -> list[str]:
     try:
         result = subprocess.run(
             [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", query],
-            stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=5.0,
+            stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=30.0,
         )
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise OSError("Windows process command observation failed") from exc
