@@ -630,7 +630,7 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     }
     expected_direct = {
         ("direct-linux", "direct", "ubuntu-24.04", "release0-to-release1"),
-        ("direct-macos", "direct", "macos-15", "release0-to-release1"),
+        ("direct-macos", "direct", "macos-14", "release0-to-release1"),
         ("direct-windows", "direct", "windows-2022", "release0-to-release1"),
     }
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"])
@@ -653,3 +653,96 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
         proc = config("true", **override)
         assert proc.returncode != 0
         assert "direct_only cannot be combined" in proc.stderr
+
+
+def test_windows_preflight_records_query_streams_origin_and_exit(tmp_path, monkeypatch):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=0, stdout='{"PSVersion":"5.1","ModulePath":"scheduler.psd1"}', stderr="")
+        return SimpleNamespace(returncode=1, stdout="partial query output", stderr="query module error")
+    monkeypatch.setattr(windows.subprocess, "run", fake_run)
+    monkeypatch.setenv("PSModulePath", "untrusted")
+    with pytest.raises(RuntimeError, match="query exit 1"):
+        windows.scheduled_task_diagnostics()
+    record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    assert record["query"] == {"argv": calls[1][0], "stdout": "partial query output",
+                               "stderr": "query module error", "exit_code": 1, "classification": "error"}
+    assert windows.SCHEDULED_TASK_QUERY in record["query"]["argv"][-1]
+    assert "PSVersion" in record["origin"]["stdout"] and "ModulePath" in record["origin"]["stdout"]
+    assert all(not any(key.casefold() == "psmodulepath" for key in call[1]["env"]) for call in calls)
+    assert "CmdletizationQuery_NotFound_TaskName," in windows.SCHEDULED_TASK_QUERY
+    assert "else { throw }" in windows.SCHEDULED_TASK_QUERY
+    journey.retain_named_evidence(tmp_path, "before-cleanup")
+    assert (tmp_path.parent / "evidence-upload" / "before-cleanup" / "preflight-scheduled-task.txt").is_file()
+
+
+def test_windows_preflight_absence_and_foreign_owner_rejection(tmp_path, monkeypatch):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path / "evidence")
+    monkeypatch.setattr(windows.subprocess, "run", lambda *a, **kw: SimpleNamespace(
+        returncode=0, stdout="", stderr=""))
+    assert windows.scheduled_task_diagnostics() == ""
+    record = json.loads((windows.EVIDENCE / "preflight-scheduled-task.txt").read_text())
+    assert record["query"]["classification"] == "not-found"
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "empty" / "astrid")
+    monkeypatch.setattr(journey, "runtime_processes", lambda *a: [])
+    monkeypatch.setattr(windows, "scheduled_task_preflight", lambda leg: {"status": "present", "tasks": [{"path": "\\", "executables": [r"C:\other\runtime.exe"]}]})
+    with pytest.raises(RuntimeError, match="outside this journey"):
+        journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
+
+
+def test_linux_manager_boundary_probes_the_isolated_unit_path(tmp_path):
+    import subprocess
+    script = (journey.ROOT / ".github/workflows/journey-linux-manager.sh").read_text()
+    function = script.split("probe_isolated_unit() {\n", 1)[1].split("\n}\n", 1)[0]
+    run_root = tmp_path / "astrid-r1-direct-linux"
+    commands = tmp_path / "commands"
+    stub = tmp_path / "systemctl"
+    stub.write_text('''#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$CALLS"
+if [[ "$*" == *FragmentPath* ]]; then printf '%s\\n' "$EXPECTED_FRAGMENT"; fi
+''')
+    stub.chmod(0o755)
+    probe = "journey-manager-path-probe-test.service"
+    config = run_root / "home/.config"
+    probe_dir = config / "systemd/user"
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", CALLS=str(commands),
+               EXPECTED_FRAGMENT=str(probe_dir / probe), run_root=str(run_root), config=str(config),
+               probe_dir=str(probe_dir), probe=probe, probe_created="0")
+    result = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not run_root.exists()
+    assert f"--user start {probe}" in commands.read_text()
+    assert 'Environment="XDG_CONFIG_HOME=%s" "XDG_DATA_HOME=%s"' in script
+    assert '"SYSTEMD_UNIT_PATH=%s:"' in script
+    assert 'sudo systemctl restart "user@$uid.service"' in script
+    assert 'test "$original" = not-found' in script
+    env["EXPECTED_FRAGMENT"] = str(tmp_path / "foreign.service")
+    failure = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
+    assert failure.returncode != 0
+
+
+def test_windows_preflight_checkpoints_launch_and_unexpected_errors(tmp_path, monkeypatch):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    calls = []
+    def fail(argv, **kwargs):
+        # The complete command is already durable even if process launch fails.
+        saved = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+        calls.append(saved)
+        if len(calls) == 1:
+            raise OSError("powershell unavailable")
+        raise ValueError("unexpected capture failure")
+    monkeypatch.setattr(windows.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="origin exit None"):
+        windows.scheduled_task_diagnostics()
+    record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    assert calls[0]["query"]["argv"][-1].endswith(windows.SCHEDULED_TASK_QUERY)
+    assert "powershell unavailable" in calls[1]["origin"]["error"]
+    assert record["query"]["classification"] == "error"
+    assert "unexpected capture failure" in record["query"]["error"]

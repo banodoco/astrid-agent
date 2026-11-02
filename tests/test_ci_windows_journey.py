@@ -638,6 +638,7 @@ def test_windows_preflight_refuses_existing_task_and_allows_only_owned_nonfresh(
     root, data = Path(r"C:\journey\program"), tmp_path / "data"
     observation = {"status": "present", "tasks": [
         {"path": "\\", "executables": [r"C:\journey\program\python.exe"]}]}
+    monkeypatch.setattr(journey, "scheduled_task_diagnostics", lambda: "")
     monkeypatch.setattr(journey, "scheduled_task_preflight", lambda leg: observation)
     with pytest.raises(RuntimeError, match="outside this journey"):
         shared_journey.assert_host_available("fresh-install", root, data)
@@ -674,3 +675,28 @@ def test_windows_scheduled_task_preflight_records_timeout_output(tmp_path, monke
     assert evidence["status"] == "error" and evidence["exit_code"] is None
     assert evidence["stdout"] == "partial output" and evidence["stderr"] == "partial error"
     assert evidence["process_error"].startswith("TimeoutExpired:")
+
+
+def test_combined_windows_preflight_fails_closed_at_either_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(shared_journey.sys, "platform", "win32")
+    monkeypatch.setattr(shared_journey, "program_root", lambda: tmp_path / "default" / "program")
+    monkeypatch.setattr(shared_journey, "runtime_processes", lambda data: [])
+    calls = []
+
+    def diagnostics():
+        calls.append("diagnostics")
+        raise RuntimeError("diagnostic query failed")
+
+    def strict(leg):
+        calls.append("strict")
+        raise RuntimeError("strict query failed")
+
+    monkeypatch.setattr(journey, "scheduled_task_diagnostics", diagnostics)
+    monkeypatch.setattr(journey, "scheduled_task_preflight", strict)
+    with pytest.raises(RuntimeError, match="diagnostic query failed"):
+        shared_journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
+    assert calls == ["diagnostics"]
+    monkeypatch.setattr(journey, "scheduled_task_diagnostics", lambda: calls.append("diagnostics"))
+    with pytest.raises(RuntimeError, match="strict query failed"):
+        shared_journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
+    assert calls == ["diagnostics", "diagnostics", "strict"]

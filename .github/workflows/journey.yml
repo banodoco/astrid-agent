@@ -430,6 +430,31 @@ jobs:
             echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
             echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Establish Linux user service manager
+        if: matrix.job_id == 'direct-linux'
+        shell: bash
+        timeout-minutes: 3
+        run: bash agent/.github/workflows/journey-linux-manager.sh
+      - name: Establish Windows Task Scheduler readiness
+        if: matrix.job_id == 'direct-windows'
+        shell: powershell
+        timeout-minutes: 3
+        run: ./agent/.github/workflows/journey-windows-manager.ps1
+      - name: Capture Windows scheduled-task query diagnostics
+        if: always() && matrix.job_id == 'direct-windows'
+        shell: powershell
+        run: |
+          $env:PYTHONPATH = "$pwd/agent"
+          python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_preflight()"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain hosted service-manager prerequisite diagnostics
+        if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: journey-manager-${{ matrix.job_id }}
+          path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
+          if-no-files-found: warn
       - name: Freeze and validate candidate inputs
         shell: bash
         env:
@@ -484,6 +509,7 @@ jobs:
             'install-bootstrap.log', 'update-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
+            'preflight-scheduled-task.txt',
             'runtime-owner-processes.json', 'runtime-service-runtime.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
