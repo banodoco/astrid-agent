@@ -340,104 +340,186 @@ class _RemoteFamily:
             # Keep the operation vocabulary auditable.  In particular, never
             # let a caller turn an arbitrary string into an attribute lookup
             # on the generated client.
-            if operation == "get_preferences": value = self._client.get_preferences(*args, **kwargs)
-            elif operation == "update_preferences": value = self._client.update_preferences(*args, **kwargs)
-            elif operation == "create_document": value = self._client.create_document(*args, **kwargs)
-            elif operation == "get_document": value = self._client.get_document(*args, **kwargs)
-            elif operation == "update_document": value = self._client.update_document(*args, **kwargs)
-            elif operation == "list_documents": value = self._client.list_documents(*args, **kwargs)
-            elif operation == "add_shot_item": value = self._client.add_shot_item(*args, **kwargs)
-            elif operation == "admit_task": value = self._client.admit_task(*args, **kwargs)
+            if operation == "get_preferences":
+                value = self._client.get_preferences(*args, **kwargs)
+            elif operation == "update_preferences":
+                value = self._client.update_preferences(*args, **kwargs)
+            elif operation == "create_document":
+                value = self._client.create_document(*args, **kwargs)
+            elif operation == "get_document":
+                value = self._client.get_document(*args, **kwargs)
+            elif operation == "update_document":
+                value = self._client.update_document(*args, **kwargs)
+            elif operation == "list_documents":
+                value = self._client.list_documents(*args, **kwargs)
+            elif operation == "add_shot_item":
+                value = self._client.add_shot_item(*args, **kwargs)
+            elif operation == "admit_task":
+                value = self._client.admit_task(*args, **kwargs)
             elif operation == "dispatch_task_admission":
                 dispatch = getattr(self._client, "dispatch_task_admission", None)
                 value = dispatch(args[0]) if callable(dispatch) else self._client.admit_task(**args[0])
-            elif operation == "attach_variant_thumbnail": value = self._client.attach_variant_thumbnail(*args, **kwargs)
-            elif operation == "archive_project_reference": value = self._client.archive_project_reference(*args, **kwargs)
-            elif operation == "archive_project_shot": value = self._client.archive_project_shot(*args, **kwargs)
-            elif operation == "archive_timeline": value = self._client.archive_timeline(*args, **kwargs)
-            elif operation == "associate_reference": value = self._client.associate_reference(*args, **kwargs)
-            elif operation == "cancel_run": value = self._client.cancel_run(*args, **kwargs)
-            elif operation == "cancel_task": value = self._client.cancel_task(*args, **kwargs)
-            elif operation == "claim_task": value = self._client.claim_task(*args, **kwargs)
+            elif operation == "attach_variant_thumbnail":
+                value = self._client.attach_variant_thumbnail(*args, **kwargs)
+            elif operation == "archive_project_reference":
+                value = self._client.archive_project_reference(*args, **kwargs)
+            elif operation == "archive_project_shot":
+                value = self._client.archive_project_shot(*args, **kwargs)
+            elif operation == "archive_timeline":
+                value = self._client.archive_timeline(*args, **kwargs)
+            elif operation == "associate_reference":
+                value = self._client.associate_reference(*args, **kwargs)
+            elif operation == "cancel_run":
+                value = self._client.cancel_run(*args, **kwargs)
+            elif operation == "cancel_task":
+                value = self._client.cancel_task(*args, **kwargs)
+            elif operation == "claim_task":
+                value = self._client.claim_task(*args, **kwargs)
             elif operation == "commit_timeline":
                 value = self._client.commit_timeline(*args, **kwargs)
-            elif operation == "create_generation": value = self._client.create_generation(*args, **kwargs)
-            elif operation == "create_media_relation": value = self._client.create_media_relation(*args, **kwargs)
-            elif operation == "create_project": value = self._client.create_project(*args, **kwargs)
-            elif operation == "create_timeline": value = self._client.create_timeline(*args, **kwargs)
+            elif operation == "create_generation":
+                value = self._client.create_generation(*args, **kwargs)
+            elif operation == "create_media_relation":
+                value = self._client.create_media_relation(*args, **kwargs)
+            elif operation == "create_project":
+                value = self._client.create_project(*args, **kwargs)
+            elif operation == "create_timeline":
+                value = self._client.create_timeline(*args, **kwargs)
             elif operation == "rename_timeline":
                 value = self._client.rename_timeline(*args, **kwargs)
-            elif operation == "create_project_reference": value = self._client.create_project_reference(*args, **kwargs)
-            elif operation == "create_project_shot": value = self._client.create_project_shot(*args, **kwargs)
-            elif operation == "create_variant": value = self._client.create_variant(*args, **kwargs)
-            elif operation == "current_project": value = self._client.current_project(*args, **kwargs)
-            elif operation == "diff_timeline": value = self._client.diff_timeline(*args, **kwargs)
-            elif operation == "get_generation": value = self._client.get_generation(*args, **kwargs)
-            elif operation == "get_object": value = self._client.get_object(*args, **kwargs)
-            elif operation == "get_project": value = self._client.get_project(*args, **kwargs)
-            elif operation == "get_project_reference": value = self._client.get_project_reference(*args, **kwargs)
-            elif operation == "get_project_shot": value = self._client.get_project_shot(*args, **kwargs)
-            elif operation == "get_project_shot_revision": value = self._client.get_project_shot_revision(*args, **kwargs)
-            elif operation == "get_project_timeline_revision": value = self._client.get_project_timeline_revision(*args, **kwargs)
-            elif operation == "get_project_parent_composition_revision": value = self._client.get_project_parent_composition_revision(*args, **kwargs)
-            elif operation == "import_timeline": value = self._client.import_timeline(*args, **kwargs)
+            elif operation == "create_project_reference":
+                value = self._client.create_project_reference(*args, **kwargs)
+            elif operation == "create_project_shot":
+                value = self._client.create_project_shot(*args, **kwargs)
+            elif operation == "create_variant":
+                value = self._client.create_variant(*args, **kwargs)
+            elif operation == "current_project":
+                value = self._client.current_project(*args, **kwargs)
+            elif operation == "diff_timeline":
+                value = self._client.diff_timeline(*args, **kwargs)
+            elif operation == "get_generation":
+                value = self._client.get_generation(*args, **kwargs)
+            elif operation == "get_object":
+                value = self._client.get_object(*args, **kwargs)
+            elif operation == "get_project":
+                value = self._client.get_project(*args, **kwargs)
+            elif operation == "get_project_reference":
+                value = self._client.get_project_reference(*args, **kwargs)
+            elif operation == "get_project_shot":
+                value = self._client.get_project_shot(*args, **kwargs)
+            elif operation == "get_project_shot_revision":
+                value = self._client.get_project_shot_revision(*args, **kwargs)
+            elif operation == "get_project_timeline_revision":
+                value = self._client.get_project_timeline_revision(*args, **kwargs)
+            elif operation == "get_project_parent_composition_revision":
+                value = self._client.get_project_parent_composition_revision(*args, **kwargs)
+            elif operation == "import_timeline":
+                value = self._client.import_timeline(*args, **kwargs)
             elif operation == "get_source_frame_thumbnail":
                 value = self._client.get_source_frame_thumbnail(*args, **kwargs)
-            elif operation == "get_project_shot_text_binding": value = self._client.get_project_shot_text_binding(*args, **kwargs)
-            elif operation == "get_managed_output": value = self._client.get_managed_output(*args, **kwargs)
-            elif operation == "get_run": value = self._client.get_run(*args, **kwargs)
-            elif operation == "get_task": value = self._client.get_task(*args, **kwargs)
-            elif operation == "inspect_timeline": value = self._client.inspect_timeline(*args, **kwargs)
+            elif operation == "get_project_shot_text_binding":
+                value = self._client.get_project_shot_text_binding(*args, **kwargs)
+            elif operation == "get_managed_output":
+                value = self._client.get_managed_output(*args, **kwargs)
+            elif operation == "get_run":
+                value = self._client.get_run(*args, **kwargs)
+            elif operation == "get_task":
+                value = self._client.get_task(*args, **kwargs)
+            elif operation == "inspect_timeline":
+                value = self._client.inspect_timeline(*args, **kwargs)
             elif operation == "create_timeline_view":
                 assert key is not None
                 value = self._client.create_timeline_view(*args, idempotency_key=key, **kwargs)
-            elif operation == "fail_attempt": value = self._client.fail_attempt(*args, **kwargs)
-            elif operation == "head_object": value = self._client.head_object(*args, **kwargs)
+            elif operation == "fail_attempt":
+                value = self._client.fail_attempt(*args, **kwargs)
+            elif operation == "head_object":
+                value = self._client.head_object(*args, **kwargs)
             elif operation == "ensure_source_frame_thumbnail":
                 value = self._client.ensure_source_frame_thumbnail(*args, **kwargs)
-            elif operation == "ingest_project_object": value = self._client.ingest_project_object(*args, **kwargs)
-            elif operation == "ingest_project_object_stream": value = self._client.ingest_project_object_stream(*args, **kwargs)
-            elif operation == "link_references": value = self._client.link_references(*args, **kwargs)
-            elif operation == "list_events": value = self._client.list_events(*args, **kwargs)
-            elif operation == "list_generations": value = self._client.list_generations(*args, **kwargs)
-            elif operation == "list_media_relations": value = self._client.list_media_relations(*args, **kwargs)
-            elif operation == "list_project_objects": value = self._client.list_project_objects(*args, **kwargs)
-            elif operation == "list_project_references": value = self._client.list_project_references(*args, **kwargs)
-            elif operation == "list_project_runs": value = self._client.list_project_runs(*args, **kwargs)
-            elif operation == "list_project_shots": value = self._client.list_project_shots(*args, **kwargs)
-            elif operation == "list_project_shot_text_bindings": value = self._client.list_project_shot_text_bindings(*args, **kwargs)
-            elif operation == "list_project_tasks": value = self._client.list_project_tasks(*args, **kwargs)
-            elif operation == "list_managed_outputs": value = self._client.list_managed_outputs(*args, **kwargs)
-            elif operation == "list_projects": value = self._client.list_projects(*args, **kwargs)
-            elif operation == "list_run_events": value = self._client.list_run_events(*args, **kwargs)
+            elif operation == "ingest_project_object":
+                value = self._client.ingest_project_object(*args, **kwargs)
+            elif operation == "ingest_project_object_stream":
+                value = self._client.ingest_project_object_stream(*args, **kwargs)
+            elif operation == "link_references":
+                value = self._client.link_references(*args, **kwargs)
+            elif operation == "list_events":
+                value = self._client.list_events(*args, **kwargs)
+            elif operation == "list_generations":
+                value = self._client.list_generations(*args, **kwargs)
+            elif operation == "list_media_relations":
+                value = self._client.list_media_relations(*args, **kwargs)
+            elif operation == "list_project_objects":
+                value = self._client.list_project_objects(*args, **kwargs)
+            elif operation == "list_project_references":
+                value = self._client.list_project_references(*args, **kwargs)
+            elif operation == "list_project_runs":
+                value = self._client.list_project_runs(*args, **kwargs)
+            elif operation == "list_project_shots":
+                value = self._client.list_project_shots(*args, **kwargs)
+            elif operation == "list_project_shot_text_bindings":
+                value = self._client.list_project_shot_text_bindings(*args, **kwargs)
+            elif operation == "list_project_tasks":
+                value = self._client.list_project_tasks(*args, **kwargs)
+            elif operation == "list_managed_outputs":
+                value = self._client.list_managed_outputs(*args, **kwargs)
+            elif operation == "list_projects":
+                value = self._client.list_projects(*args, **kwargs)
+            elif operation == "list_run_events":
+                value = self._client.list_run_events(*args, **kwargs)
             elif operation == "list_timeline_commits":
                 value = self._client.list_timeline_commits(*args, **kwargs)
-            elif operation == "list_timeline_history": value = self._client.list_timeline_history(*args, **kwargs)
-            elif operation == "list_timelines": value = self._client.list_timelines(*args, **kwargs)
-            elif operation == "list_variants": value = self._client.list_variants(*args, **kwargs)
-            elif operation == "mark_generation_variants_viewed": value = self._client.mark_generation_variants_viewed(*args, **kwargs)
-            elif operation == "mark_variant_viewed": value = self._client.mark_variant_viewed(*args, **kwargs)
-            elif operation == "publish_parent_composition": value = self._client.publish_parent_composition(*args, **kwargs)
-            elif operation == "promote_project_shot_candidate": value = self._client.promote_project_shot_candidate(*args, **kwargs)
-            elif operation == "recover_project_reference": value = self._client.recover_project_reference(*args, **kwargs)
-            elif operation == "recover_project_shot": value = self._client.recover_project_shot(*args, **kwargs)
-            elif operation == "recover_timeline": value = self._client.recover_timeline(*args, **kwargs)
-            elif operation == "register_capability": value = self._client.register_capability(*args, **kwargs)
-            elif operation == "register_executor": value = self._client.register_executor(*args, **kwargs)
-            elif operation == "remove_shot_item": value = self._client.remove_shot_item(*args, **kwargs)
-            elif operation == "reorder_shot_items": value = self._client.reorder_shot_items(*args, **kwargs)
-            elif operation == "set_project_shot_text_binding": value = self._client.set_project_shot_text_binding(*args, **kwargs)
-            elif operation == "set_project_shot_text_binding_by_id": value = self._client.set_project_shot_text_binding_by_id(*args, **kwargs)
-            elif operation == "rebind_project_shot_text_binding": value = self._client.rebind_project_shot_text_binding(*args, **kwargs)
-            elif operation == "retry_run": value = self._client.retry_run(*args, **kwargs)
-            elif operation == "retry_task": value = self._client.retry_task(*args, **kwargs)
-            elif operation == "select_project": value = self._client.select_project(*args, **kwargs)
-            elif operation == "set_primary_reference": value = self._client.set_primary_reference(*args, **kwargs)
-            elif operation == "settle_attempt": value = self._client.settle_attempt(*args, **kwargs)
-            elif operation == "update_project": value = self._client.update_project(*args, **kwargs)
-            elif operation == "update_project_reference": value = self._client.update_project_reference(*args, **kwargs)
-            elif operation == "update_project_shot": value = self._client.update_project_shot(*args, **kwargs)
-            else: raise ValueError(f"unsupported generated operation: {operation}")
+            elif operation == "list_timeline_history":
+                value = self._client.list_timeline_history(*args, **kwargs)
+            elif operation == "list_timelines":
+                value = self._client.list_timelines(*args, **kwargs)
+            elif operation == "list_variants":
+                value = self._client.list_variants(*args, **kwargs)
+            elif operation == "mark_generation_variants_viewed":
+                value = self._client.mark_generation_variants_viewed(*args, **kwargs)
+            elif operation == "mark_variant_viewed":
+                value = self._client.mark_variant_viewed(*args, **kwargs)
+            elif operation == "publish_parent_composition":
+                value = self._client.publish_parent_composition(*args, **kwargs)
+            elif operation == "promote_project_shot_candidate":
+                value = self._client.promote_project_shot_candidate(*args, **kwargs)
+            elif operation == "recover_project_reference":
+                value = self._client.recover_project_reference(*args, **kwargs)
+            elif operation == "recover_project_shot":
+                value = self._client.recover_project_shot(*args, **kwargs)
+            elif operation == "recover_timeline":
+                value = self._client.recover_timeline(*args, **kwargs)
+            elif operation == "register_capability":
+                value = self._client.register_capability(*args, **kwargs)
+            elif operation == "register_executor":
+                value = self._client.register_executor(*args, **kwargs)
+            elif operation == "remove_shot_item":
+                value = self._client.remove_shot_item(*args, **kwargs)
+            elif operation == "reorder_shot_items":
+                value = self._client.reorder_shot_items(*args, **kwargs)
+            elif operation == "set_project_shot_text_binding":
+                value = self._client.set_project_shot_text_binding(*args, **kwargs)
+            elif operation == "set_project_shot_text_binding_by_id":
+                value = self._client.set_project_shot_text_binding_by_id(*args, **kwargs)
+            elif operation == "rebind_project_shot_text_binding":
+                value = self._client.rebind_project_shot_text_binding(*args, **kwargs)
+            elif operation == "retry_run":
+                value = self._client.retry_run(*args, **kwargs)
+            elif operation == "retry_task":
+                value = self._client.retry_task(*args, **kwargs)
+            elif operation == "select_project":
+                value = self._client.select_project(*args, **kwargs)
+            elif operation == "set_primary_reference":
+                value = self._client.set_primary_reference(*args, **kwargs)
+            elif operation == "settle_attempt":
+                value = self._client.settle_attempt(*args, **kwargs)
+            elif operation == "update_project":
+                value = self._client.update_project(*args, **kwargs)
+            elif operation == "update_project_reference":
+                value = self._client.update_project_reference(*args, **kwargs)
+            elif operation == "update_project_shot":
+                value = self._client.update_project_shot(*args, **kwargs)
+            else:
+                raise ValueError(f"unsupported generated operation: {operation}")
             receipt = None
             if isinstance(value, dict) and set(value) >= {"data", "receipt"}:
                 receipt = CommandReceipt.from_dict(value["receipt"]) if value["receipt"] is not None else None
@@ -1740,7 +1822,8 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                 "from_revision": from_revision, "to_revision": to_revision,
             }))
     def _version(self, project, ref, expected_version):
-        if expected_version is not None: return int(expected_version)
+        if expected_version is not None:
+            return int(expected_version)
         current = self._resolve_timeline(project, ref)
         if not current.ok or not isinstance(current.data, Mapping):
             raise WorkspaceClientError(404, "not_found", "timeline not found", {"project": str(project), "ref": str(ref)})
@@ -1892,7 +1975,8 @@ class RemoteMedia(_RemoteFamily):
         items = []
         for path in sorted(p for p in directory.rglob("*") if p.is_file()):
             result = self.import_file(project=project, path=path, realm=realm, idempotency_key=f"{idempotency_key or 'import'}-{path.name}")
-            if not result.ok: return result
+            if not result.ok:
+                return result
             items.append(result.data)
         return DomainResult.success(items, idempotency_key=idempotency_key or "")
     def list(self, project, *, cursor=None, limit=50, kind=None, model=None, target=None, tag=None):
@@ -1963,7 +2047,8 @@ class RemoteMedia(_RemoteFamily):
         if realm_error is not None:
             return realm_error
         scoped = self.show(project, ref)
-        if not scoped.ok: return scoped
+        if not scoped.ok:
+            return scoped
         result = self._typed("head_object", ref, key=idempotency_key)
         return DomainResult.success({"verified": True, "object_id": str(ref)}, idempotency_key=result.idempotency_key) if result.ok else result
     def relate(self, project, *, from_object_id: str, to_object_id: str, kind: str, metadata=None, idempotency_key=None):
@@ -2441,34 +2526,44 @@ class RemoteReferences(_RemoteFamily):
         ref, failure = self._resolve(project, ref)
         return failure or self._typed("get_project_reference", project, ref)
     def _version(self, ref, expected_version, project=None):
-        if expected_version is not None: return int(expected_version)
+        if expected_version is not None:
+            return int(expected_version)
         current = self._client.get_project_reference(project, ref)
         return int(current.get("version", 1))
     def update(self, project, ref, *, expected_version=None, name=None, description=None, metadata=None, idempotency_key=None):
         ref, failure = self._resolve(project, ref)
-        if failure is not None: return failure
+        if failure is not None:
+            return failure
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "update_reference"}), idempotency_key=idempotency_key or "")
-        try: version = self._version(ref, expected_version, project)
-        except WorkspaceClientError as exc: return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
+        try:
+            version = self._version(ref, expected_version, project)
+        except WorkspaceClientError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("update_project_reference", project, ref, key=key, expected_version=version, name=name, description=description, metadata=metadata, idempotency_key=key)
     def archive(self, project, ref, *, expected_version=None, idempotency_key=None):
         ref, failure = self._resolve(project, ref)
-        if failure is not None: return failure
+        if failure is not None:
+            return failure
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "archive_reference"}), idempotency_key=idempotency_key or "")
-        try: version = self._version(ref, expected_version, project)
-        except WorkspaceClientError as exc: return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
+        try:
+            version = self._version(ref, expected_version, project)
+        except WorkspaceClientError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("archive_project_reference", project, ref, key=key, expected_version=version, idempotency_key=key)
     def recover(self, project, ref, *, expected_version=None, idempotency_key=None):
         ref, failure = self._resolve(project, ref)
-        if failure is not None: return failure
+        if failure is not None:
+            return failure
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "recover_reference"}), idempotency_key=idempotency_key or "")
-        try: version = self._version(ref, expected_version, project)
-        except WorkspaceClientError as exc: return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
+        try:
+            version = self._version(ref, expected_version, project)
+        except WorkspaceClientError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("recover_project_reference", project, ref, key=key, expected_version=version, idempotency_key=key)
     def associate(self, project, ref, *, media_id: str, role="depicts", association_id=None, metadata=None, context_task=None, idempotency_key=None):
@@ -2476,7 +2571,8 @@ class RemoteReferences(_RemoteFamily):
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped references are required", {"operation": "associate_reference"}), idempotency_key=key)
         ref, failure = self._resolve(project, ref)
-        if failure is not None: return failure
+        if failure is not None:
+            return failure
         metadata = dict(metadata or {})
         if context_task:
             metadata.setdefault("context_task", str(context_task))
@@ -2496,9 +2592,12 @@ class RemoteReferences(_RemoteFamily):
         if not association_id:
             return DomainResult.failure(ErrorObject("validation_error", "media reference association is required", {}), idempotency_key=key)
         ref, failure = self._resolve(project, ref)
-        if failure is not None: return failure
-        try: version = self._version(ref, expected_version, project)
-        except WorkspaceClientError as exc: return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=key)
+        if failure is not None:
+            return failure
+        try:
+            version = self._version(ref, expected_version, project)
+        except WorkspaceClientError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=key)
         return self._typed("set_primary_reference", project, ref, association_id, key=key, expected_version=version, idempotency_key=key)
 
 
@@ -2528,14 +2627,17 @@ class RemoteShots(_RemoteFamily):
             body.setdefault("metadata", dict(metadata))
         return self._typed("create_project_shot", project, body, key=key, idempotency_key=key)
     def _version(self, shot_id, expected_version, project=None):
-        if expected_version is not None: return int(expected_version)
+        if expected_version is not None:
+            return int(expected_version)
         current = self._client.get_project_shot(project, shot_id)
         return int(current.get("version", 1))
     def update(self, project, shot_id, *, expected_version=None, name=None, metadata=None, idempotency_key=None):
         if project is None:
             return DomainResult.failure(ErrorObject("unsupported_operation", "project-scoped shots are required", {"operation": "update_shot"}), idempotency_key=idempotency_key or "")
-        try: version = self._version(shot_id, expected_version, project)
-        except WorkspaceClientError as exc: return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
+        try:
+            version = self._version(shot_id, expected_version, project)
+        except WorkspaceClientError as exc:
+            return DomainResult.failure(ErrorObject(exc.code, exc.message, exc.details), idempotency_key=idempotency_key or "")
         key = idempotency_key or uuid.uuid4().hex
         return self._typed("update_project_shot", project, shot_id, key=key, expected_version=version, name=name, metadata=metadata, idempotency_key=key)
     def archive(self, project, shot_id, *, expected_version=None, idempotency_key=None):

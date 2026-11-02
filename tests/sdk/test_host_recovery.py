@@ -786,7 +786,7 @@ def test_windows_command_observation_uses_read_only_cim_and_validates_pid(monkey
     assert "[Convert]::ToBase64String" in calls[0][0][-1]
     assert calls[0][1]["capture_output"] is True
     assert "encoding" not in calls[0][1]
-    assert calls[0][1]["timeout"] == 5.0
+    assert calls[0][1]["timeout"] == 30.0
     assert calls[0][1]["check"] is False
 
 
@@ -797,6 +797,35 @@ def test_windows_command_observation_fails_closed_on_output_decode_error(monkeyp
 
     with pytest.raises(OSError, match="process command observation failed"):
         host_bootstrap._windows_process_argv(4321)
+
+
+def test_windows_command_observation_timeout_blocks_retirement(monkeypatch, tmp_path):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda pid: {
+        "pid": pid, "birth_id": "windows-creation:1234",
+    })
+    monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: r"C:\Astrid\venv\Scripts\python.exe")
+    calls = []
+
+    def timeout(argv, **kwargs):
+        calls.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(host_bootstrap.subprocess, "run", timeout)
+    monkeypatch.setattr(host_bootstrap, "_terminate_old_host", lambda *_args, **_kwargs: pytest.fail("host terminated"))
+    markers = [tmp_path / "generic-host.json", tmp_path / "generic-host.ready.json"]
+    for marker in markers:
+        marker.write_text("{}", encoding="utf-8")
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234",
+             "support_root": str(tmp_path), "python_executable": r"C:\Astrid\venv\Scripts\python.exe"}
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="native process metadata unavailable") as exc:
+        host_bootstrap._retire_host_locked(state)
+
+    assert isinstance(exc.value.__cause__, OSError)
+    assert isinstance(exc.value.__cause__.__cause__, subprocess.TimeoutExpired)
+    assert calls == [30.0]
+    assert all(marker.exists() for marker in markers)
 
 
 @pytest.mark.windows_native
