@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import sys
 import time
 
@@ -88,6 +89,34 @@ def _diagnostic_state_path(args, root: Path) -> Path:
     return path
 
 
+def _preseed_file_sha256(path: Path) -> str:
+    """Hash all observed bytes without reading beyond EOF into a Windows lock."""
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
+    digest = hashlib.sha256()
+    with path.open("rb", buffering=0) as stream:
+        opened = os.fstat(stream.fileno())
+        if identity(before) != identity(opened):
+            raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+        remaining = opened.st_size
+        while remaining:
+            block = stream.read(min(remaining, 1024 * 1024))
+            if not block:
+                raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+            digest.update(block)
+            remaining -= len(block)
+        if identity(opened) != identity(os.fstat(stream.fileno())):
+            raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+    if identity(before) != identity(path.lstat()):
+        raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+    return digest.hexdigest()
+
+
 def _preseed_workspace_state(data: Path) -> dict:
     """Return a fail-closed fingerprint of the selected release-0 realm.
 
@@ -110,7 +139,7 @@ def _preseed_workspace_state(data: Path) -> dict:
                 found.append({"path": relative, "kind": "directory"})
             elif path.is_file():
                 found.append({"path": relative, "kind": "file",
-                              "sha256": _bytes_sha256(path, "pre-seed workspace file")})
+                              "sha256": _preseed_file_sha256(path)})
             else:
                 raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
         return found
