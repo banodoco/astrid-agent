@@ -1636,6 +1636,40 @@ def _shared_executor_main(argv: list[str]) -> int:
             print(f"R-24 live shared route failed: {exc}", file=sys.stderr)
             return 1
         return 0
+    if route == "r25-r24-seam":
+        route_parser = argparse.ArgumentParser(
+            description="Retain the exact R-24 Linux seam without promoting it to M4-6 evidence")
+        route_parser.add_argument("--run-root", required=True, type=Path)
+        route_parser.add_argument("--candidate", required=True, type=Path)
+        route_parser.add_argument("--config", required=True, type=Path)
+        route_parser.add_argument("--producer-checkout", required=True, type=Path)
+        route_parser.add_argument("--app-checkout", required=True, type=Path)
+        route_parser.add_argument("--agent-checkout", required=True, type=Path)
+        route_parser.add_argument("--runtime-checkout", required=True, type=Path)
+        route_parser.add_argument("--pinokio-checkout", required=True, type=Path)
+        route_parser.add_argument("--output", required=True, type=Path)
+        values = route_parser.parse_args(argv[1:])
+        try:
+            if sys.platform != "linux":
+                raise ValueError("R-25's R-24 seam requires Linux")
+            try:
+                from .pinokio_r24_journey_seam import execute
+            except ImportError:
+                from pinokio_r24_journey_seam import execute
+            execute(
+                run_root=values.run_root,
+                candidate_file=values.candidate,
+                config_file=values.config,
+                producer_root=values.producer_checkout,
+                checkouts={"app": values.app_checkout, "agent": values.agent_checkout,
+                           "runtime": values.runtime_checkout,
+                           "pinokio": values.pinokio_checkout},
+                output=values.output,
+            )
+        except Exception as exc:
+            print(f"R-25 R-24 seam shared route failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if route == "m4-4b":
         route_parser = argparse.ArgumentParser(description="M4-4b local-process smoke")
         route_parser.add_argument("--checkout", required=True, type=Path)
