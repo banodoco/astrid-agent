@@ -208,10 +208,11 @@ def _provision_managed_home(
     run_root: Path,
     env: dict[str, str],
 ) -> None:
-    """Provision a fresh home through the pinned engine's stock setup helper."""
+    """Provision a fresh home through the pinned engine's official setup API."""
     evidence = run_root / "evidence/materializer"
     receipt_path = evidence / "managed-home-provision.json"
-    setup = (pinokiod / "script/install-mode.js").resolve(strict=True)
+    stock_setup = (pinokiod / "script/install-mode.js").resolve(strict=True)
+    setup = (Path(__file__).parent / "pinokiod-install-mode.cjs").resolve(strict=True)
     conda_source = (pinokiod / "kernel/bin/conda.js").resolve(strict=True)
     setup_env = dict(env)
     setup_env["PINOKIO_SETUP_MODE"] = SETUP_MODE
@@ -229,9 +230,14 @@ def _provision_managed_home(
             "home_inside_pinokio_home": selected_home in selected_runner_home.parents,
         },
         "source_hashes": {
-            "install_mode_sha256": _sha(setup),
+            "stock_install_mode_sha256": _sha(stock_setup),
+            "local_setup_driver_sha256": _sha(setup),
             "conda_module_sha256": _sha(conda_source),
         },
+        "local_setup_patch": (
+            "initialize the pinned Bin modules before Shells; preserve the "
+            "official javascript preset, check, install, and retry paths"
+        ),
         "disk": {
             "minimum_free_bytes": MIN_FREE_BYTES,
             "free_bytes_before": shutil.disk_usage(run_root).free,
@@ -241,7 +247,7 @@ def _provision_managed_home(
     _write_json(receipt_path, receipt)
     try:
         _run_bounded(
-            [str(node), str(setup)],
+            [str(node), str(setup), str(pinokiod)],
             log=evidence / "managed-home-setup.log",
             receipt=receipt,
             label="pinokio-managed-home-setup",
