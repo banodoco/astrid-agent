@@ -181,7 +181,8 @@ def test_role_aware_canonical_contract_is_shared_and_does_not_mutate_payload():
 
 
 def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=(500, 18, 544),
-                         flags=(16, 16, 0), ace_type=0, null_dacl=False, invalid_acl=False):
+                         flags=(16, 16, 0), masks=None, ace_type=0, null_dacl=False,
+                         invalid_acl=False):
     """Model the retained SDDL with native ACE buffers and Runtime's API seam."""
     import ctypes
     from types import SimpleNamespace
@@ -201,11 +202,13 @@ def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=
     acl = security._Acl()
     acl.count = len(trustees)
     aces = []
-    for trustee, flag in zip(trustees, flags, strict=True):
+    if masks is None:
+        masks = (0x1F01FF,) * len(trustees)
+    for trustee, flag, mask in zip(trustees, flags, masks, strict=True):
         raw_sid = sid(trustee)
         length = 8 + len(raw_sid)
         aces.append(ctypes.create_string_buffer(bytes([ace_type, flag]) + length.to_bytes(2, "little")
-                                               + (0x1F01FF).to_bytes(4, "little") + raw_sid))
+                                               + mask.to_bytes(4, "little") + raw_sid))
     descriptor = ctypes.create_string_buffer(1)
 
     def set_pointer(out, address):
@@ -262,10 +265,28 @@ def test_windows_captured_acl_same_owner_is_admitted(monkeypatch):
     {"null_dacl": True},
     {"invalid_acl": True},
     {"trustees": (544, 18, 18)},  # No effective user ACE.
+    {"masks": (0, 0x1F01FF, 0x1F01FF)},
+    {"masks": (0x20000, 0x1F01FF, 0x1F01FF)},  # READ_CONTROL alone.
+    {"masks": (1, 0x1F01FF, 0x1F01FF)},  # Read without execute/traverse.
+    {"masks": (0x20, 0x1F01FF, 0x1F01FF)},  # Execute/traverse without read.
+    {"masks": (0x90000000, 0x1F01FF, 0x1F01FF)},  # Unmapped generic bits.
+    {"flags": (8, 16, 0)},  # Inherit-only user access.
 ])
 def test_windows_schema_rejects_unsafe_acl(monkeypatch, changes):
     _windows_acl_fixture(monkeypatch, **changes)
     assert not _local_schema._windows_schema_handle_is_safe(1)
+
+
+@pytest.mark.parametrize("mask", [0x21, 0x1200A9, 0x1F01FF])
+def test_windows_schema_accepts_user_read_masks(monkeypatch, mask):
+    _windows_acl_fixture(monkeypatch, masks=(mask, 0x1F01FF, 0x1F01FF))
+    assert _local_schema._windows_schema_handle_is_safe(1)
+
+
+def test_windows_schema_combines_effective_user_aces(monkeypatch):
+    _windows_acl_fixture(monkeypatch, trustees=(500, 500, 18), flags=(0, 0, 0),
+                         masks=(1, 0x20, 0x1F01FF))
+    assert _local_schema._windows_schema_handle_is_safe(1)
 
 
 @pytest.mark.parametrize("bad", [None, "source", "destination"])
@@ -373,3 +394,122 @@ def test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign(tmp_pa
     with security._handle(path, write_dac=True) as (handle, _info):
         security._set_dacl(handle, f"O:{user_sid}D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BU)")
     assert not _local_schema._windows_schema_path_is_safe(path)
+
+
+@pytest.mark.windows_native
+@pytest.mark.parametrize("layout,target", [("source", "schema"), ("installed", "schema"),
+                                           ("installed", "source")])
+@pytest.mark.parametrize("case", ["default", "safe", "zero", "unrelated", "foreign_write", "foreign_owner"])
+def test_windows_native_schema_path_acl_controls(tmp_path, monkeypatch, layout, target, case):
+    import ctypes
+    from ctypes import wintypes
+    from types import SimpleNamespace
+
+    from runtime_protocol import windows_security as security
+
+    version = tmp_path / "version"
+    prefix = version / "py"
+    root = prefix / "Lib" / "site-packages" if layout == "installed" else tmp_path / "agent"
+    for relative in (_local_schema.SCHEMA_RELATIVE_PATH, Path("runtime.lock.json"),
+                     *_local_schema.READER_INPUTS):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((REPO_ROOT / relative).read_bytes())
+    schema = root / _local_schema.SCHEMA_RELATIVE_PATH
+    source = version / "a" / _local_schema.SCHEMA_RELATIVE_PATH
+    if layout == "installed":
+        source.parent.mkdir(parents=True)
+        source.write_bytes(schema.read_bytes())
+
+    if case == "default":
+        # Exercise the ACL inherited from the runner profile, without rewriting it.
+        assert _local_schema._windows_schema_path_is_safe(source if target == "source" else schema)
+        monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix)))
+        assert _local_schema.verified_schema_path(root, str(schema)) == schema
+        return
+
+    user_sid = security._sid_text(security._user_sid())
+    safe = f"D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BA)"
+    paths = set()
+    for leaf in (schema, root / "runtime.lock.json", *(root / p for p in _local_schema.READER_INPUTS)):
+        paths.update((leaf, *(p for p in leaf.parents if p == root or p.is_relative_to(root))))
+    if layout == "installed":
+        source_root = version / "a"
+        paths.update((source, *(p for p in source.parents
+                                if p == source_root or p.is_relative_to(source_root))))
+    for path in paths:
+        with security._handle(path, write_dac=True) as (handle, _info):
+            security._set_dacl(handle, safe)
+
+    selected = source if target == "source" else schema
+    mask = {"safe": "FA", "zero": "0x00000000", "unrelated": "0x00020000",
+            "foreign_write": "FA", "foreign_owner": "FA"}[case]
+    foreign = "(A;;0x00000002;;;BU)" if case == "foreign_write" else ""
+    descriptor = f"D:P(A;;{mask};;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BA){foreign}"
+    monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix)))
+    owner_handle = None
+    token = wintypes.HANDLE()
+    previous = None
+    try:
+        with security._handle(selected, write_dac=True) as (handle, _info):
+            try:
+                security._set_dacl(handle, descriptor)
+                if case == "foreign_owner":
+                    adv, kernel = security._api()
+
+                    class Luid(ctypes.Structure):
+                        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.LONG)]
+
+                    class TokenPrivileges(ctypes.Structure):
+                        _fields_ = [("count", wintypes.DWORD), ("luid", Luid),
+                                    ("attributes", wintypes.DWORD)]
+
+                    adv.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                                          ctypes.POINTER(Luid)]
+                    adv.LookupPrivilegeValueW.restype = wintypes.BOOL
+                    adv.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL,
+                                                           ctypes.POINTER(TokenPrivileges), wintypes.DWORD,
+                                                           ctypes.c_void_p, ctypes.c_void_p]
+                    adv.AdjustTokenPrivileges.restype = wintypes.BOOL
+                    security._check(adv.OpenProcessToken(kernel.GetCurrentProcess(), 0x20 | 0x8,
+                                                          ctypes.byref(token)))
+                    privilege = TokenPrivileges(count=1, attributes=2)
+                    security._check(adv.LookupPrivilegeValueW(None, "SeRestorePrivilege",
+                                                              ctypes.byref(privilege.luid)))
+                    saved = TokenPrivileges()
+                    saved_size = wintypes.DWORD()
+                    ctypes.set_last_error(0)
+                    security._check(adv.AdjustTokenPrivileges(token, False, ctypes.byref(privilege),
+                                                             ctypes.sizeof(saved), ctypes.byref(saved),
+                                                             ctypes.byref(saved_size)))
+                    assert ctypes.get_last_error() == 0, "SeRestorePrivilege was not assigned"
+                    previous = saved
+                    owner_handle = kernel.ReOpenFile(handle, 0x000E0000, 3, 0x02200000)
+                    if owner_handle == wintypes.HANDLE(-1).value:
+                        owner_handle = None
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    with security._descriptor("O:SY") as sd:
+                        adv.GetSecurityDescriptorOwner.argtypes = [security.P, ctypes.POINTER(security.P),
+                                                                   ctypes.POINTER(wintypes.BOOL)]
+                        adv.GetSecurityDescriptorOwner.restype = wintypes.BOOL
+                        foreign_owner, defaulted = security.P(), wintypes.BOOL()
+                        security._check(adv.GetSecurityDescriptorOwner(sd, ctypes.byref(foreign_owner),
+                                                                        ctypes.byref(defaulted)))
+                        assert adv.SetSecurityInfo(owner_handle, 1, 1, foreign_owner, None, None, None) == 0
+                assert _local_schema._windows_schema_handle_is_safe(handle) == (case == "safe")
+                if case == "safe":
+                    assert _local_schema.verified_schema_path(root, str(schema)) == schema
+                else:
+                    with pytest.raises(ValueError, match="owner/mode"):
+                        _local_schema.verified_schema_path(root, str(schema))
+            finally:
+                security._set_dacl(handle, safe)
+    finally:
+        if owner_handle is not None:
+            adv, kernel = security._api()
+            assert adv.SetSecurityInfo(owner_handle, 1, 1, security._user_sid(), None, None, None) == 0
+            kernel.CloseHandle(owner_handle)
+        if token:
+            if previous is not None:
+                security._check(adv.AdjustTokenPrivileges(token, False, ctypes.byref(previous), 0, None, None))
+            kernel.CloseHandle(token)

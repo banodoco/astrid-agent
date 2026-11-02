@@ -42,7 +42,7 @@ def _windows_schema_handle_is_safe(handle) -> bool:
                 or not dacl or not adv.IsValidAcl(dacl)):
             return False
         acl = ctypes.cast(dacl, ctypes.POINTER(security._Acl)).contents
-        user_access = False
+        user_access = 0
         for index in range(acl.count):
             ace = security.P()
             if not adv.GetAce(dacl, index, ctypes.byref(ace)) or not ace:
@@ -58,8 +58,10 @@ def _windows_schema_handle_is_safe(handle) -> bool:
                 if security._sid_text(sid) not in {"S-1-5-18", "S-1-5-32-544"}:
                     return False
             elif not header[1] & 8:  # INHERIT_ONLY_ACE does not grant this object access.
-                user_access = True
-        return user_access
+                mask = int.from_bytes(ctypes.string_at(ace.value + 4, 4), "little")
+                # ACE masks contain effective file-specific rights: read/list and execute/traverse.
+                user_access |= mask
+        return user_access & 0x21 == 0x21
     finally:
         kernel.LocalFree(descriptor)
 
