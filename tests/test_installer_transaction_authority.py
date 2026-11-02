@@ -168,18 +168,29 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
     if moment == "entry":
         replacement()
     elif moment == "between_reads":
+        # Preflight sees a matching pair; inject the race between the two
+        # reads in the serialized admission that follows it.
+        _publish_owner(paths)
         read_support_json = bootstrap._read_support_json
+        interrupt_owner_locked = bootstrap._interrupt_owner_locked
+        admitting = False
         replaced = False
 
         def replace_between_reads(path):
             nonlocal replaced
             result = read_support_json(path)
-            if path == paths.discovery_path and not replaced:
+            if admitting and path == paths.discovery_path and not replaced:
                 replaced = True
                 replacement()
             return result
 
+        def admit_with_race(*args, **kwargs):
+            nonlocal admitting
+            admitting = True
+            return interrupt_owner_locked(*args, **kwargs)
+
         monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        monkeypatch.setattr(bootstrap, "_interrupt_owner_locked", admit_with_race)
     else:
         attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
         original = getattr(bootstrap, attribute)
@@ -209,6 +220,29 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
         assert boundary.stop_calls == 1
         assert read_json(backend.root / "update-transaction.json")["step"] == "rolled_back"
         backend.start.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", ["migration", "app"])
+def test_recovery_refuses_owner_lock_without_discovery(tmp_path, monkeypatch, kind):
+    backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+        tmp_path, monkeypatch, kind)
+    _publish_owner(paths)
+    paths.discovery_path.unlink()
+    boundary.live = True
+    tracked = [backend.root / "update-transaction.json", backend.root / "current",
+               backend.service.selection, realm / "realm.sqlite3", paths.instance_lock_path]
+    before = {path: path.read_bytes() for path in tracked}
+
+    with pytest.raises(core.RuntimeOperationError, match="owner lock has no matching discovery") as raised:
+        recover()
+    assert core.is_lifecycle_refusal(raised.value)
+    assert boundary.stop_calls == 0
+    assert not paths.discovery_path.exists()
+    assert {path: path.read_bytes() for path in tracked} == before
+    for name in ("restore", "register", "start", "verify", "persist_identity"):
+        getattr(backend, name).assert_not_called()
+    backend.service.disable.assert_not_called()
+    backend.service.stop.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["migration", "app"])
