@@ -109,6 +109,14 @@ def _parse_json_object(value: str) -> dict[str, Any]:
 PRESET_CHOICES = ("overview", "scan", "motion", "beat", "frame", "cut", "compare")
 
 
+class _JsonFlag(argparse.Action):
+    """Record an explicit JSON request separately from a command default."""
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:  # noqa: ANN001
+        setattr(namespace, self.dest, True)
+        setattr(namespace, "_json_explicit", True)
+
+
 def _json_object_or_path(value: str) -> Any:
     """A JSON object given inline, or a path to the file that holds it (resolved by the verb)."""
     from astrid.packs.timeline.cli_visualize import _lenient_json_or_path
@@ -117,9 +125,11 @@ def _json_object_or_path(value: str) -> Any:
 
 
 def _add_json_flag(subparser: argparse.ArgumentParser, *, default: bool = True) -> None:
+    subparser.set_defaults(_json_explicit=False)
     subparser.add_argument(
         "--json",
-        action="store_true",
+        action=_JsonFlag,
+        nargs=0,
         default=default,
         help=(
             "Print the exact SDK envelope (ok/data/error/receipt/idempotency_key)."
@@ -1155,7 +1165,8 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         for name in ("clip", "occurrence", "shot", "track", "asset", "range", "detail", "limit", "cursor", "revision_id")
     }
     inspection_view = bool(
-        getattr(parsed, "layers", False)
+        parsed.json
+        or getattr(parsed, "layers", False)
         or any(values.get(name) for name in ("clip", "occurrence", "asset", "track", "cursor"))
         # --detail with --at or a text view (--as code/script) means "untruncated", not the layer rows
         or (values.get("detail") and not getattr(parsed, "at", None) and parsed.as_view == "cuts")
@@ -2496,7 +2507,7 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
         help="Canvas frame rate (default 30).",
     )
     _add_idempotency_key(subparser)
-    _add_json_flag(subparser, default=False)
+    _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_create)
 
 

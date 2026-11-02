@@ -18,9 +18,10 @@ import pytest
 
 from astrid import console
 from astrid.core import action_cli
+from tests._checkouts import clip_input_path
 
-CLIP_REQUEST = Path(os.environ.get("ASTRID_CLIP_REQUEST", "/home/user/proof/job/request.json"))
-CLIP_ASSET_MAP = Path(os.environ.get("ASTRID_CLIP_ASSET_MAP", "/home/user/proof/job/asset-map.json"))
+CLIP_REQUEST = Path("request.json")
+CLIP_ASSET_MAP = Path("asset-map.json")
 
 
 def _argv(out: Path, *, request: Path = CLIP_REQUEST, asset_map: Path = CLIP_ASSET_MAP,
@@ -87,7 +88,9 @@ def test_run_reaches_the_real_action_and_leaves_no_runtime_behind(isolated_home,
     """Without an installed local engine the action itself refuses; the verb must report it and clean up."""
     _home, temp = isolated_home
     out = tmp_path / "out"
-    code = action_cli.main(_argv(out)[1:])
+    request = clip_input_path("ASTRID_CLIP_REQUEST")
+    asset_map = clip_input_path("ASTRID_CLIP_ASSET_MAP")
+    code = action_cli.main(_argv(out, request=request, asset_map=asset_map)[1:])
     captured = capfd.readouterr()
     summary = json.loads(captured.out)
     assert code == 1 and summary["ok"] is False and summary["placement"] == "local"

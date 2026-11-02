@@ -4,6 +4,12 @@
 > qualification and operator procedures. It is not a supported user install
 > path. Users should follow [Getting Started](../getting-started.md) and use
 > Astrid at astrid.haus.
+>
+> The release gates and qualification policy (protected journeys, the frozen
+> `POST /v1/update`, the App update guard, coverage, RC evidence, freeze and
+> go/no-go) are in the developer skill
+> [releasing](../../astrid/packs/developer/docs/releasing/SKILL.md)
+> (`astrid skills sync --developer`). This recipe stays the procedure.
 
 Status: **maintained recipe; final release inputs pending producer handoff**.
 

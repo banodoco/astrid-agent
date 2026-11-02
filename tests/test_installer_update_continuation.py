@@ -119,11 +119,11 @@ def _assert_lock_busy(root):
         ("accepted-without-descriptor", "never-entered", False,
          ["registration", "launch"]),
         ("accepted-without-descriptor-existing-registration", "never-entered", False,
-         ["registration", "liveness", "retire", "launch"]),
+         ["registration", "liveness", "retire", "registration", "launch"]),
         ("registered-without-ack", "never-entered", True,
-         ["registration", "liveness", "retire", "launch"]),
+         ["registration", "liveness", "retire", "registration", "launch"]),
         ("claimed-without-bootstrap", "claimed", True,
-         ["registration", "liveness", "retire", "launch"]),
+         ["registration", "liveness", "retire", "registration", "launch"]),
     ],
 )
 def test_explicit_update_continues_same_operation_once_under_lock(
@@ -407,8 +407,9 @@ def test_changed_windows_worker_script_refuses_before_retirement_and_preserves_b
     monkeypatch.setattr(update_job, "_selection_path", lambda: Path(request["selection_path"]))
     job = update_job.accept(request)
     _set_unresolved(root, job, "never-entered")
+    epoch, nonce = update_job._attempt_tuple(job)
     worker_script = (Path(job["metadata"]["manifest_path"]).parent
-                     / f"worker-{job['operation_id']}.py")
+                     / f"worker-{job['operation_id']}-{epoch}-{nonce}.py")
     worker_script.write_bytes(b"# foreign or stale worker bytes\n")
     runtime_platform.owner_only(worker_script)
     before_script = worker_script.read_bytes()
@@ -460,7 +461,9 @@ def test_changed_windows_profile_source_before_script_handoff_invalidates_comman
     source_checkout.mkdir()
     write_json(profile, {"profile": "astrid", "runtime_checkout": str(source_checkout)})
     before_marker = (root / "install.json").read_bytes()
-    worker_script = Path(job["metadata"]["manifest_path"]).parent / f"worker-{job['operation_id']}.py"
+    epoch, nonce = update_job._attempt_tuple(job)
+    worker_script = (Path(job["metadata"]["manifest_path"]).parent
+                     / f"worker-{job['operation_id']}-{epoch}-{nonce}.py")
     assert not worker_script.exists()
     events = []
 
@@ -514,11 +517,13 @@ def test_lost_continuation_ack_is_recovery_needed_and_repeated_status_does_not_r
     monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
     with pytest.raises(ValueError) as refusal:
         update_job.accept(request)
-    assert getattr(refusal.value, "reason", None) == "busy"
+    assert getattr(refusal.value, "reason", None) == "acknowledgement-unknown"
     saved = read_json(root / "install.json")["update_job"]
     assert saved["operation_id"] == job["operation_id"]
     assert saved["state"] == "recovery-needed"
     assert saved["launch_status"] == "unknown"
+    assert saved["route_disposition"]["disposition"] == "acknowledgement-unknown"
+    assert saved["route_disposition"]["blocker"] == "held"
     assert adapter.events.count("launch") == 1
     before = (root / "install.json").read_bytes()
     for _ in range(2):
@@ -534,7 +539,9 @@ def test_lost_continuation_ack_is_recovery_needed_and_repeated_status_does_not_r
     assert resumed["launch_status"] == "acknowledged"
     assert adapter.events.count("launch") - previous_launches == 1
     assert adapter.events.count("liveness") - previous_liveness_checks == 0
-    assert adapter.events.count("registration") == 2
+    # A proved replacement now includes the post-retirement native-absence
+    # barrier in addition to the two explicit reconciliation observations.
+    assert adapter.events.count("registration") == 3
 
 
 def test_matching_journal_precedes_claim_continuation(tmp_path, monkeypatch):

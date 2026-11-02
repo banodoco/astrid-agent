@@ -15,8 +15,13 @@ always load.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import stat
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -45,6 +50,104 @@ DiscoverPacksFn = Callable[..., "tuple[PackDefinition, ...]"]
 SOURCE_KINDS: tuple[str, ...] = ("source", "local", "managed", "extra", "env")
 MANAGED_SOURCE_KIND = "managed"
 ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
+
+# Opt-in, request-local reuse for generation input resolution. Other discovery
+# callers continue to scan normally. Never retain an inventory across requests.
+_discovery_cache: ContextVar[dict | None] = ContextVar("pack_discovery_cache", default=None)
+
+
+@contextmanager
+def pack_discovery_scope():
+    """Reuse admitted packs only while their complete discovery inputs match."""
+    token = _discovery_cache.set({})
+    try:
+        yield
+    finally:
+        _discovery_cache.reset(token)
+
+
+def _tree_fingerprint(root: Path) -> str:
+    """Read contents, names and file kinds, including untracked resources.
+
+    A stat-only key misses same-size edits with restored timestamps. Tracking
+    the entire tree also covers added manifests, alternate manifests, deleted
+    resources and new symlinks that canonical admission must reject.
+    """
+    digest = hashlib.sha256()
+
+    def add(value: bytes) -> None:
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+
+    def visit(path: Path) -> None:
+        add(os.fsencode(path.relative_to(root)))
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            add(b"missing")
+            return
+        add(str(mode).encode())
+        if stat.S_ISLNK(mode):
+            add(os.fsencode(os.readlink(path)))
+        elif stat.S_ISDIR(mode):
+            for child in sorted(path.iterdir()):
+                visit(child)
+        elif stat.S_ISREG(mode):
+            with path.open("rb") as stream:
+                add(hashlib.file_digest(stream, "sha256").digest())
+        else:
+            raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
+
+    visit(root)
+    return digest.hexdigest()
+
+
+def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan):
+    from astrid.core.pack import loader
+
+    # Preserve registry-specific scanner seams; their arbitrary inputs cannot
+    # be fingerprinted by the normal filesystem discovery implementation.
+    if scan is not loader.discover_packs:
+        return None
+    project_root = Path(project_root).resolve()
+    raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
+    roots = [loader.packs_root(), project_root / "astrid" / "packs",
+             Path(__file__).with_name("schemas")]
+    roots.extend(source.pack_root for source in managed_inventory.sources)
+    for raw_root in (*extra_pack_roots, *filter(None, raw_env.split(os.pathsep))):
+        root = Path(raw_root).expanduser()
+        roots.append(root if root.is_absolute() else project_root / root)
+    try:
+        trees = tuple((str(root), str(root.resolve()), _tree_fingerprint(root.resolve()))
+                      for root in dict.fromkeys(roots))
+    except OSError:
+        return None  # Unreadable/racing inputs use ordinary admission and its errors.
+    return (str(project_root), tuple(extra_pack_roots), raw_env, managed_inventory.identity, trees)
+
+
+def reuse_pack_projection(projection: Callable[[], Any]) -> Any:
+    """Reuse a projection of default pack discovery inside the current scope.
+
+    The projection must depend only on the default discovery roots. Explicit
+    discovery objects and projections with other inputs must not use this seam.
+    Managed custody is verified on every lookup, just as for pack metadata.
+    """
+    cache = _discovery_cache.get()
+    if cache is None:
+        return projection()
+    from astrid.core.pack.source_setup import active_source_inventory
+
+    def fingerprint():
+        return _discovery_fingerprint(REPO_ROOT, (), active_source_inventory(), discover_packs)
+
+    before = fingerprint()
+    key = (projection, before)
+    if before is not None and key in cache:
+        return deepcopy(cache[key])
+    result = projection()
+    if before is not None and before == fingerprint():
+        cache[key] = deepcopy(result)
+    return result
 
 
 @dataclass(frozen=True)
@@ -294,6 +397,15 @@ def discover_pack_metadata(
     except ImportError:
         managed_inventory = None
 
+    cache = _discovery_cache.get()
+    fingerprint = None
+    if cache is not None and managed_inventory is not None:
+        # active_source_inventory verifies revision, cleanliness, manifest and
+        # tree digests even when an admitted inventory can be reused below.
+        fingerprint = _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan)
+        if fingerprint is not None and fingerprint in cache:
+            return deepcopy(cache[fingerprint])
+
     managed_by_root = {
         source.pack_root.resolve(): source
         for source in (managed_inventory.sources if managed_inventory is not None else ())
@@ -430,7 +542,13 @@ def discover_pack_metadata(
                 continue
             _scan_external_root(env_root, "env")
 
-    return tuple(discovered)
+    result = tuple(discovered)
+    if fingerprint is not None and fingerprint == _discovery_fingerprint(
+        project_root, extra_pack_roots, managed_inventory, scan
+    ):
+        # Do not publish a snapshot if its inputs changed during admission.
+        cache[fingerprint] = deepcopy(result)
+    return result
 
 
 def discover_packs_ordered(
@@ -461,6 +579,8 @@ __all__ = [
     "DiscoveredPack",
     "CanonicalDiscoveredPack",
     "discover_pack_metadata",
+    "pack_discovery_scope",
+    "reuse_pack_projection",
     "discover_canonical_pack_metadata",
     "discover_canonical_packs_ordered",
     "discover_packs_ordered",

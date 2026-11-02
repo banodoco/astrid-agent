@@ -78,6 +78,7 @@ def _managed_h3_comfy(root, runtime_client, monkeypatch):
     session = ManagedSchemaSession(
         root / "managed-comfy", identity["revision"], identity["content_digest"],
         vibecomfy_checkout=checkout,
+        model_paths=model_paths,
     )
     try:
         # These are the established CPU fixture's synthetic readiness facts,
@@ -138,13 +139,15 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
     """Public producer files reach one authenticated parent and named publications."""
     from astrid import sdk
     from astrid.sdk.pagination import paged_rows
+    from tests.helpers.h3_verified_parent import VerifiedH3Host
 
     source = tmp_path / "source.mp4"
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24:d=1",
+        "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24:d=1",
         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        "-c:v", "libx264", "-crf", "51", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "8k",
         "-shortest", str(source),
     ], check=True, capture_output=True, timeout=60)
     source_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
@@ -163,7 +166,7 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
     inputs = tmp_path / "inputs.json"
     inputs.write_text(json.dumps({"request": str(request_path), "asset_map": str(asset_map)}), encoding="utf-8")
 
-    daemon = real_runtime()
+    daemon = real_runtime(support_root=tmp_path / "data" / "runtime")
     client = AstridClient.open(
         endpoint=daemon.endpoint, credential=daemon.credential_path,
         realm_id=daemon.service.realm["id"], actor_id="owner",
@@ -178,11 +181,52 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
         pack_roots=[H3_PACK, PACK], attempt_base=tmp_path / "attempts", max_concurrency=2,
         client=worker_client,
     )
+    verified_host = VerifiedH3Host(tmp_path, daemon, [H3_PACK, PACK])
+    claim_child = verified_host._claim
+
+    def observe_compiled_source(*args, **kwargs):
+        result = claim_child(*args, **kwargs)
+        spec = result["spec"]
+        if spec.get("delegated_stage") == "run":
+            (binding,) = [row for row in spec["delegated_inputs"] if row["name"] == "managed_assets"]
+            # This observer runs inside the Runtime claim handler; avoid a
+            # reentrant HTTP call while that handler owns its request scope.
+            archive_bytes = daemon.service.cas.path_for(binding["object_id"].removeprefix("sha256:")).read_bytes()
+            assert "sha256:" + hashlib.sha256(archive_bytes).hexdigest() == binding["object_id"]
+            with zipfile.ZipFile(io.BytesIO(archive_bytes)) as bundle:
+                (asset,) = json.loads(bundle.read("manifest.json"))["assets"]
+                assert asset["binding"] == "source_video"
+                data = bundle.read(asset["member"])
+            assert "sha256:" + asset["sha256"] == source_digest
+            assert hashlib.sha256(data).hexdigest() == asset["sha256"]
+            assert len(data) == asset["size"] == source.stat().st_size
+            expected = json.loads(comfy.expected_path.read_text())
+            expected["basename"] = Path(asset["member"]).name
+            outputs = daemon.service.managed_output_page(binding["producer_task_id"])["items"]
+            (compiled,) = [row for row in outputs if row["output_port"] == "compilation"
+                           and row["attempt_id"] == binding["producer_attempt_id"]]
+            compilation_bytes = daemon.service.cas.path_for(compiled["object_id"].removeprefix("sha256:")).read_bytes()
+            assert "sha256:" + hashlib.sha256(compilation_bytes).hexdigest() == compiled["object_id"]
+            compilation = json.loads(compilation_bytes)
+            assert "sha256:" + compilation["managed_assets"]["sha256"] == binding["object_id"]
+            timing = compilation["continuation_timing"]
+            expected["generated_seconds"] = timing["expected_graph_output_frames"] / timing["fps"]
+            comfy.expected_path.write_text(json.dumps(expected), encoding="utf-8")
+            (tmp_path / "h3-compiled-source-binding.json").write_text(json.dumps({
+                "task_id": result["task_id"], "managed_assets": binding, "source": asset,
+                "generated_seconds": expected["generated_seconds"],
+                "compilation": compiled["object_id"], "continuation_timing": timing,
+            }, indent=2), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(verified_host, "_claim", observe_compiled_source)
     monkeypatch.setattr(sdk.AstridClient, "open_from_launcher", lambda **_kwargs: nullcontext(client))
     invoke_result = client.invoke_result
 
     def bounded_invoke(*args, **kwargs):
-        kwargs.update(timeout_seconds=150.0, poll_seconds=0.02)
+        # Leave time for all seven real child processes on a CPU host while
+        # keeping this observer below the suite's 600-second hang guard.
+        kwargs.update(timeout_seconds=450.0, poll_seconds=0.1)
         return invoke_result(*args, **kwargs)
 
     monkeypatch.setattr(client, "invoke_result", bounded_invoke)
@@ -206,6 +250,10 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
 
     def observe_admission(**kwargs):
         if kwargs["capability"] == "h3_av.transform":
+            kwargs["execution_request"] = {
+                **kwargs.get("execution_request", {"schema_version": 1}),
+                "target": verified_host.target,
+            }
             assert not admitted, "the public command must create exactly one parent"
             assert {"request.json", "h3-inputs.zip"} <= set(imports)
             expected_request = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
@@ -233,6 +281,8 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
         if kwargs["capability"] == "h3_av.transform":
             admitted.update({"request": kwargs, "result": result.data, "ok": result.ok})
             (tmp_path / "h3-admission.json").write_text(json.dumps(admitted, indent=2, default=str), encoding="utf-8")
+            assert result.ok
+            verified_host.activate(result.data["task_id"])
         return result
 
     monkeypatch.setattr(client.tasks, "create", observe_admission)
@@ -241,16 +291,11 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
         with _managed_h3_comfy(tmp_path, worker_client, monkeypatch) as comfy:
             host.discover()
             host.register()
-            with ThreadPoolExecutor(max_workers=1) as worker:
-                settled = worker.submit(host.run, poll_seconds=0.02)
-                try:
-                    code = console.main([
-                        "generate", "video", "--entry", "h3", "--inputs-json", str(inputs),
-                        "--project", project_id, "--json",
-                    ])
-                finally:
-                    host.shutdown()
-                results = settled.result(timeout=15)
+            code = console.main([
+                "generate", "video", "--entry", "h3", "--inputs-json", str(inputs),
+                "--project", project_id, "--json",
+            ])
+            results = verified_host.receipts()
             captured = capsys.readouterr()
             cli_diagnostic = (
                 f"public CLI return code: {code}\n"
@@ -261,7 +306,9 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
             assert admitted and admitted["ok"], (
                 f"{cli_diagnostic}\nadmission record: {admitted!r}"
             )
-            assert results and all(result.state == "succeeded" for result in results)
+            assert results and all(result["status"] == "succeeded" for result in results)
+            assert len(results) == 8
+            assert all(result["result"].get("process_evidence") for result in results)
             payload = json.loads(captured.out)
             assert payload["ok"] is True
             task_id = payload["kernel_task_id"]
@@ -271,12 +318,26 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
             assert len(parents) == 1 and parents[0]["task_id"] == task_id
             assert parents[0]["run_id"] == payload["kernel_run_id"]
             assert parents[0]["spec"].get("delegated_parent") is None
+            parent_binding = parents[0]["execution_binding"]
+            assert parent_binding["actual_target"] == verified_host.target
+            assert parent_binding["verification"] == {
+                "method": "credential_claim", "verified": True,
+                "evidence_digest": verified_host.qualification["evidence_digest"],
+            }
+            assert parent_binding["executor_incarnation"] == verified_host.qualification["executor_incarnation"]
             children = [row for row in tasks if row["spec"].get("delegated_parent", {}).get("parent_task_id") == task_id]
             stages = {row["spec"]["delegated_stage"]: row for row in children}
             assert len(children) == len(stages) == 7
             assert set(stages) == {"prepare", "compile", "validate", "run", "compose", "verify", "finalizer"}
             assert all(row["state"] == "succeeded" for row in [*parents, *children])
             assert all(row["spec"]["delegated_parent"]["parent_attempt_id"] == parents[0]["attempt_id"] for row in children)
+            assert all(row["spec"]["delegated_parent"]["parent_placement"] == {
+                "actual": verified_host.target, "verification": parent_binding["verification"],
+                "executor_incarnation": parent_binding["executor_incarnation"],
+            } for row in children)
+            assert all(all(row["execution_binding"][key] == parent_binding[key] for key in (
+                "actual_target", "verification", "executor_incarnation", "executor_id",
+            )) for row in children)
             managed = {}
             for row in [*parents, *children]:
                 listing = client.tasks.list_managed_outputs(row["task_id"])
@@ -307,7 +368,13 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
                 (group,) = publication["publications"]
                 assert group["missing_selectors"] == []
                 (variant,) = group["variants"]
-                output = next(row for row in managed[child["task_id"]] if row["output_port"] == port)
+                # Auxiliary evidence shares the action's output port. Match
+                # the complete published selector and require uniqueness.
+                (output,) = [row for row in managed[child["task_id"]]
+                             if row["output_port"] == port
+                             and row["group_key"] == group["group_key"]
+                             and row["variant_key"] == variant["variant_key"]
+                             and row["ordinal"] == variant["ordinal"]]
                 assert variant["object_id"] == output["object_id"]
                 binding = output["provenance"]["delegated_publication"]
                 assert binding["parent_task_id"] == task_id
@@ -330,6 +397,7 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
             assert evidence["sha256"] == source_digest.removeprefix("sha256:")
             assert evidence["size"] == source.stat().st_size
     finally:
+        verified_host.close()
         host.shutdown()
         final_capture = capsys.readouterr()
         if captured is None:
@@ -472,8 +540,14 @@ def test_public_image_command_registers_view_bytes_and_canonical_receipt(
     # subprocess qualifies these sources rather than a separately installed
     # VibeComfy. No process-custody or execution guard is replaced.
     dependency_root = str(Path(vibecomfy.__file__).resolve().parents[1])
-    monkeypatch.setattr(host_module, "_dependency_pythonpath", lambda: (dependency_root,))
-    assert host_module._dependency_pythonpath() == (dependency_root,)
+    from tests.helpers.runtime import runtime_checkout
+
+    dependencies = tuple(dict.fromkeys((
+        dependency_root, str(runtime_checkout()),
+        *(root for root in sys.path if Path(root).name in {"site-packages", "dist-packages"}),
+    )))
+    monkeypatch.setattr(host_module, "_dependency_pythonpath", lambda: dependencies)
+    assert host_module._dependency_pythonpath() == dependencies
     attempt = tmp_path / "generate-attempt"
     host = GenericPackHost(
         pack_roots=[PACK], attempt_root=attempt,

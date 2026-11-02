@@ -3,6 +3,7 @@ from __future__ import annotations
 import signal
 import subprocess
 import os
+import platform
 import sys
 import select
 from pathlib import Path
@@ -371,6 +372,8 @@ def test_first_signal_callee_metadata_survives_task_wrapper_without_clearing_unc
 
 def test_verified_detached_tree_stops_leaves_before_ancestors_and_leader(monkeypatch):
     process = _process()
+    exited = False
+    process.poll = lambda: 0 if exited else None
     census = _snapshot()
     census[300] = groups._ProcessInfo(300, 200, 200, "node")
     census[400] = groups._ProcessInfo(400, 300, 400, "browser")
@@ -379,8 +382,11 @@ def test_verified_detached_tree_stops_leaves_before_ancestors_and_leader(monkeyp
     calls = []
 
     def kill(pid, sig):
+        nonlocal exited
         calls.append((pid, sig))
         del census[pid]
+        if pid == process.pid:
+            exited = True
 
     process._astrid_custody.signal_owner = kill
     groups.terminate_tree(process, grace_seconds=0)
@@ -610,19 +616,25 @@ def test_original_root_term_wait_precedes_kill_and_preserves_escalation_budget(m
     census = {100: initial[100], 900: initial[900]}
     monkeypatch.setattr(groups, '_process_snapshot', lambda: dict(census))
     events = []
+    exited = False
     def signal_root(pid, sig):
+        nonlocal exited
         assert pid == 100
         events.append(('signal', sig))
-        if sig == signal.SIGKILL: census.pop(100)
+        if sig == signal.SIGKILL:
+            census.pop(100)
+            exited = True
     def wait(*, timeout):
+        nonlocal exited
         events.append(('wait', timeout))
-        if 100 in census:
+        if not exited:
             if stubborn: raise subprocess.TimeoutExpired(['original-root'], timeout)
             assert timeout > 0
             census.pop(100)
+            exited = True
         return 0
     process._astrid_custody.signal_owner = signal_root
-    process.poll = lambda: None if 100 in census else 0
+    process.poll = lambda: 0 if exited else None
     process.wait = wait
     groups.terminate_tree(process, grace_seconds=1)
     signal_events = [event for event in events if event[0] == 'signal']
@@ -1010,6 +1022,124 @@ def test_final_verification_still_fails_closed_when_lock_stays_busy(tmp_path, mo
 
 
 linux_only = pytest.mark.linux_native
+
+
+def _ready_owned_child(code):
+    process = groups.popen_owned_group(
+        [sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        _delegate_inventory=False,
+    )
+    try:
+        assert select.select([process.stdout], [], [], 5)[0], "child readiness timed out"
+        assert process.stdout.readline().strip() == b"READY"
+    except BaseException:
+        _close_owned_child(process)
+        raise
+    return process
+
+
+def _close_owned_child(process):
+    try:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+    finally:
+        process._astrid_custody.release_pidfds()
+        process.stdout.close()
+        process.stderr.close()
+
+
+@linux_only
+def test_zombie_leader_with_live_thread_is_killed_and_reaped(monkeypatch):
+    # SYS_exit ends just the calling task, unlike Python's process-wide exit.
+    sys_exit = {"x86_64": 60, "aarch64": 93, "riscv64": 93, "i386": 1,
+                "i686": 1, "armv7l": 1, "ppc64": 1, "ppc64le": 1, "s390x": 1}[platform.machine()]
+    code = """
+import ctypes, os, signal, threading, time
+libc = ctypes.CDLL(None)
+def worker():
+    time.sleep(20)
+    os._exit(0)
+threading.Thread(target=worker).start()
+def term(*_):
+    libc.syscall(%d, 0)  # exit the leader task, leaving the worker alive
+signal.signal(signal.SIGTERM, term)
+print('READY', flush=True)
+while True: time.sleep(.01)
+""" % sys_exit
+    process = _ready_owned_child(code)
+    observed_states = []
+    original_observe = groups.observe_tree
+    def observe(*args, **kwargs):
+        live = original_observe(*args, **kwargs)
+        if process.pid not in live and process.poll() is None:
+            tasks = Path(f"/proc/{process.pid}/task")
+            observed_states.append({p.name: (p / "stat").read_text().rsplit(")", 1)[1].split()[0]
+                                    for p in tasks.iterdir()})
+        return live
+    monkeypatch.setattr(groups, "observe_tree", observe)
+    try:
+        groups.terminate_tree(process, grace_seconds=.1, cleanup_deadline=time.monotonic() + 8)
+        assert any(states.get(str(process.pid)) == "Z" and
+                   any(tid != str(process.pid) and state not in {"Z", "X"}
+                       for tid, state in states.items()) for states in observed_states)
+        assert process.returncode == -signal.SIGKILL
+        assert not Path(f"/proc/{process.pid}").exists()
+        groups.verify_tree_absent(process)
+        assert not getattr(process, "_astrid_tree_uncertain", None)
+    finally:
+        _close_owned_child(process)
+
+
+@linux_only
+@pytest.mark.parametrize("ignore_term,expected", [(False, -signal.SIGTERM), (True, -signal.SIGKILL)])
+def test_real_original_root_term_and_kill_controls(monkeypatch, ignore_term, expected):
+    setup = "signal.signal(signal.SIGTERM, signal.SIG_IGN);" if ignore_term else ""
+    process = _ready_owned_child("import signal,time;" + setup + "print('READY',flush=True);time.sleep(20)")
+    owner = process._astrid_custody
+    original_signal = owner.signal
+    signals = []
+    def record_signal(pid, birth, signum, **kwargs):
+        signals.append((pid, signum))
+        return original_signal(pid, birth, signum, **kwargs)
+    monkeypatch.setattr(owner, "signal", record_signal)
+    try:
+        groups.terminate_tree(process, grace_seconds=.1, cleanup_deadline=time.monotonic() + 8)
+        assert process.returncode == expected
+        assert signals == ([(process.pid, signal.SIGTERM), (process.pid, signal.SIGKILL)]
+                           if ignore_term else [(process.pid, signal.SIGTERM)])
+        assert not Path(f"/proc/{process.pid}").exists()
+        groups.verify_tree_absent(process)
+        assert not getattr(process, "_astrid_tree_uncertain", None)
+    finally:
+        _close_owned_child(process)
+
+
+@linux_only
+def test_real_cleanup_deadline_exhaustion_still_raises(monkeypatch):
+    process = _ready_owned_child(
+        "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+        "print('READY',flush=True);time.sleep(20)"
+    )
+    owner = process._astrid_custody
+    original_signal = owner.signal
+    signals = []
+    def withhold_kill(pid, birth, signum, **kwargs):
+        signals.append((pid, signum))
+        if signum != signal.SIGKILL:
+            return original_signal(pid, birth, signum, **kwargs)
+    monkeypatch.setattr(owner, "signal", withhold_kill)
+    deadline = time.monotonic() + .3
+    try:
+        with pytest.raises(groups.CleanupUncertainError, match="owned leader survived bounded termination"):
+            groups.terminate_tree(process, grace_seconds=.03, cleanup_deadline=deadline)
+        assert time.monotonic() >= deadline
+        assert process.poll() is None
+        assert (process.pid, signal.SIGTERM) in signals
+        assert (process.pid, signal.SIGKILL) in signals
+        assert process._astrid_tree_uncertain == "owned leader survived bounded termination"
+    finally:
+        _close_owned_child(process)
 
 
 _BOUND_OWNERS: list = []

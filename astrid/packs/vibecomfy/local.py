@@ -26,6 +26,7 @@ _PINOKIO_EXTRA_PROBE_TIMEOUT_SECONDS = 0.1
 _PINOKIO_MAX_EXTRA_PORTS = 8
 # Keep a stalled optional request from accumulating workers across rescans.
 _PINOKIO_SCAN_LOCK = threading.Lock()
+_LAUNCH_OBSERVATION_TIMEOUT_SECONDS = 0.2
 
 
 def _get_json(url: str, timeout: float = 2) -> Any:
@@ -73,6 +74,52 @@ def _python_guess(base_dir: Path | None, embedded: bool) -> str | None:
         base_dir / ".venv" / "Scripts" / "python.exe",
     )
     return str(next((path for path in candidates if path.is_file()), "")) or None
+
+
+def _observed_launch_facts(server: dict[str, Any], *, observer=None,
+                           deadline: float | None = None) -> dict[str, Any]:
+    """Retain native direct-launch evidence; HTTP argv/Python guesses cannot authorize spawn.
+
+    Discovery stays read-only. Unsupported wrappers, inaccessible processes or
+    an unrelated listener simply leave launch unavailable for manual start.
+    The launch service independently verifies these facts again on each call.
+    """
+    from astrid.core.generation.target_launch import (
+        ProcLaunchObserver, ProcessObservation, prepare_target_launch,
+    )
+    from astrid.core.generation.targets import TargetRecord
+
+    try:
+        root = server.get('base_dir')
+        if not isinstance(root, str) or not Path(root).is_absolute():
+            return {}
+        bound = time.monotonic() + _LAUNCH_OBSERVATION_TIMEOUT_SECONDS
+        deadline = min(deadline, bound) if deadline is not None else bound
+        if time.monotonic() >= deadline:
+            return {}
+        observer = observer or ProcLaunchObserver()
+        listeners = observer.listeners(server['url'], deadline=deadline)
+        if len(listeners) != 1 or not isinstance(listeners[0], ProcessObservation):
+            return {}
+        process = listeners[0]
+        if not process.argv:
+            return {}
+        facts = {'launch_app': str(Path(root) / 'main.py'),
+                 'launch_argv': list(process.argv),
+                 'launch_process': {'pid': process.pid, 'birth_id': process.birth_id}}
+        record = TargetRecord(endpoint=server['url'], root=root,
+                              python=process.argv[0], facts=facts)
+        plan = prepare_target_launch(record)
+        if (process.root != plan.paths[0].resolved
+                or process.executable != plan.paths[1].resolved
+                or observer.process(process.pid, deadline=deadline) != process
+                or observer.listeners(plan.endpoint, deadline=deadline) != (process,)
+                or prepare_target_launch(record) != plan
+                or time.monotonic() >= deadline):
+            return {}
+        return {'python': plan.python, **facts}
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, IndexError):
+        return {}
 
 
 def _manager_present(base_dir: Path | None) -> bool:
@@ -241,6 +288,7 @@ def _probe_server(
                 "endpoint": "/userdata?dir=workflows",
                 "error": "workflow listing was not a JSON list",
             })
+    server.update(_observed_launch_facts(server, deadline=deadline))
     return server, errors
 
 

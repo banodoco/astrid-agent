@@ -82,7 +82,9 @@ def test_native_failure_writes_known_envelope_with_honest_partial_evidence(
         receipt.write_text(json.dumps({
             'runtime_evidence': {'approved_projection': record.to_dict(), 'api_digest': record.api_digest,
                 'adapter': {'kind': 'external', 'endpoint': 'http://127.0.0.1:8188'},
-                'terminal': {'phase': 'cancelled' if cancelled else 'verification'}},
+                # A later failure/cancel must not be relabeled as a successful run.
+                'terminal': {'phase': 'cancelled' if cancelled else 'verification',
+                             'execution_state': 'succeeded'}},
             'artifacts': [artifact], 'inputs': {'source': original_source},
             'evidence': {'producer': producer, 'transport': transport}}))
         error.receipt_path = str(receipt)
@@ -99,6 +101,7 @@ def test_native_failure_writes_known_envelope_with_honest_partial_evidence(
     assert payload['producer_run_id'] == 'native-123'
     assert payload['task_id'] == 'task-1' and payload['attempt_id'] == 'attempt-1'
     assert payload['outcomes']['execution']['status'] == ('cancelled' if cancelled else 'failed')
+    assert payload['evidence']['producer']['runtime']['terminal']['execution_state'] == 'succeeded'
     assert payload['outcomes']['publication']['status'] == 'not_started'
     assert payload['inputs']['source'] == original_source
     assert payload['evidence']['transport'] == transport
@@ -107,11 +110,17 @@ def test_native_failure_writes_known_envelope_with_honest_partial_evidence(
     validate_evidence_reference(settings, field='inputs.effective_settings', staging_root=out)
     assert (out / settings['path']).read_bytes() == canonical_bytes(record.to_dict()['api_projection'])
     assert settings['sha256'] == record.api_digest
-    assert len(payload['outputs']) == (1 if partial == 'valid' else 0)
+    # A hash-mismatched local file is retained with a failed check rather than dropped.
+    assert len(payload['outputs']) == (0 if partial == 'remote' else 1)
     if payload['outputs']:
         output = payload['outputs'][0]
         assert output['producer_output_id'] == 'vibecomfy:image:0'
-        assert (out / output['path']).read_bytes() == b'verified partial bytes'
+        # Preserve the mismatching bytes and the original expected hash as separate facts.
+        assert (out / output['path']).read_bytes() == (b'changed after native hash' if partial == 'corrupt' else b'verified partial bytes')
+        assert output['hash_check'] == {'status': 'failed' if partial == 'corrupt' else 'verified',
+                                        'expected_sha256': hashlib.sha256(b'verified partial bytes').hexdigest()}
+        if partial == 'corrupt':
+            assert payload['outcomes']['verification']['status'] == 'failed'
     else:
         assert payload['warnings']
 
@@ -134,6 +143,68 @@ def test_real_attached_settings_match_exact_http_prompt(comfy, tmp_path):
     assert (producer_root / payload['inputs']['source']['path']).read_bytes() == original
     assert all(key in payload['evidence']['producer'] for key in ('engine', 'entry', 'models', 'versions', 'provider', 'build'))
     assert all(key in payload['evidence']['transport'] for key in ('target', 'execution_binding', 'failure', 'cancel'))
+
+
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_native_partial_hash_checks_survive_materialization_and_harvest(monkeypatch, tmp_path, cancelled):
+    import importlib
+    from astrid.core._shared.result_manifest import harvest_staged_outputs
+    from astrid.core.execution.generic_host import GenericPackHost, HostError
+    from astrid.packs.vibecomfy import production_engine
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import ApprovedProjectionRecord, emit_bundle
+
+    workflow = VibeWorkflow('partial-test', WorkflowSource('partial-test'))
+    sink = workflow.add_node('SaveImage', _id='1', uid='save', filename_prefix='result')
+    workflow = workflow.finalize({}, output_node=sink, output_type='SaveImage', name='image',
+                                 artifact_kind='image', mime_type='image/png', filename_prefix='result')
+    bundle = emit_bundle(workflow, tmp_path / 'workflow.py', {'operation': 'authored'})
+    record = ApprovedProjectionRecord.from_dict({**compiled().to_dict(), 'revision_id': bundle.revision_id})
+    out = tmp_path / 'out'
+    error = SystemExit(143) if cancelled else RuntimeError('native verification failure')
+    status = 'cancelled' if cancelled else 'failed'
+
+    def fail(*args, **kwargs):
+        native = out / '.vibecomfy-runtime' / 'out' / 'runs' / 'native-1'
+        native.mkdir(parents=True)
+        artifacts = []
+        for index, data in enumerate((b'good bytes', b'changed bytes'), start=1):
+            name = f'result_{index:05d}_.png'
+            path = native / name
+            path.write_bytes(data)
+            expected = data if index == 1 else b'expected bytes'
+            artifacts.append({'path': str(path), 'reported_path': name, 'bytes': len(data),
+                              'sha256': hashlib.sha256(expected).hexdigest()})
+        receipt = native / 'attempt.json'
+        receipt.write_text(json.dumps({'runtime_evidence': {'approved_projection': record.to_dict(),
+            'terminal': {'phase': 'cancelled' if cancelled else 'verification',
+                         'execution_state': 'succeeded', 'retrieval_state': 'failed',
+                         'verification_state': 'failed'}}, 'artifacts': artifacts}))
+        error.receipt_path = str(receipt)
+        raise error
+
+    monkeypatch.setattr(production_engine, 'run_workflow_result_path', fail)
+    with pytest.raises(type(error)) as raised:
+        VibeComfyWorkflowBackend().workflow(bundle.python_path, out,
+            task_identity='task-1', attempt_identity='attempt-1')
+    assert raised.value is error
+    run = importlib.import_module('astrid.packs.vibecomfy.actions.run.run')
+    spool = tmp_path / 'spool'
+    manifest = run._materialize_managed_generation_result(
+        spool, raised.value, task_identity='task-1', attempt_identity='attempt-1', workflow_path=bundle.python_path)
+    payload = manifest['managed_generation_result']
+    assert payload['outcomes'] == {'execution': {'status': status}, 'retrieval': {'status': 'failed'},
+                                   'verification': {'status': 'failed'}, 'publication': {'status': 'not_started'}}
+    assert payload['evidence']['producer']['runtime']['terminal']['execution_state'] == 'succeeded'
+    assert [row['hash_check']['status'] for row in payload['outputs']] == ['verified', 'failed']
+    assert (spool / payload['outputs'][1]['path']).read_bytes() == b'changed bytes'
+    assert all(not row['is_primary'] for row in manifest['outputs'])
+    descriptors = harvest_staged_outputs(spool)
+    host = GenericPackHost.__new__(GenericPackHost)
+    host._validate_producer_evidence(descriptors, output_root=spool, task_id='task-1', attempt_id='attempt-1')
+    with pytest.raises(HostError, match='successful publication'):
+        host._validate_producer_evidence(descriptors, output_root=spool, task_id='task-1',
+                                         attempt_id='attempt-1', successful=True)
 
 
 def test_real_attached_failure_retains_verified_downloads(comfy, tmp_path, monkeypatch):

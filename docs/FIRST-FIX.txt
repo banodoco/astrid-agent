@@ -1,0 +1,1 @@
+GPU journey receipts: add the RunPod scenarios and fail-closed evidence gate, preserving missing historical observations as missing.

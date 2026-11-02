@@ -64,13 +64,26 @@ def linux_bootstrap_pip_environment():
     return {"DEB_PYTHON_INSTALL_LAYOUT": "deb"}
 
 
-def linux_bootstrap_commands(*, install_root, uv_version, python_version, venv_relative_path):
-    """Exact uv pin via system ``python3 -m pip``, then the managed-Python venv."""
+def linux_bootstrap_commands(*, install_root, uv_version, python_version, venv_relative_path,
+                             bootstrap_uv=None, bootstrap_python=None):
+    """Provision recipe-pinned uv, then the managed-Python venv.
+
+    Installed products retain their installer's uv; their unseeded venv need
+    not contain pip. Standalone release callers may still use system pip.
+    """
     paths = linux_bootstrap_paths(install_root=install_root, venv_relative_path=venv_relative_path)
     uv_version = _pin(uv_version, "uv version")
     python_version = _pin(python_version, "Python version")
-    return (("python3", "-m", "pip", "--isolated", "install", "--index-url", PYPI_INDEX,
-             "--ignore-installed", "--prefix", paths["bootstrap"], "uv==" + uv_version),
+    if bootstrap_uv is not None or bootstrap_python is not None:
+        uv = _root(bootstrap_uv)
+        python = _root(bootstrap_python)
+        provision = (uv, "--no-config", "pip", "install", "--index-url", PYPI_INDEX,
+                     "--no-deps", "--reinstall", "--python", python,
+                     "--prefix", paths["bootstrap"], "uv==" + uv_version)
+    else:
+        provision = ("python3", "-m", "pip", "--isolated", "install", "--index-url", PYPI_INDEX,
+                     "--ignore-installed", "--prefix", paths["bootstrap"], "uv==" + uv_version)
+    return (provision,
             (paths["uv"], "--no-config", "venv", "--allow-existing", "--python", python_version,
              "--managed-python", paths["venv"]))
 

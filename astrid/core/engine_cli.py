@@ -18,9 +18,9 @@ from collections.abc import Mapping
 from astrid.core.generation.engine_contracts import (
     EngineError, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
 )
-from astrid.core.generation.engine_recipe import load_recipe
+from astrid.core.generation.engine_recipe import load_model_lock, load_recipe
 from astrid.core.generation.engine_runner import (
-    engine_status, install_engine, plan_install, validate_model_cache_root,
+    _disk_anchor, engine_status, install_engine, plan_install, validate_model_cache_root,
 )
 
 
@@ -119,9 +119,26 @@ def main(argv=None, *, backend_factory=None):
                     cache[option] = value
             if ('model_cache_device' in cache) != ('model_cache_mount_id' in cache):
                 raise UnsafePathError('model cache requires both authenticated device and mount ID')
-        if args.command == 'install' and args.dry_run:
-            print(json.dumps({'plan': _plain(plan), 'recipe': _plain(recipe)}, sort_keys=True, ensure_ascii=False))
-            return 0
+        if args.command == 'install':
+            # The locked model total is the only quantified requirement in the
+            # plan. Source, environment and temporary space are additional.
+            required = sum(model.bytes for model in load_model_lock(recipe.models_lock).models)
+            disk = {'required_bytes': required, 'free_bytes': None, 'status': 'unknown',
+                    'basis': 'locked_model_bytes'}
+            if plan.placement == 'local' and plan.platform.startswith('linux-'):
+                _, _, _, free = _disk_anchor(plan.root)
+                disk.update(free_bytes=free, status='ok' if free >= required else 'blocked')
+            if args.dry_run:
+                print(json.dumps({'plan': _plain(plan), 'recipe': _plain(recipe), 'disk_check': disk},
+                                 sort_keys=True, ensure_ascii=False))
+                return 0
+            if disk['status'] == 'blocked':
+                print(json.dumps({'error': {'code': 'ENGINE_INSTALL_INSUFFICIENT_DISK', 'step': None,
+                    'retryable': True, 'recovery_handle': None,
+                    'message': 'Free disk space or choose a different --root, then retry.',
+                    'required_bytes': required, 'free_bytes': disk['free_bytes']}}, sort_keys=True),
+                    file=sys.stderr)
+                return 1
         if args.command == 'install':
             _custody_preflight(plan.root)
         if args.platform.startswith('windows-'):

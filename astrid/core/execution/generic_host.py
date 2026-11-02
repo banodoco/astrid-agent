@@ -242,6 +242,21 @@ class HostError(RuntimeError):
         self.safe_message = safe_message
 
 
+class TerminalPublicationRejected(HostError):
+    """A Runtime validation/conflict response with verified nonterminal custody."""
+
+
+def _persist_terminal_request(path: Path, request: Mapping[str, Any]) -> None:
+    """Keep the exact fenced wire request before sending any terminal mutation."""
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(request, stream, separators=(",", ":"), allow_nan=False)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
 class _RuntimeSourceCustody:
     """Retain the private launcher's bytes, never a caller's source claims."""
 
@@ -431,6 +446,8 @@ class CommandCleanupUnresolved(HostError):
 
 
 _LEASE_POLL_SECONDS = 5.0
+_TERMINAL_RECONCILE_SECONDS = 30.0
+_TERMINAL_RECONCILE_POLL_SECONDS = 0.25
 
 
 class HostCancelled(HostError):
@@ -772,21 +789,25 @@ class _ManagedVibeSessionAdapter:
         # This is a residency-control binding, never a process capability.
         self.sdk_session_identity: str | None = None
         self._sdk_session_bound = False
+        self._invocation_token: AdmissionToken | None = None
 
     @classmethod
-    def from_host_session(cls, *, native_graph: Any = None, **binding: Any) -> Any:
+    def from_host_session(cls, *, binding: SessionBinding, native_graph: Any = None, **options: Any) -> Any:
         from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
 
-        backend = CheckoutServerAdapter.from_host_session(**binding)
+        # This hook is supplied by the shared Comfy owner. A URL or a legacy
+        # checkout adapter alone is not evidence of owner authority.
+        backend = CheckoutServerAdapter.open_host_session(binding=binding, **options)
         adapter = cls(backend, native_graph)
+        adapter._hook_binding = binding
         if native_graph is None:
-            adapter.sdk_session_identity = adapter._sdk_session_identity()
-            if adapter.sdk_session_identity is None:
-                raise HostError("verified SDK residency binding is incomplete")
+            adapter.sdk_session_identity = _canonical_digest(binding.to_dict())
             adapter._sdk_session_bound = True
         return adapter
 
     def _sdk_session_identity(self) -> str | None:
+        if hasattr(self, "_hook_binding"):
+            return _canonical_digest(self._hook_binding.to_dict())
         from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
 
         backend = self.backend
@@ -813,6 +834,13 @@ class _ManagedVibeSessionAdapter:
             "invocation_identity": backend._invocation_identity,
             "runtime_instance_id": backend._runtime_instance_id,
         })
+
+    def _legacy_checkout(self) -> bool:
+        # Only adapters constructed directly through the old checkout path
+        # use its containment API. Hook-created owners must implement hooks.
+        from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
+
+        return not hasattr(self, "_hook_binding") and isinstance(self.backend, CheckoutServerAdapter)
 
     def residency_identity(self) -> Any:
         if self.backend is not self._captured_backend:
@@ -851,17 +879,35 @@ class _ManagedVibeSessionAdapter:
         return {"ok": True, kind: True, "reason": reason, "native": dict(evidence)}
 
     def observe(self, *, binding: SessionBinding) -> dict[str, Any]:
-        del binding
-        self.backend._revalidate_host_session()
-        return {"ok": True, "observed": True}
+        if self._legacy_checkout():
+            self.backend._revalidate_host_session()
+            return {"ok": True, "observed": True}
+        evidence = self.backend.observe(binding=binding)
+        if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+            raise HostError("Comfy session observation was not verified")
+        return dict(evidence)
+
+    def invoke(self, token: AdmissionToken, *, model_id: str, template_id: str) -> Mapping[str, Any]:
+        self._invocation_token = token
+        evidence = self.backend.invoke(token=token, model_id=model_id, template_id=template_id)
+        if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+            raise HostError("Comfy invocation binding was not verified")
+        context = evidence.get("child_context")
+        if (not isinstance(context, Mapping) or context.get("token_id") != token.token_id
+                or context.get("invocation_id") != token.invocation_id
+                or context.get("generation") != token.generation
+                or tuple(context.get("binding_identity", ())) != token.binding_identity):
+            raise HostError("Comfy child context does not match its admission")
+        return dict(context)
 
     def fence(self, *, reason: str) -> dict[str, Any]:
         try:
             if reason == "cpu_residency_eviction" and self.residency_identity() is None:
                 raise HostError("native CPU handoff session identity changed")
-            evidence = self.backend.cancel()
+            legacy = self._legacy_checkout()
+            evidence = self.backend.cancel() if legacy else self.backend.fence(reason=reason)
             result = self._native_evidence(
-                evidence, kind="fenced", native_key="cancelled", reason=reason
+                evidence, kind="fenced", native_key="cancelled" if legacy else "fenced", reason=reason
             )
             if reason == "cpu_residency_eviction" and result["ok"] is not True:
                 raise HostError("native CPU handoff fencing was not verified")
@@ -872,10 +918,16 @@ class _ManagedVibeSessionAdapter:
             raise
 
     def cancel(self, *, reason: str) -> dict[str, Any]:
-        evidence = self.backend.cancel()
+        evidence = self.backend.cancel() if self._legacy_checkout() else self.backend.cancel(reason=reason)
         return self._native_evidence(
             evidence, kind="cancelled", native_key="cancelled", reason=reason
         )
+
+    def cancel_admission(self, *, token: AdmissionToken, reason: str) -> dict[str, Any]:
+        # Cancellation before dispatch must not touch the previous warm run.
+        if not self._legacy_checkout() and token != self._invocation_token:
+            return {"ok": True, "cancelled": True, "reason": reason, "dispatched": False}
+        return self.cancel(reason=reason)
 
     def release(self, *, reason: str) -> dict[str, Any]:
         if reason == "capacity_replacement" and self.residency_bound:
@@ -891,15 +943,15 @@ class _ManagedVibeSessionAdapter:
             )
             if reason == "cpu_residency_eviction" and result["ok"] is not True:
                 self.cpu_handoff_failed = True
+            if result["ok"] is True:
+                transport = getattr(self.backend, "_endpoint_transport", None)
+                if transport is not None:
+                    transport.close()
             return result
         except BaseException:
             if reason == "cpu_residency_eviction":
                 self.cpu_handoff_failed = True
             raise
-        finally:
-            transport = getattr(self.backend, "_endpoint_transport", None)
-            if transport is not None:
-                transport.close()
 
 
 class _ManagedWanChildAdapter:
@@ -5391,7 +5443,7 @@ class RuntimeProtocolClient:
     def child_output(self, association_id: str):
         return self.generated.get_managed_output(association_id)
 
-    def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None):
+    def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None, request_path: Path | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated settlement requires attempt_id and fence")
         epoch = self._claimed_runtime_epoch(attempt_id)
@@ -5404,11 +5456,18 @@ class RuntimeProtocolClient:
             "result": dict(result),
             "runtime_epoch": epoch,
         }
+        idempotency_key = f"settle-{attempt_id}-{fence}"
+        if request_path is not None:
+            _persist_terminal_request(request_path, {
+                "operation": "settle_attempt", "identifier": attempt_id,
+                "idempotency_key": idempotency_key, "body": settlement,
+            })
         return self._terminal_evidence_mutation(
             task_id, result if "manifest_ref" in result else None,
-            lambda: self.generated.settle_attempt(
-                attempt_id, settlement, idempotency_key=f"settle-{attempt_id}-{fence}",
+            lambda: self._lifecycle_client().settle_attempt(
+                attempt_id, settlement, idempotency_key=idempotency_key,
             ),
+            rejected_owner=(attempt_id, int(fence)),
         )
 
     def fail(
@@ -5424,6 +5483,7 @@ class RuntimeProtocolClient:
         structured_error: Mapping[str, Any] | None = None,
         outputs: Sequence[Mapping[str, Any]] | None = None,
         result: Mapping[str, Any] | None = None,
+        request_path: Path | None = None,
     ):
         if not attempt_id or fence is None:
             raise HostError("generated failure requires attempt_id and fence")
@@ -5456,6 +5516,12 @@ class RuntimeProtocolClient:
             lease_id=lease_token, fence=int(fence), error=payload,
             runtime_epoch=epoch, idempotency_key=idempotency_key, **evidence,
         )
+        if request_path is not None:
+            _persist_terminal_request(request_path, {
+                "operation": "fail_attempt", "identifier": attempt_id,
+                "idempotency_key": idempotency_key,
+                "body": {key: value for key, value in request.items() if key != "idempotency_key"},
+            })
         return self._terminal_evidence_mutation(
             task_id, result,
             lambda: self._terminal_evidence_request(completion_client, "fail_attempt", attempt_id, request),
@@ -5491,6 +5557,7 @@ class RuntimeProtocolClient:
     def _terminal_evidence_mutation(
         self, task_id: str, expected_result: Mapping[str, Any] | None,
         mutation: Callable[[], Any],
+        *, rejected_owner: tuple[str, int] | None = None,
     ) -> Any:
         """Retry the same fenced write after checking whether its ACK was lost."""
         last_error: BaseException | None = None
@@ -5499,14 +5566,31 @@ class RuntimeProtocolClient:
                 response = mutation()
             except Exception as exc:
                 last_error = exc
+                if expected_result is not None:
+                    try:
+                        return self._verify_terminal_evidence_readback(task_id, expected_result, None)
+                    except Exception:
+                        pass
+                # A transport failure (including a lost ACK) says nothing
+                # about commit. Only a validation/conflict response AND a
+                # read of this same nonterminal owner permit a fenced failure.
+                if rejected_owner is not None and getattr(exc, "status", None) in {400, 409, 422}:
+                    try:
+                        task = self.task(task_id)
+                        task = task.get("task", task) if isinstance(task, Mapping) else task
+                        def field(name, default=None):
+                            return task.get(name, default) if isinstance(task, Mapping) else getattr(task, name, default)
+                        if (str(field("id", field("task_id"))) == task_id
+                                and field("state", field("status")) == "running"
+                                and field("attempt_id") == rejected_owner[0]
+                                and field("fence", field("lease_fence")) == rejected_owner[1]):
+                            raise TerminalPublicationRejected(str(exc)) from exc
+                    except TerminalPublicationRejected:
+                        raise
+                    except Exception:  # noqa: BLE001 - unreadable custody remains ambiguous
+                        pass
                 if expected_result is None:
-                    # Without durable request evidence, leave acknowledgement
-                    # unknown for the attempt arbiter instead of replaying it.
                     raise
-                try:
-                    return self._verify_terminal_evidence_readback(task_id, expected_result, None)
-                except Exception:
-                    pass
                 if attempt == 0:
                     continue
                 raise
@@ -5543,7 +5627,7 @@ class RuntimeProtocolClient:
         )
         result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
         if (task_id_value is not None and str(task_id_value) != task_id) or not contains(result, expected_result):
-            task = self.generated.get_task(task_id)
+            task = self.task(task_id)
             task = task.get("task", task) if isinstance(task, Mapping) else task
             task_id_value = (
                 task.get("task_id", task.get("id")) if isinstance(task, Mapping)
@@ -5566,6 +5650,7 @@ class RuntimeProtocolClient:
         outputs: Sequence[Mapping[str, Any]] | None = None,
         result: Mapping[str, Any] | None = None,
         stop_observed: bool | None = None,
+        request_path: Path | None = None,
     ):
         deadline = time.monotonic() + 2.0
         if attempt_id is None or fence is None:
@@ -5601,6 +5686,9 @@ class RuntimeProtocolClient:
             raise HostError("runtime cancellation evidence requires a complete attempt fence")
         kwargs = {}
         if evidence:
+            # Runtime's fenced cancel contract requires a boolean. Unknown
+            # producer stop evidence is no observed stop: retain fenced custody.
+            stop_observed = stop_observed is True
             kwargs.update(
                 attempt_id=attempt_id,
                 lease_id=lease_id,
@@ -5618,6 +5706,12 @@ class RuntimeProtocolClient:
             idempotency_key=idempotency_key,
             **kwargs,
         )
+        if request_path is not None:
+            _persist_terminal_request(request_path, {
+                "operation": "cancel_task", "identifier": task_id,
+                "idempotency_key": idempotency_key,
+                "body": {key: value for key, value in request.items() if key != "idempotency_key"},
+            })
         return self._terminal_evidence_mutation(
             task_id, result,
             lambda: self._terminal_evidence_request(
@@ -6251,6 +6345,7 @@ class GenericPackHost:
         self._handoff_registration_authorized_id: str | None = None
         self._handoff_attempt_threads: set[int] = set()
         self._handoff_observation_known = True
+        self._reconciliation_owners: dict[str, threading.Thread] = {}
         # A command child is short-lived while the manager-owned VibeComfy
         # server persists across tasks.  Keep only the last successful,
         # verified session/model hint in the host; it is revalidated by the
@@ -6820,11 +6915,16 @@ class GenericPackHost:
 
     def _default_matrix_path(self) -> Path | None:
         checkout = Path(__file__).resolve().parents[3]
-        candidate = checkout / "config" / "astrid-beta-capabilities.json"
         source_pack_root = checkout / "astrid" / "packs"
-        if candidate.is_file() and any(root == source_pack_root for root in self.pack_roots):
-            return candidate
-        return None
+        if not any(root == source_pack_root for root in self.pack_roots):
+            return None
+        from astrid.core.product_resources import product_resource
+        try:
+            return product_resource("astrid-beta-capabilities.json",
+                                    package_root=checkout / "astrid/resources",
+                                    source=checkout / "config/astrid-beta-capabilities.json")
+        except FileNotFoundError as exc:
+            raise HostError("Astrid capability matrix is missing; reinstall or update Astrid") from exc
 
     @staticmethod
     def _load_matrix(path: Path | None) -> dict[str, dict[str, Any]]:
@@ -8327,6 +8427,26 @@ class GenericPackHost:
         # repository lookups. Producer evidence remains in its own namespace.
         producer = payload["evidence"]["producer"]
         transport = payload["evidence"]["transport"]
+        # The bundle loader uses a fixed sibling basename. Restore the
+        # admitted source identity only after checking it against the bytes
+        # retained by the producer.
+        spec = _admitted_spec_envelope(task.get("spec", {}))
+        inputs = spec.get("inputs")
+        admitted_source = inputs.get("source") if isinstance(inputs, Mapping) else None
+        if isinstance(admitted_source, Mapping) and all(
+            key in admitted_source for key in ("bytes", "filename")
+        ) and any(key in admitted_source for key in ("sha256", "digest", "object_id")):
+            from astrid.core.contracts.managed_generation_result import validate_evidence_reference
+
+            admitted_source = validate_evidence_reference(
+                admitted_source, field="task.inputs.source", staging_root=output_root,
+            )
+            actual_source = payload["inputs"].get("source")
+            if actual_source is not None and (
+                actual_source.get("sha256"), actual_source.get("bytes")
+            ) != (admitted_source["sha256"], admitted_source["bytes"]):
+                raise HostError("producer source identity differs from admitted source")
+            payload["inputs"]["source"] = {**(actual_source or {}), **admitted_source}
         installed = self.boot_manifest_provenance()
         if installed is not None:
             manifest_path = self.boot_manifest_path
@@ -8835,6 +8955,7 @@ class GenericPackHost:
         readiness_worker_kind: str = "native",
         allow_runtime_connection: bool = True,
         workflow_execution_request: Mapping[str, Any] | None = None,
+        comfy_invocation: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -8945,6 +9066,9 @@ class GenericPackHost:
             )
             from astrid.packs.vibecomfy.endpoint_checkout import EXECUTION_REQUEST_ENV
             env.pop(EXECUTION_REQUEST_ENV, None)
+            env.pop("ASTRID_COMFY_INVOCATION", None)
+            if record.id == "vibecomfy.run" and comfy_invocation is not None:
+                env["ASTRID_COMFY_INVOCATION"] = json.dumps(comfy_invocation, sort_keys=True, separators=(",", ":"))
             if record.id == "vibecomfy.run" and workflow_execution_request is not None:
                 env[EXECUTION_REQUEST_ENV] = json.dumps(
                     workflow_execution_request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
@@ -9316,6 +9440,7 @@ class GenericPackHost:
         """
         command_admission = dict(admission or {})
         workflow_request = command_admission.pop("workflow_execution_request", None)
+        comfy_invocation = command_admission.pop("comfy_invocation", None)
         admission = command_admission if admission is not None else None
         workflow_policy = None
         if record.id == "vibecomfy.run":
@@ -9438,6 +9563,7 @@ class GenericPackHost:
             admission=admission,
             network_broker=network_broker,
             workflow_execution_request=workflow_request if record.id == "vibecomfy.run" else None,
+            comfy_invocation=comfy_invocation,
             network_policy=workflow_policy or (
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
@@ -9595,6 +9721,11 @@ class GenericPackHost:
                     argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                             "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
                 if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
+                    if child_bridge is None and remotion_lease is None:
+                        if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                            raise HostError("private network commands require the admitted Python interpreter")
+                        argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
+                                "--python-command", json.dumps(argv[1:])]
                     argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
                 if source_channel is not None:
                     argv = _captured_worker_argv(argv)
@@ -10515,6 +10646,11 @@ class GenericPackHost:
                     if operation == self.client.settle and terminal["completion_operation"] != operation:
                         raise HostCancelled("attempt already completed without success")
                     return terminal.get("completion")
+            if operation in (self.client.settle, self.client.fail):
+                if isinstance(self.client, RuntimeProtocolClient):
+                    options["request_path"] = terminal["root"] / (
+                        "settle-request.json" if operation == self.client.settle else "fail-request.json")
+                terminal["publication_call"] = (operation, copy.deepcopy(arguments), copy.deepcopy(options))
             try:
                 result = self._handoff_settlement_call(operation, *arguments, **options)
             except BaseException:
@@ -10550,7 +10686,9 @@ class GenericPackHost:
             # The adapter bounds each transport and lock wait by the remaining
             # acknowledged validity as well as the independent execution cap.
             if isinstance(getattr(operation, "__self__", None), RuntimeProtocolClient):
-                bounds = [value for value in (lifetime.deadline(), terminal.get("lease_valid_until"))
+                bounds = [value for value in (
+                    None if terminal.get("publication_pending") else lifetime.deadline(),
+                    terminal.get("lease_valid_until"))
                           if value is not None]
                 if bounds:
                     kwargs["deadline"] = min(bounds)
@@ -10688,7 +10826,8 @@ class GenericPackHost:
             with completion_lock:
                 valid_until = terminal.get("lease_valid_until")
                 return (transient and valid_until is not None and time.monotonic() < valid_until
-                        and lifetime.deadline() is not None and not lifetime.expired()
+                        and (terminal.get("publication_pending")
+                             or (lifetime.deadline() is not None and not lifetime.expired()))
                         and not terminal.get("forced") and not terminal.get("recorded")
                         and not stop.is_set())
 
@@ -10698,14 +10837,16 @@ class GenericPackHost:
             progress = read_progress()
             token = (terminal["stage"], _canonical_digest(progress))
             with completion_lock:
-                if stop.is_set() or terminal.get("recorded") or terminal.get("forced") or lifetime.expired():
+                if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
+                        or (lifetime.expired() and not terminal.get("publication_pending"))):
                     return
                 valid_until = terminal.get("lease_valid_until")
                 if valid_until is not None and time.monotonic() >= valid_until:
                     raise HostError("execution lease expired before renewal")
                 changed = token != terminal.get("renewed_progress")
                 if terminal.get("renewal_inflight") or not (changed or (
-                        liveness and valid_until is not None and lifetime.deadline() is not None)):
+                        liveness and valid_until is not None
+                        and (lifetime.deadline() is not None or terminal.get("publication_pending")))):
                     return
                 terminal["renewal_inflight"] = True
             kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
@@ -10735,7 +10876,8 @@ class GenericPackHost:
                     except (AttributeError, TypeError, ValueError) as exc:
                         raise HostError("invalid heartbeat lease expiry") from exc
                 with completion_lock:
-                    if terminal.get("forced") or terminal.get("recorded") or lifetime.expired() or stop.is_set():
+                    if (terminal.get("forced") or terminal.get("recorded") or stop.is_set()
+                            or (lifetime.expired() and not terminal.get("publication_pending"))):
                         return
                     now = time.monotonic()
                     prior_until = terminal.get("lease_valid_until")
@@ -10799,8 +10941,11 @@ class GenericPackHost:
             next_poll = time.monotonic() + _LEASE_POLL_SECONDS
             while not stop.wait(0.05):
                 if lifetime.expired():
-                    force_abort("timeout")
-                    return
+                    if terminal.get("publication_pending"):
+                        terminal["reconcile_cancel"] = True
+                    else:
+                        force_abort("timeout")
+                        return
                 if terminal.get("recorded"):
                     return
                 valid_until = terminal.get("lease_valid_until")
@@ -10811,8 +10956,11 @@ class GenericPackHost:
                     force_abort("lease_lost")
                     return
                 if self._shutdown.is_set():
-                    force_abort("cancelled")
-                    return
+                    if terminal.get("publication_pending"):
+                        terminal["reconcile_cancel"] = True
+                    else:
+                        force_abort("cancelled")
+                        return
                 if time.monotonic() < next_poll or self.client is None:
                     continue
                 next_poll = time.monotonic() + _LEASE_POLL_SECONDS
@@ -10824,7 +10972,16 @@ class GenericPackHost:
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
                 record_lease_diagnostic("observing", current=current)
+                if terminal.get("publication_pending") and (
+                        current["status"] in {"completed", "succeeded", "failed", "cancelled"}
+                        or current["attempt_id"] != exact_attempt or current["fence"] != exact_fence):
+                    # The publication owner consumes this authoritative read.
+                    # Do not race it with an unrelated lifecycle failure.
+                    return
                 if current["status"] in {"cancel_requested", "cancelled"}:
+                    if terminal.get("publication_pending"):
+                        terminal["reconcile_cancel"] = True
+                        continue
                     force_abort("cancelled")
                     return
                 state = current["status"]
@@ -10873,12 +11030,127 @@ class GenericPackHost:
                 except BaseException as exc:
                     if lease_transport_fault("heartbeat_exception", exc, current):
                         continue
+                    if terminal.get("publication_pending"):
+                        # Settlement may have committed between the task read
+                        # and heartbeat. Its owner must resolve the stale ACK;
+                        # a lifecycle abort would race successful readback.
+                        terminal["reconcile_cancel"] = True
+                        return
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
 
         terminal.update(completion_call=completion_call, ensure_failure=ensure_failure,
                         read_progress=read_progress, renew_progress=renew_progress, force_abort=force_abort,
                         lease_transport_fault=lease_transport_fault, task_snapshot=task_snapshot)
+
+        def reconcile_publication():
+            """Own bounded exact replays, then request explicit fenced cancellation.
+
+            If Runtime cannot acknowledge cancellation, this owner stays live
+            and keeps trying. A local spool alone is never a custody transfer.
+            """
+            reconcile_deadline = time.monotonic() + _TERMINAL_RECONCILE_SECONDS
+            while not terminal.get("recorded"):
+                try:
+                    current = self.client.task(str(data["id"]))
+                    current = current.get("task", current) if isinstance(current, Mapping) else current
+                    def field(name, default=None):
+                        return current.get(name, default) if isinstance(current, Mapping) else getattr(current, name, default)
+                    state = field("state", field("status"))
+                    if (state in {"completed", "succeeded", "failed", "cancelled"}
+                            or field("attempt_id", exact_attempt) != exact_attempt
+                            or field("fence", field("lease_fence", exact_fence)) != exact_fence):
+                        terminal.update(recorded=True, completion={"task": current},
+                                        status=("succeeded" if state in {"completed", "succeeded"}
+                                                else state if state in {"failed", "cancelled"} else "failed"),
+                                        settled=state in {"completed", "succeeded"}, settlement={"task": current})
+                        break
+                    if (terminal.get("reconcile_cancel") or self._shutdown.is_set()
+                            or time.monotonic() >= reconcile_deadline):
+                        # The producer has returned and its task scope has
+                        # finished cleanup before this owner is installed.
+                        # Cancellation is the explicit Runtime custody handoff.
+                        cancel = getattr(self.client, "cancel", None)
+                        operation, args, kwargs = terminal["publication_call"]
+                        if operation == self.client.fail:
+                            # Preserve an already chosen failure verbatim,
+                            # including its key, even if its ACK was lost.
+                            response = self._handoff_settlement_call(operation, *args, **kwargs)
+                            terminal.update(recorded=True, completion=response, status="failed")
+                            break
+                        valid_until = terminal.get("lease_valid_until")
+                        expiry = field("lease_expires_at")
+                        observed_expired = (isinstance(expiry, str)
+                                            and datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                                            <= datetime.now(timezone.utc))
+                        if observed_expired or (valid_until is not None and time.monotonic() >= valid_until):
+                            # The pinned Runtime allows the exact owner to
+                            # cede expired custody only without outputs/result.
+                            completion_call(
+                                self.client.fail, str(data["id"]), lease_token,
+                                "terminal publication unresolved after lease expiry; owner cedes custody",
+                                retryable=False, attempt_id=exact_attempt, fence=exact_fence,
+                                structured_error={"code": "reconciliation_required"})
+                            terminal["status"] = "failed"
+                            break
+                        if callable(cancel):
+                            response = self._handoff_settlement_call(
+                                cancel, str(data["id"]), attempt_id=exact_attempt,
+                                fence=exact_fence, lease_id=lease_token,
+                                runtime_epoch=data.get("runtime_epoch"), outputs=[],
+                                result={"status": "cancelled", "error": {
+                                    "code": "reconciliation_required",
+                                    "message": "terminal publication acknowledgement remained unresolved"}},
+                                stop_observed=True,
+                                **({"request_path": terminal["root"] / "cancel-request.json"}
+                                   if isinstance(self.client, RuntimeProtocolClient) else {}))
+                            terminal.update(recorded=True, completion=response, status="cancelled")
+                            break
+                    else:
+                        operation, args, kwargs = terminal["publication_call"]
+                        try:
+                            response = self._handoff_settlement_call(operation, *args, **kwargs)
+                        except TerminalPublicationRejected as exc:
+                            reject_publication(exc)
+                        else:
+                            terminal.update(recorded=True, completion=response,
+                                            status=terminal.get("pending_status", "succeeded"),
+                                            settled=terminal.get("pending_status") == "succeeded",
+                                            settlement=response)
+                except Exception as exc:  # noqa: BLE001 - this owner must survive Runtime outages
+                    terminal["reporting_error"] = exc
+                if not terminal.get("recorded"):
+                    time.sleep(_TERMINAL_RECONCILE_POLL_SECONDS)
+            terminal.pop("evidence_pending", None)
+            terminal.pop("publication_pending", None)
+            if terminal.get("status") == "succeeded":
+                for key in ("error", "forced", "minimal", "receipt_final"):
+                    terminal.pop(key, None)
+            terminal["write_attempted"] = False
+            self._write_task_result(terminal)
+
+        def reject_publication(error):
+            # Keep the original success spool, but never attach its conflicting
+            # descriptors or success manifest to the failure mutation.
+            for key in ("evidence_pending", "publication_pending", "pending_outputs", "pending_result", "pending_status"):
+                terminal.pop(key, None)
+            terminal.update(retain_spool=True, error=error, evidence_pending=True,
+                            publication_pending=True, pending_status="failed")
+            try:
+                completion_call(
+                    self.client.fail, str(data["id"]), lease_token, str(error),
+                    retryable=False, attempt_id=exact_attempt, fence=exact_fence,
+                    structured_error={"code": "publication_rejected"},
+                    failure_diagnostic={"category": "publication_rejected", "message": str(error)})
+            except Exception:
+                # A lost failure ACK has the same owner and exact replay rule.
+                terminal.update(evidence_pending=True, publication_pending=True, pending_status="failed")
+                raise
+            else:
+                terminal.pop("evidence_pending", None)
+                terminal.pop("publication_pending", None)
+
+        terminal["reject_publication"] = reject_publication
         pump_thread = None
         try:
             owns_attempt = self._handoff_begin_direct_attempt()
@@ -10975,35 +11247,67 @@ class GenericPackHost:
                     self._write_task_result(terminal)
                     if (self.attempt_root is None and not keep_attempt
                             and terminal.get("completion_state") not in {"in_flight", "unknown"}
-                            and not terminal.get("evidence_pending")):
+                            and not terminal.get("evidence_pending") and not terminal.get("retain_spool")):
                         self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
             except BaseException as exc:
                 terminal["reporting_error"] = exc
                 if primary_error is None:
                     raise
             finally:
-                finalizer_error = None
-                active_error = sys.exc_info()[1]
-                try:
-                    stop.set()
-                    if pump_thread is not None and pump_thread.ident is not None:
-                        pump_thread.join(timeout=2)
-                except BaseException as exc:
-                    finalizer_error = exc
-                try:
-                    if busy_published:
-                        _publish_busy(busy_path, -1)
-                except BaseException as exc:
-                    finalizer_error = finalizer_error or exc
-                try:
-                    if owns_attempt:
-                        self._handoff_leave_attempt(thread_id)
-                except BaseException as exc:
-                    finalizer_error = finalizer_error or exc
-                if finalizer_error is not None:
-                    terminal.setdefault("reporting_error", finalizer_error)
-                    if active_error is None:
-                        raise finalizer_error
+                if (terminal.get("evidence_pending") and terminal.get("publication_call")
+                        and not terminal.get("recorded")):
+                    ready = threading.Event()
+
+                    def publication_owner():
+                        owner_thread_id = threading.get_ident()
+                        accounting = self._handoff_accounting_owner
+                        with accounting._handoff_condition:
+                            # Transfer the measured attempt, including attempts
+                            # counted by the claim loop, before run_task returns.
+                            accounting._handoff_attempt_threads.discard(thread_id)
+                            accounting._handoff_attempt_threads.add(owner_thread_id)
+                        ready.set()
+                        try:
+                            reconcile_publication()
+                        finally:
+                            stop.set()
+                            if pump_thread is not None:
+                                pump_thread.join(timeout=2)
+                            if busy_published:
+                                _publish_busy(busy_path, -1)
+                            self._handoff_leave_attempt(owner_thread_id)
+                            with self._handoff_condition:
+                                self._reconciliation_owners.pop(str(exact_attempt), None)
+
+                    owner = threading.Thread(target=publication_owner,
+                                             name=f"astrid-reconcile-{exact_attempt}", daemon=False)
+                    with self._handoff_condition:
+                        self._reconciliation_owners[str(exact_attempt)] = owner
+                    owner.start()
+                    ready.wait()
+                else:
+                    finalizer_error = None
+                    active_error = sys.exc_info()[1]
+                    try:
+                        stop.set()
+                        if pump_thread is not None and pump_thread.ident is not None:
+                            pump_thread.join(timeout=2)
+                    except BaseException as exc:
+                        finalizer_error = exc
+                    try:
+                        if busy_published:
+                            _publish_busy(busy_path, -1)
+                    except BaseException as exc:
+                        finalizer_error = finalizer_error or exc
+                    try:
+                        if owns_attempt:
+                            self._handoff_leave_attempt(thread_id)
+                    except BaseException as exc:
+                        finalizer_error = finalizer_error or exc
+                    if finalizer_error is not None:
+                        terminal.setdefault("reporting_error", finalizer_error)
+                        if active_error is None:
+                            raise finalizer_error
 
     def _run_task_impl(
         self,
@@ -11812,21 +12116,19 @@ class GenericPackHost:
                         workflow_endpoint, pod_id=workflow_endpoint.attestation.pod_id, agent_port=PORT,
                     )
                     endpoint_kwargs["endpoint_transport"] = endpoint_transport
-                managed_adapter = _ManagedVibeSessionAdapter.from_host_session(
-                    **endpoint_kwargs,
-                    native_graph=getattr(self, "_native_engine_graph", None),
-                    hc03_profile=readiness_profile,
-                    model_id=model_id,
-                    template_id=template_id,
-                    invocation_identity=f"{task_id}:{attempt_id}:{fence}",
-                )
                 session_id = str(vibe_session.get("session_dir") or "")
                 session_birth = str(vibe_session.get("process_birth_id") or "")
                 session_endpoint = str(vibe_session.get("server_url") or "")
                 session_source = str(vibe_session.get("source_revision") or "")
                 session_config = str(vibe_session.get("config_digest") or "")
-                if execution_contract is not None and not vibe_session.get("comfy_process_birth_id"):
-                    raise HostError("execution_request requires observed VibeComfy engine birth identity")
+                runtime_profile = readiness_profile.get("runtime")
+                if (not isinstance(runtime_profile, Mapping)
+                        or not runtime_profile.get("runtime_instance_id")
+                        or type(claim_epoch) is not int or claim_epoch < 1
+                        or not vibe_session.get("launch_generation")
+                        or not vibe_session.get("comfy_process_birth_id")
+                        or not vibe_session.get("source_content_digest")):
+                    raise HostError("Comfy owner binding requires complete Runtime and engine birth evidence")
                 managed_binding = SessionBinding(
                     session_id=session_id,
                     runtime_instance_id=str(
@@ -11840,9 +12142,24 @@ class GenericPackHost:
                     config_digest=session_config,
                     execution_identity=stable_session_identity,
                     runtime_epoch=claim_epoch if isinstance(claim_epoch, int) and not isinstance(claim_epoch, bool) else None,
-                    launch_generation=str(vibe_session.get("launch_generation") or session_birth),
-                    engine_birth_id=str(vibe_session.get("comfy_process_birth_id") or session_birth),
+                    launch_generation=str(vibe_session["launch_generation"]),
+                    engine_birth_id=str(vibe_session["comfy_process_birth_id"]),
                 )
+                current = self.managed_tool_session.current_adapter
+                if (self.managed_tool_session.active
+                        and self.managed_tool_session.current_binding == managed_binding
+                        and isinstance(current, _ManagedVibeSessionAdapter)):
+                    managed_adapter = current
+                    if endpoint_transport is not None:
+                        endpoint_transport.close()
+                        endpoint_transport = None
+                else:
+                    managed_adapter = _ManagedVibeSessionAdapter.from_host_session(
+                        binding=managed_binding,
+                        **endpoint_kwargs,
+                        native_graph=getattr(self, "_native_engine_graph", None),
+                        hc03_profile=readiness_profile,
+                    )
                 from astrid.core.generation.backends.vibecomfy import vibecomfy_warmth_hint
 
                 current_warmth_hint = vibecomfy_warmth_hint(
@@ -11926,8 +12243,11 @@ class GenericPackHost:
                 lifetime.begin_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
+                comfy_invocation = None
                 if capability_id != "wan2gp.generate_video":
-                    self.managed_tool_session.adapter_for(managed_token, begin=True)
+                    managed_adapter = self.managed_tool_session.adapter_for(managed_token, begin=True)
+                    if isinstance(managed_adapter, _ManagedVibeSessionAdapter):
+                        comfy_invocation = managed_adapter.invoke(managed_token, model_id=model_id, template_id=template_id)
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,
@@ -11962,7 +12282,7 @@ class GenericPackHost:
                         admission={**network_admission, **(
                             {"workflow_execution_request": execution_contract}
                             if capability_id == "vibecomfy.run" and execution_contract is not None else {}
-                        )},
+                        ), **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {})},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
@@ -11995,6 +12315,7 @@ class GenericPackHost:
                                             if key not in {"task_id", "attempt_id", "fence", "network_nonce", "allowed_routes"}}
                     worker_env, worker_secrets = self._child_environment(
                         record, root, admission=network_admission, network_broker=network_broker,
+                        comfy_invocation=comfy_invocation,
                         allow_runtime_connection=not private_runtime_context)
                     if capability_id == "h3_av.transform":
                         # Presence is an entrypoint guard only. Parent authority
@@ -12279,11 +12600,10 @@ class GenericPackHost:
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
             _terminal["stage"] = "settlement"
-            if "manifest_ref" in payload:
-                _terminal.update(
-                    evidence_pending=True, publication_pending=True,
-                    pending_outputs=outputs, pending_result=payload, pending_status="succeeded",
-                )
+            _terminal.update(
+                evidence_pending=True, publication_pending=True,
+                pending_outputs=outputs, pending_result=payload, pending_status="succeeded",
+            )
             settlement = completion_call(self.client.settle,
                 task_id,
                 lease_token,
@@ -12310,6 +12630,14 @@ class GenericPackHost:
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
         except BaseException as exc:
             _terminal.setdefault("error", exc)
+            if isinstance(exc, TerminalPublicationRejected):
+                _terminal["reject_publication"](exc)
+                raise
+            if isinstance(exc, AstridError) and "manifest_ref" not in _terminal.get("pending_result", {}):
+                # A local typed validation failure, before durable evidence
+                # publication, still uses the ordinary verified failure path.
+                for key in ("evidence_pending", "publication_pending", "pending_outputs", "pending_result", "pending_status"):
+                    _terminal.pop(key, None)
             if _terminal.get("publication_pending"):
                 # The successful fenced publication may have committed while
                 # its response/readback was unavailable. Keep the exact spool
@@ -12428,13 +12756,14 @@ class GenericPackHost:
             if (_terminal.get("evidence_pending")
                     or (bool(_terminal.get("pending_result")) and not _terminal.get("recorded"))):
                 cleanup_errors.append("Runtime terminal evidence publication pending; attempt retained")
+            retain_attempt = keep_attempt or bool(_terminal.get("retain_spool")) or retain_for_unresolved_scope
             cleanup_receipt: dict[str, Any] = {
                 "path": str(root),
                 "intended_disposition": (
                     "caller_owned"
                     if self.attempt_root is not None
                     else "retained"
-                    if keep_attempt or retain_for_unresolved_scope
+                    if retain_attempt
                     else "deleted"
                 ),
                 "status": "pending",
@@ -12522,7 +12851,7 @@ class GenericPackHost:
                 cleanup_errors.append("terminal result: " + type(exc).__name__)
             # An unverified session release may still own a writer: fail this
             # task and keep its attempt below; the host keeps accepting work.
-            if keep_attempt or retain_for_unresolved_scope:
+            if retain_attempt:
                 try:
                     retained_exists = _strict_root_exists(root)
                 except Exception as exc:
@@ -13155,7 +13484,13 @@ class GenericPackHost:
                         slot.runtime_state = dict(self.runtime_state)
                         with self._handoff_condition:
                             slot._remotion_full_preflight = copy.deepcopy(self._remotion_full_preflight)
-                        slot.client.refresh_local_connection()
+                        try:
+                            slot.client.refresh_local_connection()
+                        except Exception as exc:
+                            failures[index] = failures.get(index, 0) + 1
+                            report_failure(exc, failures[index])
+                            retry_at[index] = now + backoff(failures[index])
+                            continue
                         slot._runtime_registration_fence = self._runtime_registration_fence
                         slot._registration_refresh_blocked = self._registration_refresh_blocked
                         worker = threading.Thread(target=serve, args=(index,),

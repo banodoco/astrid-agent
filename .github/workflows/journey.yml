@@ -1,9 +1,15 @@
 name: Release-1 installed lifecycle receipts
 
 # This workflow is deliberately a receipt producer, not a release dispatcher.
-# A caller supplies one immutable candidate tuple; the final gate rejects any
-# missing, skipped, failed, duplicate, or foreground-substituted matrix result.
+# A caller or automatic resolver supplies one immutable candidate tuple; the
+# final gate rejects any missing, skipped, failed, duplicate, or
+# foreground-substituted matrix result.
 on:
+  push:
+    branches:
+      - int/r1
+  schedule:
+    - cron: '23 3 * * *'
   workflow_call:
     inputs:
       candidate:
@@ -23,6 +29,11 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      direct_only:
+        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -80,6 +91,11 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      direct_only:
+        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -121,7 +137,7 @@ on:
 
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -155,23 +171,87 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: driver
           persist-credentials: false
+      - name: Check out latest App int/r1 manifest for automatic runs
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: int/r1
+          path: automatic-app
+          fetch-depth: 1
+          persist-credentials: false
+      - id: automatic_candidate
+        name: Resolve the checked-out App manifest tuple for automatic runs
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          app = Path("automatic-app")
+          manifest_path = app / "public" / "install-manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          app_ref = subprocess.check_output(
+              ["git", "-C", str(app), "rev-parse", "HEAD"], text=True
+          ).strip()
+          manifest_pinokio = (manifest.get("pinokio") or {}).get("sha")
+          if manifest_pinokio:
+              pinokio_ref = manifest_pinokio
+          else:
+              pinokio_ref = subprocess.check_output(
+                  [
+                      "git", "ls-remote", "https://github.com/banodoco/astrid-pinokio.git",
+                      "refs/heads/int/r1",
+                  ], text=True,
+              ).split()[0]
+          candidate = {
+              "app": app_ref,
+              "agent": (manifest.get("agent") or {}).get("sha"),
+              "runtime": (manifest.get("runtime") or {}).get("sha"),
+              "pinokio": pinokio_ref,
+              "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+              "artifacts": {
+                  path: hashlib.sha256((app / path).read_bytes()).hexdigest()
+                  for path in ("public/install", "public/install.sh", "public/install.ps1")
+              },
+          }
+          if any(not isinstance(candidate.get(key), str) or not candidate[key]
+                 for key in ("app", "agent", "runtime", "pinokio", "manifest_sha256")):
+              raise SystemExit("automatic App manifest resolution produced an incomplete candidate")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("candidate=" + json.dumps(candidate, separators=(",", ":")), file=output)
+              print("agent=" + candidate["agent"], file=output)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Automatic App manifest resolution\n\n")
+              summary.write(f"- App: {candidate['app']}\n")
+              summary.write(f"- Agent: {candidate['agent']}\n")
+              summary.write(f"- Runtime: {candidate['runtime']}\n")
+              summary.write(f"- Pinokio: {candidate['pinokio']}\n")
+              summary.write(f"- Manifest SHA-256: {candidate['manifest_sha256']}\n")
+          PY
       - id: config
         shell: bash
         env:
-          CANDIDATE: ${{ inputs.candidate }}
+          CANDIDATE: ${{ steps.automatic_candidate.outputs.candidate || inputs.candidate }}
           DRIVER_AGENT_REF: ${{ github.workflow_sha }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
-          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
-          STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref }}
-          M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs }}
-          M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only }}
-          M4_5_ENABLED: ${{ inputs.m4_5_enabled }}
-          M4_5_ONLY: ${{ inputs.m4_5_only }}
-          M4_5_BOUNDARY: ${{ inputs.m4_5_boundary }}
-          M4_5_BOUNDARY_ARGS: ${{ inputs.m4_5_boundary_args }}
-          M4_4B_ENABLED: ${{ inputs.m4_4b_enabled }}
-          M4_6_ENABLED: ${{ inputs.m4_6_enabled }}
-          M4_6_CANDIDATE: ${{ inputs.m4_6_candidate }}
+          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || 'bbba620e3d89eeff8021417f365e6ea584203105' }}
+          STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
+          M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
+          DIRECT_ONLY: ${{ inputs.direct_only || false }}
+          M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
+          M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
+          M4_5_ONLY: ${{ inputs.m4_5_only || false }}
+          M4_5_BOUNDARY: ${{ inputs.m4_5_boundary || '' }}
+          M4_5_BOUNDARY_ARGS: ${{ inputs.m4_5_boundary_args || '[]' }}
+          M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
+          M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
+          M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -208,7 +288,10 @@ jobs:
               raise SystemExit("m4_4a_executor_configs must contain exactly linux, macos and windows")
           if not m4_5_only and any(not isinstance(value, dict) for value in executor_configs.values()):
               raise SystemExit("each M4-4a executor config must be a JSON object")
+          direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
+          if direct_only and (backend_only or m4_5_only):
+              raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
           if m4_5_only and not m4_5_enabled:
               raise SystemExit("m4_5_only requires m4_5_enabled")
@@ -245,17 +328,19 @@ jobs:
           else:
               m4_6_candidate = {}
           matrix = [
-              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"direct-windows", "mode":"direct", "leg":"release0-to-release1", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"pinokio-backend-linux", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-backend-windows", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if backend_only:
+          if direct_only:
+              matrix = [row for row in matrix if row["mode"] == "direct"]
+          elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
@@ -300,7 +385,7 @@ jobs:
       - name: Check out frozen App candidate
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
@@ -337,11 +422,13 @@ jobs:
         run: |
           {
             echo "## Effective Release-1 journey tuple"
+            echo "- Trigger: ${{ github.event_name }} / ${{ github.sha }}"
             echo "- Driver Agent: $(git -C agent rev-parse HEAD)"
             echo "- Candidate App: $(git -C app rev-parse HEAD)"
             echo "- Candidate Agent: $(git -C candidate-agent rev-parse HEAD)"
             echo "- Candidate Runtime: $(git -C runtime rev-parse HEAD)"
             echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
+            echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze and validate candidate inputs
         shell: bash
@@ -386,16 +473,61 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Retain the matrix receipt even after a lifecycle failure
+      - name: Validate the named lifecycle evidence artifact boundary
+        id: evidence_boundary
         if: always()
+        shell: pwsh
+        run: |
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
+          $allowedNames = @(
+            'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'install-bootstrap.log', 'update-bootstrap.log', 'start.log',
+            'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
+            'service-manager-prerequisite.log', 'direct-service-ownership.log',
+            'runtime-owner-processes.json', 'runtime-service-runtime.log',
+            'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
+            'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
+            'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
+          )
+          $maxArtifactBytes = 49000000
+          # Reserve 1 KiB per file for the stored ZIP entry and central directory.
+          $estimatedArtifactBytes = 0L
+          $receiptCount = 0
+          if (Test-Path -LiteralPath $evidenceRoot) {
+            foreach ($file in Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force) {
+              $relative = [IO.Path]::GetRelativePath($evidenceRoot, $file.FullName).Replace('\', '/')
+              if ($relative -notmatch '^(before-cleanup|after-cleanup)/([^/]+)$') {
+                throw "Unexpected staged evidence path: $relative"
+              }
+              $name = $Matches[2]
+              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$') {
+                throw "Unexpected staged evidence filename: $relative"
+              }
+              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Staged evidence must be a regular file: $relative"
+              }
+              if ($name -eq 'journey-result.json') { $receiptCount++ }
+              $estimatedArtifactBytes += [long]$file.Length + 1024
+            }
+          }
+          if ($receiptCount -eq 0) {
+            throw "No staged journey-result.json receipt exists under $evidenceRoot"
+          }
+          if ($estimatedArtifactBytes -ge $maxArtifactBytes) {
+            throw "Named journey artifact estimate is $estimatedArtifactBytes bytes; limit is below $maxArtifactBytes bytes"
+          }
+          Write-Host "Validated named lifecycle artifact estimate: $estimatedArtifactBytes bytes (< $maxArtifactBytes)."
+      - name: Retain only the named lifecycle evidence after a lifecycle failure
+        if: always() && steps.evidence_boundary.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
           name: journey-receipt-${{ matrix.job_id }}
-          # Keep the job-id directory in the artifact so merge-multiple cannot
-          # overwrite nine identically named journey-result.json files.
-          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}
+          # The collector stages only allowlisted names in these two phase folders.
+          # Keep the job-id directory in the artifact to avoid receipt collisions.
+          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
           if-no-files-found: warn
+          compression-level: 0
 
   release2:
     if: needs.config.outputs.m4_5_enabled == 'true'
@@ -419,7 +551,7 @@ jobs:
       - name: Check out frozen App candidate
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
@@ -644,6 +776,7 @@ jobs:
           if-no-files-found: warn
 
   gate:
+    name: Journey evidence (exact tuple)
     if: always()
     needs: [config, journey, release2, m4_4b_local, failure_modes]
     runs-on: ubuntu-24.04
@@ -678,7 +811,7 @@ jobs:
       - name: Check out frozen App candidate for aggregate validation
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false

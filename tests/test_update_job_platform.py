@@ -238,7 +238,7 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "update_job.py").write_text(
         "import os\n"
-        "def run_job(root, operation):\n"
+        "def run_job(root, operation, epoch, nonce):\n"
         "    return {'root': root, 'operation': operation, 'env': os.environ.get('ASTRID_TEST_VALUE')}\n",
         encoding="utf-8")
     old_root = tmp_path / "old O'Brien 雪 version"
@@ -258,11 +258,14 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
             "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
             "bootstrap_sha256": hashlib.sha256(bootstrap.read_bytes()).hexdigest(),
         },
+        "attempt": {"epoch": 1, "nonce": "b" * 32, "phase": "reserved",
+                    "submit": "not-issued", "wrapper_sha256": None,
+                    "descriptor_sha256": None, "claim": None, "retirement": None},
     }
     old = Version(old_root, Path(sys.executable), profile,
                   {"ASTRID_TEST_VALUE": "O'Brien with spaces 雪"}, release=7)
 
-    worker = private / f"worker-{operation}.py"
+    worker = private / f"worker-{operation}-1-{'b' * 32}.py"
     worker.write_text("unrelated pre-existing content", encoding="utf-8")
     runtime_platform.owner_only(worker)
     with pytest.raises(ValueError, match="already exists"):
@@ -284,7 +287,7 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
     command = update_job._worker_command(old, job)
 
     assert command == [sys.executable, "-B", "-X", "utf8", "-I",
-                       str(private / f"worker-{operation}.py")]
+                       str(private / f"worker-{operation}-1-{'b' * 32}.py")]
     worker = Path(command[-1])
     assert worker.exists() and runtime_platform.is_owner_only(worker)
 

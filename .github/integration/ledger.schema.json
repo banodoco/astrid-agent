@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astrid-merge/ledger.schema.json",
+  "title": "Known-failure ledger row (JSON Lines: one row per line in ledger.jsonl)",
+  "description": "A failure is allowed on a tuple only if it matches an ADMITTED row by repo+lane+platform+node_id and its fingerprint matches. Protected journeys can never have rows. Rows are proposed by owners and admitted by M-INT (I-05).",
+  "type": "object",
+  "required": ["id", "repo", "lane", "platform", "node_id", "outcome", "phase", "fingerprint", "baseline", "provenance", "owner", "rationale", "status", "expires"],
+  "properties": {
+    "id": {"type": "string", "description": "stable row id, e.g. KF-agent-0001"},
+    "repo": {"enum": ["runtime", "agent", "app", "pinokio", "vibecomfy", "timeline_composition"]},
+    "lane": {"type": "string", "description": "unit-shard-3, integration-2, vitest, e2e-timeline, ..."},
+    "platform": {"enum": ["linux", "macos", "windows", "any"]},
+    "node_id": {"type": "string", "description": "full test node id incl. parameters/subtest"},
+    "outcome": {"enum": ["failed", "error", "timeout"]},
+    "phase": {"enum": ["setup", "call", "teardown", "collection"]},
+    "fingerprint": {"type": "string", "description": "normalised exception type + message head + top frame (paths/addresses stripped)"},
+    "semantics_hash": {"type": "string", "description": "hash of test source + fixtures, to detect changed semantics"},
+    "baseline": {"type": "object", "required": ["tuple_digest", "run"], "properties": {"tuple_digest": {"type": "string"}, "run": {"type": "string"}}, "description": "the matched parent tuple + CI run where the failure was reproduced"},
+    "provenance": {"enum": ["release1-main", "gpu-m", "timeline", "integration"], "description": "release1-main requires proof the failure pre-exists on main"},
+    "renamed_from": {"type": "string", "description": "previous node_id; only with a reviewed mapping"},
+    "owner": {"type": "string", "description": "manager responsible, e.g. M-AG"},
+    "rationale": {"type": "string"},
+    "issue": {"type": "string"},
+    "status": {"enum": ["proposed", "admitted", "rejected", "retired"]},
+    "admitted_by": {"type": "string"},
+    "expires": {"type": "string", "format": "date", "description": "re-review date; expired rows stop matching"}
+  },
+  "additionalProperties": false
+}

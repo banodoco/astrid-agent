@@ -131,6 +131,14 @@ def test_selected_interpreter_refuses_incapable_runtime_versions(tmp_path, capab
     assert "cannot safely hand off Pinokio Stop" in raised.value.stderr
 
 
+def test_stopped_custody_accepts_runtime_without_stop_handshake(tmp_path):
+    installed = _install_test_runtime(tmp_path, "selected", capability=0)
+    lifecycle, calls = _qualification_lifecycle(tmp_path, installed.python)
+    lifecycle.backend._pinokio_custody = object()
+    lifecycle.validate(installed.selected)
+    assert calls[-1][-1] == "provenance"
+
+
 def test_selected_interpreter_refuses_wrong_environment_and_unrelated_origin(tmp_path):
     installed = _install_test_runtime(tmp_path, "selected")
     lifecycle, _calls = _qualification_lifecycle(tmp_path, installed.python)
@@ -417,6 +425,21 @@ def test_running_incapable_runtime_refuses_exact_i1_without_writes(
 
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux Pinokio filters XDG_DATA_HOME.")
+def test_running_foreground_lock_refuses_with_xdg_override_before_writes(installed, monkeypatch, capsys):
+    from astrid.installer.service import pinokio_lock_paths
+
+    env = installed
+    foreground, legacy = pinokio_lock_paths(env.tmp_path, sys.platform)
+    assert foreground != legacy
+    before = _tree_bytes(env.root)
+    env.backend.preflight_stop = lambda *_args: pytest.fail("preflight must not run")
+    with update.locked(foreground):
+        assert _run_cli_app_update(env, monkeypatch) == 1
+    assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in capsys.readouterr().out.splitlines()
+    assert _tree_bytes(env.root) == before
+
+
 def test_start_racing_stopped_preflight_refuses_exact_i1_before_manifest_write(
         installed, monkeypatch, capsys):
     from astrid.installer.service import installer_lock_path
@@ -638,7 +661,7 @@ def test_ordinary_start_refuses_update_publication_and_stop_handoffs(installed, 
 
     def ordinary_start(boundary):
         message = ("Another Astrid operation" if boundary == "published" else
-                   "Choose Update to finish")
+                   "^Choose Update to finish$")
         with pytest.raises(ValueError, match=message):
             runpy.run_path(str(runner))
         refusals.append(boundary)
@@ -1233,25 +1256,21 @@ def test_rollback_launcher_incompatible_fails_before_stage(installed):
 
 
 def test_lock_failure_after_stop_restarts_old(installed, monkeypatch):
-    real_lock = update.locked
+    real_lock = update.selection_lock
     failed = False
 
     @contextlib.contextmanager
-    def lock(path, **kwargs):
+    def lock(path, backend):
         nonlocal failed
-        if path.name != ".app-update.lock":
-            if not failed:
-                failed = True
-                raise ValueError("lock unavailable")
-        with real_lock(path, **kwargs):
+        if not failed:
+            failed = True
+            raise ValueError("lock unavailable")
+        with real_lock(path, backend):
             yield
 
-    monkeypatch.setattr(update, "locked", lock)
-    from astrid.installer.service import installer_lock_path
-
-    with real_lock(installer_lock_path(installed.tmp_path, sys.platform)):
-        with pytest.raises(ValueError, match="lock unavailable"):
-            run(installed)
+    monkeypatch.setattr(update, "selection_lock", lock)
+    with pytest.raises(ValueError, match="lock unavailable"):
+        run(installed)
     assert installed.calls == ["stage", "stop:old", "stop:old", "start:old"]
     assert current(installed.root) == installed.old
     assert installed.record["identity"] == installed.old.document()["identity"]
@@ -1281,6 +1300,63 @@ def test_stopped_start_retains_lifetime_lock(installed, monkeypatch):
 
     installed.lifecycle.start = start
     run(installed)
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_update_custody_covers_stop_switch_readiness_and_terminal_write(installed, monkeypatch, rollback):
+    from astrid.installer.service import installer_lock_path
+
+    env = installed
+    lock_path = installer_lock_path(env.tmp_path, sys.platform)
+    observed = []
+
+    def assert_owned(label):
+        env.backend._pinokio_custody.check()
+        with pytest.raises(ValueError, match="lock"):
+            with update.locked(lock_path):
+                pytest.fail("lifetime lock became available")
+        observed.append(label)
+
+    save = Installer._save_update
+
+    def save_checked(self, transaction, step, **details):
+        assert_owned("before:" + step)
+        save(self, transaction, step, **details)
+        assert read_json(env.root / "update-transaction.json")["step"] == step
+        assert_owned("durable:" + step)
+
+    monkeypatch.setattr(Installer, "_save_update", save_checked)
+    stop, start, persist = env.lifecycle.stop, env.lifecycle.start, env.backend.persist_identity
+
+    def stop_checked(*args):
+        assert_owned("stop")
+        return stop(*args)
+
+    def persist_checked(*args):
+        assert_owned("switch")
+        return persist(*args)
+
+    def start_checked(version, *args):
+        assert_owned("readiness:" + version.root.name)
+        if rollback and version == env.candidate:
+            raise ValueError("candidate readiness failed")
+        return start(version, *args)
+
+    env.lifecycle.stop = stop_checked
+    env.lifecycle.start = start_checked
+    env.backend.persist_identity = persist_checked
+    if rollback:
+        with pytest.raises(ValueError, match="candidate readiness failed"):
+            run(env)
+        terminal = "rolled_back"
+    else:
+        run(env)
+        terminal = "complete"
+    assert {"stop", "switch", "readiness:new", "durable:" + terminal} <= set(observed)
+    if rollback:
+        assert "readiness:old" in observed
+    with update.locked(lock_path):
+        assert read_json(env.root / "update-transaction.json")["step"] == terminal
 
 
 def test_pinokio_app_update_recovers_staged_migration_journal_before_staging(installed):

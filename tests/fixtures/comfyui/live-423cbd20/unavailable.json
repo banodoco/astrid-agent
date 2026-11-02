@@ -1,0 +1,4 @@
+{
+  "prompt_submit_response": "not retained for original completed prompt",
+  "websocket_progress_frames": "not retained; next successful live attempt should capture"
+}
