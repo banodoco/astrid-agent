@@ -481,8 +481,14 @@ def discover_pack_metadata(
                 raise PackValidationError(
                     f"pack {child.name!r} conflicts with a core pack across {previous} and {child}"
                 )
+            if child.name == "personal" and selected_personal_root is not None:
+                canonical_personal = (selected_personal_root / "personal").resolve()
+                if previous.resolve() != canonical_personal or child.resolve() != canonical_personal:
+                    raise PackValidationError(
+                        "pack id 'personal' is reserved for the canonical personal root"
+                    )
             raise PackValidationError(
-                f"duplicate pack directory name {child.name!r} across {previous} and {child}"
+                f"duplicate pack id/directory name {child.name!r} across {previous} and {child}"
             )
 
     try:
@@ -539,7 +545,7 @@ def discover_pack_metadata(
                             f"pack {child.name!r} conflicts with a core pack across {previous[0]} and {child}"
                         )
                     raise PackValidationError(
-                        f"duplicate pack directory name {child.name!r} across {previous[0]} and {child}"
+                        f"duplicate pack id/directory name {child.name!r} across {previous[0]} and {child}"
                     )
 
     # Name-only ownership admission spans every selected root. This deliberately
