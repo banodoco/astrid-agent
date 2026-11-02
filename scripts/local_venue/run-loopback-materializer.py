@@ -21,6 +21,7 @@ SETUP_MODE = "managed-conda"
 SETUP_TIMEOUT_SECONDS = 2400
 MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
 FAILURE_MARKER = b"ASTRID_PINOKIO_FAILURE"
+UV_SYSTEM_CERTS_VALUE = "true"
 MaterializerError = RuntimeError
 
 
@@ -55,6 +56,13 @@ def _write_json(path: Path, value: Any) -> None:
         json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="ascii",
     )
+
+
+def _local_venue_environment(env: dict[str, str]) -> dict[str, str]:
+    """Propagate system trust to UV without changing TLS verification."""
+    selected = dict(env)
+    selected["UV_SYSTEM_CERTS"] = UV_SYSTEM_CERTS_VALUE
+    return selected
 
 
 def _stop_process_group(process: subprocess.Popen[bytes], timeout: int = 10) -> None:
@@ -402,7 +410,7 @@ def main(argv: list[str]) -> int:
         provision_calls += 1
         if provision_calls != 1:
             raise MaterializerError("managed home provisioning is single-use")
-        env = original_engine_environment(home, runner_home)
+        env = _local_venue_environment(original_engine_environment(home, runner_home))
         _provision_managed_home(
             pinokiod=pinokiod,
             node=node,
