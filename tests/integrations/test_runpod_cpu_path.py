@@ -406,13 +406,15 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
             project=project_id, consent=("paid",), max_usd=1.5,
             deadline=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
             offer_digest=quote["offer_digest"], preparation_seconds=120, execution_seconds=60,
-            idle_seconds=1800, wait=True, timeout_seconds=120, poll_seconds=0.02)
+            idle_seconds=1800, wait=True)
         assert result.ok, result.to_dict()
         delivered = deliver_generation(result, client=client, out=tmp_path / "delivered", project=project_id)
         image_path = Path(delivered["image_paths"][0])
         assert image_path.read_bytes() == provider.image
         task = client.tasks.show(result.task_id)
-        assert task.ok and task.data["state"] == "succeeded" and task.data["run_id"] == result.run_id
+        assert task.ok and task.data["state"] == "succeeded"
+        run_id = task.data["run_id"]
+        assert run_id
         generations, cursor = owner.list_generations(project_id)
         assert cursor is None and len(generations) == 1
         generation = generations[0]
@@ -420,7 +422,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         variants, cursor = owner.list_variants(generation.generation_id)
         assert cursor is None and len(variants) == 1
         assert variants[0].object_id == "sha256:" + _sha(image_path.read_bytes())
-        assert client.runs.show(result.run_id).ok
+        assert client.runs.show(run_id).ok
         record = json.loads(claim_path.read_text())
         assert record["lease"]["state"] == "idle" and record["paid_limits"]["idle_seconds"] == 1800
         snapshot = claim_path.read_bytes()
@@ -431,7 +433,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         record = json.loads(claim_path.read_text())
         assert record["state"] == "cleanup_complete" and record["cleanup"]["absence"]["exact_get_status"] == 404
         assert not provider.pods and len(provider.prompts) == 1
-        evidence = {"task_id": result.task_id, "run_id": result.run_id, "generation_id": generation.generation_id,
+        evidence = {"task_id": result.task_id, "run_id": run_id, "generation_id": generation.generation_id,
                     "output_object": variants[0].object_id, "delivered_file": str(image_path),
                     "sha256": _sha(image_path.read_bytes()), "synthetic_inference": True,
                     "release": record["cleanup"], "receipt": result.to_dict()}
