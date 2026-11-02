@@ -1,0 +1,68 @@
+{
+  "schema": "astrid.merge.r25-eslogger-design-receipt.v1",
+  "task": "R-25-ESLOGGER-DESIGN-R1",
+  "recorded_at_utc": "2026-11-02T18:50:32Z",
+  "status": "design-only-unproven",
+  "qualification": false,
+  "acceptance": false,
+  "dispatch": false,
+  "profile": {
+    "id": "macos-eslogger-continuity-v1",
+    "command": ["/usr/bin/eslogger", "--format", "json", "exec", "fork", "exit"],
+    "os_floor": "macOS 13",
+    "events": ["exec", "fork", "exit"],
+    "sequence_fields": ["seq_num", "global_seq_num"],
+    "census": "independent initial and final ps/libproc/launchctl observations",
+    "interval": "post-initial-census start-marker exit through final-marker exit",
+    "loss_policy": "any gap/drop/missing counter/source failure aborts",
+    "source_stability": "parser and schema_version must be pinned to target macOS build"
+  },
+  "inputs": {
+    "agent_commit": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "agent_parent": "fb222b3a54e9ffe2fa4eb2c382bc25033e773949",
+    "provider_blob": "a22d8840f764a85dd2356b05d788a52449c05e4b",
+    "observer_blob": "241ac8baa883f97eaba2ad760f0693b2e89b578c",
+    "r30_interface_sha256": "2f685c8aec21bef116f95645920717e4b12ef33c1ca820fe6185eb01ffea115d",
+    "mac_runner_setup_sha256": "29234c4e138a2b48479232fdf04800323f5bde9e2ebcb84908994563c2ff8e30",
+    "orchestrator_sha256_at_receipt": "1c8695df0639b0c2f1de0d45c96a3dd473f37d299d89aae28800d3ca81461cbc",
+    "prior_snapshot_report_sha256": "1991e92e25893e58c448804ebb234a775549e5653859471a9db285052398cad3",
+    "prior_snapshot_receipt_sha256": "e6a197cf91ab14a4bcc5d4c2866e7a7b3e648044bff33195fa9c5f077185bfa0"
+  },
+  "coverage": [
+    "R-30 §2.3 lifecycle and interval binding",
+    "authentic exec/fork/exit event profile",
+    "per-event-type seq_num and per-client global_seq_num loss detection",
+    "independent initial and final censuses",
+    "runner identity and full tuple/obligation/attempt binding",
+    "startup, shutdown, failure, and unsupported-requirement disposition"
+  ],
+  "commands": [
+    {"command": "rg/sed manager, R-30 interface, Mac setup, prior reports", "exit": 0},
+    {"command": "git show Agent custody provider and process observer at input commit", "exit": 0},
+    {"command": "sha256sum cited local inputs", "exit": 0},
+    {"command": "command -v eslogger", "exit": 1, "status": "absent-linux-workspace"},
+    {"command": "macOS eslogger execution", "exit": null, "status": "not-run-linux-workspace"},
+    {"command": "tests/live dispatch", "exit": null, "status": "not-run-design-only"}
+  ],
+  "limitations": [
+    "No target Mac or self-hosted runner was accessed or confirmed online.",
+    "No eslogger specimen, schema-version, sequence counter, drop counter, or native census evidence exists.",
+    "eslogger JSON is documented as unstable and not an application API.",
+    "Counters detect client-visible sequence gaps, not every possible pre-start, post-crash, suppressed-group, or unmodeled-path loss.",
+    "Current R-25 snapshots and published Agent provider remain non-authoritative for continuous custody.",
+    "No implementation, checker change, product change, frozen-contract change, dispatch, handoff, or acceptance claim."
+  ],
+  "source_refs": [
+    "https://developer.apple.com/documentation/endpointsecurity/es_message_t/seq_num",
+    "https://developer.apple.com/documentation/endpointsecurity/es_message_t/global_seq_num",
+    "https://developer.apple.com/documentation/endpointsecurity/es_message_t/version",
+    "https://developer.apple.com/documentation/endpointsecurity/es_process_t",
+    "https://developer.apple.com/documentation/endpointsecurity/event-types?language=objc",
+    "https://man.freebsd.org/cgi/man.cgi?apropos=0&manpath=macOS+13.6.5&query=eslogger&sektion=1"
+  ],
+  "coordination": {
+    "peer": "M-QUAL",
+    "message": "Please review DESIGN.md against R-30 §2.3; continuity remains unproven and fail-closed.",
+    "no_dispatch_until": "hannah-mac online confirmation"
+  }
+}

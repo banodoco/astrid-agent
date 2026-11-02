@@ -1,0 +1,164 @@
+{
+  "schema": "astrid.merge.r25-continuity-obligations-receipt.v1",
+  "task": "R-25-CONTINUITY-OBLIGATIONS-R1",
+  "recorded_at_utc": "2026-11-02T18:51:47Z",
+  "status": "source-census-complete",
+  "read_only": true,
+  "qualification": false,
+  "handoff_claimed": false,
+  "workspace": "/home/user/merge/ws/M-PIN",
+  "task_folder": "/home/user/merge/ws/M-PIN/queue/running/R-25-CONTINUITY-OBLIGATIONS-R1",
+  "repository_refs": {
+    "agent": {
+      "repository": "banodoco/astrid-agent",
+      "source_head": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+      "source_base": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+      "parents": [
+        "fb222b3a54e9ffe2fa4eb2c382bc25033e773949",
+        "0fed29efaf2dd009d68551d051e602c2e6bdca89"
+      ],
+      "working_checkout_observed_but_not_used": "b05ac03a5bc"
+    },
+    "pinokio_component_evidence": {
+      "repository": "banodoco/astrid-pinokio",
+      "head": "95aafb5a029c3f53cb2268d8596909eab0deb3c4",
+      "base": "33260b2b81f7fd0467ac2a25c6b576e49b31beec",
+      "source": "queue/done/R-25-SNAPSHOT-COLLECTORS-R1/canonical-receipt.json"
+    },
+    "r36": {
+      "repository": "banodoco/astrid-agent",
+      "ref": "010e8f25c70109f0a93a6fccb0a16f7f40e06739",
+      "branch": "lane/M-QUAL/R-36-v3",
+      "parent": "2f845c51c8a3f9af784868fcdd4678bc442deb90",
+      "role": "current accessible checker/provenance reference; not continuity evidence"
+    }
+  },
+  "current_tuple": {
+    "path": "/home/user/merge-docs/docs/merge-plan/CURRENT-TUPLE.json",
+    "sha256": "71a738081dba7f84bea0b882a975cd540b62684e8f6f1fa0d99f572e62908e50",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f"
+  },
+  "inputs": {
+    "orchestrator": {
+      "path": "/home/user/merge/ws/M-PIN/ORCHESTRATOR.md",
+      "correction_timestamp": "2026-11-02T18:44:58Z",
+      "sha256_at_census": "54441c5f4426a27235d9a6c41f8bb8217743c81cfd7b328ec29bb02eec552dc4",
+      "lines": "3417-3421"
+    },
+    "tasks": {
+      "path": "/home/user/merge-docs/docs/merge-plan/TASKS.md",
+      "sha256": "724a0e8ff71c93394cea697d40cfc624bef18486c4b93eea0070cd1a6d4b68fc",
+      "lines": "167-185,272"
+    },
+    "decisions": {
+      "path": "/home/user/merge-docs/docs/merge-plan/DECISIONS.md",
+      "sha256": "9dd98f26687f099883dc23c2f7d49a4c7a6305242b48ff990d62e6bd3fcef762",
+      "lines": "16,302-309"
+    },
+    "r30_interface": {
+      "path": "/home/user/merge-docs/docs/merge-plan/handoff/inputs/M-QUAL-R-30-verifier-interface.md",
+      "sha256": "2f685c8aec21bef116f95645920717e4b12ef33c1ca820fe6185eb01ffea115d",
+      "lines": "68,70,72,245-246,254-255,273,314,329,341"
+    },
+    "r25_reports": [
+      "queue/done/R-25-SNAPSHOT-COLLECTORS-R1/REPORT.md",
+      "queue/done/R-25-SNAPSHOT-COLLECTORS-R1/canonical-receipt.json",
+      "queue/done/R-25-SPECIMEN-R1/REPORT.md",
+      "queue/done/R-25-SPECIMEN-R1/canonical-receipt.json"
+    ]
+  },
+  "obligation_scope": {
+    "pinokio_slots": [
+      "pinokio-backend-linux",
+      "pinokio-fully-local-linux",
+      "pinokio-backend-macos",
+      "pinokio-fully-local-macos",
+      "pinokio-backend-windows",
+      "pinokio-fully-local-windows"
+    ],
+    "continuous_custody_families": [
+      "interruption-recovery",
+      "rollback",
+      "keep_data_uninstall",
+      "stop_safety"
+    ],
+    "continuous_custody_id_count": 24,
+    "removal_authorization_literal_family": "keep_data_uninstall",
+    "removal_authorization_literal_id_count": 6,
+    "exact_ids_by_os": {
+      "linux": [
+        "interruption-recovery:pinokio-backend-linux",
+        "interruption-recovery:pinokio-fully-local-linux",
+        "rollback:pinokio-backend-linux",
+        "rollback:pinokio-fully-local-linux",
+        "keep_data_uninstall:pinokio-backend-linux",
+        "keep_data_uninstall:pinokio-fully-local-linux",
+        "stop_safety:pinokio-backend-linux",
+        "stop_safety:pinokio-fully-local-linux"
+      ],
+      "macos": [
+        "interruption-recovery:pinokio-backend-macos",
+        "interruption-recovery:pinokio-fully-local-macos",
+        "rollback:pinokio-backend-macos",
+        "rollback:pinokio-fully-local-macos",
+        "keep_data_uninstall:pinokio-backend-macos",
+        "keep_data_uninstall:pinokio-fully-local-macos",
+        "stop_safety:pinokio-backend-macos",
+        "stop_safety:pinokio-fully-local-macos"
+      ],
+      "windows": [
+        "interruption-recovery:pinokio-backend-windows",
+        "interruption-recovery:pinokio-fully-local-windows",
+        "rollback:pinokio-backend-windows",
+        "rollback:pinokio-fully-local-windows",
+        "keep_data_uninstall:pinokio-backend-windows",
+        "keep_data_uninstall:pinokio-fully-local-windows",
+        "stop_safety:pinokio-backend-windows",
+        "stop_safety:pinokio-fully-local-windows"
+      ]
+    },
+    "not_invented": [
+      "No separate authorize_exact_removal:<slot> ID exists in the inspected inventory."
+    ]
+  },
+  "source_files": {
+    "scripts/m4_6_pinokio_custody_provider.py": "05538e2ecd10774e7374db6ecf4df4f525bf7fffd5eaed25554a1eaf9fd322d4",
+    "scripts/m4_6_process_observer.py": "a20cafdf4ca33a20167a85d37031ab3ba86e2274b57023d4680f230d8ff568bd",
+    "scripts/journey_matrix.py": "8edb29ec54a1befe4521ba0f8df5ef47d95bb86009eb8ac85b7c08c8e74b3023",
+    "scripts/check_journey_evidence.py": "473e9572c2af6e0825e1b01076b16a85af6b4c72557c70eed62949f4940a9be7",
+    "scripts/journey_failure_modes.py": "3e0d02a7d2e068f6a6df566880c3d1f51a9b3104cc69ac1380cdd02b2bb57606",
+    "scripts/failure_mode_executor.py": "a18b80e8b8e9a5b0109fae4ab987a92f43ac0fc0e1abbc0e4f33909de286f565"
+  },
+  "commands": [
+    {"command": "git -C /home/user/merge/ws/M-PIN/repos/astrid-agent show -s --format='%H%n%P%n%ad%n%s' --date=iso-strict ab43bad818ef65ca1e929b973a2f61cd9fc4bf61", "exit": 0},
+    {"command": "git -C /home/user/merge/ws/M-PIN/repos/astrid-agent ls-tree -r --name-only ab43bad818ef65ca1e929b973a2f61cd9fc4bf61", "exit": 0},
+    {"command": "for p in scripts/m4_6_pinokio_custody_provider.py scripts/m4_6_process_observer.py scripts/journey_matrix.py scripts/check_journey_evidence.py scripts/journey_failure_modes.py scripts/failure_mode_executor.py; do git -C /home/user/merge/ws/M-PIN/repos/astrid-agent show ab43bad818ef65ca1e929b973a2f61cd9fc4bf61:$p | nl -ba; done", "exit": 0},
+    {"command": "rg -n -i 'continuous|continuity|gap-free|poll|removal|custod|authoriz|snapshot|M4[-_ ]?6' /home/user/merge/ws/M-PIN/ORCHESTRATOR.md /home/user/merge/ws/M-PIN/queue/done/R-25-SNAPSHOT-COLLECTORS-R1/REPORT.md /home/user/merge/ws/M-PIN/queue/done/R-25-SPECIMEN-R1/REPORT.md", "exit": 0},
+    {"command": "git -C /home/user/merge/ws/M-PIN/repos/astrid-agent show -s --format='%H%n%P%n%ad%n%s' --date=iso-strict 010e8f25c70109f0a93a6fccb0a16f7f40e06739", "exit": 0},
+    {"command": "sha256sum CURRENT-TUPLE.json TASKS.md DECISIONS.md M-QUAL-R-30-verifier-interface.md ORCHESTRATOR.md", "exit": 0},
+    {"command": "find queue/done/R-25-SPECIMEN-R1 queue/done/R-25-SNAPSHOT-COLLECTORS-R1 -maxdepth 1 -type f", "exit": 0},
+    {"command": "rg -n -i 'continuous|continuity|gap-free|poll|removal|authorize_exact|finalization|loss|sequence' M-QUAL-R-30-verifier-interface.md", "exit": 0},
+    {"command": "rg -n -i 'D9|R-25|R-36|all six|Pinokio' TASKS.md DECISIONS.md", "exit": 0},
+    {"command": "jq -e . /home/user/merge/ws/M-PIN/queue/running/R-25-CONTINUITY-OBLIGATIONS-R1/canonical-receipt.json", "exit": 0}
+  ],
+  "coverage": {
+    "os": ["linux", "macos", "windows"],
+    "channels": ["pinokio-backend", "pinokio-fully-local"],
+    "source_census": true,
+    "tests_rerun": false,
+    "hosted_runs": false,
+    "native_runs": false
+  },
+  "limitations": [
+    "Bounded snapshots are sampled end-state/in-action observations and do not prove gap-free continuity.",
+    "Current Linux, macOS and Windows process/service sources are polling-only or refuse incomplete census; current provider refuses custody/removal authorization.",
+    "R-36 ref is a checker/provenance source reference, not an accepted hosted collector or continuity proof.",
+    "R-25 component and synthetic specimen reports are explicitly non-qualifying and do not supply authentic six-slot receipts.",
+    "No separate authorize_exact_removal obligation ID was present; removal classification is tied to the existing keep_data_uninstall IDs and custody-dependent rollback/stop predicates."
+  ],
+  "routing": "Route this report to M-QUAL and M-INT for Hannah's Release-1 scope decision. No acceptance or handoff claimed."
+}
