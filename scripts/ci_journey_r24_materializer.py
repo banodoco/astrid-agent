@@ -107,8 +107,8 @@ def route_argv(runner: Path, run_root: Path, candidate: Path, config: Path,
             "--runtime-checkout", str(checkouts["runtime"]),
             "--pinokio-checkout", str(checkouts["pinokio"])]
     if mode != "r24-only":
-        if mode != "backend" or mode_producer_root is None:
-            raise MaterializerError("only the bounded backend mode has a hosted materializer")
+        if mode not in {"backend", "fully-local"} or mode_producer_root is None:
+            raise MaterializerError("only the bounded backend and fully-local modes have a hosted materializer")
         argv.extend(["--mode", mode,
                      "--mode-producer-checkout", str(mode_producer_root),
                      "--output", str(run_root / "evidence/r25-linux-mode-actions")])
@@ -270,7 +270,8 @@ def _engine_environment(home: Path, runner_home: Path) -> dict[str, str]:
 
 def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Path,
                        home: Path, env: dict[str, str], evidence: Path,
-                       receipt: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+                       receipt: dict[str, Any],
+                       install_script: str = "pinokio/install.js") -> tuple[dict[str, Any], Path]:
     """Run the real PTerm route and require its genuine installer result.
 
     PTerm's terminal disconnect is a transport completion and can return zero
@@ -278,7 +279,9 @@ def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Pat
     never installation success: the marker and installed identity must verify
     before this function returns.
     """
-    _run(pterm_argv(node, pterm, "pinokio/install.js"),
+    if install_script not in {"pinokio/install.js", "pinokio/install-local.js"}:
+        raise MaterializerError("unsupported Pinokio install script")
+    _run(pterm_argv(node, pterm, install_script),
          log=evidence / "install.log", receipt=receipt, label="pinokio-install",
          env=env, cwd=home, timeout=3600)
     try:
@@ -735,9 +738,9 @@ def execute(args: argparse.Namespace) -> int:
             raise MaterializerError("producer ref differs from audited live producer")
         producer_root = validate_checkout(args.producer, args.producer_ref)
         mode_producer_root = None
-        if selected_mode not in {"r24-only", "backend"}:
-            raise MaterializerError("only r24-only and backend modes are materialized here")
-        if selected_mode == "backend":
+        if selected_mode not in {"r24-only", "backend", "fully-local"}:
+            raise MaterializerError("only r24-only, backend, and fully-local modes are materialized here")
+        if selected_mode in {"backend", "fully-local"}:
             if (getattr(args, "mode_producer", None) is None
                     or getattr(args, "mode_producer_ref", None)
                     != mode_actions.MODE_PRODUCER_REF):
@@ -794,17 +797,22 @@ def execute(args: argparse.Namespace) -> int:
 
         receipt["stage"] = "install-candidate"
         _write(receipt_path, receipt)
+        install_script = ("pinokio/install-local.js" if selected_mode == "fully-local"
+                          else "pinokio/install.js")
+        receipt["pinokio_install_script"] = install_script
         version, data = _install_candidate(
             node=node, pterm=pterm, resource=resource, manifest=manifest,
             home=home, env=engine_env, evidence=evidence, receipt=receipt,
+            install_script=install_script,
         )
         mode_path = resource / "app/install-mode.json"
+        expected_install_mode = "local" if selected_mode == "fully-local" else "backend"
         receipt["pinokio_install_mode_receipt"] = _pinokio_install_mode_receipt(
-            resource, "backend")
+            resource, expected_install_mode)
         receipt["pinokio_install_mode_binding"] = {
             "source": "installed-app/install-mode.json",
             "sha256": _sha(mode_path),
-            "slot_id": mode_actions.MODES["backend"],
+            "slot_id": mode_actions.MODES.get(selected_mode, "r24-only"),
             "candidate": PUBLISHED_CANDIDATE,
         }
         _write(receipt_path, receipt)
@@ -881,14 +889,14 @@ def execute(args: argparse.Namespace) -> int:
              log=evidence / "r24-live-route.log", receipt=receipt,
              label="documented-r24-live-route", env=dict(os.environ), timeout=300)
         provider_receipt = _read(run_root / "evidence/r24-live/r24-invocation.json")
-        if selected_mode == "backend":
+        if selected_mode in {"backend", "fully-local"}:
             mode_record_path = (run_root /
                                 "evidence/r25-linux-mode-actions/mode-action-seam.json")
             mode_record = _read(mode_record_path)
             if (mode_record.get("schema") != mode_actions.SCHEMA
-                    or mode_record.get("slot_id") != mode_actions.MODES["backend"]
+                    or mode_record.get("slot_id") != mode_actions.MODES[selected_mode]
                     or mode_record.get("boundary", {}).get("m4_6_receipt") is not False):
-                raise MaterializerError("bounded backend mode-action record differs")
+                raise MaterializerError("bounded mode-action record differs")
             receipt["mode_action_observation"] = {
                 "path": str(mode_record_path),
                 "sha256": _sha(mode_record_path),
@@ -984,7 +992,7 @@ def parser() -> argparse.ArgumentParser:
         value.add_argument("--" + name, type=Path, required=True)
     value.add_argument("--runner-ref", required=True)
     value.add_argument("--producer-ref", required=True)
-    value.add_argument("--mode", choices=("r24-only", "backend"), default="r24-only")
+    value.add_argument("--mode", choices=("r24-only", "backend", "fully-local"), default="r24-only")
     value.add_argument("--mode-producer", type=Path)
     value.add_argument("--mode-producer-ref")
     value.add_argument("--confirmation", required=True)
@@ -995,8 +1003,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if not HEX40.fullmatch(args.runner_ref) or not HEX40.fullmatch(args.producer_ref):
         raise MaterializerError("full runner and producer commit SHAs required")
-    if args.mode == "backend" and (not isinstance(args.mode_producer_ref, str)
-                                    or not HEX40.fullmatch(args.mode_producer_ref)):
+    if args.mode in {"backend", "fully-local"} and (not isinstance(args.mode_producer_ref, str)
+                                                       or not HEX40.fullmatch(args.mode_producer_ref)):
         raise MaterializerError("full mode producer commit SHA required")
     return execute(args)
 
