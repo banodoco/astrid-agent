@@ -22,16 +22,16 @@ from urllib.parse import urlsplit
 try:
     from . import ci_journey_provider as provider
     from . import pinokio_linux_mode_actions as mode_actions
-    from .ci_journey_r24 import PUBLISHED_CANDIDATE
+    from .ci_journey_r24 import R24_CANDIDATE
 except ImportError:
     import ci_journey_provider as provider
     import pinokio_linux_mode_actions as mode_actions
-    from ci_journey_r24 import PUBLISHED_CANDIDATE
+    from ci_journey_r24 import R24_CANDIDATE
 
 
 PINOKIOD_REF = "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
 PTERM_REF = "5be43718701c448b43daf0ce51d8935f170065bb"
-CONFIRMATION = "R24_LIVE_CURRENT_TUPLE"
+CONFIRMATION = "R24_LIVE_PIN_MANIFEST_CANDIDATE"
 PORT = 42000
 TASK_DURATION_SECONDS = 300
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -205,7 +205,7 @@ def materialize(resource: Path, pinokio: Path, producer_root: Path,
     resource.mkdir(parents=True)
     archive = scratch / "candidate-pinokio.tar"
     _run(["git", "-C", str(pinokio), "archive", "--format=tar",
-          "--output", str(archive), PUBLISHED_CANDIDATE["pinokio"]],
+          "--output", str(archive), R24_CANDIDATE["pinokio"]],
          log=scratch / "git-archive.log", receipt=receipt, label="materialize-archive")
     _run(["tar", "-xf", str(archive), "-C", str(resource)],
          log=scratch / "tar-extract.log", receipt=receipt, label="materialize-extract")
@@ -222,7 +222,7 @@ def materialize(resource: Path, pinokio: Path, producer_root: Path,
     environment = resource / "_ENVIRONMENT"
     raw = environment.read_text(encoding="utf-8")
     changed, count = re.subn(r"(?m)^ASTRID_APP_REF=.*$",
-                             f"ASTRID_APP_REF={PUBLISHED_CANDIDATE['app']}", raw)
+                             f"ASTRID_APP_REF={R24_CANDIDATE['app']}", raw)
     if count != 1:
         raise MaterializerError("candidate App ref setting unavailable")
     environment.write_text(changed, encoding="utf-8")
@@ -263,7 +263,7 @@ def _engine_environment(home: Path, runner_home: Path) -> dict[str, str]:
         "PINOKIO_HOME": str(home),
         "PINOKIO_HTTPS_ACTIVE": "0",
         "PINOKIO_NETWORK_ACTIVE": "0",
-        "ASTRID_APP_REF": PUBLISHED_CANDIDATE["app"],
+        "ASTRID_APP_REF": R24_CANDIDATE["app"],
     })
     return env
 
@@ -677,7 +677,7 @@ def _hosted_binding(receipt: dict[str, Any], task: dict[str, Any],
             "state": selected["state"],
             "execution_binding": binding,
         },
-        "candidate": PUBLISHED_CANDIDATE,
+        "candidate": R24_CANDIDATE,
         "provider_ref": provider.LIVE_PRODUCER_REF,
         "runtime_execution_sources": receipt["runtime_execution_sources"],
         "task_running_sha256": task_sha,
@@ -705,7 +705,7 @@ def execute(args: argparse.Namespace) -> int:
         "schema": "astrid.r24.materializer.v1", "status": "running",
         "stage": "preflight", "first_stop": None, "commands": [],
         "mode": selected_mode,
-        "candidate": PUBLISHED_CANDIDATE,
+        "candidate": R24_CANDIDATE,
         "provider_ref": provider.LIVE_PRODUCER_REF,
         "hosted": {key: os.environ.get(key) for key in
                    ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
@@ -745,7 +745,7 @@ def execute(args: argparse.Namespace) -> int:
             mode_producer_root = validate_checkout(
                 args.mode_producer, args.mode_producer_ref)
         checkouts = {
-            name: validate_checkout(getattr(args, name), PUBLISHED_CANDIDATE[name])
+            name: validate_checkout(getattr(args, name), R24_CANDIDATE[name])
             for name in ("app", "agent", "runtime", "pinokio")
         }
         pterm = validate_checkout(args.pterm, PTERM_REF, tracked_only=True)
@@ -757,8 +757,8 @@ def execute(args: argparse.Namespace) -> int:
         if len(roots) != expected_roots:
             raise MaterializerError("all source checkouts must be distinct")
         manifest = checkouts["app"] / "public/install-manifest.json"
-        if _sha(manifest) != PUBLISHED_CANDIDATE["manifest_sha256"]:
-            raise MaterializerError("published manifest digest mismatch")
+        if _sha(manifest) != R24_CANDIDATE["manifest_sha256"]:
+            raise MaterializerError("candidate manifest digest mismatch")
         selected_node = shutil.which("node")
         if selected_node is None:
             raise MaterializerError("Node executable is unavailable")
@@ -805,7 +805,7 @@ def execute(args: argparse.Namespace) -> int:
             "source": "installed-app/install-mode.json",
             "sha256": _sha(mode_path),
             "slot_id": mode_actions.MODES["backend"],
-            "candidate": PUBLISHED_CANDIDATE,
+            "candidate": R24_CANDIDATE,
         }
         _write(receipt_path, receipt)
         backend = resource / "app/astrid"
@@ -871,7 +871,7 @@ def execute(args: argparse.Namespace) -> int:
         _write(receipt_path, receipt)
         candidate_file = run_root / "candidate.json"
         config_file = run_root / "config.json"
-        _write(candidate_file, PUBLISHED_CANDIDATE)
+        _write(candidate_file, R24_CANDIDATE)
         _write(config_file, build_config(
             checkouts=checkouts, pterm=pterm, pinokiod=pinokiod, node=node,
             daemon_pid=daemon.pid, home=home, scratch=scratch))

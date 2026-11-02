@@ -192,7 +192,7 @@ def boundary() -> dict[str, object]:
 
 def generate(args: argparse.Namespace) -> dict[str, Any]:
     tuple_raw, full_tuple, candidate = load_current_tuple(args.current_tuple)
-    if candidate != r24.PUBLISHED_CANDIDATE or candidate != provider.LIVE_CANDIDATE:
+    if candidate != r24.R24_CANDIDATE or candidate != provider.LIVE_CANDIDATE:
         raise CompatibilityError("runner candidate differs from CURRENT-TUPLE")
     if not (args.producer_ref == provider.LIVE_PRODUCER_REF
             == mode_actions.MODE_PRODUCER_REF == push_admission.PRODUCER_REF):

@@ -1,4 +1,4 @@
-"""Focused checks for the current-tuple R-24 to Agent-harness seam."""
+"""Focused checks for the exact-candidate R-24 to Agent-harness seam."""
 from __future__ import annotations
 
 import json
@@ -19,7 +19,7 @@ def _captured_receipt() -> dict[str, object]:
     return {
         "schema": "astrid.r24.journey-provider-invocation.v1",
         "status": "captured-untrusted",
-        "candidate": dict(r24.PUBLISHED_CANDIDATE),
+        "candidate": dict(r24.R24_CANDIDATE),
         "run_id": "a" * 32,
         "request_sha256": "b" * 64,
         "session": "c" * 32,
@@ -42,16 +42,16 @@ def _paths(tmp_path: Path) -> dict[str, Path]:
     return paths
 
 
-def test_current_tuple_provider_and_harness_constants_are_identical() -> None:
+def test_exact_candidate_provider_and_harness_constants_are_identical() -> None:
     assert seam.SCHEMA == "astrid.r25.pinokio-r24-seam.v1"
-    assert r24.PUBLISHED_CANDIDATE == provider.LIVE_CANDIDATE
-    assert provider.LIVE_PRODUCER_REF == "13cb31104c8aae655d0ee04efdb9537aa111e340"
-    assert r24.PUBLISHED_CANDIDATE == {
-        "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    assert r24.R24_CANDIDATE == provider.LIVE_CANDIDATE
+    assert provider.LIVE_PRODUCER_REF == "70636d1833164dad84a3551606b61ba2634565ba"
+    assert r24.R24_CANDIDATE == {
+        "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
         "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
         "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
         "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-        "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
+        "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
     }
 
 
@@ -76,7 +76,7 @@ def test_executes_existing_live_hook_once_and_keeps_the_m4_6_boundary_closed(tmp
     assert len(calls) == 1
     assert calls[0]["checkouts"] == paths
     assert json.loads(output.read_text()) == result
-    assert result["candidate"] == r24.PUBLISHED_CANDIDATE
+    assert result["candidate"] == r24.R24_CANDIDATE
     assert result["scope"] == {
         "observations": ["busy", "unknown", "restoration"],
         "operation": "pinokio-stop-preflight",

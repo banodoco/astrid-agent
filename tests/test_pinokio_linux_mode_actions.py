@@ -15,7 +15,7 @@ from scripts import pinokio_linux_mode_actions as actions
 def _r24_record() -> dict[str, object]:
     return {
         "schema": "astrid.r25.pinokio-r24-seam.v1",
-        "candidate": dict(r24.PUBLISHED_CANDIDATE),
+        "candidate": dict(r24.R24_CANDIDATE),
         "r24": {"run_id": "a" * 32, "request_sha256": "b" * 64,
                 "session": "c" * 32, "producer_ref": "d" * 40,
                 "producer_sources": {}, "interface_sources": {}, "export": []},
@@ -62,7 +62,7 @@ def test_executes_r24_once_then_mode_provider_without_receipt(
     r24_request = {"schema": "r24-fixture", "run_id": "a" * 32}
     (run_root / "evidence/r24-live/request.json").write_text(json.dumps(r24_request))
     candidate = tmp_path / "candidate.json"
-    candidate.write_text(json.dumps(r24.PUBLISHED_CANDIDATE))
+    candidate.write_text(json.dumps(r24.R24_CANDIDATE))
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"fixture": True}))
     producer = tmp_path / "r24-producer"

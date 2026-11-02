@@ -53,12 +53,13 @@ def test_current_tuple_parser_rejects_noncanonical_binding(tmp_path, mutation) -
         compat.load_current_tuple(path)
 
 
-def test_runner_and_producers_form_one_nonqualifying_bundle() -> None:
+def test_provisional_runner_and_split_producers_remain_nonqualifying() -> None:
     candidate = {key: CURRENT[key] for key in compat._CANDIDATE_FIELDS}
-    assert r24.PUBLISHED_CANDIDATE == provider.LIVE_CANDIDATE == candidate
-    assert provider.LIVE_PRODUCER_REF == PRODUCER
+    assert r24.R24_CANDIDATE == provider.LIVE_CANDIDATE
+    assert r24.R24_CANDIDATE != candidate
+    assert provider.LIVE_PRODUCER_REF == push_admission.PRODUCER_REF
+    assert provider.LIVE_PRODUCER_REF != PRODUCER
     assert mode_actions.MODE_PRODUCER_REF == PRODUCER
-    assert push_admission.PRODUCER_REF == PRODUCER
     assert compat.boundary() == {
         "authenticated_custody": False,
         "qualification": "not-evaluated",

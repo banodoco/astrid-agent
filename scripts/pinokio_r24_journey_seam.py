@@ -1,4 +1,4 @@
-"""Expose the current-tuple R-24 Linux seam to the Agent journey harness.
+"""Expose the exact-candidate R-24 Linux seam to the Agent journey harness.
 
 This is deliberately a *seam record*, not an M4-6 receipt.  It invokes the
 already-reviewed R-24 live hook exactly once and retains the hook's immutable
@@ -79,8 +79,8 @@ def _captured(receipt: object) -> dict[str, Any]:
         raise PinokioR24SeamError("R-24 live receipt schema differs")
     if row.get("status") != "captured-untrusted":
         raise PinokioR24SeamError("R-24 live hook did not capture an untrusted live observation")
-    if row.get("candidate") != r24.PUBLISHED_CANDIDATE:
-        raise PinokioR24SeamError("R-24 live receipt candidate differs from the published tuple")
+    if row.get("candidate") != r24.R24_CANDIDATE:
+        raise PinokioR24SeamError("R-24 live receipt differs from the exact candidate")
     if not isinstance(row.get("run_id"), str) or _HEX32.fullmatch(row["run_id"]) is None:
         raise PinokioR24SeamError("R-24 live receipt run ID is invalid")
     request_sha = _digest(row.get("request_sha256"), "R-24 request SHA-256")
@@ -92,7 +92,7 @@ def _captured(receipt: object) -> dict[str, Any]:
         or bound_provider.get("sources") != provider.LIVE_PRODUCER_FILES
         or bound_provider.get("interface") != provider.LIVE_INTERFACE_FILES
     ):
-        raise PinokioR24SeamError("R-24 provider binding differs from the approved current tuple")
+        raise PinokioR24SeamError("R-24 provider binding differs from the exact candidate")
     invocation = _mapping(row.get("invocation"), "R-24 invocation")
     if invocation.get("status") != "completed" or invocation.get("exit") != 0:
         raise PinokioR24SeamError("R-24 provider invocation did not complete successfully")
@@ -152,7 +152,7 @@ def execute(*, run_root: Path, candidate_file: Path, config_file: Path,
     captured = _captured(receipt)
     record: dict[str, object] = {
         "schema": SCHEMA,
-        "candidate": dict(r24.PUBLISHED_CANDIDATE),
+        "candidate": dict(r24.R24_CANDIDATE),
         "platform": "linux",
         "r24": captured,
         "scope": {

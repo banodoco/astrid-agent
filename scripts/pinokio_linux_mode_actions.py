@@ -1,6 +1,6 @@
 """Integrate bounded Linux Pinokio mode actions with the Agent journey harness.
 
-The route first executes the exact current-tuple R-24 seam, then invokes the
+The route first executes the exact candidate-bound R-24 seam, then invokes the
 immutable R-25 mode provider while the same genuine busy task remains active.
 It retains a non-qualifying observation record only.  It cannot mint an M4-6
 receipt, authenticate custody, or turn not-run protected scenarios into pass.
@@ -239,7 +239,7 @@ def execute(*, mode: str, run_root: Path, candidate_file: Path, config_file: Pat
         raise LinuxModeActionError("R-24 run binding is unavailable")
     request = {
         "schema": PROVIDER_SCHEMA,
-        "candidate": dict(r24.PUBLISHED_CANDIDATE),
+        "candidate": dict(r24.R24_CANDIDATE),
         "mode": mode,
         "provider": {"ref": MODE_PRODUCER_REF, "sources": dict(MODE_PRODUCER_FILES)},
         "r24_request_sha256": _sha(_canonical(r24_request)),
@@ -269,7 +269,7 @@ def execute(*, mode: str, run_root: Path, candidate_file: Path, config_file: Pat
     result = _validate_result(_decode(process.stdout), request, mode)
     record = {
         "schema": SCHEMA,
-        "candidate": dict(r24.PUBLISHED_CANDIDATE),
+        "candidate": dict(r24.R24_CANDIDATE),
         "platform": "linux",
         "slot_id": MODES[mode],
         "mode": mode,

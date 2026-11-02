@@ -19,10 +19,10 @@ def canonical(value):
 def request_fixture(run_id="a" * 32):
     data = {
         "schema": provider.REQUEST_SCHEMA,
-        "candidate": hook.PUBLISHED_CANDIDATE,
+        "candidate": hook.R24_CANDIDATE,
         "provider": {"ref": provider.LIVE_PRODUCER_REF,
                      "sources": provider.LIVE_PRODUCER_FILES},
-        "stop": {"ref": hook.PUBLISHED_CANDIDATE["pinokio"],
+        "stop": {"ref": hook.R24_CANDIDATE["pinokio"],
                  "path": "pinokio/stop.js", "sha256": "b" * 64},
         "config_sha256": "c" * 64,
         "run_id": run_id,
@@ -163,15 +163,15 @@ def test_export_rejects_identity_and_inventory_tamper(tmp_path, tamper):
         hook.validate_export(export, request, output, EXECUTION_SOURCES)
 
 
-def test_live_producer_binding_matches_published_tuple_and_diagnostic_does_not():
-    assert hook.PUBLISHED_CANDIDATE == provider.LIVE_CANDIDATE
-    assert provider.LIVE_STOP["ref"] == hook.PUBLISHED_CANDIDATE["pinokio"]
-    assert provider._CANDIDATE != hook.PUBLISHED_CANDIDATE
+def test_live_producer_binding_matches_exact_candidate_and_diagnostic_does_not():
+    assert hook.R24_CANDIDATE == provider.LIVE_CANDIDATE
+    assert provider.LIVE_STOP["ref"] == hook.R24_CANDIDATE["pinokio"]
+    assert provider._CANDIDATE != hook.R24_CANDIDATE
 
 
 def test_runner_identity_is_committed_and_distinct_from_installed_agent():
     runner = hook._runner_identity()
-    assert runner["head"] != hook.PUBLISHED_CANDIDATE["agent"]
+    assert runner["head"] != hook.R24_CANDIDATE["agent"]
     assert runner["candidate_agent_distinct"] is True
     assert set(runner["sources"]) == {
         "scripts/ci_journey.py", "scripts/ci_journey_provider.py",
@@ -184,7 +184,7 @@ def test_runner_identity_rejects_installed_agent_as_runner(monkeypatch):
 
     def installed_identity(path, *args):
         if args == ("rev-parse", "HEAD"):
-            return hook.PUBLISHED_CANDIDATE["agent"].encode()
+            return hook.R24_CANDIDATE["agent"].encode()
         return actual_git(path, *args)
 
     monkeypatch.setattr(hook, "_git", installed_identity)
@@ -196,7 +196,7 @@ def test_hook_never_invokes_when_exact_candidate_validation_fails(tmp_path, monk
     root = owner_root(tmp_path)
     called = False
     def reject(**unused):
-        raise hook.JourneyProviderError("producer binding candidate differs from published tuple")
+        raise hook.JourneyProviderError("producer binding differs from the exact R-24 candidate")
     def invoke(*unused):
         nonlocal called
         called = True
@@ -209,7 +209,7 @@ def test_hook_never_invokes_when_exact_candidate_validation_fails(tmp_path, monk
     assert called is False
     receipt = json.loads((root / "evidence/r24-live/r24-invocation.json").read_bytes())
     assert receipt["invocation"]["status"] == "not-run"
-    assert receipt["runner"]["head"] != hook.PUBLISHED_CANDIDATE["agent"]
+    assert receipt["runner"]["head"] != hook.R24_CANDIDATE["agent"]
     assert receipt["admission"]["authenticated_custody"] is False
 
 
@@ -218,7 +218,7 @@ def test_success_shaped_hook_retains_stream_exit_export_and_awaits_custody(tmp_p
     request = request_fixture()
     config = canonical({"synthetic": True})
     monkeypatch.setattr(hook, "prepare_request", lambda **unused: (
-        request, config, {"candidate": hook.PUBLISHED_CANDIDATE,
+        request, config, {"candidate": hook.R24_CANDIDATE,
                           "runtime_execution_sources": EXECUTION_SOURCES},
         {"run_id": "a" * 32}))
     def invoke(unused_request, unused_config, unused_root, export):
@@ -242,7 +242,7 @@ def test_invocation_error_retains_raw_streams_and_exit(tmp_path, monkeypatch):
     root = owner_root(tmp_path)
     request = request_fixture()
     monkeypatch.setattr(hook, "prepare_request", lambda **unused: (
-        request, b"{}", {"candidate": hook.PUBLISHED_CANDIDATE}, {"run_id": "a" * 32}))
+        request, b"{}", {"candidate": hook.R24_CANDIDATE}, {"run_id": "a" * 32}))
     def fail(*unused):
         raise provider.ProviderInvocationError("failed", b"diagnostic", stdout=b"partial", returncode=7)
     monkeypatch.setattr(provider, "invoke_linux_provider_export", fail)
@@ -261,7 +261,7 @@ def test_post_validation_source_race_is_recorded_as_rejected(tmp_path, monkeypat
     root = owner_root(tmp_path)
     request = request_fixture()
     monkeypatch.setattr(hook, "prepare_request", lambda **unused: (
-        request, b"{}", {"candidate": hook.PUBLISHED_CANDIDATE}, {"run_id": "a" * 32}))
+        request, b"{}", {"candidate": hook.R24_CANDIDATE}, {"run_id": "a" * 32}))
     monkeypatch.setattr(provider, "invoke_linux_provider_export", lambda *unused: (
         _ for _ in ()).throw(provider.ProviderContractError("producer source digest mismatch")))
     with pytest.raises(provider.ProviderContractError):

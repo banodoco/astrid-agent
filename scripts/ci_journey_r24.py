@@ -19,12 +19,12 @@ except ImportError:
     import ci_journey_provider as provider
 
 
-PUBLISHED_CANDIDATE = {
-    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+R24_CANDIDATE = {
+    "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
     "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
     "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
     "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-    "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
+    "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
 }
 EXPORT_NAMES = frozenset({
     "junit.xml", "manifest.json", "observation-result.json",
@@ -118,7 +118,7 @@ def _runner_identity() -> dict[str, Any]:
         raise JourneyProviderError("runner identity is unreadable") from exc
     if top != root or not _HEX40.fullmatch(head) or dirty:
         raise JourneyProviderError("runner checkout identity or cleanliness mismatch")
-    if head == PUBLISHED_CANDIDATE["agent"]:
+    if head == R24_CANDIDATE["agent"]:
         raise JourneyProviderError("candidate runner must differ from installed Agent")
     sources: dict[str, str] = {}
     for relative in ("scripts/ci_journey.py", "scripts/ci_journey_provider.py",
@@ -219,9 +219,9 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
     """Validate exact candidates and sources before constructing the request."""
     owner = _owner(run_root)
     _, selected = _read_json_file(candidate_file, "candidate")
-    selected = _object(selected, set(PUBLISHED_CANDIDATE), "candidate")
-    if selected != PUBLISHED_CANDIDATE:
-        raise JourneyProviderError("candidate differs from the published tuple")
+    selected = _object(selected, set(R24_CANDIDATE), "candidate")
+    if selected != R24_CANDIDATE:
+        raise JourneyProviderError("candidate differs from the exact R-24 binding")
     if set(checkouts) != {"app", "agent", "runtime", "pinokio"}:
         raise JourneyProviderError("four candidate checkouts are required")
     roots = {name: _checkout(path, selected[name]) for name, path in checkouts.items()}
@@ -250,7 +250,7 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
     binding_raw = _regular(producer_root / "pinokio/providers/r24-linux-binding.json")
     binding = _decode(binding_raw)
     if binding.get("candidate") != selected:
-        raise JourneyProviderError("producer binding candidate differs from published tuple")
+        raise JourneyProviderError("producer binding differs from the exact R-24 candidate")
     stop = _regular(roots["pinokio"] / "pinokio/stop.js")
     committed_stop = _git(roots["pinokio"], "show", f"{selected['pinokio']}:pinokio/stop.js")
     if (_sha(stop) != binding.get("stop_sha256")
@@ -406,7 +406,7 @@ def execute_live_hook(*, run_root: Path, candidate_file: Path, config_file: Path
         "run_id": owner["run_id"],
         "status": "not-run",
         "runner": runner,
-        "candidate": PUBLISHED_CANDIDATE,
+        "candidate": R24_CANDIDATE,
         "provider": {"ref": provider.LIVE_PRODUCER_REF,
                      "sources": provider.LIVE_PRODUCER_FILES,
                      "interface": provider.LIVE_INTERFACE_FILES},

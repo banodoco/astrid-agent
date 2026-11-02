@@ -32,12 +32,12 @@ on:
       producer_ref:
         description: Immutable audited R-24 producer commit
         required: true
-        default: 13cb31104c8aae655d0ee04efdb9537aa111e340
+        default: 70636d1833164dad84a3551606b61ba2634565ba
         type: string
       confirmation:
-        description: Required literal R24_LIVE_CURRENT_TUPLE
+        description: Required literal R24_LIVE_PIN_MANIFEST_CANDIDATE
         required: true
-        default: R24_LIVE_CURRENT_TUPLE
+        default: R24_LIVE_PIN_MANIFEST_CANDIDATE
         type: string
       mode:
         description: Bounded action route; r24-only or backend
@@ -67,8 +67,8 @@ jobs:
     env:
       R24_CHECKOUTS: ${{ github.workspace }}
       R24_REQUESTED_RUNNER_REF: ${{ github.event_name == 'push' && github.sha || inputs.runner_ref }}
-      R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && '13cb31104c8aae655d0ee04efdb9537aa111e340' || inputs.producer_ref }}
-      R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_CURRENT_TUPLE' || inputs.confirmation }}
+      R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && '70636d1833164dad84a3551606b61ba2634565ba' || inputs.producer_ref }}
+      R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_PIN_MANIFEST_CANDIDATE' || inputs.confirmation }}
       R25_REQUESTED_MODE: ${{ github.event_name == 'push' && 'r24-only' || inputs.mode }}
       R25_REQUESTED_MODE_PRODUCER_REF: ${{ github.event_name == 'push' && '13cb31104c8aae655d0ee04efdb9537aa111e340' || inputs.mode_producer_ref }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
@@ -92,11 +92,11 @@ jobs:
             --output "$RUNNER_TEMP/r24-push-route-request.json"
           test "$(git rev-parse HEAD)" = "$R24_REQUESTED_RUNNER_REF"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-      - name: Checkout published App
+      - name: Checkout provisional candidate App
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
-          ref: 79f7e5397c044c4c97dc7e97b20ad96f787e5247
+          ref: a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a
           path: app
           fetch-depth: 1
           persist-credentials: false

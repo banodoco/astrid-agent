@@ -16,7 +16,7 @@ on:
         required: false
         type: string
       confirmation:
-        description: Set to R24_LIVE_CURRENT_TUPLE to select the R-24 Linux route
+        description: Set to R24_LIVE_PIN_MANIFEST_CANDIDATE to select the R-24 Linux route
         required: false
         type: string
   push:
@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   windows-journey:
-    if: ${{ inputs.confirmation != 'R24_LIVE_CURRENT_TUPLE' }}
+    if: ${{ inputs.confirmation != 'R24_LIVE_PIN_MANIFEST_CANDIDATE' }}
     name: Windows task host journey (${{ matrix.installer-shell }})
     runs-on: windows-latest
     timeout-minutes: 120
@@ -140,7 +140,7 @@ jobs:
           if-no-files-found: error
 
   r24-linux-live:
-    if: ${{ inputs.confirmation == 'R24_LIVE_CURRENT_TUPLE' }}
+    if: ${{ inputs.confirmation == 'R24_LIVE_PIN_MANIFEST_CANDIDATE' }}
     uses: ./.github/workflows/r24-linux-live.yml
     with:
       runner_ref: ${{ inputs.runner_ref }}
