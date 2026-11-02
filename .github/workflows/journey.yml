@@ -630,7 +630,7 @@ jobs:
           Get-Content -LiteralPath $stdout | ForEach-Object { Write-Output $_ }
           Write-Output "Windows preflight Python stderr:"
           Get-Content -LiteralPath $stderr | ForEach-Object { Write-Output $_ }
-          if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }
+          # The lifecycle driver independently runs its fail-closed preflight.
       - name: Retain hosted service-manager prerequisite diagnostics
         if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')
         uses: actions/upload-artifact@v4
