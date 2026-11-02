@@ -293,9 +293,14 @@ def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Pat
 def _require_port_free(port: int = PORT) -> None:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", port))
+            # The pinned headless entrypoint listens on every IPv4 interface.
+            # A loopback-only probe can pass while an existing non-loopback
+            # connection still makes the daemon's real bind fail.
+            probe.bind(("0.0.0.0", port))
     except OSError as exc:
-        raise MaterializerError(f"loopback port {port} is unavailable before pinokiod launch") from exc
+        raise MaterializerError(
+            f"all-interface port {port} is unavailable before pinokiod launch"
+        ) from exc
 
 
 def _loopback_endpoint(value: Any) -> str:
