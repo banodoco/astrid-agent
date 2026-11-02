@@ -1,0 +1,7 @@
+YAML parsed; non-installed jobs identical to #165
+bash -n passed for 10 installed-job shell bodies; 0 embedded Python blocks compiled
+Traceback (most recent call last):
+  File "/home/user/merge/ws/M-AG2/queue/running/AG-CI-H3-WHEEL-R10-CONTEXT-R1/agent/../validate_workflow.py", line 25, in <module>
+    assert count == 10 and python_count == 2
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

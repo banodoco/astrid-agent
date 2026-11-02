@@ -1,0 +1,2 @@
+YAML parsed; non-installed jobs identical to #165
+bash -n passed for 10 installed-job shell bodies; 2 embedded Python blocks compiled
