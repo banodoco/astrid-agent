@@ -480,3 +480,120 @@ def test_explicit_unready_target_names_working_recovery(monkeypatch):
     assert raised.value.code == "target_unreachable"
     assert "http://127.0.0.1:8123" in raised.value.fix
     assert raised.value.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_UNAVAILABLE'
+
+def _installed_audio_entry(tmp_path, monkeypatch, mode):
+    """Install a canonical test entry and real, isolated target preferences."""
+    import json
+    from astrid.core.generation import targets
+    from astrid.packs.runpod import target_selection
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    folder = tmp_path / 'entries' / '00-audio-test'
+    folder.mkdir(parents=True)
+    monkeypatch.setenv('VIBECOMFY_ENTRIES_DIR', str(folder.parent))
+    monkeypatch.setattr(targets, 'config_path', lambda: tmp_path / 'config.toml')
+    target_selection.save_runpod_preferences({'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
+        'image': 'worker@sha256:' + 'a' * 64})
+    workflow = VibeWorkflow('00-audio-test', WorkflowSource('00-audio-test'))
+    workflow.add_node('SaveAudio', _id='1', uid='sink', filename_prefix='audio')
+    workflow.register_input('filename_prefix', '1', 'filename_prefix', 'audio', type='STRING')
+    (folder / 'source.json').write_text(json.dumps({'nodes': [
+        {'id': 1, 'type': 'SaveAudio', 'inputs': [], 'widgets_values': ['audio']}], 'links': []}))
+    emit_bundle(workflow, folder / 'workflow.py', {'operation': 'authored'})
+    (folder / 'entry.json').write_text(json.dumps({'id': '00-audio-test', 'kind': 'audio',
+        'modes': [mode], 'bundle': 'workflow.py', 'binds': {}, 'defaults': {}, 'needs': []}))
+
+
+@pytest.mark.parametrize('mode', ['music', 'tts'])
+@pytest.mark.parametrize('explicit', [False, True])
+def test_audio_runpod_workflow_admits_existing_receipt_and_policy(mode, explicit, tmp_path, monkeypatch):
+    """Exercise the audio composition up to the fake Runtime and storage edges."""
+    import json
+    _installed_audio_entry(tmp_path, monkeypatch, mode)
+    client, _ = storage_client()
+    calls = []
+    def invoke(capability, **kwargs):
+        calls.append((capability, kwargs))
+        return InvocationResult(capability, 'executor', 'command', True,
+                                kernel_task_id='task-a', raw_result={'state': 'queued'})
+    client.invoke_result = invoke
+    receipt = tmp_path / 'admission.json'
+    result = GenerationFacade().audio(mode=mode, target='runpod', client=client, project='demo',
+        **({'entry': '00-audio-test'} if explicit else {}),
+        filename_prefix='test', wait=False, recovery_path=receipt, consent=('paid',), max_usd=2,
+        deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
+        preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+    assert result.kernel_task_id == 'task-a' and result.raw_result['state'] == 'queued'
+    assert len(calls) == 1
+    capability, kwargs = calls[0]
+    assert capability == 'vibecomfy.run' and kwargs['recovery_path'] == receipt and not kwargs['wait']
+    inputs = kwargs['inputs']
+    assert json.loads(inputs['target_policy'])['kind'] == 'runpod'
+    assert json.loads(inputs['workflow_inputs'])['filename_prefix'] == 'test'
+    assert inputs['generation_intent']['modality'] == 'audio'
+    assert inputs['generation_intent']['metadata'] == {'model': '00-audio-test', 'mode': mode}
+    assert all(inputs[name]['digest'].startswith('sha256:') for name in ('source', 'python', 'companion'))
+
+
+@pytest.mark.parametrize('selector', [{'mode': 'sfx'}, {'mode': 'sfx', 'model': 'hunyuan-video-foley'},
+                                      {'mode': 'sfx', 'entry': 'hunyuan-video-foley'}])
+def test_foley_runpod_refuses_before_policy_registry_or_admission(monkeypatch, selector):
+    import astrid.sdk as sdk
+    import astrid.sdk.generation as generation
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: pytest.fail('registry accessed'))
+    monkeypatch.setattr(generation, '_runpod_target_policy', lambda *args, **kwargs: pytest.fail('policy accessed'))
+    client = SimpleNamespace(invoke_result=Mock(side_effect=AssertionError('task admitted')),
+                             runpod_generation_owner=Mock())
+    with pytest.raises(AstridError) as raised:
+        GenerationFacade().audio(target='runpod', client=client, **selector)
+    envelope = raised.value.to_envelope()
+    assert envelope['task_id'] is None and envelope['status'] == 'blocked'
+    assert envelope['issues'][0]['code'] == 'foley_runpod_unsupported'
+    assert 'Fal' in envelope['issues'][0]['message']
+    assert envelope['fixes'][0]['argv'] == ['astrid', 'generate', 'describe', '--entry', 'hunyuan-video-foley']
+    client.invoke_result.assert_not_called()
+    assert not client.runpod_generation_owner.mock_calls
+
+@pytest.mark.parametrize('mode', ['music', 'tts'])
+def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, monkeypatch, real_runtime):
+    """Keep the real SDK, local Runtime admission and receipt writer in the route."""
+    import json
+    from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
+    from astrid.sdk import AstridClient
+    from astrid.sdk.remote import RemoteAstridClient
+    from astrid.sdk.workspace_client import WorkspaceClient
+    _installed_audio_entry(tmp_path, monkeypatch, mode)
+    daemon = real_runtime()
+    host = None
+    try:
+        transport = WorkspaceClient(daemon.endpoint, daemon.token)
+        client = AstridClient(remote=RemoteAstridClient(transport))
+        project = client.projects.create(name='Audio receipt', slug='audio-receipt', idempotency_key='project')
+        assert project.ok
+        project_id = project.data['project_id']
+        packs = Path(__file__).resolve().parents[2] / 'astrid' / 'packs'
+        host = GenericPackHost(pack_roots=[packs / 'vibecomfy', packs / 'runpod'],
+            client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token),
+            credential_source={}, attempt_base=tmp_path / 'attempts')
+        host.discover()
+        host.preflight()
+        host.register()
+        receipt = tmp_path / 'receipt.json'
+        args = dict(entry='00-audio-test', mode=mode, target='runpod', client=client, project=project_id,
+                    filename_prefix='test', wait=False, recovery_path=receipt, consent=('paid',), max_usd=2,
+                    deadline='2099-01-01T00:00:00Z', offer_digest='sha256:' + 'b' * 64,
+                    preparation_seconds=60, execution_seconds=60, idle_seconds=1800)
+        result = GenerationFacade().audio(**args)
+        saved = json.loads(receipt.read_text())
+        assert result.ok and result.kernel_task_id == saved['locator']['task_id']
+        assert saved['metadata']['capability_id'] == 'vibecomfy.run'
+        task = client.tasks.show(result.kernel_task_id)
+        assert task.ok and task.data['state'] == 'queued'
+        assert not task.data.get('execution_binding')
+        resumed = GenerationFacade().audio(**args, resume=True)
+        assert resumed.ok and resumed.kernel_task_id == result.kernel_task_id
+    finally:
+        if host is not None:
+            host.shutdown()
+        daemon.stop()
