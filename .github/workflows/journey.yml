@@ -691,7 +691,8 @@ jobs:
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt',
             'windows-bootstrap-environment.log',
-            'runtime-owner-processes.json', 'runtime-service-runtime.log',
+            'runtime-owner-processes.json', 'runtime-owner-assertion.json',
+            'runtime-service-runtime.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'

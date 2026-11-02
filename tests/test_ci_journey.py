@@ -1653,6 +1653,25 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
         assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
 
 
+def test_retain_named_evidence_stages_nested_release0_owner_assertion_only(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    release0 = evidence / "release0"
+    release0.mkdir(parents=True)
+    snapshot = b'{"capture":"release0-write-once"}\n'
+    (release0 / journey.OWNER_ASSERTION_SNAPSHOT).write_bytes(snapshot)
+    (release0 / "unapproved-nested.json").write_text("must not stage", encoding="utf-8")
+    # A top-level file could be produced by later diagnostics. The nested R0
+    # snapshot remains the artifact-boundary source for this release leg.
+    (evidence / journey.OWNER_ASSERTION_SNAPSHOT).write_text("later diagnostic", encoding="utf-8")
+    (evidence / "unapproved-top-level.json").write_text("must not stage", encoding="utf-8")
+
+    journey.retain_named_evidence(evidence, "before-cleanup")
+
+    staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
+    assert (staged / journey.OWNER_ASSERTION_SNAPSHOT).read_bytes() == snapshot
+    assert {path.name for path in staged.iterdir()} == {journey.OWNER_ASSERTION_SNAPSHOT}
+
+
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
 def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
     from scripts import journey_version_jumps as jumps

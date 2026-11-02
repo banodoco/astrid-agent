@@ -585,7 +585,15 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
         return
-    for source in sorted(evidence.iterdir(), key=lambda path: path.name):
+    sources = sorted(evidence.iterdir(), key=lambda path: path.name)
+    # The Release-0 assertion captures its write-once failure snapshot below
+    # the leg's evidence root. Prefer that bounded source over a same-named
+    # top-level file so later leg diagnostics cannot replace the R0 record.
+    release0_assertion = evidence / "release0" / OWNER_ASSERTION_SNAPSHOT
+    if release0_assertion.is_file() and not release0_assertion.is_symlink():
+        sources = [source for source in sources if source.name != OWNER_ASSERTION_SNAPSHOT]
+        sources.append(release0_assertion)
+    for source in sources:
         name = source.name
         if (name not in JOURNEY_EVIDENCE_NAMES and
                 not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
