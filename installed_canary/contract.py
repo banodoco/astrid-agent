@@ -193,7 +193,8 @@ def _validate(tuple_path, task_dir, work_dir, *, fresh=True):
     discovery = read(discovery_path)
     credential = exact_path(discovery['credential_file'], kind='file')
     endpoint = urlsplit(discovery['endpoint'])
-    require(credential.is_relative_to(install / 'data/runtime')
+    # Runtime's canonical credential location is <data root>/credentials (astrid_runtime/paths.py; bootstrap.py publishes it).
+    require(credential.is_relative_to(install / 'data/credentials')
             and endpoint.scheme in {'http', 'https'} and endpoint.hostname in {'127.0.0.1', '::1', 'localhost'}
             and endpoint.username is None and endpoint.password is None
             and isinstance(discovery.get('active_realm'), str) and discovery['active_realm'].strip(),

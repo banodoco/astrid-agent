@@ -85,7 +85,7 @@ def run(ctx):
         worker['profile_digest'] = _digest({k:v for k,v in worker.items() if k != 'profile_digest'})
         write_json(worker_path, worker)
         credential_path = exact_path(discovery['credential_file'], kind='file')
-        require(credential_path.is_relative_to(ctx.install / 'data/runtime'),
+        require(credential_path.is_relative_to(ctx.install / 'data/credentials'),
                 'credentials', credential_path, 'test-owned credential required')
         owner = WorkspaceClient(discovery['endpoint'], credential_path.read_text().strip())
         def stop_on_failure():

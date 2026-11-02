@@ -78,7 +78,7 @@ class Fixture:
         save(self.version / 'profile.json', {'worker_profile': str(self.worker), 'service_declaration': str(services),
              'source_checkout': str(self.purelib), 'runtime_environment': str(self.version / 'py')})
         save(self.work / 'install/program/install.json', {'data_root': str(self.work / 'install/data')})
-        credential = self.work / 'install/data/runtime/credentials/owner.token'
+        credential = self.work / 'install/data/credentials/astrid.json'
         credential.parent.mkdir(parents=True); credential.write_text('fake; never read by test controller')
         save(self.work / 'install/data/runtime/discovery.json', {'active_realm': 'fake-realm',
              'endpoint': 'http://127.0.0.1:1', 'credential_file': str(credential)})
@@ -457,6 +457,14 @@ class CanaryTests(unittest.TestCase):
         path = self.f.work / 'install/data/runtime/discovery.json'; value = read(path)
         foreign = self.f.root / 'foreign.token'; foreign.write_text('unread private fixture')
         value['credential_file'] = str(foreign); save(path, value)
+        self.reject('selected credentials')
+
+    def test_credential_under_runtime_support_refused(self):
+        # Only Runtime's canonical <data>/credentials location is accepted; a look-alike under data/runtime is not.
+        path = self.f.work / 'install/data/runtime/discovery.json'; value = read(path)
+        other = self.f.work / 'install/data/runtime/credentials/astrid.json'
+        other.parent.mkdir(parents=True, exist_ok=True); other.write_text('unread private fixture')
+        value['credential_file'] = str(other); save(path, value)
         self.reject('selected credentials')
 
     def test_unsafe_worker_environment_refused(self):
