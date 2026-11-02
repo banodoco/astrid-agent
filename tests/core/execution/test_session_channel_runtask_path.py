@@ -19,6 +19,7 @@ import yaml
 from astrid.core.execution import generic_host as gh
 from astrid.core.execution import session_channel as session_channel_module
 from astrid.core.execution.generic_host import GenericPackHost
+from tests.core.execution.session_test_profiles import register_test_profile
 from tests.core.execution.test_generic_host_actions_v3 import pack, task_for
 
 _REQUEST_NAME = ".astrid-capability-request.json"
@@ -81,6 +82,10 @@ def _host(tmp_path, *, code, session=None):
     host = GenericPackHost(pack_roots=[root], client=runtime)
     host.discover()
     host.register()
+    # Test-only instance registration so run_task's profile lookup passes; the
+    # invoke edge is spied in these tests and must never be reached here.
+    manifest = yaml.safe_load((root / "pack.yaml").read_text(encoding="utf-8"))
+    register_test_profile(host, manifest["id"], lambda *a, **k: {"result": {"success": True}})
     return host, runtime
 
 

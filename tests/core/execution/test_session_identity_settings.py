@@ -1,8 +1,9 @@
 """Host-enforced settings identity (M2-11a): the worker's settings are never trusted.
 
-(c) The host recomputes settings from its own inputs. A worker-submitted settings
-mapping that differs is refused before any invoke, and a matching one reaches the
-invoke path exactly once with the HOST-compiled settings object.
+(a) A worker request carrying a "settings" field, or any key outside the inputs
+contract, is refused before any invoke. (b) invoke receives exactly the host compile
+of the inputs. (c) Inputs that fail host compile or validation are refused before
+invoke. The earlier settings-comparison guarantee was replaced by these (M-GPU, 09:34Z).
 """
 from __future__ import annotations
 
@@ -38,13 +39,52 @@ def _adapter(stub: _Stub, tmp_path: Path):
     return adapter, inputs
 
 
-def test_mismatched_worker_settings_are_refused_before_any_invoke(tmp_path: Path) -> None:
+def test_mismatched_worker_settings_are_refused_before_any_invoke_inputs(tmp_path: Path) -> None:
+    """(a) A worker request carrying a "settings" field, or any key outside the
+    inputs contract, is refused by the broker before the adapter or invoke runs."""
+    from astrid.core.execution.session_channel import SESSION_CHANNEL_VERSION, SessionChannelBroker
+    from astrid.core.execution.generic_host import _send_activation_frame
+    import socket
+
     stub = _Stub()
     adapter, inputs = _adapter(stub, tmp_path)
-    forged = dict(compile_host_settings(inputs))
-    forged["prompt"] = "worker-chosen prompt"
-    with pytest.raises(ValueError, match="differ from the host-compiled"):
-        adapter.validate_settings(forged)
+    forged_settings = dict(compile_host_settings(inputs))
+    forged_settings["prompt"] = "worker-chosen prompt"
+    parent, child = socket.socketpair()
+    try:
+        broker = SessionChannelBroker("run-identity-1", adapter, parent, admission_token=object())
+        _send_activation_frame(child, {
+            "version": SESSION_CHANNEL_VERSION, "run_id": "run-identity-1", "seq": 1, "op": "submit",
+            "args": {"inputs": dict(inputs), "settings": forged_settings, "timeout_seconds": 5.0},
+        })
+        response = broker.serve_one()
+    finally:
+        parent.close()
+        child.close()
+    assert response["ok"] is False
+    assert response["error"]["code"] == "protocol"
+    assert stub.invocations == []
+
+
+def test_invoke_receives_exactly_host_compiled_inputs(tmp_path: Path) -> None:
+    """(b) invoke gets the host compile of the inputs, never a worker-shaped object."""
+    stub = _Stub()
+    adapter, inputs = _adapter(stub, tmp_path)
+    worker_inputs = dict(inputs)
+    adapter.submit(worker_inputs, timeout_seconds=5.0)
+    assert len(stub.invocations) == 1
+    invoked = stub.invocations[0]["settings"]
+    assert invoked == compile_host_settings(inputs)
+    assert invoked is not worker_inputs
+
+
+def test_inputs_failing_host_compile_are_refused_before_invoke(tmp_path: Path) -> None:
+    """(c) Inputs that fail host compile or validation are refused before invoke."""
+    stub = _Stub()
+    adapter, inputs = _adapter(stub, tmp_path)
+    bad = {**inputs, "resolution": "bogus"}
+    with pytest.raises(ValueError, match="resolution"):
+        adapter.submit(bad, timeout_seconds=5.0)
     assert stub.invocations == []
 
 

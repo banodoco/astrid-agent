@@ -22,8 +22,9 @@ import pytest
 import yaml
 
 from astrid.core.execution import session_channel as session_channel_module
-from astrid.core.execution.generic_host import GenericPackHost, HostError, ManagedToolProfile
+from astrid.core.execution.generic_host import GenericPackHost, HostError
 from astrid.core.execution.guards import DEFAULT_DEADLINE_SECONDS, ExecutionGuardPolicy
+from tests.core.execution.session_test_profiles import register_test_profile
 from tests.test_generic_host import FakeRuntime as _CurrentFakeRuntime
 
 
@@ -100,16 +101,9 @@ def _test_pack(tmp_path):
     return root
 
 
-def _probe_compile(inputs):
-    """Test-only host compile for the probe tool: refuses inputs without a prompt."""
-    if not isinstance(inputs, dict) or not inputs.get("prompt"):
-        raise ValueError("prompt is required")
-    return {"prompt": str(inputs["prompt"]), "message": str(inputs.get("message", ""))}
-
-
 def _register_probe_profile(host, fake_invoke):
-    """Instance-level, test-only host registration. Packs can never reach this path."""
-    host._managed_tool_profiles[PACK_ID] = ManagedToolProfile(compile_settings=_probe_compile, invoke=fake_invoke)
+    """Instance-level, test-only registration via the shared helper."""
+    register_test_profile(host, PACK_ID, fake_invoke)
 
 
 def _host(tmp_path, monkeypatch, *, policy):
@@ -170,7 +164,11 @@ def test_declared_session_pack_runs_under_default_policy_with_full_deadline(tmp_
     assert isinstance(report, dict)
     assert report["session_type"] == "SessionClient"
     assert report["refused_code"] is None
-    assert report["evidence"] == {"result": {"success": True}, "process_id": 4242, "returncode": 0}
+    assert report["evidence"] == {
+            "result": {"success": True}, "process_id": 4242, "returncode": 0,
+            # Host-compiled settings echoed back (M2-11a P2/P3 contract).
+            "compiled_settings": {"prompt": "a red fox", "message": "hello"},
+        }
 
     # 2. The worker's timeout is positive, within the remaining run budget, and above the old 900 s cap.
     timeout = report["timeout_seconds"]
@@ -205,7 +203,6 @@ def test_pack_declaring_an_unregistered_managed_tool_is_refused_before_the_chann
     # Other profiles exist (wan2gp and the probe); the unknown tool must still be refused.
     assert "wan2gp" in host._managed_tool_profiles and PACK_ID in host._managed_tool_profiles
     host._managed_tool_profiles.pop(PACK_ID)
-    _task(runtime, "unknown-tool", {"message": "hi", "prompt": "a prompt"})
     with pytest.raises(HostError, match="no registered host profile"):
-        host.run_task("unknown-tool", runtime.tasks["unknown-tool"])
+        host.run_task(_task(runtime, "unknown-tool", {"message": "hi", "prompt": "a prompt"}), lease_token="lease")
     assert opened == [] and calls == []

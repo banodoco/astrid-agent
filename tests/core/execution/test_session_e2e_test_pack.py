@@ -21,8 +21,9 @@ import yaml
 from astrid.core.execution import session_channel as session_channel_module
 from astrid.core.execution.guards import ExecutionGuardPolicy
 from astrid.core.execution.executor.runner import SESSION_ACTION_TIMEOUT_SECONDS
-from astrid.core.execution.generic_host import GenericPackHost, ManagedToolProfile
+from astrid.core.execution.generic_host import GenericPackHost
 from astrid.packs.wan2gp.src.driver import compile_host_settings
+from tests.core.execution.session_test_profiles import register_test_profile
 from tests.test_generic_host import FakeRuntime as _CurrentFakeRuntime
 
 
@@ -119,8 +120,7 @@ def _host_and_definition(tmp_path, monkeypatch, *, policy=None):
     # Host edge only: the real adapter calls this, nothing above it is replaced.
     monkeypatch.setattr(host, "invoke_wan_session", fake_invoke_wan_session)
     # Host-owned profile for this managed tool (test wiring; packs cannot add one).
-    host._managed_tool_profiles[PACK_ID] = ManagedToolProfile(
-        compile_settings=compile_host_settings, invoke=fake_invoke_wan_session)
+    register_test_profile(host, PACK_ID, fake_invoke_wan_session, compile_settings=compile_host_settings)
     return host, runtime, calls
 
 
