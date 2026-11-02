@@ -1,0 +1,172 @@
+{
+  "task": "UPD-R0-STOPPED-JOB-R1",
+  "created_at_utc": "2026-11-02T21:20:29Z",
+  "status": "AWAITING_EVIDENCE",
+  "disposition": "pushed test-only replacement candidate; protected re-review and native macOS proof remain required; not a HANDOFF or approval",
+  "repository": "banodoco/astrid-agent",
+  "branch": "lane/M-R1FIX/UPD-R0-STOPPED-JOB-R1",
+  "base": {
+    "sha": "efcb3297ab16a3ec47b30b02154089b372293544",
+    "subject": "test(installer): cover stopped R0 recovery handoff",
+    "role": "reviewed predecessor candidate"
+  },
+  "head": {
+    "sha": "bf87469258c19fbc25167b6011f1fa53defbad90",
+    "parent": "efcb3297ab16a3ec47b30b02154089b372293544",
+    "subject": "test(installer): prove stopped launchd bootout ordering"
+  },
+  "lineage": {
+    "provisional_parent": "f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9",
+    "predecessor_product_commit": "9835fa7aa352e707f5e1e8ab9734dc830fe2d757",
+    "base_is_ancestor_of_head": true,
+    "provisional_parent_is_ancestor_of_head": true
+  },
+  "tuple": {
+    "agent_candidate": "bf87469258c19fbc25167b6011f1fa53defbad90",
+    "runtime_source_commit": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "runtime_lock_source_commit": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "packaged_runtime_lock_source_commit": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "runtime_locks_preserved_from_f4f4fc99": true,
+    "proof_manifest_or_hosted_proof": "not produced by this task"
+  },
+  "diagnosis": {
+    "product_ordering": "correct; no product edit needed",
+    "source_trace": "Backend.stop re-admits then calls service.bootout_admitted_launchd at astrid/installer/backend.py:854-858. The selected Darwin manager stop is inside stop_selected_manager at line 894 and that callback is handed only to Runtime down at lines 911-914.",
+    "prior_test_gap": "the stopped recovery fixture asserted one bootout and restoration but did not put bootout, C1 entry, and manager stop on one ordered timeline",
+    "resolution": "test-only instrumentation of the existing fresh stopped/no-owner recovery test"
+  },
+  "ordering_proof": {
+    "test": "tests/test_installer_launchd_stop_handoff.py::test_fresh_recovery_boots_out_matching_stopped_r0_without_owner_and_restores",
+    "scenario": "retained exact R0 definition, loaded/not-running launchd job, fresh Runtime census with no owner, controller interruption before original bootout, then fresh recovery",
+    "required_event_chain": [
+      "launchctl-bootout",
+      "fresh-c1-down-enter",
+      "fresh-c1-manager-stop",
+      "fresh-c1-down-return"
+    ],
+    "assertion": "strictly ordered with events.index, plus manager_stops == ['stop']",
+    "meaning": "the stopped case proves bootout before C1 begins and before C1 invokes the selected no-owner manager-stop callback"
+  },
+  "scope": {
+    "r1_diff_from_base": [
+      "tests/test_installer_launchd_stop_handoff.py"
+    ],
+    "full_candidate_diff_from_f4f4fc99": [
+      "astrid/installer/backend.py",
+      "tests/test_installer_launchd_stop_handoff.py",
+      "tests/test_installer_launchd_stop_refusals.py"
+    ],
+    "r1_product_changes": false,
+    "bridge_contract_changed": false,
+    "runtime_pin_changed": false
+  },
+  "focused_proof_commands": [
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-STOPPED-JOB-R1/tmp /home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-STOPPED-JOB-R1/venv/bin/python -m pytest -q -o addopts= tests/test_installer_launchd_stop_handoff.py::test_fresh_recovery_boots_out_matching_stopped_r0_without_owner_and_restores --tb=short",
+      "inner_exit": 0,
+      "result": "1 passed in 2.06s",
+      "coverage": "new explicit stopped/no-owner bootout-before-C1-entry-before-manager-stop ordering assertion and retained-plist restore"
+    },
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-STOPPED-JOB-R1/tmp /home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-STOPPED-JOB-R1/venv/bin/python -m pytest -q -o addopts= tests/test_installer_launchd_stop_handoff.py::test_fresh_recovery_boots_out_matching_stopped_r0_without_owner_and_restores tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_accepts_matching_stopped_job_without_runtime_owner tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_stopped_job_with_changed_definition tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_stopped_job_with_live_non_r0_owner tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_same_definition_with_replacement_live_identity tests/test_installer_launchd_stop_refusals.py::test_r0_post_bootout_reappearance_refuses_the_replacement_pid --tb=short",
+      "inner_exit": 0,
+      "result": "6 passed in 2.82s",
+      "coverage": "ordering regression; stopped recovery admission; changed-definition refusal; live non-R0 owner refusal; retained-live-identity replacement refusal; post-bootout reappearance refusal"
+    },
+    {
+      "command": "/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-STOPPED-JOB-R1/venv/bin/python -m py_compile astrid/installer/backend.py tests/test_installer_launchd_stop_handoff.py tests/test_installer_launchd_stop_refusals.py",
+      "inner_exit": 0,
+      "result": "compiled successfully"
+    }
+  ],
+  "non_proof_development_attempts": [
+    {
+      "command": "initial named stopped-test run in the new task-local venv before its source/runtime site paths were registered",
+      "inner_exit": 1,
+      "result": "fixture child interpreter could not import the checkout while Backend.run deliberately strips PYTHONPATH; this was an environment setup failure before the new assertion executed",
+      "resolution": "registered only the task checkout and retained predecessor runtime site-packages through the task-local venv .pth, then reran green"
+    },
+    {
+      "command": "task-local editable pip install --no-deps --no-build-isolation",
+      "inner_exit": 2,
+      "result": "not used for proof; build backend unavailable because the fresh venv lacked setuptools",
+      "resolution": "not retried because the task-local .pth setup avoided a source-tree install and the focused tests then passed"
+    }
+  ],
+  "quality_commands": [
+    {
+      "command": "git diff --check efcb3297ab16a3ec47b30b02154089b372293544..HEAD",
+      "inner_exit": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor efcb3297ab16a3ec47b30b02154089b372293544 HEAD",
+      "inner_exit": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9 HEAD",
+      "inner_exit": 0
+    },
+    {
+      "command": "git diff --exit-code f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9..HEAD -- runtime.lock.json astrid/resources/runtime.lock.json",
+      "inner_exit": 0,
+      "result": "both Runtime lock copies unchanged"
+    },
+    {
+      "command": "git diff --name-only efcb3297ab16a3ec47b30b02154089b372293544..HEAD",
+      "inner_exit": 0,
+      "result": "only tests/test_installer_launchd_stop_handoff.py"
+    },
+    {
+      "command": "git status --short",
+      "inner_exit": 0,
+      "result": "clean worktree"
+    },
+    {
+      "command": "git ls-remote --heads origin lane/M-R1FIX/UPD-R0-STOPPED-JOB-R1",
+      "inner_exit": 0,
+      "result": "bf87469258c19fbc25167b6011f1fa53defbad90 refs/heads/lane/M-R1FIX/UPD-R0-STOPPED-JOB-R1"
+    }
+  ],
+  "push": {
+    "remote": "origin",
+    "ref": "refs/heads/lane/M-R1FIX/UPD-R0-STOPPED-JOB-R1",
+    "wip_head_before_long_steps": "efcb3297ab16a3ec47b30b02154089b372293544",
+    "final_head": "bf87469258c19fbc25167b6011f1fa53defbad90",
+    "inner_exit": 0,
+    "force_push": false
+  },
+  "subworker": {
+    "requested": true,
+    "mode": "read_only",
+    "report": "sub/1/REPORT.md",
+    "exit": 0,
+    "finding": "product order is correct and the test requires bootout < C1 entry < C1 manager stop < C1 return",
+    "product_or_test_source_writes": false
+  },
+  "hashes": {
+    "full_candidate_patch_from_f4f4fc99_sha256": "fc9b1ed3eb40a94fce909a853815182f48b541d6c9c4efe72f421d044a4f8872",
+    "r1_proof_patch_from_efcb3297_sha256": "f8c904a39dcf0c27335ff9a9685b037c0b3275cce0c0d0f8628f9288c225a15d",
+    "astrid_installer_backend_py_sha256": "952d38275aaac18c128f447445d01f334fb25c5f9381f49585b897607d4e5d9f",
+    "test_installer_launchd_stop_handoff_py_sha256": "3563e13f2f50e7df9da9c56b4a2fa24bcd7e74964af11b4b3eea2e093d0c1f85",
+    "test_installer_launchd_stop_refusals_py_sha256": "0c3ed53f23ae329ca9f643b14ef6fc8e803b004135e24195f00105f7f0154e2b",
+    "runtime_lock_json_sha256_base_and_head": "480d503612cc1041b968951510523413a77d6d1504d44163f02f8c49b69f74a5",
+    "packaged_runtime_lock_json_sha256_base_and_head": "480d503612cc1041b968951510523413a77d6d1504d44163f02f8c49b69f74a5",
+    "predecessor_report_sha256": "e455bf5916c03f6c606e07e69dda2d53df463971f0d5dca5e419407f0732a9a7",
+    "predecessor_receipt_sha256": "0e7c77e8a072b232e635c791269f192bb994c49382ed8ed00372e2c0b609e60c",
+    "subworker_report_sha256": "01752668b8efd8428b9ef33c0c9fbe66377055b9ac63677f44c8a5e2afd7e38c"
+  },
+  "limitations": [
+    "No full suite, protected exact-head re-review, proof-only App manifest, hosted journey, or native macOS launchctl run was performed or claimed.",
+    "Focused tests model launchctl and execute the pinned Runtime handoff; native launchd timing/generation behavior remains for protected native proof.",
+    "The literal M-AG review report path was unavailable locally; M-AG status supplied the exact missing-ordering finding, which this candidate addresses.",
+    "The task-local venv reuses only the retained predecessor runtime site-packages for the pinned Runtime test harness; Runtime source, bridge contract, App, and both lock files were untouched."
+  ],
+  "claims_not_made": [
+    "protected approval",
+    "integration handoff",
+    "native macOS proof",
+    "hosted proof",
+    "full-suite acceptance",
+    "published Runtime or App manifest"
+  ]
+}
