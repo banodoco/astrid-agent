@@ -860,6 +860,54 @@ def test_windows_diagnostics_workflow_retains_launch_and_original_command():
     assert "if: always()" in upload and "journey-manager-${{ matrix.job_id }}" in upload
 
 
+@pytest.mark.parametrize("failure", ["nonzero", "exception"])
+def test_windows_diagnostics_failure_is_recorded_and_driver_fails_closed(tmp_path, monkeypatch, failure):
+    from scripts import ci_windows_journey as windows
+
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=0, stdout='{"PSVersion":"5.1"}', stderr="origin stderr")
+        if len(calls) == 2 and failure == "exception":
+            raise OSError("launch exception sentinel")
+        return SimpleNamespace(returncode=7, stdout=b'{"status":"error","error":"query failed"}',
+                               stderr=b"query stderr")
+
+    monkeypatch.setattr(windows.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+        windows.scheduled_task_diagnostics(leg="release0-to-release1")
+    record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    assert record["origin"]["stderr"] == "origin stderr"
+    assert record["query"]["classification"] == "error"
+    if failure == "exception":
+        assert "OSError: launch exception sentinel" in record["query"]["process_error"]
+    else:
+        assert record["query"]["exit_code"] == 7 and record["query"]["stderr"] == "query stderr"
+
+    workflow = (journey.ROOT / ".github/workflows/journey.yml").read_text()
+    step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split(
+        "      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[0]
+    assert "if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }" not in step
+    assert "Get-Content -LiteralPath $stderr" in step
+    driver = workflow.split("      - name: Run the matrix-owned lifecycle driver\n", 1)[1].split(
+        "      - name:", 1)[0]
+    assert "        if:" not in driver and "agent/scripts/ci_journey.py" in driver
+    assert workflow.index("      - name: Freeze and validate candidate inputs") < workflow.index(
+        "      - name: Establish Linux user service manager") < workflow.index(
+        "      - name: Run the matrix-owned lifecycle driver")
+
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+        journey.release1_manager_prerequisite(
+            SimpleNamespace(job_id="direct-windows", mode="direct", leg="release0-to-release1"), tmp_path)
+    preflight = json.loads((tmp_path / "preflight-scheduled-task-release0-to-release1.json").read_text())
+    assert preflight["status"] == "error" and preflight["exit_code"] == 7
+    assert preflight["argv"] == calls[2] and preflight["stderr"] == "query stderr"
+
+
 @pytest.mark.parametrize("module_source, expected", [
     ("raise ImportError('import sentinel')\n", "ImportError: import sentinel"),
     ("def scheduled_task_diagnostics(*, leg):\n    print('preflight leg:', leg, flush=True)\n    print('partial stdout', flush=True)\n    raise RuntimeError('preflight sentinel')\n", "RuntimeError: preflight sentinel"),

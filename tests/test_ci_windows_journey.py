@@ -683,7 +683,7 @@ def test_direct_windows_workflow_preflight_invocation(tmp_path, monkeypatch, cap
     step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split(
         "      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[0]
     assert "JOURNEY_LEG: ${{ matrix.leg }}" in step
-    assert "if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }" in step
+    assert "if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }" not in step
     code = step.split('          $code = "', 1)[1].split('"\n', 1)[0]
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("JOURNEY_LEG", "release0-to-release1")
