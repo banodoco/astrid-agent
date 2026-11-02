@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -34,7 +35,7 @@ def _git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
 
 
-def _fixture_repo(root: Path, *, schema_version: int = 2) -> str:
+def _fixture_repo(root: Path, *, schema_version: int = 2, pack_id: str = "demo") -> str:
     root.mkdir()
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "fixture@example.test")
@@ -43,14 +44,14 @@ def _fixture_repo(root: Path, *, schema_version: int = 2) -> str:
     executor = pack / "executors" / "echo"
     executor.mkdir(parents=True)
     (pack / "pack.yaml").write_text(
-        f"schema_version: {schema_version}\nid: demo\nname: Demo Pack\nversion: 1.0.0\n"
+        f"schema_version: {schema_version}\nid: {pack_id}\nname: Demo Pack\nversion: 1.0.0\n"
         "capabilities: [testing]\n",
         encoding="utf-8",
     )
     (executor / "executor.yaml").write_text(
         json.dumps(
             {
-                "id": "demo.echo",
+                "id": f"{pack_id}.echo",
                 "name": "Demo Echo",
                 "kind": "external",
                 "version": "1.0",
@@ -195,6 +196,42 @@ def test_local_git_v2_source_is_staged_once_and_shared(monkeypatch: pytest.Monke
     )
     assert restored["ok"] is True
     assert active_source_inventory(state_path=state_path).sources[0].revision == revision
+
+
+def test_missing_managed_pack_is_isolated_from_source_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    missing_repo = tmp_path / "missing-repository"
+    missing_revision = _fixture_repo(missing_repo, pack_id="missing")
+    available_repo = tmp_path / "available-repository"
+    available_revision = _fixture_repo(available_repo, pack_id="available")
+    state_path = tmp_path / "state" / "pack-sources.json"
+    data_root = tmp_path / "data"
+    monkeypatch.setenv("ASTRID_SOURCE_STATE", str(state_path))
+    declarations = (
+        SourceDeclaration.from_mapping(
+            {"pack_id": "missing", "repository": str(missing_repo), "revision": missing_revision}
+        ),
+        SourceDeclaration.from_mapping(
+            {"pack_id": "available", "repository": str(available_repo), "revision": available_revision}
+        ),
+    )
+    provision(declarations, state_path=state_path, data_root=data_root)
+    installed = active_source_inventory(state_path=state_path)
+    missing_root = next(item.pack_root for item in installed.sources if item.pack_id == "missing")
+    available_root = next(item.pack_root for item in installed.sources if item.pack_id == "available")
+    shutil.rmtree(missing_root)
+
+    with caplog.at_level("WARNING", logger="astrid.core.pack.source_setup"):
+        inventory = active_source_inventory(state_path=state_path)
+    assert [item.pack_id for item in inventory.sources] == ["available"]
+    assert inventory.roots == (available_root,)
+    assert "managed pack 'missing' is unavailable because its folder is missing" in caplog.text
+    discovered = discover_pack_metadata()
+    discovered_ids = {item.id for item in discovered}
+    assert "available" in discovered_ids
+    assert "missing" not in discovered_ids
+    assert "rendering" in discovered_ids
 
 
 def test_managed_source_requires_strict_v2_manifest(tmp_path: Path) -> None:

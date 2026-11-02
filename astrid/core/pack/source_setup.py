@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -27,6 +28,7 @@ from astrid.core.pack.canonical import (
 )
 
 SOURCE_STATE_VERSION = 1
+_LOGGER = logging.getLogger(__name__)
 DEFAULT_PROFILE = "default"
 SOURCE_DECLARATIONS_ENV = "ASTRID_SOURCE_DECLARATIONS"
 SOURCE_STATE_ENV = "ASTRID_SOURCE_STATE"
@@ -416,7 +418,15 @@ def active_sources(*, state_path: str | Path | None = None, verify: bool = True)
                 source.pack_id, source.repository, source.revision,
                 source.pack_subpath, source.manifest_sha256, source.tree_sha256,
             )
-            source = _validate_checkout(next_parent_checkout(source.pack_root, declaration), declaration)
+            checkout = next_parent_checkout(source.pack_root, declaration)
+            if not source.pack_root.exists() and not source.pack_root.is_symlink():
+                _LOGGER.warning(
+                    "managed pack %r is unavailable because its folder is missing: %s",
+                    pack_id,
+                    source.pack_root,
+                )
+                continue
+            source = _validate_checkout(checkout, declaration)
         result.append(source)
     return tuple(result)
 
