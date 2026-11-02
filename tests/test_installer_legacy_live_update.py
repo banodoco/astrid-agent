@@ -124,6 +124,29 @@ def test_legacy_exception_requires_update_context(legacy):
         backend.source_checkout_ownership(data, current(root))
 
 
+@pytest.mark.parametrize("target, expected", [(1, 0), (2, 1)])
+def test_cli_admits_only_reviewed_update_target(legacy, tmp_path, monkeypatch, target, expected):
+    from unittest.mock import Mock
+    from astrid.installer import cli
+    from astrid.installer.service import Service
+    from runtime_protocol import platform
+
+    root, data, _, _, _ = legacy
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(Service, "recorded", lambda self: {})
+    monkeypatch.setattr(Backend, "preflight_stop", lambda *args: None)
+    monkeypatch.setattr(update_job, "sweep_owned_jobs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "validate_manifest", lambda manifest: manifest)
+    installer = Mock()
+    monkeypatch.setattr(cli, "Installer", Mock(return_value=installer))
+    manifest = tmp_path / "target.json"
+    write_json(manifest, {"release": target})
+    assert cli.main(["--update", "--root", str(root), "--data-root", str(data),
+                     "--manifest", str(manifest)]) == expected
+    assert installer.run.call_count == (1 if target == 1 else 0)
+
+
 @pytest.mark.parametrize("request_identity", [None, {"release": 0, "managed_by": None}])
 def test_native_acceptance_and_worker_binding_revalidate(legacy, tmp_path, monkeypatch, request_identity):
     from tests.test_installer_update_job import _fixture
@@ -168,7 +191,7 @@ def test_frozen_policy_matches_reviewed_release_manifest():
     assert policy["python_version"] == "3.11.13"
 
 
-def test_qualification_and_live_admission_agree(legacy, monkeypatch):
+def test_qualification_and_live_admission_use_same_classifier(legacy, monkeypatch):
     from scripts.verify_installed import legacy_identity_observation
 
     root, data, health, discovery, contract = legacy
@@ -182,15 +205,17 @@ def test_qualification_and_live_admission_agree(legacy, monkeypatch):
         return result
 
     monkeypatch.setattr(legacy_identity, "classify", spy)
+    # The verifier imports the same classifier; spy on its bound name too.
+    monkeypatch.setattr("scripts.verify_installed.classify", spy)
     raw = (old.root / "manifest.json").read_bytes()
     record = json.loads((old.root / "version.json").read_text())
     assert legacy_identity.admitted(old, health, discovery, program_root=root)
     assert legacy_identity_observation(health, discovery, record, json.loads(raw), raw,
                                        old.root / "version.json", contract)[0]
-    assert calls == [True]
+    assert calls == [True, True]
     assert gate(root, data)._legacy_identity_admitted
     update_job._probe_selected_identity(data, old, root, target_release=1)
-    assert calls == [True, True, True]
+    assert calls == [True, True, True, True]
     health["schema_digest"] = "sha256:wrong"
     assert not legacy_identity.admitted(old, health, discovery, program_root=root)
     assert not legacy_identity_observation(health, discovery, record, json.loads(raw), raw,
@@ -203,13 +228,14 @@ def test_missing_shipped_table_fails_closed(legacy, monkeypatch):
     assert not legacy_identity.admitted(current(root), health, discovery, program_root=root)
 
 
-@pytest.mark.parametrize("content", [None, "not json", "{}", '[{"action": "update", "target_release": 2}]'])
+@pytest.mark.parametrize("content", [None, b"not json", b"{}", b'[{"action": "update", "target_release": 2}]',
+                                    Path(__file__).parents[1].joinpath("astrid/installer/predecessors.json").read_bytes() + b" "])
 def test_missing_or_malformed_resource_refuses(legacy, monkeypatch, content):
     root, _, health, discovery, _ = legacy
     class Resource:
         def joinpath(self, _name):
             return self
-        def read_text(self, **_kwargs):
+        def read_bytes(self):
             if content is None:
                 raise FileNotFoundError()
             return content

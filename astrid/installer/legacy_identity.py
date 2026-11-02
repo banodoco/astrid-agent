@@ -14,10 +14,15 @@ from collections.abc import Mapping
 from importlib import resources
 from pathlib import Path
 
+_POLICY_SHA256 = "48cf8dea385ce30810ccf7e5a5091c8554097ef157ed3c4b35b57362f9956d50"
+
 def _policy():
     """Load the closed, shipped predecessor list; malformed data refuses admission."""
     try:
-        rows = json.loads(resources.files("astrid.installer").joinpath("omp").joinpath("predecessors.json").read_text(encoding="utf-8"))
+        raw = resources.files("astrid.installer").joinpath("predecessors.json").read_bytes()
+        if hashlib.sha256(raw).hexdigest() != _POLICY_SHA256:
+            return None
+        rows = json.loads(raw)
         if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
                 or rows[0].get("action") != "update" or type(rows[0].get("target_release")) is not int
                 or rows[0].get("target_release") != 1):
