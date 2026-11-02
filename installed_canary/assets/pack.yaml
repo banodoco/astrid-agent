@@ -29,6 +29,9 @@
         "kind": "python",
         "path": "actions/parent.py"
       },
+      "metadata": {
+        "resource_keys": []
+      },
       "outputs": {}
     }
   },

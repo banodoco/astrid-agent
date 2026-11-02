@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from installed_canary.child import audit_shapes
 from installed_canary.common import GateError, inventory, pages, read, save, sha
-from installed_canary.contract import ASSETS, BOUNDARIES, SOURCES, validate
+from installed_canary.contract import ASSETS, BOUNDARIES, SOURCES, parent_resource_keys, validate
 from installed_canary.evidence import assert_ready, restart_snapshot
 from installed_canary.journey import (child_policy, input_descriptor, restart_and_validate, restarted_owner, retain_admission,
                                       terminal_state, validate_child, wait_for_restart)
@@ -92,7 +92,7 @@ class Fixture:
         log = self.work / 'install/xdg-state/astrid-runtime/logs/service-pack-host.log'
         log.parent.mkdir(parents=True); log.write_text('selected complete log\n' * 3)
         row = {'id': 'installed_canary.parent', 'disposition': 'optional', 'evidence_reason': 'reviewed fixture',
-               'adapter_family': 'cpu', 'resource_keys': ['cpu']}
+               'adapter_family': 'cpu', 'resource_keys': parent_resource_keys()}
         selected = read(Path(self.sources['agent']['root']) / 'config/astrid-beta-capabilities.json')
         selected['capabilities'].append(row)
         matrix_path = self.task / 'selected-capabilities.json'; save(matrix_path, selected)
@@ -229,7 +229,7 @@ class CanaryTests(unittest.TestCase):
     def test_reviewed_parent_golden_bytes(self):
         self.assertEqual(inventory(ASSETS), {
             'actions/parent.py': '90af95bf904708bd230e48316727262da9d9463a2e070f27954218247913ef7c',
-            'pack.yaml': 'd163d0c20efc54dcfdc2f942e5cc4c53a0db42b0905e3bca2838dab5e0789ace'})
+            'pack.yaml': 'd8a4168e1fb8542b4a3a2e77630bc77d2242735704d5efa5dac96d1b1b8daa01'})
 
     def test_matrix_mutation_rejected_even_when_repinned(self):
         path = Path(self.f.value['matrix']['selected_path']); value = read(path)

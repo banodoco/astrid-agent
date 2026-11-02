@@ -145,7 +145,7 @@ def _validate(tuple_path, task_dir, work_dir, *, fresh=True):
     require(set(row) == {'id', 'disposition', 'evidence_reason', 'adapter_family', 'resource_keys'}
             and row['id'] == 'installed_canary.parent' and row['disposition'] == 'optional'
             and isinstance(row['evidence_reason'], str) and row['evidence_reason'].strip()
-            and row['adapter_family'] == 'cpu' and row['resource_keys'] == ['cpu'],
+            and row['adapter_family'] == 'cpu' and row['resource_keys'] == parent_resource_keys(),
             'matrix', selected_path, 'reviewed optional CPU parent row required')
     prepare = [r for r in original['capabilities'] if r.get('id') == 'h3_av.prepare']
     require(len(prepare) == 1 and prepare[0].get('disposition') in {'optional', 'required'}
@@ -218,6 +218,11 @@ def _validate(tuple_path, task_dir, work_dir, *, fresh=True):
     receipt = read(exact_path(str(task / 'logs/installer-exit.json'), kind='file'))
     require(type(receipt.get('exit')) is int, 'inputs', task, 'installer receipt requires integer exit')
     return Context(tuple_path, task, work, value, version, purelib, boundary)
+
+
+def parent_resource_keys():
+    """The parent declares its locks; its CPU child owns the CPU reservation."""
+    return read(ASSETS / 'pack.yaml')['actions']['parent']['metadata']['resource_keys']
 
 
 def validate(tuple_path, task_dir, work_dir, *, fresh=True):
