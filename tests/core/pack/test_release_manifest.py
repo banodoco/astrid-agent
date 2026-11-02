@@ -149,6 +149,37 @@ def test_actual_release_rollback_restores_previous_list_but_keeps_current_remova
     assert snapshot.refresh_pending is False
 
 
+def test_rollback_after_release_list_explicit_readd_uses_current_removal_snapshot(
+        tmp_path: Path) -> None:
+    repo = Repository(tmp_path / "repository")
+    root = tmp_path / "Astrid" / "packs"
+    initial_release = release(repo, "alpha", "shared")
+    install_release_manifest(manifest=initial_release, packs_root=root)
+
+    # A removal writes the user's current preference. An explicit re-add via
+    # the shared release parser/transaction clears it before rollback.
+    install_group(source=repo.bare, revision=repo.commit, packs={}, packs_root=root,
+                  python_packages={}, remove=("alpha",))
+    assert read_group(root).removals == ("alpha",)
+    explicit_readd = {"release": initial_release["release"], "packs": {"alpha": initial_release["packs"]["alpha"]}}
+    readded = install_release_manifest(manifest=explicit_readd, packs_root=root, origin="user")
+    assert "alpha" in read_group(root).paths
+    assert read_group(root).removals == ()
+
+    rollback_group(packs_root=root, pack_ids=("alpha",), transaction_id=readded.transaction_id)
+    rolled_back = read_group(root)
+    assert "alpha" not in rolled_back.paths
+    assert rolled_back.removals == ()
+
+    # A later default-list reconciliation can install alpha again. The stale
+    # tombstone from the re-add's retired generation must not suppress it.
+    install_release_manifest(manifest=initial_release, packs_root=root)
+    reconciled = read_group(root)
+    assert "alpha" in reconciled.paths
+    assert reconciled.removals == ()
+    assert read_pin(reconciled.paths["alpha"] / "PIN")["origin"] == "default"
+
+
 def test_failed_release_publication_keeps_live_generation(tmp_path: Path) -> None:
     repo = Repository(tmp_path / "repository")
     root = tmp_path / "Astrid" / "packs"
