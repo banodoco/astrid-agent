@@ -32,3 +32,9 @@ def test_workflow_contains_exact_reviewed_script():
     assert '\n'.join(line[10:] for line in body.splitlines()) + '\n' == script
     assert 'actions/checkout@' not in workflow
     assert 'workflow_dispatch:' in workflow
+
+
+def test_frozen_bundle_b_source_revisions():
+    assert bundle.AGENT_BRANCH_B == "lane/M-R1FIX/UPD-R0-STOPPED-JOB"
+    assert bundle.AGENT_SHA_B == "efcb3297ab16a3ec47b30b02154089b372293544"
+    assert bundle.PINOKIO_SHA_B == "292ab95d0d95065e449d08d5c170188b72aff520"

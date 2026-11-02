@@ -146,8 +146,8 @@ jobs:
           
           
           
-          AGENT_BRANCH_B = "lane/M-R1FIX/UPD-R0-CANDIDATE-PIN"
-          AGENT_SHA_B = "f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9"
+          AGENT_BRANCH_B = "lane/M-R1FIX/UPD-R0-STOPPED-JOB"
+          AGENT_SHA_B = "efcb3297ab16a3ec47b30b02154089b372293544"
           PINOKIO_BRANCH_B = "lane/M-PIN/R-25-MAC-WORKFLOW-MODE-R1"
           PINOKIO_SHA_B = "292ab95d0d95065e449d08d5c170188b72aff520"
           PYTHON = "/opt/homebrew/opt/python@3.11/bin/python3.11"
