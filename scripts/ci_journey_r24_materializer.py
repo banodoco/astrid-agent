@@ -22,10 +22,12 @@ from urllib.parse import urlsplit
 
 try:
     from . import ci_journey_provider as provider
+    from . import pinokio_install_mode_receipt as install_mode_receipt
     from . import pinokio_linux_mode_actions as mode_actions
     from .ci_journey_r24 import PUBLISHED_CANDIDATE
 except ImportError:
     import ci_journey_provider as provider
+    import pinokio_install_mode_receipt as install_mode_receipt
     import pinokio_linux_mode_actions as mode_actions
     from ci_journey_r24 import PUBLISHED_CANDIDATE
 
@@ -685,6 +687,7 @@ def execute(args: argparse.Namespace) -> int:
     node = None
     pterm = None
     engine_env = None
+    installed_mode = None
     try:
         if sys.platform != "linux" or args.confirmation != CONFIRMATION:
             raise MaterializerError("Linux and exact confirmation are required")
@@ -763,6 +766,10 @@ def execute(args: argparse.Namespace) -> int:
             home=home, env=engine_env, evidence=evidence, receipt=receipt,
             expected_vibecomfy=expected_vibecomfy,
         )
+        if selected_mode == "backend":
+            installed_mode = install_mode_receipt.read_receipt(
+                resource / "app/install-mode.json", slot_mode="pinokio-backend"
+            )
         backend = resource / "app/astrid"
         owner = {"schema_version": 1, "run_id": uuid.uuid4().hex,
                  "root": str(backend.resolve()), "data_root": str(data)}
@@ -837,6 +844,17 @@ def execute(args: argparse.Namespace) -> int:
              label="documented-r24-live-route", env=dict(os.environ), timeout=300)
         provider_receipt = _read(run_root / "evidence/r24-live/r24-invocation.json")
         if selected_mode == "backend":
+            mode_binding = install_mode_receipt.build_binding(
+                resource / "app/install-mode.json",
+                slot_id="pinokio-backend-linux",
+                slot_mode="pinokio-backend",
+                candidate=PUBLISHED_CANDIDATE,
+                session=provider_receipt["session"],
+            )
+            if mode_binding["pinokio_install_mode_receipt"] != installed_mode:
+                raise MaterializerError("installed mode changed during provider invocation")
+            receipt["pinokio_install_mode_receipt"] = installed_mode
+            receipt["pinokio_install_mode_binding"] = mode_binding
             mode_record_path = (run_root /
                                 "evidence/r25-linux-mode-actions/mode-action-seam.json")
             mode_record = _read(mode_record_path)

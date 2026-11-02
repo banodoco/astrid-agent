@@ -20,17 +20,21 @@ from types import ModuleType
 from typing import Any
 
 try:
+    from . import check_journey_evidence as evidence_gate
     from . import ci_journey_provider as provider
     from . import ci_journey_r24 as r24
     from . import ci_journey_r24_materializer as materializer
     from . import ci_journey_r24_push_admission as push_admission
     from . import pinokio_linux_mode_actions as mode_actions
+    from . import pinokio_install_mode_receipt as install_mode_receipt
 except ImportError:
+    import check_journey_evidence as evidence_gate
     import ci_journey_provider as provider
     import ci_journey_r24 as r24
     import ci_journey_r24_materializer as materializer
     import ci_journey_r24_push_admission as push_admission
     import pinokio_linux_mode_actions as mode_actions
+    import pinokio_install_mode_receipt as install_mode_receipt
 
 
 SCHEMA = "astrid.pinokio.bundle-compatibility.v1"
@@ -46,6 +50,7 @@ _ARTIFACT_PATHS = {
 }
 _RUNNER_SOURCES = (
     ".github/workflows/r24-linux-live.yml",
+    "scripts/check_journey_evidence.py",
     "scripts/ci_journey.py",
     "scripts/ci_journey_provider.py",
     "scripts/ci_journey_r24.py",
@@ -53,6 +58,7 @@ _RUNNER_SOURCES = (
     "scripts/ci_journey_r24_push_admission.py",
     "scripts/pinokio_bundle_compat.py",
     "scripts/pinokio_linux_mode_actions.py",
+    "scripts/pinokio_install_mode_receipt.py",
     "scripts/pinokio_r24_journey_seam.py",
 )
 
@@ -261,6 +267,36 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
     if consumed_request.canonical != producer_request:
         raise CompatibilityError("producer and consumer canonical requests differ")
 
+    mode_path = args.scratch_root / "install-mode.json"
+    if mode_path.exists() or mode_path.is_symlink():
+        raise CompatibilityError("fresh installed-mode compatibility path required")
+    mode_path.write_bytes(b'{"schema_version":1,"mode":"backend"}\n')
+    mode_binding = install_mode_receipt.build_binding(
+        mode_path,
+        slot_id="pinokio-backend-linux",
+        slot_mode="pinokio-backend",
+        candidate=candidate,
+        session=request_data["run_id"],
+    )
+    typed_row = install_mode_receipt.project_journey_result(
+        {
+            "job_id": "pinokio-backend-linux",
+            "mode": "pinokio-backend",
+            "provider_session": request_data["run_id"],
+            "candidate_checkouts": {
+                name: {"sha": candidate[name]}
+                for name in ("app", "agent", "runtime", "pinokio")
+            },
+        },
+        mode_binding,
+    )
+    typed_errors = evidence_gate.pinokio_install_mode_errors(
+        {"job_id": "pinokio-backend-linux", "mode": "pinokio-backend"},
+        typed_row,
+    )
+    if typed_errors:
+        raise CompatibilityError("installed-mode producer and typed consumer differ")
+
     route = materializer.route_argv(
         runner, args.scratch_root, args.scratch_root / "candidate.json",
         args.scratch_root / "config.json", producer, checkouts,
@@ -308,6 +344,9 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
             "producer_request_sha256": consumed_request.sha256,
             "producer_serializer_executed": True,
             "consumer_parser_executed": True,
+            "installed_mode_producer_executed": True,
+            "installed_mode_typed_consumer_executed": True,
+            "installed_mode_binding": mode_binding,
             "materializer_route_built": True,
             "hosted_admission_inputs": admission,
             "route": route,

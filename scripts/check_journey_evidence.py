@@ -229,16 +229,10 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
-def _release1_row_errors(candidate, contract, row):
-    """Validate one Release-1 row for both the aggregate and inventory view."""
+def pinokio_install_mode_errors(contract, row):
+    """Validate the typed installed-mode projection for one Pinokio row."""
     job_id = contract["job_id"]
     errors = []
-    if row.get("receipt_kind") != "release1-installed-lifecycle":
-        errors.append(f"{job_id}: not a Release-1 lifecycle receipt")
-    if row.get("status") != "pass":
-        errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
-    if row.get("mode") != contract["mode"]:
-        errors.append(f"{job_id}: mode does not match the required matrix")
     if contract["mode"] in PINOKIO_INSTALLED_MODE_BY_SLOT_MODE:
         expected_installed_mode = PINOKIO_INSTALLED_MODE_BY_SLOT_MODE[contract["mode"]]
         installed_mode = row.get("pinokio_install_mode_receipt")
@@ -254,6 +248,20 @@ def _release1_row_errors(candidate, contract, row):
                 f"{job_id}: declared {contract['mode']} slot conflicts with "
                 f"installed receipt mode {installed_mode['mode']!r}"
             )
+    return errors
+
+
+def _release1_row_errors(candidate, contract, row):
+    """Validate one Release-1 row for both the aggregate and inventory view."""
+    job_id = contract["job_id"]
+    errors = []
+    if row.get("receipt_kind") != "release1-installed-lifecycle":
+        errors.append(f"{job_id}: not a Release-1 lifecycle receipt")
+    if row.get("status") != "pass":
+        errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
+    if row.get("mode") != contract["mode"]:
+        errors.append(f"{job_id}: mode does not match the required matrix")
+    errors.extend(pinokio_install_mode_errors(contract, row))
     if row.get("scenario") != contract.get("leg", "fresh-install"):
         errors.append(f"{job_id}: scenario does not match the required matrix leg")
     if row.get("runner_image") != contract["runner"]:
