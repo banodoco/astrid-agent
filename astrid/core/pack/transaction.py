@@ -811,6 +811,27 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     raise PackInstallError(checked["code"], checked["reason"], compatibility=checked)
             mark("validated")
             identities = {i: (pack_digest(candidate / i), read_pin(candidate / i / "PIN")) for i in packs}
+            # Consent covers the exact staged source and declarations before
+            # any builder can run. Build outputs are validated separately and
+            # remain bound to these source identities through publication.
+            if consent is not None:
+                changes = {
+                    "intent": intent,
+                    "source": source_text,
+                    "revision": commit,
+                    "packs": {
+                        pack_id: {
+                            "before": read_pin(root / pack_id / "PIN") if (root / pack_id / "PIN").is_file() else None,
+                            "after": dict(identities[pack_id][1]),
+                            "before_digest": pack_digest(root / pack_id) if (root / pack_id).is_dir() else None,
+                            "after_digest": identities[pack_id][0],
+                        }
+                        for pack_id in sorted(packs)
+                    },
+                    "removals": sorted(tombstones),
+                }
+                if consent(changes) is not True:
+                    raise PackInstallError("user_cancelled", "The pack update was not committed because consent was not given.")
             for pack_id in sorted(packs):
                 # install_pack may retain an identical source/PIN. Every named
                 # build still needs fresh outputs and this transaction's epoch;
@@ -846,24 +867,6 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     raise PackInstallError("pin_mismatch", "Build changed staged source/PIN; the installed group is unchanged.")
             # Recheck every output after the whole build phase: a later build
             # cannot alter an earlier pack's admitted bytes unnoticed.
-            if consent is not None:
-                changes = {
-                    "intent": intent,
-                    "source": source_text,
-                    "revision": commit,
-                    "packs": {
-                        pack_id: {
-                            "before": read_pin(root / pack_id / "PIN") if (root / pack_id / "PIN").is_file() else None,
-                            "after": dict(identities[pack_id][1]),
-                            "before_digest": pack_digest(root / pack_id) if (root / pack_id).is_dir() else None,
-                            "after_digest": identities[pack_id][0],
-                        }
-                        for pack_id in sorted(packs)
-                    },
-                    "removals": sorted(tombstones),
-                }
-                if consent(changes) is not True:
-                    raise PackInstallError("user_cancelled", "The pack update was not committed because consent was not given.")
             for request, result, admitted_revision in build_records:
                 _verify_artifacts(request, result, committed_revision=admitted_revision)
             # A newer inventory revision subsumes an unacknowledged one. Carry

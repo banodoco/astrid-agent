@@ -27,18 +27,22 @@ def _freeze(value):
 
 
 def _selected_root(override: str | None) -> Path:
-    root = resolve_personal_packs_root(override)
+    # ASTRID_PACKS_PATH extends discovery; it does not choose the collection
+    # that management commands mutate. Only --packs-root may override the
+    # default writable personal collection.
+    default_root = Path.home() / "Astrid" / "packs"
+    root = resolve_personal_packs_root(override if override is not None else default_root)
     if root is None:
-        raise PackInstallError("unsafe_path", "Configure an absolute user pack collection with ASTRID_PACKS_PATH.")
+        raise PackInstallError("unsafe_path", "Use an absolute writable collection with --packs-root.")
     return root
 
 
 def _composition_roots(target_root: Path, *, include_default: bool) -> tuple[Path, ...]:
     """Freeze the host's explicitly selected external roots at CLI entry."""
     configured = os.environ.get("ASTRID_PACKS_PATH")
-    values = ([Path(item).expanduser() for item in configured.split(os.pathsep) if item]
-              if configured is not None else
-              ([Path.home() / "Astrid" / "packs"] if include_default else []))
+    values = ([Path.home() / "Astrid" / "packs"] if include_default else [])
+    if configured is not None:
+        values.extend(Path(item).expanduser() for item in configured.split(os.pathsep) if item)
     roots = []
     for value in values:
         if not value.is_absolute():
