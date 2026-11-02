@@ -148,12 +148,65 @@ def test_partial_stage_rolls_back_only_its_marked_python(tmp_path, monkeypatch):
     assert not python_dir.exists() and (runner / ".path").read_text() == "/usr/bin:/bin\n"
 
 
-def test_replace_preserves_original_mode_despite_umask(tmp_path):
+def test_replace_preserves_original_mode_despite_umask(tmp_path, monkeypatch):
+    monkeypatch.setattr(prereqs, "UID", os.getuid())
     path = tmp_path / "settings"
     path.write_text("old")
     previous = os.umask(0o077)
     try:
-        prereqs.replace_owned(path, b"new", 0o664)
+        prereqs.replace_owned(path, b"new", 0o664, tmp_path)
     finally:
         os.umask(previous)
     assert path.read_bytes() == b"new" and path.stat().st_mode & 0o777 == 0o664
+
+
+def test_archive_rejects_link_as_member_parent_and_chained_target(tmp_path):
+    for kind in ("member", "target"):
+        archive = tmp_path / (kind + ".tgz")
+        with tarfile.open(archive, "w:gz") as tf:
+            link = tarfile.TarInfo("python/alias")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "real"
+            tf.addfile(link)
+            if kind == "member":
+                item = tarfile.TarInfo("python/alias/child")
+                item.size = 1
+                tf.addfile(item, io.BytesIO(b"x"))
+            else:
+                item = tarfile.TarInfo("python/other")
+                item.type = tarfile.SYMTYPE
+                item.linkname = "alias/child"
+                tf.addfile(item)
+        dest = tmp_path / (kind + "-extract")
+        dest.mkdir()
+        with pytest.raises(RuntimeError, match="traverses"):
+            prereqs.extract_safe(archive, dest)
+
+
+def test_main_attempts_rollback_of_own_failed_transaction(tmp_path, monkeypatch):
+    monkeypatch.setattr(prereqs, "UID", os.getuid())
+    monkeypatch.setattr(prereqs.os, "getuid", lambda: prereqs.UID)
+    monkeypatch.setattr(prereqs.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(tmp_path)))
+    monkeypatch.setenv("RUNNER_NAME", "hannah-mac")
+    monkeypatch.setattr(prereqs.sys, "argv", ["script", "stage"])
+    calls = []
+    def fail_stage(home, runner, tool, temp, token):
+        root = home / ".astrid-runner-prereqs-v1"
+        root.mkdir()
+        (root / "journal.json").write_text(json.dumps({"run_id": token}))
+        raise RuntimeError("fixture")
+    monkeypatch.setattr(prereqs, "stage", fail_stage)
+    monkeypatch.setattr(prereqs, "rollback", lambda *args: calls.append(args))
+    with pytest.raises(RuntimeError, match="fixture"):
+        prereqs.main()
+    assert len(calls) == 1
+
+
+def test_interrupted_owned_path_temporary_is_replaced_safely(tmp_path, monkeypatch):
+    monkeypatch.setattr(prereqs, "UID", os.getuid())
+    path = tmp_path / "settings"
+    path.write_text("old")
+    (tmp_path / "path.next").write_text("partial")
+    prereqs.replace_owned(path, b"replacement", 0o600, tmp_path)
+    assert path.read_text() == "replacement"
+    assert not (tmp_path / "path.next").exists()

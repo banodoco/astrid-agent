@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Stage runner-owned Python/pwsh and service settings; never restart the runner."""
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -44,12 +46,24 @@ def sha(path):
 def extract_safe(archive, dest):
     """Extract a checksum-verified archive with no external link or path targets."""
     with tarfile.open(str(archive), "r:gz") as tf:
-        for item in tf.getmembers():
+        members = tf.getmembers()
+        links = set()
+        normalized = []
+        for item in members:
             name = posixpath.normpath(item.name)
+            if name == "." and item.isdir():
+                continue
             if name in ("", ".") or name.startswith("/") or name == ".." or name.startswith("../"):
                 raise RuntimeError("Archive has an unsafe member path")
             if not (item.isfile() or item.isdir() or item.issym() or item.islnk()):
                 raise RuntimeError("Archive contains an unsupported entry")
+            normalized.append((name, item))
+            if item.issym() or item.islnk():
+                links.add(name)
+        for name, item in normalized:
+            components = name.split("/")
+            if any("/".join(components[:i]) in links for i in range(1, len(components))):
+                raise RuntimeError("Archive member traverses a link")
             if item.issym() or item.islnk():
                 link = item.linkname
                 if link.startswith("/"):
@@ -58,7 +72,11 @@ def extract_safe(archive, dest):
                 resolved = posixpath.normpath(posixpath.join(base, link))
                 if resolved == ".." or resolved.startswith("../"):
                     raise RuntimeError("Archive link escapes staging")
+                parts = resolved.split("/")
+                if any("/".join(parts[:i]) in links for i in range(1, len(parts))):
+                    raise RuntimeError("Archive link target traverses another link")
         tf.extractall(str(dest))
+
 
 
 def download(url, target, digest):
@@ -79,8 +97,14 @@ def read_owned(path):
     return path.read_bytes(), stat.S_IMODE(st.st_mode)
 
 
-def replace_owned(path, content, mode):
-    temporary = path.with_name(path.name + ".prereqs-new")
+def replace_owned(path, content, mode, tempdir):
+    real_dir(tempdir)
+    temporary = tempdir / "path.next"
+    if temporary.exists() or temporary.is_symlink():
+        stale, _ = read_owned(temporary)
+        if stale is None:
+            raise RuntimeError("Unsafe interrupted settings file")
+        temporary.unlink()
     fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
         os.fchmod(fd, mode)
@@ -93,7 +117,34 @@ def replace_owned(path, content, mode):
         if temporary.exists(): temporary.unlink()
 
 
-def stage(home, runner, toolcache, temp):
+def rename_exclusive(source, target):
+    """Darwin atomic no-replace rename; fail closed when unavailable."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renamex_np", None)
+    if rename is None:
+        raise RuntimeError("Exclusive rename is unavailable")
+    rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(os.fsencode(str(source)), os.fsencode(str(target)), 4) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def write_journal(path, journal):
+    """Write and fsync a journal within its exclusively owned directory."""
+    temp = path.with_name("journal.next")
+    payload = (json.dumps(journal, sort_keys=True) + "\n").encode()
+    fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as out:
+        out.write(payload); out.flush(); os.fsync(out.fileno())
+    os.replace(str(temp), str(path))
+    dirfd = os.open(str(path.parent), os.O_RDONLY)
+    try: os.fsync(dirfd)
+    finally: os.close(dirfd)
+
+
+def stage(home, runner, toolcache, temp, run_id=None):
+    run_id = run_id or os.urandom(16).hex()
     if shutil.disk_usage(home).free < 10_000_000_000:
         raise RuntimeError("Insufficient disk for runner prerequisites")
     real_dir(home); real_dir(runner); real_dir(toolcache); real_dir(temp)
@@ -115,17 +166,20 @@ def stage(home, runner, toolcache, temp):
     if not old_path or "\n" in old_path or str(ps_dest) in old_path.split(":"):
         raise RuntimeError("Runner PATH is empty, invalid or already configured")
     new_path = (str(ps_dest) + ":" + old_path + "\n").encode("utf-8")
-    root.mkdir(mode=0o700)
-    backup = root / "path.backup"
+    preparing = root.with_name(root.name + ".preparing-" + run_id)
+    preparing.mkdir(mode=0o700)
+    backup = preparing / "path.backup"
     backup.write_bytes(original_path); backup.chmod(0o600)
-    journal = {"schema": 1, "state": "staging", "run_id": os.urandom(16).hex(), "before": {"path": {
+    journal = {"schema": 1, "state": "staging", "run_id": run_id, "before": {"path": {
                    "exists": True, "mode": original_mode, "sha256": hashlib.sha256(original_path).hexdigest()}},
                "new_sha256": {"path": hashlib.sha256(new_path).hexdigest()},
                "python_source": "astral-python-build-standalone-20261026",
                "python_version": PY_VERSION, "python_sha256": PY_SHA,
                "powershell_version": "7.6.9", "powershell_sha256": PS_SHA}
+    journal_path = preparing / "journal.json"
+    write_journal(journal_path, journal)
+    rename_exclusive(preparing, root)
     journal_path = root / "journal.json"
-    journal_path.write_text(json.dumps(journal, sort_keys=True) + "\n"); journal_path.chmod(0o600)
     archives = root / "staging"; archives.mkdir(mode=0o700)
     pyarchive = archives / "python.tar.gz"; psarchive = archives / "powershell.tar.gz"
     download(PY_URL, pyarchive, PY_SHA); download(PS_URL, psarchive, PS_SHA)
@@ -138,16 +192,13 @@ def stage(home, runner, toolcache, temp):
     psbin.chmod(psbin.stat().st_mode | stat.S_IXUSR)
     if subprocess.check_output([str(psbin), "-NoLogo", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], text=True).strip() != "7.6.9":
         raise RuntimeError("PowerShell version check failed")
-    # Create destinations exclusively; never replace an unexpectedly present directory.
+    # Prepare ownership markers before the atomic exclusive move.
     def move_to_new_owned_dir(source, destination):
-        if (source / ".astrid-prereq-owner").exists():
-            raise RuntimeError("Archive collides with the ownership marker")
-        destination.mkdir(mode=0o700)
-        owner = destination / ".astrid-prereq-owner"
-        owner.write_text(journal["run_id"])
-        owner.chmod(0o600)
-        for child in source.iterdir():
-            os.rename(str(child), str(destination / child.name))
+        owner = source / ".astrid-prereq-owner"
+        fd = os.open(str(owner), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(journal["run_id"]); f.flush(); os.fsync(f.fileno())
+        rename_exclusive(source, destination)
     move_to_new_owned_dir(py_src, py_dest)
     code = ("import json,platform,sqlite3,ssl,sys; print(json.dumps({"
             "'version':platform.python_version(),'arch':platform.machine(),"
@@ -161,9 +212,9 @@ def stage(home, runner, toolcache, temp):
     current_path, current_mode = read_owned(runner / ".path")
     if current_path != original_path or current_mode != original_mode:
         raise RuntimeError("Runner PATH changed during staging")
-    replace_owned(runner / ".path", new_path, original_mode)
+    replace_owned(runner / ".path", new_path, original_mode, root)
     journal["state"] = "pending-restart"
-    journal_path.write_text(json.dumps(journal, sort_keys=True) + "\n")
+    write_journal(journal_path, journal)
     print(json.dumps({"status": "pending-restart", "python_version": PY_VERSION,
                       "python_provenance": journal["python_source"], "powershell_version": "7.6.9",
                       "tool_cache_writable": os.access(str(toolcache), os.W_OK),
@@ -214,13 +265,13 @@ def rollback(home, runner, toolcache):
         if result.returncode != 1 or result.stdout.strip() or result.stderr.strip():
             raise RuntimeError("A prerequisite is in use or cannot be checked")
     journal["state"] = "rollback-in-progress"
-    journal_path.write_text(json.dumps(journal, sort_keys=True) + "\n")
+    write_journal(journal_path, journal)
     if current != backup:
-        replace_owned(runner / ".path", backup, before["mode"])
+        replace_owned(runner / ".path", backup, before["mode"], root)
     if marker.exists(): marker.unlink()
     for directory in present: shutil.rmtree(str(directory))
     journal["state"] = "rolled-back-restart-required"
-    journal_path.write_text(json.dumps(journal, sort_keys=True) + "\n")
+    write_journal(journal_path, journal)
     print(json.dumps({"status": "rolled-back-restart-required"}))
 
 
@@ -230,7 +281,18 @@ def main():
     home = Path(pwd.getpwuid(UID).pw_dir)
     runner = home / "actions-runner"
     if sys.argv[1:] == ["stage"]:
-        stage(home, runner, runner / "_work/_tool", runner / "_work/_temp")
+        token = os.urandom(16).hex()
+        try:
+            stage(home, runner, runner / "_work/_tool", runner / "_work/_temp", token)
+        except Exception:
+            journal_path = home / ".astrid-runner-prereqs-v1/journal.json"
+            try:
+                raw, _ = read_owned(journal_path)
+                if raw and json.loads(raw).get("run_id") == token:
+                    rollback(home, runner, runner / "_work/_tool")
+            except Exception:
+                print(json.dumps({"status": "automatic-rollback-failed", "reason": "Manual review of runner-owned journal required"}))
+            raise
     elif sys.argv[1:] == ["rollback"]:
         rollback(home, runner, runner / "_work/_tool")
     else:
