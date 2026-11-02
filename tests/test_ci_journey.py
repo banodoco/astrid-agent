@@ -1372,8 +1372,11 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
         calls.append("task")
         return "settled"
 
-    def bootstrap(*_args):
+    bootstrap_calls = []
+
+    def bootstrap(*bootstrap_args, **bootstrap_kwargs):
         assert state["running"] and state["content"] is not None
+        bootstrap_calls.append((bootstrap_args, bootstrap_kwargs))
         state.update(release=1, pid=state["pid"] + 1)
 
     monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest_path, {}))
@@ -1412,6 +1415,10 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     result = jumps.execute_release0_to_release1(args, root, data, evidence,
                                                 SimpleNamespace(pid=1), "birth")
     assert result["status"] == "pass" and result["semantic_data"]["identical"]
+    assert bootstrap_calls == [(
+        (app, candidate_path, "sh", "update", evidence / "release1", root, data),
+        {"legacy_bootstrap": True},
+    )]
     assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
                      "stop", "snapshot", "start", "task"]
     assert state["running"] and not state["local"]
