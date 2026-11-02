@@ -79,7 +79,7 @@ on:
         required: true
         type: string
       macos_runner:
-        description: Runner for direct-macos; use ["self-hosted","macOS","astrid-mac"] for the repo-scoped runner
+        description: Runner for direct-macos; use astrid-mac for the repo-scoped self-hosted smoke
         required: false
         default: macos-15
         type: string
@@ -333,20 +333,13 @@ jobs:
                   raise SystemExit("invalid m4_6_candidate: " + "; ".join(candidate_errors))
           else:
               m4_6_candidate = {}
-          macos_runner_input = os.environ["MACOS_RUNNER"].strip() or "macos-15"
-          try:
-              macos_runner = json.loads(macos_runner_input)
-          except json.JSONDecodeError:
-              macos_runner = macos_runner_input
-          if not isinstance(macos_runner, (str, list)) or not macos_runner:
-              raise SystemExit("macos_runner must be a non-empty runner label or JSON label array")
-          if isinstance(macos_runner, list) and any(
-              not isinstance(label, str) or not label or "\n" in label or "\r" in label
-              for label in macos_runner
-          ):
-              raise SystemExit("macos_runner JSON label arrays must contain only non-empty strings")
+          macos_runner = os.environ.get("MACOS_RUNNER", "macos-15").strip() or "macos-15"
+          if macos_runner not in {"macos-15", "astrid-mac"}:
+              raise SystemExit("macos_runner must be macos-15 or astrid-mac")
+          if macos_runner == "astrid-mac" and not direct_only:
+              raise SystemExit("astrid-mac is permitted only with direct_only")
           matrix = [
-              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":macos_runner, "shell":"sh", "os":"macos"},
+              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"direct-windows", "mode":"direct", "leg":"release0-to-release1", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
               {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
@@ -356,6 +349,8 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
+          if macos_runner == "astrid-mac":
+              matrix[0]["runner"] = macos_runner
           if direct_only:
               matrix = [row for row in matrix if row["mode"] == "direct"]
           elif backend_only:
@@ -693,6 +688,13 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate self-hosted smoke receipt (not release evidence)
+        if: matrix.runner == 'astrid-mac'
+        shell: bash
+        run: |
+          python agent/scripts/check_self_hosted_macos_smoke.py \
+            "$RUNNER_TEMP/candidate.json" \
+            "$RUNNER_TEMP/astrid-r1-direct-macos/evidence/release0-to-release1/journey-result.json"
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()
@@ -739,13 +741,23 @@ jobs:
           }
           Write-Host "Validated named lifecycle artifact estimate: $estimatedArtifactBytes bytes (< $maxArtifactBytes)."
       - name: Retain only the named lifecycle evidence after a lifecycle failure
-        if: always() && steps.evidence_boundary.outcome == 'success'
+        if: always() && steps.evidence_boundary.outcome == 'success' && matrix.runner != 'astrid-mac'
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
           name: journey-receipt-${{ matrix.job_id }}
           # The collector stages only allowlisted names in these two phase folders.
           # Keep the job-id directory in the artifact to avoid receipt collisions.
+          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
+          if-no-files-found: warn
+          compression-level: 0
+
+      - name: Retain self-hosted smoke evidence separately
+        if: always() && steps.evidence_boundary.outcome == 'success' && matrix.runner == 'astrid-mac'
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: self-hosted-smoke-direct-macos
           path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
           if-no-files-found: warn
           compression-level: 0

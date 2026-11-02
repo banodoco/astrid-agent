@@ -921,6 +921,11 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
 
+    smoke = matrix("true", MACOS_RUNNER="astrid-mac")
+    assert next(row for row in smoke if row["job_id"] == "direct-macos")["runner"] == "astrid-mac"
+    assert config("false", MACOS_RUNNER="astrid-mac").returncode != 0
+    assert config("true", MACOS_RUNNER='["self-hosted", "astrid-mac"]').returncode != 0
+
     backend_rows = matrix("false", M4_4A_BACKEND_ONLY="true")
     assert {row["job_id"] for row in backend_rows} == {
         "pinokio-backend-linux", "pinokio-backend-macos", "pinokio-backend-windows"
@@ -1330,3 +1335,19 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     with pytest.raises(ValueError, match="workspace failed"):
         jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
     assert state["running"]
+
+
+def test_self_hosted_identity_requires_real_macos_runner(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", "astrid-mac")
+    monkeypatch.setenv("RUNNER_OS", "macOS")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "self-hosted")
+    monkeypatch.setenv("RUNNER_NAME", "hannah-mac")
+    journey.assert_runner_identity(journey.runner_identity())
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    with pytest.raises(RuntimeError, match="self-hosted"):
+        journey.assert_runner_identity(journey.runner_identity())
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "self-hosted")
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="self-hosted"):
+        journey.assert_runner_identity(journey.runner_identity())

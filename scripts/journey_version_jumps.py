@@ -504,6 +504,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         "schema_version": 3, "receipt_kind": "release1-installed-lifecycle",
         "job_id": args.job_id, "mode": args.mode, "scenario": args.leg, "status": "not-run",
         "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
+        "evidence_class": "self-hosted-lifecycle" if journey.runner_identity()["runner_image"] == "astrid-mac" else "hosted-lifecycle",
         "source_override_test_mode": False, "candidate_checkouts": getattr(args, "candidate_checkouts", None),
         "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
         "sources": None, "installed_tuple": None, "import_origins": None,

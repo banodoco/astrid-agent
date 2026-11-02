@@ -210,7 +210,7 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
-def _release1_row_errors(candidate, contract, row):
+def _release1_row_errors(candidate, contract, row, *, self_hosted_smoke=False):
     """Validate one Release-1 row for both the aggregate and inventory view."""
     job_id = contract["job_id"]
     errors = []
@@ -222,13 +222,24 @@ def _release1_row_errors(candidate, contract, row):
         errors.append(f"{job_id}: mode does not match the required matrix")
     if row.get("scenario") != contract.get("leg", "fresh-install"):
         errors.append(f"{job_id}: scenario does not match the required matrix leg")
-    if row.get("runner_image") != contract["runner"]:
+    required_runner = "astrid-mac" if self_hosted_smoke else contract["runner"]
+    if self_hosted_smoke and job_id != "direct-macos":
+        errors.append(f"{job_id}: self-hosted smoke is only permitted for direct-macos")
+    if row.get("runner_image") != required_runner:
         errors.append(f"{job_id}: runner does not match the required matrix")
+    if self_hosted_smoke and row.get("evidence_class") != "self-hosted-lifecycle":
+        errors.append(f"{job_id}: self-hosted evidence class is required")
     if row.get("shell") != contract["shell"]:
         errors.append(f"{job_id}: shell does not match the required matrix")
     expected_os, expected_image = RUNNER_PROVENANCE[contract["runner"]]
     provenance = row.get("runner_provenance")
-    if (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != expected_os
+    if self_hosted_smoke:
+        if (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != "macOS"
+                or provenance.get("RUNNER_ENVIRONMENT") != "self-hosted"
+                or provenance.get("observed_os_family") != "darwin"
+                or not provenance.get("RUNNER_NAME")):
+            errors.append(f"{job_id}: self-hosted runner provenance is missing or mismatched")
+    elif (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != expected_os
             or provenance.get("ImageOS") != expected_image
             or not isinstance(provenance.get("ImageVersion"), str)
             or not provenance["ImageVersion"].strip()):

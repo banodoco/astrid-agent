@@ -415,7 +415,7 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
 def runner_identity() -> dict:
     """Record the workflow's declared image and raw hosted-runner observations."""
     label = os.environ.get("ASTRID_CI_EXPECTED_RUNNER") or "local"
-    raw = {key: os.environ[key] for key in ("RUNNER_OS", "ImageOS", "ImageVersion")
+    raw = {key: os.environ[key] for key in ("RUNNER_OS", "ImageOS", "ImageVersion", "RUNNER_ENVIRONMENT", "RUNNER_NAME")
            if os.environ.get(key)}
     return {"runner_image": label,
             "runner_provenance": {"observed_os_family": sys.platform, **raw}}
@@ -423,7 +423,13 @@ def runner_identity() -> dict:
 
 def assert_runner_identity(identity: dict) -> None:
     label = identity["runner_image"]
-    if label != "local":
+    if label == "astrid-mac":
+        provenance = identity["runner_provenance"]
+        if (sys.platform != "darwin" or provenance.get("RUNNER_OS") != "macOS"
+                or provenance.get("RUNNER_ENVIRONMENT") != "self-hosted"
+                or not provenance.get("RUNNER_NAME")):
+            raise RuntimeError("astrid-mac requires an observed macOS self-hosted runner")
+    elif label != "local":
         if label not in RUNNER_FAMILY:
             raise ValueError(f"Unknown controlled runner label: {label}")
         if RUNNER_FAMILY[label] != sys.platform:
@@ -1481,7 +1487,7 @@ def execute(args: argparse.Namespace) -> dict:
         assert_runner_identity(identity)
         if getattr(args, "job_id", None):
             expected = validate_job(args.job_id, args.mode)
-            if expected["runner"] != identity["runner_image"]:
+            if expected["runner"] != identity["runner_image"] and not (args.job_id == "direct-macos" and identity["runner_image"] == "astrid-mac"):
                 raise RuntimeError(f"Release-1 job {args.job_id} requires {expected['runner']}, not {identity['runner_image']}")
             if expected["shell"] != args.shell:
                 raise RuntimeError(f"Release-1 job {args.job_id} requires shell {expected['shell']}")
@@ -1506,7 +1512,7 @@ def execute(args: argparse.Namespace) -> dict:
             "run_roots": {"program": str(root), "data": str(data)},
             "candidate_checkouts": getattr(args, "candidate_checkouts", None),
             "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
-            "evidence_class": "hosted-lifecycle",
+            "evidence_class": "self-hosted-lifecycle" if identity["runner_image"] == "astrid-mac" else "hosted-lifecycle",
             "source_unit_evidence": {"status": "not-run", "substitute_for_hosted": False},
             "pinokio_backend": None,
             "installed_tuple": None, "import_origins": None,

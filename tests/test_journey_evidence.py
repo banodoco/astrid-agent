@@ -231,3 +231,19 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert "candidate-agent" in workflow and "pinokio" in workflow
     assert '"leg":"release0-to-release1"' in workflow
     assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
+
+
+def test_self_hosted_smoke_passes_own_validator_but_never_hosted_gate(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    path = tmp_path / "direct-macos" / "journey-result.json"
+    row = json.loads(path.read_text())
+    row.update(runner_image="astrid-mac", evidence_class="self-hosted-lifecycle",
+               runner_provenance={"RUNNER_OS": "macOS", "RUNNER_ENVIRONMENT": "self-hosted",
+                                  "RUNNER_NAME": "hannah-mac", "observed_os_family": "darwin"})
+    contract = next(item for item in gate.RELEASE1_MATRIX if item["job_id"] == "direct-macos")
+    assert gate._release1_row_errors(candidate, contract, row, self_hosted_smoke=True) == []
+    assert gate._release1_row_errors(candidate, contract, row)
+    path.write_text(json.dumps(row))
+    assert gate.evaluate_release1_matrix(candidate, tmp_path)
+    row["runner_provenance"].pop("RUNNER_ENVIRONMENT")
+    assert gate._release1_row_errors(candidate, contract, row, self_hosted_smoke=True)
