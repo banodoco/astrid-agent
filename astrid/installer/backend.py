@@ -494,6 +494,35 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             return None
         if manifest_digest != _IDENTITYLESS_RELEASE0_MANIFEST_SHA256:
             return None
+        try:
+            if installed.profile != installed.root / "profile.json" or linked(installed.profile):
+                return None
+            profile = read_json(installed.profile)
+            if set(profile) != {
+                "profile", "runtime_checkout", "source_checkout", "runtime_environment",
+                "source_digest", "service_declaration",
+            } or profile.get("profile") != "astrid":
+                return None
+            runtime_checkout = absolute(profile["runtime_checkout"])
+            source_checkout = absolute(profile["source_checkout"])
+            runtime_environment = absolute(profile["runtime_environment"])
+            service_declaration = absolute(profile["service_declaration"])
+        except (KeyError, OSError, TypeError, ValueError):
+            return None
+        if (runtime_checkout != installed.root / "r"
+                or runtime_environment != installed.root / "py"
+                or not source_checkout.is_relative_to(runtime_environment)
+                or service_declaration != installed.root / "services.json"
+                or not runtime_checkout.is_dir()
+                or not source_checkout.is_dir()
+                or not runtime_environment.is_dir()
+                or linked(service_declaration)
+                or not service_declaration.is_file()
+                or not isinstance(profile.get("source_digest"), str)
+                or not profile["source_digest"].strip()
+                or os.path.lexists(runtime_checkout / ".git")
+                or os.path.lexists(source_checkout / ".git")):
+            return None
         manager_identity = self.service.validate_stop_target(
             installed, data, owner_pid=owner_pid,
         )

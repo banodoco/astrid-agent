@@ -62,6 +62,18 @@ def _supported_release0_owner(tmp_path, monkeypatch, *, real_launchd=False):
     folder = backend.root / "versions" / "3204bb00-6d53a190-test0001"
     folder.mkdir(parents=True)
     installed = Version(folder, folder / "py/bin/python", folder / "profile.json", {}, 0, None)
+    installed.python.parent.mkdir(parents=True)
+    installed.python.touch()
+    (folder / "r").mkdir()
+    product_root = folder / "py/lib/python3.11/site-packages"
+    product_root.mkdir(parents=True)
+    (folder / "services.json").write_text("{}\n", encoding="utf-8")
+    write_json(installed.profile, {
+        "profile": "astrid", "runtime_checkout": str(folder / "r"),
+        "source_checkout": str(product_root), "runtime_environment": str(folder / "py"),
+        "source_digest": "sha256:" + "1" * 64,
+        "service_declaration": str(folder / "services.json"),
+    })
     manifest = json.loads(RELEASE0_MANIFEST.read_text(encoding="utf-8"))
     manifest["vibecomfy"] = {"sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"}
     write_json(folder / "manifest.json", manifest)
@@ -137,7 +149,7 @@ def test_live_supported_identityless_release0_uses_exact_launchd_owner_proof(tmp
 
 
 @pytest.mark.parametrize("damage", [
-    "identity-null", "schema", "manifest", "launch-action", "discovery-change",
+    "identity-null", "schema", "manifest", "profile", "launch-action", "discovery-change",
 ])
 def test_live_identityless_predecessor_unknown_or_changed_evidence_refuses(
         tmp_path, monkeypatch, damage):
@@ -148,6 +160,10 @@ def test_live_identityless_predecessor_unknown_or_changed_evidence_refuses(
         health["schema_digest"] = "sha256:" + "0" * 64
     elif damage == "manifest":
         (installed.root / "manifest.json").write_text("{}\n", encoding="utf-8")
+    elif damage == "profile":
+        profile = json.loads(installed.profile.read_text(encoding="utf-8"))
+        profile["source_checkout"] = str(tmp_path / "source-checkout")
+        write_json(installed.profile, profile)
     elif damage == "launch-action":
         backend.service.validate_stop_target.return_value = {"arguments": ("/foreign/python",)}
     else:
