@@ -9918,6 +9918,17 @@ class GenericPackHost:
                     ensure_failure(terminal["error"])
             except BaseException as reporting_error:
                 terminal["reporting_error"] = reporting_error
+            with completion_lock:
+                if (terminal.get("forced") == "cancelled" and terminal.get("status") == "cancelled"
+                        and not isinstance(exc, HostCancelled)):
+                    # Admission precedes the execution finalizer. Keep its
+                    # failure even if the observer already published cancel.
+                    error = terminal["error"]
+                    if isinstance(error, AstridError) and error.code == "cancelled":
+                        error = exc
+                    terminal.update(status="failed", error=error, receipt_final=False)
+                    if terminal.get("root") is not None:
+                        self._write_task_result(terminal)
             if isinstance(exc, SystemExit):
                 raise HostError("executor exited without completing its task") from exc
             raise
