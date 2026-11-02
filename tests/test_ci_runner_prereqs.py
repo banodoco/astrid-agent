@@ -250,3 +250,19 @@ def test_archive_rejects_raw_parent_components_before_normalization(tmp_path):
     with pytest.raises(RuntimeError, match="raw member"):
         prereqs.extract_safe(archive, dest)
     assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_archive_allows_safe_parent_relative_link(tmp_path):
+    archive = tmp_path / "safe.tgz"
+    with tarfile.open(archive, "w:gz") as tf:
+        data = tarfile.TarInfo("python/lib/data")
+        data.size = 1
+        tf.addfile(data, io.BytesIO(b"x"))
+        link = tarfile.TarInfo("python/bin/data")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../lib/data"
+        tf.addfile(link)
+    dest = tmp_path / "extract"
+    dest.mkdir()
+    prereqs.extract_safe(archive, dest)
+    assert (dest / "python/bin/data").read_text() == "x"
