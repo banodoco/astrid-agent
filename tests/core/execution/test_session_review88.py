@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -158,3 +159,90 @@ def test_unregistered_managed_route_is_refused_before_any_session_acquisition(tm
     with pytest.raises(gh.HostError, match="no registered host profile"):
         host.run_task(task, lease_token="lease")
     assert events == []
+
+
+class _BlockingAdapter:
+    """A submit that blocks in a native-like call until released or cancelled."""
+
+    def __init__(self, cancelled, *, honour_cancel: bool) -> None:
+        self._cancelled = cancelled
+        self._honour = honour_cancel
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    def validate_settings(self, inputs: Any) -> None:
+        return None
+
+    def submit(self, inputs: Any, timeout_seconds: float) -> dict[str, Any]:
+        self.started.set()
+        try:
+            while not self.release.is_set():
+                if self._honour and self._cancelled():
+                    break
+                self.release.wait(0.01)
+            return {"result": {"success": False}}
+        finally:
+            self.finished.set()
+
+    def progress(self) -> dict[str, Any]:
+        return {}
+
+    def cancel(self, reason: str) -> dict[str, Any]:
+        return {"state": "cancel_requested"}
+
+
+def _channel_with(adapter_factory, stop: threading.Event):
+    parent, child = socket.socketpair()
+    adapter = adapter_factory(stop.is_set)
+    broker = SessionChannelBroker(RUN_ID, adapter, parent, admission_token=object())
+    channel = gh._HostSessionChannel(broker, parent, child, RUN_ID, stop=stop)
+    channel.start()
+    from astrid.core.execution.generic_host import _send_activation_frame
+
+    _send_activation_frame(child, {"version": SESSION_CHANNEL_VERSION, "run_id": RUN_ID, "seq": 1,
+                                   "op": "submit", "args": {"inputs": {}, "timeout_seconds": 5.0}})
+    return channel, adapter, child
+
+
+def test_close_during_active_submit_stops_the_serving_thread(tmp_path: Path) -> None:
+    """S-2: close cancels the in-flight native call and waits for the thread before settlement."""
+    stop = threading.Event()
+    channel, adapter, child = _channel_with(lambda c: _BlockingAdapter(c, honour_cancel=True), stop)
+    assert adapter.started.wait(5)
+    still_serving = channel.close(join_timeout=5)
+    assert still_serving is False
+    assert adapter.finished.is_set()
+    child.close()
+
+
+def test_worker_crash_during_active_submit_leaves_no_live_thread(tmp_path: Path) -> None:
+    """S-2: a worker that dies mid-submit: the run stops the call and the thread ends."""
+    stop = threading.Event()
+    channel, adapter, child = _channel_with(lambda c: _BlockingAdapter(c, honour_cancel=True), stop)
+    assert adapter.started.wait(5)
+    child.close()
+    assert channel.close(join_timeout=5) is False
+    assert adapter.finished.is_set()
+
+
+def test_deadline_during_active_submit_is_observed_by_the_native_call(tmp_path: Path) -> None:
+    """S-2: a deadline is the cancel signal; the in-flight call ends and nothing outlives it."""
+    stop = threading.Event()
+    channel, adapter, child = _channel_with(lambda c: _BlockingAdapter(c, honour_cancel=True), stop)
+    assert adapter.started.wait(5)
+    stop.set()
+    assert adapter.finished.wait(5)
+    assert channel.close(join_timeout=5) is False
+    child.close()
+
+
+def test_a_native_call_that_ignores_cancel_is_reported_still_serving(tmp_path: Path) -> None:
+    """S-2: when the native call will not stop, close reports it still serving (the run fences)."""
+    stop = threading.Event()
+    channel, adapter, child = _channel_with(lambda c: _BlockingAdapter(c, honour_cancel=False), stop)
+    assert adapter.started.wait(5)
+    assert channel.close(join_timeout=0.2) is True
+    adapter.release.set()
+    assert adapter.finished.wait(5)
+    child.close()

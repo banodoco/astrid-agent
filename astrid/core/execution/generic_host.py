@@ -1889,15 +1889,21 @@ class _HostManagedSessionAdapter:
         return {"state": "cancel_requested", "requested_reason": requested, "outcome": outcome}
 
 
+_SESSION_CHANNEL_JOIN_SECONDS = 30.0
+
+
 class _HostSessionChannel:
     """One per-run socketpair: host keeps the parent end, the child end goes to the worker."""
 
-    def __init__(self, broker: Any, parent: socket.socket, child: socket.socket, run_id: str) -> None:
+    def __init__(self, broker: Any, parent: socket.socket, child: socket.socket, run_id: str,
+                 stop: threading.Event | None = None) -> None:
         self.broker = broker
         self._parent = parent
         self.child = child
         self.run_id = run_id
         self._thread: threading.Thread | None = None
+        # Set on close so an in-flight native call observes cancellation (review S-2).
+        self.stop = stop if stop is not None else threading.Event()
 
     def start(self) -> None:
         def serve() -> None:
@@ -1912,7 +1918,11 @@ class _HostSessionChannel:
         self._thread = threading.Thread(target=serve, name="astrid-session-channel", daemon=True)
         self._thread.start()
 
-    def close(self) -> None:
+    def close(self, join_timeout: float = _SESSION_CHANNEL_JOIN_SECONDS) -> bool:
+        """Stop the channel and wait for its serving thread. Returns True if the thread is
+        still running after the join (its native call may still be live). The caller must
+        then fence the session and must not settle (review S-2)."""
+        self.stop.set()
         try:
             self.broker.close()
         finally:
@@ -1921,6 +1931,11 @@ class _HostSessionChannel:
                     sock.close()
                 except OSError:
                     pass
+        thread = self._thread
+        if thread is None or thread is threading.current_thread():
+            return False
+        thread.join(timeout=join_timeout)
+        return thread.is_alive()
 
 
 def _capability_digest(value: Any) -> str:
@@ -12106,15 +12121,17 @@ class GenericPackHost:
                             # Fail closed before any run starts: no host profile, no channel.
                             raise HostError("managed tool has no registered host profile")
                         parent_end, child_end = socket.socketpair()
+                        channel_stop = threading.Event()
                         session_adapter = _HostManagedSessionAdapter(
                             profile=profile, managed_token=managed_token, inputs=inputs,
                             progress_path=root / ".astrid-progress.json",
                             timeout_cap=max(0.1, execution_deadline - time.monotonic()),
-                            cancelled=cancelled,
+                            cancelled=lambda: cancelled() or channel_stop.is_set(),
                             cancel_session=lambda token, reason: self.managed_tool_session.cancel(token, outcome=reason))
                         broker = SessionChannelBroker(task_id, session_adapter, parent_end,
                                                       admission_token=managed_token)
-                        session_channel = _HostSessionChannel(broker, parent_end, child_end, task_id)
+                        session_channel = _HostSessionChannel(broker, parent_end, child_end, task_id,
+                                                              stop=channel_stop)
                         session_channel.start()
                     try:
                         result = self.invoke_capability(
@@ -12148,7 +12165,15 @@ class GenericPackHost:
                         worker_env.clear()
                         worker_secrets.clear()
                         if session_channel is not None:
-                            session_channel.close()
+                            still_serving = session_channel.close()
+                            if still_serving:
+                                # The native call may still be live: fence the session and
+                                # never settle over it (review S-2).
+                                try:
+                                    self.managed_tool_session.cancel(managed_token, outcome="uncertain")
+                                except Exception:
+                                    pass
+                                raise HostError("session channel still serving at settlement; session fenced")
             finally:
                 # The outer run_task finally owns lease-pump shutdown and
                 # cleanup; this boundary only preserves child env cleanup.
