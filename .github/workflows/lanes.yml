@@ -320,7 +320,7 @@ jobs:
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
       ASTRID_HOST_EXECUTION_PROFILE: installed
       ASTRID_REMOTION_PROJECT_DIR: ${{ github.workspace }}/remotion
-      ASTRID_INSTALLED_RECEIPT_DIR: ${{ runner.temp }}/installed-wheel-receipt
+      ASTRID_INSTALLED_RECEIPT_DIR: ${{ github.workspace }}/installed-wheel-receipt
     steps:
       - name: Check out repository
         id: checkout
