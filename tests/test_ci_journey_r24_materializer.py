@@ -23,7 +23,7 @@ def test_materializer_pins_current_tuple_producer_and_native_engine():
         "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
         "manifest_sha256": "920477210d01615a6698cda30f248552f13c712734e86ea56f283300cb1a9c87",
     }
-    assert provider.LIVE_PRODUCER_REF == "cd86889f4299c7f7aca720f0f20a11be01dacb34"
+    assert provider.LIVE_PRODUCER_REF == "7bb0ae88721fdd6b2d7b948760d886eeda9df282"
     assert materializer.PINOKIOD_REF == "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
     assert materializer.PTERM_REF == "5be43718701c448b43daf0ce51d8935f170065bb"
     assert materializer.TASK_DURATION_SECONDS == 300
@@ -200,7 +200,7 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "scripts/ci_journey_r24_materializer.py" in raw
     assert "evidence/r24-live/provider-export" in raw
     assert "evidence/r24-live/hosted-binding.json" in raw
-    assert "cd86889f4299c7f7aca720f0f20a11be01dacb34" in raw
+    assert "7bb0ae88721fdd6b2d7b948760d886eeda9df282" in raw
     assert "runner_ref:" in registered
     assert "producer_ref:" in registered
     assert "confirmation:" in registered

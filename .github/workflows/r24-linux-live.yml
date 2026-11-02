@@ -21,7 +21,7 @@ on:
       producer_ref:
         description: Immutable audited R-24 producer commit
         required: true
-        default: cd86889f4299c7f7aca720f0f20a11be01dacb34
+        default: 7bb0ae88721fdd6b2d7b948760d886eeda9df282
         type: string
       confirmation:
         description: Required literal R24_LIVE_CURRENT_TUPLE
