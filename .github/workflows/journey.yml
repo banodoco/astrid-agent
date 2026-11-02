@@ -461,7 +461,7 @@ jobs:
           $stderr = Join-Path $evidence 'preflight-python-stderr.txt'
           $status = Join-Path $evidence 'preflight-launch.json'
           $original = 'python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ[''RUNNER_TEMP'']) / ''journey-manager-direct-windows''; w.scheduled_task_preflight()"'
-          $code = "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; exec('try:\n w.scheduled_task_diagnostics()\nfinally:\n w.scheduled_task_preflight(os.environ[\'JOURNEY_LEG\'])')"
+          $code = "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_diagnostics(leg=os.environ['JOURNEY_LEG'])"
           # Start-Process passes this argument string to CreateProcess on Windows.
           $arguments = '-u -c "' + $code + '"'
           $record = [ordered]@{
