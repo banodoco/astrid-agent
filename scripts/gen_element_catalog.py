@@ -17,6 +17,7 @@ from astrid.core.element.catalog import (  # noqa: E402
     _clear_registry_cache,
     list_element_descriptors,
 )
+from astrid.core.element.registry import load_default_registry  # noqa: E402
 from scripts.gen_effect_registry import _public_registry_ids  # noqa: E402
 
 DEFAULT_OUTPUT = REPO_ROOT / "astrid" / "packs" / "rendering" / "elements" / "catalog.ts"
@@ -34,6 +35,15 @@ def generate() -> str:
     # selected packs remain available through the live registry, but their
     # presence or health cannot change this generated file.
     _clear_registry_cache()
+    core_skips = [
+        record for record in load_default_registry().diagnostics
+        if record.pack_id == "rendering"
+    ]
+    if core_skips:
+        raise ValueError(
+            "Cannot generate an incomplete core element catalog:\n"
+            + "\n".join(str(record) for record in core_skips)
+        )
     descriptors = list_element_descriptors(include_shadowed=True, pack_id="rendering")
     descriptors = _preserve_public_renderability(descriptors)
     payload = json.dumps(descriptors, indent=2, sort_keys=True, ensure_ascii=False)
