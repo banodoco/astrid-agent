@@ -6,6 +6,7 @@ registry generation/admission, Root preparation and publication remain real.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -41,6 +42,8 @@ def installed_render(tmp_path_factory):
     assert built.returncode == 0, built.stdout[-2000:] + built.stderr[-2000:]
     wheels = list((root / "wheel").glob("*.whl"))
     assert len(wheels) == 1
+    (root / "wheel.log").write_text(hashlib.sha256(wheels[0].read_bytes()).hexdigest())
+    shutil.rmtree(build)
     # No installer or dependency acquisition: extract the real release wheel
     # into a disposable interpreter's site-packages.
     interpreter = root / "interpreter"
@@ -50,7 +53,13 @@ def installed_render(tmp_path_factory):
         [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True,
     ).strip())
     with zipfile.ZipFile(wheels[0]) as archive:
+        for name in (
+            "astrid/packs/rendering/actions/timeline_visualize/composed_frame.py",
+            "astrid/packs/rendering/rendering/renderers/remotion/run.py",
+        ):
+            assert archive.read(name) == (ROOT / name).read_bytes()
         archive.extractall(site)
+    shutil.rmtree(root / "wheel")
     dependencies = Path(__import__("pytest").__file__).resolve().parent.parent
     (site / "qualified-dependencies.pth").write_text(str(dependencies) + "\n")
     runtime = Path(os.environ["ASTRID_RUNTIME_CHECKOUT"])
@@ -104,7 +113,8 @@ else:
         ASTRID_TIMELINE_SCHEMA_PYTHONPATH=str(site / "astrid/core/timeline/schema/timeline-config.schema.json"),
     )
     assert not (site / "scripts").exists() and not (site / "tests").exists()
-    return root, python, site, environment
+    yield root, python, site, environment
+    shutil.rmtree(interpreter)
 
 
 @pytest.mark.parametrize("mode", ["positive", "missing-element", "missing-renderer"])
