@@ -444,9 +444,58 @@ jobs:
         if: always() && matrix.job_id == 'direct-windows'
         shell: powershell
         run: |
-          $env:PYTHONPATH = "$pwd/agent"
-          python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_preflight()"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $diagnostics = Join-Path $env:RUNNER_TEMP 'journey-manager-direct-windows'
+          New-Item -ItemType Directory -Force -Path $diagnostics | Out-Null
+          try {
+            $origin = Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue
+            [ordered]@{
+              PSVersion = $PSVersionTable.PSVersion.ToString()
+              PSEdition = $PSVersionTable.PSEdition
+              CommandType = [string]$origin.CommandType
+              Source = $origin.Source
+              ModuleName = $origin.ModuleName
+              ModulePath = $origin.Module.Path
+            } | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $diagnostics 'diagnostic-shell-origin.json')
+            $env:PYTHONPATH = "$pwd/agent"
+            $capture = @'
+          import json, os, subprocess, sys, traceback
+          from pathlib import Path
+
+          destination = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows' / 'diagnostic-step.json'
+          code = "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_preflight()"
+          record = {'argv': [sys.executable, '-c', code], 'stdout': '', 'stderr': '', 'exit_code': None, 'exception': None}
+          def checkpoint():
+              temporary = destination.with_suffix('.tmp')
+              temporary.write_text(json.dumps(record, indent=2, ensure_ascii=True) + '\n', encoding='utf-8')
+              temporary.replace(destination)
+          checkpoint()
+          try:
+              result = subprocess.run(record['argv'], capture_output=True, encoding='utf-8', errors='replace', check=False)
+              record.update(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
+          except Exception:
+              record['exception'] = traceback.format_exc()
+          finally:
+              checkpoint()
+          sys.exit(record['exit_code'] if record['exit_code'] is not None else 1)
+          '@
+            $capturePath = Join-Path $diagnostics 'diagnostic-capture.py'
+            [IO.File]::WriteAllText($capturePath, $capture, [Text.UTF8Encoding]::new($false))
+            [ordered]@{ executable = 'python'; arguments = @('-u', $capturePath) } |
+              ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $diagnostics 'diagnostic-wrapper-command.json')
+            [IO.File]::WriteAllText((Join-Path $diagnostics 'diagnostic-wrapper-exit-code.txt'), 'not started')
+            $python = (Get-Command python -ErrorAction Stop).Source
+            [ordered]@{ executable = $python; arguments = @('-u', $capturePath) } |
+              ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $diagnostics 'diagnostic-wrapper-command.json')
+            $process = Start-Process -FilePath $python -ArgumentList @('-u', ('"{0}"' -f $capturePath)) `
+              -RedirectStandardOutput (Join-Path $diagnostics 'diagnostic-wrapper-stdout.txt') `
+              -RedirectStandardError (Join-Path $diagnostics 'diagnostic-wrapper-stderr.txt') -Wait -PassThru
+            [IO.File]::WriteAllText((Join-Path $diagnostics 'diagnostic-wrapper-exit-code.txt'), [string]$process.ExitCode)
+            if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+          } catch {
+            $failure = ($_ | Format-List * -Force | Out-String) + "`n" + $_.ScriptStackTrace
+            [IO.File]::WriteAllText((Join-Path $diagnostics 'diagnostic-step-exception.txt'), $failure)
+            throw
+          }
       - name: Retain hosted service-manager prerequisite diagnostics
         if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')
         uses: actions/upload-artifact@v4

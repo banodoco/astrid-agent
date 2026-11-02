@@ -618,6 +618,77 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
         assert "direct_only cannot be combined" in proc.stderr
 
 
+def test_windows_diagnostic_step_retains_child_failure_and_success(tmp_path):
+    import subprocess
+    import sys
+    import textwrap
+
+    workflow = (journey.ROOT / '.github/workflows/journey.yml').read_text()
+    step = workflow.split('      - name: Capture Windows scheduled-task query diagnostics\n', 1)[1].split('      - name:', 1)[0]
+    capture = textwrap.dedent(step.split("            $capture = @'\n", 1)[1].split("          '@\n", 1)[0])
+    assert "if: always() && matrix.job_id == 'direct-windows'" in step
+    assert all(field in step for field in ('PSVersion', 'PSEdition', 'CommandType', 'Source', 'ModuleName', 'ModulePath'))
+    assert 'diagnostic-step-exception.txt' in step and 'ScriptStackTrace' in step
+    assert all(name in step for name in ('diagnostic-wrapper-command.json', 'diagnostic-capture.py',
+                                        'diagnostic-wrapper-stdout.txt', 'diagnostic-wrapper-stderr.txt',
+                                        'diagnostic-wrapper-exit-code.txt'))
+    assert 'if ($process.ExitCode -ne 0) { exit $process.ExitCode }' in step
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    (scripts / '__init__.py').write_text('')
+    module = scripts / 'ci_windows_journey.py'
+    evidence = tmp_path / 'journey-manager-direct-windows'
+    evidence.mkdir()
+    preflight = evidence / 'preflight-scheduled-task.txt'
+    preflight.write_text('preflight checkpoint')
+    env = dict(os.environ, RUNNER_TEMP=str(tmp_path), PYTHONPATH=str(tmp_path))
+    module.write_text('def scheduled_task_preflight():\n    import sys\n    print("partial stdout", flush=True)\n    print("partial stderr", file=sys.stderr, flush=True)\n    raise ValueError("diagnostic failure")\n')
+    failed = subprocess.run([sys.executable, '-c', capture], cwd=tmp_path, env=env, capture_output=True, text=True)
+    record = json.loads((evidence / 'diagnostic-step.json').read_text())
+    assert failed.returncode == record['exit_code'] == 1
+    assert record['argv'][:2] == [sys.executable, '-c']
+    assert 'w.scheduled_task_preflight()' in record['argv'][2]
+    assert record['stdout'] == 'partial stdout\n'
+    assert 'partial stderr\nTraceback (most recent call last):' in record['stderr']
+    assert 'raise ValueError("diagnostic failure")' in record['stderr']
+    assert 'ValueError: diagnostic failure' in record['stderr']
+    assert record['exception'] is None
+    assert preflight.read_text() == 'preflight checkpoint'
+    module.write_text('def scheduled_task_preflight():\n    raise SystemExit(7)\n')
+    exited = subprocess.run([sys.executable, '-c', capture], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert exited.returncode == json.loads((evidence / 'diagnostic-step.json').read_text())['exit_code'] == 7
+    module.write_text('def scheduled_task_preflight():\n    print("success")\n')
+    succeeded = subprocess.run([sys.executable, '-c', capture], cwd=tmp_path, env=env, capture_output=True, text=True)
+    record = json.loads((evidence / 'diagnostic-step.json').read_text())
+    assert succeeded.returncode == record['exit_code'] == 0
+    assert record['stdout'] == 'success\n' and record['stderr'] == ''
+
+
+def test_windows_diagnostic_step_checkpoints_and_retains_launch_exception(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    import textwrap
+
+    workflow = (journey.ROOT / '.github/workflows/journey.yml').read_text()
+    step = workflow.split('      - name: Capture Windows scheduled-task query diagnostics\n', 1)[1].split('      - name:', 1)[0]
+    capture = textwrap.dedent(step.split("            $capture = @'\n", 1)[1].split("          '@\n", 1)[0])
+    evidence = tmp_path / 'journey-manager-direct-windows'
+    evidence.mkdir()
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    def fail(argv, **kwargs):
+        initial = json.loads((evidence / 'diagnostic-step.json').read_text())
+        assert initial['argv'] == argv and initial['exit_code'] is None
+        raise OSError('child launch failed')
+    monkeypatch.setattr(subprocess, 'run', fail)
+    with pytest.raises(SystemExit) as exc:
+        exec(compile(capture, '<diagnostic-capture>', 'exec'), {})
+    record = json.loads((evidence / 'diagnostic-step.json').read_text())
+    assert exc.value.code == 1 and record['exit_code'] is None
+    assert record['argv'][0] == sys.executable
+    assert 'Traceback (most recent call last):' in record['exception']
+    assert 'OSError: child launch failed' in record['exception']
+
+
 def test_windows_preflight_records_query_streams_origin_and_exit(tmp_path, monkeypatch):
     from scripts import ci_windows_journey as windows
     monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
