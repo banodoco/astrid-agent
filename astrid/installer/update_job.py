@@ -472,6 +472,34 @@ def _probe_identity(data_root: Path) -> tuple[str, dict]:
     return instance_id, identity
 
 
+def _probe_legacy_identity(data_root: Path, old, root: Path, *, target_release) -> tuple[str, dict]:
+    """Prove the selected identityless predecessor from one discovery snapshot."""
+    from .legacy_identity import admitted, allows_update
+    from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+    path = data_root / "runtime" / "discovery.json"
+    snapshot = path.read_bytes()
+    discovery = json.loads(snapshot)
+    instance = discovery.get("runtime_instance_id")
+    endpoint = discovery.get("endpoint") or discovery.get("door_endpoint")
+    if not isinstance(instance, str) or not instance or not isinstance(endpoint, str) or not endpoint:
+        raise ValueError("The live Runtime owner identity is unavailable.")
+    health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance)
+    if (not allows_update(target_release)
+            or not admitted(old, health, discovery, program_root=root) or path.read_bytes() != snapshot):
+        raise ValueError("The live Runtime identity cannot be verified.")
+    return instance, {"release": 0, "managed_by": None}
+
+
+def _probe_selected_identity(data_root: Path, old, root: Path, *, target_release) -> tuple[str, dict]:
+    """Revalidate the selected predecessor, including the frozen Release-0 exception."""
+    try:
+        return _probe_identity(data_root)
+    except Exception:
+        if old.release != 0 or old.managed_by is not None:
+            raise
+        return _probe_legacy_identity(data_root, old, root, target_release=target_release)
+
+
 def _probe_startup_identity(data_root: Path) -> tuple[str, dict]:
     """The success and failure paths keep the startup wording for unavailable identity."""
     try:
@@ -512,24 +540,27 @@ def _validate_request(request: dict, root: Path) -> dict:
     elif old_version not in {old.root.name, str(old.root), old.document().get("identity", {}).get("release")}:
         raise ValueError("The selected Astrid version changed before acceptance.")
     old_identity = request.get("old_identity")
-    if not isinstance(old_identity, dict):
+    metadata = request.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("Selected update inputs are missing.")
+    target_release = metadata.get("release")
+    old_instance_id = request.get("old_instance_id")
+    if not isinstance(old_instance_id, str) or not old_instance_id or len(old_instance_id) > 128:
+        raise ValueError("The selected live instance is missing.")
+    if old_identity is None:
+        # Only the frozen legacy observation may supply the missing identity.
+        observed_instance, old_identity = _probe_legacy_identity(data_root, old, root, target_release=target_release)
+        observed_identity = old_identity
+    elif isinstance(old_identity, dict):
+        observed_instance, observed_identity = _probe_selected_identity(data_root, old, root, target_release=target_release)
+    else:
         raise ValueError("The selected live identity is missing.")
-    # Compare the immutable fields represented in the installer version. The
-    # separately captured runtime instance ID prevents a request from binding
-    # to a successor process that happens to use the same version.
     recorded_identity = {"release": old.release, "managed_by": old.managed_by}
     for key, value in recorded_identity.items():
         if old_identity.get(key) != value:
             raise ValueError("The selected live identity changed before acceptance.")
-    old_instance_id = request.get("old_instance_id")
-    if not isinstance(old_instance_id, str) or not old_instance_id or len(old_instance_id) > 128:
-        raise ValueError("The selected live instance is missing.")
-    observed_instance, observed_identity = _probe_identity(data_root)
     if observed_instance != old_instance_id or observed_identity != old_identity:
         raise ValueError("The selected live Runtime identity changed before acceptance.")
-    metadata = request.get("metadata")
-    if not isinstance(metadata, dict):
-        raise ValueError("Selected update inputs are missing.")
     # Accept the runtime's explicit path names and the preparation hook's
     # returned names. In either case, validate the same selected private bytes.
     manifest_path = Path(metadata.get("manifest_path", ""))
@@ -1282,7 +1313,8 @@ def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
                 selected_identity.get(key) != expected.get(key)
                 for key in ("release", "managed_by")):
             raise ValueError("The selected startup identity changed.")
-    observed_instance, observed_identity = _probe_identity(absolute(job["data_root"]))
+    observed_instance, observed_identity = _probe_selected_identity(
+        absolute(job["data_root"]), old, root, target_release=job.get("target_release"))
     if (observed_instance != job.get("old_instance_id")
             or observed_identity != job.get("old_identity")):
         raise ValueError("The selected Runtime instance changed after acceptance.")

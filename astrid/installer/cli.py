@@ -314,6 +314,12 @@ def main(argv: list[str] | None = None) -> int:
                         args.manifest = root / "install-manifest.json"
                         download("https://astrid.haus/install-manifest.json", args.manifest)
                     manifest = validate_manifest(read_json(args.manifest))
+                if getattr(backend, "_legacy_identity_admitted", False):
+                    from .core import update_required
+                    from .legacy_identity import allows_update
+                    if (installed is None or not update_required(mode, manifest, installed)
+                            or not allows_update(manifest.get("release", 0))):
+                        raise ValueError("The identityless legacy installation is admitted only for an update.")
                 bundle = None
                 if mode == "doctor":
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)

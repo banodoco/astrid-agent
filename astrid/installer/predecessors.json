@@ -1,0 +1,25 @@
+[
+  {
+    "id": "served-runtime-6d53-identityless-v31",
+    "app_manifest_commit": "d174f667aa04a7c43e6b0f767abb168b6022a6ab",
+    "installed_manifest_sha256": "4610f44b4dfe39d932753115668779390ed2287d15e2bd8c9568e62bbb6d60ff",
+    "install_manifest_schema_version": 1,
+    "agent_sha": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+    "runtime_sha": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+    "protocol": "workspace.v1",
+    "schema_digest": "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b",
+    "workspace_schema_version": 31,
+    "version_record_keys": [
+      "env",
+      "profile",
+      "python",
+      "root"
+    ],
+    "manifest_release": 0,
+    "python_version": "3.11.13",
+    "version_id_prefix": "3204bb00-6d53a190-",
+    "action": "update",
+    "target_release": 1,
+    "installed_manifest_vibecomfy_default_sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+  }
+]

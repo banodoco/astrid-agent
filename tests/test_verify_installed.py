@@ -7,9 +7,13 @@ import sys
 import time
 
 import pytest
-from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from scripts.verify_installed import bridge_observation, evaluate
 from tests.lanes import unavailable
+
+def _reviewed_vibecomfy(mode):
+    releases = json.loads((Path(__file__).parent / 'upgrade/releases.json').read_text())
+    row = next(row for row in releases['format_review']['supported_runtime_schemas'] if row['mode'] == mode)
+    return row['installed_manifest_vibecomfy_default_sha']
 
 
 def test_update_only_fails_regressions_and_reports_preexisting():
@@ -185,7 +189,7 @@ def _legacy_identity_fixture(tmp_path):
     python.parent.mkdir(parents=True)
     python.write_text('fixture python')
     installed_manifest = dict(fixture['manifest'])
-    installed_manifest['vibecomfy'] = {'sha': VIBECOMFY_ENGINE_REVISION}
+    installed_manifest['vibecomfy'] = {'sha': _reviewed_vibecomfy('supported-legacy-schema')}
     (root / 'manifest.json').write_text(json.dumps(installed_manifest, indent=2, sort_keys=True) + '\n')
     version_path = root / 'version.json'
     fixture['version'] = {'root': str(root), 'python': str(python), 'profile': str(profile), 'env': {}}
@@ -218,7 +222,7 @@ def _identity_aware_fixture(tmp_path):
     python.write_text('fixture python')
     raw = base64.b64decode(source['manifest_base64'])
     installed_manifest = dict(source['manifest'])
-    installed_manifest['vibecomfy'] = {'sha': VIBECOMFY_ENGINE_REVISION}
+    installed_manifest['vibecomfy'] = {'sha': _reviewed_vibecomfy('identity-aware-version-record')}
     raw = (json.dumps(installed_manifest, indent=2, sort_keys=True) + '\n').encode()
     (root / 'manifest.json').write_bytes(raw)
     version_path = root / 'version.json'
@@ -249,7 +253,7 @@ def test_supported_legacy_schema_accepts_matching_instance_and_exact_provenance(
     assert details['discovery_identity'] is None
     assert details['version_identity'] is None
     assert details['version_record_fields'] == ['env', 'profile', 'python', 'root']
-    assert json.loads(raw)['vibecomfy']['sha'] == VIBECOMFY_ENGINE_REVISION
+    assert json.loads(raw)['vibecomfy']['sha'] == _reviewed_vibecomfy('supported-legacy-schema')
 
 
 def test_source_backed_identity_aware_schema_accepts_synthetic_matching_identity_shape(tmp_path):
