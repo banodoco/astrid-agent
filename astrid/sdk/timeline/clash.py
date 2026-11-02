@@ -96,9 +96,12 @@ def _receipt_sites(entries, base):
                 if public not in touched:
                     touched.append(public)
         data = entry['receipt']['result']
+        result_source = data.get('source') if isinstance(data.get('source'), dict) else {}
+        entry_source = entry.get('source') if isinstance(entry.get('source'), dict) else {}
+        via = result_source.get('via') or entry_source.get('via')
         receipts.append({'publication_id': entry['publication_id'],
                          'label': data.get('label', recorder.get('label')),
-                         'publisher': entry['publisher'], 'touched': touched,
+                         'publisher': entry['publisher'], 'via': via, 'touched': touched,
                          'touches_conflict': False})
         sites.append(addresses)
         before = after
@@ -218,7 +221,8 @@ def _summary(record, receipts, targets=()):
     target = targets[0] if targets else None
     where = f' ({target})' if target else ''
     if match:
-        publisher = publisher_name(match.get('publisher'))
+        publisher = ('the user (editor)' if match.get('via') == 'app'
+                     else publisher_name(match.get('publisher')))
         who = f' ({publisher})' if publisher else ''
         return (f'"{label}" was not committed: "{match.get("label") or "Another edit"}"{who} '
                 f'changed a conflicting part{where} after your edit was made. Your edit is saved as '

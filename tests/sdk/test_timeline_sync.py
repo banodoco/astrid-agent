@@ -999,6 +999,149 @@ def test_final_refusal_releases_flight_and_saves_pending_edit(connected, status,
     assert json.loads(path.read_bytes())["pending_changes"][record["id"]] == record
 
 
+def test_user_editing_replays_the_fenced_flight_until_acceptance(connected, monkeypatch):
+    client, generated, path = connected
+    session = TimelineSession.open(
+        "project-slug", "timeline-slug", client=client, outbox_path=path,
+        user_editing_timeout=1, user_editing_interval=0.001,
+    )
+    command = session.queue_move("parent/clip:a", 5)
+    original = generated.commit_timeline
+    calls, fences = [], []
+
+    def defer_twice(project, timeline_id, body, *, idempotency_key):
+        calls.append((request_bytes(body), idempotency_key))
+        fences.append(json.loads(path.read_bytes())["flight"]["fence"])
+        if len(calls) < 3:
+            raise ApiError(409, "refused", "still editing",
+                           details={"status": "refused", "reason": "user_editing"})
+        return original(project, timeline_id, body, idempotency_key=idempotency_key)
+
+    monkeypatch.setattr(generated, "commit_timeline", defer_twice)
+    accepted = session.flush(idempotency_key="deferred-edit")
+    assert accepted["status"] == "accepted"
+    assert len(generated.accepted) == 1
+    assert calls[0] == calls[1] == calls[2]
+    assert len(set(fences)) == 1
+    body = json.loads(calls[0][0])
+    assert body["commands"] == [command]
+    assert body["base_revision_id"] == "r0"
+    assert body["base_publication_id"] == "pub0"
+
+
+def test_user_editing_deadline_saves_pending_and_cancellation_keeps_flight(connected):
+    client, generated, path = connected
+    session = TimelineSession.open(
+        "project-slug", "timeline-slug", client=client, outbox_path=path,
+        user_editing_timeout=0.015, user_editing_interval=0.002,
+    )
+    session.queue_move("parent/clip:a", 5)
+    generated.refusal = ApiError(409, "refused", "still editing",
+                                 details={"status": "refused", "reason": "user_editing"})
+    with pytest.raises(CommitRefused) as caught:
+        session.flush(idempotency_key="wait-cap")
+    saved = json.loads(path.read_bytes())
+    record = saved["pending_changes"][caught.value.pending_id]
+    assert saved["flight"] is None and record["state"] == "pending"
+    assert caught.value.pending_id == record["id"]
+    assert caught.value.detail == (
+        f'The user is still editing; your change is saved as {record["id"]}. '
+        'Retry after they finish.')
+    assert caught.value.fix == f'tl.retry("{record["id"]}")'
+    assert len(generated.calls) >= 2
+
+    from threading import Timer
+    from threading import Event
+
+    cancel = Event()
+    cancel_path = path.parent / "cancelled.json"
+    cancel_generated = Generated(cancel_path)
+    cancel_client = Client(cancel_generated)
+    cancel_generated.refusal = generated.refusal
+    cancelled = TimelineSession.open(
+        "project-slug", "timeline-slug", client=cancel_client, outbox_path=cancel_path,
+        user_editing_timeout=5, user_editing_interval=2, cancel_event=cancel,
+    )
+    cancelled.queue_move("parent/clip:b", 7)
+    before = json.loads(cancel_path.read_bytes())["flight"]
+    timer = Timer(0.01, cancel.set)
+    timer.start()
+    try:
+        with pytest.raises(InterruptedError, match="cancelled"):
+            cancelled.flush(idempotency_key="cancel-wait")
+    finally:
+        timer.cancel()
+    after = json.loads(cancel_path.read_bytes())
+    assert after["flight"] == before
+    assert not after["pending_changes"]
+
+
+def test_user_editing_does_not_rerun_commit_function(connected, monkeypatch):
+    from astrid.sdk.timeline import Timeline
+
+    client, generated, path = connected
+    timeline = Timeline.open(
+        "project-slug", "timeline-slug", client=client, outbox_path=path,
+        user_editing_timeout=1, user_editing_interval=0.001,
+    )
+    original = generated.commit_timeline
+    count = 0
+
+    def defer_twice(project, timeline_id, body, *, idempotency_key):
+        nonlocal count
+        count += 1
+        if count < 3:
+            raise ApiError(409, "refused", "still editing",
+                           details={"status": "refused", "reason": "user_editing"})
+        return original(project, timeline_id, body, idempotency_key=idempotency_key)
+
+    monkeypatch.setattr(generated, "commit_timeline", defer_twice)
+    evaluations = []
+
+    def edit(session):
+        evaluations.append(1)
+        session.move("parent/clip:a", 5)
+
+    result = timeline.commit(edit, label="Deferred function", key="deferred-function")
+    assert result["status"] == "accepted"
+    assert len(evaluations) == 1
+    assert count == 3
+
+
+def test_user_editing_then_field_conflict_saves_the_original_edit(connected, monkeypatch):
+    client, generated, path = connected
+    session = TimelineSession.open(
+        "project-slug", "timeline-slug", client=client, outbox_path=path,
+        user_editing_timeout=1, user_editing_interval=0.001,
+    )
+    command = session.queue_move("parent/clip:a", 5)
+    errors = [
+        ApiError(409, "refused", "still editing",
+                 details={"status": "refused", "reason": "user_editing"}),
+        ApiError(409, "conflict", "the field changed",
+                 details={"status": "conflict", "reason": "value_conflict",
+                          "current": {"revision_id": "r1", "publication_id": "pub1"},
+                          "conflicts": [{"ref": "parent/clip:a", "path": ["at"],
+                                         "theirs": {"state": "present", "value": 9}}]}),
+    ]
+    calls = []
+
+    def defer_then_conflict(project, timeline_id, body, *, idempotency_key):
+        calls.append((request_bytes(body), idempotency_key))
+        raise errors.pop(0)
+
+    monkeypatch.setattr(generated, "commit_timeline", defer_then_conflict)
+    with pytest.raises(CommitConflict) as caught:
+        session.flush(idempotency_key="deferred-conflict")
+    assert len(calls) == 2 and calls[0] == calls[1]
+    saved = json.loads(path.read_bytes())
+    record = saved["pending_changes"][caught.value.pending_id]
+    assert saved["flight"] is None
+    assert record["state"] == "pending"
+    assert record["parts"][0]["commands"] == [command]
+    assert record["failure"]["details"]["conflicts"][0]["path"] == ["at"]
+
+
 @pytest.mark.parametrize("status", ["refused", "invalid"])
 def test_final_refusal_saves_and_releases_dependent_queued_suffix(connected, monkeypatch, status):
     session = open_session(connected)

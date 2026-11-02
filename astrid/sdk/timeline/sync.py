@@ -8,8 +8,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
+import random
 import re
 import shlex
+import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
@@ -65,6 +68,13 @@ class _CommitFailure(TimelineEditError):
             self.presentation["fix"] = (f'Inspect the saved edit with tl.pending_show("{pending_id}"), '
                                         'fix the edit, then retry or drop it.')
             self.presentation.update(pending_id=pending_id, clash=copy.deepcopy(clash))
+            if self.failure.get("details", {}).get("reason") == "user_editing":
+                self.presentation.update(
+                    headline="The user is still editing",
+                    detail=(f'The user is still editing; your change is saved as {pending_id}. '
+                            'Retry after they finish.'),
+                    fix=f'tl.retry("{pending_id}")',
+                )
         elif pending_id is not None:
             retry_call = (f'tl.retry("{pending_id}", your_function)'
                           if isinstance(clash, dict) and clash.get("origin") == "function"
@@ -398,14 +408,22 @@ def _retry_conflict(record, replacement, *, expected_part=None, expected_identit
 
 
 class TimelineSession:
-    def __init__(self, client, outbox, identity, project_id, timeline_id):
+    def __init__(self, client, outbox, identity, project_id, timeline_id, *,
+                 user_editing_timeout=15.0, user_editing_interval=2.0, cancel_event=None):
         self.client, self.outbox, self.identity = client, outbox, identity
         self.project_id, self.timeline_id = project_id, timeline_id
+        self.user_editing_timeout = float(user_editing_timeout)
+        self.user_editing_interval = float(user_editing_interval)
+        if (not math.isfinite(self.user_editing_timeout) or self.user_editing_timeout < 0
+                or not math.isfinite(self.user_editing_interval) or self.user_editing_interval <= 0):
+            raise ValueError("user-editing timeout must be nonnegative and interval positive")
+        self.cancel_event = cancel_event
         self.path = f"/v1/projects/{quote(project_id, safe='')}/timelines/{quote(timeline_id, safe='')}/commit"
 
     @classmethod
     def open(cls, project, timeline, *, client, outbox_path=None,
-             base_revision_id=None, base_publication_id=None):
+             base_revision_id=None, base_publication_id=None,
+             user_editing_timeout=15.0, user_editing_interval=2.0, cancel_event=None):
         from astrid.sdk.storage_root import resolve_runtime_data_root
         from astrid.sdk.timeline.store import resolve_ids
 
@@ -418,7 +436,9 @@ class TimelineSession:
         if outbox_path is None:
             name = hashlib.sha256(request_bytes(scope)).hexdigest() + ".json"
             outbox_path = resolve_runtime_data_root() / "timeline-outbox" / name
-        session = cls(client, Outbox(outbox_path), identity, project_id, timeline_id)
+        session = cls(client, Outbox(outbox_path), identity, project_id, timeline_id,
+                      user_editing_timeout=user_editing_timeout,
+                      user_editing_interval=user_editing_interval, cancel_event=cancel_event)
         session._explicit_outbox = explicit_outbox
         while True:
             with session.outbox.locked():
@@ -1072,9 +1092,32 @@ class TimelineSession:
                 self.outbox.write(state)
             flight = copy.deepcopy(flight)
         try:
-            result = _response(self.client.timelines.commit(
-                self.project_id, self.timeline_id, body, idempotency_key=flight["key"],
-            ))
+            deadline = time.monotonic() + self.user_editing_timeout
+            while True:
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    raise InterruptedError("timeline commit cancelled; original request remains saved")
+                try:
+                    result = _response(self.client.timelines.commit(
+                        self.project_id, self.timeline_id, body, idempotency_key=flight["key"],
+                    ))
+                    break
+                except Exception as exc:
+                    details = getattr(exc, "details", {})
+                    if not (isinstance(details, dict) and details.get("status") == "refused"
+                            and details.get("reason") == "user_editing"):
+                        raise
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    delay = min(remaining, self.user_editing_interval * random.uniform(0.9, 1.1))
+                    if self.cancel_event is not None:
+                        if self.cancel_event.wait(delay):
+                            raise InterruptedError(
+                                "timeline commit cancelled; original request remains saved") from exc
+                    else:
+                        time.sleep(delay)
+        except InterruptedError:
+            raise
         except Exception as exc:
             details = getattr(exc, "details", {})
             if isinstance(details, dict) and details.get("status") in {"conflict", "refused", "invalid"}:

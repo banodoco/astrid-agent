@@ -292,6 +292,49 @@ def test_list_retry_previews_original_base_with_saved_options(monkeypatch, tmp_p
                        "imports": [{"object_id": "media-1"}], "source": {"via": "python"}}]
 
 
+def test_user_editing_retry_probes_once_and_remains_pending_until_release(monkeypatch, tmp_path):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    record = timeline.session.state["pending_changes"]["pc_saved"]
+    record["failure"] = {"details": {"status": "refused", "reason": "user_editing"}}
+    probes = []
+    released = False
+
+    def probe(session, request):
+        probes.append(copy.deepcopy(request))
+        if not released:
+            return {"status": "refused", "details": {"status": "refused", "reason": "user_editing"}}
+        return {"would_status": "merged", "evaluated_head": HEAD, "canonical_document": {}}
+
+    monkeypatch.setattr(retry_module, "_probe", probe)
+    monkeypatch.setattr(retry_module, "_preview_diff", lambda *args: {"changes": []})
+    refused = retry_module.retry(timeline, "pc_saved")
+    assert refused["status"] == "refused"
+    assert timeline.session.state["pending_changes"]["pc_saved"]["state"] == "pending"
+    assert len(probes) == 1
+
+    released = True
+    preview = retry_module.retry(timeline, "pc_saved")
+    assert preview["status"] == "preview"
+    assert len(probes) == 2
+
+
+def test_rederive_for_app_conflict_names_user_value_and_preservation(monkeypatch):
+    record = _record()
+    record["id"] = "pc_user_conflict"
+    record["failure"] = {"details": {"status": "conflict", "conflicts": [
+        {"ref": "parent/clip:a", "path": ["label"],
+         "theirs": {"state": "present", "value": "User label"}},
+    ]}}
+    packet = {"receipts": [{"touches_conflict": True, "via": "app",
+                             "publisher": "app-actor", "label": "Saved user edit"}]}
+    monkeypatch.setattr(retry_module.clash, "friendly_target", lambda *args: "clip a label")
+    summary = retry_module._summary_rederive(record, packet, SimpleNamespace())
+    assert "the user (editor) changed clip a label" in summary
+    assert "User label" in summary
+    assert "preserve it" in summary
+    assert "re-derive only compatible work" in summary
+
+
 def test_commit_preview_submits_identical_base_and_closes_pending(monkeypatch, tmp_path):
     timeline = FakeTimeline(tmp_path / "outbox.json")
     monkeypatch.setattr(retry_module, "_probe", lambda *args: {

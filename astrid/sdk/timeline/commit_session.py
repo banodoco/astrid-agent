@@ -307,8 +307,11 @@ class Timeline(Checkout):
         return key
 
     @classmethod
-    def open(cls, project=None, timeline=None, *, client=None, outbox_path=None):
-        return open(project, timeline, client=client, outbox_path=outbox_path)
+    def open(cls, project=None, timeline=None, *, client=None, outbox_path=None,
+             user_editing_timeout=15.0, user_editing_interval=2.0, cancel_event=None):
+        return open(project, timeline, client=client, outbox_path=outbox_path,
+                    user_editing_timeout=user_editing_timeout,
+                    user_editing_interval=user_editing_interval, cancel_event=cancel_event)
 
     def _adopt(self, bundle):
         self.bundle = copy.deepcopy(bundle)
@@ -1096,7 +1099,8 @@ class Timeline(Checkout):
         )
 
 
-def open(project=None, timeline=None, *, client=None, outbox_path=None):
+def open(project=None, timeline=None, *, client=None, outbox_path=None,
+         user_editing_timeout=15.0, user_editing_interval=2.0, cancel_event=None):
     """Open a Runtime head, retaining any durable request awaiting reconciliation.
 
     With no explicit client, use the configured launcher connection. With no
@@ -1108,7 +1112,10 @@ def open(project=None, timeline=None, *, client=None, outbox_path=None):
     from .store import fetch_bundle
 
     client = client if client is not None else AstridClient.open_from_launcher(start_pack_host=False)
-    session = TimelineSession.open(project, timeline, client=client, outbox_path=outbox_path)
+    session = TimelineSession.open(
+        project, timeline, client=client, outbox_path=outbox_path,
+        user_editing_timeout=user_editing_timeout,
+        user_editing_interval=user_editing_interval, cancel_event=cancel_event)
     with session.outbox.locked():
         base = session._state()["base"]
     bundle = fetch_bundle(session.project_id, session.timeline_id,

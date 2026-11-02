@@ -396,12 +396,20 @@ def _summary_rederive(record, packet, session):
         site = "the changed part"
     cause = "the timeline changed"
     if receipt:
-        cause = f'"{receipt.get("label") or "Another edit"}"'
-        publisher = clash.publisher_name(receipt.get("publisher"))
+        is_user_edit = receipt.get("via") == "app"
+        cause = "the user (editor)" if is_user_edit else f'"{receipt.get("label") or "Another edit"}"'
+        publisher = None if is_user_edit else clash.publisher_name(receipt.get("publisher"))
         if publisher:
             cause += f' ({publisher})'
         cause += f' changed {site}'
-    return (f'"{label}" can no longer apply as reviewed: {cause}. '
+    preserve = ""
+    if receipt and receipt.get("via") == "app":
+        current = conflict.get("theirs")
+        if isinstance(current, dict) and current.get("state") == "present":
+            preserve = f' The user value is {current.get("value")!r}; preserve it and re-derive only compatible work.'
+        else:
+            preserve = ' Preserve the user value and re-derive only compatible work.'
+    return (f'"{label}" can no longer apply as reviewed: {cause}.{preserve} '
             f'Run what produced the list again on the newest timeline, preview it, then commit it '
             f'with pending="{record["id"]}".')
 
@@ -520,6 +528,7 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
         raise ValueError("overwrite requires the original edit function")
     failure = record.get("failure") or {}
     if ((failure.get("details") or {}).get("status") in {"refused", "invalid"}
+            and (failure.get("details") or {}).get("reason") != "user_editing"
             and (record.get("origin") != "function" or fn is None)):
         result = _refused(record, failure, failure)
         if record.get("origin") == "function":
