@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-RUNTIME_ROOT = Path("/home/user/astrid/proof-codex/src/astrid-runtime")
+RUNTIME_ROOT = Path("/home/user/machine/ws-C/src/astrid-runtime")
 
 
 def _run_python(home: Path, script: str, *, packs_root: Path | None = None) -> None:
@@ -73,10 +73,10 @@ def test_existing_personal_pack_bytes_survive_initialization(tmp_path: Path) -> 
     assert (personal / "notes.bin").read_bytes() == other_bytes
 
 
-def test_packs_path_override_gets_its_own_personal_pack(tmp_path: Path) -> None:
+def test_additional_packs_path_does_not_change_personal_pack(tmp_path: Path) -> None:
     home = tmp_path / "home"
     override = tmp_path / "configured-packs"
     _run_python(home, "from astrid.core.pack.personal import ensure_personal_pack; ensure_personal_pack()", packs_root=override)
 
-    assert (override / "personal" / "pack.yaml").is_file()
-    assert not (home / "Astrid" / "packs").exists()
+    assert (home / "Astrid" / "packs" / "personal" / "pack.yaml").is_file()
+    assert not override.exists()
