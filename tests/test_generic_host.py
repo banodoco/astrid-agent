@@ -5035,6 +5035,84 @@ def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkey
     }
 
 
+def _wan_host_with_recording_hooks(monkeypatch, order, *, gate_raises=False, stop_at_prepare=True):
+    """The shipped wan host, with the wan profile's host hooks wrapped to record order."""
+    import dataclasses
+    import astrid.core.generation.availability as availability
+    from astrid.core.pack.loader import _default_pack_roots
+
+    monkeypatch.setattr(availability, "action_availability", lambda _route: {"available": True})
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=_default_pack_roots(), client=runtime)
+    host.discover()
+    base = host._managed_tool_profiles["wan2gp"]
+
+    def gate(capability_id):
+        order.append("before_preflight")
+        if gate_raises:
+            raise RuntimeError("gate refused the route")
+
+    def prepare(task_data, record):
+        order.append("prepare")
+        if stop_at_prepare:
+            raise RuntimeError("stop after prepare")
+        return base.prepare(task_data, record)
+
+    monkeypatch.setitem(host._managed_tool_profiles, "wan2gp", dataclasses.replace(
+        base, before_preflight=gate, prepare=prepare))
+    monkeypatch.setattr(host, "preflight", lambda *_: order.append("preflight"))
+    # Readiness is the host's own record state; the ordering under test starts after it.
+    import dataclasses as _dc
+    host.capabilities["wan2gp.generate_video"] = _dc.replace(host.capabilities["wan2gp.generate_video"], ready=True)
+    task = {'task': {'id': 'wan-task', 'capability': 'wan2gp.generate_video', 'project_id': 'demo',
+                     'attempt_id': 'wan-attempt', 'fence': 1, 'spec': {'spec': {'inputs': {'prompt': 'x'}}}}}
+    runtime.tasks['wan-task'] = task
+    return host, runtime, task
+
+
+def test_wan_hooks_run_in_order_before_any_channel(monkeypatch):
+    """M2-11a: wan runs before_preflight, then preflight, then prepare, and only then
+    would the channel open. The run is stopped at prepare, so no channel is built."""
+    import astrid.core.execution.generic_host as gh
+
+    order: list[str] = []
+    opened: list[object] = []
+    real_channel = gh._HostSessionChannel
+
+    class _Recording(real_channel):
+        def __init__(self, *args, **kwargs):
+            opened.append(args)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(gh, "_HostSessionChannel", _Recording)
+    host, runtime, task = _wan_host_with_recording_hooks(monkeypatch, order)
+    with pytest.raises(Exception, match="stop after prepare"):
+        host.run_task(task, lease_token="lease")
+    assert order == ["before_preflight", "preflight", "prepare"]
+    assert opened == []
+
+
+def test_raising_before_preflight_refuses_before_preflight_and_channel(monkeypatch):
+    """M2-11a: a raising wan gate refuses before preflight, prepare, or any channel."""
+    import astrid.core.execution.generic_host as gh
+
+    order: list[str] = []
+    opened: list[object] = []
+    real_channel = gh._HostSessionChannel
+
+    class _Recording(real_channel):
+        def __init__(self, *args, **kwargs):
+            opened.append(args)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(gh, "_HostSessionChannel", _Recording)
+    host, runtime, task = _wan_host_with_recording_hooks(monkeypatch, order, gate_raises=True)
+    with pytest.raises(Exception, match="gate refused the route"):
+        host.run_task(task, lease_token="lease")
+    assert order == ["before_preflight"]
+    assert opened == []
+
+
 def test_wan_qualification_refuses_before_host_preflight(tmp_path, monkeypatch):
     """M2-11a: the shipped session-declared wan action runs the real availability
     gate before preflight. Only the availability lookup is stubbed, to report the
