@@ -994,9 +994,12 @@ jobs:
       R0_APP: ee66de5d100e0a9b8cf5198961556a68b24cad3e
       R0_RUNTIME: 8e6b7e26b30cfc0bb199bda4979ff2da3f21e8b3
       R0_PINOKIO: 3a6a98ae251ca126505245286e2d3e760f4348e9
-      R0_RUN_ROOT: ${{ runner.temp }}/astrid-r1-direct-linux
-      R0_OUT: ${{ runner.temp }}/combined-native-capture
     steps:
+      - name: Set runner-local capture paths
+        shell: bash
+        run: |
+          printf 'R0_RUN_ROOT=%s/astrid-r1-direct-linux\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'R0_OUT=%s/combined-native-capture\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Check out immutable diagnostic driver
         uses: actions/checkout@v4
         with:
