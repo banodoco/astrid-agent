@@ -11,6 +11,13 @@ from pathlib import Path
 
 from . import update_job
 from .backend import Backend
+from .choices import (
+    CHOICE_NAMES,
+    parse_choice,
+    render_plan,
+    resolve_choices,
+    unattended_consent_required,
+)
 from .core import (
     TERMINAL_STEPS,
     BackupSpaceError,
@@ -33,6 +40,25 @@ PINOKIO_UPDATE_UNINSTALL_REFUSAL = (
 )
 PINOKIO_STOP_REFUSAL = "Astrid is still running. Choose Pinokio's Stop button, then try again."
 RECOVERED_PREVIOUS_VERSION = "Recovered your previous version — run Update again"
+
+
+class _ChoiceAction(argparse.Action):
+    """Store each public choice flag once and reject duplicate flags."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        seen = getattr(namespace, "_seen_choices", set())
+        if self.dest in seen:
+            raise argparse.ArgumentError(self, f"{option_string} may only be supplied once.")
+        seen = set(seen)
+        seen.add(self.dest)
+        setattr(namespace, "_seen_choices", seen)
+        try:
+            parsed = parse_choice(values)
+        except ValueError as failure:
+            raise argparse.ArgumentError(self, str(failure)) from failure
+        current_values = dict(getattr(namespace, "choices", None) or {})
+        current_values[self.dest] = parsed
+        setattr(namespace, "choices", current_values)
 
 
 def _pinokio_claim_is_live(recorded: dict) -> bool:
@@ -66,6 +92,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--sandbox", action="store_true",
                         help="run inside a seccomp sandbox such as OpenShell: Runtime's sandbox process control "
                              "(docs/setup/openshell-sandbox.md); selected for this install or update")
+    result.add_argument("--yes", action="store_true", help="accept the recommended setup choices")
+    result.set_defaults(choices={})
+    for name in CHOICE_NAMES:
+        flag = "--skill-copies" if name == "skill_copies" else f"--{name}"
+        result.add_argument(flag, dest=name, metavar="on|off", action=_ChoiceAction,
+                            help=f"set {name.replace('_', ' ')} to on or off")
     return result
 
 
@@ -101,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
         parser().error("--update-app requires --managed-by pinokio and keeps the existing workspace and process settings.")
     if args.sandbox and mode not in ("install", "update"):
         parser().error("--sandbox is only valid for install or update.")
+    if (args.yes or args.choices) and mode not in {"install", "update"}:
+        parser().error("setup choices and --yes are only valid for install or update.")
     if args.update_job and (not args.root or not args.root.is_absolute() or not args.data_root
                             or not args.data_root.is_absolute() or not args.manifest
                             or args.update_app or args.uninstall or args.doctor is not None
@@ -132,6 +166,14 @@ def main(argv: list[str] | None = None) -> int:
 
             backend.managed_by = "pinokio"
             pending = read_json(root / "update-transaction.json")
+            if mode in {"install", "update"}:
+                pinokio_record = backend.service.recorded()
+                backend.service.choices = resolve_choices(
+                    explicit=args.choices,
+                    saved=pinokio_record.get("choices"),
+                    accept_recommended=args.yes,
+                    existing_install=True,
+                )
             # A running session holds lifetime admission. A stopped operation
             # retains its own custody across manifest preparation and activation.
             selection(root, backend, allow_transaction=bool(pending))
@@ -251,6 +293,30 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory belongs to another installer.")
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
+                existing_install = (
+                    marker.get("owner") == LABEL
+                    or (recorded.get("owner") == LABEL
+                        and recorded.get("program_root") == str(root)
+                        and not recorded.get("uninstalled"))
+                )
+                matching_selection = (
+                    recorded.get("owner") == LABEL
+                    and recorded.get("program_root") == str(root)
+                    and not recorded.get("uninstalled")
+                )
+                resolved_choices = resolve_choices(
+                    explicit=args.choices,
+                    saved=recorded.get("choices") if matching_selection else None,
+                    accept_recommended=args.yes,
+                    existing_install=existing_install,
+                ) if mode in {"install", "update"} else None
+                if mode in {"install", "update"} and unattended_consent_required(
+                        existing_install=existing_install, accept_recommended=args.yes,
+                        interactive=sys.stdin.isatty()):
+                    print(render_plan(resolved_choices))
+                    return 2
+                if resolved_choices is not None:
+                    backend.service.choices = resolved_choices
                 pending_update = pending_transaction(root)
                 if mode in {"install", "update"} and pending_update:
                     if pending_update.get("transaction_kind") == "app":
@@ -306,7 +372,8 @@ def main(argv: list[str] | None = None) -> int:
                     write_json(root / "install.json", marker)
                     if managed_by == "pinokio":
                         write_json(backend.service.selection, {**recorded, "owner": LABEL,
-                                   "program_root": str(root), "data_root": str(data), "managed_by": "pinokio"})
+                               "program_root": str(root), "data_root": str(data), "managed_by": "pinokio",
+                               "choices": resolved_choices})
                 print(f"Using your workspace at {data}.")
                 manifest = {}
                 if mode not in {"uninstall", "doctor"}:

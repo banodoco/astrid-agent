@@ -402,6 +402,7 @@ class Service:
         self.home, self.system, self.say = home or Path.home(), system or sys.platform, say
         self.selection = install_selection(self.home, self.system)
         self.env_file = root / "service-env.json"
+        self.choices: dict[str, bool] | None = None
         # Retain our child handle for bookkeeping; C1 and the live recorded
         # process identity decide whether an unpublished owner can be stopped.
         self._foreground_process = None
@@ -990,10 +991,13 @@ class Service:
         else:
             xml_path = str(self.path).replace("'", "''")
             self.powershell(f"Register-ScheduledTask -TaskName '{TASK}' -Xml ([IO.File]::ReadAllText('{xml_path}')) -Force | Out-Null")
-        persist_install_identity(version, self.root, selection=self.selection, fields={
+        fields = {
             "owner": LABEL, "program_root": str(self.root),
             "data_root": str(data), "service_settings": settings,
-        })
+        }
+        if self.choices is not None:
+            fields["choices"] = self.choices
+        persist_install_identity(version, self.root, selection=self.selection, fields=fields)
 
     def settings(self) -> dict:
         settings = read_json(self.env_file)

@@ -1124,7 +1124,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
     def persist_identity(self, version: Version) -> None:
         """Upgrade legacy version and selection records without service changes."""
-        persist_install_identity(version, self.root, selection=self.service.selection)
+        choices = getattr(self.service, "choices", None)
+        fields = {"choices": choices} if choices is not None else None
+        persist_install_identity(version, self.root, selection=self.service.selection,
+                                 fields=fields)
 
     def start(self, version: Version, data: Path) -> None:
         if self.managed_by == "pinokio":
