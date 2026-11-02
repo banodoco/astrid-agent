@@ -1094,56 +1094,15 @@ def _powershell_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _environment_value(environment: dict, name: str) -> str:
-    return next((str(value) for key, value in environment.items()
-                 if key.casefold() == name.casefold()), "")
-
-
-def _has_pwsh_module_path(value: str) -> bool:
-    return any(marker in entry.replace("/", "\\").casefold()
-               for entry in value.split(";")
-               for marker in (r"\powershell\7", r"\documents\powershell"))
-
-
-def _windows_bootstrap_environment(parts: list[str], log: Path, env: dict | None) -> dict | None:
-    """Prepare the native Windows PowerShell module path for one bootstrap child."""
-    if (sys.platform != "win32" or log.name not in _WINDOWS_BOOTSTRAP_LOGS
-            or not parts or ntpath.basename(parts[0]).casefold() != "powershell.exe"):
-        return env
-    environment = dict(os.environ if env is None else env)
-    inherited_module_path = _environment_value(environment, "PSModulePath")
-    remediation = "not-required"
-    if _has_pwsh_module_path(inherited_module_path):
-        program_files = _environment_value(environment, "ProgramFiles")
-        system_root = _environment_value(environment, "SystemRoot")
-        if program_files and system_root:
-            environment = {key: value for key, value in environment.items()
-                           if key.casefold() != "psmodulepath"}
-            environment["PSModulePath"] = (f"{program_files}\\WindowsPowerShell\\Modules;"
-                                            f"{system_root}\\System32\\WindowsPowerShell\\v1.0\\Modules")
-            remediation = "windows-powershell-defaults"
-        else:
-            remediation = "defaults-unavailable"
-    for key in tuple(environment):
-        if key.casefold() in {"astrid_journey_psmodulepath_before",
-                              "astrid_journey_psmodulepath_remediation"}:
-            environment.pop(key)
-    # These values exist only until the wrapper has written its diagnostic and
-    # removes them immediately before it invokes the frozen installer bytes.
-    environment["ASTRID_JOURNEY_PSMODULEPATH_BEFORE"] = inherited_module_path
-    environment["ASTRID_JOURNEY_PSMODULEPATH_REMEDIATION"] = remediation
-    return environment
-
-
 def _windows_bootstrap_command(parts: list[str], log: Path) -> list[str]:
-    """Diagnose, and only when observed repair, the bootstrap PowerShell environment.
+    """Record the PowerShell bootstrap environment before the frozen installer runs.
 
     The frozen release-0 installer must remain untouched.  This wrapper executes
     immediately before it in the same Windows PowerShell process, so the retained
-    bootstrap log records the effective edition and module path even if the
-    installer fails before producing its own diagnostics.  A reset is deliberately
-    conditional on the observed inherited path: an unrelated bootstrap environment
-    is not silently changed.
+    bootstrap log records the actual child edition and inherited module path even
+    if the installer fails before producing its own diagnostics.  It deliberately
+    does not change the child environment: the supplied ``env`` is passed to the
+    subprocess verbatim by ``run`` below.
     """
     if (sys.platform != "win32" or log.name not in _WINDOWS_BOOTSTRAP_LOGS
             or not parts or ntpath.basename(parts[0]).casefold() != "powershell.exe"):
@@ -1158,29 +1117,13 @@ def _windows_bootstrap_command(parts: list[str], log: Path) -> list[str]:
     script_args = " ".join(_powershell_quote(value) for value in parts[file_index + 2:])
     invocation = " ".join(item for item in (_powershell_quote(script_path), script_args) if item)
     diagnostic = r"""
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$journeyModulePathBefore = [string]$env:ASTRID_JOURNEY_PSMODULEPATH_BEFORE
-$journeyRemediation = [string]$env:ASTRID_JOURNEY_PSMODULEPATH_REMEDIATION
-Remove-Item Env:ASTRID_JOURNEY_PSMODULEPATH_BEFORE -ErrorAction SilentlyContinue
-Remove-Item Env:ASTRID_JOURNEY_PSMODULEPATH_REMEDIATION -ErrorAction SilentlyContinue
-$journeyContaminated = @($journeyModulePathBefore -split ';' | Where-Object {
-    $_ -match '(?i)\\PowerShell\\7(?:\\|$)|\\Documents\\PowerShell(?:\\|$)'
-}).Count -gt 0
-function Get-JourneyBoundedValue([string]$Value) {
-    $limit = 4096
-    if ($Value.Length -le $limit) { return $Value }
-    return $Value.Substring(0, $limit) + '...[truncated]'
-}
+$journeyModulePath = [string]$env:PSModulePath
 $journeyDiagnostic = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     event = 'powershell-bootstrap-environment'
-    ps_edition = $PSVersionTable.PSEdition
-    ps_version = $PSVersionTable.PSVersion.ToString()
-    ps_module_path_before = Get-JourneyBoundedValue $journeyModulePathBefore
-    pwsh_path_contamination = $journeyContaminated
-    remediation = $journeyRemediation
-    ps_module_path_effective = Get-JourneyBoundedValue ([string]$env:PSModulePath)
+    ps_edition = [string]$PSVersionTable.PSEdition
+    ps_version = [string]$PSVersionTable.PSVersion
+    ps_module_path = $journeyModulePath
 }
 Write-Output ('JOURNEY_POWERSHELL_BOOTSTRAP_ENV=' + ($journeyDiagnostic | ConvertTo-Json -Compress))
 """.strip()
@@ -1193,7 +1136,6 @@ def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: 
     if (log.name == "seed.json" and len(parts) >= 4 and
             Path(parts[2]).name == "journey_workspace.py" and parts[3] == "seed"):
         return run_seed(parts, log, env=env, timeout=timeout)
-    env = _windows_bootstrap_environment(parts, log, env)
     parts = _windows_bootstrap_command(parts, log)
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run(parts, env=env, stdout=stream,
