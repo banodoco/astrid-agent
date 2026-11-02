@@ -1,0 +1,213 @@
+{
+  "task": "UPD-R0-CANDIDATE-PIN",
+  "created_at_utc": "2026-11-02T20:35:20Z",
+  "status": "provisional_proof_tuple_pushed",
+  "repository": "banodoco/astrid-agent",
+  "branch": "lane/M-R1FIX/UPD-R0-CANDIDATE-PIN",
+  "base": {
+    "sha": "6614cbe44bc950e239b0c7d3bd86a74c47818696",
+    "parents": ["3936c75980123070d4000f7c2871b8b4d4a0c04f"],
+    "tree": "f14c9b81418f8934dc0e82d230588dcb2ac3e97d",
+    "subject": "fix(installer): keep second launchd admission static"
+  },
+  "head": {
+    "sha": "f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9",
+    "parents": ["6614cbe44bc950e239b0c7d3bd86a74c47818696"],
+    "tree": "37eced3e5a114248be14088cc39dd9e5b3c3061c",
+    "subject": "chore(runtime): pin interruption proof candidate"
+  },
+  "push": {
+    "remote": "origin",
+    "ref": "refs/heads/lane/M-R1FIX/UPD-R0-CANDIDATE-PIN",
+    "observed_head": "f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9",
+    "force_push": false,
+    "inner_exit": 0
+  },
+  "authorization": {
+    "orchestrator_ruling": "2026-11-02T20:20:59Z",
+    "ruling": "The successor Agent commit must update runtime.lock.json to Runtime 255ecda21ba904520eb867936ef173cc5f7d3ae4; verify source_commit equals the named Runtime SHA before handoff.",
+    "exception": "The authorized provisional proof candidate is permitted to pin the unlanded Runtime lane."
+  },
+  "runtime_tuple": {
+    "producer_branch": "lane/M-RT/R-LINUX-INTERRUPTION-995",
+    "producer_commit": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "producer_parent": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "producer_subject": "Bridge legacy Linux owner birth IDs",
+    "source_commit": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "previous_source_commit": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "producer": "astrid-runtime",
+    "producer_version": "sha256:37a460109f3644e71010dd7626ea15cfbffe8e6e5705470d5ea56baa2b2a3576",
+    "producer_manifest": "contract/artifacts.json",
+    "producer_manifest_sha256": "561a17fedf1ab56c3cf892cf84f2df6313bb378ed3605f5757ab6fc86ed0fc5b",
+    "verified_artifact_count": 16,
+    "runtime_lock_sha256": "480d503612cc1041b968951510523413a77d6d1504d44163f02f8c49b69f74a5",
+    "packaged_runtime_lock_sha256": "480d503612cc1041b968951510523413a77d6d1504d44163f02f8c49b69f74a5",
+    "root_and_packaged_lock_bytes_equal": true,
+    "source_commit_matches_producer_head": true,
+    "all_vendored_file_hashes_match_producer_manifest_and_bytes": true
+  },
+  "generated_changes": [
+    {
+      "path": "runtime.lock.json",
+      "before_sha256": "859d67343dccbe71b216d114360e1f614fefd6629358038e4488c5b2a232e2a7",
+      "after_sha256": "480d503612cc1041b968951510523413a77d6d1504d44163f02f8c49b69f74a5",
+      "change": "source_commit only: 2776ba973b6c8f3555b5629b0840d9691a98d3c2 -> 255ecda21ba904520eb867936ef173cc5f7d3ae4"
+    },
+    {
+      "path": "astrid/resources/runtime.lock.json",
+      "before_sha256": "859d67343dccbe71b216d114360e1f614fefd6629358038e4488c5b2a232e2a7",
+      "after_sha256": "480d503612cc1041b968951510523413a77d6d1504d44163f02f8c49b69f74a5",
+      "change": "generated packaged copy, identical to the root lock"
+    }
+  ],
+  "scope_audit": {
+    "base_to_head_paths": ["astrid/resources/runtime.lock.json", "runtime.lock.json"],
+    "diff_check_inner_exit": 0,
+    "candidate_patch_sha256": "e56b0624344c8c1d09955ec2b1a94a02553e3a600e0317c49f8da455ad1cda64",
+    "base_is_ancestor_inner_exit": 0,
+    "predecessor_installer_and_test_paths_unchanged_inner_exit": 0,
+    "agent_worktree_clean": true,
+    "runtime_worktree_clean": true,
+    "no_other_product_bytes_changed": true
+  },
+  "preserved_recovery_fix": {
+    "predecessor_head": "6614cbe44bc950e239b0c7d3bd86a74c47818696",
+    "included_commits": [
+      {"sha": "3936c75980123070d4000f7c2871b8b4d4a0c04f", "subject": "fix(installer): retain exact R0 bootout identity"},
+      {"sha": "6614cbe44bc950e239b0c7d3bd86a74c47818696", "subject": "fix(installer): keep second launchd admission static"}
+    ],
+    "unchanged_sha256": {
+      "astrid/installer/backend.py": "cf74263092ee528c644283853a4480b25da40c48d44bcda306219aee701798c0",
+      "astrid/installer/service.py": "6f8cd99f927c3a1392bd77b0429054f5250c3f3d38826ca817b3665b3c7faa33",
+      "tests/test_installer_launchd_stop_handoff.py": "55166ab5123661444bf1ea05849cf9bc192819d4878529735c4683c9fd12b363",
+      "tests/test_installer_launchd_stop_refusals.py": "be0b245bc3ba012536d47b8c31840fa5bd7eaaa3b136fa6bb7c2eb8adefeb41c"
+    }
+  },
+  "commands": [
+    {
+      "command": "CODEX_WORKSPACE=/home/user/merge/ws/M-R1FIX /home/user/merge/kit/codex/task-clone.sh astrid-agent .../UPD-R0-CANDIDATE-PIN/repo 6614cbe44bc950e239b0c7d3bd86a74c47818696",
+      "inner_exit": 0,
+      "output": "task-clone: repo at 6614cbe44bc"
+    },
+    {
+      "command": "CODEX_WORKSPACE=/home/user/merge/ws/M-R1FIX /home/user/merge/kit/codex/task-clone.sh astrid-runtime .../UPD-R0-CANDIDATE-PIN/runtime 255ecda21ba904520eb867936ef173cc5f7d3ae4",
+      "inner_exit": 0,
+      "output": "task-clone: runtime at 255ecda21ba"
+    },
+    {
+      "command": "git switch -c lane/M-R1FIX/UPD-R0-CANDIDATE-PIN 6614cbe44bc... && git push -u origin lane/M-R1FIX/UPD-R0-CANDIDATE-PIN",
+      "inner_exit": 0,
+      "output": "WIP branch published at 6614cbe44bc before refresh work"
+    },
+    {
+      "command": "Inspect scripts/vendor_lock.py and scripts/refresh_runtime_client.py",
+      "inner_exit": 0,
+      "output": "Inspected before mutation. Refresh archives the clean producer, generates in the archive, checks its artifact manifest, then uses vendor_lock.update."
+    },
+    {
+      "command": "python3 scripts/vendor_lock.py check runtime.lock.json",
+      "inner_exit": 0,
+      "output": "ok runtime.lock.json"
+    },
+    {
+      "command": "python3 scripts/refresh_runtime_client.py --producer ../runtime",
+      "inner_exit": 0,
+      "output": "refreshed Runtime artifacts from 255ecda21ba9"
+    },
+    {
+      "command": "python3 ../runtime/generators/generate.py --check",
+      "inner_exit": 0,
+      "output": "no stale generated Runtime client output"
+    },
+    {
+      "command": "python3 ../runtime/scripts/artifact_manifest.py --check",
+      "inner_exit": 0,
+      "output": "contract/artifacts.json is current"
+    },
+    {
+      "command": "python3 scripts/vendor_lock.py check runtime.lock.json --producer ../runtime",
+      "inner_exit": 0,
+      "output": "ok runtime.lock.json (matches producer manifest)"
+    },
+    {
+      "command": "stdlib provenance verifier: assert producer HEAD/source_commit, root/package lock byte equality, and each of 16 consumer hashes and bytes against contract/artifacts.json",
+      "inner_exit": 0,
+      "output": "source_commit=255ecda21ba904520eb867936ef173cc5f7d3ae4; verified_artifact_count=16"
+    },
+    {
+      "command": "PYTHONPATH=repo:runtime /tmp/v03-win-security-test/bin/python -m pytest -q tests/test_product_resources.py --tb=short",
+      "inner_exit": 0,
+      "output": "3 passed in 0.94s; one non-failing PytestConfigWarning that this cached environment lacks pytest-timeout"
+    },
+    {
+      "command": "PYTHONPATH=repo:runtime /tmp/v03-win-security-test/bin/python -m pytest -q tests/stage1/test_vendored_workspace_client_parity_luna.py::test_vendored_client_is_the_locked_runtime_artifact --tb=short",
+      "inner_exit": 0,
+      "output": "1 passed in 0.33s; the same non-failing cached-environment pytest-timeout warning"
+    },
+    {
+      "command": "git diff --check 6614cbe44bc950e239b0c7d3bd86a74c47818696..f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9; scope and preservation audits",
+      "inner_exit": 0,
+      "output": "only astrid/resources/runtime.lock.json and runtime.lock.json changed; predecessor installer/test path diff empty"
+    },
+    {
+      "command": "git push origin lane/M-R1FIX/UPD-R0-CANDIDATE-PIN && git ls-remote --heads origin lane/M-R1FIX/UPD-R0-CANDIDATE-PIN",
+      "inner_exit": 0,
+      "output": "f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9 refs/heads/lane/M-R1FIX/UPD-R0-CANDIDATE-PIN"
+    }
+  ],
+  "vendor_artifact_hashes": {
+    "astrid/core/timeline/schema/timeline-config.schema.json": "sha256:f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08",
+    "astrid_runtime_client/__init__.py": "sha256:3892dbf37a38b4fb8222056a41bfed477c35345aa7f85e21c25ec65248247787",
+    "astrid_runtime_client/contract_metadata.py": "sha256:794471df339a1bf0d2823f88816162039f1930e48e8df3c9815d0a316244c1f8",
+    "astrid_runtime_client/generated.py": "sha256:a37270d78067610509b25f64f45ac55a57d9e43506fc172a0747277069845c79",
+    "astrid_runtime_client/timeline_commit_types.py": "sha256:6c0d21d3eb87cff2977f9e33a5b4d0da13676c4ebad0df4c935f39106a45b417",
+    "tests/fixtures/runtime-responses/commit_conflict_409.json": "sha256:e06c5818e9c37a1e1118d3e2df2447808277d148553bb3c418e48b1a3c6e4c08",
+    "tests/fixtures/runtime-responses/events_page_1_200.json": "sha256:235b4de800c6a234d537c2607682f0ba9a03331af76c664e4bbf890acba285fb",
+    "tests/fixtures/runtime-responses/events_page_2_200.json": "sha256:d5bffdc93e9939779c92a18c047e70df21711f12e16c345f43f3cbdec5b27eb2",
+    "tests/fixtures/runtime-responses/invalid_cursor_400.json": "sha256:16a1db399e06b8d059472f567a091b4bd579d13d8885595376f61835646bfbff",
+    "tests/fixtures/runtime-responses/managed_outputs_200.json": "sha256:6bcef19aca4ad8d574c60d738b54ba57fce6a3a9d4e1481c6f8f088dd460858d",
+    "tests/fixtures/runtime-responses/not_found_404.json": "sha256:4a40fedbeccd345f24944e4af368c50430593d976a923c12af93ba21faa21af6",
+    "tests/fixtures/runtime-responses/retired_route_410.json": "sha256:e3b43083786aae88fe3aabaaf8de631803c6a11610607eb7c3527f999aa80292",
+    "tests/fixtures/runtime-responses/task_admission_201.json": "sha256:108559a92c9e681e3ade37fa6b567e1eaac3edce221665a07a81c2c2c06bb48c",
+    "tests/fixtures/runtime-responses/task_read_200.json": "sha256:cc590c4f7d34820382b684d737f1cdb45eebeb20fbad2d5edda2dadac8ab2829",
+    "tests/fixtures/runtime-responses/validation_error_422.json": "sha256:2a02a9147bc0a8b74727d9c577803b0aca333bd0dd035602dafcf2503b00ff1a",
+    "tests/fixtures/visual-boundary-v1.json": "sha256:1fc778b42f7a5ef91a1fd8620fd92417131e44f97dd5c6a238c78f13bcabfc55"
+  },
+  "carry_forward": {
+    "task": "UPD-R0-RECOVERY-RETAINED",
+    "report": "/home/user/merge/ws/M-R1FIX/queue/pending/UPD-R0-RECOVERY-RETAINED/REPORT.md",
+    "report_sha256": "5ba568fef5fda7d45f0fbb203ba862abedf14ba3a221cd4036ca28ffc343d1a4",
+    "receipt": "/home/user/merge/ws/M-R1FIX/queue/pending/UPD-R0-RECOVERY-RETAINED/canonical-receipt.json",
+    "receipt_sha256": "d10dbf298ba1e8d4591b2a529e7489095c71ebea0ee434c4118195c13af05e17",
+    "installer_focused_proof": "Carried unchanged; intentionally not rerun. Its receipt records 10 named launchd cases, 59 launchd refusal/handoff cases, 9 R0 service-adoption cases, and 8 bounded pre-stop recovery cases passing."
+  },
+  "inputs": {
+    "orchestrator_sha256": "8f46bee1ea682dfde7f8ac0183ff7e4dc23dd765d17f1e1ca1beb542d9e1d09a",
+    "decisions_sha256": "ac554c9bd5591eb707d3b46fb81adfff6dccdc073aeff4f13f628b2a0ce6f47f"
+  },
+  "coverage": [
+    "exact provisional Runtime source pin",
+    "clean Runtime archive regeneration and producer artifact-manifest freshness",
+    "root/package runtime lock parity",
+    "all 16 vendored consumer artifacts compared byte-for-byte and by recorded producer hash",
+    "focused packaged-resource parity",
+    "focused vendored-client lock freshness",
+    "predecessor recovery-fix preservation and candidate scope audit"
+  ],
+  "limitations": [
+    "This is a provisional Agent/Runtime proof tuple, not an integration handoff.",
+    "The Runtime lane is provisional and not separately published; the exception is limited to this directed candidate.",
+    "No protected approval, proof-only App manifest, hosted journey, native macOS journey, or exact-tuple qualification is claimed.",
+    "Predecessor installer tests were deliberately carried forward, not rerun, because this task changed no installer code or tests.",
+    "The test runner was an existing shared cached virtual environment; its missing pytest-timeout plugin emitted only a PytestConfigWarning and did not affect the four passing focused checks.",
+    "No force push, shared-branch change, or product write outside the two Runtime lock copies occurred."
+  ],
+  "claims_not_made": [
+    "protected approval",
+    "integration handoff",
+    "published Runtime release",
+    "hosted or native proof",
+    "full-suite acceptance"
+  ]
+}
+

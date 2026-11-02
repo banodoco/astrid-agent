@@ -1,0 +1,165 @@
+{
+  "task": "UPD-R0-RECOVERY-RETAINED",
+  "created_at_utc": "2026-11-02T20:27:53Z",
+  "status": "candidate_pushed_worker_complete_awaiting_protected_review_and_compatible_tuple",
+  "repository": "banodoco/astrid-agent",
+  "branch": "lane/M-R1FIX/UPD-R0-RECOVERY-RETAINED",
+  "base": "839173a36dbd8f4eea3dc6d40f924ed576d59124",
+  "upstream_base": "648f99e122019faf9734a6e2e5a68aff48eaa5ce",
+  "head": "6614cbe44bc950e239b0c7d3bd86a74c47818696",
+  "head_tree": "f14c9b81418f8934dc0e82d230588dcb2ac3e97d",
+  "parents": [
+    "3936c75980123070d4000f7c2871b8b4d4a0c04f"
+  ],
+  "commits": [
+    {
+      "sha": "3936c75980123070d4000f7c2871b8b4d4a0c04f",
+      "parent": "839173a36dbd8f4eea3dc6d40f924ed576d59124",
+      "subject": "fix(installer): retain exact R0 bootout identity"
+    },
+    {
+      "sha": "6614cbe44bc950e239b0c7d3bd86a74c47818696",
+      "parent": "3936c75980123070d4000f7c2871b8b4d4a0c04f",
+      "subject": "fix(installer): keep second launchd admission static"
+    }
+  ],
+  "push": {
+    "remote": "origin",
+    "ref": "refs/heads/lane/M-R1FIX/UPD-R0-RECOVERY-RETAINED",
+    "observed_head": "6614cbe44bc950e239b0c7d3bd86a74c47818696",
+    "inner_exit": 0,
+    "force_push": false
+  },
+  "tuple": {
+    "agent_candidate": "6614cbe44bc950e239b0c7d3bd86a74c47818696",
+    "runtime_candidate_for_eventual_proof": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "agent_runtime_lock_source_commit": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "compatible_for_proof_manifest": false,
+    "disposition": "M-INT's 20:20Z ruling requires this Agent candidate to pin Runtime 255ecda21 in runtime.lock.json. That file is outside this task's explicit write scope, so no compatible combined tuple or exact-tuple proof is claimed."
+  },
+  "scope": [
+    "astrid/installer/backend.py",
+    "astrid/installer/service.py",
+    "tests/test_installer_launchd_stop_handoff.py",
+    "tests/test_installer_launchd_stop_refusals.py"
+  ],
+  "implementation": {
+    "retained_identity": "bootout_intent now durably retains the first admitted live R0 PID, discovery birth ID, observed process birth ID, UID, and resolved executable; the existing snapshot continues to bind domain, label, path, exact plist bytes/digest, and action",
+    "recovery": "only a recovering retained-R0 stop whose current loaded identity matches that exact durable live tuple may repeat immediate admission and bootout before C1",
+    "fail_closed": "changed/reused PID or birth, discovery mismatch, UID/executable/static-definition mismatch, missing or malformed identity, and stopped/no-PID ambiguity refuse without bootout",
+    "restoration": "successful recovery continues to atomically restore and bootstrap the digest-bound original R0 plist"
+  },
+  "proof_commands": [
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-RECOVERY-RETAINED/tmp .venv/bin/python -m pytest -q -o addopts= tests/test_installer_launchd_stop_handoff.py::test_second_admission_refusal_recovers_the_same_retained_r0_job tests/test_installer_launchd_stop_handoff.py::test_fresh_recovery_after_prebootout_interruption_restores_retained_r0 tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_same_definition_with_replacement_live_identity tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_stopped_job_without_exact_live_identity tests/test_installer_launchd_stop_refusals.py::test_r0_prebootout_admission_refuses_each_owner_mismatch tests/test_installer_launchd_stop_refusals.py::test_r0_post_bootout_reappearance_refuses_the_replacement_pid --tb=short",
+      "inner_exit": 0,
+      "result": "10 passed in 3.39s",
+      "coverage": "second-admission refusal recovery; fresh pre-bootout interruption recovery; replacement live identity; stopped/no-PID ambiguity; label/path/arguments/executable/UID mismatch controls; post-bootout reappearance"
+    },
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-RECOVERY-RETAINED/tmp .venv/bin/python -m pytest -q -o addopts= tests/test_installer_launchd_stop_refusals.py tests/test_installer_launchd_stop_handoff.py --tb=short",
+      "inner_exit": 0,
+      "result": "59 passed in 30.93s",
+      "coverage": "complete launchd refusal and real Backend/C1 handoff fixture sets, including crash-after-bootout recovery and downstream rollback"
+    },
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-RECOVERY-RETAINED/tmp .venv/bin/python -m pytest -q -o addopts= tests/test_installer_release0_service_adoption.py --tb=short",
+      "inner_exit": 0,
+      "result": "9 passed in 0.44s",
+      "coverage": "reviewed R0 service action adoption"
+    },
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-RECOVERY-RETAINED/tmp .venv/bin/python -m pytest -q -o addopts= -m 'not integration and not darwin_native and not live' tests/test_installer_pre_stop_recovery.py -k 'not pinokio_update_recovers_crash_after_stopping_save_after_busy_refusal' --tb=short",
+      "inner_exit": 0,
+      "result": "8 passed, 1 deselected in 4.09s",
+      "coverage": "bounded pre-stop transaction recovery paths not dependent on the base custody-script regression"
+    }
+  ],
+  "quality_commands": [
+    {
+      "command": ".venv/bin/python -m py_compile astrid/installer/backend.py astrid/installer/service.py tests/test_installer_launchd_stop_handoff.py tests/test_installer_launchd_stop_refusals.py",
+      "inner_exit": 0
+    },
+    {
+      "command": "git diff --check 839173a36dbd8f4eea3dc6d40f924ed576d59124..HEAD",
+      "inner_exit": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor 839173a36dbd8f4eea3dc6d40f924ed576d59124 HEAD",
+      "inner_exit": 0
+    },
+    {
+      "command": "git ls-remote --heads origin lane/M-R1FIX/UPD-R0-RECOVERY-RETAINED",
+      "inner_exit": 0,
+      "result": "6614cbe44bc950e239b0c7d3bd86a74c47818696 refs/heads/lane/M-R1FIX/UPD-R0-RECOVERY-RETAINED"
+    }
+  ],
+  "non_proof_attempts": [
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-RECOVERY-RETAINED/tmp .venv/bin/python -m pytest -q -o addopts= tests/test_installer_launchd_stop_handoff.py::test_second_admission_refusal_recovers_the_same_retained_r0_job tests/test_installer_launchd_stop_handoff.py::test_fresh_recovery_after_prebootout_interruption_restores_retained_r0 tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_same_definition_with_replacement_live_identity tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_stopped_job_without_exact_live_identity --tb=short",
+      "inner_exit": 1,
+      "result": "3 failed, 1 passed; development run exposed that the second admission comparison occurred before attaching the current live tuple; fixed before proof"
+    },
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-RECOVERY-RETAINED/tmp .venv/bin/python -m pytest -q -o addopts= tests/test_installer_launchd_stop_refusals.py tests/test_installer_launchd_stop_handoff.py --tb=short",
+      "inner_exit": 1,
+      "result": "4 failed, 55 passed; development run showed live-state comparison changed the accepted running-to-stopped second-admission transition; fixed by retaining static second-admission comparison and reserving the live tuple for recovery classification"
+    },
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-RECOVERY-RETAINED/tmp .venv/bin/python -m pytest -q -o addopts= tests/test_installer_release0_service_adoption.py tests/test_installer_pre_stop_recovery.py tests/test_installer_release0_rollback.py tests/test_installer_update_recovery.py tests/test_installer_cli_recovery.py --tb=short",
+      "inner_exit": 1,
+      "result": "11 failed, 43 passed, 52 errors; invalid broad selection cleared the default marker exclusion and selected integration nodes without ASTRID_RUNTIME_CHECKOUT and other declared fixtures; custody subprocess nodes also reproduced the base isolated relative-import failure"
+    },
+    {
+      "command": "TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-RECOVERY-RETAINED/tmp .venv/bin/python -m pytest -q -o addopts= -m 'not integration and not darwin_native and not live' tests/test_installer_release0_service_adoption.py tests/test_installer_pre_stop_recovery.py tests/test_installer_release0_rollback.py tests/test_installer_update_recovery.py tests/test_installer_cli_recovery.py --tb=short",
+      "inner_exit": 1,
+      "result": "11 failed, 43 passed, 52 deselected; all failures use the unchanged custody.py isolated-script relative import introduced at upstream base 648f99e1; valid bounded selections were rerun separately"
+    }
+  ],
+  "coverage": [
+    "positive retained-original recovery after a second launchd admission refusal",
+    "positive fresh-controller recovery after interruption between persisted intent and bootout",
+    "exact-byte original R0 plist restoration and bootstrap",
+    "replacement live PID/birth refusal even with identical plist/action",
+    "stopped/no-PID recovery ambiguity refusal",
+    "label, plist path, arguments, executable and UID mismatches",
+    "post-bootout reappearance refusal",
+    "affected launchd handoff, rollback, adoption and bounded pre-stop recovery"
+  ],
+  "hashes": {
+    "candidate_patch_sha256": "55099363b6904f8cfffafe4b75da99717ffc9fbe67e8c6d998e1fa13a71794e5",
+    "astrid_installer_backend_py_sha256": "cf74263092ee528c644283853a4480b25da40c48d44bcda306219aee701798c0",
+    "astrid_installer_service_py_sha256": "6f8cd99f927c3a1392bd77b0429054f5250c3f3d38826ca817b3665b3c7faa33",
+    "test_installer_launchd_stop_handoff_py_sha256": "55166ab5123661444bf1ea05849cf9bc192819d4878529735c4683c9fd12b363",
+    "test_installer_launchd_stop_refusals_py_sha256": "be0b245bc3ba012536d47b8c31840fa5bd7eaaa3b136fa6bb7c2eb8adefeb41c",
+    "runtime_lock_json_sha256_unchanged": "859d67343dccbe71b216d114360e1f614fefd6629358038e4488c5b2a232e2a7",
+    "decisions_md_sha256": "ac554c9bd5591eb707d3b46fb81adfff6dccdc073aeff4f13f628b2a0ce6f47f",
+    "fast_iteration_md_sha256": "71104186543ee6a42f1d44d3af3f519e520b2ce3d0456c5fc307026758e04017",
+    "orchestrator_md_sha256": "25cc7ac3c30c3664d3c937bbabebfce0bcfe36efed01999a1dc778046a19b79b",
+    "prior_candidate_report_sha256": "639ae0a1a5c7b52b92908865f25dd08f3757ec014d4be055034cdcd437f5bfda",
+    "prior_candidate_receipt_sha256": "095e1fe662c0106352c165e60d7f078ef0b63c23fba2e46bca1f4ba58077a753",
+    "stepback_report_sha256": "3f4d12059f00e328c4b92503e3f3a9d9aca100aa63b6afa5d17ee8fc028ea425"
+  },
+  "subworker": {
+    "requested": true,
+    "mode": "read_only",
+    "result_integrated": true,
+    "finding": "persist and compare the original live PID/birth tuple; never use current replacement discovery as recovery authority; stopped/no-PID ambiguity remains fail closed",
+    "writes": false
+  },
+  "limitations": [
+    "No native macOS launchctl execution, hosted journey, exact-tuple manifest proof, or full suite was performed.",
+    "M-AG protected review remains separate and is not claimed.",
+    "Runtime 255ecda21 was installed only as the task-local test dependency; Runtime source was not changed.",
+    "The target Agent/Runtime tuple is not manifest-compatible because runtime.lock.json still pins 2776ba97. Updating that file is required by M-INT's later 20:20Z ruling but forbidden by this task's explicit write scope.",
+    "A loaded stopped/no-PID job, or an original job that naturally restarted before recovery, is observationally indistinguishable from an identical post-bootout reappearance with the available witness and therefore remains refused pending a protected decision authorizing a generation witness.",
+    "The broader recovery experiment reproduced an unchanged upstream custody.py isolated relative-import failure; it is not attributed to this four-file delta and is not counted as proof."
+  ],
+  "claims_not_made": [
+    "protected approval",
+    "hosted or native proof",
+    "compatible combined tuple",
+    "integration handoff",
+    "full-suite acceptance"
+  ]
+}

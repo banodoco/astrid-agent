@@ -1,0 +1,176 @@
+{
+  "task": "UPD-R0-STOPPED-JOB",
+  "created_at_utc": "2026-11-02T20:45:00Z",
+  "status": "AWAITING_EVIDENCE",
+  "disposition": "pushed scoped candidate; protected exact-head review and native proof remain mandatory; not a HANDOFF",
+  "repository": "banodoco/astrid-agent",
+  "branch": "lane/M-R1FIX/UPD-R0-STOPPED-JOB",
+  "base": {
+    "sha": "f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9",
+    "tree": "37eced3e5a114248be14088cc39dd9e5b3c3061c",
+    "parents": [
+      "6614cbe44bc950e239b0c7d3bd86a74c47818696"
+    ],
+    "subject": "chore(runtime): pin interruption proof candidate",
+    "role": "provisional proof candidate only; not an integration handoff"
+  },
+  "head": {
+    "sha": "efcb3297ab16a3ec47b30b02154089b372293544",
+    "tree": "43d88d1672a73b686ffe63ffcdd99621ee4483bd",
+    "parents": [
+      "9835fa7aa352e707f5e1e8ab9734dc830fe2d757"
+    ],
+    "subject": "test(installer): cover stopped R0 recovery handoff"
+  },
+  "commits": [
+    {
+      "sha": "9835fa7aa352e707f5e1e8ab9734dc830fe2d757",
+      "parent": "f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9",
+      "subject": "fix(installer): recover matching stopped R0 launchd job"
+    },
+    {
+      "sha": "efcb3297ab16a3ec47b30b02154089b372293544",
+      "parent": "9835fa7aa352e707f5e1e8ab9734dc830fe2d757",
+      "subject": "test(installer): cover stopped R0 recovery handoff"
+    }
+  ],
+  "tuple": {
+    "agent_candidate": "efcb3297ab16a3ec47b30b02154089b372293544",
+    "runtime_source_commit": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "runtime_lock_source_commit": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "packaged_runtime_lock_source_commit": "255ecda21ba904520eb867936ef173cc5f7d3ae4",
+    "runtime_lock_preserved_from_base": true,
+    "lock_compatible_for_future_manifest": true,
+    "proof_manifest_or_hosted_proof": "not produced by this task"
+  },
+  "scope": [
+    "astrid/installer/backend.py",
+    "tests/test_installer_launchd_stop_handoff.py",
+    "tests/test_installer_launchd_stop_refusals.py"
+  ],
+  "implementation": {
+    "stopped_recovery": "A persisted retained R0 bootout intent with no retained live identity can re-admit and boot out a loaded/not-running job only during retained-R0 recovery, only when the existing retained plist/action comparisons pass, and only when the fresh post-preflight Runtime publication has no owner PID.",
+    "live_owner": "Any live owner continues through the existing exact retained PID, discovery-birth, observed-process-birth, UID, executable, install-root, and second-admission validation; the stopped exception cannot admit a live owner.",
+    "recovery_restoration": "The existing digest-bound restore path verifies absence, atomically restores the retained original plist, and bootstraps it. The new handoff fixture proves loaded/not-running restoration after a pre-bootout controller interruption.",
+    "refusals_preserved": "Changed/unknown definition, a live non-R0 owner, retained-live identity replacement, and post-bootout reappearance still refuse without using the replacement as a stop target."
+  },
+  "focused_proof_commands": [
+    {
+      "command": "TASK_PY=/home/user/merge/ws/M-R1FIX/queue/pending/UPD-R0-RECOVERY-RETAINED/repo/.venv/bin/python; TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-STOPPED-JOB/tmp $TASK_PY -m pytest -q -o addopts= tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_accepts_matching_stopped_job_without_runtime_owner tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_stopped_job_with_changed_definition tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_stopped_job_with_live_non_r0_owner tests/test_installer_launchd_stop_handoff.py::test_fresh_recovery_boots_out_matching_stopped_r0_without_owner_and_restores tests/test_installer_launchd_stop_handoff.py::test_second_admission_refusal_recovers_the_same_retained_r0_job tests/test_installer_launchd_stop_handoff.py::test_fresh_recovery_after_prebootout_interruption_restores_retained_r0 tests/test_installer_launchd_stop_refusals.py::test_recovery_intent_refuses_same_definition_with_replacement_live_identity tests/test_installer_launchd_stop_refusals.py::test_r0_post_bootout_reappearance_refuses_the_replacement_pid --tb=short",
+      "inner_exit": 0,
+      "result": "8 passed in 5.18s",
+      "coverage": "three 20:37Z ruling cases; full interrupted stopped-job restore; retained validated-live-owner recoveries; replacement-live-identity refusal; post-bootout reappearance refusal"
+    },
+    {
+      "command": "TASK_PY=/home/user/merge/ws/M-R1FIX/queue/pending/UPD-R0-RECOVERY-RETAINED/repo/.venv/bin/python; TMPDIR=/home/user/merge/ws/M-R1FIX/queue/running/UPD-R0-STOPPED-JOB/tmp $TASK_PY -m pytest -q -o addopts= tests/test_installer_launchd_stop_refusals.py tests/test_installer_launchd_stop_handoff.py --tb=short",
+      "inner_exit": 0,
+      "result": "62 passed in 14.99s",
+      "coverage": "complete affected launchd identity/refusal and real Backend/C1 handoff fixture files"
+    },
+    {
+      "command": "TASK_PY=/home/user/merge/ws/M-R1FIX/queue/pending/UPD-R0-RECOVERY-RETAINED/repo/.venv/bin/python; $TASK_PY -m py_compile astrid/installer/backend.py tests/test_installer_launchd_stop_refusals.py tests/test_installer_launchd_stop_handoff.py",
+      "inner_exit": 0,
+      "result": "compiled successfully"
+    }
+  ],
+  "development_attempts_not_counted_as_proof": [
+    {
+      "command": "same named 8-test focused command as the first proof command before the harness correction",
+      "inner_exit": 1,
+      "result": "7 passed, 1 failed: the new handoff fixture tried to unlink a discovery publication that was intentionally absent in its no-owner setup",
+      "resolution": "changed only that test setup to use Path.unlink(missing_ok=True), then reran the named selection and complete affected fixture files green"
+    }
+  ],
+  "quality_commands": [
+    {
+      "command": "git diff --check f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9..HEAD",
+      "inner_exit": 0
+    },
+    {
+      "command": "git merge-base --is-ancestor f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9 HEAD",
+      "inner_exit": 0
+    },
+    {
+      "command": "git diff --exit-code f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9..HEAD -- runtime.lock.json astrid/resources/runtime.lock.json",
+      "inner_exit": 0,
+      "result": "both Runtime lock copies unchanged from exact base"
+    },
+    {
+      "command": "python scope audit over git diff --name-only f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9..HEAD",
+      "inner_exit": 0,
+      "result": "only astrid/installer/** and tests/** paths; all three paths listed in scope"
+    },
+    {
+      "command": "git ls-remote --heads origin lane/M-R1FIX/UPD-R0-STOPPED-JOB",
+      "inner_exit": 0,
+      "result": "efcb3297ab16a3ec47b30b02154089b372293544 refs/heads/lane/M-R1FIX/UPD-R0-STOPPED-JOB"
+    },
+    {
+      "command": "git status --short",
+      "inner_exit": 0,
+      "result": "clean worktree"
+    }
+  ],
+  "push": {
+    "remote": "origin",
+    "ref": "refs/heads/lane/M-R1FIX/UPD-R0-STOPPED-JOB",
+    "wip_head": "9835fa7aa352e707f5e1e8ab9734dc830fe2d757",
+    "observed_head": "efcb3297ab16a3ec47b30b02154089b372293544",
+    "inner_exit": 0,
+    "force_push": false
+  },
+  "coverage": [
+    "matching label/program path/ProgramArguments with fresh no-owner census proceeds through bootout",
+    "interrupted pre-bootout recovery restores/bootstrap-loads the exact retained R0 plist to loaded/not-running",
+    "changed stopped-job definition refuses before bootout and C1",
+    "live non-R0 owner refuses before bootout and C1",
+    "validated retained live-owner recovery remains covered",
+    "replacement live identity and post-bootout reappearance remain covered"
+  ],
+  "subworker": {
+    "requested": true,
+    "mode": "read_only",
+    "brief": "sub/1/brief.md",
+    "report": "sub/1/REPORT.md",
+    "exit": 0,
+    "finding": "20:37Z expressly supersedes stopped/no-PID refusal only for matched retained definition plus fresh no-owner census; live-owner and reappearance fences remain",
+    "product_or_test_writes": false
+  },
+  "predecessor_carry_forward": {
+    "report": "/home/user/merge/ws/M-R1FIX/queue/pending/UPD-R0-RECOVERY-RETAINED/REPORT.md",
+    "receipt": "/home/user/merge/ws/M-R1FIX/queue/pending/UPD-R0-RECOVERY-RETAINED/canonical-receipt.json",
+    "carried_rejection": "bootout_intent alone could strand an untouched job if the second admission refused; f4f4fc99 already carries the retained exact live-identity remedy",
+    "superseded_boundary": "the predecessor's stopped/no-PID refusal is replaced by M-INT's 20:37:10Z definition-plus-fresh-no-owner ruling"
+  },
+  "hashes": {
+    "candidate_patch_sha256": "766c18b3af9a02a1b674e1dbde8d01b6b3401e7ac426e7e99fc3be921c62a069",
+    "astrid_installer_backend_py_sha256": "952d38275aaac18c128f447445d01f334fb25c5f9381f49585b897607d4e5d9f",
+    "test_installer_launchd_stop_handoff_py_sha256": "7cf52ac2481921a4e7098c35f202a2c363e88e78edaf97e55efd3cc01ceff01e",
+    "test_installer_launchd_stop_refusals_py_sha256": "0c3ed53f23ae329ca9f643b14ef6fc8e803b004135e24195f00105f7f0154e2b",
+    "runtime_lock_json_sha256_base_and_head": "480d503612cc1041b968951510523413a77d6d1504d44163f02f8c49b69f74a5",
+    "packaged_runtime_lock_json_sha256_base_and_head": "480d503612cc1041b968951510523413a77d6d1504d44163f02f8c49b69f74a5",
+    "orchestrator_md_sha256": "b5908af8b8c6053b12af362467d34f2d54d26231cb355539ad6814210addcd13",
+    "predecessor_report_sha256": "5ba568fef5fda7d45f0fbb203ba862abedf14ba3a221cd4036ca28ffc343d1a4",
+    "predecessor_receipt_sha256": "d10dbf298ba1e8d4591b2a529e7489095c71ebea0ee434c4118195c13af05e17",
+    "subworker_brief_sha256": "425a3b2f86a8863b3c388c1c884d693a6ae816b24cdbc55c5f314ec28f78bedb",
+    "subworker_report_sha256": "93ec2ccbf89862a88fd453f1629a10975a578915a8ed5054766e64c4a26953fa"
+  },
+  "decision_inputs": {
+    "orchestrator": "ORCHESTRATOR.md 2026-11-02T19:22:20Z and 2026-11-02T20:37:10Z",
+    "decisions_md": "not present at /home/user/merge/ws/M-R1FIX/DECISIONS.md; no substitute file was created or edited",
+    "ruling_applied": "definition match plus fresh no owner proceeds; definition mismatch and live non-validated owner refuse"
+  },
+  "limitations": [
+    "No protected exact-head review, proof-only App manifest, hosted journey, native macOS launchctl proof, or full suite was run or claimed.",
+    "The focused tests use the existing launchctl harness; native timing and launchd generation behavior still require protected native proof.",
+    "Runtime 255ecda21 was reused from the predecessor task's cached test environment; Runtime source, frozen bridge contract, App, shared branches, proof checks, and both lock files were not changed.",
+    "The requested DECISIONS.md input was unavailable at the literal manager-workspace path; its stated rulings were independently present in ORCHESTRATOR.md and were applied from there."
+  ],
+  "claims_not_made": [
+    "integration handoff",
+    "protected approval",
+    "hosted or native macOS proof",
+    "full-suite acceptance",
+    "published Runtime or App manifest"
+  ]
+}
