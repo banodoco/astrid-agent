@@ -390,6 +390,34 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Bootstrap PowerShell for self-hosted macOS smoke
+        if: matrix.runner == 'astrid-mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/powershell-7.6.9-osx-arm64.tar.gz"
+          powershell_dir="$RUNNER_TEMP/powershell-7.6.9"
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$archive" \
+            https://github.com/PowerShell/PowerShell/releases/download/v7.6.9/powershell-7.6.9-osx-arm64.tar.gz
+          printf '%s  %s\n' 'a1c7e98ac403da4be5ba75c1c5855af272de7787a91d478c4267466fe58fc1af' "$archive" | shasum -a 256 -c -
+          mkdir -p "$powershell_dir"
+          tar -xzf "$archive" -C "$powershell_dir"
+          chmod +x "$powershell_dir/pwsh"
+          "$powershell_dir/pwsh" -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          printf '%s\n' "$powershell_dir" >> "$GITHUB_PATH"
+      - name: Select Python 3.11 for self-hosted macOS smoke
+        if: matrix.runner == 'astrid-mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python=/opt/homebrew/opt/python@3.11/bin/python3.11
+          "$python" -c 'import sys; assert sys.version_info[:2] == (3, 11), sys.version'
+          bin_dir="$RUNNER_TEMP/astrid-smoke-bin"
+          mkdir -p "$bin_dir"
+          ln -sf "$python" "$bin_dir/python"
+          ln -sf "$python" "$bin_dir/python3"
+          printf '%s\n' "$bin_dir" >> "$GITHUB_PATH"
       # The driver itself is pinned to the reviewed workflow source.  Candidate
       # Agent is checked out separately so the receipt proves both identities.
       - name: Check out reviewed Agent receipt harness
@@ -432,6 +460,7 @@ jobs:
           path: pinokio
           persist-credentials: false
       - uses: actions/setup-python@v5
+        if: matrix.runner != 'astrid-mac'
         with:
           python-version: "3.11"
       - name: Record effective immutable checkouts

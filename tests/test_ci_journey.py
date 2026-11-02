@@ -1356,3 +1356,18 @@ def test_self_hosted_identity_requires_real_macos_runner(monkeypatch):
     monkeypatch.setattr(journey.sys, "platform", "linux")
     with pytest.raises(RuntimeError, match="self-hosted"):
         journey.assert_runner_identity(journey.runner_identity())
+
+
+def test_self_hosted_bootstraps_tools_before_pwsh_without_changing_hosted_setup():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    journey_job = workflow.split("  journey:\n", 1)[1].split("\n  release2:\n", 1)[0]
+    bootstrap = journey_job.split("      - name: Bootstrap PowerShell", 1)[1].split("      - name:", 1)[0]
+    assert "if: matrix.runner == 'astrid-mac'" in bootstrap
+    assert "a1c7e98ac403da4be5ba75c1c5855af272de7787a91d478c4267466fe58fc1af" in bootstrap
+    assert "shasum -a 256 -c -" in bootstrap and '>> "$GITHUB_PATH"' in bootstrap
+    assert journey_job.index("Bootstrap PowerShell") < journey_job.index("Run the matrix-owned lifecycle driver")
+    python_step = journey_job.split("      - name: Select Python 3.11", 1)[1].split("      # The driver", 1)[0]
+    assert "if: matrix.runner == 'astrid-mac'" in python_step
+    assert "/opt/homebrew/opt/python@3.11/bin/python3.11" in python_step
+    assert '"$bin_dir/python"' in python_step and '"$bin_dir/python3"' in python_step
+    assert "- uses: actions/setup-python@v5\n        if: matrix.runner != 'astrid-mac'" in journey_job
