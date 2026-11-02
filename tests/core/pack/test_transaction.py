@@ -899,7 +899,12 @@ def test_browser_tamper_refuses_publication_and_keeps_complete_old_tree(
             target = pack / item["disk"]
         else:
             target = pack / {"extra": ".build/unlisted.json", "source": "payload.txt", "pin": "PIN"}[fault]
-        target.write_bytes(target.read_bytes() + b"\n" if target.exists() else b"{}")
+        if fault == "pin":
+            pin = json.loads(target.read_bytes())
+            pin["digest"] = "0" * 64
+            target.write_text(json.dumps(pin, sort_keys=True, separators=(",", ":")) + "\n")
+        else:
+            target.write_bytes(target.read_bytes() + b"\n" if target.exists() else b"{}")
 
     with pytest.raises(PackInstallError):
         install(repo, packs_root, revision=change_browser(repo), **browser,

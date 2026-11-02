@@ -580,6 +580,13 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             mark("validated")
             identities = {i: (pack_digest(candidate / i), read_pin(candidate / i / "PIN")) for i in packs}
             for pack_id in sorted(packs):
+                # install_pack may retain an identical source/PIN. Every named
+                # build still needs fresh outputs and this transaction's epoch;
+                # never feed old metadata or another toolchain's files to it.
+                generated = candidate / pack_id / ".build"
+                if generated.exists() or generated.is_symlink():
+                    _tree(generated)
+                    shutil.rmtree(generated)
                 spec = builds.get(pack_id, {})
                 if not isinstance(spec, dict) or set(spec) - {"entry", "extension_manifest"}:
                     raise PackInstallError("invalid_request", "Use the frozen entry/extension_manifest build inputs.")
