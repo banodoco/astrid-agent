@@ -11051,6 +11051,9 @@ class GenericPackHost:
             contract = _execution_contract(data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
             terminal["execution_contract"] = contract
             lifetime.runtime_limit = (contract or {}).get("limits", {}).get("max_runtime_seconds")
+            # Review X-4: validate the managed route (declared session -> registered profile)
+            # before any session lock, open, admission or dispatch.
+            self._managed_profile_for(self.capabilities.get(str(data.get("capability") or "")))
             # The lease observer continues while waiting for this host's
             # session. No second task may replace a live binding or overwrite
             # its request-specific idle policy during setup/collection.

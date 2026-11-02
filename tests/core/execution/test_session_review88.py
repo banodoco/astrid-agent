@@ -11,6 +11,8 @@ import socket
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from astrid.core.execution import generic_host as gh
 from astrid.core.execution.session_channel import SESSION_CHANNEL_VERSION, SessionChannelBroker
 from astrid.packs.wan2gp.src.driver import compile_host_settings
@@ -114,3 +116,45 @@ def test_cancel_failure_is_reported_uncertain_not_confirmed(tmp_path: Path) -> N
     result = adapter.cancel("operator asked")
     assert result["outcome"] == "uncertain"
     assert result["requested_reason"] == "operator asked"
+
+
+def test_unregistered_managed_route_is_refused_before_any_session_acquisition(tmp_path: Path, monkeypatch: Any) -> None:
+    """Review X-4: the profile and route are validated before any open, start, admit or dispatch."""
+    import dataclasses
+
+    import astrid.core.generation.availability as availability
+    from astrid.core.execution.managed_tool_session import ManagedToolSession
+    from astrid.core.pack.loader import _default_pack_roots
+    from tests.packs.wan2gp import test_session_run_task_parity as parity
+
+    monkeypatch.setattr(availability, "action_availability", lambda _route: {"available": True})
+    client = parity._RuntimeClient()
+    host = gh.GenericPackHost(pack_roots=_default_pack_roots(), client=client)
+    host.discover()
+    host.capabilities["wan2gp.generate_video"] = dataclasses.replace(
+        host.capabilities["wan2gp.generate_video"], ready=True)
+    # The shipped wan action declares a managed session; with no profile it must be refused.
+    monkeypatch.delitem(host._managed_tool_profiles, "wan2gp")
+
+    events: list[str] = []
+    real_open = ManagedToolSession.open
+    real_admit = ManagedToolSession.admit
+    real_adapter_for = ManagedToolSession.adapter_for
+    monkeypatch.setattr(ManagedToolSession, "open", lambda self, *a, **k: (events.append("open"), real_open(self, *a, **k))[1])
+    monkeypatch.setattr(ManagedToolSession, "admit", lambda self, *a, **k: (events.append("admit"), real_admit(self, *a, **k))[1])
+    monkeypatch.setattr(ManagedToolSession, "adapter_for", lambda self, *a, **k: (events.append("adapter_for"), real_adapter_for(self, *a, **k))[1])
+    real_channel = gh._HostSessionChannel
+
+    class _Recording(real_channel):
+        def __init__(self, *args, **kwargs):
+            events.append("channel")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(gh, "_HostSessionChannel", _Recording)
+    monkeypatch.setattr(host, "invoke_wan_session", lambda *a, **k: events.append("invoke") or {})
+
+    task = parity._task(tmp_path, dict(parity.EXPLICIT_INPUTS))
+    client.tasks["wan-task"] = task
+    with pytest.raises(gh.HostError, match="no registered host profile"):
+        host.run_task(task, lease_token="lease")
+    assert events == []
