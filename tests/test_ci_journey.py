@@ -686,24 +686,44 @@ def test_tst_b1_windows_duplicate_owner_error_retains_bounded_identity_evidence(
         tmp_path, monkeypatch):
     monkeypatch.setattr(journey.sys, "platform", "win32")
     owner = (r"C:\Astrid\pythonw.exe -X utf8 -I -c "
+             "os.environ.update({'API_TOKEN':'must-not-be-retained'}); "
              "from astrid_runtime.cli import main; main(['run', '--profile', 'astrid'])")
-    rows = [
-        {"ProcessId": 2972, "ParentProcessId": 1920,
-         "CreationDate": "2026-11-02T17:18:18.000000+00:00",
-         "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner},
-        {"ProcessId": 3032, "ParentProcessId": 1920,
-         "CreationDate": "2026-11-02T17:18:21.973746+00:00",
-         "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner},
-    ]
+    selected = {
+        "ProcessId": 3032, "ParentProcessId": 1920,
+        "CreationDate": "2026-11-02T17:18:21.973746+00:00",
+        "NativeIdentity": "windows-creation:134381135019737465",
+        "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner,
+    }
+    duplicate = {
+        "ProcessId": 2972, "ParentProcessId": 1920,
+        "CreationDate": "2026-11-02T17:18:18.000000+00:00",
+        "NativeIdentity": "windows-creation:134381135010000000",
+        "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner,
+    }
+    rows = [selected]
 
     def powershell(code, *unused, **kwargs):
-        assert "ParentProcessId,CreationDate,ExecutablePath,CommandLine" in code
+        assert "GetProcessTimes" in code
+        assert "SanitizedCommandLine" in code
+        assert "CommandSha256" in code
         return json.dumps(rows)
 
     monkeypatch.setattr(journey.windows, "powershell", powershell)
-    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 3032})
+    monkeypatch.setattr(journey, "healthy", lambda data: {
+        "pid": 3032,
+        "process_birth_id": "windows-creation:134381135019737465",
+        "runtime_instance_id": "instance-3032",
+        "active_realm": "realm-3032",
+        "coordinator_epoch": "epoch-3032",
+    })
+    evidence = tmp_path / "evidence" / "release0"
+    # The unchanged strict assertion passes and creates no diagnostic until it
+    # actually observes the duplicate failure.
+    journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert not (evidence / "runtime-owner-assertion.json").exists()
+    rows.insert(0, duplicate)
     with pytest.raises(RuntimeError) as failure:
-        journey.assert_one_runtime(tmp_path)
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
     message = str(failure.value)
     assert "selected Runtime owner 3032, found [2972, 3032]" in message
     assert '"matcher":"astrid_runtime-cli-run"' in message
@@ -711,6 +731,96 @@ def test_tst_b1_windows_duplicate_owner_error_retains_bounded_identity_evidence(
     assert '"creation_date":"2026-11-02T17:18:21.973746+00:00"' in message
     assert hashlib.sha256(owner.encode()).hexdigest() in message
     assert owner not in message
+    assert "must-not-be-retained" not in message
+
+    snapshot_path = evidence / "runtime-owner-assertion.json"
+    snapshot_bytes = snapshot_path.read_bytes()
+    snapshot = journey.read_json(snapshot_path)
+    assert snapshot["capture"]["timing"] == "captured before the assertion raises"
+    assert snapshot["capture"]["atomicity"]["status"] == "not-established"
+    assert snapshot["assertion"]["asserted_owner_pids"] == [2972, 3032]
+    assert snapshot["assertion"]["selected_pid_bound_to_asserted_owner"] == {
+        "status": "observed", "record_index": 1,
+    }
+    assert snapshot["selected_discovery_identity"]["process_birth_id"] == {
+        "status": "observed", "value": "windows-creation:134381135019737465",
+    }
+    owners = {row["pid"]["value"]: row for row in snapshot["asserted_owners"]}
+    assert set(owners) == {2972, 3032}
+    selected_snapshot = owners[3032]
+    assert selected_snapshot["command_line"] == {
+        "status": "observed", "value": "-c <astrid_runtime.cli main(['run', ...])>",
+    }
+    assert selected_snapshot["command_sha256"]["value"] == hashlib.sha256(owner.encode()).hexdigest()
+    assert selected_snapshot["executable_path"] == {
+        "status": "observed", "value": r"C:\Astrid\pythonw.exe",
+    }
+    assert selected_snapshot["creation_time"]["value"] == "2026-11-02T17:18:21.973746+00:00"
+    assert selected_snapshot["native_identity"]["value"] == "windows-creation:134381135019737465"
+    assert selected_snapshot["parent_child_relation"] == {
+        "status": "observed", "parent_is_asserted_owner": False,
+        "asserted_children": [], "shared_parent_with": [2972],
+    }
+    assert "must-not-be-retained" not in snapshot_path.read_text()
+
+    # A later census may observe different rows, but cannot replace the first
+    # failure-time record or its staged copies.
+    rows[:] = [selected, {**duplicate, "ExecutablePath": r"C:\Other\pythonw.exe"}]
+    with pytest.raises(RuntimeError):
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    journey.retain_named_evidence(evidence, "after-cleanup")
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    assert (tmp_path / "evidence-upload" / "before-cleanup" / "runtime-owner-assertion.json").read_bytes() == snapshot_bytes
+    assert (tmp_path / "evidence-upload" / "after-cleanup" / "runtime-owner-assertion.json").read_bytes() == snapshot_bytes
+
+
+def test_tst_b1_windows_owner_failure_snapshot_marks_missing_fields_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    rows = [
+        {"ProcessId": 2972, "ParentProcessId": 1920,
+         "CreationDate": None, "NativeIdentity": None, "ExecutablePath": None,
+         "Matcher": "astrid_runtime-cli-run", "CommandLength": None,
+         "CommandSha256": None, "SanitizedCommandLine": None},
+        {"ProcessId": 3032, "ParentProcessId": None,
+         "CreationDate": None, "NativeIdentity": None, "ExecutablePath": None,
+         "Matcher": "astrid_runtime-cli-run", "CommandLength": None,
+         "CommandSha256": None, "SanitizedCommandLine": None},
+    ]
+
+    def powershell(code, *unused, **kwargs):
+        assert "NativeIdentity" in code
+        return json.dumps(rows)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 3032})
+    evidence = tmp_path / "evidence" / "release0"
+    with pytest.raises(RuntimeError) as failure:
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert "selected Runtime owner 3032, found [2972, 3032]" in str(failure.value)
+    snapshot = journey.read_json(evidence / "runtime-owner-assertion.json")
+    selected = next(row for row in snapshot["asserted_owners"] if row["pid"]["value"] == 3032)
+    assert snapshot["selected_discovery_identity"]["process_birth_id"] == {
+        "status": "unavailable", "reason": "discovery process_birth_id was unavailable",
+    }
+    assert selected["command_sha256"] == {
+        "status": "unavailable", "reason": "command-line digest was unavailable",
+    }
+    assert selected["executable_path"] == {
+        "status": "unavailable", "reason": "Win32_Process.ExecutablePath was unavailable",
+    }
+    assert selected["creation_time"] == {
+        "status": "unavailable", "reason": "Win32_Process.CreationDate was unavailable",
+    }
+    assert selected["native_identity"] == {
+        "status": "unavailable", "reason": "GetProcessTimes creation identity was unavailable",
+    }
+    assert selected["parent_child_relation"] == {
+        "status": "unavailable", "parent_is_asserted_owner": None,
+        "asserted_children": [], "shared_parent_with": [],
+        "reason": "parent PID was unavailable",
+    }
 
 
 @pytest.mark.parametrize("owners", [[], [4124], [4123, 4124], [4123, 4123]])
@@ -1323,7 +1433,7 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
         assert state["running"] and not state["local"]
         return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
 
-    def one_runtime(_data):
+    def one_runtime(_data, _evidence=None):
         assert state["running"] and not state["local"]
 
     def manager_action(operation):
