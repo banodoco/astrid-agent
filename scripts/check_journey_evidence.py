@@ -79,10 +79,129 @@ RUNNER_PROVENANCE = {
     "macos-15": ("macOS", "macos15"),
 }
 
+# This is deliberately not an alias in RUNNER_PROVENANCE.  Hosted matrix
+# validation remains closed over GitHub-hosted images; the self-hosted route is
+# admitted only by the separate trusted-context predicate below.
+SELF_HOSTED_MACOS_VENUE = "self-hosted"
+SELF_HOSTED_MACOS_RUNNER_NAME = "hannah-mac"
+SELF_HOSTED_MACOS_LABEL = "astrid-mac"
+SELF_HOSTED_MACOS_CONTEXT_FIELDS = frozenset((
+    "schema_version", "source", "repository", "workflow_path", "ref", "head_sha",
+    "run_id", "run_attempt", "job_id", "matrix_job_id", "runner_name",
+    "runner_labels", "conclusion", "candidate", "receipt_sha256",
+))
+SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS = frozenset((
+    "repository", "workflow_path", "ref", "head_sha", "run_id", "run_attempt",
+    "job_id", "matrix_job_id", "runner_name", "runner_labels",
+))
+
 
 def _migrate_macos_receipt_key(contract):
     """Compatibility for existing receipt fixtures; the matrix now owns this key."""
     return contract
+
+
+def _positive_integer(value):
+    return type(value) is int and value > 0
+
+
+def _labels(value, *, subject):
+    """Return a duplicate-free label set, or a precise closed-profile error."""
+    if not isinstance(value, list) or not value:
+        return None, f"{subject}: runner labels are absent"
+    if any(not isinstance(label, str) or not label.strip() for label in value):
+        return None, f"{subject}: runner labels must be non-empty strings"
+    labels = frozenset(value)
+    if len(labels) != len(value):
+        return None, f"{subject}: runner labels contain a duplicate"
+    required = {"self-hosted", "macOS", SELF_HOSTED_MACOS_LABEL}
+    missing = sorted(required - labels)
+    if missing:
+        return None, f"{subject}: runner labels are missing {', '.join(missing)}"
+    return labels, None
+
+
+def self_hosted_macos_identity_errors(candidate, receipt, trusted_context, receipt_sha256):
+    """Bind a self-hosted receipt to context fetched outside that runner.
+
+    ``trusted_context`` is intentionally a separate checker input.  It must be
+    assembled by the trusted aggregate from the GitHub Actions run/job API and
+    the downloaded artifact bytes, never by the self-hosted job or its upload.
+    The receipt's identity fields are useful only as claims that are compared
+    against that external record.
+    """
+    errors = []
+    if not isinstance(trusted_context, dict):
+        return ["self-hosted macOS: trusted Actions context is absent"]
+    missing = sorted(SELF_HOSTED_MACOS_CONTEXT_FIELDS - set(trusted_context))
+    unknown = sorted(set(trusted_context) - SELF_HOSTED_MACOS_CONTEXT_FIELDS)
+    if missing:
+        errors.append("self-hosted macOS: trusted context is missing " + ", ".join(missing))
+    if unknown:
+        errors.append("self-hosted macOS: trusted context has unknown fields " + ", ".join(unknown))
+    if trusted_context.get("schema_version") != 1:
+        errors.append("self-hosted macOS: trusted context schema version is not 1")
+    if trusted_context.get("source") != "github-actions-api":
+        errors.append("self-hosted macOS: trusted context must be GitHub Actions API-originated")
+    if trusted_context.get("repository") != "banodoco/astrid-agent":
+        errors.append("self-hosted macOS: trusted repository is not banodoco/astrid-agent")
+    if trusted_context.get("workflow_path") != ".github/workflows/journey.yml":
+        errors.append("self-hosted macOS: trusted workflow path is not journey.yml")
+    ref = trusted_context.get("ref")
+    if not isinstance(ref, str) or not ref.startswith("refs/") or "\n" in ref or "\r" in ref:
+        errors.append("self-hosted macOS: trusted ref is absent or malformed")
+    if not SHA.fullmatch(str(trusted_context.get("head_sha", ""))):
+        errors.append("self-hosted macOS: trusted head SHA is absent or malformed")
+    for field in ("run_id", "run_attempt", "job_id"):
+        if not _positive_integer(trusted_context.get(field)):
+            errors.append(f"self-hosted macOS: trusted {field} is absent or malformed")
+    if trusted_context.get("matrix_job_id") != "direct-macos":
+        errors.append("self-hosted macOS: trusted job is not direct-macos")
+    if trusted_context.get("runner_name") != SELF_HOSTED_MACOS_RUNNER_NAME:
+        errors.append("self-hosted macOS: trusted runner name is not hannah-mac")
+    _, label_error = _labels(trusted_context.get("runner_labels"), subject="self-hosted macOS trusted context")
+    if label_error:
+        errors.append(label_error)
+    if trusted_context.get("conclusion") != "success":
+        errors.append("self-hosted macOS: trusted job conclusion is not success")
+    if trusted_context.get("candidate") != candidate:
+        errors.append("self-hosted macOS: trusted tuple differs from frozen candidate")
+    if not isinstance(receipt_sha256, str) or not DIGEST.fullmatch(receipt_sha256):
+        errors.append("self-hosted macOS: checker did not hash the receipt bytes")
+    elif trusted_context.get("receipt_sha256") != receipt_sha256:
+        errors.append("self-hosted macOS: trusted receipt digest differs from parsed receipt bytes")
+
+    if not isinstance(receipt, dict):
+        return errors + ["self-hosted macOS: receipt is absent or malformed"]
+    if receipt.get("venue") != SELF_HOSTED_MACOS_VENUE:
+        errors.append("self-hosted macOS: receipt venue is not self-hosted")
+    if receipt.get("runner_image") not in {"local", "self-hosted"}:
+        errors.append("self-hosted macOS: receipt is relabelled hosted evidence or has an unknown runner image")
+    identity = receipt.get("execution_identity")
+    if not isinstance(identity, dict):
+        return errors + ["self-hosted macOS: receipt execution identity is absent"]
+    missing = sorted(SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS - set(identity))
+    unknown = sorted(set(identity) - SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS)
+    if missing:
+        errors.append("self-hosted macOS: receipt identity is missing " + ", ".join(missing))
+    if unknown:
+        errors.append("self-hosted macOS: receipt identity has unknown fields " + ", ".join(unknown))
+    for field in SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS - {"runner_labels"}:
+        if identity.get(field) != trusted_context.get(field):
+            errors.append(f"self-hosted macOS: receipt {field} differs from trusted context")
+    receipt_labels, receipt_label_error = _labels(
+        identity.get("runner_labels"), subject="self-hosted macOS receipt"
+    )
+    context_labels, context_label_error = _labels(
+        trusted_context.get("runner_labels"), subject="self-hosted macOS trusted context"
+    )
+    if receipt_label_error:
+        errors.append(receipt_label_error)
+    if context_label_error:
+        errors.append(context_label_error)
+    if receipt_labels is not None and context_labels is not None and receipt_labels != context_labels:
+        errors.append("self-hosted macOS: receipt runner labels differ from trusted context")
+    return errors
 
 
 REQUIRED = {

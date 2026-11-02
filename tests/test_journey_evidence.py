@@ -66,6 +66,56 @@ def evidence(tmp_path):
     return candidate, manifest, row, write
 
 
+def self_hosted_macos_identity(candidate, receipt_sha256="f" * 64):
+    context = {
+        "schema_version": 1,
+        "source": "github-actions-api",
+        "repository": "banodoco/astrid-agent",
+        "workflow_path": ".github/workflows/journey.yml",
+        "ref": "refs/heads/lane/M-QUAL/self-hosted-macos",
+        "head_sha": "e" * 40,
+        "run_id": 123,
+        "run_attempt": 2,
+        "job_id": 456,
+        "matrix_job_id": "direct-macos",
+        "runner_name": "hannah-mac",
+        "runner_labels": ["self-hosted", "macOS", "astrid-mac"],
+        "conclusion": "success",
+        "candidate": copy.deepcopy(candidate),
+        "receipt_sha256": receipt_sha256,
+    }
+    receipt = {
+        "venue": "self-hosted",
+        # Current driver receipt emission may retain local here; it is never
+        # authentication and the API-originated context below is authoritative.
+        "runner_image": "local",
+        "execution_identity": {
+            key: copy.deepcopy(context[key])
+            for key in gate.SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS
+        },
+    }
+    return receipt, context
+
+
+def test_self_hosted_macos_identity_requires_matching_external_context(tmp_path):
+    candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    receipt, context = self_hosted_macos_identity(candidate)
+    assert not gate.self_hosted_macos_identity_errors(candidate, receipt, context, "f" * 64)
+
+    # The receipt's own runner/repository claims have no authority; changing
+    # either after the API context hashed the receipt is rejected.
+    bad = copy.deepcopy(receipt)
+    bad["execution_identity"]["runner_name"] = "not-hannah-mac"
+    assert any("runner_name differs" in error for error in gate.self_hosted_macos_identity_errors(
+        candidate, bad, context, "f" * 64
+    ))
+    bad = copy.deepcopy(receipt)
+    bad["execution_identity"]["repository"] = "attacker/example"
+    assert any("repository differs" in error for error in gate.self_hosted_macos_identity_errors(
+        candidate, bad, context, "f" * 64
+    ))
+
+
 def test_four_required_negative_controls(tmp_path):
     candidate, manifest, row, write = evidence(tmp_path)
     assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'ubuntu-24.04', 'sh')
