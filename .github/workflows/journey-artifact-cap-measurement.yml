@@ -1,0 +1,44 @@
+name: R-01 artifact-cap measurement fixture
+
+# This is intentionally separate from Release-1 journey execution.  It is a
+# dispatch-only receipt fixture for measuring Actions' uploaded artifact bytes.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: artifact-cap measurement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the requested measurement harness revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Generate duplicated oversized non-qualifying bootstrap diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u scripts/journey_artifact_cap_measurement_fixture.py \
+            "$RUNNER_TEMP/r01-artifact-cap-measurement/evidence-upload"
+      - name: Apply the named artifact boundary
+        id: evidence_boundary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u scripts/journey_artifact_boundary.py \
+            "$RUNNER_TEMP/r01-artifact-cap-measurement/evidence-upload"
+      - name: Upload retained artifact-cap measurement evidence
+        if: always() && steps.evidence_boundary.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r01-artifact-cap-measurement-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/r01-artifact-cap-measurement/evidence-upload
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
