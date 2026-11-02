@@ -142,6 +142,19 @@ def test_m4_6_malformed_or_local_evidence_is_never_a_pass(tmp_path):
         assert rows[f"{prefix}:direct-linux"]["status"] == "failed"
 
 
+def test_m4_5_wrong_checker_tuple_is_explicitly_failed(tmp_path):
+    pinned = candidate()
+    path = tmp_path / "journey-result.json"
+    path.write_text(json.dumps({
+        "receipt_kind": "release2-installed-lifecycle",
+        "scenario_id": "release2-button-direct-linux",
+        "candidate": {key: "e" * 40 for key in ("app", "agent", "runtime", "pinokio")},
+    }), encoding="utf-8")
+    row = by_id(gate.evaluate_end_state_obligations(pinned, tmp_path)[0])["release2-button-direct-linux"]
+    assert row["status"] == "failed"
+    assert "M4-5 receipt candidate differs from the frozen checker candidate" in row["reasons"]
+
+
 def test_checker_cli_lists_the_closed_inventory_and_fails_not_run_rows(tmp_path, monkeypatch, capsys):
     app = tmp_path / "app"
     public = app / "public"
