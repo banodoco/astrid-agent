@@ -255,11 +255,6 @@ def test_approve_regenerates_lock_and_keeps_quarantined_approvals(tmp_path):
     checkout = tmp_path / "checkout"
     _pack(checkout / "astrid" / "packs", "goodpack", GOOD)
     _pack(checkout / "astrid" / "packs", "badpack", BAD)
-    contracts = checkout / "astrid" / "core" / "contracts"
-    contracts.mkdir(parents=True)
-    (contracts / "output_result_exemptions.json").write_text(
-        json.dumps({"non_exempt": [], "exemptions": {}}), encoding="utf-8"
-    )
     lock = checkout / capability_ledger.CENSUS_LOCK_RELATIVE
     lock.parent.mkdir(parents=True)
     lock.write_text(
