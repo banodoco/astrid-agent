@@ -15,3 +15,7 @@ python3 ./comparator.py /path/to/baseline/capture-index.json /path/to/candidate/
 ```
 
 Use a new output path, outside the evidence trees. The comparator must not write over its input files or any file named `capture-index.json`. It does not perform provenance, fixture identity, schema-completeness, alias or qualification review and does not independently certify that coverage labels are truthful. Different input identities are blocked; the separately required reviewer must check the full historical coverage census and A-only disposition.
+
+## Manifest command annotations (054)
+
+In `capture-manifest.json`, each case `command` is an argv token vector (not shell text). `argv_provenance` is exactly `argv source-derived` or `argv installed-verified`; `additional_argv` lists supplementary argv vectors for P1 help surfaces. A source-derived vector establishes only parser/entrypoint syntax from the pinned source and never proves fixtures, fault controls, qualification or capture. `command_gap` and `fixture_binding` remain independent disposition fields. Path values may use only `${INSTALL_PREFIX}` and `${DATA}`. Every case remains `uncaptured`; this manifest is not a capture index.

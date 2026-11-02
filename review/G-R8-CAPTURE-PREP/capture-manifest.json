@@ -14,7 +14,15 @@
         "SDK signature and dispatch behavior",
         "no inferred equivalence between model and entry"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid",
+        "h3",
+        "--help"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P1",
       "command_gap": "Installed r10c console executable path and observed H3 help/SDK signature for the P1 surface matrix.",
       "cpu_preparable": [
@@ -49,14 +57,97 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
       "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
-      "source_derived_proposal": {
+      "installed_verified_partial_observation": {
+        "confidence": "installed-r10c verified",
+        "argv": [
+          "/home/user/astrid/proof-codex/work/49/install/program/versions/c5327cc2-aa1c91d9-831068e1/py/bin/python",
+          "-I",
+          "-B",
+          "-m",
+          "astrid",
+          "--help"
+        ],
+        "cwd": "inherited by H post-verify.py; exact cwd not recorded",
+        "environment": {
+          "inheritance": "H launcher inherits ambient environment, unsets names matching ASTRID_*, VIBECOMFY_*, PYTHON*, UV_*, then exports the following. Not env -i.",
+          "HOME": "/home/user/astrid/proof-codex/work/49/install/home",
+          "PATH": "/home/user/astrid/proof-codex/work/49/install/bin:/home/user/astrid/proof-codex/work/49/install/home/.local/bin:/usr/local/bin:/usr/bin:/bin",
+          "TMPDIR": "/home/user/astrid/proof-codex/work/49/install/tmp",
+          "UV_CACHE_DIR": "/home/user/astrid/proof-codex/work/49/install/uv-cache",
+          "UV_PYTHON_INSTALL_DIR": "/home/user/astrid/proof-codex/work/49/install/xdg-data/astrid/bootstrap/python",
+          "UV_PYTHON_PREFERENCE": "only-managed",
+          "XDG_DATA_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-data",
+          "XDG_STATE_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-state",
+          "XDG_CONFIG_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-config",
+          "XDG_CACHE_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-cache",
+          "npm_config_cache": "/home/user/astrid/proof-codex/work/49/install/npm-cache",
+          "BUN_INSTALL_CACHE_DIR": "/home/user/astrid/proof-codex/work/49/install/bun-cache",
+          "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+          "ASTRID_RUNTIME_DOOR_PORT": "53541",
+          "BROWSER": "/bin/true",
+          "PYTHONDONTWRITEBYTECODE": "1",
+          "umask": "077"
+        },
+        "source": "H logs/post-verification-results.json and installed-cli-smoke.log; SHA256 e7f9b7b0263ea83a7c0d4f23b9241455d8cfa352994cbd4da627ded4244e2183 and c7923a556259956bdfd7117882790311cc47c9e4d4c56cab7fd0eabf1792a090",
+        "result": "exit 0; combined stdout/stderr root help lists H3 plan/run/compose/edit",
+        "scope": "partial root help observation only; no H3 subcommand, SDK signature or P1 capture verified; H installation path may be removed",
+        "fault_control": "none",
+        "raw_evidence": "H installed-cli-smoke.log combined stream and post-verification-results.json exit record; no capture index"
+      },
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "additional_argv": [
+        [
+          "${INSTALL_PREFIX}/py/bin/python",
+          "-I",
+          "-B",
+          "-m",
+          "astrid",
+          "h3",
+          "plan",
+          "--help"
+        ],
+        [
+          "${INSTALL_PREFIX}/py/bin/python",
+          "-I",
+          "-B",
+          "-m",
+          "astrid",
+          "h3",
+          "run",
+          "--help"
+        ],
+        [
+          "${INSTALL_PREFIX}/py/bin/python",
+          "-I",
+          "-B",
+          "-m",
+          "astrid",
+          "h3",
+          "compose",
+          "--help"
+        ],
+        [
+          "${INSTALL_PREFIX}/py/bin/python",
+          "-I",
+          "-B",
+          "-m",
+          "astrid",
+          "h3",
+          "edit",
+          "--help"
+        ]
+      ],
+      "prior_053_partial_source_proposal": {
         "argv_templates": [
           [
             "<installed-astrid>",
@@ -95,43 +186,6 @@
         "result_interpretation": "help should exit 0 by argparse semantics; must be observed on installed r10c",
         "fault_control": "none for these help probes; P1 refusal control is in map",
         "limitation": "executable is a placeholder and installed route has not been observed; not a runnable command or capture"
-      },
-      "installed_verified_partial_observation": {
-        "confidence": "installed-r10c verified",
-        "argv": [
-          "/home/user/astrid/proof-codex/work/49/install/program/versions/c5327cc2-aa1c91d9-831068e1/py/bin/python",
-          "-I",
-          "-B",
-          "-m",
-          "astrid",
-          "--help"
-        ],
-        "cwd": "inherited by H post-verify.py; exact cwd not recorded",
-        "environment": {
-          "inheritance": "H launcher inherits ambient environment, unsets names matching ASTRID_*, VIBECOMFY_*, PYTHON*, UV_*, then exports the following. Not env -i.",
-          "HOME": "/home/user/astrid/proof-codex/work/49/install/home",
-          "PATH": "/home/user/astrid/proof-codex/work/49/install/bin:/home/user/astrid/proof-codex/work/49/install/home/.local/bin:/usr/local/bin:/usr/bin:/bin",
-          "TMPDIR": "/home/user/astrid/proof-codex/work/49/install/tmp",
-          "UV_CACHE_DIR": "/home/user/astrid/proof-codex/work/49/install/uv-cache",
-          "UV_PYTHON_INSTALL_DIR": "/home/user/astrid/proof-codex/work/49/install/xdg-data/astrid/bootstrap/python",
-          "UV_PYTHON_PREFERENCE": "only-managed",
-          "XDG_DATA_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-data",
-          "XDG_STATE_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-state",
-          "XDG_CONFIG_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-config",
-          "XDG_CACHE_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-cache",
-          "npm_config_cache": "/home/user/astrid/proof-codex/work/49/install/npm-cache",
-          "BUN_INSTALL_CACHE_DIR": "/home/user/astrid/proof-codex/work/49/install/bun-cache",
-          "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
-          "ASTRID_RUNTIME_DOOR_PORT": "53541",
-          "BROWSER": "/bin/true",
-          "PYTHONDONTWRITEBYTECODE": "1",
-          "umask": "077"
-        },
-        "source": "H logs/post-verification-results.json and installed-cli-smoke.log; SHA256 e7f9b7b0263ea83a7c0d4f23b9241455d8cfa352994cbd4da627ded4244e2183 and c7923a556259956bdfd7117882790311cc47c9e4d4c56cab7fd0eabf1792a090",
-        "result": "exit 0; combined stdout/stderr root help lists H3 plan/run/compose/edit",
-        "scope": "partial root help observation only; no H3 subcommand, SDK signature or P1 capture verified; H installation path may be removed",
-        "fault_control": "none",
-        "raw_evidence": "H installed-cli-smoke.log combined stream and post-verification-results.json exit record; no capture index"
       }
     },
     {
@@ -141,7 +195,21 @@
         "branch-specific output",
         "no owner/admission/engine acquisition during dry-run"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid",
+        "h3",
+        "plan",
+        "--spec",
+        "${DATA}/P2/request.json",
+        "--asset-map",
+        "${DATA}/P2/asset-map.json",
+        "--out",
+        "${DATA}/P2/plan"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P2",
       "command_gap": "Installed r10c preview entry/call with a bound scenario request and no-acquisition observation hook.",
       "cpu_preparable": [
@@ -180,13 +248,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -196,7 +268,22 @@
         "validation errors precede acquisition",
         "entry guard outcome"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid",
+        "h3",
+        "ops",
+        "prepare",
+        "--request",
+        "${DATA}/P3/request.json",
+        "--input-bundle",
+        "${DATA}/P3/input-bundle",
+        "--out",
+        "${DATA}/P3/preparation"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P3",
       "command_gap": "Installed real-boundary preflight invocation and test-owned bundle tamper control for a named case.",
       "cpu_preparable": [
@@ -236,13 +323,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario. Historical public workspace and NEW-IDENTITY workspace adapter are distinct approved identities; missing bytes/compatibility must be resolved without substituting one for the other."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario. Historical public workspace and NEW-IDENTITY workspace adapter are distinct approved identities; missing bytes/compatibility must be resolved without substituting one for the other.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -252,7 +343,24 @@
         "output count",
         "role refusal behavior"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid.packs.h3_av.actions.transform.run",
+        "--request",
+        "${DATA}/P4/request.json",
+        "--asset-map",
+        "${DATA}/P4/asset-map.json",
+        "--out",
+        "${DATA}/P4/output",
+        "--worker-qualification",
+        "${DATA}/P4/worker-qualification.json",
+        "--require-worker-qualification",
+        "--placement",
+        "runpod"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P4",
       "command_gap": "Installed real-boundary output-validation invocation and engine response control for a named role case.",
       "cpu_preparable": [
@@ -292,13 +400,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -309,7 +421,28 @@
         "tamper rejected before publication",
         "no topology allowance inferred"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid",
+        "h3",
+        "ops",
+        "compose",
+        "--preparation",
+        "${DATA}/P5/preparation.json",
+        "--input-bundle",
+        "${DATA}/P5/input-bundle",
+        "--generated",
+        "${DATA}/P5/generated",
+        "--source",
+        "${DATA}/P5/source",
+        "--preservation-evidence",
+        "${DATA}/P5/preservation-evidence.json",
+        "--out",
+        "${DATA}/P5/composition"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P5",
       "command_gap": "Installed compose/verify invocation and spool tamper control for a named media case.",
       "cpu_preparable": [
@@ -352,13 +485,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -367,7 +504,22 @@
         "atomic success",
         "no partial output after second-file failure"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid",
+        "h3",
+        "ops",
+        "compile",
+        "--preparation",
+        "${DATA}/P6/preparation.json",
+        "--input-bundle",
+        "${DATA}/P6/input-bundle",
+        "--out",
+        "${DATA}/P6/compilation"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P6",
       "command_gap": "Installed managed export invocation and second-file staging failure control.",
       "cpu_preparable": [
@@ -409,13 +561,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -425,7 +581,28 @@
         "editorial assertion retained",
         "approved leaf allowances only"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid",
+        "h3",
+        "ops",
+        "verify",
+        "--preparation",
+        "${DATA}/P7/preparation.json",
+        "--input-bundle",
+        "${DATA}/P7/input-bundle",
+        "--composition",
+        "${DATA}/P7/composition.json",
+        "--candidate",
+        "${DATA}/P7/candidate.mp4",
+        "--source",
+        "${DATA}/P7/source.mp4",
+        "--out",
+        "${DATA}/P7/verification.json"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P7",
       "command_gap": "Installed receipt reader invocation and supported-version catalogue for a named version-refusal case.",
       "cpu_preparable": [
@@ -466,13 +643,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -482,7 +663,21 @@
         "unknown stop reported honestly",
         "no neighboring job impact"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid.packs.h3_av.actions.transform.run",
+        "--request",
+        "${DATA}/P8/request.json",
+        "--asset-map",
+        "${DATA}/P8/asset-map.json",
+        "--out",
+        "${DATA}/P8/output",
+        "--placement",
+        "runpod"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P8",
       "command_gap": "Installed cancellation interface and controllable prompt/ACK race schedule.",
       "cpu_preparable": [
@@ -523,13 +718,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -539,7 +738,22 @@
         "submission count exact",
         "terminal association preserved"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid.packs.h3_av.actions.transform.run",
+        "--request",
+        "${DATA}/P9/request.json",
+        "--asset-map",
+        "${DATA}/P9/asset-map.json",
+        "--out",
+        "${DATA}/P9/output",
+        "--resume",
+        "--placement",
+        "runpod"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P9",
       "command_gap": "Installed recovery interface and controlled response-loss or crash/restart schedule.",
       "cpu_preparable": [
@@ -583,13 +797,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -601,7 +819,21 @@
         "terminal owner and cleanup evidence",
         "1800-second default and precedence, holder-specific expiry and verified warm snapshot reuse from real lifecycle records"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid.packs.h3_av.actions.transform.run",
+        "--request",
+        "${DATA}/P10/request.json",
+        "--asset-map",
+        "${DATA}/P10/asset-map.json",
+        "--out",
+        "${DATA}/P10/output",
+        "--placement",
+        "local"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P10",
       "command_gap": "Exact installed invocation for the real H3 admission/claim and subsequent custody/lease case.",
       "cpu_preparable": [
@@ -645,13 +877,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario. Historical public workspace and NEW-IDENTITY workspace adapter are distinct approved identities; missing bytes/compatibility must be resolved without substituting one for the other."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario. Historical public workspace and NEW-IDENTITY workspace adapter are distinct approved identities; missing bytes/compatibility must be resolved without substituting one for the other.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -661,7 +897,19 @@
         "approved migration message",
         "retired child-only codes enumerated without suppressing unrelated errors"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid",
+        "h3",
+        "plan",
+        "--spec",
+        "${DATA}/P11/invalid-request.json",
+        "--out",
+        "${DATA}/P11/plan"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P11",
       "command_gap": "Installed error/status entrypoint and exact input for each named refusal case.",
       "cpu_preparable": [
@@ -703,13 +951,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     },
     {
       "checks": [
@@ -719,7 +971,24 @@
         "stitch controls and status",
         "shared result associations"
       ],
-      "command": null,
+      "command": [
+        "${INSTALL_PREFIX}/py/bin/python",
+        "-I",
+        "-B",
+        "-m",
+        "astrid",
+        "action",
+        "run",
+        "vibecomfy.validate",
+        "--request",
+        "${DATA}/P12/request.json",
+        "--asset-map",
+        "${DATA}/P12/asset-map.json",
+        "--placement",
+        "local",
+        "--out",
+        "${DATA}/P12/output"
+      ],
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P12",
       "command_gap": "Installed shared-child/stitch invocation and dependency-failure control for a named case.",
       "cpu_preparable": [
@@ -761,13 +1030,17 @@
       "state": "uncaptured",
       "tuple": {
         "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
-        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
+        "agent_alignment": "H task 58 source-validation PASS: lock-aligned Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, direct parent 1bc0f7d43bf03e3c8442676e47cecff308053acc, tree 852c01bc81a68cc91e19355a080050a73eef528c; task 58 installed qualification is not established.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
       },
-      "command_confidence": "unresolved",
+      "command_confidence": "source-derived",
       "baseline_disposition": "A-only (no baseline)",
-      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
+      "argv_provenance": "argv source-derived",
+      "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
     }
   ],
   "command_fault_map": "COMMAND-FAULT-MAP.md",
@@ -817,7 +1090,7 @@
     "All raw paths are proposed collection names; 0 real R8 captures or tuple qualification are established.",
     "P10 readiness/admission is a gate before P4; lease lifecycle coverage may span later phases."
   ],
-  "packet_revision": "053 / 2026-11-02",
+  "packet_revision": "054 argv source-derived (H task 58 candidate source; uncaptured)",
   "schema": "r8-g0-capture-manifest/v1",
   "state_rule": "All families and scenarios are uncaptured. Transition only after real immutable raw evidence, exact installed tuple and invocation, nonzero executed/collected count, and reviewed source-to-case/artifact mapping. Record actual exit codes, including expected zero.",
   "status": "BLOCKED: no complete installed-r10c scenario command established; all rows uncaptured",
@@ -883,5 +1156,6 @@
       }
     ],
     "row_disposition": "A-only (no baseline) where no per-scenario baseline fixture is identified by the approved sources; common support fixtures do not create scenario coverage."
-  }
+  },
+  "argv_policy": "Each cases[].command is an argv token vector. argv_provenance records source or installed evidence. Path arguments use only ${INSTALL_PREFIX} and ${DATA}; non-path constants are literal CLI tokens. Source-derived argv establishes parser syntax only, not fixture availability, fault-hook behavior, qualification, or capture."
 }
