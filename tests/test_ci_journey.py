@@ -616,3 +616,72 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
         proc = config("true", **override)
         assert proc.returncode != 0
         assert "direct_only cannot be combined" in proc.stderr
+
+
+def test_windows_preflight_records_query_streams_origin_and_exit(tmp_path, monkeypatch):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=0, stdout='{"PSVersion":"5.1","ModulePath":"scheduler.psd1"}', stderr="")
+        return SimpleNamespace(returncode=1, stdout="partial query output", stderr="query module error")
+    monkeypatch.setattr(windows.subprocess, "run", fake_run)
+    monkeypatch.setenv("PSModulePath", "untrusted")
+    with pytest.raises(RuntimeError, match="query exit 1"):
+        windows.scheduled_task_preflight()
+    record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    assert record["query"] == {"argv": calls[1][0], "stdout": "partial query output",
+                               "stderr": "query module error", "exit_code": 1}
+    assert windows.SCHEDULED_TASK_QUERY in record["query"]["argv"][-1]
+    assert "PSVersion" in record["origin"]["stdout"] and "ModulePath" in record["origin"]["stdout"]
+    assert all(not any(key.casefold() == "psmodulepath" for key in call[1]["env"]) for call in calls)
+    assert "CmdletizationQuery_NotFound_TaskName," in windows.SCHEDULED_TASK_QUERY
+    assert "else { throw }" in windows.SCHEDULED_TASK_QUERY
+    journey.retain_named_evidence(tmp_path, "before-cleanup")
+    assert (tmp_path.parent / "evidence-upload" / "before-cleanup" / "preflight-scheduled-task.txt").is_file()
+
+
+def test_windows_preflight_absence_and_foreign_owner_rejection(tmp_path, monkeypatch):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path / "evidence")
+    monkeypatch.setattr(windows.subprocess, "run", lambda *a, **kw: SimpleNamespace(
+        returncode=0, stdout="", stderr=""))
+    assert windows.scheduled_task_preflight() == ""
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "empty" / "astrid")
+    monkeypatch.setattr(journey, "runtime_processes", lambda *a: [])
+    monkeypatch.setattr(windows, "scheduled_task_preflight", lambda: 'present\nC:\\other\\runtime.exe\n')
+    with pytest.raises(RuntimeError, match="outside this journey"):
+        journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
+
+
+def test_linux_manager_boundary_probes_the_isolated_unit_path(tmp_path):
+    import subprocess
+    script = (journey.ROOT / ".github/workflows/journey-linux-manager.sh").read_text()
+    function = script.split("probe_isolated_unit() {\n", 1)[1].split("\n}\n", 1)[0]
+    run_root = tmp_path / "astrid-r1-direct-linux"
+    commands = tmp_path / "commands"
+    stub = tmp_path / "systemctl"
+    stub.write_text('''#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$CALLS"
+if [[ "$*" == *FragmentPath* ]]; then printf '%s\\n' "$EXPECTED_FRAGMENT"; fi
+''')
+    stub.chmod(0o755)
+    probe = "journey-manager-path-probe-test.service"
+    config = run_root / "home/.config"
+    probe_dir = config / "systemd/user"
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", CALLS=str(commands),
+               EXPECTED_FRAGMENT=str(probe_dir / probe), run_root=str(run_root), config=str(config),
+               probe_dir=str(probe_dir), probe=probe, probe_created="0")
+    result = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not run_root.exists()
+    assert f"--user start {probe}" in commands.read_text()
+    assert 'Environment="XDG_CONFIG_HOME=%s" "XDG_DATA_HOME=%s"' in script
+    assert 'sudo systemctl restart "user@$uid.service"' in script
+    assert 'test "$original" = not-found' in script
+    env["EXPECTED_FRAGMENT"] = str(tmp_path / "foreign.service")
+    failure = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
+    assert failure.returncode != 0

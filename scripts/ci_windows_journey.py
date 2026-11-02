@@ -72,6 +72,51 @@ def powershell(code, name, *, show=True, timeout=300):
                show=show, timeout=timeout)
 
 
+
+# Only the cmdlet's specific no-match error denotes absence. Other scheduler,
+# module and transport failures must remain failures rather than an empty result.
+SCHEDULED_TASK_QUERY = (
+    "try { $t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop; "
+    "if ($t) { 'present'; $t.Actions | ForEach-Object { $_.Execute } } } "
+    "catch { if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound_TaskName,*') "
+    "{ } else { throw } }"
+)
+SCHEDULED_TASK_ORIGIN = (
+    "$c=Get-Command Get-ScheduledTask -ErrorAction Stop; "
+    "[pscustomobject]@{PSVersion=$PSVersionTable.PSVersion.ToString(); "
+    "PSEdition=$PSVersionTable.PSEdition; CommandType=[string]$c.CommandType; "
+    "Source=$c.Source; ModuleName=$c.ModuleName; ModulePath=$c.Module.Path} | ConvertTo-Json -Compress"
+)
+
+
+def scheduled_task_preflight(name="preflight-scheduled-task.txt", *, timeout=30):
+    """Capture independent query streams and shell origin even when a query fails."""
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
+    prefix = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+    records = {}
+    for label, code in (("origin", SCHEDULED_TASK_ORIGIN), ("query", SCHEDULED_TASK_QUERY)):
+        argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", prefix + code]
+        record = {"argv": argv, "stdout": "", "stderr": "", "exit_code": None}
+        records[label] = record
+        try:
+            result = subprocess.run(argv, env=env, capture_output=True, encoding="utf-8",
+                                    errors="replace", timeout=timeout, check=False)
+            record.update(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
+        except subprocess.TimeoutExpired as exc:
+            def decoded(value):
+                return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+            record.update(stdout=decoded(exc.stdout), stderr=decoded(exc.stderr), error="timeout")
+        except OSError as exc:
+            record["error"] = f"{type(exc).__name__}: {exc}"
+    (EVIDENCE / name).write_text(json.dumps(records, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    for label, record in records.items():
+        if record["exit_code"] != 0:
+            raise RuntimeError(f"{name}: {label} exit {record['exit_code']}" +
+                               (f" ({record['error']})" if record.get("error") else ""))
+    return records["query"]["stdout"]
+
+
 def source(repo):
     sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):

@@ -63,6 +63,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "install-bootstrap.log", "update-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
+    "preflight-scheduled-task.txt",
     "runtime-owner-processes.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
@@ -864,10 +865,7 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
                 if fresh or fields.get("FragmentPath") != expected:
                     raise RuntimeError("An Astrid user-manager unit outside this journey is loaded")
     elif sys.platform == "win32":
-        existing = windows.powershell(
-            "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction SilentlyContinue; "
-            "if ($t) { 'present'; $t.Actions | ForEach-Object { $_.Execute } }",
-            "preflight-scheduled-task.txt", show=False, timeout=30)
+        existing = windows.scheduled_task_preflight()
         if existing.strip() and (fresh or not windows_task_owned(existing, root)):
             raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
     if fresh and runtime_processes(data):
@@ -919,6 +917,8 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
         _manager_probe(["launchctl", "print", f"gui/{os.getuid()}"], label="launchd GUI domain")
         manager = "launchd"
     elif sys.platform == "win32":
+        # Retain the query even if the subsequent manager prerequisite fails.
+        windows.scheduled_task_preflight()
         # The command checks both the PowerShell service-manager module and its
         # scheduler surface; it does not manufacture or start a task.
         version = windows.powershell(
