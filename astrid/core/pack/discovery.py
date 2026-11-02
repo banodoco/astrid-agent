@@ -469,7 +469,6 @@ def discover_pack_metadata(
                 exc,
             )
             return
-        seen: dict[str, Path] = {}
         for child in children:
             try:
                 if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
@@ -511,10 +510,6 @@ def discover_pack_metadata(
                 continue
             if pack.visibility == "hidden":
                 continue
-            if pack.id in seen:
-                raise PackValidationError(
-                    f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {manifest_path}")
-            seen[pack.id] = manifest_path
             _add(
                 pack,
                 source_kind,
@@ -560,6 +555,9 @@ def discover_pack_metadata(
             if env_root == "":
                 continue
             _scan_external_root(env_root, "env")
+
+    from astrid.core.pack.ownership import first_pack_owner
+    discovered = first_pack_owner(discovered)
 
     if scan is _default_discover_packs:
         records = {item.pack.id: managed_by_root[item.pack.root.resolve()]

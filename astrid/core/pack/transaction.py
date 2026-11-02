@@ -565,6 +565,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                             "after": dict(identities[pack_id][1]),
                             "before_digest": pack_digest(root / pack_id) if (root / pack_id).is_dir() else None,
                             "after_digest": identities[pack_id][0],
+                            "staged_root": str(candidate / pack_id),
                         }
                         for pack_id in sorted(packs)
                     },
@@ -590,6 +591,11 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             for pack_id, (digest, pin) in identities.items():
                 if pack_digest(candidate / pack_id) != digest or read_pin(candidate / pack_id / "PIN") != pin:
                     raise PackInstallError("pin_mismatch", "Staged source/PIN changed after preparation; retry the group build.")
+            if consent is not None and revision is None:
+                for pack_id, subpath in packs.items():
+                    source_pack = _directory(Path(source) / subpath)
+                    if pack_digest(source_pack) != identities[pack_id][0]:
+                        raise PackInstallError("pin_mismatch", "Local source changed after consent; retry the group transaction.")
             for request, result in build_records:
                 _verify_artifacts(request, result)
             if _state(candidate) != state:

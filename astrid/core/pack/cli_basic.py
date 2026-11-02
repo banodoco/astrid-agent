@@ -526,17 +526,14 @@ def _filtered_packs(
         *(item for item in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep) if item),
     ]
     roots.extend(Path(item).expanduser() for item in raw_roots)
-    packs_by_id: dict[str, PackDefinition] = {}
+    candidates: list[PackDefinition] = []
     for root in roots:
-        for pack in discover_packs(
+        candidates.extend(discover_packs(
             root,
             include_hidden=show_hidden if include_hidden is None else include_hidden,
-        ):
-            existing = packs_by_id.get(pack.id)
-            if existing is None or ((pack.root / "PIN").is_file()
-                                    and not (existing.root / "PIN").is_file()):
-                packs_by_id[pack.id] = pack
-    packs = list(packs_by_id.values())
+        ))
+    from astrid.core.pack.ownership import first_pack_owner
+    packs = first_pack_owner(candidates)
     category = getattr(args, "category", None)
     status = getattr(args, "status", None)
     visibility = getattr(args, "visibility", None)

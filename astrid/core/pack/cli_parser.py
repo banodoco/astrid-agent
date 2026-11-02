@@ -48,7 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     from .cli_inspect import _handle_inspect  # noqa: PLC0415
     from .cli_search import _handle_agent_index, _handle_search  # noqa: PLC0415
-    from .cli_manage import build_add_parser, build_remove_parser  # noqa: PLC0415
+    from .cli_manage import (  # noqa: PLC0415
+        _handle_rollback, _handle_update, build_add_parser, build_remove_parser,
+    )
 
     parser = RecoverableArgumentParser(
         prog="python3 -m astrid.core.pack.cli",
@@ -58,6 +60,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_add_parser(subparsers)
     build_remove_parser(subparsers)
+
+    update_parser = subparsers.add_parser(
+        "update", help="Update a selected dependency group after reviewing the exact staged changes."
+    )
+    update_parser.add_argument("--source", required=True, help="Git repository containing the selected packs.")
+    update_parser.add_argument("--revision", required=True, help="Target Git ref or full commit SHA.")
+    update_parser.add_argument(
+        "--pack", action="append", required=True, dest="packs", metavar="ID=SUBPATH",
+        help="Pack in the selected dependency group (repeat for each pack).",
+    )
+    update_parser.add_argument("--packs-root", help="Installed collection directory (defaults to Astrid's configured root).")
+    update_parser.set_defaults(handler=_handle_update)
+
+    rollback_parser = subparsers.add_parser(
+        "rollback", help="Restore selected packs from the generation before the active commit."
+    )
+    rollback_parser.add_argument(
+        "--pack", action="append", required=True, dest="pack_ids",
+        help="Pack in the selected dependency group (repeat for each pack).",
+    )
+    rollback_parser.add_argument("--transaction-id", help="Expected active generation; defaults to the current generation.")
+    rollback_parser.add_argument("--packs-root", help="Installed collection directory (defaults to Astrid's configured root).")
+    rollback_parser.set_defaults(handler=_handle_rollback)
 
     validate_parser = subparsers.add_parser(
         "validate", aliases=["check"], help="Statically validate a pack directory."

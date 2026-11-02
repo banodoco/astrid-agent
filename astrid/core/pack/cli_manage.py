@@ -9,11 +9,9 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import json
-import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +19,9 @@ import yaml
 
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import pack_digest, read_pin
-from astrid.core.pack.install import PackInstallError, _directory, _fetch_tree, _git_source
+from astrid.core.pack.install import PackInstallError
 from astrid.core.pack.personal import resolve_personal_packs_root
-from astrid.core.pack.transaction import GroupCommitError, install_group
+from astrid.core.pack.transaction import GroupCommitError, install_group, rollback_group
 
 
 def _python_packages() -> dict[str, str]:
@@ -35,36 +33,21 @@ def _python_packages() -> dict[str, str]:
     return packages
 
 
-def _preview(source: str, pack_id: str, subpath: str, revision: str | None) -> tuple[Path, str | None]:
-    """Materialize a static preview using the installer’s source checks."""
-    source_path = Path(source).expanduser()
-    if revision is None:
-        candidate = source_path / subpath
-        try:
-            _directory(candidate)
-        except PackInstallError:
-            raise PackInstallError("invalid_source", "Folder source must contain the selected pack directory.")
-        return candidate, None
-
-    work = Path(tempfile.mkdtemp(prefix="astrid-pack-consent-"))
-    stage = work / pack_id
-    stage.mkdir()
-    try:
-        resolved = _fetch_tree(work, _git_source(source), revision, subpath, stage)
-        return stage, resolved
-    except BaseException:
-        shutil.rmtree(work, ignore_errors=True)
-        raise
-
-
 def _consent_details(pack_root: Path, *, source: str, commit: str | None) -> dict[str, Any]:
     manifest = validate_canonical_pack(pack_root).definition.to_dict()
     secrets = manifest.get("secrets", [])
+    actions = manifest.get("actions", {})
+    action_secrets = {
+        action_id: action["secrets"]
+        for action_id, action in actions.items()
+        if isinstance(action, dict) and action.get("secrets")
+    }
     permissions = manifest.get("permissions", [])
     network = [permission for permission in permissions
                if isinstance(permission, dict) and permission.get("id") in {"network", "external_services"}]
     return {"id": manifest["id"], "name": manifest["name"], "source": source,
-            "commit": commit, "secrets": secrets, "network": network}
+            "commit": commit, "secrets": secrets, "action_secrets": action_secrets,
+            "network": network}
 
 
 def _show_consent(details: dict[str, Any]) -> None:
@@ -73,6 +56,13 @@ def _show_consent(details: dict[str, Any]) -> None:
     print(f"Commit: {details['commit'] or '(local folder; unpinned)'}")
     print("Declared secrets:")
     print(json.dumps(details["secrets"], indent=2, sort_keys=True) if details["secrets"] else "  none")
+    print("Action-scoped secrets:")
+    if details["action_secrets"]:
+        for action_id, secrets in details["action_secrets"].items():
+            print(f"  actions.{action_id}.secrets:")
+            print(json.dumps(secrets, indent=2, sort_keys=True))
+    else:
+        print("  none")
     print("Declared network access:")
     print(json.dumps(details["network"], indent=2, sort_keys=True) if details["network"] else "  none")
 
@@ -90,28 +80,40 @@ def _handle_add(args: argparse.Namespace) -> int:
     pack_id = args.pack_id
     subpath = args.subpath
     source = args.source
-    preview_root, commit = _preview(source, pack_id, subpath, args.revision)
-    try:
-        details = _consent_details(preview_root, source=source, commit=commit)
+    root = resolve_personal_packs_root(args.packs_root)
+    if root is None:
+        raise PackInstallError("invalid_packs_root", "Configure an absolute user packs root before installing.")
+
+    def consent(changes: dict[str, Any]) -> bool:
+        staged_root = Path(changes["packs"][pack_id]["staged_root"])
+        details = _consent_details(staged_root, source=source, commit=changes["revision"])
         if details["id"] != pack_id:
             raise PackInstallError("pack_id_mismatch", "Selected manifest id does not match --pack-id.")
         _show_consent(details)
-        if not _confirm("Install this pack through the dependency-group transaction? [y/N] ", yes=args.yes):
-            print("Pack installation cancelled.")
-            return 1
-        root = resolve_personal_packs_root(args.packs_root)
-        if root is None:
-            raise PackInstallError("invalid_packs_root", "Configure an absolute user packs root before installing.")
-        result = install_group(source=source, revision=commit, packs={pack_id: subpath},
+        accepted = _confirm("Install this exact staged pack through the dependency-group transaction? [y/N] ",
+                             yes=args.yes)
+        if accepted and args.revision is None:
+            live_root = Path(source).expanduser() / subpath
+            if pack_digest(live_root) != pack_digest(staged_root):
+                raise PackInstallError("source_changed", "Pack source changed during consent; review it again.")
+        return accepted
+
+    root_was_present = root.exists()
+    try:
+        result = install_group(source=source, revision=args.revision, packs={pack_id: subpath},
                               packs_root=root, python_packages=_python_packages(),
-                              origin="folder" if commit is None else "user")
-        print(f"Installed {pack_id} at {result.paths[pack_id]} (transaction {result.transaction_id}).")
-        if result.refresh_pending:
-            print("Refresh acknowledgment is pending; retry the committed transaction refresh.", file=sys.stderr)
-        return 0
-    finally:
-        if args.revision is not None:
-            shutil.rmtree(preview_root.parent, ignore_errors=True)
+                              origin="folder" if args.revision is None else "user", consent=consent)
+    except PackInstallError as exc:
+        if exc.code in {"user_cancelled", "source_changed"} and not root_was_present:
+            try:
+                root.rmdir()
+            except OSError:
+                pass
+        raise
+    print(f"Installed {pack_id} at {result.paths[pack_id]} (transaction {result.transaction_id}).")
+    if result.refresh_pending:
+        print("Refresh acknowledgment is pending; retry the committed transaction refresh.", file=sys.stderr)
+    return 0
 
 
 def _handle_remove(args: argparse.Namespace) -> int:
@@ -136,6 +138,12 @@ def _handle_remove(args: argparse.Namespace) -> int:
 def _handle_add_error(args: argparse.Namespace) -> int:
     try:
         return _handle_add(args)
+    except PackInstallError as exc:
+        if exc.code == "user_cancelled":
+            print("Pack installation cancelled.")
+            return 1
+        print(f"packs add: {exc}", file=sys.stderr)
+        return 1
     except (OSError, ValueError, GroupCommitError, subprocess.SubprocessError, yaml.YAMLError) as exc:
         print(f"packs add: {exc}", file=sys.stderr)
         return 1
@@ -166,6 +174,69 @@ def build_remove_parser(subparsers: Any) -> None:
     parser.add_argument("--packs-root", help="User pack collection root (defaults to ~/Astrid/packs).")
     parser.add_argument("--yes", action="store_true", help="Confirm the removal transaction.")
     parser.set_defaults(handler=_handle_remove_error)
+
+
+def _pack_specs(values: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for value in values:
+        pack_id, separator, subpath = value.partition("=")
+        if not separator or not pack_id or not subpath or pack_id in result:
+            raise PackInstallError("invalid_request", "Select packs as unique ID=SUBPATH values.")
+        result[pack_id] = subpath
+    return result
+
+
+def _confirm_update(changes: dict[str, Any]) -> bool:
+    print("Proposed dependency group update:", file=sys.stderr)
+    print(f"  source: {changes['source']}", file=sys.stderr)
+    print(f"  target revision: {changes['revision']}", file=sys.stderr)
+    for pack_id, change in changes["packs"].items():
+        print(f"  {pack_id}: {change['before'] or 'not installed'} -> {change['after']}", file=sys.stderr)
+        print(f"    tree: {change['before_digest'] or 'none'} -> {change['after_digest']}", file=sys.stderr)
+    print(f"  preserved removals: {', '.join(changes['removals']) or 'none'}", file=sys.stderr)
+    return input("Commit this validated group update? [y/N] ").strip().lower() in {"y", "yes"}
+
+
+def _confirm_rollback(changes: dict[str, Any]) -> bool:
+    print("Proposed dependency group rollback:", file=sys.stderr)
+    for pack_id, change in changes["packs"].items():
+        print(f"  {pack_id}: {change['current'] or 'not installed'} -> {change['restore'] or 'absent'}", file=sys.stderr)
+        print(f"    tree: {change['current_digest'] or 'none'} -> {change['restore_digest'] or 'none'}", file=sys.stderr)
+    print(f"  preserved removals: {', '.join(changes['removals']) or 'none'}", file=sys.stderr)
+    return input("Commit this rollback? [y/N] ").strip().lower() in {"y", "yes"}
+
+
+def _handle_update(args: argparse.Namespace) -> int:
+    from astrid.core.pack.loader import packs_root as default_packs_root
+
+    try:
+        packs = _pack_specs(args.packs)
+        root = Path(args.packs_root).expanduser() if args.packs_root else default_packs_root()
+        result = install_group(source=args.source, revision=args.revision, packs=packs,
+                               packs_root=root, python_packages=_python_packages(), intent="update",
+                               consent=_confirm_update)
+    except (PackInstallError, OSError, EOFError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"Updated {', '.join(sorted(packs))} in committed generation {result.transaction_id}.")
+    return 0
+
+
+def _handle_rollback(args: argparse.Namespace) -> int:
+    from astrid.core.pack.loader import packs_root as default_packs_root
+
+    try:
+        root = Path(args.packs_root).expanduser() if args.packs_root else default_packs_root()
+        result = rollback_group(packs_root=root, pack_ids=args.pack_ids,
+                                transaction_id=args.transaction_id, consent=_confirm_rollback)
+    except (PackInstallError, OSError, EOFError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"Rolled back {', '.join(sorted(set(args.pack_ids)))} in committed generation {result.transaction_id}.")
+    return 0
+
+
+__all__ = ["_handle_update", "_handle_rollback"]
 
 
 def origin_and_modified(pack: Any) -> tuple[str, bool | None]:
