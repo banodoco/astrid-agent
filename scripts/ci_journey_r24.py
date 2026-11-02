@@ -20,7 +20,7 @@ except ImportError:
 
 
 PUBLISHED_CANDIDATE = {
-    "app": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
     "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
     "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
     "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
