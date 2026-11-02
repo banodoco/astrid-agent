@@ -23,6 +23,7 @@ import time
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 if __package__:
@@ -1222,9 +1223,14 @@ def _runtime_owner_command(command: str) -> bool:
 class _RuntimeOwnerPids(list):
     """PID list carrying bounded identity evidence for a failed strict census."""
 
-    def __init__(self, pids: list[int], details: list[dict]):
+    def __init__(self, pids: list[int], details: list[dict], task_action: dict | None = None):
         super().__init__(pids)
         self.details = details
+        # The census command returns only redacted task-action facts: its
+        # executable image and a digest/count for the parsed arguments.  The
+        # command itself and its arguments can carry secrets and must not be
+        # retained in journey evidence.
+        self.task_action = task_action
 
 
 def _bounded_text(value: object, *, limit: int) -> tuple[str | None, bool]:
@@ -1251,14 +1257,20 @@ def _runtime_owner_detail(row: dict, command: str, matcher: str | None = None) -
     creation_date, creation_date_truncated = _bounded_text(row.get("CreationDate"), limit=128)
     native_identity, native_identity_truncated = _bounded_text(row.get("NativeIdentity"), limit=128)
     command_sha256, _ = _bounded_text(row.get("CommandSha256"), limit=64)
+    command_tail_sha256, _ = _bounded_text(row.get("CommandTailSha256"), limit=64)
     if command_sha256 is None and command:
         command_sha256 = hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest()
     command_length = row.get("CommandLength")
+    command_tail_argument_count = row.get("CommandTailArgumentCount")
     return {
         "command_line": command_line,
         "command_line_truncated": command_line_truncated,
         "command_length": command_length if type(command_length) is int and command_length >= 0 else None,
         "command_sha256": command_sha256,
+        "command_tail_sha256": command_tail_sha256,
+        "command_tail_argument_count": (
+            command_tail_argument_count
+            if type(command_tail_argument_count) is int and command_tail_argument_count >= 0 else None),
         "creation_date": creation_date,
         "creation_date_truncated": creation_date_truncated,
         "executable_path": executable_path,
@@ -1290,6 +1302,10 @@ namespace AstridOwnerCensus {
       out FILETIME exited, out FILETIME kernel, out FILETIME user);
     [DllImport("kernel32.dll", SetLastError=true)]
     private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    private static extern IntPtr CommandLineToArgvW(string commandLine, out int argc);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    private static extern IntPtr LocalFree(IntPtr memory);
     public static string CreationFileTime(uint pid) {
       IntPtr handle = OpenProcess(0x1000, false, pid);
       if (handle == IntPtr.Zero) return null;
@@ -1299,6 +1315,34 @@ namespace AstridOwnerCensus {
         ulong value = ((ulong)created.high << 32) | created.low;
         return value.ToString(CultureInfo.InvariantCulture);
       } finally { CloseHandle(handle); }
+    }
+    public static string[] CommandLineArguments(string commandLine) {
+      if (String.IsNullOrEmpty(commandLine)) return null;
+      int argc;
+      IntPtr values = CommandLineToArgvW(commandLine, out argc);
+      if (values == IntPtr.Zero || argc < 1) return null;
+      try {
+        string[] result = new string[argc];
+        for (int index = 0; index < argc; index++) {
+          IntPtr value = Marshal.ReadIntPtr(values, index * IntPtr.Size);
+          result[index] = Marshal.PtrToStringUni(value) ?? String.Empty;
+        }
+        return result;
+      } finally { LocalFree(values); }
+    }
+    public static string ArgumentVectorSha256(string[] values) {
+      if (values == null) return null;
+      using (var stream = new System.IO.MemoryStream()) {
+        foreach (string value in values) {
+          byte[] bytes = System.Text.Encoding.UTF8.GetBytes(value ?? String.Empty);
+          byte[] length = BitConverter.GetBytes(bytes.Length);
+          stream.Write(length, 0, length.Length);
+          stream.Write(bytes, 0, bytes.Length);
+        }
+        using (var hash = System.Security.Cryptography.SHA256.Create()) {
+          return BitConverter.ToString(hash.ComputeHash(stream.ToArray())).Replace("-", "").ToLowerInvariant();
+        }
+      }
     }
   }
 }
@@ -1332,6 +1376,16 @@ try {
                     if ($null -ne $created) { $native = 'windows-creation:' + $created }
                 } catch {}
             }
+            $tailHash = $null
+            $tailCount = $null
+            try {
+                $argv = [AstridOwnerCensus.Native]::CommandLineArguments($command)
+                if ($null -ne $argv -and $argv.Length -ge 1) {
+                    $tail = @($argv | Select-Object -Skip 1)
+                    $tailHash = [AstridOwnerCensus.Native]::ArgumentVectorSha256($tail)
+                    $tailCount = $tail.Length
+                }
+            } catch {}
             [pscustomobject]@{
                 ProcessId = $_.ProcessId
                 ParentProcessId = $_.ParentProcessId
@@ -1342,6 +1396,8 @@ try {
                 CommandLength = $command.Length
                 CommandSha256 = ([BitConverter]::ToString($sha256.ComputeHash(
                     [Text.Encoding]::UTF8.GetBytes($command))).Replace('-', '').ToLowerInvariant())
+                CommandTailArgumentCount = $tailCount
+                CommandTailSha256 = $tailHash
                 SanitizedCommandLine = if ($matcher -eq 'runtime_protocol-start') {
                     '-m runtime_protocol start'
                 } else {
@@ -1350,7 +1406,33 @@ try {
             }
         }
     })
-    ConvertTo-Json -InputObject $owners -Compress -Depth 3
+    $taskAction = @{ status = 'unavailable'; reason = 'task action query did not run' }
+    try {
+        $tasks = @(Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop)
+        if ($tasks.Count -ne 1) { throw "expected one Astrid Runtime task, found $($tasks.Count)" }
+        if ([string]$tasks[0].TaskPath -ne '\') { throw "unexpected task path $($tasks[0].TaskPath)" }
+        $actions = @($tasks[0].Actions)
+        if ($actions.Count -ne 1) { throw "expected one task action, found $($actions.Count)" }
+        $execute = [string]$actions[0].Execute
+        $arguments = [string]$actions[0].Arguments
+        if ([string]::IsNullOrWhiteSpace($execute)) { throw 'task action executable was unavailable' }
+        # Parse the registered argument tail with exactly the same native
+        # Windows parser used for each live process.  Do not serialize the
+        # potentially secret-bearing arguments into evidence.
+        $parsed = [AstridOwnerCensus.Native]::CommandLineArguments(('x ' + $arguments))
+        if ($null -eq $parsed -or $parsed.Length -lt 1) { throw 'task action arguments were unparsable' }
+        $tail = @($parsed | Select-Object -Skip 1)
+        $taskAction = @{
+            status = 'observed'
+            task_path = [string]$tasks[0].TaskPath
+            executable_path = $execute
+            arguments_sha256 = [AstridOwnerCensus.Native]::ArgumentVectorSha256($tail)
+            argument_count = $tail.Length
+        }
+    } catch {
+        $taskAction = @{ status = 'unavailable'; reason = $_.Exception.GetType().Name }
+    }
+    @{ owners = @($owners); task_action = $taskAction } | ConvertTo-Json -Compress -Depth 4
 } finally {
     $sha256.Dispose()
 }
@@ -1360,10 +1442,22 @@ try {
 def runtime_processes(data: Path) -> list[int]:
     """Count every live Runtime owner process on this isolated journey host."""
     if sys.platform == "win32":
-        rows = json.loads(windows.powershell(
+        observation = json.loads(windows.powershell(
             WINDOWS_RUNTIME_OWNER_CENSUS,
             "runtime-owner-processes.json", show=False, timeout=30))
+        if isinstance(observation, dict) and "owners" in observation:
+            rows = observation.get("owners")
+            task_action = observation.get("task_action")
+        else:
+            # Keep old, bounded test inputs readable; they do not contain
+            # enough proof to normalize a parent and so remain fail-closed.
+            rows = observation
+            task_action = None
         rows = rows if isinstance(rows, list) else [rows]
+        if not all(isinstance(row, dict) for row in rows):
+            raise RuntimeError("Windows Runtime owner census returned malformed owner records")
+        if task_action is not None and not isinstance(task_action, dict):
+            raise RuntimeError("Windows Runtime owner census returned malformed task action evidence")
         matched = []
         for row in rows:
             command = str(row.get("CommandLine") or "")
@@ -1378,6 +1472,7 @@ def runtime_processes(data: Path) -> list[int]:
             [int(row["ProcessId"]) for row, _command, _matcher in matched],
             [_runtime_owner_detail(row, command, matcher)
              for row, command, matcher in matched[:OWNER_CENSUS_MAX_RECORDS]],
+            task_action,
         )
     # The installed prelude can be long and can contain newlines. Ask ps for
     # the full command, then keep continuation lines with their process.
@@ -1391,6 +1486,150 @@ def runtime_processes(data: Path) -> list[int]:
             pid, command = records[-1]
             records[-1] = (pid, command + "\n" + line)
     return [pid for pid, command in records if _runtime_owner_command(command)]
+
+
+def _same_windows_path(left: object, right: object) -> bool:
+    """Compare two complete Windows image paths without accepting a suffix."""
+    if not isinstance(left, str) or not isinstance(right, str) or not left or not right:
+        return False
+    return ntpath.normcase(ntpath.normpath(left)) == ntpath.normcase(ntpath.normpath(right))
+
+
+def _windows_venv_base_executable(venv_executable: object) -> str | None:
+    """Resolve only a normal CPython Windows venv's configured pythonw image.
+
+    This intentionally does not infer the base image from a version, filename,
+    or a nearby process.  A malformed, relative, unreadable, or ambiguous
+    ``pyvenv.cfg`` is no proof and leaves the raw owner census uncollapsed.
+    """
+    if not isinstance(venv_executable, str):
+        return None
+    executable = ntpath.normpath(venv_executable)
+    if (ntpath.basename(executable).casefold() != "pythonw.exe" or
+            ntpath.basename(ntpath.dirname(executable)).casefold() != "scripts"):
+        return None
+    config = Path(ntpath.join(ntpath.dirname(ntpath.dirname(executable)), "pyvenv.cfg"))
+    try:
+        if config.is_symlink() or not config.is_file():
+            return None
+        content = config.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return None
+    homes = []
+    for line in content.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip().casefold() == "home":
+            home = value.strip()
+            if home:
+                homes.append(home)
+    if len(homes) != 1 or not ntpath.isabs(homes[0]):
+        return None
+    return ntpath.normpath(ntpath.join(homes[0], "pythonw.exe"))
+
+
+def _windows_tail_matches(detail: dict, action: dict) -> bool:
+    """Compare redacted native-parser evidence, never raw service arguments."""
+    owner_digest = detail.get("command_tail_sha256")
+    action_digest = action.get("arguments_sha256")
+    owner_count = detail.get("command_tail_argument_count")
+    action_count = action.get("argument_count")
+    return (isinstance(owner_digest, str) and re.fullmatch(r"[0-9a-f]{64}", owner_digest) is not None and
+            owner_digest == action_digest and type(owner_count) is int and owner_count >= 0 and
+            owner_count == action_count)
+
+
+def _windows_creation_before(parent: dict, child: dict) -> bool:
+    """Require an unambiguous parent-before-child creation ordering."""
+    try:
+        parent_time = datetime.fromisoformat(str(parent["creation_date"]).replace("Z", "+00:00"))
+        child_time = datetime.fromisoformat(str(child["creation_date"]).replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError):
+        return False
+    return parent_time < child_time
+
+
+def _windows_logical_owner_normalization(owners: _RuntimeOwnerPids,
+                                         discovery: dict) -> tuple[list[int], dict]:
+    """Collapse precisely one proven CPython venv redirector parent.
+
+    A two-process exception would hide real duplicate Runtime ownership.  This
+    routine therefore accepts the physical pair only when every retained fact
+    binds it to the selected discovery incarnation and to the registered Task
+    Scheduler action.  Any missing fact returns the unmodified raw census.
+    """
+    raw_pids = [int(pid) for pid in owners]
+    selected_pid = discovery.get("pid")
+    selected_identity = discovery.get("process_birth_id")
+    proof = {
+        "status": "not-collapsed",
+        "raw_owner_pids": raw_pids,
+        "selected_pid": selected_pid,
+    }
+    if type(selected_pid) is not int or selected_pid <= 0:
+        proof["reason"] = "selected discovery PID was unavailable"
+        return raw_pids, proof
+    if not isinstance(selected_identity, str) or not selected_identity:
+        proof["reason"] = "selected discovery native identity was unavailable"
+        return raw_pids, proof
+    if len(raw_pids) != 2 or len(set(raw_pids)) != 2:
+        proof["reason"] = "raw census did not contain exactly one parent and selected child"
+        return raw_pids, proof
+    if len(owners.details) != 2:
+        proof["reason"] = "raw census detail evidence was incomplete"
+        return raw_pids, proof
+    selected_rows = [row for row in owners.details if row.get("pid") == selected_pid]
+    if len(selected_rows) != 1:
+        proof["reason"] = "selected discovery PID was not uniquely retained"
+        return raw_pids, proof
+    child = selected_rows[0]
+    if child.get("native_identity") != selected_identity:
+        proof["reason"] = "selected discovery native identity did not match the child census record"
+        return raw_pids, proof
+    parent_pid = child.get("parent_pid")
+    parent_rows = [row for row in owners.details if row.get("pid") == parent_pid]
+    if type(parent_pid) is not int or len(parent_rows) != 1:
+        proof["reason"] = "selected child did not have one immediate raw-census parent"
+        return raw_pids, proof
+    parent = parent_rows[0]
+    if not isinstance(parent.get("native_identity"), str) or not parent["native_identity"]:
+        proof["reason"] = "parent native identity was unavailable"
+        return raw_pids, proof
+    action = owners.task_action
+    if not isinstance(action, dict) or action.get("status") != "observed":
+        proof["reason"] = "registered task action evidence was unavailable"
+        return raw_pids, proof
+    if action.get("task_path") != "\\":
+        proof["reason"] = "registered task path was not the exact Runtime task path"
+        return raw_pids, proof
+    if not _same_windows_path(parent.get("executable_path"), action.get("executable_path")):
+        proof["reason"] = "parent image did not equal the registered task action image"
+        return raw_pids, proof
+    if not _windows_tail_matches(parent, action) or not _windows_tail_matches(child, action):
+        proof["reason"] = "parsed parent or child command tail did not equal registered task arguments"
+        return raw_pids, proof
+    expected_base = _windows_venv_base_executable(parent.get("executable_path"))
+    if expected_base is None:
+        proof["reason"] = "parent venv pyvenv.cfg was unreadable, ambiguous, or did not resolve an absolute base image"
+        return raw_pids, proof
+    if not _same_windows_path(child.get("executable_path"), expected_base):
+        proof["reason"] = "pyvenv.cfg base image did not equal the selected child image"
+        return raw_pids, proof
+    if not _windows_creation_before(parent, child):
+        proof["reason"] = "parent creation did not precede child creation"
+        return raw_pids, proof
+    proof.update({
+        "status": "collapsed",
+        "logical_owner_pids": [selected_pid],
+        "redirector_pid": parent_pid,
+        "selected_native_identity": selected_identity,
+        "task_action": {
+            "executable_path": action.get("executable_path"),
+            "arguments_sha256": action.get("arguments_sha256"),
+            "argument_count": action.get("argument_count"),
+        },
+        "venv_base_image": expected_base,
+    })
+    return [selected_pid], proof
 
 
 def _owner_snapshot_value(value: object, *, unavailable: str, limit: int | None = None) -> dict:
@@ -1425,6 +1664,14 @@ def _owner_snapshot_record(detail: dict, asserted_pids: set[int]) -> dict:
             detail.get("command_sha256"), unavailable="command-line digest was unavailable", limit=64),
         "command_length": _owner_snapshot_value(
             detail.get("command_length"), unavailable="command-line length was unavailable"),
+        "parsed_command_tail": {
+            "sha256": _owner_snapshot_value(
+                detail.get("command_tail_sha256"),
+                unavailable="native parsed command-tail digest was unavailable", limit=64),
+            "argument_count": _owner_snapshot_value(
+                detail.get("command_tail_argument_count"),
+                unavailable="native parsed command-tail argument count was unavailable"),
+        },
         "executable_path": _owner_snapshot_value(
             detail.get("executable_path"), unavailable="Win32_Process.ExecutablePath was unavailable", limit=1024),
         "parent_pid": parent,
@@ -1444,7 +1691,9 @@ def _owner_snapshot_record(detail: dict, asserted_pids: set[int]) -> dict:
 
 
 def _owner_failure_snapshot(discovery: dict, owners: _RuntimeOwnerPids | None,
-                            census_error: Exception | None = None) -> dict:
+                            census_error: Exception | None = None,
+                            logical_owner_pids: list[int] | None = None,
+                            normalization: dict | None = None) -> dict:
     asserted_pids = [int(pid) for pid in owners] if owners is not None else []
     asserted_set = set(asserted_pids)
     records = [_owner_snapshot_record(detail, asserted_set)
@@ -1470,10 +1719,14 @@ def _owner_failure_snapshot(discovery: dict, owners: _RuntimeOwnerPids | None,
                         if record["pid"].get("value") == selected_value]
     return {
         "schema_version": 1,
-        "receipt_kind": "windows-runtime-owner-cardinality-failure",
+        "receipt_kind": ("windows-runtime-owner-cardinality-failure"
+                         if logical_owner_pids is None else
+                         "windows-runtime-owner-logical-owner-assertion"),
         "capture": {
             "trigger": "strict exactly-one selected Runtime owner assertion",
-            "timing": "captured before the assertion raises",
+            "timing": ("captured before the assertion raises"
+                       if logical_owner_pids is None else
+                       "captured before the logical-owner assertion resolves"),
             "retention": "write-once; later census and cleanup paths do not overwrite this file",
             "atomicity": {
                 "status": "not-established",
@@ -1502,6 +1755,10 @@ def _owner_failure_snapshot(discovery: dict, owners: _RuntimeOwnerPids | None,
             },
             "retained_owner_record_limit": OWNER_CENSUS_MAX_RECORDS,
             "unretained_asserted_owner_pids": asserted_pids[len(records):],
+            **({} if logical_owner_pids is None else {
+                "logical_owner_pids": logical_owner_pids,
+                "logical_owner_normalization": normalization,
+            }),
         },
         "asserted_owners": records,
     }
@@ -1509,7 +1766,9 @@ def _owner_failure_snapshot(discovery: dict, owners: _RuntimeOwnerPids | None,
 
 def _write_owner_failure_snapshot(evidence: Path | None, discovery: dict,
                                   owners: _RuntimeOwnerPids | None,
-                                  census_error: Exception | None = None) -> str:
+                                  census_error: Exception | None = None,
+                                  logical_owner_pids: list[int] | None = None,
+                                  normalization: dict | None = None) -> str:
     if evidence is None:
         return "not-requested"
     path = evidence / OWNER_ASSERTION_SNAPSHOT
@@ -1518,7 +1777,8 @@ def _write_owner_failure_snapshot(evidence: Path | None, discovery: dict,
     try:
         evidence.mkdir(parents=True, exist_ok=True)
         with path.open("x", encoding="utf-8") as stream:
-            json.dump(_owner_failure_snapshot(discovery, owners, census_error), stream,
+            json.dump(_owner_failure_snapshot(
+                discovery, owners, census_error, logical_owner_pids, normalization), stream,
                       indent=2, sort_keys=True, ensure_ascii=True)
             stream.write("\n")
         return "captured"
@@ -1536,15 +1796,35 @@ def assert_one_runtime(data: Path, evidence: Path | None = None) -> None:
         if sys.platform == "win32":
             _write_owner_failure_snapshot(evidence, discovery, None, exc)
         raise
-    if owners != [int(discovery["pid"])]:
+    expected_owner = [int(discovery["pid"])]
+    logical_owners = list(owners)
+    normalization = None
+    snapshot = "not-requested"
+    if sys.platform == "win32" and isinstance(owners, _RuntimeOwnerPids):
+        logical_owners, normalization = _windows_logical_owner_normalization(owners, discovery)
+        # Preserve the raw two-process census and the complete redacted proof
+        # even when it legitimately normalizes to one logical owner.  This is
+        # write-once because later cleanup censuses are not evidence of the
+        # assertion-time process topology.
+        if list(owners) != expected_owner:
+            if logical_owners == expected_owner and normalization.get("status") == "collapsed":
+                snapshot = _write_owner_failure_snapshot(
+                    evidence, discovery, owners,
+                    logical_owner_pids=logical_owners,
+                    normalization=normalization)
+            else:
+                snapshot = _write_owner_failure_snapshot(evidence, discovery, owners)
+    if logical_owners != expected_owner:
         # The raw process file can be replaced by cleanup censuses. Keep a
         # bounded, redacted assertion-time snapshot that cleanup cannot replace.
         details = getattr(owners, "details", [])
         diagnostic = json.dumps(details, sort_keys=True, separators=(",", ":"))
-        snapshot = _write_owner_failure_snapshot(evidence, discovery, owners)
+        if snapshot == "not-requested":
+            snapshot = _write_owner_failure_snapshot(evidence, discovery, owners)
         raise RuntimeError(
             f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}; "
-            f"bounded_owner_census={diagnostic}; owner_census_snapshot={snapshot}"
+            f"logical_owners={logical_owners}; bounded_owner_census={diagnostic}; "
+            f"owner_census_snapshot={snapshot}"
         )
 
 

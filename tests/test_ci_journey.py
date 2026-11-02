@@ -918,6 +918,153 @@ def test_tst_b1_windows_owner_failure_snapshot_marks_missing_fields_unavailable(
     }
 
 
+_ARTIFACT_VENV = (r"D:\a\_temp\astrid-r1-direct-windows\program\versions\3204bb00-"
+                  r"6d53a190-f042d729\py\Scripts\pythonw.exe")
+_ARTIFACT_BASE = (r"D:\a\_temp\astrid-r1-direct-windows\localappdata\Astrid Installer" "\\"
+                  r"bootstrap\python\cpython-3.11.13-windows-x86_64-none\pythonw.exe")
+_ARTIFACT_TAIL_SHA256 = "00d7b317229dfb6c2e46d4f0a0a903af124a578f2997ccfd1c84596b36f7389e"
+
+
+def _artifact_shaped_windows_owners(*, child_identity="windows-creation:134381205278019339",
+                                    child_parent=6976, child_image=_ARTIFACT_BASE,
+                                    action_image=_ARTIFACT_VENV,
+                                    parent_tail=_ARTIFACT_TAIL_SHA256,
+                                    child_tail=_ARTIFACT_TAIL_SHA256,
+                                    action_tail=_ARTIFACT_TAIL_SHA256,
+                                    extra=()):
+    """The retained 41507782325 process topology, without secret command text."""
+    parent = {
+        "pid": 6976,
+        "parent_pid": 1880,
+        "creation_date": "2026-11-02T19:15:27.791539+00:00",
+        "native_identity": "windows-creation:134381205277915396",
+        "executable_path": _ARTIFACT_VENV,
+        "command_tail_sha256": parent_tail,
+        "command_tail_argument_count": 4,
+    }
+    child = {
+        "pid": 5224,
+        "parent_pid": child_parent,
+        "creation_date": "2026-11-02T19:15:27.801933+00:00",
+        "native_identity": child_identity,
+        "executable_path": child_image,
+        "command_tail_sha256": child_tail,
+        "command_tail_argument_count": 4,
+    }
+    task_action = {
+        "status": "observed",
+        "task_path": "\\",
+        "executable_path": action_image,
+        "arguments_sha256": action_tail,
+        "argument_count": 4,
+    }
+    details = [parent, child, *extra]
+    return journey._RuntimeOwnerPids([row["pid"] for row in details], details, task_action)
+
+
+def _artifact_shaped_discovery():
+    return {
+        "pid": 5224,
+        "process_birth_id": "windows-creation:134381205278019339",
+        "runtime_instance_id": "eac11355544e43cb87aa37c391715b25",
+        "active_realm": "d924bbae-6693-4db1-9b57-cfc8651ed7b9",
+        "coordinator_epoch": "eac11355544e43cb87aa37c391715b25",
+    }
+
+
+def test_tst_b1_windows_artifact_shaped_venv_redirector_is_one_logical_owner(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owners = _artifact_shaped_windows_owners()
+    monkeypatch.setattr(journey, "healthy", lambda _data: _artifact_shaped_discovery())
+    monkeypatch.setattr(journey, "runtime_processes", lambda _data: owners)
+    monkeypatch.setattr(journey, "_windows_venv_base_executable", lambda _path: _ARTIFACT_BASE)
+
+    journey.assert_one_runtime(tmp_path, evidence=tmp_path / "evidence" / "release0")
+
+    snapshot = journey.read_json(tmp_path / "evidence" / "release0" / "runtime-owner-assertion.json")
+    assert snapshot["receipt_kind"] == "windows-runtime-owner-logical-owner-assertion"
+    assert snapshot["assertion"]["asserted_owner_pids"] == [6976, 5224]
+    assert snapshot["assertion"]["logical_owner_pids"] == [5224]
+    assert snapshot["assertion"]["logical_owner_normalization"]["status"] == "collapsed"
+    assert snapshot["assertion"]["logical_owner_normalization"]["selected_native_identity"] == (
+        "windows-creation:134381205278019339")
+    assert snapshot["assertion"]["logical_owner_normalization"]["task_action"] == {
+        "executable_path": _ARTIFACT_VENV,
+        "arguments_sha256": _ARTIFACT_TAIL_SHA256,
+        "argument_count": 4,
+    }
+
+
+@pytest.mark.parametrize("case", [
+    "wrong-base-image", "changed-argv", "unreadable-pyvenv-cfg", "missing-selected-identity",
+    "unrelated-parent", "third-owner", "genuine-second-interpreter",
+])
+def test_tst_b1_windows_logical_owner_normalization_rejects_every_unproven_owner(
+        tmp_path, monkeypatch, case):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    kwargs = {}
+    if case == "wrong-base-image":
+        kwargs["child_image"] = r"D:\foreign\pythonw.exe"
+    elif case == "changed-argv":
+        kwargs["child_tail"] = "f" * 64
+    elif case == "missing-selected-identity":
+        kwargs["child_identity"] = None
+    elif case == "unrelated-parent":
+        kwargs["child_parent"] = 1880
+    elif case == "third-owner":
+        kwargs["extra"] = ({
+            "pid": 7111, "parent_pid": 6976,
+            "creation_date": "2026-11-02T19:15:27.802000+00:00",
+            "native_identity": "windows-creation:134381205278019400",
+            "executable_path": _ARTIFACT_VENV,
+            "command_tail_sha256": _ARTIFACT_TAIL_SHA256,
+            "command_tail_argument_count": 4,
+        },)
+    elif case == "genuine-second-interpreter":
+        kwargs["extra"] = ({
+            "pid": 8111, "parent_pid": 1880,
+            "creation_date": "2026-11-02T19:15:27.802000+00:00",
+            "native_identity": "windows-creation:134381205278019401",
+            "executable_path": _ARTIFACT_BASE,
+            "command_tail_sha256": _ARTIFACT_TAIL_SHA256,
+            "command_tail_argument_count": 4,
+        },)
+    owners = _artifact_shaped_windows_owners(**kwargs)
+    monkeypatch.setattr(journey, "healthy", lambda _data: _artifact_shaped_discovery())
+    monkeypatch.setattr(journey, "runtime_processes", lambda _data: owners)
+    monkeypatch.setattr(journey, "_windows_venv_base_executable",
+                        lambda _path: None if case == "unreadable-pyvenv-cfg" else _ARTIFACT_BASE)
+
+    with pytest.raises(RuntimeError, match=r"Expected exactly the selected Runtime owner 5224"):
+        journey.assert_one_runtime(tmp_path, evidence=tmp_path / "evidence" / "release0")
+
+    snapshot = journey.read_json(tmp_path / "evidence" / "release0" / "runtime-owner-assertion.json")
+    assert snapshot["receipt_kind"] == "windows-runtime-owner-cardinality-failure"
+    assert snapshot["assertion"]["asserted_owner_pids"] == list(owners)
+    assert "logical_owner_pids" not in snapshot["assertion"]
+
+
+def test_tst_b1_windows_venv_cfg_requires_one_readable_absolute_home(monkeypatch):
+    class Config:
+        def __init__(self, text):
+            self.text = text
+        def is_symlink(self):
+            return False
+        def is_file(self):
+            return True
+        def read_text(self, **_kwargs):
+            return self.text
+
+    config = Config("home = D:\\base\\cpython-3.11.13\\ninclude-system-site-packages = false\\n")
+    monkeypatch.setattr(journey, "Path", lambda _path: config)
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) == r"D:\base\cpython-3.11.13\pythonw.exe"
+    config.text = "home = D:\\one\\nhome = D:\\two\\n"
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) is None
+    config.text = "home = relative\\python\\n"
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) is None
+
+
 @pytest.mark.parametrize("owners", [[], [4124], [4123, 4124], [4123, 4123]])
 def test_tst_b1_rejects_missing_foreign_or_duplicate_runtime_owner(tmp_path, monkeypatch, owners):
     monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
