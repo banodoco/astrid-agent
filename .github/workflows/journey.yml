@@ -143,13 +143,18 @@ jobs:
               config.mkdir(mode=0o700)
               cache = temp / "r25-private-cache"
               cache.mkdir(mode=0o700)
+              npm_user = config / "npm-user.conf"
+              npm_global = config / "npm-global.conf"
+              for path in (npm_user, npm_global):
+                  fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                  os.close(fd)
               return {"PATH": search_path, "HOME": str(home),
                       "USER": "astrid-runner", "LOGNAME": "astrid-runner", "TMPDIR": str(temp),
                       "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
                       "XDG_CONFIG_HOME": str(config), "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "2",
                       "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
                       "GIT_CONFIG_KEY_1": "core.hooksPath", "GIT_CONFIG_VALUE_1": "/dev/null",
-                      "NPM_CONFIG_USERCONFIG": "/dev/null", "NPM_CONFIG_GLOBALCONFIG": "/dev/null",
+                      "NPM_CONFIG_USERCONFIG": str(npm_user), "NPM_CONFIG_GLOBALCONFIG": str(npm_global),
                       "PIP_CONFIG_FILE": "/dev/null", "NPM_CONFIG_CACHE": str(cache / "npm"),
                       "PIP_CACHE_DIR": str(cache / "pip"), "UV_CACHE_DIR": str(cache / "uv"),
                       "BUN_INSTALL_CACHE_DIR": str(cache / "bun")}

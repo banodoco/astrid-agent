@@ -74,9 +74,29 @@ def test_subprocess_environment_ignores_user_config_and_uses_owned_temp_cache(tm
     monkeypatch.setenv("GITHUB_TOKEN", "sensitive")
     env = r25.build_env(tmp_path / "home", tmp_path, "/usr/bin:/bin")
     assert "GITHUB_TOKEN" not in env
-    for name in ("NPM_CONFIG_USERCONFIG", "NPM_CONFIG_GLOBALCONFIG", "PIP_CONFIG_FILE"):
-        assert env[name] == "/dev/null"
+    assert env["PIP_CONFIG_FILE"] == "/dev/null"
+    npm_user = Path(env["NPM_CONFIG_USERCONFIG"])
+    npm_global = Path(env["NPM_CONFIG_GLOBALCONFIG"])
+    assert npm_user != npm_global
+    for config in (npm_user, npm_global):
+        assert config.is_relative_to(tmp_path / "r25-git-config")
+        assert config.read_text() == "" and config.stat().st_mode & 0o777 == 0o600
     cache = tmp_path / "r25-private-cache"
     assert cache.stat().st_mode & 0o777 == 0o700
     for name in ("NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "UV_CACHE_DIR", "BUN_INSTALL_CACHE_DIR"):
         assert Path(env[name]).is_relative_to(cache)
+
+
+def test_actual_npm_version_with_isolated_distinct_configs(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import pytest
+    if shutil.which("npm") is None:
+        pytest.skip("npm unavailable")
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env = r25.build_env(home, tmp_path, os.environ.get("PATH", "/usr/bin:/bin"))
+    result = subprocess.run(["npm", "--version"], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip()
