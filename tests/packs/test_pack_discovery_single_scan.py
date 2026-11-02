@@ -58,7 +58,7 @@ def _write_pack(parent: Path, pack_id: str, *, duplicate: bool = False, **fields
 @pytest.fixture(autouse=True)
 def _isolated_sources(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: None)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: None)
 
 
 def _two_call_scanner(root=None):
@@ -140,7 +140,7 @@ def test_rejected_declared_resources_stay_unopened_in_warm_cache(
     if rejection == "descriptor":
         descriptor.write_text('{"id":"wrong.renderer"}', encoding="utf-8")
     monkeypatch.setattr(loader, "packs_root", lambda: source)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     extras_arg = (str(extras),)
@@ -231,7 +231,7 @@ def test_cache_reads_only_declared_runtime_payloads(
     for path, data in unselected_bytes.items():
         path.write_bytes(data)
     monkeypatch.setattr(loader, "packs_root", lambda: source)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     kwargs = {"project_root": tmp_path, "extra_pack_roots": (str(extras),)}
@@ -314,7 +314,7 @@ def test_cache_uses_canonical_directory_selection(
     authoring_bytes = b"DIRECTORY AUTHORING bytes must stay excluded"
     authoring.write_bytes(authoring_bytes)
     monkeypatch.setattr(loader, "packs_root", lambda: source)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     kwargs = {"project_root": tmp_path, "extra_pack_roots": (str(extras),)}
@@ -377,7 +377,7 @@ def test_undeclared_symlink_invalidates_cache_without_acquiring_target(
     target.write_bytes(target_bytes)
     link = root / "unselected/linked.bin"
     monkeypatch.setattr(loader, "packs_root", lambda: source)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     kwargs = {"project_root": tmp_path, "extra_pack_roots": (str(extras),)}
@@ -515,7 +515,7 @@ def test_selected_descriptor_rejection_precedes_other_resource_acquisition(
     descriptor = root / "rendering/a.yaml"
     valid_descriptor = descriptor.read_bytes()
     monkeypatch.setattr(loader, "packs_root", lambda: source)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     kwargs = {"project_root": tmp_path, "extra_pack_roots": (str(root),)}
@@ -549,7 +549,7 @@ def test_source_symlink_add_remove_and_retarget_keep_strict_refusal(
     other = _write_pack(tmp_path / "other", "target")
     link = source / "linked"
     monkeypatch.setattr(loader, "packs_root", lambda: source)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     for values in resource_accesses.values():
@@ -593,7 +593,7 @@ def test_same_authority_reuses_full_scan_only_with_builtin_scanner(
         pack_root=managed, pack_id="alpha", revision="a" * 40,
         manifest_sha256="b" * 64, tree_sha256="c" * 64,
     ),))
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: inventory)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: inventory)
     monkeypatch.setattr(loader, "packs_root", lambda: packs)
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(env))
     extra_roots = (str(extra), str(managed))
@@ -728,7 +728,7 @@ def test_cached_scan_does_not_hide_new_alternate_source_manifest(
     manifestless = packs / "legacy"
     manifestless.mkdir()
     monkeypatch.setattr(loader, "packs_root", lambda: packs)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     with pack_discovery_scope():
@@ -751,7 +751,7 @@ def test_managed_identity_guard_is_unchanged(tmp_path: Path, monkeypatch: pytest
     _write_pack(packs, "local")
     managed = _write_pack(tmp_path / "managed", "alpha")
     monkeypatch.setattr(loader, "packs_root", lambda: packs)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="inventory", sources=(SimpleNamespace(pack_root=managed, pack_id="wrong"),),
     ))
     rows = discover_pack_metadata(project_root=tmp_path)
@@ -838,7 +838,7 @@ def test_discovery_cache_hashes_only_selected_roots_and_invalidates_them(
     incompatible_external = _write_pack(extra_root, "incompatible_external", pack_api=[])
     (incompatible_external / "payload.bin").write_bytes(b"incompatible")
     monkeypatch.setattr(loader, "packs_root", lambda: source)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     fingerprint = pack_discovery._tree_fingerprint

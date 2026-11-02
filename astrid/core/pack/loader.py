@@ -7,7 +7,7 @@ from importlib import metadata as importlib_metadata
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -29,7 +29,7 @@ from astrid.core.pack.permissions import (
     _optional_pack_extensions,
 )
 from astrid.pack_api import VERSION as PACK_API_VERSION
-from astrid.pack_validation import validate_pack as validate_pack_compatibility
+from astrid.pack_validation import _has_cycle, validate_pack as validate_pack_compatibility
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -166,7 +166,40 @@ def scan_packs(
             raise PackValidationError(f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {manifest_path}")
         seen[pack.id] = manifest_path
         packs.append(pack)
-    packs, compatibility_quarantine = _isolate_incompatible_packs(packs)
+    admitted = admit_pack_candidates(
+        packs, strict=strict, include_hidden=include_hidden,
+        required_pack_ids=required_pack_ids,
+    )
+    return PackScan(admitted.packs, tuple(quarantined) + admitted.quarantined)
+
+
+def admit_pack_candidates(
+    packs: list[PackDefinition], *, strict: bool = False,
+    include_hidden: bool = False,
+    required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
+    allow_legacy: bool = False,
+    available_packs: tuple[PackDefinition, ...] = (),
+    expected_pack_ids: dict[Path, str] | None = None,
+    before_load: Callable[[PackDefinition, bool], None] | None = None,
+) -> PackScan:
+    """Shared descriptor/compatibility closure before resource acquisition.
+
+    External discovery retains its v2 policy; strict source scans retain v3
+    policy. ``before_load`` verifies managed custody before descriptor or full
+    payload access, and its failures propagate rather than being quarantined.
+    """
+    expected_pack_ids = expected_pack_ids or {}
+    quarantined: list[QuarantinedPack] = []
+
+    def isolate(candidates):
+        active, rejected = _isolate_incompatible_packs(
+            [*available_packs, *candidates], allow_legacy=allow_legacy,
+            expected_pack_ids=expected_pack_ids,
+        )
+        roots = {pack.root for pack in candidates}
+        return [pack for pack in active if pack.root in roots], rejected
+
+    packs, compatibility_quarantine = isolate(packs)
     quarantined.extend(compatibility_quarantine)
 
     def reject(pack: PackDefinition, exc: Exception) -> None:
@@ -183,11 +216,16 @@ def scan_packs(
     # dependency can then remove its dependents through the shared validator.
     ready: list[PackDefinition] = []
     for pack in packs:
+        if before_load is not None:
+            before_load(pack, True)
         try:
-            ready.append(load_pack_metadata(pack.manifest_path, validate_descriptors=True))
+            ready.append(load_pack_metadata(
+                pack.manifest_path, validate_descriptors=True,
+                expected_pack_id=expected_pack_ids.get(pack.root),
+            ))
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
             reject(pack, exc)
-    packs, descriptor_quarantine = _isolate_incompatible_packs(ready)
+    packs, descriptor_quarantine = isolate(ready)
     quarantined.extend(descriptor_quarantine)
 
     # Dependencies acquire resources first, so a subsequent I/O failure also
@@ -195,7 +233,7 @@ def scan_packs(
     # validator above owns cycle checks and bundled-pack exemptions; fallback
     # ordering preserves those exemptions rather than adding a new validator.
     pending = list(packs)
-    admitted: dict[str, PackDefinition] = {}
+    admitted: dict[Path, PackDefinition] = {}
     while pending:
         pending_ids = {pack.id for pack in pending}
         pack = next((
@@ -203,24 +241,28 @@ def scan_packs(
             if not pending_ids.intersection(candidate.dependencies.get("packs", ()))
         ), pending[0])
         pending.remove(pack)
+        if before_load is not None:
+            before_load(pack, False)
         try:
-            full_pack = load_pack_manifest(pack.manifest_path)
+            full_pack = load_pack_manifest(
+                pack.manifest_path, expected_pack_id=expected_pack_ids.get(pack.root),
+            )
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
             reject(pack, exc)
         else:
             if full_pack.visibility != "hidden" or include_hidden:
-                admitted[pack.id] = full_pack
+                admitted[pack.root] = full_pack
                 continue
-        active, failed_dependency_quarantine = _isolate_incompatible_packs([
+        active, failed_dependency_quarantine = isolate([
             *admitted.values(), *pending,
         ])
         quarantined.extend(failed_dependency_quarantine)
         active_ids = {candidate.id for candidate in active}
         pending = [candidate for candidate in pending if candidate.id in active_ids]
-        admitted = {key: value for key, value in admitted.items() if key in active_ids}
+        admitted = {key: value for key, value in admitted.items() if value.id in active_ids}
     # Preserve scanner order (and discovery priority), not acquisition order.
-    ordered, final_quarantine = _isolate_incompatible_packs([
-        admitted[pack.id] for pack in packs if pack.id in admitted
+    ordered, final_quarantine = isolate([
+        admitted[pack.root] for pack in packs if pack.root in admitted
     ])
     quarantined.extend(final_quarantine)
     return PackScan(tuple(ordered), tuple(quarantined))
@@ -242,13 +284,15 @@ def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
 
 
 def _isolate_incompatible_packs(
-    packs: list[PackDefinition],
+    packs: list[PackDefinition], *, allow_legacy: bool = False,
+    expected_pack_ids: dict[Path, str] | None = None,
 ) -> tuple[list[PackDefinition], list[QuarantinedPack]]:
     """Apply the shared pure compatibility validator to external pack inventory."""
+    expected_pack_ids = expected_pack_ids or {}
     executable: list[PackDefinition] = []
     quarantined: list[QuarantinedPack] = []
     for pack in packs:
-        if pack.schema_version != "3":
+        if pack.schema_version != "3" and not allow_legacy:
             record = QuarantinedPack(
                 pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
                 error="Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.",
@@ -259,7 +303,8 @@ def _isolate_incompatible_packs(
             executable.append(pack)
     packs = executable
     bundled_root = packs_root().resolve()
-    external = [pack for pack in packs if not pack.root.resolve().is_relative_to(bundled_root)]
+    external = [pack for pack in packs if pack.schema_version == "3"
+                and not pack.root.resolve().is_relative_to(bundled_root)]
     external_ids = {pack.id for pack in external}
     if not external:
         return packs, quarantined
@@ -288,13 +333,29 @@ def _isolate_incompatible_packs(
                 continue
             manifest = pack.to_dict()
             manifest["schema_version"] = int(pack.schema_version)
-            result = validate_pack_compatibility(
-                mode="inventory", manifest=manifest, candidate=selected[pack.id],
-                selected=selected, core_api=PACK_API_VERSION, release_pins={},
-                python_packages=python_packages, import_violations=(),
-            )
-            if not result["ok"]:
+            if pack.root in expected_pack_ids:
+                # Managed checkout folders are immutable revision addresses,
+                # not authored pack names. Canonical admission already bound
+                # their declared identity. Retain that existing managed policy
+                # and reuse the shared cycle check for dependency closure;
+                # never fabricate a different canonical_root for the validator.
+                dependencies = list(pack.dependencies.get("packs", ()))
+                if any(dependency not in selected for dependency in dependencies):
+                    reason = "A declared pack dependency is unavailable. Install the dependency pack."
+                elif _has_cycle(pack.id, dependencies, selected):
+                    reason = "Pack dependencies contain a cycle. Remove a dependency edge."
+                else:
+                    continue
+            else:
+                result = validate_pack_compatibility(
+                    mode="inventory", manifest=manifest, candidate=selected[pack.id],
+                    selected=selected, core_api=PACK_API_VERSION, release_pins={},
+                    python_packages=python_packages, import_violations=(),
+                )
+                if result["ok"]:
+                    continue
                 reason = f"{result['reason']} {result['fix']}"
+            if reason:
                 rejected[pack.id] = QuarantinedPack(
                     pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
                     error=" ".join(reason.split()),

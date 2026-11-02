@@ -151,6 +151,8 @@ def _tree_fingerprint(
         return entry
 
     def payload(entry: CanonicalPackEntry) -> None:
+        if expected_pack_id is not None:
+            _verify_managed_pack(entry.root, expected_pack_id)
         for handle in entry.resource_metadata():
             visit(handle.resolved, content=handle.file_kind == "file", recurse=False)
 
@@ -187,6 +189,22 @@ def _tree_fingerprint(
     else:
         visit(root)
     return digest.hexdigest()
+
+
+def _verify_managed_pack(root: Path, pack_id: str, *, descriptors_only: bool = False) -> None:
+    from astrid.core.pack.source_setup import active_source_inventory
+
+    active_source_inventory(selected_paths={root: ()})
+    entry = read_normalize_validate(
+        root / "pack.yaml", source=ExternalPackSource.MANAGED,
+        expected_pack_id=pack_id, resolve_resources=False,
+    )
+    paths = (
+        tuple(item["path"] for item in entry.definition.rendering.values())
+        if descriptors_only else
+        tuple(handle.path for handle in entry.resource_metadata() if handle.file_kind == "file")
+    )
+    active_source_inventory(selected_paths={root: paths})
 
 
 def _selection_key(project_root, extra_pack_roots, managed_inventory):
@@ -260,7 +278,7 @@ def reuse_pack_projection(projection: Callable[[], Any]) -> Any:
     from astrid.core.pack.source_setup import active_source_inventory
 
     def fingerprint():
-        return _discovery_fingerprint(REPO_ROOT, (), active_source_inventory(), discover_packs)
+        return _discovery_fingerprint(REPO_ROOT, (), active_source_inventory(selected_paths={}), discover_packs)
 
     before = fingerprint()
     key = (projection, before)
@@ -362,100 +380,27 @@ def discover_canonical_pack_metadata(
     Source packs belong to the bundled canonical catalog. External failures
     are isolated per pack, matching :func:`discover_pack_metadata`.
     """
-    project_root = Path(project_root).expanduser().resolve()
     discovered: list[CanonicalDiscoveredPack] = []
-    seen: set[tuple[str, str]] = set()
-    scanned: set[Path] = set()
-
-    try:
-        from astrid.core.pack.source_setup import active_source_inventory
-
-        managed_inventory = active_source_inventory()
-    except ImportError:
-        managed_inventory = None
-    def add(path: Path, source: ExternalPackSource, *, source_record: Any | None = None) -> None:
-        metadata = read_normalize_validate(
-            path, source=source, resolve_resources=False,
-            expected_pack_id=source_record.pack_id if source_record is not None else None,
-        )
-        if metadata.definition.visibility == "hidden":
-            return
-        entry = read_normalize_validate(
-            path,
-            source=source,
-            expected_pack_id=source_record.pack_id if source_record is not None else None,
-        )
-        if entry.definition.visibility == "hidden":
-            return
-        key = (source.value, entry.id)
-        if key in seen:
-            raise CanonicalPackValidationError(
-                f"duplicate canonical pack ID {entry.id!r} in {source.value}"
-            )
-        seen.add(key)
-        discovered.append(
-            CanonicalDiscoveredPack(
-                entry,
-                source.value,
-                len(discovered),
-                source_revision=source_record.revision if source_record is not None else None,
-                source_manifest_sha256=source_record.manifest_sha256 if source_record is not None else None,
-                source_tree_sha256=source_record.tree_sha256 if source_record is not None else None,
-                source_inventory_identity=managed_inventory.identity
-                if source_record is not None and managed_inventory is not None
-                else None,
-            )
-        )
-
-    def scan(raw_root: str | Path, source: ExternalPackSource) -> None:
-        root = Path(raw_root).expanduser()
-        if not root.is_absolute():
-            root = project_root / root
-        root = root.resolve()
-        if root in scanned or not root.is_dir():
-            return
-        scanned.add(root)
+    for row in discover_pack_metadata(
+        project_root=project_root, extra_pack_roots=extra_pack_roots,
+    ):
+        if row.source_kind == "source":
+            continue
         try:
-            children = (
-                (root,) if (root / "pack.yaml").is_file()
-                else sorted(root.iterdir(), key=lambda p: p.name)
+            entry = read_normalize_validate(
+                row.pack.manifest_path, source=row.source_kind,
+                expected_pack_id=row.id if row.source_kind == MANAGED_SOURCE_KIND else None,
             )
-        except OSError as exc:
-            logging.getLogger(__name__).warning(
-                "skipping unreadable %s root %s: %s", source.value, root, exc
-            )
-            return
-        for child in children:
-            manifest = child / "pack.yaml"
-            try:
-                if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
-                    continue
-                if child.name == "__pycache__":
-                    continue
-                if manifest.is_file():
-                    add(manifest, source)
-            except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
-                logging.getLogger(__name__).warning(
-                    "skipping %s pack %s: manifest failed to load: %s", source.value, manifest, exc
-                )
-
-    if managed_inventory is not None:
-        for source in managed_inventory.sources:
-            root = source.pack_root.resolve()
-            if root in scanned:
-                continue
-            scanned.add(root)
-            try:
-                add(root / "pack.yaml", ExternalPackSource.MANAGED, source_record=source)
-            except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
-                logging.getLogger(__name__).warning(
-                    "skipping managed pack %s: manifest failed to load: %s", root, exc
-                )
-    for root in extra_pack_roots:
-        scan(root, ExternalPackSource.EXTRA)
-    for root in os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep):
-        if root:
-            scan(root, ExternalPackSource.ENV)
+        except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
+            logging.getLogger(__name__).warning("skipping %s pack %s: %s", row.source_kind, row.pack_dir, exc)
+            continue
+        discovered.append(CanonicalDiscoveredPack(
+            entry, row.source_kind, len(discovered),
+            source_revision=row.source_revision,
+            source_manifest_sha256=row.source_manifest_sha256,
+            source_tree_sha256=row.source_tree_sha256,
+            source_inventory_identity=row.source_inventory_identity,
+        ))
     return tuple(discovered)
 
 
@@ -481,9 +426,13 @@ def discover_pack_metadata(
     test seam (``mock.patch("astrid.core.<x>.registry.discover_packs")``) keeps
     working. Defaults to :func:`astrid.core.pack.discover_packs`.
     """
+    from astrid.core.pack import loader
+
     scan = discover_packs_fn if discover_packs_fn is not None else discover_packs
     discovered: list[DiscoveredPack] = []
     scanned_external_roots: set[Path] = set()
+    external_candidates: list[PackDefinition] = []
+    external_origins: dict[Path, str] = {}
 
     def _add(pack: PackDefinition, source_kind: str, *, source_record: Any | None = None) -> None:
         metadata: dict[str, Any] = {}
@@ -508,7 +457,7 @@ def discover_pack_metadata(
     try:
         from astrid.core.pack.source_setup import active_source_inventory
 
-        managed_inventory = active_source_inventory()
+        managed_inventory = active_source_inventory(selected_paths={})
     except ImportError:
         managed_inventory = None
 
@@ -516,8 +465,8 @@ def discover_pack_metadata(
     fingerprint = None
     metadata_fingerprint = None
     if cache is not None and managed_inventory is not None:
-        # active_source_inventory verifies revision, cleanliness, manifest and
-        # tree digests even when an admitted inventory can be reused below.
+        # Fingerprinting verifies only previously admitted managed resource
+        # files, after unchanged admission metadata authorizes their selection.
         fingerprint = _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan)
         if fingerprint is not None and fingerprint in cache:
             return deepcopy(cache[fingerprint])
@@ -544,7 +493,7 @@ def discover_pack_metadata(
         skips only its own pack (with a warning), so valid neighbors in the
         same root survive. Only an unreadable root is skipped wholesale.
         """
-        from astrid.core.pack import load_pack_manifest, pack_manifest_path
+        from astrid.core.pack import pack_manifest_path
 
         resolved = _resolve_pack_root(raw_root)
         # An SDK caller may pass a root explicitly while the same canonical
@@ -601,6 +550,10 @@ def discover_pack_metadata(
                     else None,
                 )
             except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
+                if source_kind == MANAGED_SOURCE_KIND:
+                    # A malformed edit must not hide a managed manifest pin
+                    # failure behind external per-pack quarantine.
+                    active_source_inventory(selected_paths={resolved: ()})
                 _LOGGER.warning(
                     "skipping %s pack %s: manifest failed to load: %s",
                     source_kind,
@@ -622,29 +575,8 @@ def discover_pack_metadata(
                 continue
             seen[pack.id] = manifest_path
             candidates.append(pack)
-        for candidate in candidates:
-            try:
-                pack = load_pack_manifest(
-                    candidate.manifest_path,
-                    expected_pack_id=managed_by_root[resolved].pack_id
-                    if source_kind == MANAGED_SOURCE_KIND and resolved in managed_by_root
-                    else None,
-                )
-            except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
-                _LOGGER.warning(
-                    "skipping %s pack %s: manifest failed to load: %s",
-                    source_kind, candidate.manifest_path, exc,
-                )
-                continue
-            if pack.visibility == "hidden":
-                continue
-            _add(
-                pack,
-                source_kind,
-                source_record=managed_by_root.get(resolved)
-                if source_kind == MANAGED_SOURCE_KIND
-                else None,
-            )
+        external_candidates.extend(candidates)
+        external_origins.update((pack.root, source_kind) for pack in candidates)
 
     source_packs = scan()
     for pack in source_packs:
@@ -662,6 +594,19 @@ def discover_pack_metadata(
             if env_root == "":
                 continue
             _scan_external_root(env_root, "env")
+
+    def verify_managed(pack: PackDefinition, descriptors_only: bool) -> None:
+        source = managed_by_root.get(pack.root)
+        if source is not None:
+            _verify_managed_pack(pack.root, source.pack_id, descriptors_only=descriptors_only)
+
+    admitted = loader.admit_pack_candidates(
+        external_candidates, allow_legacy=True, available_packs=tuple(source_packs),
+        expected_pack_ids={root: source.pack_id for root, source in managed_by_root.items()},
+        before_load=verify_managed,
+    )
+    for pack in admitted.packs:
+        _add(pack, external_origins[pack.root], source_record=managed_by_root.get(pack.root))
 
     result = tuple(discovered)
     if metadata_fingerprint is not None and metadata_fingerprint == _discovery_fingerprint(

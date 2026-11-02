@@ -44,7 +44,7 @@ def inventory(monkeypatch, *roots: Path):
     sources = tuple(SimpleNamespace(pack_root=root, pack_id=root.name, revision="a" * 40,
                                    manifest_sha256="b" * 64, tree_sha256="c" * 64) for root in roots)
     result = SimpleNamespace(sources=sources, identity="fixture-inventory")
-    monkeypatch.setattr("astrid.core.pack.source_setup.active_source_inventory", lambda: result)
+    monkeypatch.setattr("astrid.core.pack.source_setup.active_source_inventory", lambda **kwargs: result)
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
     return result
 
