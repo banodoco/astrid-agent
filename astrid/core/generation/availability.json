@@ -39,6 +39,23 @@
     "astrid_motion:preview/src/Root.tsx": true,
     "astrid_motion:preview/src/index.ts": true
   },
-  "models": {},
-  "template_models": {}
+  "models": {
+    "wan-2.2": {
+      "available": false,
+      "error": {
+        "code": "generation_route_unqualified",
+        "message": "wan-2.2 generation is unavailable because this model has not been qualified"
+      }
+    },
+    "wan-templates": {
+      "available": false,
+      "error": {
+        "code": "generation_route_unqualified",
+        "message": "Wan generation templates are unavailable because they have not been qualified"
+      }
+    }
+  },
+  "template_models": {
+    "video/wan": "wan-templates"
+  }
 }
