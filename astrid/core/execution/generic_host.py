@@ -11254,7 +11254,8 @@ class GenericPackHost:
                 if primary_error is None:
                     raise
             finally:
-                if (terminal.get("evidence_pending") and terminal.get("publication_call")
+                if (isinstance(self.client, RuntimeProtocolClient)
+                        and terminal.get("evidence_pending") and terminal.get("publication_call")
                         and not terminal.get("recorded")):
                     ready = threading.Event()
 
