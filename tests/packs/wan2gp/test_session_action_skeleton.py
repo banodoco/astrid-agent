@@ -147,11 +147,12 @@ def test_success_submits_once_and_never_cancels(tmp_path: Path) -> None:
     result = _run_action(tmp_path, session)
 
     assert len(session.submit_calls) == 1
-    assert session.submit_calls[0]["settings"] == compile_host_settings(INPUTS)
+    # The worker submits RAW inputs (review X-6); the host compiles its own admitted copy.
+    assert session.submit_calls[0]["settings"] == {k: v for k, v in INPUTS.items() if v is not None}
     assert session.submit_calls[0]["timeout_seconds"] == 30.0
     assert session.cancel_calls == []
     assert (tmp_path / "out" / "frame_000.mp4").is_file()
-    assert result["output_root"] == tmp_path / "out"
+    assert result["output_root"] == str(tmp_path / "out")
     assert result["payload"]["wan_mapping"]["output_root"] == str((tmp_path / "out").absolute())
 
 

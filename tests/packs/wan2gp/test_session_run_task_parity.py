@@ -240,6 +240,18 @@ def run_task_arm(tmp_path: Path, inputs: dict[str, Any], monkeypatch: Any) -> di
         monkeypatch.setitem(profiles, "wan2gp", dataclasses.replace(profiles["wan2gp"], invoke=edge))
     monkeypatch.setattr(host, "prepare_wan_session", _fake_prepare(host))
     monkeypatch.setattr(host, "preflight", lambda *_: None)
+    # Record the real pid of each worker the host launches (the receipt's process_id source).
+    import astrid.core.execution.generic_host as gh_module
+
+    spawned_pids: list[int] = []
+    real_spawn = gh_module.spawn_task_scope
+
+    def recording_spawn(*args: Any, **kwargs: Any) -> Any:
+        process = real_spawn(*args, **kwargs)
+        spawned_pids.append(process.pid)
+        return process
+
+    monkeypatch.setattr(gh_module, "spawn_task_scope", recording_spawn)
     host.capabilities["wan2gp.generate_video"] = dataclasses.replace(
         host.capabilities["wan2gp.generate_video"], ready=True)
 
@@ -252,6 +264,7 @@ def run_task_arm(tmp_path: Path, inputs: dict[str, Any], monkeypatch: Any) -> di
         raised = type(exc).__name__
 
     return {
+        "observed_worker_pids": list(spawned_pids),
         "raised": raised,
         "submitted_settings": [_canonical_settings(call) for call in calls],
         "uploads": sorted(
@@ -357,10 +370,50 @@ def test_submitted_settings_match_frozen_old_route(case: str, tmp_path: Path, mo
     assert new["submitted_settings"] == golden[case]["submitted_settings"]
 
 
+# Intended deltas from the frozen pre-swap route, each asserted EXACTLY (review 88 /
+# M-GPU 12:14Z). Anything else in the receipt must equal the golden.
+#
+# 1. The swap changed the wan definition, so both digests change. These are the new
+#    exact values, pinned here, not the pre-swap golden values.
+NEW_CAPABILITY_DIGEST = "sha256:b79846b685c49acea3f173116132214af789b0d976b3b663769aebb91b5a420d"
+NEW_SOURCE_DIGEST = "3561beb52368eb6e6214ba9c1e93b9ee4a8409f71b63899489445f80982ba20b"
+# 2. Native admission identifiers stay on the host (review S-3): they must be ABSENT.
+REMOVED_IDENTITY_KEYS = ("invocation_id", "session_id", "generation", "binding_identity")
+
+
 @pytest.mark.parametrize("case", list(CASE_INPUTS))
 def test_receipt_matches_frozen_old_route(case: str, tmp_path: Path, monkeypatch: Any, golden: dict[str, Any]) -> None:
+    from astrid.packs.wan2gp.src.driver import compile_host_settings
+
     new = run_task_arm(tmp_path, CASE_INPUTS[case], monkeypatch)
-    assert receipt(new) == receipt(golden[case])
+    actual = receipt(new)
+    expected = copy.deepcopy(receipt(golden[case]))
+
+    actual_result = actual["settlement"]["result"]
+    expected_result = expected["settlement"]["result"]
+
+    # Delta 1: the new digests, exactly.
+    assert actual_result["capability_digest"] == NEW_CAPABILITY_DIGEST
+    assert actual_result["source_digest"] == NEW_SOURCE_DIGEST
+    expected_result["capability_digest"] = NEW_CAPABILITY_DIGEST
+    expected_result["source_digest"] = NEW_SOURCE_DIGEST
+
+    # Delta 2: identity keys are absent from the consumer-visible native result.
+    for key in REMOVED_IDENTITY_KEYS:
+        assert key not in actual_result["wan_native"], key
+        expected_result["wan_native"].pop(key, None)
+
+    # Delta 3: compiled_settings is the host's compile of the admitted inputs, exactly.
+    assert actual_result["wan_native"]["compiled_settings"] == compile_host_settings(dict(CASE_INPUTS[case]))
+    expected_result["wan_native"]["compiled_settings"] = compile_host_settings(dict(CASE_INPUTS[case]))
+
+    # Delta 4: process_id is the pid the test observed when the host launched the worker.
+    observed = new["observed_worker_pids"]
+    assert len(observed) == 1, observed
+    assert actual_result["process_evidence"]["process_id"] == observed[0]
+    expected_result["process_evidence"]["process_id"] = observed[0]
+
+    assert actual == expected
 
 
 @pytest.mark.parametrize("case", list(CASE_INPUTS))

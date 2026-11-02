@@ -12370,6 +12370,10 @@ class GenericPackHost:
                 result=result,
                 payload=payload,
             )
+            if result_profile is not None and result_profile.flatten_result is not None:
+                # The consumer-visible wan result carries process evidence only, as before.
+                payload.pop("process_id", None)
+                payload.pop("returncode", None)
             effect = task_data.get("expected_effect")
             if isinstance(effect, list):
                 effect = effect[0] if effect else None

@@ -182,16 +182,10 @@ def test_wan_session_action_transports_public_inputs_to_submit(tmp_path: Path, m
 
     # The submit carries each value under its native key.
     assert session.submitted is not None
-    assert session.submitted["prompt"] == "p"
-    assert session.submitted["model"] == "wan-2.2"
-    assert session.submitted["negative_prompt"] == "blurry"
-    assert session.submitted["resolution"] == "512x512"
-    assert session.submitted["video_length"] == 9
-    assert session.submitted["force_fps"] == "8"
-    assert session.submitted["seed"] == 7
-    assert session.submitted["guidance_scale"] == 5.5
-    assert session.submitted["num_inference_steps"] == 4
-    assert session.submitted["loras"] == "[]"
+    # The worker submits RAW public inputs (review X-6): names are the public ones, and
+    # the host alone maps them to native keys (video_length, force_fps, ...).
+    assert session.submitted == WAN_SESSION_PUBLIC_INPUTS
+    assert "video_length" not in session.submitted
     assert session.timeout_seconds == 30.0
     assert session.cancel_calls == []
 
