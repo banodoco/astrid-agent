@@ -515,8 +515,8 @@ def _installed_managed_target():
         if exc.code == 'engine_not_installed':
             # A deleted locked model can fail installed health before workflow
             # compilation. Preserve the refusal, but name the actual asset fix.
-            from .asset_gaps import asset_readiness
             from .asset_alignment import selected_target
+            from .asset_gaps import asset_readiness
             from .model_downloader import _root_and_destination, _validate_model
             try:
                 selected = selected_target()

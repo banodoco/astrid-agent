@@ -6,8 +6,8 @@ endpoint; it never provisions, starts or restarts an engine.
 """
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -22,7 +22,13 @@ from urllib.parse import urlsplit
 from .asset_gaps import align_argv, workflow_asset_gaps
 from .engine_contracts import EngineError, IntegrityError, ModelSpec, UnsafePathError
 from .engine_recipe import load_model_lock, load_recipe, load_recipe_index
-from .model_downloader import _matches, _root_and_destination, _safe_relative, _validate_model, download_model
+from .model_downloader import (
+    _matches,
+    _root_and_destination,
+    _safe_relative,
+    _validate_model,
+    download_model,
+)
 
 
 class AlignmentError(EngineError):
@@ -47,7 +53,12 @@ class ManagedAssetTarget:
         return ComfyTargetClient(ComfyTarget(self.url, 'managed')).object_info()
 
     def cached_object_info(self) -> dict[str, Any] | None:
-        from vibecomfy.schema.cache import CACHE_METADATA_KEY, load_object_info_cache, object_info_payload, validate_object_info_cache
+        from vibecomfy.schema.cache import (
+            CACHE_METADATA_KEY,
+            load_object_info_cache,
+            object_info_payload,
+            validate_object_info_cache,
+        )
         _safe_path(self.root, self.schema_cache)
         data = load_object_info_cache(self.schema_cache)
         if data is None:
@@ -73,7 +84,7 @@ class ManagedAssetTarget:
         source and environment checks continue to use the installed machinery.
         """
         from .engine_execution import create_local_backend
-        from .engine_runner import _Runner, _parse_receipt, plan_install
+        from .engine_runner import _parse_receipt, _Runner, plan_install
 
         raw = json.loads(_safe_path(self.root, self.root / '.astrid-engine/install.json').read_bytes())
         recipe = load_recipe(raw['engine'], raw['platform'])
@@ -119,9 +130,10 @@ def _safe_path(root: Path, path: Path) -> Path:
 
 
 def selected_target() -> ManagedAssetTarget:
+    from vibecomfy.schema.cache import object_info_cache_path
+
     from .engine_local_endpoint import recorded_engine_root
     from .engine_runner import _parse_receipt, plan_install
-    from vibecomfy.schema.cache import object_info_cache_path
 
     # This is the same installed-receipt authority used by target selection,
     # without engine_status (which probes and can mutate custody state).
@@ -168,11 +180,13 @@ def _locked_models() -> dict[str, ModelSpec]:
 
 
 def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
-    from astrid.core.model_catalog.registry import ModelRegistry
-    from .backends.vibecomfy import _load_pinned_catalog_workflow
     from vibecomfy.model_assets import _referenced_model_values, _subdir_for_model_reference
-    from vibecomfy.node_packs import resolve_node_packs, read_lockfile
+    from vibecomfy.node_packs import read_lockfile, resolve_node_packs
     from vibecomfy.node_packs._lockfile import resolve_lockfile_path
+
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    from .backends.vibecomfy import _load_pinned_catalog_workflow
 
     locked = _locked_models()
     lockpath = resolve_lockfile_path()
@@ -387,7 +401,7 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, opener=None
                     seen_packs.add(pack['name'])
     try:
         observed = target.object_info()
-    except (ValueError, OSError, EngineError) as exc:
+    except (ValueError, OSError, EngineError):
         report = inspect_assets(manifests, target, deadline=deadline)
         report['probe_error'] = 'Selected target object_info is unavailable; start the installed engine and retry ' + shlex.join(align_argv(entry_id))
     else:

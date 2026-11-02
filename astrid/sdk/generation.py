@@ -13,13 +13,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
-from typing import Any, Mapping, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from ._module import _sdk_module
 from .exceptions import (
     AstridSDKError,
-    CapabilityPreconditionError,
     CapabilityInvocationError,
+    CapabilityPreconditionError,
     CapabilityValidationError,
 )
 from .results import _reconstruct_generation_result

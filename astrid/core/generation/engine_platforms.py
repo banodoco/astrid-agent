@@ -1,17 +1,22 @@
 """Linux target spelling and local install locking for the shared runner."""
 from __future__ import annotations
 
-from contextlib import contextmanager
 import math
 import os
 import stat
 import string
 import sys
 import time
+from contextlib import contextmanager
 
 from . import _engine_python_bootstrap as _bootstrap
-from .engine_contracts import (CommandRequest, DeadlineExceeded, RecipeValidationError,
-                               UnsafePathError, UnsupportedPlatform)
+from .engine_contracts import (
+    CommandRequest,
+    DeadlineExceeded,
+    RecipeValidationError,
+    UnsafePathError,
+    UnsupportedPlatform,
+)
 from .engine_runner import _root
 
 _LINUX = frozenset({"linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130"})

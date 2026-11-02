@@ -804,7 +804,8 @@ class _Supervisor:
         if payload != {} or self.unresolved or self.engine is None:
             raise EndpointOwnershipError("live engine custody is required")
         engine = self.engine
-        check = lambda: self.check(channel, deadline)
+        def check():
+            return self.check(channel, deadline)
         def request(path, payload=None):
             return _get_json(self.recipe.start.port, path, 1024 * 1024, deadline, check,
                              owned=engine, payload=payload)

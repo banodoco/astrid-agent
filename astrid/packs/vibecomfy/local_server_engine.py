@@ -67,13 +67,13 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
 def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
-    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from vibecomfy.schema.validate import (
         _choice_scope,
         validate_api_against_schema,
         validate_api_link_shapes,
     )
 
+    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
 
     client = ComfyTargetClient(ComfyTarget(url, "attached"))
@@ -345,8 +345,9 @@ def run_local_server(
         except BaseException as exc:
             cleanup_prompts(url, destination)
             if "vibecomfy schema refresh" in str(exc) or getattr(exc, "next_action", None) == "vibecomfy schema refresh":
-                from astrid.core.generation.asset_gaps import align_argv
                 import shlex
+
+                from astrid.core.generation.asset_gaps import align_argv
                 fix = 'Install the missing locked node pack: ' + shlex.join(align_argv())
                 raise ProductionEngineError(str(exc).replace("vibecomfy schema refresh", fix)) from exc
             raise
