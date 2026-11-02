@@ -437,7 +437,7 @@ def test_windows_native_schema_path_acl_controls(tmp_path, monkeypatch, layout, 
         source_root = version / "a"
         paths.update((source, *(p for p in source.parents
                                 if p == source_root or p.is_relative_to(source_root))))
-    for path in paths:
+    for path in sorted(paths, key=lambda path: (-len(path.parts), str(path))):
         with security._handle(path, write_dac=True) as (handle, _info):
             security._set_dacl(handle, safe)
 
