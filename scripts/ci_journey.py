@@ -60,7 +60,7 @@ GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
-    "install-bootstrap.log", "update-bootstrap.log", "start.log",
+    "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
@@ -640,6 +640,30 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 if manager.get("error"):
                     item["error"] = manager["error"]
             diagnostic[key] = item
+        if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
+            # This log is nested under release0, and must remain byte-for-byte
+            # intact rather than taking the usual bounded tail of text logs.
+            source = evidence / "release0" / "release0-bootstrap.log"
+            exit_path = evidence / "release0" / "release0-bootstrap-exit.json"
+            previous = recorded.get("failure_diagnostics", {}).get("before-cleanup", {}).get(
+                "release0_bootstrap", {})
+            exit_code = previous.get("exit_code")
+            if exit_path.is_file() and not exit_path.is_symlink():
+                exit_code = read_json(exit_path).get("exit_code")
+            if not source.is_file() or source.is_symlink():
+                source = destination.parent / "before-cleanup" / "release0-bootstrap.log"
+            target = destination / "release0-bootstrap.log"
+            item = {"status": "unavailable", "path": None, "exit_code": exit_code, "sha256": None}
+            if source.is_file() and not source.is_symlink():
+                if source != target:
+                    shutil.copyfile(source, target)
+                digest = hashlib.sha256()
+                with target.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                item.update(status="captured", path=target.relative_to(run_root).as_posix(),
+                            sha256=digest.hexdigest())
+            diagnostic["release0_bootstrap"] = item
         recorded.setdefault("failure_diagnostics", {})[phase] = diagnostic
         write_json(result_path, recorded)
         # Refresh the staged receipt after adding paths and observation status.
@@ -1057,6 +1081,12 @@ def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: 
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
+    if sys.platform == "win32" and log.name == "release0-bootstrap.log" and log.parent.name == "release0":
+        try:
+            write_json(log.parent / "release0-bootstrap-exit.json", {"exit_code": result.returncode})
+        except OSError as exc:
+            print(f"Journey bootstrap exit capture failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
     output = log.read_text(encoding="utf-8-sig", errors="replace")
     if result.returncode:
         raise RuntimeError(f"{log.name}: exit {result.returncode}; see {log}")
