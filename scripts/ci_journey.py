@@ -565,12 +565,14 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
     else:
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
-    paths = [log_dir / "install.log", log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    paths = [log_dir / "install.log", log_dir / "runtime.log", log_dir / "runtime-service.log",
+             *sorted(log_dir.glob("service-*.log"))]
     for source in paths:
         if source.is_symlink() or not source.is_file():
             continue
         name = ("install.log" if source.name == "install.log" else
                 "runtime-service-runtime.log" if source.name == "runtime.log" else
+                "runtime-service-service-launchd.log" if source.name == "runtime-service.log" else
                 f"runtime-service-{source.name}")
         target = evidence / name
         try:
@@ -651,7 +653,7 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 if manager.get("error"):
                     item["error"] = manager["error"]
             diagnostic[key] = item
-        if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
+        if recorded.get("scenario") == "release0-to-release1":
             # This log is nested under release0, and must remain byte-for-byte
             # intact rather than taking the usual bounded tail of text logs.
             source = evidence / "release0" / "release0-bootstrap.log"
@@ -1105,7 +1107,7 @@ def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: 
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
-    if sys.platform == "win32" and log.name == "release0-bootstrap.log" and log.parent.name == "release0":
+    if log.name == "release0-bootstrap.log" and log.parent.name == "release0":
         try:
             write_json(log.parent / "release0-bootstrap-exit.json", {"exit_code": result.returncode})
         except OSError as exc:

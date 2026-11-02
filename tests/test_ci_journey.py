@@ -758,16 +758,17 @@ def test_failure_diagnostics_records_unavailable_install_and_manager_error(tmp_p
     assert journey.read_json(run_root / before["service_manager"]["path"])["stderr"] == "manager unavailable"
 
 
-def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform,shell", [("win32", "powershell.exe"), ("darwin", "sh")])
+def test_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup(tmp_path, monkeypatch, platform, shell):
     from scripts import journey_version_jumps
 
     run_root = tmp_path / "journey"
     root, data = run_root / "program", run_root / "data"
     evidence = run_root / "evidence" / "release0-to-release1"
     args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
-                              leg="release0-to-release1", shell="powershell.exe", retain_for_next_leg=False)
+                              leg="release0-to-release1", shell=shell, retain_for_next_leg=False)
     raw = b"first product error\r\n\xff\x00" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 31)
-    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey.sys, "platform", platform)
     monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
@@ -780,7 +781,7 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
     monkeypatch.setattr(journey, "sentinel_observation", lambda *unused: {"alive": True})
 
     def process(argv, **kwargs):
-        assert str(argv[0]) == "powershell.exe"
+        assert str(argv[0]) == shell
         kwargs["stdout"].buffer.write(raw)
         return SimpleNamespace(returncode=37)
 
@@ -1431,3 +1432,14 @@ def test_self_hosted_installed_generations_must_retain_smoke_port(monkeypatch):
     assert journey.verify_smoke_door_port({"env": {"ASTRID_RUNTIME_DOOR_PORT": "49152"}}) == "49152"
     with pytest.raises(RuntimeError, match="did not retain"):
         journey.verify_smoke_door_port({"env": {"ASTRID_RUNTIME_DOOR_PORT": "17340"}})
+
+
+def test_macos_capture_preserves_launchagent_output_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    log_dir = tmp_path / "home" / "Library" / "Logs" / "Astrid Runtime"
+    log_dir.mkdir(parents=True)
+    (log_dir / "runtime-service.log").write_text("actual service failure")
+    evidence = tmp_path / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+    journey.capture_runtime_service_logs(evidence, tmp_path, "before-cleanup")
+    assert (evidence / "runtime-service-service-launchd.log").read_text() == "actual service failure"
