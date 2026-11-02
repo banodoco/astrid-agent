@@ -481,6 +481,7 @@ def test_real_host_refuses_change_after_last_capture_read(tmp_path, monkeypatch,
     monkeypatch.setattr(host, "_run_command_definition", execute)
     original_read = Path.read_bytes
     digest_active = False
+    selected_digest_calls = 0
     changed = False
 
     def last_read_mutation(path):
@@ -510,11 +511,15 @@ def test_real_host_refuses_change_after_last_capture_read(tmp_path, monkeypatch,
     original_digest = identity.pack_digest
 
     def digest_with_last_read(root):
-        nonlocal digest_active
+        nonlocal digest_active, selected_digest_calls
         is_selected = Path(root).resolve() == pack_root.resolve()
         previous = digest_active
         if is_selected:
-            digest_active = True
+            selected_digest_calls += 1
+            # The first selected traversal produces the observed digest. The
+            # second is the final verification traversal whose last-read race
+            # previously escaped the digest comparison.
+            digest_active = selected_digest_calls == 2
         try:
             return original_digest(root)
         finally:
