@@ -64,6 +64,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
+    "windows-bootstrap-environment.log",
     "runtime-owner-processes.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
@@ -1085,13 +1086,29 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
     return version_path, data, version
 
 
-def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600) -> str:
+def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600,
+        legacy_bootstrap: bool = False) -> str:
     log.parent.mkdir(parents=True, exist_ok=True)
     parts = [str(part) for part in argv]
     if (log.name == "seed.json" and len(parts) >= 4 and
             Path(parts[2]).name == "journey_workspace.py" and parts[3] == "seed"):
         return run_seed(parts, log, env=env, timeout=timeout)
     with log.open("w", encoding="utf-8") as stream:
+        if legacy_bootstrap and sys.platform == "win32":
+            child_env = dict(os.environ if env is None else env)
+            inherited = next((value for key, value in child_env.items() if key.casefold() == "psmodulepath"), None)
+            diagnostic = json.dumps({"bootstrap": log.name, "PSModulePath": inherited,
+                                     "PSEdition": child_env.get("JOURNEY_LAUNCHER_PSEDITION")})
+            with (log.parent.parent / "windows-bootstrap-environment.log").open("a", encoding="utf-8") as diagnostic_stream:
+                diagnostic_stream.write(diagnostic + "\n")
+            print(f"Windows bootstrap prelaunch: {diagnostic}", flush=True)
+            child_env = {key: value for key, value in child_env.items() if key.casefold() != "psmodulepath"}
+            windows_env = {key.casefold(): value for key, value in child_env.items()}
+            child_env["PSModulePath"] = ";".join((
+                ntpath.join(windows_env["programfiles"], "WindowsPowerShell", "Modules"),
+                ntpath.join(windows_env["systemroot"], "System32", "WindowsPowerShell", "v1.0", "Modules"),
+            ))
+            env = child_env
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
     if sys.platform == "win32" and log.name == "release0-bootstrap.log" and log.parent.name == "release0":
@@ -1141,7 +1158,7 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
 
 
 def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
-              evidence: Path, root: Path, data: Path) -> None:
+              evidence: Path, root: Path, data: Path, legacy_bootstrap: bool = False) -> None:
     flags: list[str | Path] = ["--manifest", manifest_path, "--root", root,
                                "--data-root", data]
     if mode == "update":
@@ -1151,7 +1168,7 @@ def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
     if sys.platform == "win32":
         run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", app / "public" / "install.ps1", *flags], evidence / f"{mode}-bootstrap.log",
-            env=env)
+            env=env, legacy_bootstrap=legacy_bootstrap)
     else:
         run([shell, app / "public" / "install", *flags],
             evidence / f"{mode}-bootstrap.log", env=env)
