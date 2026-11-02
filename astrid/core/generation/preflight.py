@@ -308,6 +308,14 @@ class LocalGenerationReadiness:
                                   issues=issues, fixes=self.fixes)
 
 
+def _gpu_guidance(mode: str | None = None) -> str:
+    guidance = 'Generation needs a local GPU or --target runpod.'
+    if mode == 'tts':
+        guidance += (' For voice, explicitly choose Edge TTS through '
+                     'generation.generate_speech with provider=edge-tts.')
+    return guidance
+
+
 def _feature_is_missing(feature: str, value: Any) -> bool:
     """Return whether a generation feature value is absent for preflight.
 
@@ -548,6 +556,7 @@ def check_local_generation_readiness(
                  if not legacy_local else
                  "legacy local generation requires a ComfyUI runtime ('comfy.cmd.main' "
                  "or the 'comfyui' CLI); neither is installed or discoverable")
+                + '. ' + _gpu_guidance(mode)
             ),
             recovery_command=guidance,
             fixes=(
@@ -618,7 +627,8 @@ def _installed_managed_target():
                     target={'root': str(selected.root), 'endpoint': selected.url, 'owner': 'astrid'})) from exc
         fix = _managed_install_fix()
         raise generation_error(
-            ValueError('The installed managed ComfyUI engine is not ready; repair its installation.'),
+            ValueError('The installed managed ComfyUI engine is not ready; repair its installation. '
+                       + _gpu_guidance()),
             code='engine_not_found', details={'field': 'target', 'engine_code': exc.code},
             fixes=(() if fix is None else (fix,)),
         ) from exc
@@ -696,13 +706,22 @@ def _select_generation_target(target: str, *, repo=None):
 
 
 def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None,
-                             entry_id: str | None = None):
+                             entry_id: str | None = None, mode: str | None = None):
     """Read/probe the bound target and expose the shared error envelope."""
     try:
         if target == 'runpod' and runpod_owner is not None:
             return call_runpod_owner(runpod_owner.validation_target)
         return _select_generation_target(target, repo=repo)
     except AstridError as exc:
+        if isinstance(exc, GenerationReadinessError) and exc.code == 'engine_not_found':
+            envelope = exc.to_envelope()
+            envelope['entry'] = envelope['entry'] or (
+                {'id': entry_id, 'engine': 'comfyui', 'mode': mode} if entry_id else None)
+            if mode == 'tts':
+                envelope['issues'] = [{**issue, 'message': issue['message'].replace(
+                    _gpu_guidance(), _gpu_guidance(mode))}
+                                      for issue in envelope['issues']]
+            raise GenerationReadinessError(envelope) from exc
         if isinstance(exc, GenerationReadinessError) and entry_id and all(
                 issue['code'] in {'missing_model', 'missing_node_pack'} for issue in exc.readiness['issues']):
             from .asset_gaps import asset_readiness
@@ -730,7 +749,7 @@ def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> N
             fix=(readiness.recovery_command + "; use --target http://127.0.0.1:8188 "
                  "when your existing ComfyUI is running there"),
         )
-        raise generation_error(error,
+        raise generation_error(error, entry={'id': entry.id, 'engine': 'comfyui', 'mode': mode},
             fixes=readiness.fixes or [
                 {'argv': ['astrid', 'generate', 'targets', '--target', 'http://127.0.0.1:8188'],
                  'scope': 'read_only', 'details': {'guidance': readiness.recovery_command}}])

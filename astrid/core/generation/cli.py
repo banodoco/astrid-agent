@@ -147,8 +147,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
-            "--target", action=_Once, default=None if modality == 'audio' else 'auto', metavar="TARGET",
-            help=("auto, managed, a loopback ComfyUI URL, or runpod (music/tts only)." if modality == 'audio'
+            "--target", action=_Once, default='auto', metavar="TARGET",
+            help=("auto (default), managed, a loopback ComfyUI URL, or runpod (music/tts only)." if modality == 'audio'
                   else "auto (default), managed, a loopback ComfyUI URL, or runpod."),
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
