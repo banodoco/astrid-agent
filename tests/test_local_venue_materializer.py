@@ -110,6 +110,18 @@ def test_local_setup_driver_only_corrects_pinned_initialization_order():
     assert 'mode !== "managed-conda"' in raw
 
 
+def test_local_venue_propagates_uv_system_certificates_only():
+    ambient = {
+        "HOME": "/task/home",
+        "SSL_CERT_FILE": "/ambient/ca.pem",
+        "UV_SYSTEM_CERTS": "false",
+    }
+    selected = local_venue._local_venue_environment(ambient)
+    assert selected["UV_SYSTEM_CERTS"] == "true"
+    assert selected["SSL_CERT_FILE"] == "/ambient/ca.pem"
+    assert ambient["UV_SYSTEM_CERTS"] == "false"
+
+
 def test_managed_home_setup_refuses_a_zero_exit_without_conda(tmp_path, monkeypatch):
     roots = _provision_roots(tmp_path)
     monkeypatch.setattr(local_venue, "_run_bounded", lambda *args, **kwargs: None)
