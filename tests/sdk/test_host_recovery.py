@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.core.product_resources import product_resource
 from astrid.core._shared.boot_manifest import load_boot_manifest_hash
 from astrid.core.execution import generic_host
 from astrid.core.execution.generic_host import (
@@ -37,6 +39,10 @@ class Harness:
         self.source = tmp_path / "source"
         (self.source / "astrid" / "packs").mkdir(parents=True)
         _materialize_source_closure(self.source)
+        packaged_matrix = product_resource("astrid-beta-capabilities.json")
+        fixture_matrix = self.source / "astrid" / "resources" / "astrid-beta-capabilities.json"
+        fixture_matrix.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(packaged_matrix, fixture_matrix)
         self.support = tmp_path / "support"
         (self.support / "credentials").mkdir(parents=True)
         self.credential = self.support / "credentials" / "worker.token"
@@ -984,3 +990,15 @@ def test_runtime_shutdown_refuses_foreign_owner_before_effects(harness, field, v
         prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
                                    runtime_instance_id="instance-1")
     assert process.poll() is None and h.marker() == state
+
+
+def test_runtime_shutdown_preserves_unscoped_absence(harness):
+    from astrid.services import prepare_pack_host_shutdown
+    h = harness
+    process, _ = h.host()
+    h.kill_leader(process)
+    state = h.marker()
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="process scope is unverified"):
+        prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
+                                   runtime_instance_id=state["runtime_instance_id"])
+    assert h.marker() == state
