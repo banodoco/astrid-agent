@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import signal
 import subprocess
@@ -112,7 +113,7 @@ def accepted_refresh(**kwargs):
 
 
 def kill_child_at_boundary(repo: Repository, root: Path, tmp_path: Path,
-                           revision: str, phase: str) -> None:
+                           revision: str, phase: str, *, browser=None) -> None:
     """Run one transaction in a minimal child and SIGKILL it at a named seam."""
     source_root = Path(__file__).resolve().parents[3]
     import runtime_protocol
@@ -128,19 +129,19 @@ def kill_child_at_boundary(repo: Repository, root: Path, tmp_path: Path,
     Path(child_env["HOME"]).mkdir()
     script = tmp_path / "crash_at_boundary.py"
     script.write_text(textwrap.dedent("""
-        import os, signal, sys
+        import json, os, signal, sys
         from astrid.core.pack.transaction import install_group
-        source, revision, root, phase = sys.argv[1:]
+        source, revision, root, phase, options = sys.argv[1:]
         def boundary(current):
             if current == phase:
                 os.kill(os.getpid(), signal.SIGKILL)
         install_group(source=source, revision=revision,
             packs={"alpha": "packs/alpha", "shared": "packs/shared"},
-            packs_root=root, python_packages={}, boundary=boundary)
+            packs_root=root, python_packages={}, boundary=boundary, **json.loads(options))
         raise AssertionError("requested boundary was not reached")
     """), encoding="utf-8")
     child = subprocess.run([sys.executable, str(script), str(repo.bare), revision,
-                            str(root), phase], env=child_env,
+                            str(root), phase, json.dumps(browser or {})], env=child_env,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
     assert child.returncode == -signal.SIGKILL, child.stderr.decode("utf-8", "replace")
 
@@ -734,3 +735,335 @@ def test_source_or_real_builder_failure_preserves_old_group(
     snapshot = read_group(packs_root)
     assert snapshot.transaction_id == initial.transaction_id
     assert snapshot.refresh_pending is False
+
+
+@pytest.fixture
+def browser(repo: Repository):
+    """Real Git packs and the existing pinned Node/esbuild fixture; no builder fake."""
+    required = ("ASTRID_BUILD_TEST_NODE", "ASTRID_BUILD_TEST_NODE_VERSION", "ASTRID_BUILD_TEST_ESBUILD")
+    assert all(os.environ.get(key) for key in required), (
+        "Browser transaction tests require explicit pinned local Node/esbuild inputs: " + ", ".join(required))
+    from tests.pack_builder.test_pack_build import toolchain
+
+    builds = {}
+    for pack_id in GROUP:
+        extension = {"id": f"{pack_id}.extension", "version": "1.0.0", "label": "Élan",
+                     "apiVersion": 1, "contributions": []}
+        pack = repo.work / "packs" / pack_id
+        (pack / "entry.tsx").write_text(
+            "import {defineExtension} from '@astrid/editor-sdk';\n"
+            f"export default defineExtension({{manifest: {json.dumps(extension)}, "
+            "activate(ctx) { return ctx.effects.register('fixture', () => import('./lazy')); } });\n",
+            encoding="utf-8")
+        (pack / "lazy.ts").write_text("import icon from './icon.svg'; export default {icon, colour: 'blue'};\n")
+        (pack / "icon.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"><title>blue</title></svg>\n')
+        builds[pack_id] = {"entry": "entry.tsx", "extension_manifest": extension}
+    repo.publish()
+    return {"builds": builds, "toolchain": toolchain()}
+
+
+def tree_bytes(root: Path):
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*") if path.is_file()}
+
+
+def browser_records(snapshot, *, admitted_revision=None):
+    """Check the wire contract from disk, independently of the writer/verifier."""
+    records = {}
+    for pack_id, path in snapshot.paths.items():
+        record_bytes = (path / ".build/admission.json").read_bytes()
+        record = json.loads(record_bytes)
+        assert set(record) == {"version", "packId", "sourceDigest", "digest", "artifactManifestDigest",
+                               "committedRevision", "transactionId"}
+        assert type(record["version"]) is int and record["version"] == 1
+        assert record["packId"] == pack_id
+        assert record["sourceDigest"] == pack_digest(path) == read_pin(path / "PIN")["digest"]
+        assert type(record["committedRevision"]) is int
+        if admitted_revision is None:
+            assert record["committedRevision"] == snapshot.revision
+            assert record["transactionId"] == snapshot.transaction_id
+        else:
+            assert record["committedRevision"] == admitted_revision
+        manifest_path = path / ".build" / f'{record["sourceDigest"]}.artifact-manifest.json'
+        raw = manifest_path.read_bytes()
+        artifact = json.loads(raw)
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                             ensure_ascii=False).encode("utf-8")
+        assert raw == canonical(artifact) and not raw.endswith(b"\n")
+        assert b'\xc3\x89lan' in raw
+        assert record_bytes == canonical(record)
+        assert hashlib.sha256(raw).hexdigest() == record["artifactManifestDigest"]
+        assert all(artifact[field] == record[field] for field in ("packId", "sourceDigest", "digest"))
+        assert snapshot.admissions[pack_id] == {
+            **{field: record[field] for field in ("packId", "sourceDigest", "digest", "artifactManifestDigest",
+                                                 "committedRevision", "transactionId")},
+            "artifact_manifest": artifact}
+        files = artifact["files"]
+        assert [f["path"] for f in files] == sorted(f["path"] for f in files)
+        assert any(f["path"].startswith("chunks/") for f in files)
+        assert any(f["path"].startswith("assets/") for f in files)
+        expected = {manifest_path.relative_to(path).as_posix(), ".build/admission.json"}
+        graph = []
+        for item in files:
+            assert item["disk"] == (f'.build/{record["sourceDigest"]}.js' if item["path"] == "index.js"
+                                    else f'.build/{record["sourceDigest"]}/{item["path"]}')
+            data = (path / item["disk"]).read_bytes()
+            assert len(data) == item["size"] and type(item["size"]) is int
+            assert hashlib.sha256(data).hexdigest() == item["sha256"]
+            expected.add(item["disk"])
+            if item["path"] == "index.js":
+                assert item["sha256"] == record["digest"]
+                assert data.startswith(f'/* astrid-graph-index-sha256:{artifact["graphIndexDigest"]} */\n'.encode())
+            else:
+                graph.append({"logical_path": item["path"], "sha256": item["sha256"],
+                              "size": item["size"], "mime": item["mime"]})
+        assert hashlib.sha256(canonical(graph)).hexdigest() == artifact["graphIndexDigest"]
+        assert {p.relative_to(path).as_posix() for p in (path / ".build").rglob("*") if p.is_file()} == expected
+        records[pack_id] = record
+    return records
+
+
+def change_browser(repo: Repository):
+    for pack_id in GROUP:
+        (repo.work / "packs" / pack_id / "lazy.ts").write_text(
+            "import icon from './icon.svg'; export default {icon, colour: 'red'};\n")
+    return repo.next_revision()
+
+
+def test_browser_install_update_rollback_and_replay_publish_complete_records(
+        repo: Repository, packs_root: Path, browser) -> None:
+    notifications = []
+
+    def refresh(**kwargs):
+        snapshot = read_group(packs_root)
+        records = browser_records(snapshot)
+        assert snapshot.transaction_id == kwargs["transaction_id"]
+        assert snapshot.revision == kwargs["committed_revision"]
+        assert set(kwargs["changed_ids"]) == set(GROUP)
+        notifications.append(records)
+        return accepted_refresh(**kwargs)
+
+    old_commit = repo.commit
+    first = install(repo, packs_root, **browser, refresh=refresh)
+    old_tree = tree_bytes(packs_root)
+    old_records = browser_records(read_group(packs_root))
+    second = install(repo, packs_root, revision=change_browser(repo), **browser, refresh=refresh)
+    changed = browser_records(read_group(packs_root))
+    assert all(changed[i]["digest"] != old_records[i]["digest"] for i in GROUP)
+    assert tree_bytes(second.retired_root) == old_tree
+    assert browser_records(read_retired_group(packs_root=packs_root,
+                          transaction_id=second.transaction_id)) == old_records
+    changed_tree = tree_bytes(packs_root)
+
+    # This foundation's rollback route is reinstalling the prior pinned commit.
+    # It restores exact B/M/files while recording the new commit revision/tx.
+    restored = install(repo, packs_root, revision=old_commit, **browser, refresh=refresh)
+    restored_records = browser_records(read_group(packs_root))
+    assert tree_bytes(restored.retired_root) == changed_tree
+    replay = install(repo, packs_root, revision=old_commit, **browser, refresh=refresh)
+    replay_records = browser_records(read_group(packs_root))
+    assert [first.revision, second.revision, restored.revision, replay.revision] == [1, 2, 3, 4]
+    assert len({first.transaction_id, second.transaction_id, restored.transaction_id, replay.transaction_id}) == 4
+    for pack_id in GROUP:
+        for field in ("sourceDigest", "digest", "artifactManifestDigest"):
+            assert old_records[pack_id][field] == restored_records[pack_id][field] == replay_records[pack_id][field]
+    assert len(notifications) == 4  # Every callback validated complete disk records.
+    assert not replay.refresh_pending
+
+
+@pytest.mark.parametrize("fault", ["manifest", "record", "entry", "chunk", "extra", "source", "pin"])
+@pytest.mark.parametrize("phase", ["built", "before_swap"])
+def test_browser_tamper_refuses_publication_and_keeps_complete_old_tree(
+        repo: Repository, packs_root: Path, browser, fault: str, phase: str) -> None:
+    initial = install(repo, packs_root, **browser, refresh=accepted_refresh)
+    before = tree_bytes(packs_root)
+    calls = []
+
+    def tamper(current):
+        if current != phase:
+            return
+        candidates = [p for p in (packs_root.parent / ".astrid-retired").iterdir()
+                      if (p / "alpha/.build/admission.json").exists()
+                      and p.name != initial.transaction_id]
+        assert len(candidates) == 1
+        pack = candidates[0] / "alpha"
+        record = json.loads((pack / ".build/admission.json").read_bytes())
+        manifest_path = pack / ".build" / f'{record["sourceDigest"]}.artifact-manifest.json'
+        if fault == "manifest":
+            target = manifest_path
+        elif fault == "record":
+            target = pack / ".build/admission.json"
+        elif fault in {"entry", "chunk"}:
+            artifact = json.loads(manifest_path.read_bytes())
+            item = next(f for f in artifact["files"] if (f["path"] == "index.js") == (fault == "entry"))
+            target = pack / item["disk"]
+        else:
+            target = pack / {"extra": ".build/unlisted.json", "source": "payload.txt", "pin": "PIN"}[fault]
+        target.write_bytes(target.read_bytes() + b"\n" if target.exists() else b"{}")
+
+    with pytest.raises(PackInstallError):
+        install(repo, packs_root, revision=change_browser(repo), **browser,
+                boundary=tamper, refresh=lambda **kw: calls.append(kw))
+    assert tree_bytes(packs_root) == before
+    assert read_group(packs_root).transaction_id == initial.transaction_id
+    assert not calls
+
+
+@pytest.mark.parametrize("phase", ["prepared", "before_swap", "swapped", "before_refresh"])
+def test_browser_process_death_preserves_complete_records_and_refresh_retry(
+        repo: Repository, packs_root: Path, tmp_path: Path, browser, phase: str) -> None:
+    initial = install(repo, packs_root, **browser, refresh=accepted_refresh)
+    before = tree_bytes(packs_root)
+    old_records = browser_records(read_group(packs_root))
+    kill_child_at_boundary(repo, packs_root, tmp_path, change_browser(repo), phase, browser=browser)
+    snapshot = read_group(packs_root)
+    records = browser_records(snapshot)
+    after_swap = phase in {"swapped", "before_refresh"}
+    if after_swap:
+        assert snapshot.revision == 2 and snapshot.transaction_id != initial.transaction_id
+        assert all(records[i]["digest"] != old_records[i]["digest"] for i in GROUP)
+        assert snapshot.refresh_pending
+        retired = read_retired_group(packs_root=packs_root, transaction_id=snapshot.transaction_id)
+        assert browser_records(retired) == old_records
+        assert tree_bytes(next(iter(retired.paths.values())).parent) == before
+    else:
+        assert tree_bytes(packs_root) == before
+        assert records == old_records
+    seen = []
+
+    def refresh(**kwargs):
+        assert browser_records(read_group(packs_root)) == records
+        seen.append(kwargs)
+        return accepted_refresh(**kwargs)
+
+    assert retry_refresh(packs_root=packs_root, refresh=refresh) is False
+    assert len(seen) == int(after_swap)
+    assert retry_refresh(packs_root=packs_root, refresh=refresh) is False
+    assert len(seen) == int(after_swap)  # Accepted outbox does not notify twice.
+    if not after_swap:
+        completed = install(repo, packs_root, **browser, refresh=accepted_refresh)
+        assert completed.revision == 2
+        browser_records(read_group(packs_root))
+
+
+def test_retained_browser_records_keep_their_admission_revision_and_replacement_clears_them(
+        repo: Repository, packs_root: Path, browser) -> None:
+    first = install(repo, packs_root, **browser, refresh=accepted_refresh)
+    before = {i: tree_bytes(packs_root / i) for i in GROUP}
+    repo.write_pack("extra", "ordinary-pack\n")
+    repo.publish()
+    install(repo, packs_root, packs={"extra": "packs/extra"}, refresh=accepted_refresh)
+    snapshot = read_group(packs_root)
+    assert snapshot.revision == 2
+    assert set(snapshot.admissions) == set(GROUP)
+    for pack_id in GROUP:
+        assert tree_bytes(snapshot.paths[pack_id]) == before[pack_id]
+        record = json.loads((snapshot.paths[pack_id] / ".build/admission.json").read_bytes())
+        assert record["committedRevision"] == first.revision
+        assert record["transactionId"] == first.transaction_id
+    install_group(source=repo.bare, packs={}, packs_root=packs_root, python_packages={},
+                  remove=("alpha", "extra"), refresh=accepted_refresh)
+    snapshot = read_group(packs_root)
+    assert snapshot.revision == 3 and set(snapshot.admissions) == {"shared"}
+    browser_records(snapshot, admitted_revision=1)
+    install(repo, packs_root, packs={"shared": "packs/shared"}, refresh=accepted_refresh)
+    snapshot = read_group(packs_root)
+    assert snapshot.revision == 4 and snapshot.admissions == {}
+    assert not (packs_root / "shared/.build").exists()
+
+
+@pytest.mark.parametrize("fault", ["compile", "tool_hash", "unsafe_import"])
+def test_real_browser_build_refusal_preserves_prior_admitted_tree(
+        repo: Repository, packs_root: Path, browser, fault: str) -> None:
+    install(repo, packs_root, **browser, refresh=accepted_refresh)
+    before = tree_bytes(packs_root)
+    if fault == "tool_hash":
+        browser["toolchain"]["esbuild_sha256"] = "0" * 64
+    else:
+        entry = repo.work / "packs/alpha/entry.tsx"
+        entry.write_text("export default <broken" if fault == "compile" else
+                         "import x from 'https://example.invalid/code.js'; export default x;\n")
+        repo.publish()
+    with pytest.raises(PackInstallError) as error:
+        install(repo, packs_root, **browser)
+    assert error.value.code == {"compile": "compile_failed", "tool_hash": "tool_mismatch",
+                                "unsafe_import": "unsafe_import"}[fault]
+    assert tree_bytes(packs_root) == before
+    browser_records(read_group(packs_root))
+
+
+def test_browser_refresh_refusal_retries_same_records_without_rebuild(
+        repo: Repository, packs_root: Path, browser) -> None:
+    calls = []
+
+    def refuse(**kwargs):
+        browser_records(read_group(packs_root))
+        calls.append(kwargs)
+        return {"version": 1, "accepted": False, "revision": kwargs["committed_revision"], "reason": "closed"}
+
+    result = install(repo, packs_root, **browser, refresh=refuse)
+    assert result.refresh_pending
+    records = browser_records(read_group(packs_root))
+    before = {i: tree_bytes(packs_root / i) for i in GROUP}
+
+    def accept(**kwargs):
+        assert browser_records(read_group(packs_root)) == records
+        calls.append(kwargs)
+        return accepted_refresh(**kwargs)
+
+    assert retry_refresh(packs_root=packs_root, refresh=accept) is False
+    assert calls[0] == calls[1]
+    assert all(tree_bytes(packs_root / i) == before[i] for i in GROUP)
+    assert retry_refresh(packs_root=packs_root, refresh=accept) is False
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("location", ["installed", "candidate"])
+@pytest.mark.parametrize("fault", ["manifest", "record", "chunk", "missing", "future_revision", "identity",
+                                  "transactionId", "committedRevision"])
+def test_unrelated_update_refuses_corrupt_retained_browser_admission(
+        repo: Repository, packs_root: Path, browser, location: str, fault: str) -> None:
+    install(repo, packs_root, **browser, refresh=accepted_refresh)
+    # Give retained records a real historical epoch distinct from revision 1.
+    initial = install(repo, packs_root, **browser, refresh=accepted_refresh)
+    repo.write_pack("extra", "ordinary-pack\n")
+    repo.publish()
+
+    def corrupt(pack):
+        record_path = pack / ".build/admission.json"
+        record = json.loads(record_path.read_bytes())
+        manifest_path = pack / ".build" / f'{record["sourceDigest"]}.artifact-manifest.json'
+        if fault == "missing":
+            record_path.unlink()
+        elif fault == "manifest":
+            manifest_path.write_bytes(manifest_path.read_bytes() + b"\n")
+        elif fault == "record":
+            record_path.write_bytes(record_path.read_bytes() + b"\n")
+        elif fault in {"future_revision", "identity", "transactionId", "committedRevision"}:
+            field = {"future_revision": "committedRevision", "identity": "packId"}.get(fault, fault)
+            record[field] = {"future_revision": 100, "identity": "impostor",
+                             "transactionId": "0" * 32, "committedRevision": 1}[fault]
+            record_path.write_text(json.dumps(record, sort_keys=True, separators=(",", ":")))
+        else:
+            artifact = json.loads(manifest_path.read_bytes())
+            chunk = next(f for f in artifact["files"] if f["path"].startswith("chunks/"))
+            (pack / chunk["disk"]).write_bytes(b"corrupt")
+
+    if location == "installed":
+        corrupt(packs_root / "alpha")
+    before = tree_bytes(packs_root)
+    notifications = []
+
+    def boundary(phase):
+        if location == "candidate" and phase == "before_swap":
+            candidate = next(p for p in (packs_root.parent / ".astrid-retired").iterdir()
+                             if (p / "extra/pack.yaml").exists())
+            corrupt(candidate / "alpha")
+
+    with pytest.raises(PackInstallError):
+        install(repo, packs_root, packs={"extra": "packs/extra"}, boundary=boundary,
+                refresh=lambda **kw: notifications.append(kw))
+    assert tree_bytes(packs_root) == before
+    assert read_group(packs_root).revision == 2
+    assert read_group(packs_root).transaction_id == initial.transaction_id
+    assert not notifications
