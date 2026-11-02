@@ -31,7 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--fal-timeout", type=int, default=900)
     parser.add_argument("--fal-logs", action="store_true")
-    parser.add_argument("--transparent", action="store_true")
+    transparency = parser.add_mutually_exclusive_group()
+    transparency.add_argument("--transparent", dest="transparent", action="store_true")
+    transparency.add_argument("--no-transparent", dest="transparent", action="store_false")
+    parser.set_defaults(transparent=True)
     parser.add_argument("--force", action="store_true")
     return parser
 
@@ -43,8 +46,8 @@ def main(argv: list[str] | None = None) -> int:
     frames = sorted(args.frames_dir.glob("*.png"))
     if not frames:
         parser_error("--frames-dir contains no PNG frames")
-    if args.factor <= 0:
-        parser_error("--factor must be > 0")
+    if args.ai_upscale_factor <= 0:
+        parser_error("--ai-upscale-factor must be > 0")
     outputs, reports = ai_upscale_frames_with_fal(
         [str(path) for path in frames], args.out_dir, args=args, force=args.force
     )

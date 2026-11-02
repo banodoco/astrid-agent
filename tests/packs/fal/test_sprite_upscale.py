@@ -9,6 +9,7 @@ import pytest
 
 from astrid.core.contracts.errors import AstridError
 from astrid.packs.fal.actions.sprite_upscale import upscale
+from astrid.packs.fal.actions.sprite_upscale import run as sprite_upscale_run
 
 
 def _args() -> argparse.Namespace:
@@ -73,3 +74,41 @@ def test_sprite_upscale_uses_fal_action_and_reports_output(tmp_path, monkeypatch
 def test_sprite_upscale_rejects_result_without_image_url():
     with pytest.raises(AstridError, match="did not include an image URL"):
         upscale._fal_image_url({"seed": 7})
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected_transparent"),
+    [([], True), (["--transparent"], True), (["--no-transparent"], False)],
+)
+def test_sprite_upscale_cli_parses_factor_and_transparency(
+    tmp_path, monkeypatch, flags, expected_transparent
+):
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    (frames_dir / "frame.png").write_bytes(b"frame")
+    seen = {}
+
+    def upscale_frames(frames, out_dir, *, args, force):
+        seen.update(
+            frames=frames,
+            out_dir=out_dir,
+            factor=args.ai_upscale_factor,
+            transparent=args.transparent,
+            force=force,
+        )
+        return [], []
+
+    monkeypatch.setattr(sprite_upscale_run, "ai_upscale_frames_with_fal", upscale_frames)
+
+    assert sprite_upscale_run.main(
+        [
+            "--frames-dir", str(frames_dir),
+            "--out-dir", str(tmp_path / "out"),
+            "--subject", "blue bird",
+            "--animation", "flap",
+            "--ai-upscale-factor", "3",
+            *flags,
+        ]
+    ) == 0
+    assert seen["factor"] == 3
+    assert seen["transparent"] is expected_transparent

@@ -63,7 +63,14 @@ def test_sprite_sheet_dry_run(capsys, tmp_path):
 
 def test_fal_upscale_is_exposed_by_the_fal_pack_not_sprite_sheet():
     with pytest.raises(SystemExit):
-        main(["--ai-upscale-provider", "fal", "--dry-run"])
+        main(
+            [
+                "--animation", "four-frame blink cycle",
+                "--subject", "simple black dot",
+                "--ai-upscale-provider", "fal",
+                "--dry-run",
+            ]
+        )
 
 
 def test_sprite_sheet_reference_image_dry_run(capsys, tmp_path):
