@@ -47,6 +47,7 @@
         if (($Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not ($Attributes -band [IO.FileAttributes]::Directory)) {
             throw 'Astrid directories must be directories without reparse points.'
         }
+        Import-Module Microsoft.PowerShell.Security
         $Acl = Get-Acl -LiteralPath $Path
         if ($Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $Sid -or
             -not $Acl.AreAccessRulesProtected -or $Acl.Sddl -match '\((?!A;)') {
