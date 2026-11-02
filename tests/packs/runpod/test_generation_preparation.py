@@ -660,3 +660,42 @@ def test_missing_sdk_cancel_bridge_retains_custody_and_reports_stop_unknown(gene
         "task_id": "task-exact", "state": "cancellation_unresolved",
         "custody_retained": True, "observed_stop": False,
     }
+
+
+def test_host_adapter_composition_quotes_approved_cuda_version(small_lease, monkeypatch, tmp_path):
+    """The real retained host composition passes its CUDA policy to the quote boundary."""
+    import importlib.util
+    from pathlib import Path
+    from astrid.packs.runpod import adapter as adapter_module
+    import runpod_lifecycle
+    from types import SimpleNamespace
+
+    source = Path(adapter_module.__file__)
+    spec = importlib.util.spec_from_file_location("test_host_composed_runpod_adapter", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    observed = {}
+
+    async def availability(**kwargs):
+        observed.update(kwargs)
+        return SimpleNamespace(gpu_type_id="gpu-exact", datacenters=[SimpleNamespace(
+            status="available", price_per_hour=1.0, datacenter_id="DC-test")])
+
+    monkeypatch.setattr(runpod_lifecycle, "gpu_availability", availability)
+    from runpod_lifecycle import api
+    monkeypatch.setattr(api, "get_network_volumes", lambda key: [{
+        "id": small_lease.prefs.volume_id, "name": small_lease.prefs.volume_name,
+        "size": small_lease.prefs.volume_size_gb, "dataCenterId": "DC-test",
+    }])
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "runtime-data"))
+    adapter = module.build_host_adapter(
+        preferences=small_lease.raw, engine="comfyui", holds=lambda *a, **k: None,
+        quiesce=lambda *a, **k: None, credentials=lambda name: "fake-only",
+        environ={"ASTRID_RUNPOD_SOURCE_ROOT": str(tmp_path / "source")},
+    )
+    try:
+        quote = adapter.quote()
+        assert quote["offer"]["gpu_type_id"] == "gpu-exact"
+        assert observed["allowed_cuda_versions"] == ("13.0",)
+    finally:
+        adapter.lease_owner.close()

@@ -407,7 +407,8 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
         "sha256:" + plan.recipe_sha256, "sha256:" + plan.models_lock_sha256,
         runtime_lock["source_commit"], vibe.pin.revision,
     )
-    config = RunPodConfig(api_key=credential, transport="https")
+    config = RunPodConfig(api_key=credential, transport="https",
+                          allowed_cuda_versions=("13.0",))
     selection = broker_selection(preferences, config, account_ref=preferences.provider_account_ref,
                                  data_root=None, compatibility=compatibility)
     async def drain(record):
