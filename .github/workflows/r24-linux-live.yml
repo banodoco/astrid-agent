@@ -1,6 +1,9 @@
 name: R-24 hosted Linux live materializer
 
 on:
+  push:
+    branches:
+      - venue/M-PIN-R-24-PUSH-ROUTE-R1-E53B11D1
   workflow_call:
     inputs:
       runner_ref:
@@ -42,23 +45,29 @@ jobs:
     timeout-minutes: 120
     env:
       R24_CHECKOUTS: ${{ github.workspace }}
+      R24_REQUESTED_RUNNER_REF: ${{ github.event_name == 'push' && github.sha || inputs.runner_ref }}
+      R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && '7bb0ae88721fdd6b2d7b948760d886eeda9df282' || inputs.producer_ref }}
+      R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_CURRENT_TUPLE' || inputs.confirmation }}
+      GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Checkout immutable candidate runner
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-agent
-          ref: ${{ inputs.runner_ref }}
+          ref: ${{ env.R24_REQUESTED_RUNNER_REF }}
           path: runner
           fetch-depth: 0
           persist-credentials: false
-      - name: Require request ref to be the workflow revision
+      - name: Admit request and require the workflow revision
         working-directory: runner
-        env:
-          REQUESTED_RUNNER_REF: ${{ inputs.runner_ref }}
         run: |
           set -euo pipefail
-          test "$REQUESTED_RUNNER_REF" = "$GITHUB_SHA"
-          test "$(git rev-parse HEAD)" = "$REQUESTED_RUNNER_REF"
+          python3 -B scripts/ci_journey_r24_push_admission.py \
+            --runner-ref "$R24_REQUESTED_RUNNER_REF" \
+            --producer-ref "$R24_REQUESTED_PRODUCER_REF" \
+            --confirmation "$R24_REQUESTED_CONFIRMATION" \
+            --output "$RUNNER_TEMP/r24-push-route-request.json"
+          test "$(git rev-parse HEAD)" = "$R24_REQUESTED_RUNNER_REF"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
       - name: Checkout published App
         uses: actions/checkout@v4
@@ -96,7 +105,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-pinokio
-          ref: ${{ inputs.producer_ref }}
+          ref: ${{ env.R24_REQUESTED_PRODUCER_REF }}
           path: producer
           fetch-depth: 1
           persist-credentials: false
@@ -131,9 +140,9 @@ jobs:
         name: Materialize candidate, admit task, and invoke live provider
         working-directory: runner
         env:
-          REQUESTED_RUNNER_REF: ${{ inputs.runner_ref }}
-          REQUESTED_PRODUCER_REF: ${{ inputs.producer_ref }}
-          REQUESTED_CONFIRMATION: ${{ inputs.confirmation }}
+          REQUESTED_RUNNER_REF: ${{ env.R24_REQUESTED_RUNNER_REF }}
+          REQUESTED_PRODUCER_REF: ${{ env.R24_REQUESTED_PRODUCER_REF }}
+          REQUESTED_CONFIRMATION: ${{ env.R24_REQUESTED_CONFIRMATION }}
         run: |
           set +e
           python3 -B scripts/ci_journey_r24_materializer.py \
@@ -156,7 +165,7 @@ jobs:
         if: steps.execute.outputs.inner_exit == '0'
         uses: actions/upload-artifact@v4
         with:
-          name: r24-provider-export-${{ inputs.runner_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r24-provider-export-${{ env.R24_REQUESTED_RUNNER_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 30
           if-no-files-found: error
           path: ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-export
@@ -164,7 +173,7 @@ jobs:
         if: steps.execute.outputs.inner_exit == '0'
         uses: actions/upload-artifact@v4
         with:
-          name: r24-runner-bindings-${{ inputs.runner_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r24-runner-bindings-${{ env.R24_REQUESTED_RUNNER_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 30
           if-no-files-found: error
           path: |
@@ -184,11 +193,12 @@ jobs:
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/hosted-binding.json
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stdout.json
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stderr.log
+            ${{ runner.temp }}/r24-push-route-request.json
       - name: Upload bounded first-stop diagnostics
         if: always() && steps.execute.outputs.inner_exit != '0'
         uses: actions/upload-artifact@v4
         with:
-          name: r24-first-stop-${{ inputs.runner_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: r24-first-stop-${{ env.R24_REQUESTED_RUNNER_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 30
           if-no-files-found: warn
           path: |
@@ -214,6 +224,7 @@ jobs:
             ${{ runner.temp }}/r24-live-run/evidence/materializer/stop.log
             ${{ runner.temp }}/r24-live-run/evidence/materializer/failure-stop.log
             ${{ runner.temp }}/r24-live-run/evidence/r24-live
+            ${{ runner.temp }}/r24-push-route-request.json
       - name: Propagate inner execution result
         if: always()
         env:

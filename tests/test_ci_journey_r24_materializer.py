@@ -11,6 +11,7 @@ import pytest
 
 from scripts import ci_journey_provider as provider
 from scripts import ci_journey_r24_materializer as materializer
+from scripts import ci_journey_r24_push_admission as push_admission
 from scripts import ci_journey_r24_task as task_boundary
 
 
@@ -243,8 +244,10 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     registered = (root / ".github/workflows/windows-journey.yml").read_text(encoding="utf-8")
     assert "workflow_call:" in raw
     assert "workflow_dispatch:" in raw
-    assert "push:" not in raw
+    assert "push:" in raw
+    assert "venue/M-PIN-R-24-PUSH-ROUTE-R1-E53B11D1" in raw
     assert "ubuntu-24.04" in raw
+    assert "scripts/ci_journey_r24_push_admission.py" in raw
     assert "scripts/ci_journey_r24_materializer.py" in raw
     assert "evidence/r24-live/provider-export" in raw
     assert "evidence/r24-live/hosted-binding.json" in raw
@@ -254,6 +257,85 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "confirmation:" in registered
     assert "inputs.confirmation != 'R24_LIVE_CURRENT_TUPLE'" in registered
     assert "uses: ./.github/workflows/r24-linux-live.yml" in registered
+
+
+def _push_admission_environment(**changes):
+    sha = "a" * 40
+    values = {
+        "GITHUB_REPOSITORY": push_admission.REPOSITORY,
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": push_admission.VENUE_REF,
+        "GITHUB_SHA": sha,
+        "GITHUB_WORKFLOW_SHA": sha,
+        "GITHUB_WORKFLOW_REF": (
+            f"{push_admission.REPOSITORY}/{push_admission.WORKFLOW_PATH}@"
+            f"{push_admission.VENUE_REF}"
+        ),
+    }
+    values.update(changes)
+    return values
+
+
+def test_push_admission_accepts_only_the_exact_dedicated_venue_head():
+    environment = _push_admission_environment()
+    admitted = push_admission.validate_admission(
+        environment, runner_ref="a" * 40,
+        producer_ref=push_admission.PRODUCER_REF,
+        confirmation=push_admission.CONFIRMATION,
+    )
+    assert admitted == {
+        "schema": "astrid.r24.push-route-request.v1",
+        "event": "push",
+        "ref": push_admission.VENUE_REF,
+        "workflow_ref": environment["GITHUB_WORKFLOW_REF"],
+        "workflow_sha": "a" * 40,
+        "runner_ref": "a" * 40,
+        "producer_ref": push_admission.PRODUCER_REF,
+        "confirmation": push_admission.CONFIRMATION,
+    }
+
+
+@pytest.mark.parametrize(
+    ("environment", "runner_ref", "producer_ref", "confirmation", "message"),
+    [
+        (_push_admission_environment(GITHUB_EVENT_NAME="schedule"), "a" * 40,
+         push_admission.PRODUCER_REF, push_admission.CONFIRMATION, "GitHub event"),
+        (_push_admission_environment(GITHUB_REF="refs/heads/main"), "a" * 40,
+         push_admission.PRODUCER_REF, push_admission.CONFIRMATION, "GITHUB_REF"),
+        (_push_admission_environment(GITHUB_WORKFLOW_SHA="b" * 40), "a" * 40,
+         push_admission.PRODUCER_REF, push_admission.CONFIRMATION, "GITHUB_WORKFLOW_SHA"),
+        (_push_admission_environment(GITHUB_WORKFLOW_REF="foreign/workflow@refs/heads/main"), "a" * 40,
+         push_admission.PRODUCER_REF, push_admission.CONFIRMATION, "GITHUB_WORKFLOW_REF"),
+        (_push_admission_environment(), "b" * 40,
+         push_admission.PRODUCER_REF, push_admission.CONFIRMATION, "runner_ref/GITHUB_SHA"),
+        (_push_admission_environment(), "a" * 40, "b" * 40,
+         push_admission.CONFIRMATION, "producer_ref"),
+    ],
+)
+def test_push_admission_rejects_wrong_event_ref_or_identity(
+        environment, runner_ref, producer_ref, confirmation, message):
+    with pytest.raises(push_admission.AdmissionError, match=message):
+        push_admission.validate_admission(
+            environment, runner_ref=runner_ref, producer_ref=producer_ref,
+            confirmation=confirmation,
+        )
+
+
+def test_dispatch_admission_keeps_existing_exact_head_compatibility():
+    environment = _push_admission_environment(
+        GITHUB_EVENT_NAME="workflow_dispatch",
+        GITHUB_REF="refs/heads/lane/M-PIN/R-24-MATERIALIZER-HOME-FIX-R1",
+        GITHUB_WORKFLOW_REF=(
+            "banodoco/astrid-agent/.github/workflows/windows-journey.yml@"
+            "refs/heads/lane/M-PIN/R-24-MATERIALIZER-HOME-FIX-R1"
+        ),
+    )
+    admitted = push_admission.validate_admission(
+        environment, runner_ref="a" * 40,
+        producer_ref=push_admission.PRODUCER_REF,
+        confirmation=push_admission.CONFIRMATION,
+    )
+    assert admitted["event"] == "workflow_dispatch"
 
 
 def test_run_records_timeout_as_exact_first_command_outcome(tmp_path):
