@@ -483,11 +483,36 @@ def test_fresh_recovery_boots_out_matching_stopped_r0_without_owner_and_restores
     fresh._stop_boundary = boundary
     fresh.verify = lambda *_args, **_kwargs: None
 
+    manager_stops = []
+
+    def stopped_job_manager_stop():
+        # With no Runtime owner there is no C1 owner signal. The selected
+        # manager callback is therefore the observable C1 handoff boundary.
+        events.append("fresh-c1-manager-stop")
+        manager_stops.append("stop")
+
+    fresh.service.stop = stopped_job_manager_stop
+    bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+    real_down = bootstrap.down
+
+    def tracked_down(*args, **kwargs):
+        events.append("fresh-c1-down-enter")
+        result = real_down(*args, **kwargs)
+        events.append("fresh-c1-down-return")
+        return result
+
+    monkeypatch.setattr(bootstrap, "down", tracked_down)
+
     core.Installer(backend.root, data, fresh, say=lambda _line: None)._recover_update()
 
     terminal = core.read_json(backend.root / "update-transaction.json")
     assert terminal["step"] == "rolled_back"
     assert bootouts == [("launchctl", "bootout", target)]
+    assert (events.index("launchctl-bootout")
+            < events.index("fresh-c1-down-enter")
+            < events.index("fresh-c1-manager-stop")
+            < events.index("fresh-c1-down-return"))
+    assert manager_stops == ["stop"]
     assert core.current(backend.root) == old
     assert loaded["version"] == old
     assert loaded["running"] is False
