@@ -751,6 +751,25 @@ def test_windows_preflight_entrypoint_preserves_uncaught_tracebacks(tmp_path, mo
     assert "sentinel" in result.stderr
 
 
+@pytest.mark.parametrize("body, exit_code", [
+    ('print("captured output")', 0),
+    ('raise SystemExit(7)', 7),
+])
+def test_windows_preflight_entrypoint_preserves_output_and_exit(tmp_path, body, exit_code):
+    import subprocess
+    import sys
+    package = tmp_path / "scripts"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "ci_windows_journey.py").write_text("def scheduled_task_preflight():\n    " + body + "\n")
+    result = subprocess.run([sys.executable, "-u", str(journey.ROOT / "scripts/ci_windows_preflight.py")],
+                            env=dict(os.environ, PYTHONPATH=str(tmp_path), RUNNER_TEMP=str(tmp_path)),
+                            capture_output=True, text=True)
+    assert result.returncode == exit_code
+    if exit_code == 0:
+        assert result.stdout == "captured output\n" and result.stderr == ""
+
+
 def test_windows_preflight_workflow_captures_before_launch_and_uploads_on_failure():
     workflow = (journey.ROOT / ".github/workflows/journey.yml").read_text()
     step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split("      - name:", 1)[0]
