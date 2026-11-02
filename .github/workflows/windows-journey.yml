@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   windows-journey:
-    if: ${{ github.event_name != 'workflow_dispatch' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.app_ref != '79a88325f72600b8ab30f87c403c2c0db373524c' }}
     name: Windows task host journey (${{ matrix.installer-shell }})
     runs-on: windows-latest
     timeout-minutes: 120
@@ -128,18 +128,33 @@ jobs:
           if-no-files-found: error
 
   windows-schema-acl:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.app_ref == '79a88325f72600b8ab30f87c403c2c0db373524c' }}
     name: Windows schema ACL controls
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - name: Check out the dispatched Agent commit
+      - name: Check out the exact requested Agent head
         uses: actions/checkout@v4
+        with:
+          ref: 79a88325f72600b8ab30f87c403c2c0db373524c
 
       - name: Record the checked-out Agent commit
         shell: pwsh
         run: |
+          $expected = '79a88325f72600b8ab30f87c403c2c0db373524c'
           $head = git rev-parse HEAD
+          if ($head -ne $expected) {
+            throw "expected Agent $expected but checked out $head"
+          }
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          @(
+            "repository=$env:GITHUB_REPOSITORY"
+            "workflow_ref=$env:GITHUB_WORKFLOW_REF"
+            "workflow_sha=$env:GITHUB_SHA"
+            "run_id=$env:GITHUB_RUN_ID"
+            "run_attempt=$env:GITHUB_RUN_ATTEMPT"
+            "agent_head=$head"
+          ) | Set-Content -Path test-results/run-identity.txt
           "Agent: $head" | Tee-Object -FilePath "$env:GITHUB_STEP_SUMMARY" -Append
 
       - name: Set up Python
@@ -156,17 +171,18 @@ jobs:
       - name: Run the exact Windows schema ACL selectors
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force test-results | Out-Null
           python -m pytest -q -rA `
             --junitxml=test-results/windows-schema-acl.xml `
             'tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls' `
             'tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign'
 
-      - name: Upload Windows schema ACL JUnit evidence
+      - name: Upload Windows schema ACL evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-schema-acl-junit
+          name: windows-schema-acl-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 30
-          path: test-results/windows-schema-acl.xml
+          path: |
+            test-results/windows-schema-acl.xml
+            test-results/run-identity.txt
           if-no-files-found: error
