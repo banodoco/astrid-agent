@@ -215,6 +215,50 @@ def test_legacy_exception_requires_update_context(legacy):
         backend.source_checkout_ownership(data, current(root))
 
 
+def test_linux_r0_unscoped_birth_requires_exact_legacy_binding(legacy, monkeypatch):
+    root, data, health, discovery, _ = legacy
+    discovery["process_birth_id"] = "proc-start-ticks:19"
+    write_json(data / "runtime/discovery.json", discovery)
+    monkeypatch.setattr("runtime_protocol.platform.process_identity", lambda pid: {
+        "pid": pid, "birth_id": "proc-start-ticks:19;boot:boot;pidns:7"})
+
+    backend = gate(root, data)
+    assert backend._legacy_identity_admitted
+
+    # The unscoped tick cannot authorize a normal or foreign Runtime health.
+    health["identity"] = {"release": 1, "managed_by": None}
+    with pytest.raises(RuntimeError, match="startup identity cannot be verified"):
+        gate(root, data)
+
+
+@pytest.mark.parametrize("actual", [
+    "proc-start-ticks:20;boot:boot;pidns:7",  # another incarnation
+    "proc-start-ticks:19;boot:boot",  # incomplete scope
+    "proc-start-ticks:19;boot:boot;pidns:7;extra:value",  # unrecognized encoding
+])
+def test_linux_r0_unscoped_birth_refuses_nonmatching_or_partial_scope(legacy, monkeypatch, actual):
+    root, data, _, discovery, _ = legacy
+    discovery["process_birth_id"] = "proc-start-ticks:19"
+    write_json(data / "runtime/discovery.json", discovery)
+    monkeypatch.setattr("runtime_protocol.platform.process_identity", lambda pid: {
+        "pid": pid, "birth_id": actual})
+
+    with pytest.raises(RuntimeError, match="owner identity changed"):
+        gate(root, data)
+
+
+def test_linux_r0_unscoped_birth_does_not_bypass_update_context(legacy, monkeypatch):
+    root, data, _, discovery, _ = legacy
+    discovery["process_birth_id"] = "proc-start-ticks:19"
+    write_json(data / "runtime/discovery.json", discovery)
+    monkeypatch.setattr("runtime_protocol.platform.process_identity", lambda pid: {
+        "pid": pid, "birth_id": "proc-start-ticks:19;boot:boot;pidns:7"})
+
+    backend = Backend(root, root / "install.log", root / "uv")
+    with pytest.raises(RuntimeError, match="startup identity cannot be verified"):
+        backend.source_checkout_ownership(data, current(root))
+
+
 @pytest.mark.parametrize("target, expected", [(1, 0), (2, 1)])
 def test_cli_admits_only_reviewed_update_target(legacy, tmp_path, monkeypatch, target, expected):
     from unittest.mock import Mock

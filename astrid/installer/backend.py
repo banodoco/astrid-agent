@@ -425,6 +425,21 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return value
 
     @staticmethod
+    def _legacy_scoped_birth_candidate(expected: str, actual: object) -> bool:
+        """Recognize the one old Linux spelling without treating it as proof.
+
+        Release 0 recorded only Linux's process start tick.  A current Runtime
+        adds both boot and PID-namespace scope, so it cannot compare equal.
+        The matching tick merely permits the caller to run the closed legacy
+        provenance and HTTP-instance binding below; it is never a live-owner
+        verdict on its own.
+        """
+        expected_match = re.fullmatch(r"proc-start-ticks:([0-9]+)", expected)
+        actual_match = (re.fullmatch(r"proc-start-ticks:([0-9]+);boot:([^;]+);pidns:([0-9]+)", actual)
+                        if isinstance(actual, str) else None)
+        return bool(expected_match and actual_match and expected_match.group(1) == actual_match.group(1))
+
+    @staticmethod
     def _discovery_owner_state(discovery: dict) -> str:
         """Classify one discovery snapshot without signaling or editing it."""
         if not isinstance(discovery, dict):
@@ -439,7 +454,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise RuntimeError("Runtime discovery owner identity could not be observed; refusing to change it.") from exc
         if identity is None:
             return "stale"  # Proven absent; Runtime startup owns reconciliation.
-        if identity.get("pid") != pid or identity.get("birth_id") != birth:
+        if identity.get("pid") != pid:
+            raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
+        if identity.get("birth_id") != birth:
+            if Backend._legacy_scoped_birth_candidate(birth, identity.get("birth_id")):
+                return "legacy-birth-candidate"
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 
@@ -471,7 +490,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         else:
             state = self._discovery_owner_state(discovery)
         live_identity = None
-        if state == "live":
+        if state in {"live", "legacy-birth-candidate"}:
             try:
                 instance_id = discovery.get("runtime_instance_id")
                 endpoint = discovery.get("endpoint")
@@ -480,8 +499,15 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 boundary = LocalRuntimeBoundary()
                 health = boundary.owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
                 from .legacy_identity import admitted as legacy_admitted
-                if (self.process_control is not None and self.managed_by is None
-                        and legacy_admitted(installed, health, discovery, program_root=self.root)):
+                admitted_legacy = (self.process_control is not None and self.managed_by is None
+                                   and legacy_admitted(installed, health, discovery, program_root=self.root))
+                # An unscoped R0 birth is insufficient authority even when
+                # its tick prefixes the current scoped observation.  Only the
+                # exact predecessor, selected-install, and HTTP instance
+                # classifier can bind this compatibility transition.
+                if state == "legacy-birth-candidate" and not admitted_legacy:
+                    raise ValueError("Legacy Runtime birth candidate is not admitted.")
+                if admitted_legacy:
                     self._legacy_identity_admitted = True
                     live_identity = {"release": 0, "managed_by": None}
                 else:
