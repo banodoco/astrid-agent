@@ -77,7 +77,7 @@ def test_local_schema_refuses_writable_inputs(staged_schema, target):
 
 def test_local_schema_refuses_foreign_owner(staged_schema, monkeypatch):
     root, schema = staged_schema
-    monkeypatch.setattr(_local_schema, "owned_by_current_user", lambda *_args, **_kw: False)
+    monkeypatch.setattr(_local_schema.platform, "is_current_user", lambda _facts: False)
     with pytest.raises(ValueError, match="owner/mode"):
         _local_schema.verified_schema_path(root, str(schema))
 
@@ -97,7 +97,7 @@ def test_timeline_reader_applies_verified_admission(staged_schema, tmp_path, mon
     elif change == "digest":
         schema.write_text("{}")
     elif change == "owner":
-        monkeypatch.setattr(_local_schema, "owned_by_current_user", lambda *_args, **_kw: False)
+        monkeypatch.setattr(_local_schema.platform, "is_current_user", lambda _facts: False)
     elif change == "regular_file":
         schema.unlink()
         schema.mkdir()
@@ -378,8 +378,8 @@ def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, layout,
 
     monkeypatch.setattr(security, "_handle", handle)
     monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix)))
-    monkeypatch.setattr(_local_schema, "owned_by_current_user",
-                        lambda *_args, **_kwargs: pytest.fail("owner-only DACL predicate was called"))
+    monkeypatch.setattr(_local_schema.platform, "is_current_user",
+                        lambda *_args: pytest.fail("POSIX ownership predicate was called"))
     if case in {"safe", "user_distinct_default", "default_owner"}:
         assert _local_schema.verified_schema_path(root, str(schema)) == schema
         assert schema in checked

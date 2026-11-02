@@ -9,7 +9,8 @@ import stat
 import sys
 from pathlib import Path
 
-from astrid.core.execution.platform_helpers import owned_by_current_user
+from runtime_protocol import platform
+
 from astrid.core.product_resources import product_resource
 
 SCHEMA_RELATIVE_PATH = Path("astrid/core/timeline/schema/timeline-config.schema.json")
@@ -109,7 +110,7 @@ def verified_schema_path(source_root: Path, configured: str) -> Path:
             if sys.platform == "win32":
                 safe = _windows_schema_path_is_safe(path)
             else:
-                safe = owned_by_current_user(path, facts, forbidden=0o022)
+                safe = platform.is_current_user(facts) and not facts.st_mode & 0o022
             if not safe:
                 raise ValueError(f"local timeline schema input has a foreign owner/mode: {path.name}")
             if path == root:
