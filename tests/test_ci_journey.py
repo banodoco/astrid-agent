@@ -428,6 +428,33 @@ def test_tst_b1_bootstrap_propagates_run_owned_roots_on_each_os(tmp_path, monkey
     assert "--update" in argv
 
 
+def test_tst_b1_windows_bootstrap_rebuilds_windows_powershell_module_path(tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    (app / "public").mkdir(parents=True)
+    (app / "public" / "install.ps1").write_text("", encoding="utf-8")
+    manifest = app / "public" / "install-manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("KEEP_ME", "inherited")
+    original = dict(journey.os.environ)
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured.update(argv=argv, **kwargs)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    run_root = tmp_path / "run"
+    journey.bootstrap(app, manifest, "powershell.exe", "install", tmp_path / "evidence",
+                      run_root / "program", run_root / "data")
+
+    assert captured["argv"][0] == "powershell.exe"
+    assert all(key.casefold() != "psmodulepath" for key in captured["env"])
+    assert captured["env"]["KEEP_ME"] == "inherited"
+    assert dict(journey.os.environ) == original
+
+
 @pytest.mark.posix_native
 def test_tst_b1_sentinel_survives_then_is_reaped_by_own_context(tmp_path):
     with pytest.raises(RuntimeError, match="stop journey"):
