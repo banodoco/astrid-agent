@@ -38,19 +38,21 @@ def test_generation_list_public_command_uses_shared_catalog(monkeypatch, capsys)
     from astrid import console
 
     monkeypatch.setattr(listing, "catalog_rows", lambda: [{
-        "id": "example-model", "kind": "image", "mode": "t2i",
-        "backend": "", "availability": "fixture-only", "reason": "test | reason",
-        "template": "", "source": "fixture",
+        "id": "z-image", "kind": "image", "mode": "t2i",
+        "backend": "local", "availability": "unavailable", "reason": "test | reason",
+        "template": "image/z_image_turbo", "source": "catalog",
     }])
 
     assert console.main(["generate", "list", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)
-    assert len(rows) == 1
-    assert rows[0]["id"] == "example-model"
-    assert rows[0]["kind"] == "image"
-    assert rows[0]["mode"] == "t2i"
-    assert rows[0]["availability"] == "fixture-only"
-    assert rows[0]["reason"] == "test | reason"
+    assert rows == [{
+        "id": "z-image", "kind": "image", "mode": "t2i",
+        "backend": "local", "availability": "unavailable", "reason": "test | reason",
+        "template": "image/z_image_turbo", "source": "catalog",
+        "target": "declaration", "ready": False,
+        "fix": "Use an implemented generation route; see the availability declaration.",
+        "models_present": [],
+    }]
 
 
 def test_real_installed_pack_is_discovered_but_not_written_to_bundled_index(
