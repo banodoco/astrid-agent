@@ -1,0 +1,41 @@
+{
+  "schema": "astrid.merge.r25-etw-delivery-receipt.v1",
+  "task": "R-25-ETW-DELIVERY-R1",
+  "recorded_at_utc": "2026-11-02T19:00:00Z",
+  "status": "delivery-prepared",
+  "qualification": false,
+  "receipt_qualification": false,
+  "implementation": false,
+  "hosted_dispatch": false,
+  "integration_handoff": false,
+  "branch": "lane/M-PIN/R-25-ETW-DELIVERY-R1-design",
+  "base_agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+  "artifact_commit": null,
+  "receipt_commit": null,
+  "remote_head": null,
+  "remote": "https://github.com/banodoco/astrid-agent",
+  "remote_branch_path": "https://github.com/banodoco/astrid-agent/tree/lane/M-PIN/R-25-ETW-DELIVERY-R1-design",
+  "deliverables": {
+    "design": {"path": "R-25-ETW-DESIGN-R1-DESIGN.md", "source_path": "queue/done/R-25-ETW-DESIGN-R1/DESIGN.md", "sha256": "ec67e663a53ea3114781ac9a1e27a4a55495b4dc2a821703fff2d75b01c4bed4", "remote_path": "R-25-ETW-DESIGN-R1-DESIGN.md"},
+    "source_report": {"path": "R-25-ETW-DESIGN-R1-REPORT.md", "source_path": "queue/done/R-25-ETW-DESIGN-R1/REPORT.md", "sha256": "8aa32f14cf72e661899265edb689529df8d8e5826f0331b1ae1a4176d38176d4", "remote_path": "R-25-ETW-DESIGN-R1-REPORT.md"},
+    "source_canonical_receipt": {"path": "R-25-ETW-DESIGN-R1-source-canonical-receipt.json", "source_path": "queue/done/R-25-ETW-DESIGN-R1/canonical-receipt.json", "sha256": "8dba3e9c9391768e8046b1e3b6afa38392023b2db610e7810d67ad648b80e67a", "remote_path": "R-25-ETW-DESIGN-R1-source-canonical-receipt.json"},
+    "delivery_receipt": {"path": "R-25-ETW-DELIVERY-R1-canonical-receipt.json", "remote_path": "R-25-ETW-DELIVERY-R1-canonical-receipt.json"}
+  },
+  "review_context": {
+    "verifier_interface": "/home/user/merge-docs/docs/merge-plan/handoff/inputs/M-QUAL-R-30-verifier-interface.md",
+    "verifier_interface_sha256": "2f685c8aec21bef116f95645920717e4b12ef33c1ca820fe6185eb01ffea115d",
+    "unresolved_limitations": ["Reviewed Microsoft sources do not document a global source sequence for these kernel process events.", "Hosted-runner supervisor isolation and privilege availability remain unresolved.", "No implementation, Windows ETW execution, hosted dispatch, qualification, or integration handoff was performed."]
+  },
+  "commands": [
+    {"command": "df -h /home/user/merge/ws/M-PIN /home/user/merge/cache /tmp", "exit": 0, "result": "7.4 GiB available; above 2 GiB floor"},
+    {"command": "task-clone.sh astrid-agent <task-folder>/agent ab43bad818ef65ca1e929b973a2f61cd9fc4bf61", "exit": 0},
+    {"command": "git switch -c lane/M-PIN/R-25-ETW-DELIVERY-R1-design", "exit": 0},
+    {"command": "copy source artifacts to uniquely named root files", "exit": 0},
+    {"command": "sha256sum source and copied artifacts", "exit": 0},
+    {"command": "git diff --check", "exit": null},
+    {"command": "git commit", "exit": null},
+    {"command": "git push", "exit": null},
+    {"command": "git ls-remote --heads origin lane/M-PIN/R-25-ETW-DELIVERY-R1-design", "exit": null}
+  ],
+  "no_integration_handoff": true
+}

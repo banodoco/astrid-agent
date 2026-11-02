@@ -1,0 +1,75 @@
+{
+  "schema": "astrid.merge.r25-etw-design-receipt.v1",
+  "task": "R-25-ETW-DESIGN-R1",
+  "recorded_at_utc": "2026-11-02T18:52:15Z",
+  "status": "design-only-inputs-reviewed",
+  "qualification": false,
+  "receipt_qualification": false,
+  "implementation": false,
+  "hosted_dispatch": false,
+  "branch": "lane/M-PIN/R-25-ETW-DESIGN-R1-design",
+  "base_agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+  "deliverables": {
+    "design": "DESIGN.md",
+    "report": "REPORT.md",
+    "design_sha256": "ec67e663a53ea3114781ac9a1e27a4a55495b4dc2a821703fff2d75b01c4bed4",
+    "report_sha256": "8aa32f14cf72e661899265edb689529df8d8e5826f0331b1ae1a4176d38176d4"
+  },
+  "inputs": {
+    "orchestrator": "ORCHESTRATOR.md",
+    "orchestrator_sha256_at_review": "1a992a104acac6cffc537466a6c3e37b468b3da0507b12cf762855b79d43ab7d",
+    "verifier_interface": "/home/user/merge-docs/docs/merge-plan/handoff/inputs/M-QUAL-R-30-verifier-interface.md",
+    "verifier_interface_sha256": "2f685c8aec21bef116f95645920717e4b12ef33c1ca820fe6185eb01ffea115d",
+    "agent_commit": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "snapshot_report": "queue/done/R-25-SNAPSHOT-COLLECTORS-R1/REPORT.md",
+    "missing_requested_source": "4a8bca56d672a99bb73bd2b2f2ea07948443b841"
+  },
+  "profile": {
+    "control_provider_guid": "151f55dc-467d-471f-83b5-5f889d46ff66",
+    "control_keyword": "SYSTEM_PROCESS_KW_GENERAL",
+    "legacy_process_flag": "0x00000001",
+    "event_class_guid": "3d6fa8d0-fe05-11d0-9dda-00c04fd7ba7c",
+    "session": "Astrid ETW Custody",
+    "event_types": [1, 2, 3, 4],
+    "identity_extension": "EVENT_ENABLE_PROPERTY_PROCESS_START_KEY",
+    "loss_counters": ["EventsLost", "LogBuffersLost", "RealTimeBuffersLost", "TRACE_LOGFILE_HEADER.EventsLost", "TRACE_LOGFILE_HEADER.BuffersLost"]
+  },
+  "commands": [
+    {"command": "rg/sed/tail source and interface inspection", "exit": 0},
+    {"command": "git show ab43bad818ef65ca1e929b973a2f61cd9fc4bf61", "exit": 0},
+    {"command": "git show 4a8bca56d672a99bb73bd2b2f2ea07948443b841:<requested-source>", "exit": 128},
+    {"command": "git fetch origin 4a8bca56d672a99bb73bd2b2f2ea07948443b841", "exit": 128},
+    {"command": "sha256sum reviewed local inputs", "exit": 0},
+    {"command": "Microsoft Learn primary-document research", "exit": 0}
+  ],
+  "coverage": [
+    "provider/session identity",
+    "process event types and process-start-key identity",
+    "authenticated interval and tuple binding",
+    "independent initial/final census protocol",
+    "sequence and ETW loss-counter handling",
+    "privilege and supervisor/candidate isolation requirements",
+    "fail-closed lifecycle and unresolved R-30 §2.3 gaps"
+  ],
+  "limitations": [
+    "No implementation or Windows execution was performed.",
+    "No hosted dispatch or tests were run.",
+    "The requested 4a8bca56d672a99bb73bd2b2f2ea07948443b841 object was unavailable locally and from the configured remote.",
+    "Microsoft documents ETW loss counters but the reviewed sources do not document a global source sequence for these process events.",
+    "Hosted-runner privilege and independent supervisor isolation remain unresolved.",
+    "No R-30 qualification, receipt qualification, handoff, commit or push is claimed."
+  ],
+  "sources": [
+    "https://learn.microsoft.com/en-us/windows/win32/etw/system-providers",
+    "https://learn.microsoft.com/en-us/windows/win32/etw/configuring-and-starting-a-systemtraceprovider-session",
+    "https://learn.microsoft.com/en-us/windows/win32/etw/process",
+    "https://learn.microsoft.com/en-us/windows/win32/etw/process-typegroup1",
+    "https://learn.microsoft.com/en-us/windows/win32/api/evntprov/ns-evntprov-enable_trace_parameters",
+    "https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_properties",
+    "https://learn.microsoft.com/en-us/windows/win32/etw/consuming-events",
+    "https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-event_trace_logfilew",
+    "https://learn.microsoft.com/en-us/windows/win32/api/evntrace/ns-evntrace-trace_logfile_header",
+    "https://learn.microsoft.com/en-us/windows/win32/etw/controlling-event-tracing-sessions",
+    "https://learn.microsoft.com/en-us/windows/win32/secauthz/privilege-constants"
+  ]
+}
