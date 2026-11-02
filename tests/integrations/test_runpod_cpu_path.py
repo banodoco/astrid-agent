@@ -138,6 +138,8 @@ def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
 class ProviderHTTP:
     """RunPod GraphQL/REST and pod-agent HTTP contracts, with no host doubles."""
 
+    pod_id = "cpupod"
+
     def __init__(self, source_root, claim_path):
         self.claim_path = claim_path
         self.events, self.commands, self.pods, self.jobs, self.files = [], [], [], {}, {}
@@ -204,7 +206,7 @@ class ProviderHTTP:
             assert "DC-unpinned" in query and "networkVolumeId" not in query
             assert record["worker_image"] in query and record["request_name"] in query
             assert 'gpuTypeId: "gpu-exact"' in query
-            self.pods.append({"id": "pod-cpu", "name": record["request_name"],
+            self.pods.append({"id": self.pod_id, "name": record["request_name"],
                 "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0,
                 "imageName": record["worker_image"], "networkVolumeId": None,
                 "dataCenterId": "DC-unpinned", "machineType": "CPU fixture GPU",
@@ -258,7 +260,7 @@ class ProviderHTTP:
         if host == "rest.runpod.io":
             assert path.startswith("/v1/pods"), "ephemeral route queried volumes"
             if method == "DELETE":
-                assert path.endswith("/pod-cpu") and self.pods
+                assert path.endswith("/" + self.pod_id) and self.pods
                 assert json.loads(self.claim_path.read_text())["release_authorized"] is True
                 self.pods.clear()
                 return reply({}, 204)
@@ -266,7 +268,7 @@ class ProviderHTTP:
             if path == "/v1/pods":
                 return reply(self.pods)
             return reply(self.pods[0] if self.pods else {}, 200 if self.pods else 404)
-        assert host == "pod-cpu-8000.proxy.runpod.net", host
+        assert host == self.pod_id + "-8000.proxy.runpod.net", host
         if path == "/health":
             return reply({"ok": True, "protocol": 1})
         if path == "/jobs" and method == "POST":
@@ -297,7 +299,7 @@ class ProviderHTTP:
                           "total": len(data), "sha256": _sha(data[body["offset"]:]), "etag": _sha(data)})
         if path == "/engine-proxy":
             binding = json.loads(self.claim_path.read_text())["lease"]["endpoint_binding"]
-            assert binding["state"] == "binding" and binding["pod_id"] == "pod-cpu"
+            assert binding["state"] == "binding" and binding["pod_id"] == self.pod_id
             assert "loopback_url" not in binding
             return reply({"ok": True})
         if "/engines/" in path:
