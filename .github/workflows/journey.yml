@@ -137,7 +137,7 @@ on:
 
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name != 'push' && github.event_name != 'schedule' }}
 
 permissions:
   contents: read
