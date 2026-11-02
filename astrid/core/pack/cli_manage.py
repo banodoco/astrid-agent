@@ -4,18 +4,15 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 from importlib import metadata
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-import yaml
-
 from .install import PackInstallError
 from .personal import resolve_personal_packs_root
-from .transaction import _facts, install_group, read_group, read_retired_group, rollback_group
+from .transaction import install_group, rollback_group
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -63,87 +60,6 @@ def _validation_snapshot() -> tuple[Mapping[str, str], Mapping[str, Mapping[str,
     return MappingProxyType(packages), MappingProxyType(pins)
 
 
-def _candidate_dependencies(source: str, revision: str | None, packs: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
-    """Read only requested candidate manifests from a local Git source."""
-    source_path = Path(source).expanduser()
-    result: dict[str, tuple[str, ...]] = {}
-    for pack_id, subpath in packs.items():
-        relative = "pack.yaml" if subpath == "." else f"{subpath.rstrip('/')}/pack.yaml"
-        try:
-            if revision is None:
-                manifest_bytes = (source_path / subpath / "pack.yaml").read_bytes()
-            elif source_path.is_dir():
-                shown = subprocess.run(["git", "-C", str(source_path), "show", f"{revision}:{relative}"],
-                                       stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=30)
-                if shown.returncode:
-                    continue  # The transaction reports the authoritative source refusal.
-                manifest_bytes = shown.stdout
-            else:
-                continue  # Remote acquisition is owned by the transaction.
-            parsed = yaml.safe_load(manifest_bytes)
-        except (OSError, subprocess.SubprocessError, yaml.YAMLError):
-            continue
-        if not isinstance(parsed, dict):
-            continue
-        dependencies = parsed.get("dependencies", {})
-        declared = dependencies.get("packs", ()) if isinstance(dependencies, dict) else ()
-        if isinstance(declared, list) and all(isinstance(dep, str) and dep for dep in declared):
-            result[pack_id] = tuple(declared)
-    return result
-
-
-def _selected_snapshot(root: Path, pack_ids: tuple[str, ...] | list[str], *, rollback: bool = False,
-                       candidate_dependencies: Mapping[str, tuple[str, ...]] | None = None) -> Mapping[str, Mapping[str, Any]]:
-    """Compose selected core/external facts once for a real management call.
-
-    Roots are explicit: the user collection, bundled core collection, and
-    configured external roots. Only manifest paths named by the selected
-    dependency closure are opened; unrelated roots and manifests are untouched.
-    """
-    from .loader import packs_root
-
-    user_root = root.resolve()
-    core_root = packs_root().resolve()
-    external_roots = [Path(item).expanduser().resolve()
-                      for item in os.environ.get("ASTRID_PACKS_PATH", "").split(os.pathsep) if item]
-    roots = list(dict.fromkeys((user_root, *external_roots, core_root)))
-    current = read_group(user_root)
-    selected_generation = (read_retired_group(packs_root=user_root, transaction_id=current.transaction_id)
-                          if rollback and current.transaction_id else current)
-    seed_paths = selected_generation.paths
-    selected: dict[str, Mapping[str, Any]] = {}
-    candidate_dependencies = candidate_dependencies or {}
-    visited: set[str] = set()
-    pending = list(pack_ids)
-    while pending:
-        pack_id = pending.pop()
-        if pack_id in visited:
-            continue
-        visited.add(pack_id)
-        path = seed_paths.get(pack_id)
-        candidate_deps = candidate_dependencies.get(pack_id)
-        if path is None and candidate_deps is None:
-            path = next((candidate for selected_root in roots
-                         if (candidate := selected_root / pack_id).is_dir()
-                         and not candidate.is_symlink() and (candidate / "pack.yaml").is_file()), None)
-        if path is None and candidate_deps is None:
-            continue
-        if path is not None:
-            manifest, facts = _facts(path)
-            is_core = path.resolve().is_relative_to(core_root)
-            if is_core:
-                facts["origin"] = "core"
-            if path.resolve() != user_root / pack_id and pack_id not in seed_paths:
-                selected[pack_id] = _freeze(dict(facts))
-        else:
-            manifest = {}
-        dependencies = manifest.get("dependencies", {})
-        declared = candidate_deps if candidate_deps is not None else (dependencies.get("packs", ()) if isinstance(dependencies, Mapping) else ())
-        if isinstance(declared, (list, tuple)):
-            pending.extend(dep for dep in declared if isinstance(dep, str) and dep and dep not in visited)
-    return MappingProxyType(selected)
-
-
 def _pack_specs(values: list[str]) -> dict[str, str]:
     result: dict[str, str] = {}
     for value in values:
@@ -181,10 +97,8 @@ def _handle_update(args) -> int:
         packs = _pack_specs(args.packs)
         root = _selected_root(args.packs_root)
         packages, pins = _validation_snapshot()
-        selected = _selected_snapshot(root, tuple(packs),
-                                      candidate_dependencies=_candidate_dependencies(args.source, args.revision, packs))
         result = install_group(source=args.source, revision=args.revision, packs=packs,
-                               packs_root=root, python_packages=packages, release_pins=pins, selected=selected, intent="update",
+                               packs_root=root, python_packages=packages, release_pins=pins, intent="update",
                                consent=_confirm_update)
     except (PackInstallError, OSError, EOFError) as exc:
         print(str(exc), file=sys.stderr)
@@ -197,10 +111,9 @@ def _handle_rollback(args) -> int:
     try:
         root = _selected_root(args.packs_root)
         packages, pins = _validation_snapshot()
-        selected = _selected_snapshot(root, tuple(args.pack_ids), rollback=True)
         result = rollback_group(packs_root=root, pack_ids=args.pack_ids,
                                 transaction_id=args.transaction_id, consent=_confirm_rollback,
-                                python_packages=packages, release_pins=pins, selected=selected)
+                                python_packages=packages, release_pins=pins)
     except (PackInstallError, OSError, EOFError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

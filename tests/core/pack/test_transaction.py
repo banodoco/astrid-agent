@@ -921,6 +921,167 @@ def test_real_update_cli_uses_explicit_selected_external_dependency_roots(
     assert (unrelated / "do-not-read").read_text(encoding="utf-8") == "unrelated"
 
 
+def test_real_cli_file_url_update_selects_dependency_added_by_verified_candidate(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    # The installed generation has no extdep edge. The next candidate adds it;
+    # only the staged, file-URL candidate can tell the transaction to select it.
+    install_group(source=repo.bare, revision=repo.commit, packs=GROUP, packs_root=packs_root,
+                  python_packages={})
+    repo.write_pack("alpha", "alpha-with-new-dep\n", dependencies=("shared", "extdep"))
+    revision = repo.publish()
+    external = tmp_path / "configured-external"
+    dependency = external / "extdep"
+    dependency.mkdir(parents=True)
+    (dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+
+    assert packs_cli_main(["update", "--source", repo.bare.as_uri(), "--revision", revision,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 0
+    assert read_pin(read_group(packs_root).paths["alpha"] / "PIN")["commit"] == revision
+
+
+def test_real_cli_validates_retained_unrelated_external_dependency_for_update_and_rollback(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    retained = packs_root / "retained"
+    retained.mkdir(parents=True)
+    (retained / "pack.yaml").write_text(manifest("retained", ("extdep",)), encoding="utf-8")
+    (retained / "payload.txt").write_text("retained\n", encoding="utf-8")
+    external = tmp_path / "configured-external"
+    dependency = external / "extdep"
+    dependency.mkdir(parents=True)
+    (dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 0
+    updated = read_group(packs_root)
+    assert "retained" in updated.paths
+    next_revision = repo.next_revision()
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", next_revision,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 0
+    assert packs_cli_main(["rollback", "--packs-root", str(packs_root),
+                           "--pack", "alpha", "--pack", "shared"]) == 0
+    assert "retained" in read_group(packs_root).paths
+
+
+def test_real_cli_retained_pack_can_import_selected_core_pack_api(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack import loader
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    core_root = tmp_path / "core-packs"
+    core = core_root / "coredep"
+    core.mkdir(parents=True)
+    (core / "pack.yaml").write_text(manifest("coredep"), encoding="utf-8")
+    (core / "api.py").write_text("PUBLIC = True\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "packs_root", lambda: core_root)
+    retained = packs_root / "retained"
+    retained.mkdir(parents=True)
+    # The public core API is legal even without an external-style dependency
+    # edge; the separate core import-policy snapshot authorizes its API module.
+    (retained / "pack.yaml").write_text(manifest("retained"), encoding="utf-8")
+    (retained / "consumer.py").write_text("from astrid.packs.coredep.api import PUBLIC\n", encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 0
+    assert "retained" in read_group(packs_root).paths
+
+
+def test_real_cli_composes_facts_while_generation_writer_is_held_out(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from astrid.core.pack import transaction
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    original_compose = transaction._compose_resulting_facts
+    writer_started = threading.Event()
+    writer_done = threading.Event()
+    failure: list[BaseException] = []
+    fired = False
+
+    def racing_compose(facts, paths):
+        nonlocal fired
+        result = original_compose(facts, paths)
+        if not fired:
+            fired = True
+            def racing_writer():
+                writer_started.set()
+                try:
+                    install_group(source=repo.bare, revision=repo.commit, packs=GROUP,
+                                  packs_root=packs_root, python_packages={}, intent="update")
+                except BaseException as exc:
+                    failure.append(exc)
+                finally:
+                    writer_done.set()
+            threading.Thread(target=racing_writer, daemon=True).start()
+            assert writer_started.wait(2)
+            # Selection is already complete, yet the competing generation
+            # writer cannot publish until this CLI transaction releases custody.
+            assert not writer_done.wait(0.1)
+        return result
+
+    monkeypatch.setattr(transaction, "_compose_resulting_facts", racing_compose)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 0
+    assert writer_done.wait(10)
+    assert not failure
+    assert read_group(packs_root).revision == 2
+
+
+def test_real_cli_git_child_receives_only_declared_environment(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack import install as install_module
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    real_run = install_module.subprocess.run
+    seen: list[tuple[list[str], dict[str, str] | None]] = []
+    def capture(command, *args, **kwargs):
+        if command and command[0] == "git":
+            seen.append((list(command), kwargs.get("env")))
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(install_module.subprocess, "run", capture)
+    monkeypatch.setenv("GIT_CONFIG", "/tmp/ambient-git-config")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/tmp/ambient-global-config")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "1")
+    monkeypatch.setenv("ASTRID_TEST_PARENT_SECRET", "must-not-reach-child")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+
+    assert packs_cli_main(["update", "--source", repo.bare.as_uri(), "--revision", repo.commit,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 0
+    assert seen
+    for command, env in seen:
+        assert env is not None
+        assert set(env) == {"PATH", "HOME", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL",
+                            "GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "GIT_NO_REPLACE_OBJECTS", "GIT_SSH_COMMAND"}
+        assert env["PATH"] == os.defpath
+        git_dir = next(value.removeprefix("--git-dir=") for value in command
+                       if value.startswith("--git-dir="))
+        assert env["HOME"] == str(Path(git_dir).parent)
+        assert env["LC_ALL"] == "C"
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert env["GIT_ASKPASS"] == "/bin/false"
+        assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
+        assert env["GIT_SSH_COMMAND"] == "ssh -F /dev/null -oBatchMode=yes"
+
+
 def test_real_update_cli_allows_omitted_source_tree_digest_and_rejects_real_release_pin_mismatch(
         repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from astrid.core.pack.cli import main as packs_cli_main
