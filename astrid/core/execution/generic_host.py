@@ -1787,10 +1787,19 @@ def _declares_managed_session(record: Any) -> bool:
 
 @dataclass(frozen=True)
 class ManagedToolProfile:
-    """Host-owned rules for one managed tool. Pack code never supplies these."""
+    """Host-owned rules for one managed tool. Pack code never supplies these.
+
+    The optional hooks are host code only, supplied by the host's own registry;
+    a pack or worker can never reach or set them. A generic managed action has
+    none of them. ``needs_warm_slot`` fails closed without a ``prepare`` hook.
+    """
 
     compile_settings: Callable[[Mapping[str, Any]], dict[str, Any]]
     invoke: Callable[..., Any]
+    before_preflight: Callable[[str], None] | None = None
+    needs_warm_slot: bool = False
+    prepare: Callable[[Mapping[str, Any], Any], tuple[Any, Any, Any]] | None = None
+    verify: Callable[..., None] | None = None
 
 
 class _HostManagedSessionAdapter:
@@ -6289,7 +6298,14 @@ class GenericPackHost:
         from astrid.packs.wan2gp.src.driver import compile_host_settings as _wan_compile
 
         self._managed_tool_profiles: dict[str, ManagedToolProfile] = {
-            "wan2gp": ManagedToolProfile(compile_settings=_wan_compile, invoke=self.invoke_wan_session),
+            "wan2gp": ManagedToolProfile(
+                compile_settings=_wan_compile,
+                invoke=self.invoke_wan_session,
+                before_preflight=self._wan_before_preflight,
+                needs_warm_slot=True,
+                prepare=self._wan_prepare,
+                verify=self._wan_verify,
+            ),
         }
         self.capability_matrix_path = Path(capability_matrix).expanduser().resolve() if capability_matrix else self._default_matrix_path()
         # Keep the mapping live when the default is os.environ so test/runtime
@@ -10523,6 +10539,42 @@ class GenericPackHost:
             if terminal.get("forced"):
                 terminal["receipt_final"] = True
 
+    def _managed_profile_for(self, record: Any) -> ManagedToolProfile | None:
+        """The host profile for a session-declared action, else None.
+
+        The predicate is the action's declaration only, never a capability id.
+        A declared session with no registered profile fails closed.
+        """
+        if record is None or not _declares_managed_session(record):
+            return None
+        profile = self._managed_tool_profiles.get(str(record.definition.metadata.get("source_pack") or ""))
+        if profile is None:
+            raise HostError("managed tool has no registered host profile")
+        return profile
+
+    def _wan_before_preflight(self, capability_id: str) -> None:
+        from astrid.core.generation.availability import require_action_available
+
+        require_action_available(capability_id)
+
+    def _wan_prepare(self, task_data: Mapping[str, Any], record: Any) -> tuple[Any, Any, Any]:
+        managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
+        managed_adapter = self.managed_tool_session.current_adapter
+        managed_capability = CapabilityDescriptor(
+            capability_id=record.id,
+            residency_support="unknown",
+            resources_claimed=tuple(record.resource_keys),
+            warm_reuse_expected=True,
+        )
+        return managed_binding, managed_adapter, managed_capability
+
+    def _wan_verify(self, result: Any, *, output_root: Path, managed_token: Any, stage: str) -> None:
+        from astrid.packs.wan2gp.src.driver import verify_host_result
+
+        if stage == "evidence":
+            self.managed_tool_session.adapter_for(managed_token)
+        verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
+
     def run_task(
         self,
         task: Mapping[str, Any],
@@ -11097,9 +11149,10 @@ class GenericPackHost:
         # exceptions as well as unavailable results settle the exact lease.
         renderer_selection: dict[str, Any] | None = None
         try:
-            if capability_id == "wan2gp.generate_video":
-                from astrid.core.generation.availability import require_action_available
-                require_action_available(capability_id)
+            gate_record = self.capabilities.get(capability_id)
+            gate_profile = self._managed_profile_for(gate_record) if gate_record is not None else None
+            if gate_profile is not None and gate_profile.before_preflight is not None:
+                gate_profile.before_preflight(capability_id)
             self.preflight(capability_id)
             record = self.capabilities[capability_id]
             _terminal["record"] = record
@@ -11872,16 +11925,12 @@ class GenericPackHost:
                     if self._vibecomfy_warmth_hint == current_warmth_hint
                     else None
                 )
-            if capability_id == "wan2gp.generate_video":
-                managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
-                managed_adapter = self.managed_tool_session.current_adapter
-                managed_capability = CapabilityDescriptor(
-                    capability_id=capability_id,
-                    residency_support="unknown",
-                    resources_claimed=tuple(record.resource_keys),
-                    warm_reuse_expected=True,
-                )
+            managed_profile = self._managed_profile_for(record)
+            if managed_profile is not None and managed_profile.prepare is not None:
+                managed_binding, managed_adapter, managed_capability = managed_profile.prepare(task_data, record)
             else:
+                if managed_profile is not None and managed_profile.needs_warm_slot:
+                    raise HostError("managed tool needs warm-slot admission but has no prepare hook")
                 self._open_managed_task_session(
                     capability=managed_capability,
                     binding=managed_binding,
@@ -11933,21 +11982,8 @@ class GenericPackHost:
                 lifetime.begin_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
-                if capability_id != "wan2gp.generate_video":
-                    self.managed_tool_session.adapter_for(managed_token, begin=True)
-                if capability_id == "wan2gp.generate_video":
-                    result = self._run_wan_session(
-                        inputs=inputs,
-                        output_root=output_root,
-                        attempt=root,
-                        managed_token=managed_token,
-                        execution_deadline=execution_deadline,
-                        cancelled=cancelled,
-                    )
-                    effective_output_root = getattr(result, "output_root", None)
-                    if isinstance(effective_output_root, (str, Path)):
-                        output_root = Path(effective_output_root).expanduser().resolve()
-                elif record.definition.command is not None:
+                self.managed_tool_session.adapter_for(managed_token, begin=True)
+                if record.definition.command is not None:
                     result = self._run_command_definition(
                         record,
                         inputs,
@@ -12090,11 +12126,9 @@ class GenericPackHost:
             harvest_values = {**inputs, "out": str(output_root), "run_root": str(root), "python_exec": sys.executable}
             if record.definition.command is not None:
                 _, harvest_values = _bind_host_owned_command_outputs(record, harvest_values, output_root=output_root)
-            if capability_id == "wan2gp.generate_video":
-                from astrid.packs.wan2gp.src.driver import verify_host_result
-
-                self.managed_tool_session.adapter_for(managed_token)
-                verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
+            verify_profile = self._managed_profile_for(record)
+            if verify_profile is not None and verify_profile.verify is not None:
+                verify_profile.verify(result, output_root=output_root, managed_token=managed_token, stage="evidence")
             try:
                 evidence_receipt = self.execution_policy.assert_evidence_cap(
                     root,
@@ -12194,8 +12228,9 @@ class GenericPackHost:
                     else None
                 ),
             ) if typed_outputs else []
-            if capability_id == "wan2gp.generate_video":
-                verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
+            outputs_profile = self._managed_profile_for(record)
+            if outputs_profile is not None and outputs_profile.verify is not None:
+                outputs_profile.verify(result, output_root=output_root, managed_token=managed_token, stage="outputs")
             # Cancellation can arrive while staged outputs are being read or
             # uploaded. Never publish a completed settlement after that point.
             if cancelled():
