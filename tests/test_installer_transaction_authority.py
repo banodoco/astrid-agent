@@ -195,7 +195,12 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
     if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
         with pytest.raises(RuntimeOperationError) as raised:
             recover()
-        assert not core.is_lifecycle_refusal(raised.value)
+        if moment == "between_reads":
+            assert core.is_lifecycle_refusal(raised.value)
+            assert "owner lock has no matching discovery" in str(raised.value)
+            assert raised.value.details["safe"] is False
+        else:
+            assert not core.is_lifecycle_refusal(raised.value)
         assert boundary.stop_calls == 0
         for path in tracked:
             assert path.read_bytes() == before[path], path
