@@ -36,9 +36,22 @@ from .core import (
     write_json,
 )
 from .launcher import install_shim, owned_shim, remove_shim
-from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
+from .service import (
+    LABEL,
+    Service,
+    _release0_service_command,
+    bootstrap_root,
+    platform_target,
+    venv_python,
+)
 from .support import reveal_bundle
 from .tools import binary, clone_source, install_tools, source
+
+# Exact installed manifest written for the supported identity-less predecessor:
+# Agent 3204bb00135bec8ee2d2d3fb21eed5abfceca649, Runtime
+# 6d53a19070faf63fc15ae1f81417722edc2c8a5f, and its default VibeComfy pin.
+_IDENTITYLESS_RELEASE0_MANIFEST_SHA256 = "4610f44b4dfe39d932753115668779390ed2287d15e2bd8c9568e62bbb6d60ff"
+_IDENTITYLESS_RELEASE0_SCHEMA_DIGEST = "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b"
 
 
 def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
@@ -442,6 +455,58 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 
+    def _supported_identityless_macos_owner(self, health, *, instance_id: str,
+                                             owner_pid: int, data: Path,
+                                             installed: Version | None) -> dict | None:
+        """Admit only the exact managed R0 owner that predates health identity.
+
+        Missing identity is only a compatibility discriminator here, never
+        ownership evidence. The immutable predecessor manifest, its exact
+        health contract, and launchd's installed action/PID supply the positive
+        proof. Every unknown or partial shape remains a refusal.
+        """
+        if (self.service.system != "darwin" or installed is None
+                or installed.release != 0 or installed.managed_by is not None
+                or not isinstance(health, dict)):
+            return None
+        required = {
+            "status", "protocol", "schema_digest", "runtime_epoch",
+            "runtime_session_id", "runtime_instance_id",
+        }
+        if (not required.issubset(health)
+                or set(health) - (required | {"services"})
+                or health.get("status") != "ok"
+                or health.get("protocol") != "workspace.v1"
+                or health.get("schema_digest") != _IDENTITYLESS_RELEASE0_SCHEMA_DIGEST
+                or health.get("runtime_instance_id") != instance_id
+                or type(health.get("runtime_epoch")) is not int
+                or health["runtime_epoch"] < 1
+                or not isinstance(health.get("runtime_session_id"), str)
+                or not health["runtime_session_id"].strip()
+                or ("services" in health and not isinstance(health["services"], list))):
+            return None
+        manifest_path = installed.root / "manifest.json"
+        try:
+            if linked(manifest_path) or not manifest_path.is_file():
+                return None
+            manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+        if manifest_digest != _IDENTITYLESS_RELEASE0_MANIFEST_SHA256:
+            return None
+        manager_identity = self.service.validate_stop_target(
+            installed, data, owner_pid=owner_pid,
+        )
+        if not isinstance(manager_identity, dict):
+            return None
+        expected_arguments = tuple(_release0_service_command(
+            installed, data, windows=False, log=self.service.log,
+            env_file=self.service.env_file,
+        ))
+        if manager_identity.get("arguments") != expected_arguments:
+            return None
+        return {"release": installed.release, "managed_by": installed.managed_by}
+
     def source_checkout_ownership(self, data: Path, installed: Version | None = None) -> bool:
         """Resolve whether the selected workspace belongs to source checkouts.
 
@@ -453,7 +518,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         Git checkout root, so it cannot pass that check.
         """
         from astrid_runtime.bootstrap import SourceProfile
-        from astrid_runtime.identity import validate_live_owner_identity
+        from astrid_runtime.identity import StartupIdentityError, validate_live_owner_identity
         from astrid_runtime.paths import RuntimePaths
         from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
         from runtime_protocol.source_identity import validate_checkout_root
@@ -478,7 +543,15 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     raise ValueError("Runtime discovery owner identity is incomplete; refusing to change it.")
                 boundary = LocalRuntimeBoundary()
                 health = boundary.owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
-                live_identity = validate_live_owner_identity(health, instance_id=instance_id)
+                try:
+                    live_identity = validate_live_owner_identity(health, instance_id=instance_id)
+                except StartupIdentityError:
+                    live_identity = self._supported_identityless_macos_owner(
+                        health, instance_id=instance_id, owner_pid=discovery["pid"],
+                        data=data, installed=installed,
+                    )
+                    if live_identity is None:
+                        raise
                 # Bind the OS and HTTP observations to the same advertisement.
                 if paths.discovery_path.read_bytes() != discovery_bytes:
                     raise ValueError("Runtime discovery owner identity changed; refusing to change it.")

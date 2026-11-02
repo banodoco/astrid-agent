@@ -12,7 +12,7 @@ import pytest
 
 from astrid.installer import service
 from astrid.installer.core import Version, read_json, write_json
-from astrid.installer.service import LABEL, Service, command, render
+from astrid.installer.service import LABEL, Service, _release0_service_command, command, render
 
 FIXTURES = Path(__file__).parent / "fixtures" / "release0" / "services"
 CHECKSUMS = Path(__file__).parent / "fixtures" / "release0" / "SHA256SUMS"
@@ -82,6 +82,20 @@ def _posix_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str)
     manager.path.parent.mkdir(parents=True, exist_ok=True)
     manager.path.write_bytes(definition)
     return manager, version, data, definition, legacy_settings
+
+
+def test_published_release0_program_sidecar_action_is_an_exact_known_action(tmp_path, monkeypatch):
+    manager, version, data, _definition, _legacy_settings = _posix_service(
+        tmp_path, monkeypatch, "darwin",
+    )
+    action = _release0_service_command(
+        version, data, windows=False, log=manager.log, env_file=manager.env_file,
+    )
+
+    assert manager._known_launch_action(action, data, windows=False, script=action[-1])
+    changed = list(action)
+    changed[-1] = changed[-1].replace(str(manager.env_file), str(tmp_path / "foreign.json"))
+    assert not manager._known_launch_action(changed, data, windows=False, script=changed[-1])
 
 
 @pytest.mark.parametrize("system", ["darwin", "linux"])

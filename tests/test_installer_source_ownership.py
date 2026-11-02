@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from astrid.installer.backend import Backend
 from astrid.installer.core import Version, write_json
+from astrid.installer.service import _release0_service_command
+
+RELEASE0_MANIFEST = Path(__file__).parent / "fixtures" / "release0" / "served" / "install-manifest.json"
+RELEASE0_SCHEMA = "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b"
 
 
 def _git_checkout(path: Path) -> Path:
@@ -29,6 +34,42 @@ def _profile(data: Path, runtime: Path, agent: Path) -> Path:
     path = data / "runtime" / "source-profiles" / "astrid.json"
     write_json(path, {"profile": "astrid", "runtime_checkout": str(runtime), "source_checkout": str(agent)})
     return path
+
+
+def _supported_release0_owner(tmp_path, monkeypatch):
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
+
+    backend = _backend(tmp_path)
+    backend.service.system = "darwin"
+    data = tmp_path / "data"
+    paths = RuntimePaths.current(data_root=data)
+    write_json(paths.discovery_path, {
+        "pid": 4242, "process_birth_id": "birth", "runtime_instance_id": "instance",
+        "endpoint": "http://127.0.0.1:12345",
+    })
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {"pid": pid, "birth_id": "birth"})
+    health = {
+        "status": "ok", "protocol": "workspace.v1", "schema_digest": RELEASE0_SCHEMA,
+        "runtime_epoch": 1, "runtime_session_id": "session", "runtime_instance_id": "instance",
+        "services": [],
+    }
+    monkeypatch.setattr(
+        "astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+        lambda *_args, **_kwargs: health,
+    )
+    folder = backend.root / "versions" / "3204bb00-6d53a190-test0001"
+    folder.mkdir(parents=True)
+    installed = Version(folder, folder / "py/bin/python", folder / "profile.json", {}, 0, None)
+    manifest = json.loads(RELEASE0_MANIFEST.read_text(encoding="utf-8"))
+    manifest["vibecomfy"] = {"sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"}
+    write_json(folder / "manifest.json", manifest)
+    arguments = tuple(_release0_service_command(
+        installed, data, windows=False, log=backend.service.log,
+        env_file=backend.service.env_file,
+    ))
+    backend.service.validate_stop_target = Mock(return_value={"arguments": arguments})
+    return backend, data, paths, installed, health
 
 
 def test_stopped_legacy_source_profile_refuses_clean_and_dirty_checkouts(tmp_path, monkeypatch):
@@ -61,6 +102,43 @@ def test_live_b1_source_identity_refuses_after_process_and_instance_validation(t
     monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary._http_health_payload",
                         staticmethod(lambda *_args, **_kwargs: {"runtime_instance_id": "instance", "identity": identity}))
     assert _backend(tmp_path).source_checkout_ownership(data)
+
+
+def test_live_supported_identityless_release0_uses_exact_launchd_owner_proof(tmp_path, monkeypatch):
+    backend, data, _paths, installed, _health = _supported_release0_owner(tmp_path, monkeypatch)
+
+    assert not backend.source_checkout_ownership(data, installed)
+    backend.service.validate_stop_target.assert_called_once_with(installed, data, owner_pid=4242)
+
+
+@pytest.mark.parametrize("damage", [
+    "identity-null", "schema", "manifest", "launch-action", "discovery-change",
+])
+def test_live_identityless_predecessor_unknown_or_changed_evidence_refuses(
+        tmp_path, monkeypatch, damage):
+    backend, data, paths, installed, health = _supported_release0_owner(tmp_path, monkeypatch)
+    if damage == "identity-null":
+        health["identity"] = None
+    elif damage == "schema":
+        health["schema_digest"] = "sha256:" + "0" * 64
+    elif damage == "manifest":
+        (installed.root / "manifest.json").write_text("{}\n", encoding="utf-8")
+    elif damage == "launch-action":
+        backend.service.validate_stop_target.return_value = {"arguments": ("/foreign/python",)}
+    else:
+        expected = backend.service.validate_stop_target.return_value
+
+        def replace(*_args, **_kwargs):
+            write_json(paths.discovery_path, {
+                "pid": 4242, "process_birth_id": "birth",
+                "runtime_instance_id": "replacement", "endpoint": "http://127.0.0.1:12345",
+            })
+            return expected
+
+        backend.service.validate_stop_target.side_effect = replace
+
+    with pytest.raises(RuntimeError, match="Live Runtime startup identity cannot be verified"):
+        backend.source_checkout_ownership(data, installed)
 
 
 @pytest.mark.parametrize("reason", ["malformed", "stale"])
