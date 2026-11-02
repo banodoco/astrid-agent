@@ -1554,15 +1554,6 @@
  ],
  "external_contracts": {
   "hivemind": {
-   "executor_ids": [
-    "hivemind.contribute",
-    "hivemind.get_item",
-    "hivemind.ingest_article",
-    "hivemind.ingest_workflow",
-    "hivemind.ingest_youtube",
-    "hivemind.refresh_media",
-    "hivemind.search"
-   ],
    "note": "Seven Hivemind executors are declared by the optional external pack; installation is proven by the managed source inventory."
   }
  }

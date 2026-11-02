@@ -72,7 +72,7 @@ def _in_repo_pack(root: object) -> bool:
 def _in_repo_packs_only() -> Iterator[None]:
     """Hide every external pack source from discovery while the registries load.
 
-    Unsets ``ASTRID_PACKS_PATH`` and points ``ASTRID_HOME`` and the managed
+    Unsets ``ASTRID_PACKS_PATH`` and points ``HOME``, ``ASTRID_HOME`` and the managed
     pack-source state/data at an empty temp dir, so a broken or newer external
     pack on this machine can neither appear in nor break the catalog.
     """
@@ -80,10 +80,11 @@ def _in_repo_packs_only() -> Iterator[None]:
     from astrid.core.pack.source_setup import SOURCE_DATA_ENV, SOURCE_STATE_ENV
 
     overrides: dict[str, str | None] = {ASTRID_PACKS_PATH_ENV: None}
-    saved = {name: os.environ.get(name) for name in (ASTRID_PACKS_PATH_ENV, "ASTRID_HOME", SOURCE_STATE_ENV, SOURCE_DATA_ENV)}
+    saved = {name: os.environ.get(name) for name in (ASTRID_PACKS_PATH_ENV, "HOME", "ASTRID_HOME", SOURCE_STATE_ENV, SOURCE_DATA_ENV)}
     with tempfile.TemporaryDirectory(prefix="astrid-capability-index-") as empty:
         overrides.update(
             {
+                "HOME": empty,
                 "ASTRID_HOME": empty,
                 SOURCE_STATE_ENV: str(Path(empty) / "pack-sources.json"),
                 SOURCE_DATA_ENV: str(Path(empty) / "packs"),
@@ -105,15 +106,16 @@ def _in_repo_packs_only() -> Iterator[None]:
 
 
 def _executor_rows() -> list[tuple[str, str]]:
-    from astrid.core.generation.availability import action_availability, availability_projection
+    from astrid.core.generation.availability import action_availability, availability_declaration, availability_projection
     registry = load_executors()
+    declaration = availability_declaration()
     rows = []
     for executor in registry.list():
         if not _in_repo_pack(executor.metadata.get("pack_root")):
             continue
         short = short_description_or_truncated(executor.short_description, executor.description)
         try:
-            projection = availability_projection(action_availability(executor.id))
+            projection = availability_projection(action_availability(executor.id, declaration=declaration))
         except KeyError:
             projection = {'availability': 'available'}
         if projection['availability'] == 'unavailable':

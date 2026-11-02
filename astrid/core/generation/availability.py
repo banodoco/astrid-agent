@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 from astrid.core.contracts.errors import AstridError
 
 
-def availability_declaration() -> dict[str, Any]:
+def _freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def availability_declaration(*, selected_packs: tuple[Any, ...] | None = None) -> Mapping[str, Any]:
     """Collect live availability policy from parsed installed pack manifests."""
     from astrid.core.pack import PackValidationError
     from astrid.core.pack.discovery import discover_packs_ordered
@@ -22,7 +32,9 @@ def availability_declaration() -> dict[str, Any]:
     }
     # Use the same layered selection as action registries. A later same-ID
     # installation replaces its bundled declaration, rather than merging it.
-    selected = {pack.id: pack for pack in discover_packs_ordered()}
+    selected = {pack.id: pack for pack in (
+        selected_packs if selected_packs is not None else discover_packs_ordered()
+    )}
     owners: dict[tuple[str, str], str] = {}
     for pack in selected.values():
         policy = pack.extensions.get("astrid", {}).get("generation_availability", {})
@@ -36,16 +48,22 @@ def availability_declaration() -> dict[str, Any]:
                     raise PackValidationError(
                         f"generation availability {section}.{key} has multiple owners: {owner}, {pack.id}"
                     )
+                if section == "template_models":
+                    for prefix in payload[section]:
+                        if (prefix.startswith(key) or key.startswith(prefix)) and owners[section, prefix] != pack.id:
+                            raise PackValidationError(
+                                f"generation template families {prefix!r} and {key!r} have different owners"
+                            )
                 owners[section, key] = pack.id
                 payload[section][key] = value
-    return payload
+    return _freeze(payload)
 
 
-def action_availability(action_id: str) -> dict[str, Any]:
+def action_availability(action_id: str, *, declaration: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """Return one action's declared availability record."""
-    actions = availability_declaration().get("actions")
-    record = actions.get(action_id) if isinstance(actions, dict) else None
-    if not isinstance(record, dict):
+    actions = (declaration if declaration is not None else availability_declaration()).get("actions")
+    record = actions.get(action_id) if isinstance(actions, Mapping) else None
+    if not isinstance(record, Mapping):
         raise KeyError(f"unknown generation availability action {action_id!r}")
     return record
 
@@ -55,23 +73,24 @@ def require_action_available(action_id: str) -> None:
     _require_available(action_id, action_availability(action_id))
 
 
-def model_availability(model: str, mode: str, backend: str) -> dict[str, Any]:
+def model_availability(model: str, mode: str, backend: str, *, declaration: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """Return a catalog qualification decision; undeclared models retain their existing status."""
-    models = availability_declaration().get("models", {})
-    if not isinstance(models, dict):
+    models = (declaration if declaration is not None else availability_declaration()).get("models", {})
+    if not isinstance(models, Mapping):
         raise RuntimeError("invalid generation model availability declaration")
     if model not in models:
         return {"available": True}
     record = models[model]
-    if not isinstance(record, dict):
+    if not isinstance(record, Mapping):
         raise RuntimeError(f"invalid generation availability for model {model!r}")
     return record
 
 
-def template_availability(template: str, mode: str, backend: str) -> dict[str, Any]:
+def template_availability(template: str, mode: str, backend: str, *, declaration: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """Resolve declared template families through the same model decision."""
-    families = availability_declaration().get("template_models", {})
-    if not isinstance(families, dict):
+    declaration = declaration if declaration is not None else availability_declaration()
+    families = declaration.get("template_models", {})
+    if not isinstance(families, Mapping):
         raise RuntimeError("invalid generation template availability declaration")
     matches = [(prefix, model) for prefix, model in families.items()
                if isinstance(prefix, str) and template.startswith(prefix)]
@@ -80,7 +99,7 @@ def template_availability(template: str, mode: str, backend: str) -> dict[str, A
     _, model = max(matches, key=lambda item: len(item[0]))
     if not isinstance(model, str) or not model:
         raise RuntimeError(f"invalid generation availability mapping for {template!r}")
-    return model_availability(model, mode, backend)
+    return model_availability(model, mode, backend, declaration=declaration)
 
 
 def require_model_available(model: str, mode: str, backend: str) -> None:
@@ -91,7 +110,7 @@ def require_template_available(template: str, mode: str = "", backend: str = "lo
     _require_available(f"{template}/{mode}/{backend}", template_availability(template, mode, backend))
 
 
-def availability_projection(record: dict[str, Any]) -> dict[str, str]:
+def availability_projection(record: Mapping[str, Any]) -> dict[str, str]:
     """Use the same reason and fix in discovery, documentation and refusals."""
     if record.get("available") is True:
         return {"availability": "available", "reason": "", "fix": ""}
@@ -105,17 +124,18 @@ def availability_projection(record: dict[str, Any]) -> dict[str, str]:
             "fix": str(error.get("fix") or fix)}
 
 
-def entry_availability(entry: dict[str, Any], mode: str, backend: str = "local") -> dict[str, Any]:
+def entry_availability(entry: dict[str, Any], mode: str, backend: str = "local", *, declaration: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """Only declared actions and bundled entries carry release qualification."""
+    declaration = declaration if declaration is not None else availability_declaration()
     if entry.get("action"):
         try:
-            return action_availability(entry["action"])
+            return action_availability(entry["action"], declaration=declaration)
         except KeyError:
             return {"available": True}
     if entry.get("source") == "ready-template":
-        decision = template_availability(entry["id"], mode, backend)
+        decision = template_availability(entry["id"], mode, backend, declaration=declaration)
         if decision.get("available") is True and entry.get("registry_id"):
-            return model_availability(entry["registry_id"], mode, backend)
+            return model_availability(entry["registry_id"], mode, backend, declaration=declaration)
         return decision
     return {"available": True}
 
@@ -160,11 +180,11 @@ def require_bundled_execution_available(resolved: Any) -> None:
     require_bundled_workflow_available(getattr(getattr(workflow, 'source', None), 'path', None))
 
 
-def _require_available(route: str, record: dict[str, Any]) -> None:
+def _require_available(route: str, record: Mapping[str, Any]) -> None:
     if record.get("available") is True:
         return
     error = record.get("error")
-    if not isinstance(error, dict) or not isinstance(error.get("code"), str):
+    if not isinstance(error, Mapping) or not isinstance(error.get("code"), str):
         raise RuntimeError(f"unavailable route {route!r} has no coded error")
     raise AstridError(
         f"{route}: {error.get('message') or 'route is unavailable'}",
