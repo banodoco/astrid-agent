@@ -394,7 +394,7 @@ def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest
         if _declares_parameter(function, "output_root"):
             call_values["output_root"] = Path(str(request.out)).expanduser().resolve() if request.out else None
         if _declares_parameter(function, "timeout_seconds"):
-            call_values["timeout_seconds"] = SESSION_ACTION_TIMEOUT_SECONDS
+            call_values["timeout_seconds"] = float(getattr(_session, "timeout_seconds", SESSION_ACTION_TIMEOUT_SECONDS))
     action_result = function(**call_values)
     validate_action_output_definition(executor, action_result)
     return ExecutorRunResult(executor_id=executor.id, kind=executor.kind,

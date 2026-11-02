@@ -106,6 +106,10 @@ class SessionClient:
 
     # ----------------------------------------------------------------- ops
 
+    @property
+    def timeout_seconds(self) -> float:
+        return self._timeout
+
     def submit(self, settings: Mapping[str, Any], timeout_seconds: float) -> dict[str, Any]:
         """Start the run once. Never retried. Returns the evidence mapping."""
         if not isinstance(settings, Mapping):

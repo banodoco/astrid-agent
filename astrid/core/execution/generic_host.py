@@ -9893,6 +9893,7 @@ class GenericPackHost:
         require_network_startup: bool = False,
         run_channel: socket.socket | None = None,
         run_channel_run_id: str | None = None,
+        run_channel_timeout_seconds: float | None = None,
         network_broker_required: bool = False,
         storage_estimate: Mapping[str, int] | None = None,
         child_bridge: Any | None = None,
@@ -10011,6 +10012,8 @@ class GenericPackHost:
                     raise HostError("session channel requires its run id")
                 payload["run_channel_fd"] = run_channel.fileno()
                 payload["run_channel_run_id"] = run_channel_run_id
+                if run_channel_timeout_seconds is not None:
+                    payload["run_channel_timeout_seconds"] = float(run_channel_timeout_seconds)
                 inherited_fds += (run_channel.fileno(),)
             request_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             if child_bridge is not None:
@@ -12028,6 +12031,8 @@ class GenericPackHost:
                             child_bridge=child_bridge,
                             run_channel=session_channel.child if session_channel is not None else None,
                             run_channel_run_id=session_channel.run_id if session_channel is not None else None,
+                            run_channel_timeout_seconds=(max(0.1, execution_deadline - time.monotonic())
+                                                         if session_channel is not None else None),
                         )
                     finally:
                         worker_env.clear()
