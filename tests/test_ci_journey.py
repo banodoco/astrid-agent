@@ -1401,6 +1401,63 @@ def test_release0_and_release1_bootstraps_use_normalized_windows_path(tmp_path, 
                for record in records)
 
 
+def test_direct_release0_to_release1_lifecycle_sanitizes_both_windows_children(tmp_path, monkeypatch):
+    """Keep R0 and R1 sanitation bound to the real direct lifecycle ordering."""
+    app = tmp_path / "app"
+    app.mkdir()
+    evidence, root, data = (tmp_path / name for name in ("evidence", "program", "data"))
+    r0_manifest, candidate_path = tmp_path / "r0.json", tmp_path / "candidate.json"
+    journey.write_json(r0_manifest, {"release": 0})
+    journey.write_json(candidate_path, {"manifest_sha256": "digest", "artifacts": {}})
+    manifest = {"release": 1, "agent": {}, "runtime": {}}
+    args = SimpleNamespace(job_id="direct-windows", mode="direct", leg="release0-to-release1",
+                           shell="powershell.exe", app_checkout=app, candidate=candidate_path)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", "inherited-pwsh-path")
+    monkeypatch.setenv("JOURNEY_LAUNCHER_PSEDITION", "Core")
+    children, owners = [], []
+
+    def process(argv, **kwargs):
+        children.append((argv, kwargs["env"].copy()))
+        # Exercise the R1 failure boundary after a successfully sanitized R0 child.
+        return SimpleNamespace(returncode=0 if len(children) == 1 else 37)
+
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path / "fixture", r0_manifest, {}))
+    monkeypatch.setattr(journey, "selected_manifest", lambda *a, **kw: (candidate_path, manifest))
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *a: manifest)
+    monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *a: {"alive": True})
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *a: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda *a: None)
+    monkeypatch.setattr(journey, "installation", lambda *a: (tmp_path / "old", data, {"release": 0}))
+    monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
+    monkeypatch.setattr(journey, "selected_tuple", lambda *a: {})
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *a: {})
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *a: owners.append("checked"))
+    monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions", lambda *a, **kw: None)
+    monkeypatch.setattr(journey, "verify", lambda *a, **kw: None)
+    monkeypatch.setattr(jumps, "direct_workspace", lambda *a: {})
+    monkeypatch.setattr(jumps, "task_after_update", lambda *a: "task")
+    monkeypatch.setattr(journey, "healthy", lambda *a: {"pid": 123})
+    monkeypatch.setattr(journey, "process_birth", lambda *a: "birth")
+
+    with pytest.raises(RuntimeError, match=r"update-bootstrap.log: exit 37"):
+        jumps.execute_release0_to_release1(args, root, data, evidence, SimpleNamespace(pid=1), "birth")
+
+    assert owners == ["checked"]
+    assert [Path(argv[6]).as_posix() for argv, _ in children] == [
+        (tmp_path / "fixture/served/install.ps1").as_posix(), (app / "public/install.ps1").as_posix()]
+    assert all(env["PSModulePath"] == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                                       r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+               for _, env in children)
+    records = [json.loads(line) for line in (evidence / "windows-bootstrap-environment.log").read_text().splitlines()]
+    assert records == [{"bootstrap": name, "PSModulePath": "inherited-pwsh-path", "PSEdition": "Core"}
+                       for name in ("release0-bootstrap.log", "update-bootstrap.log")]
+
+
 def test_windows_bootstrap_edition_and_diagnostic_are_wired_to_workflow():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
     lifecycle = workflow.split("      - name: Run the matrix-owned lifecycle driver\n", 1)[1].split(
