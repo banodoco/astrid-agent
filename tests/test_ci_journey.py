@@ -1196,6 +1196,124 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
         assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
 
 
+def test_linux_warm_identity_observation_binds_candidate_runtime_and_stable_reads(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    discovery = data / "runtime" / "discovery.json"
+    discovery.parent.mkdir(parents=True)
+    pid = os.getpid()
+    discovery.write_text(json.dumps({
+        "pid": pid, "process_birth_id": "proc-start-ticks:1234",
+        "runtime_instance_id": "release0-instance", "door_endpoint": "http://127.0.0.1:17340",
+    }), encoding="utf-8")
+    runtime = tmp_path / "runtime"
+    (runtime / "runtime_protocol").mkdir(parents=True)
+    (runtime / "runtime_protocol" / "platform.py").write_text("# checked candidate source\n", encoding="utf-8")
+    commands = []
+
+    def fake_run(argv, **kwargs):
+        commands.append((argv, kwargs))
+        if argv[0] == sys.executable:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"status": "observed", "value": {
+                    "pid": pid,
+                    "birth_id": "proc-start-ticks:1234;boot:current;pidns:1",
+                }}),
+                stderr="",
+            )
+        assert argv[:3] == ["systemctl", "--user", "show"]
+        return SimpleNamespace(returncode=0, stderr="", stdout="\n".join((
+            f"MainPID={pid}", "NRestarts=0", "ActiveState=active", "SubState=running",
+            "ExecMainStartTimestampMonotonic=123456",
+        )))
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_unused):
+            return False
+
+        def read(self, *_unused):
+            return json.dumps({
+                "status": "ok", "runtime_instance_id": "release0-instance",
+                "protocol": "workspace.v1", "schema_digest": "sha256:" + "a" * 64,
+            })
+
+    requested = []
+
+    class Opener:
+        def open(self, request, *, timeout):
+            requested.append((request.full_url, timeout))
+            return Response()
+
+    monkeypatch.setattr(jumps.subprocess, "run", fake_run)
+    monkeypatch.setattr(jumps.urllib.request, "build_opener", lambda *_: Opener())
+    observation = jumps.warm_release0_identity_observation(
+        SimpleNamespace(candidate_runtime_checkout=runtime), data,
+    )
+    assert observation["collector_exit"] == 0
+    assert observation["diagnostic_only"] is True and observation["not_a_passing_row"] is True
+    assert observation["discovery_a"]["sha256"] == observation["discovery_b"]["sha256"]
+    assert observation["discovery_a"]["parsed"]["pid"]["value"] == pid
+    assert observation["discovery_a"]["parsed"]["process_birth_id"]["value"] == "proc-start-ticks:1234"
+    assert observation["candidate_runtime_process_identity"] == {
+        "status": "observed", "inner_exit": 0,
+        "timeout_seconds": jumps.WARM_IDENTITY_PROBE_TIMEOUT_SECONDS,
+        "stdout_sha256": observation["candidate_runtime_process_identity"]["stdout_sha256"],
+        "result": {"status": "observed", "value": {
+            "pid": pid, "birth_id": "proc-start-ticks:1234;boot:current;pidns:1",
+        }},
+    }
+    assert observation["health"]["runtime_instance_id"]["value"] == "release0-instance"
+    assert observation["health"]["status_value"]["value"] == "ok"
+    assert observation["health"]["protocol"]["value"] == "workspace.v1"
+    assert observation["health"]["schema_digest"]["value"] == "sha256:" + "a" * 64
+    assert {key: value["value"] for key, value in observation["systemd"]["fields"].items()} == {
+        "MainPID": str(pid), "NRestarts": "0", "ActiveState": "active", "SubState": "running",
+        "ExecMainStartTimestampMonotonic": "123456",
+    }
+    assert observation["linux_scope"]["boot_id"]["status"] == "observed"
+    assert observation["linux_scope"]["pid_namespace_inode"]["status"] == "observed"
+    assert observation["classification"] == "stable-owner-scoped-identity-divergence"
+    assert requested == [(journey.HEALTH_URL, jumps.WARM_IDENTITY_HEALTH_TIMEOUT_SECONDS)]
+    assert commands[0][0][0:3] == [sys.executable, "-I", "-c"]
+    assert commands[0][0][-2:] == [str(runtime), str(pid)]
+
+
+def test_linux_warm_identity_observation_records_unavailable_fields_without_stopping_update(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    discovery = data / "runtime" / "discovery.json"
+    discovery.parent.mkdir(parents=True)
+    discovery.write_text(json.dumps({
+        "pid": 44, "process_birth_id": "proc-start-ticks:44",
+        "runtime_instance_id": "release0-instance", "door_endpoint": "http://127.0.0.1:17340",
+    }), encoding="utf-8")
+    runtime = tmp_path / "runtime"
+    (runtime / "runtime_protocol").mkdir(parents=True)
+    (runtime / "runtime_protocol" / "platform.py").write_text("# checked candidate source\n", encoding="utf-8")
+
+    def fake_run(argv, **_kwargs):
+        if argv[0] == sys.executable:
+            raise jumps.subprocess.TimeoutExpired(argv, jumps.WARM_IDENTITY_PROBE_TIMEOUT_SECONDS)
+        return SimpleNamespace(returncode=1, stdout="", stderr="not connected")
+
+    monkeypatch.setattr(jumps.subprocess, "run", fake_run)
+    monkeypatch.setattr(jumps.urllib.request, "build_opener",
+                        lambda *_: (_ for _ in ()).throw(OSError("health unavailable")))
+    observation = jumps.warm_release0_identity_observation(
+        SimpleNamespace(candidate_runtime_checkout=runtime), data,
+    )
+    assert observation["collector_exit"] == 0
+    assert observation["classification"] == "observation-unavailable"
+    assert observation["candidate_runtime_process_identity"]["inner_exit"] is None
+    assert observation["candidate_runtime_process_identity"]["result"]["status"] == "unavailable"
+    assert observation["health"]["status"] == "unavailable"
+    assert observation["systemd"]["inner_exit"] == 1
+    assert all(value["status"] == "unavailable"
+               for value in observation["systemd"]["fields"].values())
+
+
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
 def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
     from scripts import journey_version_jumps as jumps
@@ -1269,6 +1387,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
 
     def bootstrap(*_args):
         assert state["running"] and state["content"] is not None
+        assert calls[-1] == "warm-observation"
+        calls.append("update-bootstrap")
         state.update(release=1, pid=state["pid"] + 1)
 
     monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest_path, {}))
@@ -1297,6 +1417,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     monkeypatch.setattr(jumps, "workspace", workspace)
     monkeypatch.setattr(jumps, "task_after_update", task)
     monkeypatch.setattr(journey, "bootstrap", bootstrap)
+    monkeypatch.setattr(jumps, "warm_release0_identity_observation", lambda *_: (
+        calls.append("warm-observation") or {"diagnostic_only": True, "collector_exit": 0}))
     monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions",
                         lambda *_args, **_kwargs: tmp_path / jumps.DIAGNOSTIC_STATE_NAME)
 
@@ -1308,7 +1430,7 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
                                                 SimpleNamespace(pid=1), "birth")
     assert result["status"] == "pass" and result["semantic_data"]["identical"]
     assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
-                     "stop", "snapshot", "start", "task"]
+                     "warm-observation", "update-bootstrap", "stop", "snapshot", "start", "task"]
     assert state["running"] and not state["local"]
 
 

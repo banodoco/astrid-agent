@@ -11,8 +11,10 @@ import os
 from pathlib import Path
 import platform
 import re
+import subprocess
 import sys
 import time
+import urllib.request
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
@@ -35,12 +37,303 @@ RELEASE0_REQUIRED = frozenset({
 CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
 DIAGNOSTIC_START_STAGE = "release0-api-seed"
 DIAGNOSTIC_STATE_NAME = "release0-api-seed-preconditions.json"
+WARM_IDENTITY_PROBE_TIMEOUT_SECONDS = 5
+WARM_IDENTITY_HEALTH_TIMEOUT_SECONDS = 10
+WARM_IDENTITY_SYSTEMD_TIMEOUT_SECONDS = 10
+WARM_IDENTITY_SYSTEMD_FIELDS = (
+    "MainPID", "NRestarts", "ActiveState", "SubState", "ExecMainStartTimestampMonotonic",
+)
+
+# This runs from the immutable Runtime checkout that the journey already
+# validates against its candidate tuple.  It imports only Runtime's stdlib
+# process-observation module, does not inherit the journey environment, and
+# emits a bounded JSON envelope rather than its stdout/stderr.
+_WARM_IDENTITY_PROBE = r'''
+import json
+import sys
+from pathlib import Path
+
+runtime = Path(sys.argv[1])
+pid = int(sys.argv[2])
+sys.path.insert(0, str(runtime))
+try:
+    from runtime_protocol import platform
+    value = platform.process_identity(pid, timeout=1.0)
+    print(json.dumps({"status": "observed", "value": value}, sort_keys=True))
+except BaseException as exc:
+    print(json.dumps({"status": "error", "error": {
+        "type": type(exc).__name__, "message": str(exc)[:512],
+    }}, sort_keys=True))
+    raise SystemExit(1)
+'''
 
 
 def _bytes_sha256(path: Path, label: str) -> str:
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f"Diagnostic {label} must be a regular file")
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _warm_error(exc: BaseException) -> dict:
+    """Bound an observation error so the diagnostic cannot retain secrets."""
+    return {"type": type(exc).__name__, "message": str(exc)[:512]}
+
+
+def _warm_unavailable(reason: str) -> dict:
+    return {"status": "unavailable", "reason": reason}
+
+
+def _warm_value(value, expected, label: str, *, positive: bool = False) -> dict:
+    if not isinstance(value, expected) or (positive and value <= 0):
+        return _warm_unavailable(f"{label} is absent or malformed")
+    return {"status": "observed", "value": value}
+
+
+def _warm_discovery_read(data: Path) -> tuple[dict, dict | None]:
+    """Read the live discovery file once without retaining its secret-bearing body."""
+    record = {
+        "status": "unavailable", "path": "runtime/discovery.json", "sha256": None,
+        "parsed": {
+            "pid": _warm_unavailable("discovery was not read"),
+            "process_birth_id": _warm_unavailable("discovery was not read"),
+            "runtime_instance_id": _warm_unavailable("discovery was not read"),
+        },
+    }
+    path = data / "runtime" / "discovery.json"
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError("discovery must be a regular file")
+        raw = path.read_bytes()
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError("discovery is not a JSON object")
+        record.update(
+            status="observed", sha256=hashlib.sha256(raw).hexdigest(),
+            parsed={
+                "pid": _warm_value(value.get("pid"), int, "discovery pid", positive=True),
+                "process_birth_id": _warm_value(value.get("process_birth_id"), str,
+                                                  "discovery process_birth_id"),
+                "runtime_instance_id": _warm_value(value.get("runtime_instance_id"), str,
+                                                     "discovery runtime_instance_id"),
+            },
+        )
+        return record, value
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        record["error"] = _warm_error(exc)
+        return record, None
+
+
+def _warm_runtime_process_identity(runtime_checkout: Path | None, pid: int | None) -> dict:
+    """Observe one PID with the exact candidate Runtime, within a hard bound."""
+    record = {"status": "unavailable", "inner_exit": None,
+              "timeout_seconds": WARM_IDENTITY_PROBE_TIMEOUT_SECONDS,
+              "result": _warm_unavailable("candidate Runtime probe did not run")}
+    if not isinstance(pid, int) or pid <= 0:
+        record["result"] = _warm_unavailable("discovery pid is unavailable")
+        return record
+    if runtime_checkout is None:
+        record["result"] = _warm_unavailable("candidate Runtime checkout is unavailable")
+        return record
+    package = runtime_checkout / "runtime_protocol" / "platform.py"
+    if runtime_checkout.is_symlink() or not package.is_file() or package.is_symlink():
+        record["result"] = _warm_unavailable("candidate Runtime platform source is unavailable")
+        return record
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", _WARM_IDENTITY_PROBE, str(runtime_checkout), str(pid)],
+            capture_output=True, text=True, timeout=WARM_IDENTITY_PROBE_TIMEOUT_SECONDS,
+            check=False, env={"PATH": os.environ.get("PATH", ""), "LC_ALL": "C", "PYTHONUTF8": "1"},
+        )
+        record["inner_exit"] = completed.returncode
+        raw = completed.stdout.encode("utf-8", errors="replace")
+        record["stdout_sha256"] = hashlib.sha256(raw).hexdigest()
+        if len(raw) > 4096:
+            record["result"] = _warm_unavailable("candidate Runtime probe output exceeded its bound")
+            return record
+        value = json.loads(completed.stdout)
+        if not isinstance(value, dict) or value.get("status") not in {"observed", "error"}:
+            record["result"] = _warm_unavailable("candidate Runtime probe returned an invalid envelope")
+            return record
+        if value["status"] == "observed":
+            record.update(status="observed", result={"status": "observed", "value": value.get("value")})
+        else:
+            error = value.get("error") if isinstance(value.get("error"), dict) else {}
+            record["result"] = {"status": "unavailable", "error": {
+                "type": str(error.get("type", "RuntimeError"))[:128],
+                "message": str(error.get("message", "candidate Runtime process_identity failed"))[:512],
+            }}
+    except subprocess.TimeoutExpired as exc:
+        record["error"] = _warm_error(exc)
+        record["result"] = _warm_unavailable("candidate Runtime probe timed out")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        record["error"] = _warm_error(exc)
+        record["result"] = _warm_unavailable("candidate Runtime probe could not be parsed")
+    return record
+
+
+def _warm_health_observation(discovery: dict | None) -> dict:
+    """Read the health endpoint only when discovery binds it to the local door."""
+    record = {
+        "status": "unavailable", "endpoint": _warm_unavailable("discovery was not read"),
+        "runtime_instance_id": _warm_unavailable("health was not queried"),
+        "status_value": _warm_unavailable("health was not queried"),
+        "protocol": _warm_unavailable("health was not queried"),
+        "schema_digest": _warm_unavailable("health was not queried"),
+    }
+    if not isinstance(discovery, dict):
+        return record
+    expected_origin = journey.HEALTH_URL.removesuffix("/api/runtime/v1/health")
+    if discovery.get("door_endpoint") != expected_origin:
+        record["endpoint"] = _warm_unavailable("discovery door endpoint is not the fixed local health origin")
+        return record
+    record["endpoint"] = {"status": "observed", "value": journey.HEALTH_URL}
+    try:
+        request = urllib.request.Request(journey.HEALTH_URL, headers={"Origin": "https://astrid.haus"})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                request, timeout=WARM_IDENTITY_HEALTH_TIMEOUT_SECONDS) as response:
+            value = json.load(response)
+        if not isinstance(value, dict):
+            raise ValueError("health response is not a JSON object")
+        record.update(
+            status="observed",
+            runtime_instance_id=_warm_value(value.get("runtime_instance_id"), str,
+                                            "health runtime_instance_id"),
+            status_value=_warm_value(value.get("status"), str, "health status"),
+            protocol=_warm_value(value.get("protocol"), str, "health protocol"),
+            schema_digest=_warm_value(value.get("schema_digest"), str, "health schema_digest"),
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        record["error"] = _warm_error(exc)
+    return record
+
+
+def _warm_systemd_observation() -> dict:
+    """Read, never alter, the owning user unit's relevant process fields."""
+    record = {"status": "unavailable", "inner_exit": None,
+              "fields": {name: _warm_unavailable("systemd was not queried")
+                         for name in WARM_IDENTITY_SYSTEMD_FIELDS}}
+    command = ["systemctl", "--user", "show", "astrid.service",
+               "--property=" + ",".join(WARM_IDENTITY_SYSTEMD_FIELDS)]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True,
+                                   timeout=WARM_IDENTITY_SYSTEMD_TIMEOUT_SECONDS, check=False)
+        record["inner_exit"] = completed.returncode
+        fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+        record["fields"] = {
+            name: ({"status": "observed", "value": fields[name]}
+                   if isinstance(fields.get(name), str) and fields[name] else
+                   _warm_unavailable("systemd did not return " + name))
+            for name in WARM_IDENTITY_SYSTEMD_FIELDS
+        }
+        if completed.returncode == 0:
+            record["status"] = "observed"
+        else:
+            record["error"] = {"type": "SystemctlExit", "message":
+                               f"systemctl --user show exited {completed.returncode}"}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        record["error"] = _warm_error(exc)
+    return record
+
+
+def _warm_linux_scope(pid: int | None) -> dict:
+    """Capture exactly the boot and target PID namespace scope Runtime observes."""
+    record = {"status": "unavailable",
+              "boot_id": _warm_unavailable("scope was not queried"),
+              "pid_namespace_inode": _warm_unavailable("scope was not queried")}
+    if not isinstance(pid, int) or pid <= 0:
+        record["boot_id"] = _warm_unavailable("discovery pid is unavailable")
+        record["pid_namespace_inode"] = _warm_unavailable("discovery pid is unavailable")
+        return record
+    try:
+        boot = (Path("/proc") / "sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        record["boot_id"] = _warm_value(boot, str, "Linux boot ID")
+    except OSError as exc:
+        record["boot_id"] = {"status": "unavailable", "error": _warm_error(exc)}
+    try:
+        namespace = (Path("/proc") / str(pid) / "ns" / "pid").stat().st_ino
+        record["pid_namespace_inode"] = _warm_value(namespace, int, "Linux PID namespace inode", positive=True)
+    except OSError as exc:
+        record["pid_namespace_inode"] = {"status": "unavailable", "error": _warm_error(exc)}
+    if (record["boot_id"]["status"] == "observed" and
+            record["pid_namespace_inode"]["status"] == "observed"):
+        record["status"] = "observed"
+    return record
+
+
+def _warm_observed_value(record: dict, key: str):
+    value = record.get(key, {})
+    return value.get("value") if isinstance(value, dict) and value.get("status") == "observed" else None
+
+
+def _warm_identity_classification(first: dict, second: dict, probe: dict, health: dict,
+                                  manager: dict) -> str:
+    """Classify only the observation; it never changes owner-admission policy."""
+    first_identity, second_identity = first.get("parsed", {}), second.get("parsed", {})
+    required = (first.get("status") == "observed" and second.get("status") == "observed"
+                and probe.get("status") == "observed" and health.get("status") == "observed"
+                and manager.get("status") == "observed")
+    if not required:
+        return "observation-unavailable"
+    if first.get("sha256") != second.get("sha256") or first_identity != second_identity:
+        return "discovery-changed-during-observation"
+    pid = _warm_observed_value(first_identity, "pid")
+    instance = _warm_observed_value(first_identity, "runtime_instance_id")
+    health_instance = _warm_observed_value(health, "runtime_instance_id")
+    manager_pid = _warm_observed_value(manager.get("fields", {}), "MainPID")
+    if health_instance != instance or manager_pid != str(pid):
+        return "owner-or-manager-mismatch"
+    actual = probe.get("result", {}).get("value")
+    expected_birth = _warm_observed_value(first_identity, "process_birth_id")
+    actual_birth = actual.get("birth_id") if isinstance(actual, dict) else None
+    if actual_birth == expected_birth:
+        return "stable-owner-exact-identity"
+    if isinstance(expected_birth, str) and isinstance(actual_birth, str) and actual_birth.startswith(expected_birth + ";"):
+        return "stable-owner-scoped-identity-divergence"
+    return "owner-identity-difference"
+
+
+def warm_release0_identity_observation(args, data: Path) -> dict:
+    """Bounded Linux-only, read-only observation immediately before update bootstrap.
+
+    Missing or changing data remains explicit diagnostic evidence.  This
+    function deliberately never raises for a collection failure, never signals
+    the service, and never promotes a diagnostic to a passing journey row.
+    """
+    observation = {
+        "schema_version": 1,
+        "kind": "read-only-warm-release0-owner-identity",
+        "diagnostic_only": True,
+        "not_a_passing_row": True,
+        "timing": {
+            "position": "immediately-before-release1-update-bootstrap",
+            "sequence": ["discovery_a", "candidate_runtime_process_identity", "health",
+                         "systemd_user_show", "linux_scope", "discovery_b"],
+            "started_monotonic": time.monotonic(),
+        },
+        "collector_exit": 0,
+    }
+    try:
+        first, first_raw = _warm_discovery_read(data)
+        observation["discovery_a"] = first
+        pid = _warm_observed_value(first["parsed"], "pid")
+        runtime_checkout = getattr(args, "candidate_runtime_checkout", None)
+        observation["candidate_runtime_process_identity"] = _warm_runtime_process_identity(runtime_checkout, pid)
+        observation["health"] = _warm_health_observation(first_raw)
+        observation["systemd"] = _warm_systemd_observation()
+        observation["linux_scope"] = _warm_linux_scope(pid)
+        second, _ = _warm_discovery_read(data)
+        observation["discovery_b"] = second
+        observation["classification"] = _warm_identity_classification(
+            first, second, observation["candidate_runtime_process_identity"], observation["health"],
+            observation["systemd"],
+        )
+    except Exception as exc:  # Keep unexpected collector faults visible but non-mutating.
+        observation["collector_exit"] = 1
+        observation["collector_error"] = _warm_error(exc)
+        observation.setdefault("classification", "observation-unavailable")
+    finally:
+        observation["timing"]["finished_monotonic"] = time.monotonic()
+    return observation
 
 
 def _target_tuple(manifest: dict) -> dict:
@@ -566,6 +859,11 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
+        # On Linux, retain the minimal read-only A/B observation as the final
+        # operation before the candidate update bootstrap.  It is diagnostic
+        # only: unavailable evidence remains a refusal, never a pass.
+        if sys.platform == "linux":
+            result["warm_release0_identity"] = warm_release0_identity_observation(args, data)
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
