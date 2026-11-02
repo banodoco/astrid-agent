@@ -768,6 +768,10 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
                               leg="release0-to-release1", shell="powershell.exe", retain_for_next_leg=False)
     raw = b"first product error\r\n\xff\x00" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 31)
     monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("JOURNEY_LAUNCHER_PSEDITION", "Core")
     monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
@@ -816,6 +820,76 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
         assert entry == {"status": "captured", "path": (staged / phase / "release0-bootstrap.log").relative_to(run_root).as_posix(),
                          "exit_code": 37, "sha256": hashlib.sha256(raw).hexdigest()}
         assert (run_root / entry["path"]).read_bytes() == raw
+        diagnostic = json.loads((staged / phase / "windows-bootstrap-environment.log").read_text())
+        assert diagnostic == {"bootstrap": "release0-bootstrap.log", "PSEdition": "Core",
+                              "PSModulePath": r"C:\Program Files\PowerShell\7\Modules"}
+
+
+@pytest.mark.parametrize("platform,legacy", [("win32", True), ("win32", False), ("linux", True)])
+def test_bootstrap_module_path_is_scoped_to_windows_legacy_launch(tmp_path, monkeypatch, platform, legacy):
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    inherited = {"pSmOdUlEpAtH": r"C:\Users\test\Documents\PowerShell\Modules;C:\PowerShell\7\Modules",
+                 "PROGRAMFILES": r"C:\Program Files", "SYSTEMROOT": r"C:\Windows",
+                 "JOURNEY_LAUNCHER_PSEDITION": "Core", "KEEP": "value"}
+    calls = []
+    def process(argv, **kwargs):
+        calls.append((argv, kwargs["env"]))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    log = tmp_path / "release1" / "update-bootstrap.log"
+    journey.run(["powershell.exe", "-File", "install.ps1"], log, env=inherited, legacy_bootstrap=legacy)
+    child = calls[0][1]
+    diagnostic = tmp_path / "windows-bootstrap-environment.log"
+    if platform == "win32" and legacy:
+        assert child["PSModulePath"] == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                                         r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+        assert "pSmOdUlEpAtH" not in child and child["KEEP"] == "value"
+        assert json.loads(diagnostic.read_text()) == {"bootstrap": "update-bootstrap.log",
+                                                     "PSModulePath": inherited["pSmOdUlEpAtH"],
+                                                     "PSEdition": "Core"}
+    else:
+        assert child == inherited
+        assert not diagnostic.exists()
+    assert inherited["pSmOdUlEpAtH"].endswith(r"C:\PowerShell\7\Modules")
+
+
+def test_release0_and_release1_bootstraps_use_normalized_windows_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", "inherited-pwsh-path")
+    monkeypatch.setenv("JOURNEY_LAUNCHER_PSEDITION", "Core")
+    calls = []
+    def process(argv, **kwargs):
+        calls.append((argv, kwargs["env"]["PSModulePath"]))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    evidence = tmp_path / "evidence"
+    jumps.bootstrap_release0(tmp_path / "fixture", tmp_path / "manifest", "powershell.exe",
+                             evidence / "release0", tmp_path / "program", tmp_path / "data")
+    journey.bootstrap(tmp_path / "app", tmp_path / "manifest", "powershell.exe", "update",
+                      evidence / "release1", tmp_path / "program", tmp_path / "data", True)
+    assert [Path(argv[6]).as_posix() for argv, _ in calls] == [
+        (tmp_path / "fixture" / "served" / "install.ps1").as_posix(),
+        (tmp_path / "app" / "public" / "install.ps1").as_posix()]
+    assert all(path == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                        r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules") for _, path in calls)
+    records = [json.loads(line) for line in (evidence / "windows-bootstrap-environment.log").read_text().splitlines()]
+    assert [record["bootstrap"] for record in records] == ["release0-bootstrap.log", "update-bootstrap.log"]
+    assert all(record["PSModulePath"] == "inherited-pwsh-path" and record["PSEdition"] == "Core"
+               for record in records)
+
+
+def test_windows_bootstrap_edition_and_diagnostic_are_wired_to_workflow():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    lifecycle = workflow.split("      - name: Run the matrix-owned lifecycle driver\n", 1)[1].split(
+        "      - name:", 1)[0]
+    assert "$env:JOURNEY_LAUNCHER_PSEDITION = $PSVersionTable.PSEdition" in lifecycle
+    assert lifecycle.index("$env:JOURNEY_LAUNCHER_PSEDITION") < lifecycle.index("python -u agent/scripts/ci_journey.py")
+    boundary = workflow.split("      - name: Validate the named lifecycle evidence artifact boundary\n", 1)[1].split(
+        "      - name:", 1)[0]
+    assert "'windows-bootstrap-environment.log'" in boundary
+    assert "windows-bootstrap-environment.log" in journey.JOURNEY_EVIDENCE_NAMES
 
 
 def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
