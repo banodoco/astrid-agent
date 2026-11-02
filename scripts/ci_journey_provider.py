@@ -166,16 +166,16 @@ _PRODUCER_FILES = {
 # This immutable live producer input is bound to the published Release-1
 # tuple below.  It is not a release pin, evidence authority, or qualification
 # decision: callers still authenticate their candidate inputs and custody.
-LIVE_PRODUCER_REF = "cd86889f4299c7f7aca720f0f20a11be01dacb34"
+LIVE_PRODUCER_REF = "7bb0ae88721fdd6b2d7b948760d886eeda9df282"
 LIVE_PRODUCER_FILES = {
-    "pinokio/providers/r24-linux.py": "9fe1698833a0e6eb7a4c1337ad5fa0493db4444e6320d2d46b4ff2ccbfce1b2e",
-    "pinokio/providers/r24-action.cjs": "042f533200723898aba2f15f78edfe98bc3197f9b161f4391b706a38469ca0f3",
-    "pinokio/providers/r24-live-action.js": "0df87acefad6a365e97f7a846a7d6136e06d026840a10796f640396a7187ae78",
+    "pinokio/providers/r24-linux.py": "978b52548281250ed264d7f08d8c8179419a1aa11035ddb1d6450960839e0dc9",
+    "pinokio/providers/r24-action.cjs": "2901c4e75b11a96547d2033e62118ee64247670b8f9531fc6bbad9fb1b34be01",
+    "pinokio/providers/r24-live-action.js": "32778884de8fd1e615cfbbb8d56f79aa9b57e7ddb5eb6239621d01de2e00db92",
     "pinokio/providers/r24-linux-binding.json": "89582d987efb569bfc7f41a4ecb3ec800c9f3e10e7e849b0100a42a78b292f52",
     "pinokio/providers/r24-schema.json": "233f989b29f54d082e1287c200b70b14b0315a9d763d05bcff824e556c648ffc",
 }
 LIVE_INTERFACE_FILES = {
-    "pinokio/providers/R24-LINUX.md": "39db49375eb1246f8670edad1c055bc84f78c94db7b08908a6b2a20ba003879e",
+    "pinokio/providers/R24-LINUX.md": "2a2eb76b14d90544dc8a800764b20283d56ef34622dc331eaebd59997800a03c",
 }
 LIVE_CANDIDATE = {
     "app": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
