@@ -646,6 +646,18 @@ def test_same_release_repair_keeps_installed_version_and_never_stages(tmp_path, 
         assert not {"stop", "start", "register"}.intersection(names)
 
 
+def test_same_release_repair_applies_changed_skill_policy_without_staging(tmp_path):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path, release=10)
+    backend.service = SimpleNamespace(choices={"skills": False, "skill_copies": False},
+                                      skill_policy_changed=True)
+    backend.workspace = lambda *_args: {"realm_id": "kept-realm", "realm_root": str(data / "realm")}
+    Installer(root, data, backend, say=lambda _line: None).run("install", {"release": 10})
+    names = [call[0] for call in backend.calls]
+    assert names.count("sync_skills") == 1
+    assert current(root) == old
+    assert "stage" not in names
+
+
 def test_explicit_update_rejects_malformed_candidate_release_before_staging(tmp_path):
     root, data, _old, backend = _installed_lifecycle_backend(tmp_path, release=10)
 
@@ -899,7 +911,8 @@ def test_backend_skill_sync_logs_output_and_failure_result(tmp_path, monkeypatch
     version = Version(tmp_path / "version", Path(sys.executable), tmp_path / "profile.json", {})
     backend.sync_skills(version)
 
-    assert calls[0][0] == [Path(sys.executable), "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json"]
+    assert calls[0][0] == [Path(sys.executable), "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
+                           "--skills", "on", "--skill-copies", "off"]
     assert calls[0][2] == 60
     assert "sync diagnostic output" in log.read_text(encoding="utf-8")
     assert "Astrid skills sync failed (CalledProcessError)." in log.read_text(encoding="utf-8")

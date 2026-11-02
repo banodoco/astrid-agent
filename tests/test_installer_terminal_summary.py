@@ -175,6 +175,27 @@ def test_backend_skill_result_exposes_actual_targets(tmp_path, monkeypatch):
     assert result == {"ok": True, "destinations": [target]}
 
 
+def test_backend_skill_sync_passes_saved_skills_and_copy_policy(tmp_path, monkeypatch):
+    backend = Backend(tmp_path / "program", tmp_path / "install.log", tmp_path / "uv")
+    backend.service.choices = {"skills": False, "skill_copies": True}
+    calls = []
+    monkeypatch.setattr(backend, "run", lambda argv, **_kwargs: calls.append(argv) or '{"actions": []}')
+    backend.sync_skills(type("Version", (), {"python": tmp_path / "python", "env": {}})())
+    assert calls[0][-4:] == ["--skills", "off", "--skill-copies", "on"]
+
+
+def test_backend_reports_preserved_skill_conflicts(tmp_path, monkeypatch):
+    backend = Backend(tmp_path / "program", tmp_path / "install.log", tmp_path / "uv")
+    monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: json.dumps({
+        "actions": [{"harness": "claude", "removed": ["/agents/astrid-owned"]}],
+        "conflicts": [{"path": "/agents/astrid-copy", "reason": "edited copy"}],
+    }))
+    result = backend.sync_skills(type("Version", (), {"python": tmp_path / "python", "env": {}})())
+    assert result["conflicts"] == [{"path": "/agents/astrid-copy", "reason": "edited copy"}]
+    assert result["removed"] == ["/agents/astrid-owned"]
+    assert "edited copy" in (tmp_path / "install.log").read_text(encoding="utf-8")
+
+
 def test_backend_skill_result_marks_subprocess_failure(tmp_path, monkeypatch):
     backend = Backend(tmp_path / "program", tmp_path / "install.log", tmp_path / "uv")
     monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(

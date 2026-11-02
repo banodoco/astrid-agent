@@ -130,6 +130,39 @@ class AdapterPlanTest(unittest.TestCase):
         self.assertTrue(all_args.deep)
 
 
+def test_managed_skill_policy_resolves_saved_flags_and_explicit_developer(tmp_path, monkeypatch):
+    import json
+    from astrid.installer import service
+
+    record = tmp_path / "install.json"
+    record.write_text(json.dumps({"owner": service.LABEL, "program_root": str(tmp_path / "program"),
+                                  "choices": {"skills": False, "skill_copies": True}}), encoding="utf-8")
+    monkeypatch.setattr(service, "install_selection", lambda *_args: record)
+    parser = skills_cli.build_parser()
+    saved = parser.parse_args(["sync"])
+    assert skills_cli._skill_policy(saved) == (False, "copy")
+    developer = parser.parse_args(["install", "--developer"])
+    assert skills_cli._skill_policy(developer) == (True, "copy")
+    explicit = parser.parse_args(["sync", "--skills", "on", "--skill-copies", "off"])
+    assert skills_cli._skill_policy(explicit) == (True, "symlink")
+    skills_cli._save_explicit_skill_policy(explicit)
+    saved_values = json.loads(record.read_text(encoding="utf-8"))["choices"]
+    assert saved_values == {"skills": True, "skill_copies": False}
+
+
+def test_explicit_skills_off_install_creates_no_skill_targets():
+    fx = _Tmp()
+    try:
+        assert skills_cli.main(["sync", "--skills", "off", "--dry-run", "--harness", "claude", "--json"]) == 0
+        assert not (fx.home / ".claude" / "skills").exists()
+        assert not fx.state_path.exists()
+        assert skills_cli.main(["install", "--skills", "off", "--harness", "claude", "--json"]) == 0
+        assert not (fx.home / ".claude" / "skills").exists()
+        assert not fx.state_path.exists()
+    finally:
+        fx.close()
+
+
 class ApplyTest(unittest.TestCase):
     def test_apply_creates_symlink_and_is_idempotent(self) -> None:
         fx = _Tmp()
@@ -558,6 +591,76 @@ def test_view_sync_retains_selection_and_migrates_old_installs():
         skills.uninstall(["chiptune"], ["claude"], state_path=fx.state_path)
         skills.sync(harness_names=["claude"], state_path=fx.state_path)
         assert not (view / "chiptune").exists()
+    finally:
+        fx.close()
+
+
+def test_copy_sync_is_idempotent_and_off_preserves_edited_copy_and_foreign_link():
+    fx = _Tmp()
+    try:
+        skills.sync(harness_names=["claude"], mechanism="copy", state_path=fx.state_path)
+        first = skills.sync(harness_names=["claude"], mechanism="copy", state_path=fx.state_path)
+        second = skills.sync(harness_names=["claude"], mechanism="copy", state_path=fx.state_path)
+        adapter = ClaudeAdapter()
+        core = next(d for d in _descriptors() if d.pack_id == "_core")
+        target = adapter.target_for(core)
+        assert target.is_dir() and not target.is_symlink()
+        assert (target / ".astrid-managed-skill.json").is_file()
+        assert all(not step["extras"].get("changed") for action in second["actions"] for step in action["steps"])
+        skills.sync(harness_names=["claude"], mechanism="symlink", state_path=fx.state_path)
+        assert target.is_symlink()
+        skills.sync(harness_names=["claude"], mechanism="copy", state_path=fx.state_path)
+        assert target.is_dir() and not target.is_symlink()
+        data_before_off = state.load(fx.state_path)
+
+        edited = target / "SKILL.md"
+        edited.write_text(edited.read_text(encoding="utf-8") + "user edit\n", encoding="utf-8")
+        foreign = adapter.skills_dir / "astrid-foreign"
+        foreign.symlink_to(fx.tmp / "foreign-target")
+        report = skills.disable_owned(state_path=fx.state_path)
+        assert edited.exists()
+        assert foreign.is_symlink()
+        assert any("edited Astrid managed copy preserved" in row["reason"] for row in report["conflicts"])
+        assert any("not confirmed Astrid-owned" in row["reason"] for row in report["ambiguous"])
+        data_after_off = state.load(fx.state_path)
+        assert data_after_off["disabled_defaults"] == data_before_off["disabled_defaults"]
+    finally:
+        fx.close()
+
+
+def test_copy_mechanism_uses_managed_copies_for_all_harnesses():
+    fx = _Tmp()
+    try:
+        report = skills.sync(harness_names=["claude", "codex", "hermes"], mechanism="copy", state_path=fx.state_path)
+        for harness, adapter_type in (("claude", ClaudeAdapter), ("codex", CodexAdapter), ("hermes", HermesAdapter)):
+            adapter = adapter_type()
+            core = next(d for d in _descriptors() if d.pack_id == "_core")
+            target = adapter.target_for(core)
+            assert target.is_dir() and not target.is_symlink()
+            assert (target / ".astrid-managed-skill.json").is_file()
+        assert report["actions"]
+    finally:
+        fx.close()
+
+
+def test_off_reconciles_marker_owned_state_view_without_install_records():
+    fx = _Tmp()
+    try:
+        skills.sync(harness_names=["claude"], state_path=fx.state_path)
+        adapter = ClaudeAdapter()
+        target = adapter.skills_dir / "astrid"
+        view = fx.state_path.parent / "skills" / "claude"
+        assert target.is_symlink()
+        assert (view / ".astrid-managed-packs").is_file()
+
+        data = state.load(fx.state_path)
+        data["installs"]["claude"] = {}
+        state.save(data, fx.state_path)
+        report = skills.disable_owned(state_path=fx.state_path)
+
+        assert not target.exists() and not target.is_symlink()
+        assert not view.exists()
+        assert any(str(view) in action["removed"] for action in report["actions"])
     finally:
         fx.close()
 

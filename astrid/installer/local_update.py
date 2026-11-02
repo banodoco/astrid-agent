@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TextIO
 
 from .backend import Backend
+from .choices import resolve_choices
 from .core import (
     TERMINAL_STEPS,
     Installer,
@@ -194,8 +195,12 @@ def _backend(root: Path) -> Backend:
     log = platform.log_dir() / "install.log"
     platform.private_directory(log.parent)
     uv = default_uv()
-    return Backend(root, log, uv, say=lambda message: print(message, file=sys.stderr),
-                   managed_by=read_json(root / "install.json").get("managed_by"))
+    backend = Backend(root, log, uv, say=lambda message: print(message, file=sys.stderr),
+                      managed_by=read_json(root / "install.json").get("managed_by"))
+    backend.service.choices = resolve_choices(
+        saved=backend.service.recorded().get("choices"), existing_install=True,
+    )
+    return backend
 
 
 def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:

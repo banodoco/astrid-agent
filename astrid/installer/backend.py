@@ -1275,7 +1275,12 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
     def sync_skills(self, version: Version) -> dict:
         """Best-effort install of Astrid's skill view into detected harnesses."""
-        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json"]
+        choices = getattr(self.service, "choices", None) or {}
+        skills_on = choices.get("skills", True)
+        copies_on = choices.get("skill_copies", False)
+        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
+                "--skills", "on" if skills_on else "off",
+                "--skill-copies", "on" if copies_on else "off"]
         failed = False
         try:
             output = self.run(argv, extra_env=version.env, timeout=60)
@@ -1287,7 +1292,17 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 for step in action.get("steps", [])
                 if isinstance(step, dict) and isinstance(step.get("target"), str)
             })
+            removed = sorted({
+                str(path)
+                for action in actions if isinstance(action, dict)
+                for path in action.get("removed", [])
+                if isinstance(path, str)
+            })
+            conflicts = [*report.get("conflicts", []), *report.get("ambiguous", [])]
             outcome = "Astrid skills sync completed successfully.\n"
+            for conflict in conflicts:
+                if isinstance(conflict, dict):
+                    outcome += f"Preserved skill target {conflict.get('path', '(unknown path)')}: {conflict.get('reason', 'ownership is ambiguous')}.\n"
         except (OSError, subprocess.SubprocessError) as exc:
             failed = True
             output = "" if isinstance(exc, subprocess.CalledProcessError) else (
@@ -1297,16 +1312,25 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 output = output.decode("utf-8", errors="replace")
             outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
             destinations = []
+            removed = []
+            conflicts = []
         except (ValueError, TypeError, AttributeError) as exc:
             failed = True
             outcome = f"Astrid skills sync returned an unreadable result ({type(exc).__name__}).\n"
             destinations = []
+            removed = []
+            conflicts = []
         with self.log.open("a", encoding="utf-8") as stream:
             platform.owner_only(stream.fileno())
             stream.write(outcome)
         if failed:
             self.say("Couldn't add Astrid's skill to your agents; see the log.")
-        return {"ok": not failed, "destinations": destinations}
+        result = {"ok": not failed, "destinations": destinations}
+        if removed:
+            result["removed"] = removed
+        if conflicts:
+            result["conflicts"] = conflicts
+        return result
 
     def finish(self, old: Version | None, candidate: Version, backup: dict | None) -> None:
         # Keep the immediately previous program and backup. Failures cleaning an

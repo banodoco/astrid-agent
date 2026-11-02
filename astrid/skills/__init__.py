@@ -8,6 +8,8 @@ selects one Claude-style frontmatter document per pack.
 from __future__ import annotations
 
 import copy
+import json
+import shutil
 from pathlib import Path
 from functools import wraps
 from typing import Iterable
@@ -15,7 +17,7 @@ from typing import Iterable
 from . import discovery, registry, state
 from .discovery import SkillDescriptor, list_skills
 from .harnesses import ADAPTERS, HarnessAdapter, adapter_for, all_adapters
-from .harnesses.base import target_mechanism
+from .harnesses.base import edited_managed_copy, is_managed_copy, target_mechanism
 from .links import LinkScan, scan_links
 
 # Legacy setup defaults retained for external and managed pack policy.
@@ -167,6 +169,158 @@ def _inventory(current_state, harness, descriptor):
 
 
 @_locked_operation
+def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> dict:
+    """Remove only installed skill targets backed by Astrid state or markers."""
+    from .harnesses.codex import BEGIN_MARKER, END_MARKER
+
+    current = state.load(state_path)
+    initial_installs = copy.deepcopy(current.get("installs", {}))
+    descriptors = list_skills() + discovery.list_extras(list_skills())
+    by_id = {d.skill_id: d for d in descriptors}
+    report: dict = {"actions": [], "conflicts": [], "ambiguous": []}
+    detected = all_adapters()
+    view_parent = (state_path or state.state_path()).parent / "skills"
+    for harness, adapter in detected.items():
+        records = current.get("installs", {}).get(harness, {})
+        retained_records = {}
+        harness_report = {"harness": harness, "removed": [], "preserved": []}
+        for skill_id, record in list(records.items()):
+            target_value = record.get("target") if isinstance(record, dict) else None
+            target = Path(target_value).expanduser() if isinstance(target_value, str) else None
+            descriptor = by_id.get(skill_id)
+            if target is None and descriptor is not None:
+                target = adapter.target_for(descriptor)
+            if target is None:
+                report["ambiguous"].append({"harness": harness, "skill": skill_id, "reason": "missing target record"})
+                retained_records[skill_id] = record
+                continue
+            if record.get("mechanism") == "external-dir" and harness == "hermes":
+                try:
+                    from .harnesses.hermes import PACKS_DIR_FOR_EXTERNAL
+                    changed = adapter._rewrite_config("uninstall", str(PACKS_DIR_FOR_EXTERNAL.resolve()))
+                except (OSError, RuntimeError, ValueError) as exc:
+                    report["conflicts"].append({"harness": harness, "path": str(target), "reason": str(exc)})
+                    retained_records[skill_id] = record
+                    continue
+                if changed:
+                    harness_report["removed"].append(str(target))
+                continue
+            if target.is_symlink():
+                try:
+                    resolved = target.resolve(strict=True)
+                except OSError:
+                    resolved = None
+                expected = descriptor.skill_dir.resolve() if descriptor is not None else None
+                view_root = view_parent / harness
+                owned_view = (
+                    not view_root.is_symlink()
+                    and resolved == view_root.resolve()
+                    and (view_root / ".astrid-managed-packs").is_file()
+                )
+                owned_link = resolved is not None and (
+                    resolved == expected
+                    or ("astrid" in resolved.parts and skill_id in resolved.parts)
+                    or (skill_id == "_core" and resolved.parts[-2:] == ("skills", "core"))
+                    or owned_view
+                )
+                if owned_link:
+                    if not dry_run:
+                        target.unlink()
+                    harness_report["removed"].append(str(target))
+                    if owned_view and view_root.is_dir():
+                        if not dry_run:
+                            shutil.rmtree(view_root)
+                        harness_report["removed"].append(str(view_root))
+                else:
+                    report["ambiguous"].append({"harness": harness, "path": str(target), "reason": "link target is not confirmed Astrid-owned"})
+                    harness_report["preserved"].append(str(target))
+                    retained_records[skill_id] = record
+            elif target.is_dir() and is_managed_copy(target):
+                if not dry_run:
+                    shutil.rmtree(target)
+                harness_report["removed"].append(str(target))
+            elif target.is_dir() and edited_managed_copy(target):
+                report["conflicts"].append({"harness": harness, "path": str(target), "reason": "edited Astrid managed copy preserved"})
+                harness_report["preserved"].append(str(target))
+                retained_records[skill_id] = record
+            elif target.exists():
+                report["ambiguous"].append({"harness": harness, "path": str(target), "reason": "occupied target has no valid Astrid marker"})
+                harness_report["preserved"].append(str(target))
+                retained_records[skill_id] = record
+        skills_dir = getattr(adapter, "skills_dir", None)
+        if skills_dir is not None and skills_dir.is_dir():
+            recorded_paths = {
+                Path(row["target"]).expanduser()
+                for row in records.values()
+                if isinstance(row, dict) and isinstance(row.get("target"), str)
+            }
+            for entry in sorted(skills_dir.iterdir()):
+                if entry.name != "astrid" and not entry.name.startswith("astrid-"):
+                    continue
+                if not (entry.exists() or entry.is_symlink()) or entry in recorded_paths:
+                    continue
+                if entry.is_symlink():
+                    try:
+                        linked = entry.resolve(strict=True)
+                    except OSError:
+                        linked = None
+                    suffix = entry.name[len("astrid-"):] if entry.name.startswith("astrid-") else "_core"
+                    view_root = view_parent / harness
+                    owned_view = (
+                        not view_root.is_symlink()
+                        and linked == view_root.resolve()
+                        and (view_root / ".astrid-managed-packs").is_file()
+                    )
+                    owned_source = linked is not None and "astrid" in linked.parts and (
+                        suffix in linked.parts or (suffix == "_core" and linked.parts[-2:] == ("skills", "core"))
+                    )
+                    if owned_view or owned_source:
+                        if not dry_run:
+                            entry.unlink()
+                        harness_report["removed"].append(str(entry))
+                        if owned_view:
+                            if not dry_run:
+                                shutil.rmtree(view_root)
+                            harness_report["removed"].append(str(view_root))
+                    elif linked is None or "astrid" not in linked.parts:
+                        report["ambiguous"].append({"harness": harness, "path": str(entry), "reason": "link target is not confirmed Astrid-owned; foreign or unresolved link preserved"})
+                elif edited_managed_copy(entry):
+                    report["conflicts"].append({"harness": harness, "path": str(entry), "reason": "edited Astrid managed copy preserved"})
+                elif is_managed_copy(entry):
+                    if not dry_run:
+                        shutil.rmtree(entry)
+                    harness_report["removed"].append(str(entry))
+                elif entry.exists():
+                    report["ambiguous"].append({"harness": harness, "path": str(entry), "reason": "unrecorded target preserved"})
+        view_root = view_parent / harness
+        if view_root.is_dir() and not view_root.is_symlink() and (view_root / ".astrid-managed-packs").is_file():
+            if not dry_run:
+                shutil.rmtree(view_root)
+            if str(view_root) not in harness_report["removed"]:
+                harness_report["removed"].append(str(view_root))
+        if harness == "codex":
+            md = getattr(adapter, "agents_md", None)
+            if md is not None and md.is_file():
+                text = md.read_text(encoding="utf-8")
+                if BEGIN_MARKER in text and END_MARKER in text:
+                    before, _, rest = text.partition(BEGIN_MARKER)
+                    _, _, after = rest.partition(END_MARKER)
+                    updated = before.rstrip() + ("\n" if before.rstrip() and after.lstrip() else "") + after.lstrip("\n")
+                    if updated != text:
+                        if not dry_run:
+                            md.write_text(updated, encoding="utf-8")
+                        harness_report["removed"].append(str(md))
+        current["installs"][harness] = retained_records
+        if harness_report["removed"]:
+            current["skills"][harness]["synced_at"] = state.now_iso()
+        report["actions"].append(harness_report)
+    changed = any(action["removed"] for action in report["actions"]) or current["installs"] != initial_installs
+    if changed and not dry_run:
+        state.save(current, state_path)
+    return report
+
+
+@_locked_operation
 def install(
     pack_ids: Iterable[str] | None,
     harness_names: Iterable[str] | None,
@@ -179,6 +333,7 @@ def install(
     all_skills: bool = False,
     developer: bool = False,
 ) -> dict:
+    mechanism = mechanism or "symlink"
     descriptors = _units(pack_ids, tuple(skill_names), all_skills, developer=developer)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
@@ -186,17 +341,19 @@ def install(
 
     report: dict = {"actions": []}
     for harness_name, adapter in targets.items():
-        kwargs: dict = {"force": force}
-        if harness_name == "hermes":
-            kwargs["mechanism"] = mechanism
+        selected_mechanism = mechanism if harness_name == "hermes" or mechanism != "external-dir" else "symlink"
+        kwargs: dict = {"force": force, "mechanism": selected_mechanism}
         if harness_name == "codex":
             kwargs["all_after_descriptors"] = list(_codex_after_set(current_state, descriptors, install=True))
         if dry_run:
             steps = adapter.plan("install", descriptors, **kwargs)
         else:
             steps = adapter.apply("install", descriptors, **kwargs)
+            conflicts_by_target = {step.target for step in steps if step.extras.get("conflict")}
             for descriptor in descriptors:
                 target = adapter.target_for(descriptor)
+                if target in conflicts_by_target:
+                    continue
                 state.record_install(
                     current_state,
                     harness_name,
@@ -209,6 +366,8 @@ def install(
                     ),
                 )
             for descriptor in descriptors:
+                if adapter.target_for(descriptor) in conflicts_by_target:
+                    continue
                 entry = _inventory(current_state, harness_name, descriptor)
                 entry["selected"] = True
                 entry["digest"] = discovery.unit_digest(descriptor, extras_for_digest)
@@ -217,6 +376,10 @@ def install(
                     disabled.remove(descriptor.pack_id)
         report["actions"].append({"harness": harness_name, "steps": [_step_to_dict(s) for s in steps],
                                   **({"visibility": "external-dir: all skills visible"} if harness_name == "hermes" and mechanism == "external-dir" else {})})
+        for step in steps:
+            if step.extras.get("conflict"):
+                report.setdefault("conflicts", []).append({"harness": harness_name,
+                    "path": str(step.target) if step.target else None, "reason": step.extras["conflict"]})
 
     if not dry_run:
         state.save(current_state, state_path)
@@ -300,6 +463,7 @@ def sync(
     main skill of their pack for every target harness, so later plain syncs
     keep them (``uninstall(developer=True)`` deselects them).
     """
+    mechanism = mechanism or "symlink"
     all_descriptors = list_skills()
     extras = discovery.list_extras(all_descriptors)
     all_units = all_descriptors + extras
@@ -387,18 +551,20 @@ def sync(
                 changed = False
             registry_changes[harness_name] = changed
             descriptors = [gateway, *visible]
-        kwargs: dict = {"force": force}
-        if harness_name == "hermes":
-            kwargs["mechanism"] = mechanism
+        selected_mechanism = mechanism if harness_name == "hermes" or mechanism != "external-dir" else "symlink"
+        kwargs: dict = {"force": force, "mechanism": selected_mechanism}
         if harness_name == "codex":
             kwargs["all_after_descriptors"] = list(descriptors)
         if dry_run:
             steps = adapter.plan("install", descriptors, **kwargs)
         else:
             steps = adapter.apply("install", descriptors, **kwargs)
+            conflicts_by_target = {step.target for step in steps if step.extras.get("conflict")}
             disabled_before = list(current_state["disabled_defaults"].get(harness_name, []))
             for descriptor in descriptors:
                 target = adapter.target_for(descriptor)
+                if target in conflicts_by_target:
+                    continue
                 state.record_install(
                     current_state,
                     harness_name,
@@ -413,6 +579,13 @@ def sync(
             current_state["disabled_defaults"][harness_name] = disabled_before
             # Prune orphan installs from state.
             installed_ids = {d.skill_id for d in descriptors}
+            # Read the live pre-prune records before replacing this harness's
+            # install map with only the descriptors still present.
+            recorded_targets = {
+                Path(info["target"]).expanduser()
+                for info in current_state.get("installs", {}).get(harness_name, {}).values()
+                if isinstance(info, dict) and isinstance(info.get("target"), str)
+            }
             current_state["installs"][harness_name] = {
                 pid: info
                 for pid, info in current_state["installs"].get(harness_name, {}).items()
@@ -432,7 +605,7 @@ def sync(
                 known_ids = {
                     d.skill_id for d in all_units if d.pack_id not in disabled_ids
                 }
-                for removed in prune_orphan_skill_links(skills_dir, known_ids):
+                for removed in prune_orphan_skill_links(skills_dir, known_ids, owned_targets=recorded_targets):
                     steps.append(_pruned_step(removed))
                     removed_id = _link_pack_id(removed.name)
                     state.record_uninstall(
@@ -441,6 +614,25 @@ def sync(
                         removed_id,
                         default=removed_id in default_pack_ids(all_descriptors),
                     )
+                for entry in sorted(skills_dir.iterdir()) if skills_dir.is_dir() else ():
+                    removed_id = _link_pack_id(entry.name)
+                    if removed_id is None or removed_id in known_ids:
+                        continue
+                    if edited_managed_copy(entry):
+                        report.setdefault("conflicts", []).append({
+                            "harness": harness_name, "path": str(entry),
+                            "reason": "edited Astrid managed copy preserved",
+                        })
+                    elif entry.is_symlink():
+                        try:
+                            linked = entry.resolve(strict=True)
+                        except OSError:
+                            linked = None
+                        if linked is None or "astrid" not in linked.parts:
+                            report.setdefault("ambiguous", []).append({
+                                "harness": harness_name, "path": str(entry),
+                                "reason": "foreign or unresolved link preserved",
+                            })
         outdated = []
         changed = []
         composed_ids = {d.pack_id for d in _sync_descriptors_for_harness(
@@ -475,6 +667,10 @@ def sync(
              "outdated": outdated, "changed": changed,
              **({"visibility": "external-dir: all skills visible"} if harness_name == "hermes" and mechanism == "external-dir" else {})}
         )
+        for step in steps:
+            if step.extras.get("conflict"):
+                report.setdefault("conflicts", []).append({"harness": harness_name,
+                    "path": str(step.target) if step.target else None, "reason": step.extras["conflict"]})
 
     if not dry_run:
         state.save(current_state, state_path)

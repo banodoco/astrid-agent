@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from astrid.core.foundation.paths import REPO_ROOT
+from astrid.core.contracts.errors import AstridError
 
 from ..discovery import SkillDescriptor
 from .base import (
@@ -91,7 +92,11 @@ class HermesAdapter(HarnessAdapter):
         for descriptor in descriptors:
             target = self.target_for(descriptor)
             if action == "install":
-                changed = ensure_symlink(target, descriptor.skill_dir, force=force)
+                try:
+                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=mechanism)
+                except AstridError as exc:
+                    steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
+                    continue
                 steps.append(
                     PlannedStep(
                         description=("created" if changed else "ok") + f" {target}",

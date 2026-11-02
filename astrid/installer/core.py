@@ -382,6 +382,17 @@ class Installer:
         finally:
             self.outcomes["command"] = getattr(self.backend, "command_result", None)
 
+    def _sync_skills_for_repair(self, version: Version) -> None:
+        service = getattr(self.backend, "service", None)
+        choices = getattr(service, "choices", None) or {}
+        changed = bool(getattr(service, "skill_policy_changed", False))
+        if choices.get("skills", True) and not choices.get("skill_copies", False) and not changed:
+            return
+        try:
+            self.outcomes["skills"] = self.backend.sync_skills(version)
+        except Exception:  # noqa: BLE001 - skill setup remains best effort
+            self.say("Couldn't add Astrid's skill to your agents; see the log.")
+
     def _save_update(self, transaction: dict, step: str, **details) -> None:
         custody = getattr(self.backend, "_pinokio_custody", None)
         if custody is not None:
@@ -604,6 +615,7 @@ class Installer:
                     persist = getattr(self.backend, "persist_identity", None)
                     if persist is not None:
                         persist(old)
+                    self._sync_skills_for_repair(old)
                     install_launcher(self.root)
                     self.say("Open https://astrid.haus")
                     self._open_command()
@@ -617,6 +629,7 @@ class Installer:
             self.backend.start(old, self.data)
             self.backend.verify(old, self.data, realm["realm_id"])
             self.outcomes["startup"] = "running and ready"
+            self._sync_skills_for_repair(old)
             self.say("Open https://astrid.haus")
             self._open_command()
             return

@@ -12,8 +12,25 @@ import pytest
 
 from astrid.installer import core
 from astrid.installer import local_update as local
+from astrid.installer.service import LABEL, install_selection
 from astrid.installer.core import RuntimeOperationError, Version, current, switch, write_json
 from astrid.installer.tools import DEFAULT_OMP_SOURCE
+
+
+def test_local_update_backend_uses_saved_skill_policy(tmp_path, monkeypatch):
+    root = tmp_path / "program"
+    root.mkdir()
+    write_json(root / "install.json", {"owner": LABEL, "managed_by": None})
+    selection = install_selection(tmp_path, sys.platform)
+    write_json(selection, {"owner": LABEL, "program_root": str(root), "choices": {
+        "skills": False, "skill_copies": True,
+    }})
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from runtime_protocol import platform
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    backend = local._backend(root)
+    assert backend.service.choices["skills"] is False
+    assert backend.service.choices["skill_copies"] is True
 
 
 @pytest.mark.parametrize("health,valid", [

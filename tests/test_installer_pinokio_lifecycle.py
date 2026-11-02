@@ -457,6 +457,23 @@ def test_second_pinokio_root_is_allowed_after_first_root_is_deleted(tmp_path, mo
     assert recorded["program_root"] == str(second_root)
 
 
+def test_pinokio_install_saves_explicit_skill_policy(tmp_path, monkeypatch):
+    home = _cli_home(tmp_path, monkeypatch)
+    selection, captured = _stub_cli_install(tmp_path, monkeypatch, home)
+    monkeypatch.setattr(cli, "download", lambda _url, path: write_json(path, {}))
+    monkeypatch.setattr(cli, "validate_manifest", lambda manifest: manifest)
+
+    assert cli.main([
+        "--managed-by", "pinokio", "--root", str(tmp_path / "pinokio-app"), "--yes",
+        "--skills", "off", "--skill-copies", "on",
+    ]) == 0
+
+    assert captured["mode"] == "install"
+    saved = read_json(selection)["choices"]
+    assert saved["skills"] is False
+    assert saved["skill_copies"] is True
+
+
 def test_pinokio_install_refuses_existing_login_install(tmp_path, monkeypatch, capsys):
     home = _cli_home(tmp_path, monkeypatch)
     login_root = default_program_root(home, sys.platform)

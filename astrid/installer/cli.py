@@ -149,8 +149,16 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
             print("  Skill destinations: sync failed; see the installer log.")
         elif skills.get("destinations"):
             print("  Skill destinations: " + ", ".join(safe(path) for path in skills["destinations"]))
-        else:
+        elif not skills.get("removed"):
             print("  Skill destinations: no target changes were reported.")
+        if skills is not None:
+            if skills.get("removed"):
+                print("  Astrid skill targets removed: " + ", ".join(safe(path) for path in skills["removed"]))
+            for conflict in skills.get("conflicts", []):
+                if isinstance(conflict, dict):
+                    where = safe(conflict.get("path", "(unknown path)"))
+                    reason = safe(conflict.get("reason", "ownership is ambiguous"))
+                    print(f"  Skill target preserved: {where} ({reason}).")
         if failure is not None:
             print(f"  Failure: {type(failure).__name__}: {safe(failure)}")
     print("  Way back: " + _way_back_command(choices, mode=mode))
@@ -250,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         parser().error("--update-app requires --managed-by pinokio and keeps the existing workspace and process settings.")
     if args.sandbox and mode not in ("install", "update"):
         parser().error("--sandbox is only valid for install or update.")
-    if (args.yes or args.choices) and mode not in {"install", "update"}:
+    if (args.yes or args.choices) and mode not in {"install", "update", "app-update"}:
         parser().error("setup choices and --yes are only valid for install or update.")
     if args.update_job and (not args.root or not args.root.is_absolute() or not args.data_root
                             or not args.data_root.is_absolute() or not args.manifest
@@ -283,13 +291,18 @@ def main(argv: list[str] | None = None) -> int:
 
             backend.managed_by = "pinokio"
             pending = read_json(root / "update-transaction.json")
-            if mode in {"install", "update"}:
+            if mode in {"install", "update", "app-update"}:
                 pinokio_record = backend.service.recorded()
                 backend.service.choices = resolve_choices(
                     explicit=args.choices,
                     saved=pinokio_record.get("choices"),
                     accept_recommended=args.yes,
                     existing_install=True,
+                )
+                prior_skill_policy = resolve_choices(saved=pinokio_record.get("choices"), existing_install=True)
+                backend.service.skill_policy_changed = any(
+                    name in args.choices and backend.service.choices[name] != prior_skill_policy[name]
+                    for name in ("skills", "skill_copies")
                 )
             # A running session holds lifetime admission. A stopped operation
             # retains its own custody across manifest preparation and activation.
@@ -435,7 +448,16 @@ def main(argv: list[str] | None = None) -> int:
                     prompt=prompt_values,
                     accept_recommended=args.yes,
                     existing_install=existing_install,
-                ) if mode in {"install", "update"} else None
+                ) if mode in {"install", "update", "app-update"} else None
+                if resolved_choices is not None:
+                    previous_skill_policy = resolve_choices(
+                        saved=recorded.get("choices") if matching_selection else None,
+                        existing_install=existing_install,
+                    )
+                    backend.service.skill_policy_changed = any(
+                        name in args.choices and resolved_choices[name] != previous_skill_policy[name]
+                        for name in ("skills", "skill_copies")
+                    )
                 if mode in {"install", "update"} and unattended_consent_required(
                         existing_install=existing_install, accept_recommended=args.yes,
                         interactive=sys.stdin.isatty()):

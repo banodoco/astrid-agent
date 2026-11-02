@@ -129,7 +129,9 @@ def ours_link_to_pack_id(link_name: str) -> str | None:
     return None
 
 
-def prune_orphan_skill_links(skills_dir: Path, known_pack_ids: set[str]) -> list[Path]:
+def prune_orphan_skill_links(
+    skills_dir: Path, known_pack_ids: set[str], *, owned_targets: set[Path] | None = None,
+) -> list[Path]:
     """Remove ``astrid-*`` symlinks whose pack id is not in *known_pack_ids*.
 
     Only our own symlinks are considered, and only symlinks are removed; a
@@ -151,6 +153,25 @@ def prune_orphan_skill_links(skills_dir: Path, known_pack_ids: set[str]) -> list
             if is_managed_copy(entry):
                 shutil.rmtree(entry)
             else:
+                try:
+                    linked = entry.resolve(strict=True)
+                except OSError:
+                    # A stale install record is useful only when the current
+                    # link still names that recorded pack. An unrelated or
+                    # unresolved user link at the same path remains untouched.
+                    unresolved = entry.readlink()
+                    unresolved = unresolved if unresolved.is_absolute() else entry.parent / unresolved
+                    recorded_target = any(
+                        entry == target or entry.resolve(strict=False) == target.resolve(strict=False)
+                        for target in (owned_targets or set())
+                    )
+                    if not recorded_target or pack_id not in unresolved.parts:
+                        continue
+                    entry.unlink()
+                    removed.append(entry)
+                    continue
+                if "astrid" not in linked.parts and entry not in (owned_targets or set()):
+                    continue
                 entry.unlink()
             removed.append(entry)
     return removed
@@ -163,13 +184,37 @@ def is_managed_copy(target: Path, source: Path | None = None) -> bool:
         marker = json.loads((target / _COPY_MARKER).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    if source is None:
-        return True
-    return (
+    if not isinstance(marker, dict) or not isinstance(marker.get("digest"), str):
+        return False
+    if _directory_digest(target, exclude_marker=True) != marker["digest"]:
+        return False
+    return source is None or (
         marker.get("source") == str(source.resolve())
         and marker.get("digest") == _directory_digest(source)
-        and _directory_digest(target, exclude_marker=True) == marker.get("digest")
     )
+
+
+def edited_managed_copy(target: Path) -> bool:
+    """Whether a valid Astrid marker remains but the copy no longer matches it."""
+    try:
+        marker = json.loads((target / _COPY_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(marker, dict)
+        and isinstance(marker.get("source"), str)
+        and isinstance(marker.get("digest"), str)
+        and _directory_digest(target, exclude_marker=True) != marker["digest"]
+    )
+
+
+def _managed_copy_mode(target: Path) -> str | None:
+    try:
+        marker = json.loads((target / _COPY_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    mode = marker.get("mechanism") if isinstance(marker, dict) else None
+    return mode if mode in {"copy", "symlink-fallback"} else None
 
 
 def managed_target_matches(target: Path, source: Path) -> bool:
@@ -185,13 +230,51 @@ def target_mechanism(target: Path, default: str = "symlink") -> str:
     return "copy" if is_managed_copy(target) else default
 
 
-def ensure_symlink(target: Path, source: Path, *, force: bool = False) -> bool:
+def ensure_symlink(target: Path, source: Path, *, force: bool = False, mechanism: str = "symlink") -> bool:
     """Create a symlink to ``source``, falling back to a managed directory copy."""
     # Returns True if the FS state changed, False if already correct.
     target.parent.mkdir(parents=True, exist_ok=True)
     source_resolved = source.resolve()
+    if mechanism not in {"symlink", "copy"}:
+        raise ValueError(f"Unknown skill mechanism: {mechanism}")
     if is_managed_copy(target, source_resolved):
-        return False
+        mode = _managed_copy_mode(target)
+        if mechanism == "copy":
+            if mode != "copy":
+                marker_path = target / _COPY_MARKER
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+                marker["mechanism"] = "copy"
+                marker_path.write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
+            return False
+        if mode != "copy":  # Keep an existing symlink fallback stable.
+            return False
+    if edited_managed_copy(target):
+        raise AstridError(f"Edited Astrid managed copy preserved: {target}")
+    if mechanism == "copy":
+        if target.is_symlink():
+            try:
+                linked = target.resolve(strict=True)
+                if linked != source_resolved and "astrid" not in linked.parts:
+                    raise AstridError(f"Foreign skill link preserved: {target}")
+            except OSError:
+                raise AstridError(f"Foreign skill link preserved: {target}") from None
+            target.unlink()
+        elif target.exists() and not is_managed_copy(target):
+            if not force:
+                raise AstridError(f"Skill target is occupied by a foreign entry: {target}")
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        if target.exists() or target.is_symlink():
+            shutil.rmtree(target) if target.is_dir() and not target.is_symlink() else target.unlink()
+        shutil.copytree(source_resolved, target)
+        (target / _COPY_MARKER).write_text(
+            json.dumps({"source": str(source_resolved), "digest": _directory_digest(source_resolved),
+                        "mechanism": "copy"}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return True
     if target.is_symlink():
         try:
             existing = Path(target).resolve()
@@ -199,10 +282,8 @@ def ensure_symlink(target: Path, source: Path, *, force: bool = False) -> bool:
             existing = None
         if existing == source_resolved:
             return False
-        if not force:
-            # Different existing symlink — replace anyway, install is the
-            # authoritative writer for these paths.
-            pass
+        if existing is None or "astrid" not in existing.parts:
+            raise AstridError(f"Foreign skill link preserved: {target}")
         target.unlink()
     elif is_managed_copy(target):
         shutil.rmtree(target)
@@ -225,7 +306,8 @@ def ensure_symlink(target: Path, source: Path, *, force: bool = False) -> bool:
         shutil.copytree(source_resolved, target)
         (target / _COPY_MARKER).write_text(
             json.dumps(
-                {"source": str(source_resolved), "digest": _directory_digest(source_resolved)},
+                {"source": str(source_resolved), "digest": _directory_digest(source_resolved),
+                 "mechanism": "symlink-fallback"},
                 sort_keys=True,
             ) + "\n",
             encoding="utf-8",
@@ -252,6 +334,7 @@ __all__ = [
     "InstallRecord",
     "PlannedStep",
     "ensure_symlink",
+    "edited_managed_copy",
     "is_managed_copy",
     "managed_target_matches",
     "target_mechanism",
