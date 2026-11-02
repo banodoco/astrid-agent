@@ -250,6 +250,7 @@ jobs:
             ${{ runner.temp }}/r24-live-run/config.json
             ${{ runner.temp }}/r24-live-run/tst-b1-owner.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-materializer.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/installed-identity.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/pinokiod.log
             ${{ runner.temp }}/r24-live-run/evidence/materializer/install.log
             ${{ runner.temp }}/r24-live-run/evidence/materializer/start.log

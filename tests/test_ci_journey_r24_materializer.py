@@ -367,6 +367,7 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "scripts/ci_journey_r24_materializer.py" in raw
     assert "evidence/r24-live/provider-export" in raw
     assert "evidence/r24-live/hosted-binding.json" in raw
+    assert "evidence/materializer/installed-identity.json" in raw
     assert "13cb31104c8aae655d0ee04efdb9537aa111e340" in raw
     assert "r25-linux-mode-actions" in raw
     assert mode_actions.MODE_PRODUCER_REF in raw
