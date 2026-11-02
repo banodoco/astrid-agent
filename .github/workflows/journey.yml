@@ -644,6 +644,9 @@ jobs:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
+          if ('${{ matrix.job_id }}' -eq 'direct-windows') {
+            $env:JOURNEY_LAUNCHER_PSEDITION = $PSVersionTable.PSEdition
+          }
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
           $release0Args = @()
           $oldLauncherArgs = @()
@@ -687,7 +690,9 @@ jobs:
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt',
-            'runtime-owner-processes.json', 'runtime-service-runtime.log',
+            'windows-bootstrap-environment.log',
+            'runtime-owner-processes.json', 'runtime-owner-assertion.json',
+            'runtime-service-runtime.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
             'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
