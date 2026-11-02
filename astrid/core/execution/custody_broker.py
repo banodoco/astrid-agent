@@ -574,7 +574,19 @@ def _token_from_words(words: Sequence[int]) -> _AuditToken:
     return token
 
 
+def _linux_binding():
+    """Runtime's Linux primitives (runtime_protocol, the admitted route); errors map to CustodyError."""
+    from runtime_protocol import linux_process_binding
+    return linux_process_binding
+
+
 def audit_token_details(words: Sequence[int]) -> dict[str, object]:
+    if sys.platform.startswith("linux"):
+        binding = _linux_binding()
+        try:
+            return binding.details(words)
+        except binding.LinuxBindingError as exc:
+            raise CustodyError("linux process token is unavailable") from exc
     if sys.platform != "darwin":
         raise CustodyError("Darwin audit-token custody is unavailable")
     token = _token_from_words(words)
@@ -612,6 +624,12 @@ def _peer_token(connection: socket.socket) -> dict[str, object]:
 
 def current_process_audit_token(pid: int) -> dict[str, object]:
     """Read one live process token through a retained Mach task-name port."""
+    if sys.platform.startswith("linux"):
+        binding = _linux_binding()
+        try:
+            return binding.token(pid)
+        except binding.LinuxBindingError as exc:
+            raise CustodyError("linux process token is unavailable") from exc
 
     if sys.platform != "darwin" or int(pid) <= 0:
         raise CustodyError("Darwin audit-token custody is unavailable")
@@ -683,6 +701,12 @@ def current_process_audit_token(pid: int) -> dict[str, object]:
 
 
 def signal_audit_token(words: Sequence[int], signum: int) -> None:
+    if sys.platform.startswith("linux"):
+        binding = _linux_binding()
+        try:
+            return binding.signal(words, signum)
+        except binding.LinuxBindingError as exc:
+            raise CustodyError("linux process signal refused") from exc
     if int(signum) not in _admitted_signals():
         raise CustodyError("custody signal is outside the admitted set")
     if sys.platform != "darwin":
