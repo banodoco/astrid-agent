@@ -1,16 +1,20 @@
 """TST-B1: focused custody and result-contract tests for named installed journeys."""
 
 import argparse
+from contextlib import contextmanager
+import hashlib
 import json
 import os
 import shutil
 import sys
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import ci_journey as journey
+from scripts import journey_version_jumps as jumps
 
 
 def app_checkout(tmp_path):
@@ -78,6 +82,171 @@ def test_tst_b1_installed_tuple_rejects_wrong_source(tmp_path):
                                {"root": str(installed)})
 
 
+def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
+    """Create a retained release-0 state while stubbing only external products."""
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    version_root = root / "versions" / "release0"
+    version_root.mkdir(parents=True)
+    data.mkdir(parents=True)
+    journey.write_json(root / "install.json", {"data_root": str(data)})
+    journey.write_json(run_root / journey.OWNER_FILE, {
+        "schema_version": 1, "run_id": "a" * 32,
+        "root": str(root), "data_root": str(data),
+    })
+    (root / "current").write_text("release0\n", encoding="utf-8")
+    version_path = version_root / "version.json"
+    journey.write_json(version_path, {"root": str(version_root), "python": sys.executable, "env": {}})
+    release0_manifest = tmp_path / "release0-manifest.json"
+    release0_sources = {"agent": {"sha": "1" * 40}, "runtime": {"sha": "2" * 40}}
+    journey.write_json(release0_manifest, {"release": 0, **release0_sources, "tools": {}})
+    journey.write_json(version_root / "manifest.json", {"release": 0, **release0_sources, "tools": {}})
+    app = tmp_path / "app"
+    app.mkdir()
+    target_manifest = {
+        "release": 1, "agent": {"sha": "3" * 40},
+        "runtime": {"sha": "4" * 40, "schema_digest": "f" * 64},
+        "tools": {"python": {"version": "3.11.13"}},
+    }
+    candidate = {
+        "app": "5" * 40, "agent": "3" * 40, "runtime": "4" * 40, "pinokio": "6" * 40,
+        "manifest_sha256": "7" * 64, "artifacts": {"manifest": "7" * 64},
+    }
+    candidate_path = tmp_path / "candidate.json"
+    journey.write_json(candidate_path, candidate)
+    args = argparse.Namespace(
+        run_root=run_root, root=root, data_root=data, leg="release0-to-release1", mode="direct",
+        shell="sh", job_id=None, source_override=False, app_checkout=app, candidate=candidate_path,
+        candidate_agent_checkout=tmp_path / "agent", candidate_runtime_checkout=tmp_path / "runtime",
+        pinokio_checkout=tmp_path / "pinokio", release0_fixture=tmp_path / "fixture",
+        allow_release0_to_release1=True, diagnostic_start_at="release0-api-seed",
+        diagnostic_state=run_root / jumps.DIAGNOSTIC_STATE_NAME,
+    )
+    fixture_receipt = {"fixture_sums_sha256": "8" * 64, "manifest_sha256": "9" * 64}
+    checkouts = {name: {"sha": sha, "repo": str(tmp_path / name)} for name, sha in {
+        "app": "5" * 40, "agent": "3" * 40, "runtime": "4" * 40, "pinokio": "6" * 40,
+    }.items()}
+    monkeypatch.setattr(jumps, "release0_admission", lambda unused: (
+        tmp_path / "fixture", release0_manifest, fixture_receipt))
+    monkeypatch.setattr(journey, "selected_manifest", lambda *unused, **kwargs: (
+        tmp_path / "selected-manifest.json", target_manifest))
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *unused: target_manifest)
+    monkeypatch.setattr(journey, "candidate_checkouts", lambda unused: checkouts)
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *unused: {"manager": "test"})
+    monkeypatch.setattr(journey, "healthy", lambda *unused: {"pid": 42, "runtime_instance_id": "r0"})
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: None)
+    version_path, _, version = journey.installation(root, data)
+    args.candidate_checkouts = checkouts
+    if write_state:
+        jumps.write_diagnostic_release0_preconditions(
+            args, root, data, fixture_receipt=fixture_receipt, release0_manifest=release0_manifest,
+            target_manifest=target_manifest, candidate=candidate, version_path=version_path, version=version,
+        )
+    evidence = run_root / "evidence" / "release0-to-release1-diagnostic-release0-api-seed"
+    return args, root, data, evidence, version_path
+
+
+@pytest.mark.parametrize("case", ["absent", "stale", "wrong-version", "wrong-tuple"])
+def test_diagnostic_stage_start_fails_closed_for_invalid_preconditions(tmp_path, monkeypatch, case):
+    args, root, data, evidence, version_path = _diagnostic_release0_state(
+        tmp_path, monkeypatch, write_state=case != "absent")
+    if case == "stale":
+        state = journey.read_json(args.diagnostic_state)
+        state["run_id"] = "b" * 32
+        journey.write_json(args.diagnostic_state, state)
+    elif case == "wrong-version":
+        version = journey.read_json(version_path)
+        version["diagnostic_mutation"] = True
+        journey.write_json(version_path, version)
+    elif case == "wrong-tuple":
+        state = journey.read_json(args.diagnostic_state)
+        state["release1_candidate"]["tuple"]["agent"] = "a" * 40
+        journey.write_json(args.diagnostic_state, state)
+    calls = []
+    monkeypatch.setattr(jumps, "direct_workspace", lambda *unused: calls.append(unused))
+    with pytest.raises(RuntimeError, match="precondition file is absent|preconditions are stale"):
+        jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
+    assert calls == []
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert receipt["qualification"] == {
+        "eligible": False,
+        "reason": "stage-start diagnostics do not execute the complete lifecycle",
+    }
+
+
+def test_diagnostic_stage_runs_only_seed_block_after_validated_checkpoint(tmp_path, monkeypatch):
+    args, root, data, evidence, _ = _diagnostic_release0_state(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(journey, "verify", lambda *unused, **kwargs: calls.append("verify"))
+    monkeypatch.setattr(jumps, "task_after_update", lambda *unused: "task-1")
+    def workspace(_root, _version, _data, _evidence, action, request):
+        calls.append(action)
+        if action == "seed":
+            assert request == {"project": "tst-m4-3b-release0", "generation": "release0",
+                               "task_id": None, "create_project": True}
+            return {"project": "tst-m4-3b-release0"}
+        assert action == "snapshot"
+        assert request == {"project": "tst-m4-3b-release0", "task_id": "task-1"}
+        return {"snapshot": "ok"}
+    monkeypatch.setattr(jumps, "direct_workspace", workspace)
+    result = jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
+    assert calls == ["verify", "seed", "snapshot"]
+    assert result["status"] == "pass"
+    assert result["checks"] == {"preconditions": "pass", "seed": "pass", "snapshot": "pass"}
+    assert result["evidence_class"] == "diagnostic-only"
+    assert result["qualification"]["eligible"] is False
+
+
+def test_diagnostic_release0_admission_uses_explicit_stage_not_a_job_id(tmp_path, monkeypatch):
+    args = argparse.Namespace(
+        mode="direct", job_id=None, candidate=tmp_path / "candidate.json",
+        allow_release0_to_release1=True, release0_fixture=tmp_path / "fixture",
+        source_override=False, diagnostic_start_at="release0-api-seed",
+    )
+    expected = (tmp_path / "fixture", tmp_path / "manifest.json", {"fixture": "bound"})
+    monkeypatch.setattr(jumps, "verified_release0_fixture", lambda fixture: expected)
+    assert jumps.release0_admission(args) == expected
+    args.diagnostic_start_at = None
+    with pytest.raises(ValueError, match="scoped frozen-fixture direct admission"):
+        jumps.release0_admission(args)
+
+
+def test_diagnostic_stage_start_is_explicit_and_cannot_use_a_qualification_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "execute", lambda *unused: pytest.fail("must reject before execution"))
+    base = ["--leg", "release0-to-release1", "--mode", "direct", "--app-checkout", str(tmp_path),
+            "--run-root", str(tmp_path / "run"), "--root", str(tmp_path / "run" / "program"),
+            "--data-root", str(tmp_path / "run" / "data"), "--candidate", str(tmp_path / "candidate.json"),
+            "--candidate-agent-checkout", str(tmp_path / "agent"),
+            "--candidate-runtime-checkout", str(tmp_path / "runtime"),
+            "--pinokio-checkout", str(tmp_path / "pinokio"), "--release0-fixture", str(tmp_path / "fixture"),
+            "--allow-release0-to-release1", "--diagnostic-start-at", "release0-api-seed",
+            "--diagnostic-state", str(tmp_path / "run" / jumps.DIAGNOSTIC_STATE_NAME)]
+    with pytest.raises(SystemExit) as failure:
+        journey.main([*base, "--job-id", "direct-linux"])
+    assert failure.value.code == 2
+
+
+def test_default_journey_execution_does_not_enter_diagnostic_stage(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    args = argparse.Namespace(
+        run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+        leg="fresh-install", shell="sh", mode="direct", source_override=False,
+        diagnostic_start_at=None, retain_for_next_leg=False,
+    )
+    calls = []
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setattr(journey, "assert_host_available", lambda leg, *unused: calls.append(leg))
+    monkeypatch.setattr(journey, "snapshot_failure_evidence", lambda *unused: None)
+    monkeypatch.setattr(journey, "_execute_owned", lambda *unused: {"status": "pass"})
+    monkeypatch.setattr(jumps, "execute_diagnostic_release0_stage",
+                        lambda *unused: pytest.fail("default execution entered diagnostic mode"))
+    result = journey.execute(args)
+    assert result["status"] == "pass"
+    assert result["final_cleanup"] == "pass"
+    assert calls == ["fresh-install", "cleanup"]
+
+
 def test_tst_b1_failure_writes_small_result_with_unrun_checks(tmp_path, monkeypatch):
     run_root = tmp_path / "run"
     args = argparse.Namespace(run_root=run_root, root=run_root / "program",
@@ -109,7 +278,8 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
-    assert workflow.count("repository: banodoco/astrid-app") == 3
+    assert workflow.count("repository: banodoco/astrid-app") == 4
+    assert workflow.count("name: Check out frozen App candidate") == 3
     assert "repository: banodoco/reigh-app" not in workflow
 
 
@@ -584,6 +754,66 @@ def test_failure_diagnostics_records_unavailable_install_and_manager_error(tmp_p
     assert journey.read_json(run_root / before["service_manager"]["path"])["stderr"] == "manager unavailable"
 
 
+def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps
+
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="release0-to-release1", shell="powershell.exe", retain_for_next_leg=False)
+    raw = b"first product error\r\n\xff\x00" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 31)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+
+    @contextmanager
+    def sentinel(*unused):
+        yield SimpleNamespace(pid=123), "birth"
+
+    monkeypatch.setattr(journey, "sentinel_process", sentinel)
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *unused: {"alive": True})
+
+    def process(argv, **kwargs):
+        assert str(argv[0]) == "powershell.exe"
+        kwargs["stdout"].buffer.write(raw)
+        return SimpleNamespace(returncode=37)
+
+    monkeypatch.setattr(journey.subprocess, "run", process)
+
+    def failed_journey(*unused):
+        journey.write_json(evidence / "journey-result.json",
+                           {"status": "not-run", "scenario": args.leg})
+        root.mkdir()
+        (root / "current").write_text("v0")
+        journey_version_jumps.bootstrap_release0(tmp_path / "fixture", tmp_path / "manifest",
+                                                 args.shell, evidence / "release0", root, data)
+
+    monkeypatch.setattr(journey, "_execute_owned", failed_journey)
+    monkeypatch.setattr(journey, "installation", lambda *unused: (None, data, {"python": "python"}))
+
+    def cleanup(*unused, **kwargs):
+        shutil.rmtree(evidence / "release0")
+        (root / "current").unlink()
+
+    monkeypatch.setattr(journey, "installed_cli", cleanup)
+    monkeypatch.setattr(journey, "runtime_processes", lambda *unused: [])
+    with pytest.raises(RuntimeError, match=r"release0-bootstrap.log: exit 37"):
+        journey.execute(args)
+
+    # The combined workflow uploads its allowlisted receipts from the run root.
+    # Keep this source-branch regression bound to that existing harness boundary.
+    staged = run_root / "evidence-upload"
+    for phase in ("before-cleanup", "after-cleanup"):
+        receipt = journey.read_json(staged / phase / "journey-result.json")
+        entry = receipt["failure_diagnostics"][phase]["release0_bootstrap"]
+        assert receipt["status"] == "fail"
+        assert entry == {"status": "captured", "path": (staged / phase / "release0-bootstrap.log").relative_to(run_root).as_posix(),
+                         "exit_code": 37, "sha256": hashlib.sha256(raw).hexdigest()}
+        assert (run_root / entry["path"]).read_bytes() == raw
+
+
 def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
@@ -960,3 +1190,139 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
         assert json.loads((staged / (prefix + "input.log")).read_bytes()) == {"generation": generation}
         assert json.loads((staged / (prefix + "stdout.log")).read_bytes()) == {"generation": generation}
         assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
+
+
+@pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
+def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
+    from scripts import journey_version_jumps as jumps
+
+    root, data, evidence = tmp_path / "program", tmp_path / "data", tmp_path / "evidence"
+    app = tmp_path / "app"
+    app.mkdir()
+    manifest_path = tmp_path / "manifest.json"
+    journey.write_json(manifest_path, {"release": 0})
+    candidate_path = tmp_path / "candidate.json"
+    candidate = {"manifest_sha256": "digest", "artifacts": {}}
+    journey.write_json(candidate_path, candidate)
+    manifest = {"release": 1, "agent": {}, "runtime": {}}
+    args = SimpleNamespace(job_id="direct", mode="direct", leg="release0-to-release1", shell="sh",
+                           app_checkout=app, candidate=candidate_path)
+    state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
+    calls = []
+
+    def ownership(_root, _data):
+        assert state["running"] and not state["local"]
+        return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
+
+    def one_runtime(_data):
+        assert state["running"] and not state["local"]
+
+    def manager_action(operation):
+        calls.append(operation)
+        if operation == "stop":
+            assert state["running"] and not state["local"]
+            state["running"] = False
+        else:
+            assert not state["running"] and not state["local"]
+            state["running"] = True
+            state["pid"] += 1
+
+    def run(argv, log, **kwargs):
+        if manager == "systemd-user":
+            assert argv[:2] == ["systemctl", "--user"] and argv[-1] == "astrid.service"
+            manager_action(argv[2])
+        else:
+            assert argv[0] == "launchctl" and argv[1] in ("bootout", "bootstrap")
+            manager_action("stop" if argv[1] == "bootout" else "start")
+        return ""
+
+    def powershell(code, name, **kwargs):
+        assert "-TaskName 'Astrid Runtime'" in code
+        manager_action("stop" if "Stop-ScheduledTask" in code else "start")
+        return ""
+
+    def workspace(version, _data, _evidence, action, request, *, realm):
+        # A second RuntimeService would fail this simulated exclusive lock.
+        assert not state["running"] and not state["local"]
+        assert realm == tmp_path / "realm"
+        state["local"] = True
+        try:
+            calls.append(action)
+            if action == "seed":
+                state["content"] = {"project": request["project"], "timeline": "user edit",
+                                    "preferences": "keep", "cas_sha256": "content"}
+                return {"project": request["project"]}
+            assert request["task_id"] == "settled"
+            return {**state["content"], "task": "settled", "schema_version": 1,
+                    "target_schema_version": 1}
+        finally:
+            state["local"] = False
+
+    def task(_version, _evidence, project):
+        assert state["running"] and state["content"]["project"] == project
+        calls.append("task")
+        return "settled"
+
+    def bootstrap(*_args):
+        assert state["running"] and state["content"] is not None
+        state.update(release=1, pid=state["pid"] + 1)
+
+    monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest_path, {}))
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
+    monkeypatch.setattr(journey, "selected_manifest", lambda *_args, **_kw: (candidate_path, manifest))
+    monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *_: {"alive": True})
+    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *_: None)
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda _: one_runtime(data))
+    monkeypatch.setattr(journey, "installation", lambda *_: (tmp_path / f"v{state['release']}", data,
+                                                             {"release": state["release"]}))
+    monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
+    monkeypatch.setattr(journey, "selected_tuple", lambda *_: {"agent": "old", "runtime": "old"})
+    monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "new", "runtime": "new"})
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", ownership)
+    monkeypatch.setattr(journey, "assert_one_runtime", one_runtime)
+    monkeypatch.setattr(journey, "runtime_processes", lambda _: [state["pid"]] if state["running"] else [])
+    monkeypatch.setattr(journey, "workspace_root", lambda _: tmp_path / "realm" if state["running"]
+                        else pytest.fail("discovery is unavailable after shutdown"))
+    monkeypatch.setattr(journey, "healthy", lambda _: {"pid": state["pid"],
+                                                       "runtime_instance_id": str(state["pid"])})
+    monkeypatch.setattr(journey, "process_birth", lambda pid: str(pid) if pid == state["pid"] else None)
+    monkeypatch.setattr(journey, "run", run)
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(jumps, "workspace", workspace)
+    monkeypatch.setattr(jumps, "task_after_update", task)
+    monkeypatch.setattr(journey, "bootstrap", bootstrap)
+    monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions",
+                        lambda *_args, **_kwargs: tmp_path / jumps.DIAGNOSTIC_STATE_NAME)
+
+    def verify(mode, _version, _data, directory, **_kwargs):
+        if mode == "install":
+            journey.write_json(directory / "verify-install.json", {"details": {}})
+    monkeypatch.setattr(journey, "verify", verify)
+    result = jumps.execute_release0_to_release1(args, root, data, evidence,
+                                                SimpleNamespace(pid=1), "birth")
+    assert result["status"] == "pass" and result["semantic_data"]["identical"]
+    assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
+                     "stop", "snapshot", "start", "task"]
+    assert state["running"] and not state["local"]
+
+
+def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps as jumps
+
+    state = {"running": True}
+    monkeypatch.setattr(journey, "assert_direct_service_ownership",
+                        lambda *_: {"manager": "systemd-user"} if state["running"] else pytest.fail("stopped"))
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda *_: None)
+    monkeypatch.setattr(journey, "runtime_processes", lambda *_: [1] if state["running"] else [])
+    monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
+    monkeypatch.setattr(journey, "run", lambda argv, *_args, **_kw: state.update(running=argv[2] == "start"))
+    def fail(*_args, **_kwargs):
+        assert not state["running"]
+        raise ValueError("workspace failed")
+    monkeypatch.setattr(jumps, "workspace", fail)
+    with pytest.raises(ValueError, match="workspace failed"):
+        jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
+    assert state["running"]
