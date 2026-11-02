@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   windows-journey:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.app_ref != '79a88325f72600b8ab30f87c403c2c0db373524c' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.app_ref == '' }}
     name: Windows task host journey (${{ matrix.installer-shell }})
     runs-on: windows-latest
     timeout-minutes: 120
@@ -128,7 +128,7 @@ jobs:
           if-no-files-found: error
 
   windows-schema-acl:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.app_ref == '79a88325f72600b8ab30f87c403c2c0db373524c' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.app_ref != '' }}
     name: Windows schema ACL controls
     runs-on: windows-latest
     timeout-minutes: 30
@@ -136,12 +136,17 @@ jobs:
       - name: Check out the exact requested Agent head
         uses: actions/checkout@v4
         with:
-          ref: 79a88325f72600b8ab30f87c403c2c0db373524c
+          ref: ${{ inputs.app_ref }}
 
       - name: Record the checked-out Agent commit
         shell: pwsh
+        env:
+          EXPECTED_AGENT_REF: ${{ inputs.app_ref }}
         run: |
-          $expected = '79a88325f72600b8ab30f87c403c2c0db373524c'
+          $expected = $env:EXPECTED_AGENT_REF.Trim().ToLowerInvariant()
+          if ($expected -notmatch '^[0-9a-f]{40}$') {
+            throw "app_ref must be a full 40-character Agent commit SHA"
+          }
           $head = git rev-parse HEAD
           if ($head -ne $expected) {
             throw "expected Agent $expected but checked out $head"
