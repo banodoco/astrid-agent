@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core import timeline
+from astrid.pack_api import POOL_VERSION, load_pool, validate_pool
 from astrid.pack_api import build_manifest, write_manifest
 from astrid.pack_api import register_outputs
 from astrid.core.element import catalog as effects_catalog
@@ -27,7 +27,7 @@ def _stable_pool_id(effect_id: str) -> str:
 
 def _skeleton() -> dict[str, Any]:
     return {
-        "version": timeline.POOL_VERSION,
+        "version": POOL_VERSION,
         "generated_at": utc_now_seconds(),
         "entries": [],
     }
@@ -76,11 +76,11 @@ def merge_pool(pool: dict[str, Any], *, theme: str | Path | None = None) -> dict
     for entry_id in sorted(set(upserts) - replaced):
         entries.append(upserts[entry_id])
     merged = dict(pool)
-    merged["version"] = timeline.POOL_VERSION
+    merged["version"] = POOL_VERSION
     merged.setdefault("generated_at", utc_now_seconds())
     merged["entries"] = entries
     if not kept_stale_theme_entries:
-        timeline.validate_pool(merged)
+        validate_pool(merged)
     return merged
 
 
@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    pool = timeline.load_pool(args.pool) if args.pool.exists() else _skeleton()
+    pool = load_pool(args.pool) if args.pool.exists() else _skeleton()
     merged = merge_pool(pool, theme=args.theme)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")

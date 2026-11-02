@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 EXPECTED_PUBLIC_NAMES = (
+    "child_bridge_is_live",
+    "inherited_child_bridge",
+    "validate_child_policy",
     "discover",
     "get_capability",
     "invoke",

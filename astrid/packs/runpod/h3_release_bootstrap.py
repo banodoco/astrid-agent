@@ -7,6 +7,8 @@ after provisioning. No installed Astrid or third-party target package is needed.
 """
 from __future__ import annotations
 
+from astrid.pack_api import astrid_root
+
 import base64
 import hashlib
 import io
@@ -42,7 +44,7 @@ _RUNTIME_SOURCES = ("__init__.py", "errors.py", "platform.py", "cancellation.py"
 
 def source_archive() -> bytes:
     """Return deterministic bytes from either a checkout or installed package."""
-    package = Path(__file__).resolve().parents[2]
+    package = astrid_root()
     files = {"astrid/" + name: (package / name).read_bytes() for name in _SOURCES}
     runtime = Path(runtime_protocol.__file__).resolve().parent
     files.update({"runtime_protocol/" + name: (runtime / name).read_bytes()

@@ -56,6 +56,8 @@ product result envelope.
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
 import argparse
 import copy
 import json
@@ -1376,7 +1378,7 @@ def _navigation_scope(
 
 def _timeline_editing_resources() -> dict[str, Any]:
     """Locate the installed checkout recipe without depending on cwd."""
-    docs_root = Path(__file__).resolve().parents[1] / "rendering" / "docs"
+    docs_root = pack_root("rendering") / "docs"
     guide = docs_root / "references" / "document-checkout.md"
     script = docs_root / "scripts" / "timeline_document.py"
     return {

@@ -7,6 +7,10 @@ frames.
 """
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import copy
 import hashlib
 import json
@@ -246,7 +250,7 @@ def element_source_roots(checkout: Path) -> list[tuple[str, Path]]:
 
 
 def _checkout_root() -> Path:
-    return Path(__file__).resolve().parents[5]
+    return checkout_root()
 
 
 def renderer_environment_identity() -> str:
@@ -861,7 +865,7 @@ class RemotionFrameProvider:
     def _validate_staged_assets(self, clip: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
         from astrid.core.rendering.scene_answers import SceneQueryUnavailable
         from astrid.packs.rendering.rendering.renderers.remotion.run import (
-            REPO_ROOT,
+            CHECKOUT_ROOT,
             _effect_id_for_clip,
             _effect_registry_for_assets,
             _resolve_end_spanning_card_assets,
@@ -869,7 +873,7 @@ class RemotionFrameProvider:
             load_default_registry,
         )
 
-        catalog = load_default_registry(project_root=REPO_ROOT)
+        catalog = load_default_registry(project_root=CHECKOUT_ROOT)
         effects, aliases = _effect_registry_for_assets(self.theme_path, registry=catalog)
         ref = clip.get("elementRef")
         effect_id = ref.get("id") if isinstance(ref, Mapping) and ref.get("kind") == "effect" else _effect_id_for_clip(clip, effects, aliases)

@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import argparse
 import json
 import subprocess
@@ -13,9 +17,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from astrid.core import timeline
+from astrid.pack_api import load_registry
 from astrid.pack_api import write_json_atomic
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.media import MediaProbe, MediaProbeError, ffprobe_metadata_strict
 from astrid.core.rendering.artifacts import validate_render_result
 from astrid.pack_api import SCHEMA_VERSION
@@ -118,7 +121,7 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
         timeline_data = json.loads(timeline_path.read_text(encoding="utf-8"))
         if not isinstance(timeline_data, dict):
             raise ValueError("timeline must contain a JSON object")
-        assets = timeline.load_registry(assets_path)
+        assets = load_registry(assets_path)
     except Exception as exc:  # noqa: BLE001 - support reports normalize adapter failures
         return _support_load_failure(str(exc) or type(exc).__name__)
 
@@ -243,7 +246,7 @@ def _protocol_render(
     specialization_spec: audio_reactive_colour.AudioReactiveColourSpec | None = None
     if report.features.get("audio_reactive_colour") is True:
         timeline_data = json.loads(timeline_path.read_text(encoding="utf-8"))
-        registry = timeline.load_registry(assets_path)
+        registry = load_registry(assets_path)
         specialization_spec = audio_reactive_colour.match_and_validate(
             timeline_data,
             registry,
@@ -290,7 +293,7 @@ def _protocol_render(
         declared_profile = request.profile or probed_profile
         duration_frames = _duration_frames(probe, declared_profile)
         backend_provenance = remotion_backend._render_provenance_payload(
-            project_dir=REPO_ROOT / "remotion",
+            project_dir=CHECKOUT_ROOT / "remotion",
             composition_id="TimelineComposition",
             theme_path=None,
             active_theme=None,

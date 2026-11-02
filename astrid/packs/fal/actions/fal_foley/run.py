@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from astrid.pack_api import AstridError
-from astrid.core.contracts.errors import _redact_credential_data, _redact_credentials
+from astrid.pack_api import redact_credential_data, redact_credentials
 from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('fal.fal_foley')
@@ -34,7 +34,7 @@ def _save_audio(
         audio = result["video"]
     if not audio or not audio.get("url"):
         raise AstridError(
-            f"fal foley result had no audio url: {_redact_credentials(str(_redact_credential_data(result)))[:400]}",
+            f"fal foley result had no audio url: {redact_credentials(str(redact_credential_data(result)))[:400]}",
             code="FAL_FOLEY_MISSING_AUDIO_URL",
             field="audio.url",
             fix="Retry the Foley request; if it recurs, inspect the fal response and report the missing audio URL.",

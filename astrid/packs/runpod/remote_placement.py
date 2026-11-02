@@ -28,6 +28,8 @@ provider path of its own. Tests stub the whole boundary.
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
 import base64
 import hashlib
 import io
@@ -869,7 +871,7 @@ class LifecyclePodProvider:
     def _claim_module():
         import importlib.util
 
-        path = Path(__file__).resolve().parents[3] / "scripts" / "claim_runpod_5090_backup.py"
+        path = checkout_root() / "scripts" / "claim_runpod_5090_backup.py"
         spec = importlib.util.spec_from_file_location("astrid_claim_runpod_5090_backup", path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None

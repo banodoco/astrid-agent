@@ -6,6 +6,8 @@ renderer reads), never element params. Pure apart from the Clip it is given.
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
 import argparse
 import json
 from collections.abc import Mapping
@@ -79,7 +81,7 @@ def look_values(parsed: argparse.Namespace) -> dict[str, str]:
 
 
 def composition_version(project_dir: Path | None = None) -> str:
-    root = project_dir or Path(__file__).resolve().parents[3]
+    root = project_dir or checkout_root()
     try:
         lock = json.loads((root / "remotion" / "package-lock.json").read_text(encoding="utf-8"))
         version = lock.get("packages", {}).get("node_modules/@banodoco/timeline-composition", {}).get("version")

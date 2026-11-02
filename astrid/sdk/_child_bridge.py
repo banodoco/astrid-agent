@@ -35,6 +35,17 @@ _DISCOVERY_GRANT_CEILINGS = {
     "max_child_media_bytes": 16 * 1024 * 1024,
 }
 _bridge: ChildBridge | None = None
+
+
+def inherited_child_bridge() -> ChildBridge | None:
+    """Return the bridge inherited by this managed action, if any."""
+    return _bridge
+
+
+def child_bridge_is_live(value: Any) -> bool:
+    """Report whether a value is this SDK's open, connected child bridge."""
+    return (isinstance(value, ChildBridge) and not value._closed
+            and value._channel.fileno() >= 0)
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\Z")
 _OUTPUT_FIELDS = {"association_id", "run_id", "task_id", "attempt_id", "object_id",
                   "digest", "size", "filename", "media_type", "output_port", "ordinal"}
@@ -402,6 +413,11 @@ def _validate_child_policy(value: Mapping[str, Any] | None) -> dict[str, Any] | 
             raise CapabilityValidationError("recoverable_outputs must pin editorial.human_review/state_result in capabilities")
     # Runtime resolves defaults, permitted names, numeric ceilings and policy authority.
     return json.loads(_strict_json(copied))
+
+
+def validate_child_policy(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Validate and normalize the finite child delegation policy."""
+    return _validate_child_policy(value)
 
 
 class _BridgeTimeout(CapabilityInvocationError):

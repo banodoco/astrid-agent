@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
 from astrid.pack_api import AstridValueError
 from astrid.pack_api import guard_canonical_entrypoint
 
@@ -591,8 +593,8 @@ def _t9_child_dispatch(
     # Reuse the strict synthetic model/candidate/fixture inventory checks;
     # merely having a profile or an ambient Python module is not activation.
     generation.character_swap_asset_sha256()
-    root = Path(__file__).resolve().parents[5]
-    if Path(generation.__file__).resolve().parents[4] != root:
+    root = checkout_root()
+    if checkout_root() != root:
         raise AstridValueError("T9 child generation source belongs to another closure")
     candidate_path = Path(os.environ["ASTRID_H3_CANDIDATE_MANIFEST"])
     candidate_bytes = candidate_path.read_bytes()

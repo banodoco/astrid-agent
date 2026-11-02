@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
+CHECKOUT_ROOT = checkout_root()
+
 import hashlib
 import json
 import os
@@ -30,7 +34,6 @@ def execute_scene_only(
     label_snapshot: Callable[..., dict[str, object]],
 ) -> dict[str, Any]:
     """Return public Scene answers through the ordinary filmstrip artifact."""
-    from astrid.core.foundation.paths import REPO_ROOT
     from astrid.core.rendering import scene_answers
     from astrid.core.rendering.remotion_runtime import default_composition_id
     from astrid.core.rendering.verified_source import inherited_source
@@ -98,7 +101,7 @@ def execute_scene_only(
             raise scene_answers.SceneQueryUnavailable("verified source has no exact timeline identity")
         out_root.mkdir(parents=True, exist_ok=True)
         project_dir = Path(
-            os.environ.get("ASTRID_REMOTION_PROJECT_DIR") or (REPO_ROOT / "remotion")
+            os.environ.get("ASTRID_REMOTION_PROJECT_DIR") or (CHECKOUT_ROOT / "remotion")
         ).resolve()
         with tempfile.TemporaryDirectory(prefix=".scene-only-", dir=str(out_root)) as temporary:
             answers = scene_answers._prepared_host_frames_at(

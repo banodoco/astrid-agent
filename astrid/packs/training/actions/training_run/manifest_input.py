@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from astrid.pack_api import write_json_atomic
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.packs.training.shared.manifest import validate_schema
 from astrid.packs.training.shared.manifest_adapters.ai_toolkit_ltx import (
     AiToolkitLtxAdapter,
@@ -31,7 +34,7 @@ def normalize_ai_toolkit_manifest(
     manifest_path: str | Path,
     training_run_dir: str | Path,
     *,
-    repo_root: Path = REPO_ROOT,
+    repo_root: Path = PACK_ROOT,
     allow_inferred_caption_sidecars: bool = True,
 ) -> NormalizedManifest:
     """Normalize canonical or flat training manifests into the training run."""
@@ -79,7 +82,7 @@ def seed_from_dataset_run(
     dataset_run_dir: str | Path,
     training_run_dir: str | Path,
     *,
-    repo_root: Path = REPO_ROOT,
+    repo_root: Path = PACK_ROOT,
 ) -> NormalizedManifest:
     """Normalize the dataset-builder compatibility flat manifest into a training run."""
     return normalize_ai_toolkit_manifest(compatibility_manifest_path(dataset_run_dir), training_run_dir, repo_root=repo_root)

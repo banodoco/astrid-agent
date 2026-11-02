@@ -1,6 +1,8 @@
 """The layer interface, the registry and pack discovery."""
 from __future__ import annotations
 
+from importlib.resources import files
+
 import importlib.util
 import math
 import sys
@@ -195,7 +197,7 @@ def check_defaults() -> dict[str, Any]:
 
 
 def _packs_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+    return Path(str(files("astrid.packs")))
 
 
 def broken() -> dict[str, str]:

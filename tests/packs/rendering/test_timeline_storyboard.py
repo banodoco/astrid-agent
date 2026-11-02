@@ -194,8 +194,8 @@ def test_discord_inputs_sort_bare_then_numeric_through_ten(tmp_path: Path) -> No
     registry_path = _write_json(tmp_path / "assets.json", registry)
 
     view_model = storyboard.build_view_model(
-        storyboard.timeline.load_timeline(timeline_path),
-        storyboard.timeline.load_registry(registry_path),
+        storyboard.load_timeline(timeline_path),
+        storyboard.load_registry(registry_path),
         registry_dir=registry_path.parent,
     )
 
@@ -575,8 +575,8 @@ def test_placeholder_shot_carries_prompt_metadata_and_authored_bounds(
     )
 
     view_model = storyboard.build_view_model(
-        storyboard.timeline.load_timeline(timeline_path),
-        storyboard.timeline.load_registry(registry_path),
+        storyboard.load_timeline(timeline_path),
+        storyboard.load_registry(registry_path),
         registry_dir=registry_path.parent,
     )
 
@@ -660,8 +660,8 @@ def test_placeholder_flag_distinguishes_media_shots_from_slots(tmp_path: Path) -
     )
 
     view_model = storyboard.build_view_model(
-        storyboard.timeline.load_timeline(timeline_path),
-        storyboard.timeline.load_registry(registry_path),
+        storyboard.load_timeline(timeline_path),
+        storyboard.load_registry(registry_path),
         registry_dir=registry_path.parent,
     )
     shot = view_model["shots"][0]

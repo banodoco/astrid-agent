@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import re
 import subprocess
 import time
@@ -9,7 +13,6 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.foundation.paths import REPO_ROOT
 
 from ....shared.interfaces import FilterResult
 from ._common import (
@@ -27,7 +30,7 @@ BLACK_DURATION_RE = re.compile(r"black_duration:(?P<duration>[0-9.]+)")
 
 
 class BlackFrameFilter:
-    def __init__(self, *, runner: Runner = subprocess.run, repo_root: Path = REPO_ROOT, **_: Any) -> None:
+    def __init__(self, *, runner: Runner = subprocess.run, repo_root: Path = PACK_ROOT, **_: Any) -> None:
         self._runner = runner
         self._repo_root = repo_root
 

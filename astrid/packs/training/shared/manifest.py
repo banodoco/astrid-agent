@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -12,7 +14,7 @@ from referencing import Registry, Resource
 
 from .items import repo_relative_path, utc_now_iso
 
-SCHEMAS_ROOT = Path(__file__).resolve().parents[1] / "actions" / "dataset_build" / "schemas"
+SCHEMAS_ROOT = pack_root("training") / "actions" / "dataset_build" / "schemas"
 
 
 def accepted_items(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:

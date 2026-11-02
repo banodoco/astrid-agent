@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-
 from astrid.pack_api import owned_by_current_user
 from astrid.pack_api import guard_canonical_entrypoint
 
@@ -25,9 +24,8 @@ from typing import Any, Mapping, Sequence
 
 from runtime_protocol.dirfd import filesystem as os
 
-from astrid.core import timeline
+from astrid.pack_api import save_registry
 from astrid.pack_api import build_manifest, write_manifest
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.pack_api import SCHEMA_VERSION
 from astrid.core.rendering.contracts import RenderRequest
 from astrid.core.rendering.delivery_audio import METADATA_KEY as DELIVERY_AUDIO_KEY
@@ -252,7 +250,7 @@ def _rewrite_provenance_output_path(
 
 def _write_empty_asset_registry(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    timeline.save_registry({"assets": {}}, path)
+    save_registry({"assets": {}}, path)
 
 
 def _write_render_manifest(output: Path, *, timeline_path: Path, selector: str) -> None:

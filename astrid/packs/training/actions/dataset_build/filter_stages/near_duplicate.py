@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from astrid.core.foundation.paths import REPO_ROOT
 
 from ..acquisition import string_set
 from ....shared.interfaces import FilterResult
@@ -24,7 +27,7 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 class NearDuplicateFilter:
-    def __init__(self, *, runner: Runner = subprocess.run, repo_root: Path = REPO_ROOT, **_: Any) -> None:
+    def __init__(self, *, runner: Runner = subprocess.run, repo_root: Path = PACK_ROOT, **_: Any) -> None:
         self._runner = runner
         self._repo_root = repo_root
 

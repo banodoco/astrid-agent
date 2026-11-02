@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.foundation.paths import REPO_ROOT
 
 from ..items import repo_relative_path, utc_now_iso
 from ..manifest import validate_schema
@@ -22,7 +25,7 @@ class AiToolkitLtxAdapter:
         out_path: str | Path = "ai-toolkit-ltx.manifest.json",
         source_manifest: str | Path | None = None,
         vocabulary_path: str | Path | None = None,
-        repo_root: Path = REPO_ROOT,
+        repo_root: Path = PACK_ROOT,
     ) -> None:
         self.out_path = Path(out_path)
         self.source_manifest = Path(source_manifest) if source_manifest is not None else None

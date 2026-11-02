@@ -7,6 +7,10 @@ Historical acquisition identity and failed-child snapshot recovery are not prove
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import copy
 import hashlib
 import io
@@ -23,7 +27,6 @@ from runtime_protocol.dirfd import filesystem as os
 
 import astrid.sdk as sdk
 from astrid.pack_api import write_json_atomic
-from astrid.core.foundation.paths import REPO_ROOT
 
 from .state import validate_review_state, write_review_state
 
@@ -216,7 +219,7 @@ def prepare_inputs(*, root: Path, run_dir: Path, data_path: Path, state_path: Pa
         path = Path(raw)
         if not path.is_absolute():
             _relative(raw)
-            path = REPO_ROOT / path
+            path = PACK_ROOT / path
         relative = _under(path, root)
         media_relative = _under(path, clips)
         # Encode URL components individually; the ZIP member stays the exact

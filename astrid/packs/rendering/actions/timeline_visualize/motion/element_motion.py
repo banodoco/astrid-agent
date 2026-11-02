@@ -10,6 +10,8 @@ the renderer's own Node and esbuild (~0.1 s). Without Node the hand mirror in
 
 from __future__ import annotations
 
+from importlib.resources import files
+
 import json
 import hashlib
 import math
@@ -19,7 +21,6 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.pack.manifest import ManifestParseError, load_manifest_mapping
 
 SCRIPT = Path(__file__).with_name("element_motion.mjs")
@@ -83,7 +84,7 @@ def canonical_element_identity(reference: Mapping[str, Any] | None) -> str | Non
 def _packs_root(root: Path | None) -> Path:
     """Return the checkout's declared pack root; never search beneath it."""
     if root is None:
-        return (Path(REPO_ROOT) / "astrid" / "packs").resolve()
+        return Path(str(files("astrid.packs"))).resolve()
     candidate = Path(root).resolve()
     checkout_packs = candidate / "astrid" / "packs"
     return checkout_packs if checkout_packs.is_dir() else candidate

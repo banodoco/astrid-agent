@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from importlib import import_module as _import_module
 
-VERSION = (1, 0)
+VERSION = (1, 1)
 
 # Public name -> implementation module. No pack may be a dependency here.
 _EXPORTS = {
@@ -40,6 +40,8 @@ _EXPORTS = {
     'PipeReader': 'astrid.core.execution.pipe_io',
     'PipeWriter': 'astrid.core.execution.pipe_io',
     'PipelineMetadata': 'astrid.core.timeline',
+    'POOL_VERSION': 'astrid.core.timeline',
+    'Pool': 'astrid.core.timeline',
     'ProjectRuntimeError': 'astrid.core.project.runtime',
     'ROLE_DURATION_BOUNDS': 'astrid.core.timeline',
     'RecoverableArgumentParser': 'astrid.core.cli_choices',
@@ -55,6 +57,10 @@ _EXPORTS = {
     'TOTAL_DURATION_BOUNDS': 'astrid.core.timeline',
     'TRIM_BOUND_EXTENSION_SEC': 'astrid.core.timeline',
     'TimelineConfig': 'astrid.core.timeline',
+    'Timeline': 'astrid.core.timeline',
+    'TimelineActor': 'astrid.core.timeline.events.schema.types',
+    'TimelineEvent': 'astrid.core.timeline.events.schema.types',
+    'TimelineSnapshot': 'astrid.core.timeline.snapshot',
     'UncertainCancellation': 'astrid.core.execution.managed_tool_session',
     'add_choice_arg': 'astrid.core.cli_choices',
     'admit_orchestrator_project_run': 'astrid.core.project.kernel_admission',
@@ -64,9 +70,12 @@ _EXPORTS = {
     'build_manifest': 'astrid.core._shared.result_manifest',
     'build_normalized_review': 'astrid.core.experiments.normalize',
     'build_rubric_response_schema': 'astrid.core.experiments.evaluation',
+    'pack_root': 'astrid.core.foundation.pack_resources',
     'bundle_fps': 'astrid.core.timeline.cuts',
     'canonical_event_json': 'astrid.core.events',
     'canonical_runtime_entrypoint': 'astrid.core.pack.entrypoint',
+    'astrid_root': 'astrid.core.foundation.pack_resources',
+    'checkout_root': 'astrid.core.foundation.pack_resources',
     'canonical_timeline_config': 'astrid.core.timeline',
     'close_pipe_workers': 'astrid.core.execution.pipe_io',
     'compile_arrangement_plan': 'astrid.core.timeline',
@@ -85,6 +94,7 @@ _EXPORTS = {
     'is_all_generative_arrangement': 'astrid.core.timeline',
     'is_experiment_review_save': 'astrid.core.experiments.state',
     'is_valid_content_hash': 'astrid.core.experiments.schema',
+    'inspect_renderer': 'astrid.core.modalities',
     'load_arrangement': 'astrid.core.timeline',
     'load_default_registry': 'astrid.core.execution.executor.registry',
     'load_experiment_review_state': 'astrid.core.experiments.state',
@@ -114,7 +124,10 @@ _EXPORTS = {
     'register_product_commands': 'astrid.core.cli.registration',
     'reject_project_with_out': 'astrid.core.project.runtime',
     'release_group': 'astrid.core.execution.process_group',
+    'resolve_artifact': 'astrid.core.modalities',
     'render_astrid_error': 'astrid.core.contracts.errors',
+    'redact_credential_data': 'astrid.core.contracts.errors',
+    'redact_credentials': 'astrid.core.contracts.errors',
     'require_action_available': 'astrid.core.generation.availability',
     'require_project_owned_artifact': 'astrid.core.project.ownership',
     'require_runtime_materialized_file': 'astrid.core.media',
@@ -126,6 +139,7 @@ _EXPORTS = {
     'save_arrangement': 'astrid.core.timeline',
     'save_metadata': 'astrid.core.timeline',
     'save_registry': 'astrid.core.timeline',
+    'save_pool': 'astrid.core.timeline',
     'save_timeline': 'astrid.core.timeline',
     'selected_project': 'astrid.core.project.guidance',
     'sha256_file': 'astrid.core.foundation.hash',
@@ -137,6 +151,9 @@ _EXPORTS = {
     'utc_now_seconds': 'astrid.core.util.time',
     'validate_arrangement': 'astrid.core.timeline',
     'validate_arrangement_duration_window': 'astrid.core.timeline',
+    'validate_pool': 'astrid.core.timeline',
+    'validate_registry': 'astrid.core.timeline',
+    'validate_timeline': 'astrid.core.timeline',
     'validate_conclusions': 'astrid.core.experiments.evaluation',
     'validate_diagnostics': 'astrid.core.experiments.schema',
     'validate_experiment': 'astrid.core.experiments.schema',
@@ -147,6 +164,8 @@ _EXPORTS = {
     'write_journal_atomic': 'astrid.core.util.generation_helpers',
     'write_json_atomic': 'astrid.core._shared.jsonio',
     'write_manifest': 'astrid.core._shared.result_manifest',
+    'timeline_duration_frames': 'astrid.core.timeline',
+    'timeline_render_duration_frames': 'astrid.core.timeline',
 }
 
 __all__ = ("VERSION", *_EXPORTS)

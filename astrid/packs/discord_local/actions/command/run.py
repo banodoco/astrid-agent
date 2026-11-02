@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root, pack_root
+
 from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("discord_local.command")
@@ -27,8 +29,8 @@ from astrid.pack_api import run_pack_main
 
 # Used only to scrub internal paths from debug text. Runtime dependencies are
 # supplied explicitly and are never located relative to this package path.
-_SOURCE_ROOT_FOR_REDACTION = Path(__file__).resolve().parents[5]
-VARIANTS_FILE = Path(__file__).resolve().parents[2] / "model_variants.json"
+_SOURCE_ROOT_FOR_REDACTION = checkout_root()
+VARIANTS_FILE = pack_root("discord_local") / "model_variants.json"
 OPTION_RE = re.compile(
     r"\s+(resolution|duration|seed|aspect_ratio|input_media(?:_(?:[2-9]|10))?):([^\s]+)",
     re.IGNORECASE,
