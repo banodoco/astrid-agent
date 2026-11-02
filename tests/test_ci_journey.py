@@ -866,22 +866,27 @@ def test_windows_bootstrap_run_preserves_inherited_environment_arguments_and_exi
     assert captured["argv"][3].endswith("exit $LASTEXITCODE")
 
 
-def test_windows_bootstrap_run_keeps_none_environment_inherited(tmp_path, monkeypatch):
+def test_windows_bootstrap_run_keeps_none_environment_inherited_and_retains_diagnostic(tmp_path, monkeypatch):
     monkeypatch.setattr(journey.sys, "platform", "win32")
     captured = {}
+    diagnostic = ('JOURNEY_POWERSHELL_BOOTSTRAP_ENV='
+                  '{"ps_edition":"Desktop","ps_module_path":"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\Modules"}\n')
 
     def fake_run(argv, **kwargs):
         captured["argv"] = argv
         captured["env"] = kwargs["env"]
+        kwargs["stdout"].write(diagnostic + "installer output\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    log = tmp_path / "release0" / "release0-bootstrap.log"
     journey.run(["powershell.exe", "-NoProfile", "-File", r"C:\journey\install.ps1"],
-                tmp_path / "release0" / "release0-bootstrap.log")
+                log)
 
     assert captured["argv"][2] == "-Command"
     assert "JOURNEY_POWERSHELL_BOOTSTRAP_ENV=" in captured["argv"][3]
     assert captured["env"] is None
+    assert log.read_text(encoding="utf-8") == diagnostic + "installer output\n"
 
 
 def test_windows_bootstrap_command_leaves_non_bootstrap_launches_unchanged(monkeypatch):
