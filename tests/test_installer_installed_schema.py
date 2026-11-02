@@ -23,6 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.core.gateway.doctor_bundle import redact_log
 from astrid.installer import app_update, core
 from astrid.installer.backend import Backend
 from astrid.installer.service import LABEL
@@ -32,6 +33,7 @@ SCHEMA = Path("astrid/core/timeline/schema/timeline-config.schema.json")
 PRODUCER = "5453366458f7b4ee874c94d15ae7952e3e82d3c3"
 SCHEMA_SHA256 = "f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
 pytestmark = pytest.mark.linux_native
+_CHILD_OUTPUT_TAIL = 16 * 1024
 
 
 def _run(argv, *, cwd, env=None):
@@ -167,10 +169,54 @@ print(json.dumps({name: importlib.import_module(name).__file__ for name in names
 
 
 def _installed_script(state, version, script, *args):
-    return json.loads(state.backend.run(
-        [version.python, "-X", "utf8", "-I", "-B", "-c", script,
-         state.product_root, ROOT, version.root / "a", *args], extra_env=version.env,
+    try:
+        output = state.backend.run(
+            [version.python, "-X", "utf8", "-I", "-B", "-c", script,
+             state.product_root, ROOT, version.root / "a", *args], extra_env=version.env,
+        )
+    except subprocess.CalledProcessError as exc:
+        child_output = exc.output.decode("utf-8", errors="replace") if isinstance(
+            exc.output, bytes) else str(exc.output or "")
+        diagnostic = redact_log(child_output)[-_CHILD_OUTPUT_TAIL:].strip()
+        pytest.fail(
+            "installed reader/validator child probe failed "
+            f"(exit {exc.returncode}); redacted combined output tail:\n"
+            f"{diagnostic or '<no child output captured>'}",
+            pytrace=False,
+        )
+    return json.loads(output)
+
+
+def test_installed_script_failure_exposes_redacted_child_exception():
+    child_output = "\n".join((
+        "Traceback (most recent call last):",
+        r"  File C:\Users\PrivateRunner\schema-probe.py, line 4, in <module>",
+        "ValueError: local timeline schema input has a foreign owner/mode: source",
+        "ASTRID_WORKSPACE_CREDENTIAL=workspace-secret",
+        "Authorization: Bearer bearer-secret",
     ))
+
+    def fail(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(23, ["python"], output=child_output)
+
+    state = SimpleNamespace(
+        backend=SimpleNamespace(run=fail),
+        product_root=Path("installed-product"),
+    )
+    version = SimpleNamespace(python=Path("python"), root=Path("version"), env={})
+
+    with pytest.raises(pytest.fail.Exception) as raised:
+        _installed_script(state, version, "raise ValueError")
+
+    message = str(raised.value)
+    assert "installed reader/validator child probe failed (exit 23)" in message
+    assert "ValueError: local timeline schema input has a foreign owner/mode: source" in message
+    assert "<redacted:path>" in message
+    assert "ASTRID_WORKSPACE_CREDENTIAL=<redacted>" in message
+    assert "Authorization: <redacted> <redacted>" in message
+    assert "PrivateRunner" not in message
+    assert "workspace-secret" not in message
+    assert "bearer-secret" not in message
 
 
 def test_stage_binds_installed_reader_validator_and_service_to_verified_schema(staged_installer):
