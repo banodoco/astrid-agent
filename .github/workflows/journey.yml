@@ -211,6 +211,13 @@ jobs:
               finally: os.close(dirfd)
           
           
+          def publish_cache_marker(root, marker, run_id):
+              marker_temp = root / "cache-marker.next"
+              fd = os.open(str(marker_temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+              with os.fdopen(fd, "w") as stream:
+                  stream.write(run_id); stream.flush(); os.fsync(stream.fileno())
+              rename_exclusive(marker_temp, marker)
+          
           def stage(home, runner, toolcache, temp, run_id=None):
               run_id = run_id or os.urandom(16).hex()
               if shutil.disk_usage(home).free < 10_000_000_000:
@@ -275,8 +282,7 @@ jobs:
               if info != {"version": PY_VERSION, "arch": "arm64", "prefix": str(py_dest)}:
                   raise RuntimeError("Runner-owned standalone Python failed identity checks")
               move_to_new_owned_dir(psextract, ps_dest)
-              fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-              with os.fdopen(fd, "w") as stream: stream.write(journal["run_id"])
+              publish_cache_marker(root, marker, journal["run_id"])
               current_path, current_mode = read_owned(runner / ".path")
               if current_path != original_path or current_mode != original_mode:
                   raise RuntimeError("Runner PATH changed during staging")
@@ -313,31 +319,63 @@ jobs:
               py = toolcache / "Python" / PY_VERSION / "arm64"
               marker = py.parent / "arm64.complete"
               ps = root / "powershell-7.6.9"
-              present = []
-              for directory in (py, ps):
-                  if directory.exists() or directory.is_symlink():
-                      real_dir(directory)
-                      owner, _ = read_owned(directory / ".astrid-prereq-owner")
-                      if owner is None or owner.decode("ascii") != run_id:
-                          raise RuntimeError("Prerequisite owner marker is missing or changed")
-                      present.append(directory)
+              paths = {"python": py, "powershell": ps}
+              quarantine = {key: path.parent / (".astrid-rollback-" + run_id + "-" + key)
+                            for key, path in paths.items()}
               if marker.exists() or marker.is_symlink():
                   marker_data, _ = read_owned(marker)
                   if marker_data is None or marker_data.decode("ascii") != run_id:
                       raise RuntimeError("Cache marker is invalid")
               if not shutil.rmtree.avoids_symlink_attacks:
                   raise RuntimeError("Safe directory removal is unavailable")
-              for directory in present:
+              if journal["state"] != "rollback-in-progress":
+                  identities = {}
+                  for key, directory in paths.items():
+                      if quarantine[key].exists() or quarantine[key].is_symlink():
+                          raise RuntimeError("Rollback quarantine unexpectedly exists")
+                      if directory.exists() or directory.is_symlink():
+                          real_dir(directory)
+                          owner, _ = read_owned(directory / ".astrid-prereq-owner")
+                          if owner is None or owner.decode("ascii") != run_id:
+                              raise RuntimeError("Prerequisite owner marker is missing or changed")
+                          st = directory.stat()
+                          identities[key] = [st.st_dev, st.st_ino]
+                      else:
+                          identities[key] = None
+                  journal["rollback_dirs"] = identities
+                  journal["state"] = "rollback-in-progress"
+                  write_journal(journal_path, journal)
+              identities = journal.get("rollback_dirs")
+              if not isinstance(identities, dict) or set(identities) != set(paths):
+                  raise RuntimeError("Rollback identities are missing")
+              for key, original in paths.items():
+                  renamed = quarantine[key]
+                  a = original.exists() or original.is_symlink()
+                  b = renamed.exists() or renamed.is_symlink()
+                  if a and b:
+                      raise RuntimeError("Both original and quarantine exist")
+                  if not (a or b):
+                      continue
+                  directory = original if a else renamed
+                  real_dir(directory)
+                  st = directory.stat()
+                  if identities[key] != [st.st_dev, st.st_ino]:
+                      raise RuntimeError("Rollback directory identity changed")
+                  if a:
+                      owner, _ = read_owned(original / ".astrid-prereq-owner")
+                      if owner is None or owner.decode("ascii") != run_id:
+                          raise RuntimeError("Original prerequisite owner marker changed")
                   result = subprocess.run(["/usr/sbin/lsof", "-n", "+D", str(directory)], capture_output=True,
                                           text=True, timeout=60, check=False)
                   if result.returncode != 1 or result.stdout.strip() or result.stderr.strip():
                       raise RuntimeError("A prerequisite is in use or cannot be checked")
-              journal["state"] = "rollback-in-progress"
-              write_journal(journal_path, journal)
               if current != backup:
                   replace_owned(runner / ".path", backup, before["mode"], root)
               if marker.exists(): marker.unlink()
-              for directory in present: shutil.rmtree(str(directory))
+              for key, original in paths.items():
+                  renamed = quarantine[key]
+                  if original.exists(): rename_exclusive(original, renamed)
+                  if renamed.exists(): shutil.rmtree(str(renamed))
               journal["state"] = "rolled-back-restart-required"
               write_journal(journal_path, journal)
               print(json.dumps({"status": "rolled-back-restart-required"}))

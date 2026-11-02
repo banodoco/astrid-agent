@@ -144,8 +144,19 @@ def test_partial_stage_rolls_back_only_its_marked_python(tmp_path, monkeypatch):
         prereqs.stage(home, runner, tool, temp)
     python_dir = tool / "Python" / prereqs.PY_VERSION / "arm64"
     assert python_dir.exists() and (runner / ".path").read_text() == "/usr/bin:/bin\n"
+    original_rmtree = prereqs.shutil.rmtree
+    def interrupted_remove(path):
+        (Path(path) / ".astrid-prereq-owner").unlink()
+        raise OSError("simulated crash during deletion")
+    interrupted_remove.avoids_symlink_attacks = True
+    monkeypatch.setattr(prereqs.shutil, "rmtree", interrupted_remove)
+    with pytest.raises(OSError, match="simulated crash"):
+        prereqs.rollback(home, runner, tool)
+    assert not python_dir.exists()
+    monkeypatch.setattr(prereqs.shutil, "rmtree", original_rmtree)
     prereqs.rollback(home, runner, tool)
     assert not python_dir.exists() and (runner / ".path").read_text() == "/usr/bin:/bin\n"
+    assert not list(python_dir.parent.glob(".astrid-rollback-*"))
 
 
 def test_replace_preserves_original_mode_despite_umask(tmp_path, monkeypatch):
@@ -210,3 +221,15 @@ def test_interrupted_owned_path_temporary_is_replaced_safely(tmp_path, monkeypat
     prereqs.replace_owned(path, b"replacement", 0o600, tmp_path)
     assert path.read_text() == "replacement"
     assert not (tmp_path / "path.next").exists()
+
+
+def test_cache_marker_is_never_published_empty_on_interruption(tmp_path, monkeypatch):
+    marker = tmp_path / "complete"
+    def interrupt(source, destination):
+        assert source.read_text() == "a" * 32
+        raise OSError("interrupted before publish")
+    monkeypatch.setattr(prereqs, "rename_exclusive", interrupt)
+    with pytest.raises(OSError, match="interrupted"):
+        prereqs.publish_cache_marker(tmp_path, marker, "a" * 32)
+    assert not marker.exists()
+    assert (tmp_path / "cache-marker.next").read_text() == "a" * 32
