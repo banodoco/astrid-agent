@@ -138,6 +138,10 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
 
     backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
         tmp_path, monkeypatch, kind)
+    # Recovery races must begin with an admitted owner publication. The stop
+    # above clears it, so restore the matching discovery/lock pair before the
+    # selected boundary publishes its replacement.
+    _publish_owner(paths)
     tracked = [backend.root / "update-transaction.json", backend.root / "current",
                backend.service.selection, realm / "realm.sqlite3"]
     before = {path: path.read_bytes() for path in tracked}
@@ -170,11 +174,17 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
     elif moment == "between_reads":
         read_support_json = bootstrap._read_support_json
         replaced = False
+        discovery_reads = 0
 
         def replace_between_reads(path):
-            nonlocal replaced
+            nonlocal replaced, discovery_reads
             result = read_support_json(path)
-            if path == paths.discovery_path and not replaced:
+            if path == paths.discovery_path:
+                discovery_reads += 1
+            # Runtime preflight reads discovery before the serialized
+            # admission snapshot. Replace only after that snapshot's
+            # discovery read, between its discovery and owner-lock reads.
+            if path == paths.discovery_path and discovery_reads == 2 and not replaced:
                 replaced = True
                 replacement()
             return result
@@ -195,6 +205,8 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
     if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
         with pytest.raises(RuntimeOperationError) as raised:
             recover()
+        if moment == "between_reads":
+            assert replaced
         assert not core.is_lifecycle_refusal(raised.value)
         assert boundary.stop_calls == 0
         for path in tracked:
@@ -209,6 +221,31 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
         assert boundary.stop_calls == 1
         assert read_json(backend.root / "update-transaction.json")["step"] == "rolled_back"
         backend.start.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", ["migration", "app"])
+def test_recovery_refuses_lock_without_matching_discovery_without_mutation(tmp_path, monkeypatch, kind):
+    from astrid.installer.core import RuntimeOperationError
+
+    backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+        tmp_path, monkeypatch, kind)
+    write_json(paths.instance_lock_path, {"pid": 12345})
+    tracked = [backend.root / "update-transaction.json", backend.root / "current",
+               backend.service.selection, realm / "realm.sqlite3", paths.instance_lock_path]
+    before = {path: path.read_bytes() for path in tracked}
+
+    with pytest.raises(RuntimeOperationError) as raised:
+        recover()
+
+    assert core.is_lifecycle_refusal(raised.value)
+    assert "owner lock has no matching discovery" in str(raised.value)
+    assert boundary.stop_calls == 0
+    assert not paths.discovery_path.exists()
+    assert {path: path.read_bytes() for path in tracked} == before
+    for name in ("restore", "register", "start", "verify", "persist_identity"):
+        getattr(backend, name).assert_not_called()
+    backend.service.disable.assert_not_called()
+    backend.service.stop.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["migration", "app"])
