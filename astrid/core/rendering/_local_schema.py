@@ -58,7 +58,9 @@ def _windows_schema_handle_is_safe(handle) -> bool:
                 if security._sid_text(sid) not in {"S-1-5-18", "S-1-5-32-544"}:
                     return False
             elif not header[1] & 8:  # INHERIT_ONLY_ACE does not grant this object access.
-                user_access = True
+                mask = int.from_bytes(ctypes.string_at(ace.value + 4, 4), "little")
+                # FILE_READ_DATA / FILE_LIST_DIRECTORY, GENERIC_READ, or GENERIC_ALL.
+                user_access |= bool(mask & (0x00000001 | 0x80000000 | 0x10000000))
         return user_access
     finally:
         kernel.LocalFree(descriptor)
