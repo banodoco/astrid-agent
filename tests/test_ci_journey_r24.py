@@ -1,5 +1,4 @@
 """Focused R-24 journey-hook tests; all success data is synthetic."""
-import copy
 import hashlib
 import json
 from pathlib import Path
@@ -8,6 +7,9 @@ import pytest
 
 from scripts import ci_journey_provider as provider
 from scripts import ci_journey_r24 as hook
+
+EXECUTION_SOURCES = {"agent": {"agent.py": "1" * 64},
+                     "runtime": {"runtime.py": "2" * 64}}
 
 
 def canonical(value):
@@ -28,16 +30,32 @@ def request_fixture(run_id="a" * 32):
     return provider.ProviderRequest.parse(canonical(data))
 
 
-def export_fixture(root: Path, request, *, session="d" * 32):
+def export_fixture(root: Path, request, *, session="d" * 32, omit=None):
     root.mkdir()
     rows = []
+    runtime = {"pid": 123, "process_birth_id": "birth", "runtime_instance_id": "instance",
+               "runtime_session_id": "runtime-session", "runtime_epoch": 7,
+               "endpoint": "http://127.0.0.1:17340", "realm_id": "realm"}
+    execution_sources = EXECUTION_SOURCES
+    invocation = {"schema": "astrid.r24.action-invocation.v1",
+                  "request_sha256": request.sha256,
+                  "run_id": json.loads(request.canonical)["run_id"],
+                  "session": session, "source": "pinokio/providers/r24-action.cjs",
+                  "source_sha256": provider.LIVE_PRODUCER_FILES["pinokio/providers/r24-action.cjs"],
+                  "engine": {"pid": 123}, "runtime_execution_sources": execution_sources,
+                  "returncode": 0, "exit_code": 0, "signal": None,
+                  "raw_result": {}, "stderr": {}, "raw_result_validated": True}
+    invocation_sha = hashlib.sha256(canonical(invocation)).hexdigest()
     common = {"schema": "astrid.r24.live-observation.v1",
               "request_sha256": request.sha256,
               "run_id": json.loads(request.canonical)["run_id"],
               "session": session, "engine": {"pid": 123},
-              "provider_ref": provider.LIVE_PRODUCER_REF}
+              "provider_ref": provider.LIVE_PRODUCER_REF,
+              "runtime": runtime, "runtime_execution_sources": execution_sources,
+              "action_invocation_sha256": invocation_sha}
     values = {
         "busy": {**common, "kind": "busy", "engine_binding": {}, "busy": {},
+                 "action_invocation": invocation,
                  "protected_before": {}, "protected_after": {}},
         "unknown": {**common, "kind": "unknown", "unknown": {},
                     "protected_before": {}, "protected_after": {}},
@@ -47,6 +65,8 @@ def export_fixture(root: Path, request, *, session="d" * 32):
     }
     source = "pinokio/providers/r24-action.cjs"
     for kind in ("busy", "unknown", "restoration"):
+        if omit is not None:
+            values[kind].pop(omit, None)
         raw = canonical(values[kind])
         (root / f"observation-{kind}.json").write_bytes(raw)
         rows.append({"kind": kind, "source": source,
@@ -102,9 +122,18 @@ def test_owner_binds_to_genuine_pinokio_install_selection(tmp_path):
 def test_export_binds_stdout_artifacts_run_request_and_one_session(tmp_path):
     request = request_fixture()
     output = export_fixture(tmp_path / "export", request)
-    session, inventory = hook.validate_export(tmp_path / "export", request, output)
+    session, inventory = hook.validate_export(
+        tmp_path / "export", request, output, EXECUTION_SOURCES)
     assert session == "d" * 32
     assert {row["path"] for row in inventory} == hook.EXPORT_NAMES
+
+
+@pytest.mark.parametrize("field", ["runtime", "runtime_execution_sources", "action_invocation_sha256"])
+def test_export_rejects_observation_missing_current_producer_binding(tmp_path, field):
+    request = request_fixture()
+    output = export_fixture(tmp_path / "export", request, omit=field)
+    with pytest.raises(hook.JourneyProviderError, match="fields differ"):
+        hook.validate_export(tmp_path / "export", request, output, EXECUTION_SOURCES)
 
 
 @pytest.mark.parametrize("tamper", ["run", "session", "request", "provider", "digest", "manifest", "stdout"])
@@ -131,7 +160,7 @@ def test_export_rejects_identity_and_inventory_tamper(tmp_path, tamper):
     elif tamper == "stdout":
         output = provider.LinuxProviderOutput(output.result, b"", b"{}", 0)
     with pytest.raises((hook.JourneyProviderError, provider.ProviderContractError)):
-        hook.validate_export(export, request, output)
+        hook.validate_export(export, request, output, EXECUTION_SOURCES)
 
 
 def test_live_producer_binding_matches_published_tuple_and_diagnostic_does_not():
@@ -151,7 +180,6 @@ def test_runner_identity_is_committed_and_distinct_from_installed_agent():
 
 
 def test_runner_identity_rejects_installed_agent_as_runner(monkeypatch):
-    root = Path(hook.__file__).resolve().parent.parent
     actual_git = hook._git
 
     def installed_identity(path, *args):
@@ -190,7 +218,8 @@ def test_success_shaped_hook_retains_stream_exit_export_and_awaits_custody(tmp_p
     request = request_fixture()
     config = canonical({"synthetic": True})
     monkeypatch.setattr(hook, "prepare_request", lambda **unused: (
-        request, config, {"candidate": hook.PUBLISHED_CANDIDATE},
+        request, config, {"candidate": hook.PUBLISHED_CANDIDATE,
+                          "runtime_execution_sources": EXECUTION_SOURCES},
         {"run_id": "a" * 32}))
     def invoke(unused_request, unused_config, unused_root, export):
         return export_fixture(Path(export), request)

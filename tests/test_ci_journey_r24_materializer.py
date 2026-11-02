@@ -1,8 +1,9 @@
 """Focused source-bound tests for the hosted R-24 materializer."""
+import argparse
 import hashlib
 import json
-import os
-import subprocess
+import socket
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +26,7 @@ def test_materializer_pins_current_tuple_producer_and_native_engine():
     assert provider.LIVE_PRODUCER_REF == "cd86889f4299c7f7aca720f0f20a11be01dacb34"
     assert materializer.PINOKIOD_REF == "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
     assert materializer.PTERM_REF == "5be43718701c448b43daf0ce51d8935f170065bb"
+    assert materializer.TASK_DURATION_SECONDS == 300
 
 
 def test_pterm_and_documented_route_arguments_are_exact(tmp_path):
@@ -84,21 +86,114 @@ def test_hosted_binding_requires_actions_run_job_and_session(monkeypatch):
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
+    execution_binding = {"status": "claimed", "binding_id": "1" * 32,
+                         "session_id": "runtime-session", "runtime_epoch": 7,
+                         "executor_id": "astrid-pack-host", "target_kind": "profile",
+                         "target_id": "astrid"}
+    client_source = {"path": "/installed/generated.py", "sha256": "9" * 64,
+                     "expected_path": "/checkout/generated.py"}
+    task = {"authenticated": True, "installed_client": client_source,
+            "runtime": {"instance_id": "instance",
+                        "session_id": "runtime-session", "epoch": 7},
+            "task": {"task_id": "e" * 32, "run_id": "f" * 32,
+                     "state": "running", "capability_id": "chiptune.compose",
+                     "execution_binding": execution_binding}}
+    active = {"task_id": "e" * 32, "run_id": "f" * 32,
+              "capability": "chiptune.compose", "status": "running",
+              "binding_id": "1" * 32, "execution_session_id": "runtime-session",
+              "runtime_epoch": 7, "executor_id": "astrid-pack-host",
+              "target_kind": "profile", "target_id": "astrid", "binding_status": "claimed"}
+    protected = {"active_tasks": [active]}
+    busy = {"runtime": {"runtime_instance_id": "instance",
+                        "runtime_session_id": "runtime-session", "runtime_epoch": 7},
+            "protected_before": protected, "protected_after": protected,
+            "busy": {"blockers": [
+                {"task_id": "e" * 32, "state": "running", "blocker_kind": "running_task"},
+                {"task_id": "e" * 32, "state": "running",
+                 "blocker_kind": "claimed_or_stale_binding"},
+            ]}}
+    busy_sha = hashlib.sha256(materializer._canonical(busy)).hexdigest()
     provider_receipt = {"run_id": "b" * 32, "session": "c" * 32,
-                        "request_sha256": "d" * 64, "export": {"files": []}}
-    task = {"task": {"task_id": "e" * 32, "run_id": "f" * 32,
-                     "state": "running", "execution_binding": {"status": "claimed"}}}
-    binding = materializer._hosted_binding(provider_receipt, task)
+                        "request_sha256": "d" * 64,
+                        "runtime_execution_sources": {"agent": {"agent.py": "1" * 64},
+                                                      "runtime": {"runtime.py": "2" * 64}},
+                        "export": {"files": [{"path": "observation-busy.json",
+                                                "sha256": busy_sha}]}}
+    settled = {"authenticated": True, "installed_client": client_source,
+               "runtime": task["runtime"],
+               "task": {"task_id": "e" * 32, "run_id": "f" * 32,
+                        "state": "cancelled"}}
+    binding = materializer._hosted_binding(
+        provider_receipt, task, busy, settled,
+        task_sha="1" * 64, busy_sha=busy_sha, settled_sha="2" * 64,
+    )
     assert binding["workflow"]["job"] == "r24-live"
     assert binding["session"] == "c" * 32
+    assert binding["busy_observation_sha256"] == busy_sha
     monkeypatch.delenv("GITHUB_JOB")
     with pytest.raises(materializer.MaterializerError, match="Actions binding"):
-        materializer._hosted_binding(provider_receipt, task)
+        materializer._hosted_binding(
+            provider_receipt, task, busy, settled,
+            task_sha="1" * 64, busy_sha=busy_sha, settled_sha="2" * 64,
+        )
 
 
-def test_workflow_has_dispatch_only_and_separate_exact_artifacts():
-    path = Path(__file__).resolve().parents[1] / ".github/workflows/r24-linux-live.yml"
-    raw = path.read_text(encoding="utf-8")
+@pytest.mark.parametrize("change", ["missing", "foreign", "extra"])
+def test_hosted_binding_rejects_busy_census_not_exact_task(monkeypatch, change):
+    values = {
+        "GITHUB_REPOSITORY": "banodoco/astrid-agent", "GITHUB_WORKFLOW": "workflow",
+        "GITHUB_WORKFLOW_REF": "workflow-ref", "GITHUB_WORKFLOW_SHA": "a" * 40,
+        "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": "r24-live",
+        "GITHUB_SHA": "a" * 40,
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    client_source = {"path": "/installed/generated.py", "sha256": "9" * 64,
+                     "expected_path": "/checkout/generated.py"}
+    task = {"authenticated": True, "installed_client": client_source,
+            "runtime": {"instance_id": "instance", "session_id": "session", "epoch": 3},
+            "task": {"task_id": "1" * 32, "run_id": "2" * 32, "state": "running",
+                     "capability_id": "chiptune.compose", "execution_binding": {
+                         "binding_id": "3" * 32, "executor_id": "executor",
+                         "status": "claimed", "session_id": "session", "runtime_epoch": 3,
+                         "target_kind": "profile", "target_id": "astrid"}}}
+    row = {"task_id": "1" * 32, "run_id": "2" * 32, "capability": "chiptune.compose",
+           "status": "running", "binding_id": "3" * 32,
+           "execution_session_id": "session", "runtime_epoch": 3,
+           "executor_id": "executor", "target_kind": "profile", "target_id": "astrid",
+           "binding_status": "claimed"}
+    rows = [] if change == "missing" else [dict(row)]
+    if change == "foreign":
+        rows[0]["task_id"] = "4" * 32
+    if change == "extra":
+        rows.append({**row, "task_id": "5" * 32})
+    protected = {"active_tasks": rows}
+    busy = {"runtime": {"runtime_instance_id": "instance",
+                        "runtime_session_id": "session", "runtime_epoch": 3},
+            "protected_before": protected, "protected_after": protected,
+            "busy": {"blockers": [{"task_id": "1" * 32, "state": "running",
+                                      "blocker_kind": "running_task"}]}}
+    digest = hashlib.sha256(materializer._canonical(busy)).hexdigest()
+    receipt = {"run_id": "6" * 32, "session": "7" * 32, "request_sha256": "8" * 64,
+               "runtime_execution_sources": {"agent": {"agent.py": "1" * 64},
+                                             "runtime": {"runtime.py": "2" * 64}},
+               "export": {"files": [{"path": "observation-busy.json", "sha256": digest}]}}
+    settled = {"authenticated": True, "installed_client": client_source,
+               "runtime": task["runtime"],
+               "task": {"task_id": "1" * 32, "run_id": "2" * 32,
+                        "state": "cancelled"}}
+    with pytest.raises(materializer.MaterializerError, match="busy census"):
+        materializer._hosted_binding(
+            receipt, task, busy, settled,
+            task_sha="1" * 64, busy_sha=digest, settled_sha="2" * 64,
+        )
+
+
+def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
+    root = Path(__file__).resolve().parents[1]
+    raw = (root / ".github/workflows/r24-linux-live.yml").read_text(encoding="utf-8")
+    registered = (root / ".github/workflows/windows-journey.yml").read_text(encoding="utf-8")
+    assert "workflow_call:" in raw
     assert "workflow_dispatch:" in raw
     assert "push:" not in raw
     assert "ubuntu-24.04" in raw
@@ -106,6 +201,112 @@ def test_workflow_has_dispatch_only_and_separate_exact_artifacts():
     assert "evidence/r24-live/provider-export" in raw
     assert "evidence/r24-live/hosted-binding.json" in raw
     assert "cd86889f4299c7f7aca720f0f20a11be01dacb34" in raw
+    assert "runner_ref:" in registered
+    assert "producer_ref:" in registered
+    assert "confirmation:" in registered
+    assert "inputs.confirmation != 'R24_LIVE_CURRENT_TUPLE'" in registered
+    assert "uses: ./.github/workflows/r24-linux-live.yml" in registered
+
+
+def test_run_records_timeout_as_exact_first_command_outcome(tmp_path):
+    receipt = {"commands": []}
+    with pytest.raises(materializer.MaterializerError, match="timed out"):
+        materializer._run(
+            [sys.executable, "-c", "import time; time.sleep(2)"],
+            log=tmp_path / "timeout.log", receipt=receipt, label="bounded-command",
+            timeout=1,
+        )
+    assert receipt["commands"][0]["argv"][0] == sys.executable
+    assert receipt["commands"][0]["exit"] is None
+    assert receipt["commands"][0]["timed_out"] is True
+    assert receipt["commands"][0]["timeout_seconds"] == 1
+
+
+def test_pinokiod_port_preflight_rejects_existing_listener():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        with pytest.raises(materializer.MaterializerError, match="unavailable"):
+            materializer._require_port_free(port)
+
+
+@pytest.mark.parametrize("value", [
+    "http://127.0.0.1:17340@foreign.example",
+    "https://127.0.0.1:17340",
+    "http://127.0.0.1:17340/path",
+])
+def test_runtime_endpoint_rejects_nonexact_loopback(value):
+    with pytest.raises(materializer.MaterializerError, match="endpoint mismatch"):
+        materializer._loopback_endpoint(value)
+    with pytest.raises(task_boundary.TaskBoundaryError, match="discovery mismatch"):
+        task_boundary._loopback_endpoint(value)
+    assert materializer._loopback_endpoint("http://127.0.0.1:17340") == (
+        "http://127.0.0.1:17340")
+
+
+def test_installed_candidate_selection_is_manifest_and_root_bound(tmp_path):
+    backend = tmp_path / "backend"
+    version_root = backend / "versions/v1"
+    data = tmp_path / "data"
+    python = version_root / "bin/python"
+    profile = version_root / "profile.json"
+    python.parent.mkdir(parents=True)
+    data.mkdir()
+    real_python = python.with_name("python3")
+    real_python.write_bytes(b"python")
+    python.symlink_to(real_python.name)
+    profile.write_text("{}")
+    manifest = tmp_path / "candidate.json"
+    manifest.write_text('{"candidate": true}')
+    (backend / "current").write_text("v1")
+    (backend / "install.json").write_text(json.dumps({
+        "owner": "haus.astrid.runtime", "managed_by": "pinokio",
+        "data_root": str(data.resolve()),
+    }))
+    (version_root / "manifest.json").write_bytes(manifest.read_bytes())
+    (version_root / "version.json").write_text(json.dumps({
+        "root": str(version_root.resolve()), "python": str(python),
+        "profile": str(profile.resolve()),
+        "identity": {"release": 1, "managed_by": "pinokio"}, "env": {},
+    }))
+    selected, selected_data = materializer._installed(backend, manifest)
+    assert selected["python"] == str(python)
+    assert python.is_symlink()
+    assert selected_data == data.resolve()
+    (version_root / "manifest.json").write_text('{"candidate": false}')
+    with pytest.raises(materializer.MaterializerError, match="candidate identity"):
+        materializer._installed(backend, manifest)
+
+
+def test_installed_agent_client_source_must_match_checkout(tmp_path):
+    version_root = tmp_path / "version"
+    observed = version_root / "site/astrid_runtime_client/generated.py"
+    expected = tmp_path / "checkout/generated.py"
+    observed.parent.mkdir(parents=True)
+    expected.parent.mkdir(parents=True)
+    observed.write_bytes(b"generated-client")
+    expected.write_bytes(b"generated-client")
+    source = task_boundary._source_binding(version_root, expected, observed)
+    assert source["sha256"] == hashlib.sha256(b"generated-client").hexdigest()
+    expected.write_bytes(b"different")
+    with pytest.raises(task_boundary.TaskBoundaryError, match="source mismatch"):
+        task_boundary._source_binding(version_root, expected, observed)
+
+
+def test_materializer_records_exact_first_stop_before_sources(tmp_path):
+    args = argparse.Namespace(
+        run_root=tmp_path / "run", confirmation="wrong",
+        runner=tmp_path / "runner", runner_ref="a" * 40,
+        producer=tmp_path / "producer", producer_ref=provider.LIVE_PRODUCER_REF,
+        app=tmp_path / "app", agent=tmp_path / "agent",
+        runtime=tmp_path / "runtime", pinokio=tmp_path / "pinokio",
+        pterm=tmp_path / "pterm", pinokiod=tmp_path / "pinokiod",
+    )
+    assert materializer.execute(args) == 1
+    receipt = json.loads((args.run_root / "evidence/materializer/r24-materializer.json").read_bytes())
+    assert receipt["status"] == "blocked"
+    assert receipt["first_stop"] == "preflight"
+    assert receipt["commands"] == []
 
 
 def test_task_observer_requires_running_claimed_current_session(monkeypatch, tmp_path):
@@ -124,23 +325,71 @@ def test_task_observer_requires_running_claimed_current_session(monkeypatch, tmp
         lease_fence=1, lease_expires_at="later",
     )
     client = SimpleNamespace(get_task=lambda unused: task)
-    monkeypatch.setattr(task_boundary, "_client", lambda unused: (
-        client, {}, tmp_path, {"runtime_instance_id": "instance"}))
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+        client, {}, tmp_path, {"runtime_instance_id": "instance"}, {}))
     monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (health, handshake))
     monkeypatch.setattr(task_boundary, "_task_projection", lambda value: vars(value))
-    observed = task_boundary.observe_task(tmp_path, "a" * 32, 1)
+    observed = task_boundary.observe_task(tmp_path, tmp_path / "client.py", "a" * 32, 1)
     assert observed["task"]["execution_binding"]["status"] == "claimed"
     task.execution_binding["session_id"] = "foreign"
     with pytest.raises(task_boundary.TaskBoundaryError, match="binding mismatch"):
-        task_boundary.observe_task(tmp_path, "a" * 32, 1)
+        task_boundary.observe_task(tmp_path, tmp_path / "client.py", "a" * 32, 1)
+    task.execution_binding["session_id"] = "session"
+    task.task_id = "f" * 32
+    with pytest.raises(task_boundary.TaskBoundaryError, match="binding mismatch"):
+        task_boundary.observe_task(tmp_path, tmp_path / "client.py", "a" * 32, 1)
 
 
 def test_task_observer_rejects_terminal_before_provider(monkeypatch, tmp_path):
     task = SimpleNamespace(state="succeeded", version=2, execution_binding=None)
     client = SimpleNamespace(get_task=lambda unused: task)
     health = SimpleNamespace(runtime_instance_id="instance", runtime_session_id="session", runtime_epoch=7)
-    monkeypatch.setattr(task_boundary, "_client", lambda unused: (
-        client, {}, tmp_path, {"runtime_instance_id": "instance"}))
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+        client, {}, tmp_path, {"runtime_instance_id": "instance"}, {}))
     monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (health, None))
     with pytest.raises(task_boundary.TaskBoundaryError, match="terminal before provider"):
-        task_boundary.observe_task(tmp_path, "a" * 32, 1)
+        task_boundary.observe_task(tmp_path, tmp_path / "client.py", "a" * 32, 1)
+
+
+@pytest.mark.parametrize("status,code", [(404, "foreign"), (409, "not_found")])
+def test_worker_start_accepts_only_exact_generation_not_found(monkeypatch, tmp_path, status, code):
+    from astrid_runtime_client.generated import ApiError
+
+    client = SimpleNamespace(
+        get_local_worker_generation=lambda: (_ for _ in ()).throw(ApiError(status, code, "missing")),
+        start_local_worker=lambda *unused: pytest.fail("must not start for an inexact error"),
+    )
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+        client, {}, tmp_path, {"active_realm": "realm"}, {}))
+    monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (None, None))
+    with pytest.raises(ApiError):
+        task_boundary.ensure_worker(tmp_path, tmp_path / "client.py")
+
+
+def test_worker_start_is_observed_with_get_start_get(monkeypatch, tmp_path):
+    from astrid_runtime_client.generated import ApiError
+
+    calls = []
+    generation = {"state": "active", "profile_id": "astrid", "workspace_uuid": "realm",
+                  "executor_incarnation": "incarnation"}
+
+    def get_generation():
+        calls.append("get")
+        if calls == ["get"]:
+            raise ApiError(404, "not_found", "missing")
+        return generation
+
+    def start(profile, realm):
+        calls.append(("start", profile, realm))
+        return {"state": "active"}
+
+    health = SimpleNamespace(runtime_instance_id="instance", runtime_session_id="session", runtime_epoch=7)
+    handshake = SimpleNamespace(realm_id="realm")
+    client = SimpleNamespace(get_local_worker_generation=get_generation, start_local_worker=start)
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+        client, {}, tmp_path, {"active_realm": "realm"}, {}))
+    monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (health, handshake))
+    result = task_boundary.ensure_worker(tmp_path, tmp_path / "client.py")
+    assert calls == ["get", ("start", "astrid", "realm"), "get"]
+    assert result["started"] is True
+    assert result["generation"] == generation

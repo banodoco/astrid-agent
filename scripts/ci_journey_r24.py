@@ -277,7 +277,9 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
 
 
 def validate_export(export: Path, request: provider.ProviderRequest,
-                    output: provider.LinuxProviderOutput) -> tuple[str, list[dict[str, Any]]]:
+                    output: provider.LinuxProviderOutput,
+                    runtime_execution_sources: dict[str, dict[str, str]]) -> tuple[
+                        str, list[dict[str, Any]]]:
     """Join every fixed export member to one request, run, session and result."""
     if export.is_symlink() or not export.is_dir():
         raise JourneyProviderError("provider export is unavailable")
@@ -302,12 +304,17 @@ def validate_export(export: Path, request: provider.ProviderRequest,
     request_data = json.loads(request.canonical)
     rows = {row.kind: row for row in output.result.observations}
     session = None
-    common = {"schema", "request_sha256", "run_id", "session", "engine", "provider_ref", "kind"}
+    common = {"schema", "request_sha256", "run_id", "session", "engine", "provider_ref", "kind",
+              "runtime", "runtime_execution_sources", "action_invocation_sha256"}
     additions = {
-        "busy": {"engine_binding", "busy", "protected_before", "protected_after"},
+        "busy": {"engine_binding", "busy", "action_invocation",
+                 "protected_before", "protected_after"},
         "unknown": {"unknown", "protected_before", "protected_after"},
         "restoration": {"restoration", "protected_before", "protected_after", "control_removed"},
     }
+    shared_runtime = None
+    shared_sources = None
+    shared_invocation_sha = None
     for kind in ("busy", "unknown", "restoration"):
         raw = payloads[f"observation-{kind}.json"]
         observation = _object(_decode(raw), common | additions[kind], f"{kind} observation")
@@ -318,9 +325,57 @@ def validate_export(export: Path, request: provider.ProviderRequest,
                 or observation["provider_ref"] != request_data["provider"]["ref"]
                 or observation["kind"] != kind
                 or not isinstance(current_session, str) or not _HEX32.fullmatch(current_session)
+                or not isinstance(observation["action_invocation_sha256"], str)
+                or not _HEX64.fullmatch(observation["action_invocation_sha256"])
                 or rows[kind].source not in request_data["provider"]["sources"]
                 or rows[kind].evidence_sha256 != _sha(raw)):
             raise JourneyProviderError("raw observation binding mismatch")
+        runtime = _object(observation["runtime"], {
+            "pid", "process_birth_id", "runtime_instance_id", "runtime_session_id",
+            "runtime_epoch", "endpoint", "realm_id",
+        }, "observation runtime")
+        if (type(runtime["pid"]) is not int or runtime["pid"] < 1
+                or type(runtime["runtime_epoch"]) is not int or runtime["runtime_epoch"] < 1
+                or any(not isinstance(runtime[name], str) or not runtime[name]
+                       for name in ("process_birth_id", "runtime_instance_id", "runtime_session_id",
+                                    "endpoint", "realm_id"))):
+            raise JourneyProviderError("raw observation Runtime binding mismatch")
+        sources = observation["runtime_execution_sources"]
+        if (not isinstance(sources, dict) or set(sources) != {"agent", "runtime"}
+                or any(not isinstance(rows_by_owner, dict) or not rows_by_owner
+                       or any(not isinstance(path, str) or not path
+                              or not isinstance(digest, str) or not _HEX64.fullmatch(digest)
+                              for path, digest in rows_by_owner.items())
+                       for rows_by_owner in sources.values())):
+            raise JourneyProviderError("raw observation execution sources mismatch")
+        if sources != runtime_execution_sources:
+            raise JourneyProviderError("raw observation sources differ from producer binding")
+        invocation_sha = observation["action_invocation_sha256"]
+        if shared_runtime is None:
+            shared_runtime = runtime
+            shared_sources = sources
+            shared_invocation_sha = invocation_sha
+        elif (runtime != shared_runtime or sources != shared_sources
+              or invocation_sha != shared_invocation_sha):
+            raise JourneyProviderError("raw observations span multiple Runtime bindings")
+        if kind == "busy":
+            invocation = observation["action_invocation"]
+            if (not isinstance(invocation, dict)
+                    or _sha(_canonical(invocation)) != invocation_sha
+                    or invocation.get("schema") != "astrid.r24.action-invocation.v1"
+                    or invocation.get("request_sha256") != request.sha256
+                    or invocation.get("run_id") != request_data["run_id"]
+                    or invocation.get("session") != current_session
+                    or invocation.get("engine") != observation["engine"]
+                    or invocation.get("runtime_execution_sources") != sources
+                    or invocation.get("source") not in request_data["provider"]["sources"]
+                    or invocation.get("source_sha256") != request_data["provider"]["sources"].get(
+                        invocation.get("source"))
+                    or invocation.get("returncode") != 0
+                    or invocation.get("exit_code") != 0
+                    or invocation.get("signal") is not None
+                    or invocation.get("raw_result_validated") is not True):
+                raise JourneyProviderError("raw action invocation binding mismatch")
         if session is None:
             session = current_session
         elif session != current_session:
@@ -394,7 +449,8 @@ def execute_live_hook(*, run_root: Path, candidate_file: Path, config_file: Path
     stdout = _stream_record(evidence / "provider-stdout.json", output.stdout)
     stderr = _stream_record(evidence / "provider-stderr.log", output.stderr)
     try:
-        session, inventory = validate_export(export, request, output)
+        session, inventory = validate_export(
+            export, request, output, binding["runtime_execution_sources"])
     except Exception as exc:
         receipt.update(status="fail", error=f"{type(exc).__name__}: {exc}",
                        invocation={"status": "invalid", "exit": output.returncode,
@@ -404,6 +460,7 @@ def execute_live_hook(*, run_root: Path, candidate_file: Path, config_file: Path
     receipt.update(
         status="captured-untrusted",
         session=session,
+        runtime_execution_sources=binding["runtime_execution_sources"],
         invocation={"status": "completed", "exit": output.returncode,
                     "stdout": stdout, "stderr": stderr},
         export={"path": "provider-export", "files": inventory},

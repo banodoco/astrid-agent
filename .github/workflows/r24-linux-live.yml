@@ -1,6 +1,17 @@
 name: R-24 hosted Linux live materializer
 
 on:
+  workflow_call:
+    inputs:
+      runner_ref:
+        required: true
+        type: string
+      producer_ref:
+        required: true
+        type: string
+      confirmation:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       runner_ref:
@@ -28,9 +39,8 @@ concurrency:
 jobs:
   r24-live:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
-      R24_RUN_ROOT: ${{ runner.temp }}/r24-live-run
       R24_CHECKOUTS: ${{ github.workspace }}
     steps:
       - name: Checkout immutable candidate runner
@@ -137,26 +147,26 @@ jobs:
             --pinokio "$R24_CHECKOUTS/pinokio" \
             --pterm "$R24_CHECKOUTS/pterm" \
             --pinokiod "$R24_CHECKOUTS/pinokiod" \
-            --run-root "$R24_RUN_ROOT" \
+            --run-root "$RUNNER_TEMP/r24-live-run" \
             --confirmation "$REQUESTED_CONFIRMATION"
           inner_exit=$?
           echo "inner_exit=$inner_exit" >> "$GITHUB_OUTPUT"
           exit 0
       - name: Upload six unchanged provider export files
-        if: always()
+        if: steps.execute.outputs.inner_exit == '0'
         uses: actions/upload-artifact@v4
         with:
           name: r24-provider-export-${{ inputs.runner_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
           path: ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-export
       - name: Upload run, job, task, and session bindings
-        if: always()
+        if: steps.execute.outputs.inner_exit == '0'
         uses: actions/upload-artifact@v4
         with:
           name: r24-runner-bindings-${{ inputs.runner_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
             ${{ runner.temp }}/r24-live-run/candidate.json
             ${{ runner.temp }}/r24-live-run/config.json
@@ -165,6 +175,7 @@ jobs:
             ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/project.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.stderr.log
             ${{ runner.temp }}/r24-live-run/evidence/materializer/task-running.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/task-settled.json
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/request.json
@@ -173,6 +184,36 @@ jobs:
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/hosted-binding.json
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stdout.json
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stderr.log
+      - name: Upload bounded first-stop diagnostics
+        if: always() && steps.execute.outputs.inner_exit != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r24-first-stop-${{ inputs.runner_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/r24-live-run/candidate.json
+            ${{ runner.temp }}/r24-live-run/config.json
+            ${{ runner.temp }}/r24-live-run/tst-b1-owner.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-materializer.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/pinokiod.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/install.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/start.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/project.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.stderr.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-running.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-running.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-settled.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-settled.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-cleanup.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-cleanup.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-live-route.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/stop.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/failure-stop.log
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live
       - name: Propagate inner execution result
         if: always()
         env:
