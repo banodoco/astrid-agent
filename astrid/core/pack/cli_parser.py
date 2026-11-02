@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate_parser = subparsers.add_parser(
-        "validate", help="Statically validate a pack directory."
+        "validate", aliases=["check"], help="Statically validate a pack directory."
     )
     validate_parser.add_argument(
         "path", nargs="?", default=".", help="Path to pack root (default: .)"
