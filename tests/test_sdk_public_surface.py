@@ -16,6 +16,13 @@ from typing import Any
 import pytest
 
 from tests._sdk_contract import EXPECTED_PUBLIC_NAMES
+from tests.helpers.vibecomfy import use_vibecomfy
+
+
+# Discovery and generation routes exercise VibeComfy's public entry module.
+# Provision the lock-selected distribution into this test interpreter before
+# importing SDK code, matching the Runtime test-environment setup.
+use_vibecomfy()
 
 
 REPRESENTATIVE_SUBMODULES = (
@@ -189,7 +196,9 @@ def test_retired_filesystem_event_helpers_are_not_public_or_reachable() -> None:
             getattr(sdk, name)
 
 
-def test_discover_and_get_capability_expose_public_dtos() -> None:
+def test_discover_and_get_capability_expose_public_dtos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     astrid = _import_public_module()
 
     inventory = astrid.discover()
@@ -199,7 +208,9 @@ def test_discover_and_get_capability_expose_public_dtos() -> None:
     assert isinstance(inventory.elements, tuple)
     assert isinstance(inventory.capabilities, tuple)
     assert inventory.executors
-    assert inventory.orchestrators
+    # This tuple ships no native orchestrator manifests. Discovery represents
+    # that supported empty surface with an empty tuple.
+    assert inventory.orchestrators == ()
     assert inventory.elements
     assert inventory.capabilities
     assert inventory.packs
@@ -265,26 +276,12 @@ def test_discover_and_get_capability_expose_public_dtos() -> None:
         "editorial.inspect_cut",
         kind="executor",
     )
-    # V3 hype is an executor; exercise an actual admitted orchestrator instead.
-    orchestrator_id = inventory.orchestrators[0].id
-    canonical_orchestrator = astrid.get_capability(
-        orchestrator_id,
-        kind="orchestrator",
-    )
-
     executor = astrid.get_capability(
         "editorial.arrange",
         kind="executor",
     )
     kindless_executor = astrid.get_capability(
         "editorial.arrange",
-    )
-    orchestrator = astrid.get_capability(
-        orchestrator_id,
-        kind="orchestrator",
-    )
-    kindless_orchestrator = astrid.get_capability(
-        orchestrator_id,
     )
     element = astrid.get_capability(
         "effects/text-card",
@@ -313,10 +310,21 @@ def test_discover_and_get_capability_expose_public_dtos() -> None:
 
     assert canonical_executor.handle.aliases == ()
 
+    # The approved tuple admits no orchestrators, so exercise the same public
+    # DTO path with the existing synthetic orchestrator registry fixture.
+    orchestrator_id = _install_public_orchestrator_fixture(monkeypatch)
+    synthetic_inventory = astrid.discover()
+    canonical_orchestrator = synthetic_inventory.orchestrators[0]
+    orchestrator = astrid.get_capability(
+        orchestrator_id,
+        kind="orchestrator",
+    )
+    kindless_orchestrator = astrid.get_capability(orchestrator_id)
+
     assert orchestrator.id == orchestrator_id
     assert kindless_orchestrator.id == orchestrator_id
     assert orchestrator.capability_type == "orchestrator"
-    assert orchestrator.native_kind in {"built_in", "external"}
+    assert orchestrator.native_kind == "external"
     assert isinstance(orchestrator.handle, astrid.CapabilityHandle)
     assert isinstance(orchestrator.inputs, tuple)
     assert isinstance(orchestrator.outputs, tuple)
@@ -324,7 +332,8 @@ def test_discover_and_get_capability_expose_public_dtos() -> None:
     assert isinstance(orchestrator.definition, dict)
     assert orchestrator.defaults == {}
     json.dumps(orchestrator.to_dict())
-
+    assert canonical_orchestrator.id == orchestrator_id
+    assert canonical_orchestrator.capability_type == "orchestrator"
     assert canonical_orchestrator.handle.aliases == ()
 
     assert element.id == "effects/text-card"
@@ -517,27 +526,21 @@ def test_get_capability_supports_pack_declared_element_kinds_and_invalid_kind_er
             encoding="utf-8",
         )
 
-        capability = astrid.get_capability(
-            "widget/glow",
-            kind="element",
-            extra_pack_roots=(str(packs_root),),
-        )
+        inventory = astrid.discover(extra_pack_roots=(str(packs_root),))
+        assert all(pack["id"] != "demo" for pack in inventory.packs)
 
-        explicit_kind_capability = astrid.get_capability(
-            "glow",
-            kind="element",
-            element_kind="widget",
-            extra_pack_roots=(str(packs_root),),
-        )
-
-        assert capability.id == "widgets/glow"
-        assert capability.handle.kind == "widgets"
-        assert explicit_kind_capability.id == "widgets/glow"
-        assert explicit_kind_capability.handle.kind == "widgets"
+        # Extra schema-v2 packs are quarantined until explicitly migrated to
+        # v3, so an extension in one cannot alter the admitted element API.
+        with pytest.raises(astrid.CapabilityValidationError, match="element kind must be one of"):
+            astrid.get_capability(
+                "widget/glow",
+                kind="element",
+                extra_pack_roots=(str(packs_root),),
+            )
 
         with pytest.raises(
             astrid.CapabilityValidationError,
-            match=r"element kind must be one of \[effects, animations, transitions, widgets\]",
+            match=r"element kind must be one of \[effects, animations, transitions\]",
         ):
             astrid.get_capability(
                 "wigdet/glow",
@@ -577,7 +580,9 @@ def test_discover_exposes_pack_declared_extension_metadata() -> None:
                     "id": "demo",
                     "name": "Demo Pack",
                     "version": "0.1.0",
-                    "schema_version": 2,
+                    "schema_version": 3,
+                    "pack_api": "1.0",
+                    "actions": {},
                     "extensions": {
                         "generation": {
                             "backends": [
@@ -887,6 +892,7 @@ def _install_public_orchestrator_fixture(monkeypatch):
     )
     registries = (ExecutorRegistry(), OrchestratorRegistry((definition,)), None)
     sdk = importlib.import_module("astrid.sdk")
+    registries = (*registries[:2], sdk._load_element_registry())
     monkeypatch.setattr(sdk, "_load_registries", lambda **_kwargs: registries)
     monkeypatch.setattr(sdk, "_discover_pack_inventory", lambda **_kwargs: ())
     from astrid.core.execution.orchestrator import runner
@@ -1427,7 +1433,22 @@ def test_generate_facade_maps_contract_failures_and_openai_route(
 ) -> None:
     astrid = _import_public_module()
     sdk = importlib.import_module("astrid.sdk")
+    availability = importlib.import_module("astrid.core.generation.availability")
     from astrid.core.generation import GENERATION_RESULT_KEY
+
+    # This test exercises facade payload/error mapping. The approved catalog
+    # currently marks Wan 2.2 unqualified, so make only this synthetic route
+    # available to reach the fake executor response under test.
+    original_model_availability = availability.model_availability
+    monkeypatch.setattr(
+        availability,
+        "model_availability",
+        lambda model, mode, backend: (
+            {"available": True}
+            if model == "wan-2.2"
+            else original_model_availability(model, mode, backend)
+        ),
+    )
 
     def missing_generation_result(capability_id: str, **kwargs: Any) -> Any:
         return astrid.InvocationResult(
@@ -3026,17 +3047,31 @@ def test_generate_facade_maps_contract_failures_and_openai_rejection(
 ) -> None:
     astrid = _import_public_module()
     sdk = importlib.import_module("astrid.sdk")
+    availability = importlib.import_module("astrid.core.generation.availability")
     from astrid.core.generation import GENERATION_RESULT_KEY
 
+    original_model_availability = availability.model_availability
+    monkeypatch.setattr(
+        availability,
+        "model_availability",
+        lambda model, mode, backend: (
+            {"available": True}
+            if model == "wan-2.2"
+            else original_model_availability(model, mode, backend)
+        ),
+    )
+
     with pytest.raises(
-        astrid.CapabilityPreconditionError,
-        match="generation.generate_image_openai",
+        astrid.CapabilityInvocationError,
+        match="explicit generated runtime client is required for task admission",
     ):
         astrid.generate.image(
             model="gpt-image-1",
             mode="t2i",
             execution="openai",
+            prompt="a small paper lantern",
             out=tmp_path,
+            project="demo",
         )
 
     def missing_generation_result(capability_id: str, **kwargs: Any) -> Any:
