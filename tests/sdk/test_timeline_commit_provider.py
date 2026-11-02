@@ -399,6 +399,57 @@ def test_stale_disjoint_rebases_and_same_clip_conflicts():
     assert len(realm.entries) == count
 
 
+def test_intervening_track_value_conflict_keeps_states_and_rederive_summary(monkeypatch):
+    from types import SimpleNamespace
+
+    from astrid.sdk.timeline import retry as retry_module
+
+    document = document_fixture()
+    payload = document["parent_revision"]["payload"]
+    payload["config"]["tracks"][0]["label"] = "Original label"
+    document["parent_revision"]["content_digest"] = _digest(payload)
+    realm = DetachedRealm(document)
+    base = detached(realm.head)
+
+    def label_patch(value):
+        return {"schema_version": 1, "op": "doc.patch", "version": "1", "select": None,
+                "args": {"changes": [{"op": "set", "ref": "parent",
+                                       "path": ["config", "tracks", "id:picture", "label"],
+                                       "before": {"state": "present", "value": "Original label"},
+                                       "value": value}]}}
+
+    agent_command = label_patch("Agent label")
+    user_command = label_patch("User label")
+    realm.call([user_command])
+
+    context = realm.context([agent_command], base=base)
+    context["request"].update(merge="fields", reads=[])
+    context["invocation"]["body"] = detached(context["request"])
+    context["request_hash"] = _digest(context["invocation"])
+    with pytest.raises(CommitRejected) as error:
+        create_runtime_commit_service().commit(context, DetachedPort(realm, context))
+
+    failure = error.value.failure["details"]
+    assert failure["reason"] == "value_conflict", failure
+    conflict, = failure["conflicts"]
+    assert conflict["ref"] == "parent"
+    assert conflict["path"] == ["config", "tracks", "id:picture", "label"]
+    assert conflict["base"] == {"state": "present", "value": "Original label"}
+    assert conflict["ours"] == {"state": "present", "value": "Agent label"}
+    assert conflict["theirs"] == {"state": "present", "value": "User label"}
+
+    record = {"id": "pc_user_conflict", "label": "Set track label",
+              "failure": {"details": failure}}
+    packet = {"receipts": [{"touches_conflict": True, "via": "app",
+                             "publisher": "app-actor", "label": "Saved user edit"}]}
+    monkeypatch.setattr(retry_module.clash, "friendly_target", lambda *args: "track picture label")
+    summary = retry_module._summary_rederive(record, packet, SimpleNamespace())
+    assert "the user (editor) changed track picture label" in summary
+    assert "User label" in summary
+    assert "preserve it" in summary
+    assert "re-derive only compatible work" in summary
+
+
 def test_stale_head_retries_original_plan_and_created_ids_once(monkeypatch):
     from astrid.sdk.timeline import commands
     from astrid.sdk.timeline.capture import capture_track_create

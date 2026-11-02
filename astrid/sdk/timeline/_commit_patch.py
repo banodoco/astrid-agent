@@ -6,7 +6,7 @@ import json
 
 from jsonschema import Draft202012Validator
 
-from ._command_state import ABSENT, CommandError, equal, present
+from ._command_state import ABSENT, CommandError, State, equal, present
 from ._doc_patch import Closure, identities, identity_key, normalized_path, value_at
 
 
@@ -16,6 +16,14 @@ def _text(value):
 
 def _effect_key(effect):
     return json.dumps(effect, sort_keys=True, separators=(',', ':'))
+
+
+def _guard_state(bundle, ref, path):
+    state = State(bundle)
+    if any(':' in token for token in path):
+        entity = state.entity(ref, optional=True)
+        return ABSENT.copy() if entity is None else value_at(entity, ref, path)
+    return state.get(ref, path)
 
 
 def validate_reads(reads):
@@ -969,7 +977,8 @@ def rebase_patch(plan, entries, head_bundle, *, load_boundary):
         guards.extend(copy.deepcopy(step.get('dependencies', [])))
     # Captured semantic writes guard ancestors too; their historical aliases are
     # normalized at the base, before any head-dependent materialization.
-    base_closure = Closure(load_boundary(entries[0])[0]) if entries else landing
+    base_bundle = load_boundary(entries[0])[0] if entries else head_bundle
+    base_closure = Closure(base_bundle)
     for record in plan.records:
         if record['command']['op'] != 'doc.patch':
             guards.extend({'kind': 'field', 'ref': site['ref'], 'path': site['path']}
@@ -996,7 +1005,10 @@ def rebase_patch(plan, entries, head_bundle, *, load_boundary):
                         'selection_changed' if guard['kind'] == 'collection' else
                         'dependency_changed' if guard['kind'] == 'scope' else 'value_conflict')
                 raise CommandError('intervening publication changed a guarded address', kind=kind,
-                                   ref=guard['ref'], path=guard['path'])
+                                   ref=guard['ref'], path=guard['path'],
+                                   base=_guard_state(base_bundle, guard['ref'], guard['path']),
+                                   ours=_guard_state(plan.bundle, guard['ref'], guard['path']),
+                                   theirs=_guard_state(head_bundle, guard['ref'], guard['path']))
     return expected
 
 
