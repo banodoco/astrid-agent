@@ -6,6 +6,11 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Literal, TypedDict
 
+from packaging.markers import UndefinedComparison, UndefinedEnvironmentName, _evaluate_markers
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
+
 from astrid.pack_imports import ImportViolation
 
 
@@ -75,22 +80,51 @@ def _dep_ids(manifest: Mapping[str, object]) -> list[str] | None:
     return sorted(set(raw))
 
 
-def _requirements(manifest: Mapping[str, object]) -> list[str] | None:
+_MARKER_FIELDS = frozenset({
+    "implementation_name", "implementation_version", "os_name", "platform_machine",
+    "platform_release", "platform_system", "platform_version", "python_full_version",
+    "platform_python_implementation", "python_version", "sys_platform",
+})
+
+
+def _requirements(manifest: Mapping[str, object], packages: Mapping[str, str],
+                  environment: Mapping[str, str] | None) -> tuple[str, str] | None:
+    """Check PEP 508 against supplied immutable interpreter facts, never the host."""
     deps = manifest.get("dependencies", {})
-    if not isinstance(deps, Mapping):
-        return None
-    raw = deps.get("python_requirements", [])
+    raw = deps.get("python_requirements", []) if isinstance(deps, Mapping) else None
     if not isinstance(raw, (list, tuple)):
-        return None
-    packages = []
+        return "invalid_manifest", "dependencies.python_requirements must be a list."
+    installed = {canonicalize_name(name): version for name, version in packages.items()}
     for item in raw:
         if not isinstance(item, str) or not item.strip():
-            return None
-        match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9_.-]*)", item)
-        if not match:
-            return None
-        packages.append(match.group(1).lower().replace("_", "-").replace(".", "-"))
-    return sorted(set(packages))
+            return "invalid_manifest", f"Invalid Python requirement {item!r}."
+        try:
+            req = Requirement(item)
+        except InvalidRequirement as exc:
+            return "invalid_manifest", f"Invalid Python requirement {item!r}: {exc}"
+        if req.marker:
+            if environment is None or not _MARKER_FIELDS.issubset(environment):
+                return "invalid_manifest", f"Python requirement {item!r} needs an explicit interpreter marker environment (including python_version)."
+            try:
+                # Marker.evaluate() reads the host environment even when overrides
+                # are supplied; evaluate its parsed expression with only the snapshot.
+                marker_env = {**environment, "extra": ""}
+                if not _evaluate_markers(req.marker._markers, marker_env):
+                    continue
+            except (UndefinedComparison, UndefinedEnvironmentName, ValueError, TypeError) as exc:
+                return "invalid_manifest", f"Python requirement {item!r} has an invalid marker environment: {exc}"
+        if req.url or req.extras:
+            return "invalid_manifest", f"Python requirement {item!r} cannot be verified from the locked version snapshot (URL or extras)."
+        version = installed.get(canonicalize_name(req.name))
+        if version is None:
+            return "missing_python", f"Python requirement {item!r} is missing from the locked interpreter."
+        try:
+            parsed_version = Version(version)
+        except (InvalidVersion, TypeError):
+            return "missing_python", f"Python requirement {item!r} has invalid installed version {version!r}."
+        if not req.specifier.contains(parsed_version, prereleases=None):
+            return "missing_python", f"Python requirement {item!r} is incompatible with locked version {version!r}."
+    return None
 
 
 def _has_cycle(pack_id: str, deps: list[str], selected: Mapping[str, PackFacts]) -> bool:
@@ -121,13 +155,17 @@ def validate_pack(*, mode: Literal["install", "inventory", "execute"],
                   manifest: Mapping[str, object], candidate: PackFacts,
                   selected: Mapping[str, PackFacts], core_api: tuple[int, int],
                   release_pins: Mapping[str, PinFacts], python_packages: Mapping[str, str],
-                  import_violations: Sequence[ImportViolation]) -> CompatibilityResult:
+                  import_violations: Sequence[ImportViolation],
+                  canonical_personal_root: str | None = None,
+                  internal_pack_ids: frozenset[str] = frozenset(),
+                  python_environment: Mapping[str, str] | None = None) -> CompatibilityResult:
     """Validate immutable manifest and inventory snapshots without side effects."""
     pack_id_value = manifest.get("id", candidate.get("id", ""))
     pack_id = pack_id_value if isinstance(pack_id_value, str) else ""
     code = "compatible"
     deps: list[str] = []
     warnings: list[str] = []
+    detail = ""
 
     def fail(name: str) -> None:
         nonlocal code
@@ -155,8 +193,13 @@ def validate_pack(*, mode: Literal["install", "inventory", "execute"],
         )
         if collision:
             fail("duplicate_id")
-        elif pack_id in {"core", "personal", "astrid", "_core"}:
+        elif pack_id in {"core", "astrid", "_core"} or (
+            pack_id == "personal" and (not canonical_personal_root or candidate.get("id") != "personal" or
+                                       candidate.get("canonical_root") != canonical_personal_root)
+        ):
             fail("reserved_id")
+            if pack_id == "personal":
+                detail = f"Personal pack root {candidate.get('canonical_root')!r} is not the configured canonical personal identity {canonical_personal_root!r}."
         elif candidate.get("canonical_root") and str(candidate["canonical_root"]).rstrip("/\\").split("/")[-1].split("\\")[-1] != pack_id:
             fail("basename_mismatch")
     if code == "compatible":
@@ -166,8 +209,14 @@ def validate_pack(*, mode: Literal["install", "inventory", "execute"],
             fail("api_missing")
         elif api_raw == "internal":
             pin = release_pins.get(pack_id, {})
-            if not pin or candidate.get("commit") != pin.get("commit"):
+            commit = pin.get("commit")
+            digest = pin.get("digest")
+            if (pack_id not in internal_pack_ids or not isinstance(commit, str) or
+                not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) or
+                not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or
+                candidate.get("commit") != commit or candidate.get("installed_digest") != digest):
                 fail("api_major")
+                detail = f"Pack {pack_id!r} cannot use internal API without its authorized, exact release commit and digest PIN."
         elif api is None:
             fail("invalid_manifest")
         elif api[0] != core_api[0]:
@@ -176,8 +225,7 @@ def validate_pack(*, mode: Literal["install", "inventory", "execute"],
             fail("api_minor")
     if code == "compatible":
         parsed = _dep_ids(manifest)
-        reqs = _requirements(manifest)
-        if parsed is None or reqs is None:
+        if parsed is None:
             fail("invalid_manifest")
         else:
             deps = parsed
@@ -193,12 +241,16 @@ def validate_pack(*, mode: Literal["install", "inventory", "execute"],
                 candidate.get("installed_digest") != release_pins[pack_id].get("digest")
             ):
                 fail("pin_mismatch")
-            elif any(req not in {name.lower().replace("_", "-").replace(".", "-") for name in python_packages}
-                     for req in reqs):
-                fail("missing_python")
-            elif import_violations:
-                fail("import_violation")
+            else:
+                requirement_failure = _requirements(manifest, python_packages, python_environment)
+                if requirement_failure:
+                    fail(requirement_failure[0])
+                    detail = requirement_failure[1]
+                elif import_violations:
+                    fail("import_violation")
     reason, fix = ("", "") if code == "compatible" else _CODES[code]
+    if detail:
+        reason = detail
     return {
         "version": 1, "pack_id": pack_id, "ok": code == "compatible", "code": code,
         "reason": reason, "fix": fix, "dependencies": deps, "warnings": sorted(set(warnings)),
