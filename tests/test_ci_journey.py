@@ -665,19 +665,19 @@ def test_windows_preflight_records_query_streams_origin_and_exit(tmp_path, monke
         calls.append((argv, kwargs))
         if len(calls) == 1:
             return SimpleNamespace(returncode=0, stdout='{"PSVersion":"5.1","ModulePath":"scheduler.psd1"}', stderr="")
-        return SimpleNamespace(returncode=1, stdout="partial query output", stderr="query module error")
+        return SimpleNamespace(returncode=1, stdout=b'{"status":"error","error":{"message":"access denied"}}', stderr=b"query module error")
     monkeypatch.setattr(windows.subprocess, "run", fake_run)
     monkeypatch.setenv("PSModulePath", "untrusted")
-    with pytest.raises(RuntimeError, match="query exit 1"):
+    with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
         windows.scheduled_task_diagnostics()
     record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
-    assert record["query"] == {"argv": calls[1][0], "stdout": "partial query output",
-                               "stderr": "query module error", "exit_code": 1, "classification": "error"}
-    assert windows.SCHEDULED_TASK_QUERY in record["query"]["argv"][-1]
+    assert record["query"]["argv"] == calls[1][0]
+    assert record["query"]["observation"]["status"] == "error"
+    assert record["query"]["stderr"] == "query module error"
+    assert record["query"]["exit_code"] == 1 and record["query"]["classification"] == "error"
+    assert windows.SCHEDULED_TASK_PREFLIGHT == record["query"]["argv"][-1]
     assert "PSVersion" in record["origin"]["stdout"] and "ModulePath" in record["origin"]["stdout"]
     assert all(not any(key.casefold() == "psmodulepath" for key in call[1]["env"]) for call in calls)
-    assert "CmdletizationQuery_NotFound_TaskName," in windows.SCHEDULED_TASK_QUERY
-    assert "else { throw }" in windows.SCHEDULED_TASK_QUERY
     evidence = tmp_path / "run" / "evidence" / "preflight"
     evidence.mkdir(parents=True)
     shutil.copyfile(tmp_path / "preflight-scheduled-task.txt", evidence / "preflight-scheduled-task.txt")
@@ -689,14 +689,15 @@ def test_windows_preflight_absence_and_foreign_owner_rejection(tmp_path, monkeyp
     from scripts import ci_windows_journey as windows
     monkeypatch.setattr(windows, "EVIDENCE", tmp_path / "evidence")
     monkeypatch.setattr(windows.subprocess, "run", lambda *a, **kw: SimpleNamespace(
-        returncode=0, stdout="", stderr=""))
-    assert windows.scheduled_task_diagnostics() == ""
+        returncode=0, stdout=b'{"status":"absent"}' if a[0][-1] == windows.SCHEDULED_TASK_PREFLIGHT else "",
+        stderr=b"" if a[0][-1] == windows.SCHEDULED_TASK_PREFLIGHT else ""))
+    assert windows.scheduled_task_diagnostics() == {"status": "absent"}
     record = json.loads((windows.EVIDENCE / "preflight-scheduled-task.txt").read_text())
     assert record["query"]["classification"] == "not-found"
     monkeypatch.setattr(journey.sys, "platform", "win32")
     monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "empty" / "astrid")
     monkeypatch.setattr(journey, "runtime_processes", lambda *a: [])
-    monkeypatch.setattr(windows, "scheduled_task_preflight", lambda leg: {"status": "present", "tasks": [{"path": "\\", "executables": [r"C:\other\runtime.exe"]}]})
+    monkeypatch.setattr(windows, "scheduled_task_diagnostics", lambda **kwargs: {"status": "present", "tasks": [{"path": "\\", "executables": [r"C:\other\runtime.exe"]}]})
     with pytest.raises(RuntimeError, match="outside this journey"):
         journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
 
@@ -744,13 +745,13 @@ def test_windows_preflight_checkpoints_launch_and_unexpected_errors(tmp_path, mo
             raise OSError("powershell unavailable")
         raise ValueError("unexpected capture failure")
     monkeypatch.setattr(windows.subprocess, "run", fail)
-    with pytest.raises(RuntimeError, match="origin exit None"):
+    with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
         windows.scheduled_task_diagnostics()
     record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
-    assert calls[0]["query"]["argv"][-1].endswith(windows.SCHEDULED_TASK_QUERY)
+    assert calls[0]["query"]["argv"][-1] == windows.SCHEDULED_TASK_PREFLIGHT
     assert "powershell unavailable" in calls[1]["origin"]["error"]
     assert record["query"]["classification"] == "error"
-    assert "unexpected capture failure" in record["query"]["error"]
+    assert "unexpected capture failure" in record["query"]["process_error"]
 
 
 def test_windows_preflight_missing_leg_regression(tmp_path, monkeypatch):
@@ -797,7 +798,9 @@ def test_windows_diagnostics_timeout_retains_partial_streams_and_traceback(tmp_p
     record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
     for item in record.values():
         assert item["stdout"] == "partial out" and item["stderr"] == "partial err"
-        assert item["exit_code"] is None and "Traceback" in item["error"]
+        assert item["exit_code"] is None
+    assert "Traceback" in record["origin"]["error"]
+    assert "Traceback" in record["query"]["process_error"]
 
 
 def test_windows_diagnostics_workflow_retains_launch_and_original_command():
@@ -805,8 +808,7 @@ def test_windows_diagnostics_workflow_retains_launch_and_original_command():
     step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split(
         "      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[0]
     assert "original_command = $original" in step and "w.scheduled_task_preflight()" in step
-    assert "w.scheduled_task_diagnostics()" in step
-    assert "w.scheduled_task_preflight(os.environ[" in step
+    assert "w.scheduled_task_diagnostics(leg=os.environ[" in step
     assert "Get-Content -LiteralPath $stdout" in step and "Get-Content -LiteralPath $stderr" in step
     assert step.index("Save-PreflightLaunch\n          try") < step.index("$process = Start-Process")
     for part in ("$PSVersionTable.PSVersion", "$command.Module.Path", "-RedirectStandardOutput $stdout",
@@ -818,7 +820,7 @@ def test_windows_diagnostics_workflow_retains_launch_and_original_command():
 
 @pytest.mark.parametrize("module_source, expected", [
     ("raise ImportError('import sentinel')\n", "ImportError: import sentinel"),
-    ("def scheduled_task_diagnostics():\n    print('partial stdout', flush=True)\n    raise RuntimeError('preflight sentinel')\ndef scheduled_task_preflight(leg):\n    print('preflight leg:', leg, flush=True)\n", "RuntimeError: preflight sentinel"),
+    ("def scheduled_task_diagnostics(*, leg):\n    print('preflight leg:', leg, flush=True)\n    print('partial stdout', flush=True)\n    raise RuntimeError('preflight sentinel')\n", "RuntimeError: preflight sentinel"),
 ])
 def test_windows_diagnostics_expression_preserves_python_traceback(tmp_path, module_source, expected):
     import subprocess

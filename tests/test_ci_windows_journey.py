@@ -631,6 +631,20 @@ def test_windows_scheduled_task_preflight_rejects_inconsistent_process_result(tm
     assert evidence["stderr"] == "query failed"
 
 
+def test_windows_diagnostics_rejects_failed_origin_even_with_absent_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
+    def run(argv, **kwargs):
+        if argv[-1] == journey.SCHEDULED_TASK_PREFLIGHT:
+            return subprocess.CompletedProcess(argv, 0, b'{"status":"absent"}', b"")
+        return subprocess.CompletedProcess(argv, 1, "", "origin failed")
+    monkeypatch.setattr(journey.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="origin exit 1"):
+        journey.scheduled_task_diagnostics(leg="fresh-install")
+    diagnostic = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    assert diagnostic["origin"]["stderr"] == "origin failed"
+    assert diagnostic["query"]["classification"] == "not-found"
+
+
 def test_windows_preflight_refuses_existing_task_and_allows_only_owned_nonfresh(tmp_path, monkeypatch):
     monkeypatch.setattr(shared_journey.sys, "platform", "win32")
     monkeypatch.setattr(shared_journey, "program_root", lambda: tmp_path / "default" / "program")
@@ -638,8 +652,7 @@ def test_windows_preflight_refuses_existing_task_and_allows_only_owned_nonfresh(
     root, data = Path(r"C:\journey\program"), tmp_path / "data"
     observation = {"status": "present", "tasks": [
         {"path": "\\", "executables": [r"C:\journey\program\python.exe"]}]}
-    monkeypatch.setattr(journey, "scheduled_task_diagnostics", lambda: "")
-    monkeypatch.setattr(journey, "scheduled_task_preflight", lambda leg: observation)
+    monkeypatch.setattr(journey, "scheduled_task_diagnostics", lambda **kwargs: observation)
     with pytest.raises(RuntimeError, match="outside this journey"):
         shared_journey.assert_host_available("fresh-install", root, data)
     shared_journey.assert_host_available("stale-update", root, data)
@@ -664,7 +677,7 @@ def test_windows_journey_success_returns_zero(tmp_path, monkeypatch):
     assert journey.main() == 0
 
 
-@pytest.mark.parametrize("status,exit_code", [("absent", 0), ("present", 0), ("error", 1)])
+@pytest.mark.parametrize("status,exit_code", [("absent", 0), ("present", 0), ("error", 1), ("unknown", 0)])
 def test_direct_windows_workflow_preflight_invocation(tmp_path, monkeypatch, capsys, status, exit_code):
     workflow = (WORKFLOW.parent / "journey.yml").read_text(encoding="utf-8")
     step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split(
@@ -672,26 +685,38 @@ def test_direct_windows_workflow_preflight_invocation(tmp_path, monkeypatch, cap
     assert "JOURNEY_LEG: ${{ matrix.leg }}" in step
     assert "if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }" in step
     code = step.split('          $code = "', 1)[1].split('"\n', 1)[0]
-    monkeypatch.setattr(journey, "scheduled_task_diagnostics", lambda: None)
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("JOURNEY_LEG", "release0-to-release1")
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     response = {"status": status}
+    if status == "absent":
+        # The hosted raw probe returned exit 1 with empty streams for this exact
+        # structured no-match result; no separate raw query should decide it.
+        response["error"] = {"fully_qualified_error_id": "CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask",
+                             "category": "ObjectNotFound"}
     if status == "present":
         response["tasks"] = [{"path": "\\", "executables": [r"C:\journey\python.exe"]}]
     if status == "error":
         response["error"] = {"message": "Access denied"}
-    monkeypatch.setattr(journey.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
-        argv, exit_code, json.dumps(response).encode(), b"diagnostic stderr"))
-    if status == "error":
+    def run(argv, **kwargs):
+        if argv[-1].endswith(journey.SCHEDULED_TASK_ORIGIN):
+            return subprocess.CompletedProcess(argv, 0, "origin", "")
+        assert argv[-1] == journey.SCHEDULED_TASK_PREFLIGHT
+        return subprocess.CompletedProcess(argv, exit_code, json.dumps(response).encode(), b"diagnostic stderr")
+    monkeypatch.setattr(journey.subprocess, "run", run)
+    if status in {"error", "unknown"}:
         with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
             exec(code, {})
     else:
         exec(code, {})
     evidence = json.loads((tmp_path / "journey-manager-direct-windows" /
                            "preflight-scheduled-task-release0-to-release1.json").read_text())
-    assert evidence["status"] == status and evidence["observation"] == response
+    assert evidence["status"] == ("error" if status == "unknown" else status)
+    if status != "unknown":
+        assert evidence["observation"] == response
     assert evidence["exit_code"] == exit_code and evidence["stderr"] == "diagnostic stderr"
+    diagnostic = json.loads((tmp_path / "journey-manager-direct-windows" / "preflight-scheduled-task.txt").read_text())
+    assert diagnostic["query"]["classification"] == {"absent": "not-found", "present": "present"}.get(status, "error")
     prefix = "Scheduled Task preflight (release0-to-release1): "
     assert json.loads(capsys.readouterr().out.strip().removeprefix(prefix)) == evidence
 
@@ -721,26 +746,22 @@ def test_windows_scheduled_task_preflight_records_timeout_output(tmp_path, monke
     assert "Traceback" in evidence["process_error"] and "TimeoutExpired:" in evidence["process_error"]
 
 
-def test_combined_windows_preflight_fails_closed_at_either_checkpoint(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["origin", "query"])
+def test_combined_windows_preflight_fails_closed_at_either_checkpoint(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(shared_journey.sys, "platform", "win32")
     monkeypatch.setattr(shared_journey, "program_root", lambda: tmp_path / "default" / "program")
     monkeypatch.setattr(shared_journey, "runtime_processes", lambda data: [])
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
     calls = []
-
-    def diagnostics():
-        calls.append("diagnostics")
-        raise RuntimeError("diagnostic query failed")
-
-    def strict(leg):
-        calls.append("strict")
-        raise RuntimeError("strict query failed")
-
-    monkeypatch.setattr(journey, "scheduled_task_diagnostics", diagnostics)
-    monkeypatch.setattr(journey, "scheduled_task_preflight", strict)
-    with pytest.raises(RuntimeError, match="diagnostic query failed"):
+    def run(argv, **kwargs):
+        if argv[-1] == journey.SCHEDULED_TASK_PREFLIGHT:
+            calls.append("query")
+            if failure == "query":
+                return subprocess.CompletedProcess(argv, 1, b'{"status":"error"}', b"access denied")
+            return subprocess.CompletedProcess(argv, 0, b'{"status":"absent"}', b"")
+        calls.append("origin")
+        return subprocess.CompletedProcess(argv, 1 if failure == "origin" else 0, "", "")
+    monkeypatch.setattr(journey.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="origin exit 1" if failure == "origin" else "Scheduled Task preflight failed"):
         shared_journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
-    assert calls == ["diagnostics"]
-    monkeypatch.setattr(journey, "scheduled_task_diagnostics", lambda: calls.append("diagnostics"))
-    with pytest.raises(RuntimeError, match="strict query failed"):
-        shared_journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
-    assert calls == ["diagnostics", "diagnostics", "strict"]
+    assert calls == ["origin", "query"]

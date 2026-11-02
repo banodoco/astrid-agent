@@ -884,8 +884,7 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
                 if fresh or fields.get("FragmentPath") != expected:
                     raise RuntimeError("An Astrid user-manager unit outside this journey is loaded")
     elif sys.platform == "win32":
-        windows.scheduled_task_diagnostics()
-        existing = windows.scheduled_task_preflight(leg)
+        existing = windows.scheduled_task_diagnostics(leg=leg)
         if existing["status"] == "present":
             tasks = existing["tasks"]
             owned = (len(tasks) == 1 and len(tasks[0]["executables"]) == 1
