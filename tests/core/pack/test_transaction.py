@@ -876,6 +876,78 @@ def test_update_cli_refuses_disabled_or_invalid_configured_collection(
     assert tree_snapshot(bundled) == bundled_before
 
 
+@pytest.mark.parametrize("dependency_present", [True, False])
+def test_real_update_cli_uses_explicit_selected_external_dependency_roots(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        dependency_present: bool) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    dependency = "extdep" if dependency_present else "genuinely_missing"
+    (repo.work / "packs" / "alpha" / "pack.yaml").write_text(
+        manifest("alpha", (dependency,)), encoding="utf-8")
+    target = repo.publish()
+    external = tmp_path / "selected-external"
+    external.mkdir()
+    if dependency_present:
+        pack = external / "extdep"
+        pack.mkdir()
+        (pack / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    unrelated = tmp_path / "unselected-root"
+    unrelated.mkdir()
+    (unrelated / "do-not-read").write_text("unrelated", encoding="utf-8")
+    original_iterdir = Path.iterdir
+    def guard_unrelated(path):
+        if path.resolve() == unrelated.resolve():
+            raise AssertionError("unselected root was scanned")
+        return original_iterdir(path)
+    monkeypatch.setattr(Path, "iterdir", guard_unrelated)
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    result = packs_cli_main(["update", "--source", str(repo.bare), "--revision", target,
+                             "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                             "--pack", "shared=packs/shared"])
+    if dependency_present:
+        assert result == 0
+        assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", target,
+                               "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                               "--pack", "shared=packs/shared"]) == 0
+        assert "alpha" in read_group(packs_root).paths
+        assert packs_cli_main(["rollback", "--packs-root", str(packs_root),
+                               "--pack", "alpha", "--pack", "shared"]) == 0
+        assert "alpha" in read_group(packs_root).paths
+    else:
+        assert result == 2
+        assert read_group(packs_root).revision == 0
+    assert (unrelated / "do-not-read").read_text(encoding="utf-8") == "unrelated"
+
+
+def test_real_update_cli_allows_omitted_source_tree_digest_and_rejects_real_release_pin_mismatch(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    declarations = tmp_path / "source-declarations.json"
+    declarations.write_text(json.dumps({"sources": [{"pack_id": "alpha", "repository": str(repo.bare),
+                                                      "revision": repo.commit}]}), encoding="utf-8")
+    monkeypatch.setenv("ASTRID_SOURCE_DECLARATIONS", str(declarations))
+    monkeypatch.delenv("ASTRID_RELEASE_PACK_PINS", raising=False)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 0
+
+    pinned = tmp_path / "release-pins.json"
+    pinned.write_text(json.dumps({"alpha": {"commit": "f" * 40, "digest": "e" * 64}}), encoding="utf-8")
+    monkeypatch.setenv("ASTRID_RELEASE_PACK_PINS", str(pinned))
+    next_revision = repo.next_revision()
+    before = tree_bytes(packs_root)
+    current = read_group(packs_root)
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", next_revision,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 2
+    assert tree_bytes(packs_root) == before
+    assert read_group(packs_root).transaction_id == current.transaction_id
+
+
 def test_rollback_uses_explicit_interpreter_snapshot_for_python_requirements(
         repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from importlib import metadata
@@ -1170,6 +1242,93 @@ def test_rollback_refuses_conflicting_current_source_pin(repo: Repository, packs
         rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"))
     assert failure.value.code == "rollback_conflict"
     assert group_bytes(packs_root) == before
+
+
+@pytest.mark.parametrize("fault", ["entry", "chunk", "manifest", "record", "missing"])
+def test_rollback_refuses_corrupt_retired_browser_admission_without_changing_live_generation(
+        repo: Repository, packs_root: Path, browser, fault: str) -> None:
+    from astrid.core.pack.transaction import rollback_group
+
+    first = install(repo, packs_root, **browser, refresh=accepted_refresh)
+    second = install(repo, packs_root, revision=change_browser(repo), **browser, refresh=accepted_refresh)
+    prior = packs_root.parent / ".astrid-retired" / second.transaction_id / "alpha"
+    record_path = prior / ".build" / "admission.json"
+    record = json.loads(record_path.read_bytes())
+    manifest_path = prior / ".build" / f'{record["sourceDigest"]}.artifact-manifest.json'
+    if fault == "manifest":
+        target = manifest_path
+    elif fault == "record":
+        target = record_path
+    elif fault in {"entry", "chunk"}:
+        artifact = json.loads(manifest_path.read_bytes())
+        item = next(row for row in artifact["files"] if (row["path"] == "index.js") == (fault == "entry"))
+        target = prior / item["disk"]
+    else:
+        artifact = json.loads(manifest_path.read_bytes())
+        item = next(row for row in artifact["files"] if row["path"] != "index.js")
+        target = prior / item["disk"]
+    if fault == "missing":
+        target.unlink()
+    else:
+        target.write_bytes(target.read_bytes() + b"tampered")
+
+    before = tree_bytes(packs_root)
+    current = read_group(packs_root)
+    with pytest.raises(PackInstallError):
+        rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                       transaction_id=second.transaction_id)
+    assert tree_bytes(packs_root) == before
+    assert read_group(packs_root).transaction_id == current.transaction_id
+    assert read_group(packs_root).revision == current.revision
+    assert first.transaction_id != current.transaction_id
+
+
+def test_rollback_interruption_refuses_without_live_change_and_can_retry(
+        repo: Repository, packs_root: Path, browser) -> None:
+    from astrid.core.pack.transaction import rollback_group
+
+    initial = install(repo, packs_root, **browser, refresh=accepted_refresh)
+    historical_commit = read_pin(read_group(packs_root).paths["alpha"] / "PIN")["commit"]
+    second = install(repo, packs_root, revision=change_browser(repo), **browser, refresh=accepted_refresh)
+    before = tree_bytes(packs_root)
+    current = read_group(packs_root)
+
+    def interrupt(phase: str) -> None:
+        if phase == "before_swap":
+            raise RuntimeError("simulated rollback interruption")
+
+    with pytest.raises(RuntimeError, match="simulated rollback interruption"):
+        rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                       transaction_id=second.transaction_id, boundary=interrupt)
+    assert tree_bytes(packs_root) == before
+    assert read_group(packs_root).transaction_id == current.transaction_id
+
+    restored = rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                              transaction_id=second.transaction_id)
+    assert restored.revision == current.revision + 1
+    assert read_pin(read_group(packs_root).paths["alpha"] / "PIN")["commit"] == historical_commit
+    assert initial.transaction_id != second.transaction_id
+
+
+def test_rollback_historical_pin_must_match_applicable_release_pin(repo: Repository, packs_root: Path) -> None:
+    from astrid.core.pack.transaction import rollback_group
+
+    first = install(repo, packs_root)
+    historical_commit = read_pin(read_group(packs_root).paths["alpha"] / "PIN")["commit"]
+    second = install(repo, packs_root, revision=repo.next_revision(), intent="update")
+    before = group_bytes(packs_root)
+    with pytest.raises(PackInstallError) as failure:
+        rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                       transaction_id=second.transaction_id,
+                       release_pins={"alpha": {"commit": "f" * 40, "digest": "e" * 64}})
+    assert failure.value.code == "pin_mismatch"
+    assert group_bytes(packs_root) == before
+    # With no applicable release pin, rollback preserves the exact historical
+    # source PIN from the retired generation.
+    rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                   transaction_id=second.transaction_id)
+    assert read_pin(read_group(packs_root).paths["alpha"] / "PIN")["commit"] == historical_commit
+    assert first.transaction_id != second.transaction_id
 
 
 def test_update_refuses_a_different_installed_source_pin(
