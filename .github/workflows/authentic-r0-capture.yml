@@ -4,6 +4,9 @@ name: Authentic post-R0 capture (no R1 update)
 # frozen R0 public bytes in a fresh runner-temp root, seeds R0, records bounded
 # non-secret observations, then removes only that run-owned installation.
 on:
+  push:
+    branches:
+      - venue/M-VENUE-V-17-WINDOWS-1
   workflow_dispatch:
     inputs:
       capture_os:
@@ -173,7 +176,7 @@ jobs:
           compression-level: 0
 
   capture-windows:
-    if: inputs.capture_os == 'windows'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/venue/M-VENUE-V-17-WINDOWS-1') || (github.event_name == 'workflow_dispatch' && inputs.capture_os == 'windows')
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
