@@ -420,7 +420,10 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
         schema_version=str(definition.schema_version),
         aliases=tuple(dict(alias) for alias in data["aliases"]),
         permissions=_normalize_pack_permissions(data["permissions"]),
-        extensions=_optional_pack_extensions(data.get("extensions", {}), path="pack.extensions"),
+        extensions=_optional_pack_extensions(
+            data.get("extensions", {}), path="pack.extensions", pack_id=definition.id,
+            actions=dict(data.get("actions", {})),
+        ),
         actions=dict(data.get("actions", {})),
         ui=dict(data.get("ui", {})),
         rendering=dict(data.get("rendering", {})),

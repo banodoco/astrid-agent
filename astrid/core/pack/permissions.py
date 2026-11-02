@@ -121,7 +121,10 @@ def _normalize_pack_permission_services(value: Any, *, path: str) -> tuple[str, 
     return tuple(normalized)
 
 
-def _optional_pack_extensions(value: Any, *, path: str) -> dict[str, Any]:
+def _optional_pack_extensions(
+    value: Any, *, path: str, pack_id: str | None = None,
+    actions: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if value is None:
         return {}
     data = _require_mapping(value, path)
@@ -180,7 +183,59 @@ def _optional_pack_extensions(value: Any, *, path: str) -> dict[str, Any]:
             data["astrid"],
             path=f"{path}.astrid",
         )
+        _validate_astrid_policy(
+            normalized["astrid"], path=f"{path}.astrid", pack_id=pack_id,
+            actions=actions,
+        )
     return normalized
+
+
+def _validate_astrid_policy(
+    policy: dict[str, Any], *, path: str, pack_id: str | None,
+    actions: dict[str, Any] | None,
+) -> None:
+    """Validate moved policy at manifest admission, before any projection."""
+    if "generation_availability" in policy:
+        generation = _require_mapping(policy["generation_availability"], f"{path}.generation_availability")
+        allowed = {"actions", "models", "template_models", "fixture_only_routes"}
+        if set(generation) - allowed:
+            raise PackValidationError(f"{path}.generation_availability has unknown sections")
+        for section, raw in generation.items():
+            section_path = f"{path}.generation_availability.{section}"
+            values = _require_mapping(raw, section_path)
+            for key, record in values.items():
+                if not isinstance(key, str) or not key.strip():
+                    raise PackValidationError(f"{section_path} keys must be non-empty strings")
+                if section == "template_models":
+                    if not isinstance(record, str) or record not in generation.get("models", {}):
+                        raise PackValidationError(f"{section_path}.{key} must reference this pack's model policy")
+                elif section == "fixture_only_routes":
+                    if record is not True or (pack_id is not None and not key.startswith(f"{pack_id}:")):
+                        raise PackValidationError(f"{section_path}.{key} must declare an owned fixture route")
+                else:
+                    if section == "actions" and pack_id is not None and not key.startswith(f"{pack_id}."):
+                        raise PackValidationError(f"{section_path}.{key} is not owned by pack {pack_id}")
+                    decision = _require_mapping(record, f"{section_path}.{key}")
+                    if type(decision.get("available")) is not bool:
+                        raise PackValidationError(f"{section_path}.{key}.available must be boolean")
+                    if decision["available"] is False:
+                        error = _require_mapping(decision.get("error"), f"{section_path}.{key}.error")
+                        for field in ("code", "message"):
+                            _require_string(error, field, f"{section_path}.{key}.error.{field}")
+    if "output_result_exemptions" in policy:
+        exemptions = _require_mapping(policy["output_result_exemptions"], f"{path}.output_result_exemptions")
+        if set(exemptions) != {"actions"}:
+            raise PackValidationError(f"{path}.output_result_exemptions requires only actions")
+        records = _require_mapping(exemptions["actions"], f"{path}.output_result_exemptions.actions")
+        for action_id, raw in records.items():
+            if actions is not None and action_id not in actions:
+                raise PackValidationError(f"{path}.output_result_exemptions references unknown local action {action_id!r}")
+            detail = _require_mapping(raw, f"{path}.output_result_exemptions.actions.{action_id}")
+            _require_string(detail, "note", f"{path}.output_result_exemptions.actions.{action_id}.note")
+            reasons = detail.get("reasons")
+            if (not isinstance(reasons, list) or not reasons
+                    or any(reason not in {"paid", "GPU", "external-escape-hatch", "no-artifact"} for reason in reasons)):
+                raise PackValidationError(f"{path}.output_result_exemptions.actions.{action_id}.reasons is invalid")
 
 
 def _normalize_rendering_extensions(value: Any, *, path: str) -> dict[str, Any]:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
@@ -363,7 +364,14 @@ def _first_party_inventory(
         and not child.name.startswith(".")
         and child.name not in _IGNORED_PACKS_ROOT_DIRS
     }
-    runtime_mounts = sorted(name for name, child in child_dirs.items() if (child / "cli.py").is_file())
+    # A CLI file is a runtime-mount exception only when the directory has no
+    # pack manifest. Manifest-bearing CLI packs are ordinary selected packs
+    # and must pass the same validation as every other manifest root.
+    runtime_mounts = sorted(
+        name
+        for name, child in child_dirs.items()
+        if (child / "cli.py").is_file() and pack_manifest_path(child) is None
+    )
     excluded: list[str] = []
     if pack_roots is not None:
         selected = tuple(Path(path).expanduser().resolve() for path in pack_roots)
@@ -371,16 +379,38 @@ def _first_party_inventory(
 
     errors: list[str] = []
     selected: list[Path] = []
+    # Engine assets are already declared by the canonical engine index. Reuse
+    # those explicit inputs instead of maintaining a copied directory allowlist.
+    resource_roots: set[str] = set()
+    index = root / "engine-index.json"
+    if index.is_file():
+        try:
+            entries = json.loads(index.read_text(encoding="utf-8"))["entries"]
+            for entry in entries:
+                recipe = (root.parent / entry["recipe"]["path"]).resolve()
+                relative = recipe.relative_to(root)
+                if recipe.is_file() and len(relative.parts) > 1:
+                    resource_roots.add(relative.parts[0])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"invalid engine resource inventory: {exc}")
     for name, child in sorted(child_dirs.items()):
-        if name == "_core" or name in runtime_mounts:
+        if name == "_core":
             continue
-        if pack_manifest_path(child) is None:
-            if any(path.is_file() for path in child.rglob("*")):
-                excluded.append(name)
-            else:
-                errors.append(f"unexpected top-level directory: {name}")
+        manifest = pack_manifest_path(child)
+        if manifest is not None:
+            # A CLI entrypoint does not exempt a directory from pack validation.
+            selected.append(child)
             continue
-        selected.append(child)
+        if name in runtime_mounts:
+            # Manifestless CLI mounts are established runtime-owned roots.
+            continue
+        if name in resource_roots:
+            excluded.append(name)
+            continue
+        if any(path.is_file() for path in child.rglob("*")):
+            errors.append(f"unexpected manifestless top-level directory: {name}")
+        else:
+            errors.append(f"unexpected top-level directory: {name}")
     core_dir = child_dirs.get("_core")
     if core_dir is None:
         errors.append("missing internal directory: _core")

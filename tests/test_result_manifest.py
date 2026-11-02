@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from astrid.core._shared.result_manifest import (
     HarvestError,
@@ -290,6 +291,33 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
     assert "h3_av.publication_finalizer" in non_exempt_ids
     assert registry.get("h3_av.publication_finalizer").metadata.get("output_result_manifest") is True
 
+    # Independently read the selected pack manifests instead of treating the
+    # inventory reader as the authority for first-party adoption.
+    manifest_adopters: set[str] = set()
+    for manifest_path in sorted(Path("astrid/packs").glob("*/pack.yaml")):
+        pack = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        for local_id, action in (pack.get("actions") or {}).items():
+            if not isinstance(action, dict):
+                continue
+            metadata = action.get("metadata", {})
+            if action.get("output_result_manifest") is True or (
+                isinstance(metadata, dict)
+                and metadata.get("output_result_manifest") is True
+            ):
+                manifest_adopters.add(f"{pack['id']}.{local_id}")
+    assert manifest_adopters <= registry_ids
+    assert manifest_adopters <= non_exempt_ids
+
+    # Pin both sides of the classification with representative authored facts:
+    # the pack manifest declares adoption, while these known non-adopters need
+    # explicit exemption reasons.
+    assert "understanding.audio_understand" in manifest_adopters
+    assert "h3_av.publication_finalizer" in manifest_adopters
+    assert rows["blender.render"]["result_contract"] == "exempted"
+    assert rows["blender.render"]["reasons"] == ["GPU", "external-escape-hatch"]
+    assert rows["editorial.human_review"]["result_contract"] == "exempted"
+    assert rows["editorial.human_review"]["reasons"] == ["no-artifact"]
+
     # The matrix is the authority for optional external routes; it must not be
     # mistaken for bundled default-registry discovery.
     matrix = json.loads(
@@ -317,6 +345,27 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
     assert external_ids.isdisjoint(registry_ids)
     for executor_id in external_ids:
         assert rows[executor_id]["reasons"] == ["external-escape-hatch"]
+
+    # Independent, authored classifications keep the census meaningful even
+    # if the policy reader and its output change together. These examples pin
+    # each live contract class and the key boundary routes without copying the
+    # complete policy table into a second authority.
+    expected_classifications = {
+        "h3_av.publication_finalizer": ("manifest", ()),
+        "editorial.human_review": ("exempted", ("no-artifact",)),
+        "foley.foley_map": ("exempted", ("paid",)),
+        "rendering.render": ("exempted", ("GPU",)),
+        "training.training_run": (
+            "exempted",
+            ("paid", "GPU", "external-escape-hatch"),
+        ),
+        "vibecomfy.edit": ("exempted", ("external-escape-hatch",)),
+        "hivemind.search": ("exempted", ("external-escape-hatch",)),
+    }
+    for executor_id, (contract, reasons) in expected_classifications.items():
+        assert executor_id in rows, executor_id
+        assert rows[executor_id]["result_contract"] == contract
+        assert tuple(rows[executor_id]["reasons"]) == reasons
 
     allowed_reasons = {"paid", "GPU", "external-escape-hatch", "no-artifact"}
     for definition in registry.list():

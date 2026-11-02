@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
+import json
 from typing import Any
 
 from astrid.core.contracts.errors import AstridError
 
 
-@lru_cache(maxsize=1)
 def availability_declaration() -> dict[str, Any]:
     """Collect live availability policy from parsed installed pack manifests."""
-    from astrid.core.pack import discover_packs
+    from astrid.core.pack import PackValidationError
+    from astrid.core.pack.discovery import discover_packs_ordered
 
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -20,14 +20,24 @@ def availability_declaration() -> dict[str, Any]:
         "models": {},
         "template_models": {},
     }
-    for pack in discover_packs():
+    # Use the same layered selection as action registries. A later same-ID
+    # installation replaces its bundled declaration, rather than merging it.
+    selected = {pack.id: pack for pack in discover_packs_ordered()}
+    owners: dict[tuple[str, str], str] = {}
+    for pack in selected.values():
         policy = pack.extensions.get("astrid", {}).get("generation_availability", {})
         if not isinstance(policy, dict):
             continue
         for section in ("actions", "fixture_only_routes", "models", "template_models"):
             values = policy.get(section, {})
-            if isinstance(values, dict):
-                payload[section].update(values)
+            for key, value in values.items():
+                owner = owners.get((section, key))
+                if owner is not None:
+                    raise PackValidationError(
+                        f"generation availability {section}.{key} has multiple owners: {owner}, {pack.id}"
+                    )
+                owners[section, key] = pack.id
+                payload[section][key] = value
     return payload
 
 

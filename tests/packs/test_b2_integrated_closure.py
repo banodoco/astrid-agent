@@ -50,9 +50,15 @@ def test_catalog_preserves_stage1_capability_census() -> None:
     orchestrators = load_orchestrators(executor_registry=executors)
     elements = load_elements()
     assert tuple(pack.id for pack in packs) == PACK_IDS
-    assert packs
-    assert executors.list()
-    assert elements.list()
+    # Census from the exact-base source manifests: 30 pack manifests, 108
+    # action declarations (one local parent is an orchestrator), and 44 distinct
+    # qualified element IDs (45 element.yaml files include one duplicate ID).
+    assert (len(packs), len(executors.list()), len(orchestrators.list()), len(elements.list())) == (
+        30,
+        107,
+        1,
+        44,
+    )
 
 
 def test_bundled_resources_are_confined_and_readable() -> None:
