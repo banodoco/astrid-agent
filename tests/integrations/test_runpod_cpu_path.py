@@ -195,6 +195,8 @@ class ProviderHTTP:
             assert record["lease"]["state"] == "preparing"
             assert 'allowedCudaVersions: ["13.0"]' in query or 'allowedCudaVersions: ["13.0",]' in query
             assert "DC-unpinned" in query and "networkVolumeId" not in query
+            assert record["worker_image"] in query and record["request_name"] in query
+            assert 'gpuTypeId: "gpu-exact"' in query
             self.pods.append({"id": "pod-cpu", "name": record["request_name"],
                 "desiredStatus": "RUNNING", "actualStatus": "RUNNING", "costPerHr": 1.0,
                 "imageName": record["worker_image"], "networkVolumeId": None,
@@ -318,7 +320,9 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     monkeypatch.setenv("ASTRID_RUNPOD_SOURCE_ROOT", str(tuple_sources))
     monkeypatch.setenv("VIBECOMFY_ENTRIES_DIR", str(tmp_path / "entries"))
     preferences = {"provider_account_ref": "cpu-fixture", "gpu_types": ["CPU fixture GPU"],
-        "image": "fixture/cuda130@sha256:" + "1" * 64, "idle_timeout_seconds": 1800,
+        "image": "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
+                 "@sha256:24795acee5856a3e6d383e879ccdd53edd25d24ea38d0edab5a1d3718ea385e6",
+        "idle_timeout_seconds": 1800,
         "credential_ref": "env:FAKE_RUNPOD_CREDENTIAL", "budget_cap_usd": 2.0}
     target_selection.save_runpod_preferences(preferences)
     claim_path = target_selection.canonical_claim_path("cpu-fixture")
