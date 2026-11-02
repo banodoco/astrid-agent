@@ -1,0 +1,33 @@
+Obtaining file:///home/user/merge/ws/M-AG/queue/running/AG-CI-SOURCE-UNION-E425-VERIFY-R1/runtime
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Obtaining file:///home/user/merge/ws/M-AG/queue/running/AG-CI-SOURCE-UNION-E425-VERIFY-R1/runtime/packages/python
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: astrid-runtime, astrid-runtime-client
+  Building editable for astrid-runtime (pyproject.toml): started
+  Building editable for astrid-runtime (pyproject.toml): finished with status 'done'
+  Created wheel for astrid-runtime: filename=astrid_runtime-0.1.0-0.editable-py3-none-any.whl size=4185 sha256=b5bc202b0a0b8d385f954495a999995626202d398ae2e7f29fb68dd5568eb5af
+  Stored in directory: /tmp/pip-ephem-wheel-cache-zxrxxbd7/wheels/fc/fb/24/24847d6cf08394d280bb11e109fad2d0d85bdfbbca13fc5de4
+  Building editable for astrid-runtime-client (pyproject.toml): started
+  Building editable for astrid-runtime-client (pyproject.toml): finished with status 'done'
+  Created wheel for astrid-runtime-client: filename=astrid_runtime_client-0.2.14-0.editable-py3-none-any.whl size=2984 sha256=f08a231b52d54ba1cf91d2f99108244bb48131049a7408d8ebb5b1734fd433d1
+  Stored in directory: /tmp/pip-ephem-wheel-cache-zxrxxbd7/wheels/d5/43/53/836f295703c7cae7c9af995502256c2ef075b1957f10cafd7f
+Successfully built astrid-runtime astrid-runtime-client
+Installing collected packages: astrid-runtime-client, astrid-runtime
+Successfully installed astrid-runtime-0.1.0 astrid-runtime-client-0.2.14
+
+[notice] A new release of pip is available: 24.0 -> 26.2.2
+[notice] To update, run: /home/user/merge/ws/M-AG/queue/running/AG-CI-SOURCE-UNION-E425-VERIFY-R1/venv/bin/python -m pip install --upgrade pip

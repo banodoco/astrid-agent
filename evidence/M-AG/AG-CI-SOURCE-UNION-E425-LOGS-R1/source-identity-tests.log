@@ -1,0 +1,24 @@
+F.................................                                       [100%]
+=================================== FAILURES ===================================
+___________ test_original_gitless_bundle_reproduces_retained_failure ___________
+
+repos = (PosixPath('/tmp/pytest-of-root/pytest-0/test_original_gitless_bundle_r0/sources'), {'VibeComfy': '49d5af54c166041c010...ime': '6b68399829ab4917ccba055d4e83eae3a1fbfc5d', 'runpod-lifecycle': '9652f790d2ecde63638828a71c8daff52187e1b9', ...})
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_original_gitless_bundle_r0')
+runtime = <module 'astrid_runtime.bootstrap' from '/home/user/merge/ws/M-AG/queue/running/AG-CI-SOURCE-UNION-E425-VERIFY-R1/runtime/astrid_runtime/bootstrap.py'>
+
+    def test_original_gitless_bundle_reproduces_retained_failure(repos, tmp_path, runtime):
+        """The previous tar filter dropped .git, making the real capture fail."""
+        from astrid.sdk.autobootstrap import AutoBootstrapError, _lifecycle_result
+    
+        sources, _ = repos
+        old = tmp_path / "old"
+        old.mkdir()
+        for name in ("astrid-runtime", "astrid-agent"):
+            shutil.copytree(sources / name, old / name, ignore=shutil.ignore_patterns(".git", "ignored-local"))
+>       with pytest.raises(runtime.BootstrapError, match="Requested Runtime identity could not be verified") as exc:
+E       Failed: DID NOT RAISE <class 'astrid_runtime.bootstrap.BootstrapError'>
+
+tests/scripts/test_pod_source_identity.py:106: Failed
+=========================== short test summary info ============================
+FAILED tests/scripts/test_pod_source_identity.py::test_original_gitless_bundle_reproduces_retained_failure
+1 failed, 33 passed in 10.51s
