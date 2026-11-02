@@ -403,6 +403,7 @@ def test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root():
 
 @pytest.mark.parametrize("phase,returncode,stderr,absent", [
     ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
+    ("after-cleanup", 113, 'Bad request.\nCould not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
     ("before-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),
     ("after-cleanup", 113, "launchctl unavailable\n", False),
     ("after-cleanup", 1, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),
@@ -1468,3 +1469,39 @@ def test_update_bootstrap_failure_preserves_exact_log_and_exit_across_cleanup(tm
         entry = row["failure_diagnostics"][phase]["update_bootstrap"]
         assert entry["exit_code"] == 19 and entry["sha256"] == hashlib.sha256(raw).hexdigest()
         assert (staged / "update-bootstrap.log").read_bytes() == raw
+
+
+def test_self_hosted_preupdate_launchd_snapshot_is_staged_and_hosted_unchanged(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps as jumps
+    run_root = tmp_path / "run"
+    data = run_root / "data"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    unit = run_root / "home/Library/LaunchAgents/haus.astrid.runtime.plist"
+    unit.parent.mkdir(parents=True)
+    unit.write_bytes(b"actual pre-update plist")
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setattr(journey.os, "getuid", lambda: 503)
+    monkeypatch.setattr(journey, "assert_runner_identity", lambda _: None)
+    monkeypatch.setattr(journey.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=0, stdout="actual launchctl state", stderr=""))
+    monkeypatch.delenv("ASTRID_CI_EXPECTED_RUNNER", raising=False)
+    assert jumps.capture_self_hosted_before_update(evidence, data) is False
+    assert not evidence.exists()
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", "astrid-mac")
+    assert jumps.capture_self_hosted_before_update(evidence, data) is True
+    for phase in ("before-cleanup", "after-cleanup"):
+        journey.retain_named_evidence(evidence, phase)
+        staged = run_root / "evidence-upload" / phase
+        assert (staged / "unit-file-before-update.txt").read_bytes() == b"actual pre-update plist"
+        assert journey.read_json(staged / "manager-state-before-update.json")["stdout"] == "actual launchctl state"
+
+
+def test_self_hosted_preupdate_refuses_missing_launchd_evidence(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps as jumps
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", "astrid-mac")
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setattr(journey, "assert_runner_identity", lambda _: None)
+    monkeypatch.setattr(journey.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=1, stdout="", stderr="unavailable"))
+    with pytest.raises(RuntimeError, match="Before-update launchd evidence"):
+        jumps.capture_self_hosted_before_update(tmp_path / "evidence", tmp_path / "run" / "data")

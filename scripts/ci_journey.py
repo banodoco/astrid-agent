@@ -66,9 +66,10 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "preflight-scheduled-task.txt",
     "runtime-owner-processes.json",
     "runtime-service-runtime.log",
+    "manager-state-before-update.json",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
-    "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+    "unit-file-before-update.txt", "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 
@@ -523,10 +524,11 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
         else:
             unit_path.write_text("Task Scheduler definition unavailable\n", encoding="utf-8")
         if sys.platform in {"linux", "darwin"} and completed.returncode:
+            missing_text = f'Could not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}'
             missing_service = (sys.platform == "darwin" and phase == "after-cleanup"
                                and completed.returncode == 113
-                               and completed.stderr.strip() ==
-                               f'Could not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}')
+                               and completed.stderr.strip().replace("\r\n", "\n") in
+                               {missing_text, f"Bad request.\n{missing_text}"})
             if missing_service:
                 manager["service_state"] = "absent"
             else:

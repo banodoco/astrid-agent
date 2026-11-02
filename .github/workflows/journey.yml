@@ -780,9 +780,10 @@ jobs:
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
             'preflight-scheduled-task.txt',
             'runtime-owner-processes.json', 'runtime-service-runtime.log',
+            'manager-state-before-update.json',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
-            'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
+            'unit-file-before-update.txt', 'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
           )
           $maxArtifactBytes = 49000000
           # Reserve 1 KiB per file for the stored ZIP entry and central directory.

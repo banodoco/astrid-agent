@@ -497,6 +497,22 @@ def release0_admission(args) -> tuple[Path, Path, dict]:
     return verified_release0_fixture(args.release0_fixture)
 
 
+def capture_self_hosted_before_update(evidence: Path, data: Path) -> bool:
+    """Capture actual launchd/plist state immediately before the update."""
+    if os.environ.get("ASTRID_CI_EXPECTED_RUNNER") != "astrid-mac":
+        return False
+    journey.assert_runner_identity(journey.runner_identity())
+    journey.capture_manager_state(evidence, data, "before-update")
+    manager_path = evidence / "manager-state-before-update.json"
+    unit_path = evidence / "unit-file-before-update.txt"
+    if not manager_path.is_file() or not unit_path.is_file():
+        raise RuntimeError("Before-update launchd evidence could not be captured")
+    manager = journey.read_json(manager_path)
+    if manager.get("returncode") != 0 or not manager.get("unit_file") or manager.get("error"):
+        raise RuntimeError("Before-update launchd evidence could not be captured")
+    return True
+
+
 def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
     """Authentic release-0 direct install, API seed, and frozen release-1 update."""
     evidence.mkdir(parents=True, exist_ok=True)
@@ -570,6 +586,12 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
+        if capture_self_hosted_before_update(evidence, data):
+            result["runtime_exit_snapshot"] = {
+                "status": "unavailable",
+                "reason": "Runtime exit occurs within the synchronous installer; no reliable external observation hook exists",
+            }
+            journey.write_json(result_path, result)
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
