@@ -2,9 +2,9 @@
   "schema_version": 1,
   "description": "Committed output-result inventory. Every bundled executor in the default registry either writes a universal result manifest (non-exempt) or appears here with a specific M2-approved reason; optional external routes remain explicitly listed without being treated as bundled discovery. The registry conformance gate uses this list to allow non-conforming executors while making the gap visible.",
   "last_registry_snapshot": "2026-11-01T00:00:00Z",
-  "total_executors": 115,
-  "m1_adopters": 79,
-  "exempted": 36,
+  "total_executors": 113,
+  "m1_adopters": 78,
+  "exempted": 35,
   "non_exempt": [
     "editorial.arrange",
     "editorial.boundary_candidates",
@@ -59,7 +59,6 @@
     "vibecomfy.run",
     "vibecomfy.video_enhance",
     "vibecomfy.character_animation",
-    "wan2gp.generate_video",
     "youtube.youtube_audio",
     "seedance_local.reference_video",
     "discord_local.command",
@@ -262,12 +261,6 @@
         "external-escape-hatch"
       ],
       "note": "Validates VibeComfy workflows through external VibeComfy CLI."
-    },
-    "wan2gp.validate_settings": {
-      "reasons": [
-        "no-artifact"
-      ],
-      "note": "Compiles and validates Wan2GP settings without producing a media artifact."
     },
     "youtube.upload": {
       "reasons": [

@@ -1469,30 +1469,6 @@
    "required_packages": []
   },
   {
-   "id": "wan2gp.generate_video",
-   "disposition": "optional",
-   "evidence_reason": "Optional native Wan2GP worker capability; the pinned engine is disclosed by the executor and runs only on a configured worker.",
-   "adapter_family": "local_generation",
-   "resource_keys": [
-    "gpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
-  },
-  {
-   "id": "wan2gp.validate_settings",
-   "disposition": "optional",
-   "evidence_reason": "Optional native Wan2GP settings validation; compilation is available without engine execution.",
-   "adapter_family": "local_generation",
-   "resource_keys": [
-    "gpu"
-   ],
-   "required_env": [],
-   "required_binaries": [],
-   "required_packages": []
-  },
-  {
    "id": "discord_local.command",
    "disposition": "optional",
    "evidence_reason": "Optional personal Discord adapter; retained with truthful binary preflight.",

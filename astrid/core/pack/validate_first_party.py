@@ -46,7 +46,6 @@ _FIRST_PARTY_PACK_IDS = (
     "understanding",
     "vibecomfy",
     "video_editing",
-    "wan2gp",
     "youtube",
     "typed_timeline",
     "timeline",

@@ -113,8 +113,6 @@
     "video_editing.sync_draft_voiceover",
     "video_editing.thumbnail_maker",
     "video_editing.vary_grid",
-    "wan2gp.generate_video",
-    "wan2gp.validate_settings",
     "youtube.upload",
     "youtube.youtube_audio"
   ],
@@ -226,8 +224,6 @@
     "video_editing.run_hype_pipeline",
     "video_editing.sync_draft_voiceover",
     "video_editing.vary_image_grid",
-    "wan2gp.generate_video",
-    "wan2gp.validate_settings",
     "youtube.download_youtube_audio",
     "youtube.download_youtube_video",
     "youtube.upload_youtube_video"
@@ -339,8 +335,6 @@
     "video_editing.run_hype_pipeline",
     "video_editing.sync_draft_voiceover",
     "video_editing.vary_image_grid",
-    "wan2gp.generate_video",
-    "wan2gp.validate_settings",
     "youtube.download_youtube_audio",
     "youtube.download_youtube_video",
     "youtube.upload_youtube_video"
