@@ -1802,6 +1802,13 @@ class ManagedToolProfile:
     verify: Callable[..., None] | None = None
 
 
+# Native admission identifiers the host keeps to itself (review S-3).
+_HOST_IDENTITY_EVIDENCE_KEYS = frozenset({
+    "token_id", "invocation_id", "session_id", "generation", "binding", "binding_identity",
+    "identity", "admission", "admission_token", "custody", "execution_identity",
+})
+
+
 class _HostManagedSessionAdapter:
     """Host side of the per-run session channel. Authority never leaves the host.
 
@@ -1822,21 +1829,32 @@ class _HostManagedSessionAdapter:
         self._cancelled = cancelled
         self._submitted = False
 
+    def _canonical_inputs(self, inputs: Any) -> Any:
+        return json.loads(json.dumps(inputs, sort_keys=True, default=str))
+
     def validate_settings(self, inputs: Mapping[str, Any]) -> None:
+        """Refuse before any compile or invoke unless the worker's inputs are exactly the
+        host-admitted inputs. The worker never chooses native inputs (review S-1)."""
         if not isinstance(inputs, Mapping):
             raise ValueError("inputs must be an object")
-        self._profile.compile_settings(dict(inputs))
+        if self._canonical_inputs(dict(inputs)) != self._canonical_inputs(self._inputs):
+            raise ValueError("inputs differ from the host-admitted inputs")
+        self._profile.compile_settings(dict(self._inputs))
 
     def submit(self, inputs: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
         if self._submitted:
             raise RuntimeError("submit is allowed once per run")
         self._submitted = True
-        compiled = self._profile.compile_settings(dict(inputs))
+        # Compile the HOST-admitted inputs only; the worker's copy was already
+        # proven identical in validate_settings.
+        compiled = self._profile.compile_settings(dict(self._inputs))
         timeout = max(0.1, min(float(timeout_seconds), self._timeout_cap))
         evidence = self._profile.invoke(
             self._token, compiled, timeout=timeout, cancelled=self._cancelled,
             progress_path=self._progress_path)
-        result = dict(evidence) if isinstance(evidence, Mapping) else {"result": None}
+        raw = dict(evidence) if isinstance(evidence, Mapping) else {"result": None}
+        # Identity stays on the host (review S-3): only explicitly safe evidence is echoed.
+        result = {key: value for key, value in raw.items() if key not in _HOST_IDENTITY_EVIDENCE_KEYS}
         # Non-secret echo of what the host compiled and invoked.
         result["compiled_settings"] = compiled
         return result
@@ -1848,11 +1866,20 @@ class _HostManagedSessionAdapter:
             return {}
 
     def cancel(self, reason: str) -> dict[str, Any]:
+        """Report the requested reason separately from the verified outcome (review N-7).
+
+        The outcome is what the managed session verified: confirmed native cancellation,
+        or uncertain (the session is fenced). Nothing is reported as confirmed unless
+        the native cancel returned without error.
+        """
+        requested = str(reason)[:200]
         try:
-            self._cancel_session(self._token, str(reason)[:200])
+            self._cancel_session(self._token, "confirmed")
         except Exception:
-            return {"state": "cancel_requested"}
-        return {"state": "cancel_requested"}
+            outcome = "uncertain"
+        else:
+            outcome = "confirmed"
+        return {"state": "cancel_requested", "requested_reason": requested, "outcome": outcome}
 
 
 class _HostSessionChannel:

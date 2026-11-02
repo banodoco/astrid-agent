@@ -79,12 +79,15 @@ def test_invoke_receives_exactly_host_compiled_inputs(tmp_path: Path) -> None:
 
 
 def test_inputs_failing_host_compile_are_refused_before_invoke(tmp_path: Path) -> None:
-    """(c) Inputs that fail host compile or validation are refused before invoke."""
+    """(c) A worker copy that differs from the admitted inputs is refused before compile or invoke.
+
+    Review S-1: the host compiles only its own admitted inputs. Any worker-shaped
+    difference (including one that would fail compile) is refused at validation."""
     stub = _Stub()
     adapter, inputs = _adapter(stub, tmp_path)
     bad = {**inputs, "resolution": "bogus"}
-    with pytest.raises(ValueError, match="resolution"):
-        adapter.submit(bad, timeout_seconds=5.0)
+    with pytest.raises(ValueError, match="host-admitted"):
+        adapter.validate_settings(bad)
     assert stub.invocations == []
 
 
