@@ -888,6 +888,15 @@ def healthy(data: Path) -> dict:
     return discovery
 
 
+def _runtime_owner_command(command: str) -> bool:
+    # Installed services run the Runtime CLI through a Python -c prelude. Keep
+    # recognizing the older runtime_protocol form for other running owners.
+    return ("-m runtime_protocol start" in command or
+            (re.search(r"(?:^|\s)-c(?:\s|$)", command) is not None and
+             "from astrid_runtime.cli import main" in command and
+             re.search(r"main\(\s*\[\s*['\"]run['\"]", command) is not None))
+
+
 def runtime_processes(data: Path) -> list[int]:
     """Count every live Runtime owner process on this isolated journey host."""
     if sys.platform == "win32":
@@ -896,14 +905,19 @@ def runtime_processes(data: Path) -> list[int]:
             "runtime-owner-processes.json", show=False, timeout=30))
         rows = rows if isinstance(rows, list) else [rows]
         return [int(row["ProcessId"]) for row in rows if
-                "-m runtime_protocol start" in str(row.get("CommandLine") or "")]
-    output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
-    found = []
+                _runtime_owner_command(str(row.get("CommandLine") or ""))]
+    # The installed prelude can be long and can contain newlines. Ask ps for
+    # the full command, then keep continuation lines with their process.
+    output = subprocess.check_output(["ps", "-ww", "-axo", "pid=,command="], text=True)
+    records: list[tuple[int, str]] = []
     for line in output.splitlines():
-        pid, _, command = line.strip().partition(" ")
-        if "-m runtime_protocol start" in command:
-            found.append(int(pid))
-    return found
+        match = re.match(r"^\s*(\d+)\s+(.*)$", line)
+        if match:
+            records.append((int(match.group(1)), match.group(2)))
+        elif records:
+            pid, command = records[-1]
+            records[-1] = (pid, command + "\n" + line)
+    return [pid for pid, command in records if _runtime_owner_command(command)]
 
 
 def assert_one_runtime(data: Path) -> None:

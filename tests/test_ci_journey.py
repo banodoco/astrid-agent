@@ -393,3 +393,40 @@ def test_tst_b1_counts_all_runtime_owners_to_reject_duplicates(tmp_path, monkeyp
         "103 python -m astrid_runtime up\n"
     ))
     assert journey.runtime_processes(data) == [101, 102]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
+        tmp_path, monkeypatch, platform):
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    # The actual service prelude is long and may be rendered with newlines by ps.
+    installed = ("/selected/py/bin/python -X utf8 -I -c import json,os,sys\n" +
+                 "# " + "padding" * 1000 + "\n" +
+                 "from astrid_runtime.cli import main\n" +
+                 "sys.exit(main(['run', '--profile', 'astrid', '--data-root', '/selected']))")
+    foreign = installed.replace("/selected", "/foreign")
+    unrelated = "python -c from astrid_runtime.cli import main; main(['status'])"
+    if platform == "win32":
+        rows = [{"ProcessId": 4123, "CommandLine": installed},
+                {"ProcessId": 4124, "CommandLine": foreign},
+                {"ProcessId": 4125, "CommandLine": unrelated}]
+        monkeypatch.setattr(journey.windows, "powershell", lambda *args, **kwargs: json.dumps(rows))
+    else:
+        def ps(argv, **kwargs):
+            assert argv == ["ps", "-ww", "-axo", "pid=,command="]
+            return f" 4123 {installed}\n 4124 {foreign}\n 4125 {unrelated}\n"
+        monkeypatch.setattr(journey.subprocess, "check_output", ps)
+    assert journey.runtime_processes(tmp_path) == [4123, 4124]
+    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
+    with pytest.raises(RuntimeError, match=r"found \[4123, 4124\]"):
+        journey.assert_one_runtime(tmp_path)
+
+
+@pytest.mark.parametrize("owners", [[], [4124], [4123, 4124], [4123, 4123]])
+def test_tst_b1_rejects_missing_foreign_or_duplicate_runtime_owner(tmp_path, monkeypatch, owners):
+    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
+    monkeypatch.setattr(journey, "runtime_processes", lambda data: owners)
+    with pytest.raises(RuntimeError, match="Expected exactly the selected Runtime owner 4123"):
+        journey.assert_one_runtime(tmp_path)
+    monkeypatch.setattr(journey, "runtime_processes", lambda data: [4123])
+    journey.assert_one_runtime(tmp_path)
