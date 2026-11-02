@@ -12,6 +12,7 @@ from pathlib import Path
 
 if __package__:
     from .journey_matrix import (
+        DEFERRED_R1_X_DIRECT_CONTAINMENT_CONTINUITY_OBLIGATIONS,
         DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
         END_STATE_INVENTORY,
         GPU_MATRIX,
@@ -33,6 +34,7 @@ if __package__:
 else:
     try:
         from journey_matrix import (
+            DEFERRED_R1_X_DIRECT_CONTAINMENT_CONTINUITY_OBLIGATIONS,
             DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
             END_STATE_INVENTORY,
             GPU_MATRIX,
@@ -53,6 +55,7 @@ else:
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
+            DEFERRED_R1_X_DIRECT_CONTAINMENT_CONTINUITY_OBLIGATIONS,
             DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
             END_STATE_INVENTORY,
             GPU_MATRIX,
@@ -836,6 +839,25 @@ def deferred_pinokio_continuity_statuses():
     )
 
 
+def deferred_direct_containment_continuity_statuses():
+    """Expose direct P13 exclusions; they are never evaluated as R1 passes."""
+    return tuple(
+        {
+            "id": row["id"],
+            "assertion_id": row["assertion_id"],
+            "status": "deferred-R1.x",
+            "r1_gate": row["r1_gate"],
+            "release_scope": row["release_scope"],
+            "decision_pointer": row["decision_pointer"],
+            "removal_authorization_relation": row["removal_authorization_relation"],
+            "reasons": (
+                "excluded from the R1 gate by M-INT rule 36 P13; checkpoint evidence is not containment or continuous history",
+            ),
+        }
+        for row in DEFERRED_R1_X_DIRECT_CONTAINMENT_CONTINUITY_OBLIGATIONS
+    )
+
+
 def evaluate_end_state_obligations(candidate, results):
     """Return the closed END-STATE inventory with fail-closed row statuses.
 
@@ -1046,7 +1068,10 @@ def main():
             candidate = read(args.candidate)
             validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
             obligation_statuses, visibility_errors = evaluate_end_state_obligations(candidate, args.results)
-            deferred_continuity_statuses = deferred_pinokio_continuity_statuses()
+            deferred_continuity_statuses = (
+                *deferred_pinokio_continuity_statuses(),
+                *deferred_direct_containment_continuity_statuses(),
+            )
             errors.extend(visibility_errors)
             errors.extend(
                 f"{row['id']}: obligation status {row['status']}"

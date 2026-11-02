@@ -7,6 +7,7 @@ from collections import Counter
 
 from scripts import check_journey_evidence as gate
 from scripts.journey_matrix import (
+    DEFERRED_R1_X_DIRECT_CONTAINMENT_CONTINUITY_OBLIGATIONS,
     DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
     END_STATE_INVENTORY,
     M4_5_SCENARIO_IDS,
@@ -186,6 +187,32 @@ def test_option_b_defers_exactly_the_pinokio_continuity_claims_not_their_r1_end_
     assert {row["id"] for row in statuses} == OPTION_B_DEFERRED_IDS
     assert {row["status"] for row in statuses} == {"deferred-R1.x"}
     assert {row["r1_gate"] for row in statuses} == {"excluded-deferred-R1.x"}
+
+
+def test_direct_rule36_checkpoint_rows_defer_containment_and_continuous_history_never_pass():
+    deferred = {row["id"]: row for row in DEFERRED_R1_X_DIRECT_CONTAINMENT_CONTINUITY_OBLIGATIONS}
+    expected = {
+        f"{scenario}:{slot}"
+        for scenario in ("interruption-recovery", "rollback", "keep_data_uninstall", "stop_safety")
+        for slot in ("direct-macos", "direct-linux", "direct-windows")
+    }
+    assert set(deferred) == expected
+    assert len(deferred) == 12
+    assert all(
+        row["r1_gate"] == "excluded-deferred-R1.x"
+        and row["decision_pointer"] == "ORCHESTRATOR.md:11776"
+        and row["claim"] == "native manager/process containment and continuous-history custody"
+        for row in deferred.values()
+    )
+    inventory = {row["id"]: row for row in END_STATE_INVENTORY}
+    assert all(
+        inventory[row_id]["assertion_id"] == deferred[row_id]["r1_snapshot_assertion_id"]
+        and "deferred-R1.x" in inventory[row_id]["predicate"]
+        for row_id in expected
+    )
+    statuses = gate.deferred_direct_containment_continuity_statuses()
+    assert {row["id"] for row in statuses} == expected
+    assert {row["status"] for row in statuses} == {"deferred-R1.x"}
 
 
 def test_obligation_statuses_are_complete_and_missing_routes_are_not_run(tmp_path):
