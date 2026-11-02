@@ -5,7 +5,7 @@
     "scripts/reshape"
   ],
   "command": [
-    "/tmp/I-AG-07-venv/bin/python",
+    "/home/user/merge/ws/M-AG/queue/running/I-AG-07-R1/venv/bin/python",
     "-m",
     "mypy",
     "astrid",
@@ -15,15 +15,16 @@
     "--no-pretty",
     "--show-error-codes"
   ],
-  "finding_count": 2247,
+  "finding_count": 2258,
   "code_counts": {
-    "arg-type": 485,
+    "arg-type": 489,
     "assignment": 199,
-    "attr-defined": 598,
+    "attr-defined": 599,
     "call-arg": 1,
     "call-overload": 42,
     "dict-item": 34,
     "func-returns-value": 2,
+    "has-type": 5,
     "import-untyped": 25,
     "index": 198,
     "list-item": 7,
@@ -39,7 +40,7 @@
     "str-bytes-safe": 1,
     "type-var": 3,
     "typeddict-item": 7,
-    "union-attr": 401,
+    "union-attr": 402,
     "valid-type": 17,
     "var-annotated": 55
   }
