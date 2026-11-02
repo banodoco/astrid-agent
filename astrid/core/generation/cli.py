@@ -82,7 +82,7 @@ def _entry_help(description: dict[str, Any]) -> str:
 
 
 def _context_description(argv: list[str]) -> dict[str, Any] | None:
-    if not argv or argv[0] not in {"image", "video"} or not any(
+    if not argv or argv[0] not in {"image", "video", "audio"} or not any(
             item in {"-h", "--help"} for item in argv):
         return None
     selector = argparse.ArgumentParser(add_help=False)
@@ -133,8 +133,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command = sub.add_parser('list', help='List generation entries and readiness.')
     command.add_argument('--kind', choices=('image', 'video', 'audio', 'generation', 'fixture'))
     command.add_argument('--json', action='store_true')
-    for modality in ("image", "video"):
-        command = sub.add_parser(modality, help=f"Generate {'an image' if modality == 'image' else 'a video'}.",
+    for modality in ("image", "video", "audio"):
+        command = sub.add_parser(modality, help=f"Generate {'an image' if modality == 'image' else 'a video' if modality == 'video' else 'audio'}.",
             epilog=_entry_help(contextual) if contextual and contextual["kind"] == modality else None,
             formatter_class=argparse.RawDescriptionHelpFormatter)
         command.add_argument("prompt", nargs="?", help="Describe the media to generate.")
@@ -142,11 +142,14 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--model", action=_Once, help="Generation catalog entry ID (legacy selector).")
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
-        command.add_argument("--mode", action=_Once, help="Generation mode; inferred from the supplied inputs by default.")
+        command.add_argument("--mode", action=_Once, choices=('music', 'tts', 'sfx') if modality == 'audio' else None,
+                             required=modality == 'audio', help=("Audio mode: music, tts, or sfx." if modality == 'audio'
+                             else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
-            "--target", action=_Once, default="auto", metavar="TARGET",
-            help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
+            "--target", action=_Once, default=None if modality == 'audio' else 'auto', metavar="TARGET",
+            help=("auto, managed, a loopback ComfyUI URL, or runpod (music/tts only)." if modality == 'audio'
+                  else "auto (default), managed, a loopback ComfyUI URL, or runpod."),
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
         command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
@@ -162,6 +165,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--fps", action=_Once, type=float)
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
+        if modality == 'audio':
+            command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
     command = sub.add_parser("describe", help="Describe one entry without checking execution readiness.")
     command.add_argument('workflow', nargs='?')
     command.add_argument("--entry")
@@ -240,6 +245,8 @@ def _controls(parsed):
     controls = {}
     if parsed.no_wait:
         controls['wait'] = False
+    if getattr(parsed, 'resume', False):
+        controls['resume'] = True
     for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest',
                  'preparation_seconds', 'execution_seconds', 'idle_seconds'):
         value = getattr(parsed, name, None)
@@ -372,6 +379,9 @@ def _main(argv: list[str]) -> int:
         return 0
     if parsed.modality == "workflow":
         return _workflow_command(parsed)
+    if parsed.modality == 'audio' and parsed.mode == 'sfx' and parsed.target == 'runpod':
+        # Ask the SDK for its canonical refusal before entry or input resolution.
+        _generate_facade().audio(mode='sfx', target='runpod')
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
         parser.error("--model and --entry select different generation entries")
     if parsed.prompt is not None and not parsed.prompt.strip():
@@ -403,7 +413,7 @@ def _main(argv: list[str]) -> int:
                     context = None
                 raise GenerationInputError(str(exc), entry=context) from exc
             parser.error(str(exc))
-    elif 'prompt' not in values:
+    elif 'prompt' not in values and not (parsed.modality == 'audio' and values):
         parser.error("prompt is required unless declared entry inputs are supplied")
     from astrid.sdk.exceptions import AstridSDKError
 

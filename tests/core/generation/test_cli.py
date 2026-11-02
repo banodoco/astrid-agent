@@ -325,3 +325,31 @@ def test_launch_rejects_duplicate_selector_before_sdk(monkeypatch, capsys):
     monkeypatch.setattr(cli, '_generate_facade', lambda: pytest.fail('duplicate reached SDK'))
     assert cli.main(['launch', '--target', 'auto', '--target', 'managed', '--json']) == 2
     assert json.loads(capsys.readouterr().out)['issues'][0]['code'] == 'input_rejected'
+
+@pytest.mark.parametrize('mode', ['music', 'tts'])
+def test_audio_cli_forwards_runpod_controls_to_facade(monkeypatch, capsys, mode):
+    calls = []
+    def invoke(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(ok=True, kernel_task_id='task-a', to_dict=lambda: {'kernel_task_id': 'task-a'})
+    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(audio=invoke))
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext('runtime-client'))
+    assert cli.main(['audio', 'hello', '--mode', mode, '--target', 'runpod', '--consent', 'paid',
+        '--max-usd', '2', '--deadline', '2099-01-01T00:00:00Z', '--offer-digest', 'offer',
+        '--preparation-seconds', '60', '--execution-seconds', '60', '--idle-seconds', '1800',
+        '--recovery-path', 'receipt.json', '--resume', '--no-wait', '--json']) == 0
+    assert calls == [{'model': None, 'mode': mode, 'target': 'runpod', 'prompt': 'hello',
+        'dry_run': False, 'client': 'runtime-client', 'wait': False, 'consent': ['paid'],
+        'max_usd': 2.0, 'deadline': '2099-01-01T00:00:00Z', 'offer_digest': 'offer',
+        'preparation_seconds': 60.0, 'execution_seconds': 60.0, 'idle_seconds': 1800.0,
+        'recovery_path': 'receipt.json', 'resume': True}]
+    assert json.loads(capsys.readouterr().out)['kernel_task_id'] == 'task-a'
+
+
+def test_audio_cli_runpod_foley_refuses_before_task_admission(monkeypatch):
+    from astrid.core.contracts.errors import AstridError
+    monkeypatch.setattr(cli, '_open_client', lambda: pytest.fail('Runtime client opened'))
+    with pytest.raises(AstridError) as raised:
+        cli.main(['audio', '--mode', 'sfx', '--target', 'runpod', '--entry', 'missing'])
+    assert raised.value.to_envelope()['issues'][0]['code'] == 'foley_runpod_unsupported'
+    assert raised.value.to_envelope()['task_id'] is None
