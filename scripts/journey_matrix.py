@@ -84,6 +84,125 @@ M4_5_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in M4_5_MATRIX)
 M4_6_MATRIX: Final = RELEASE1_MATRIX
 M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
 
+# Release end-state inventory, ordered by the orchestration request. These are
+# obligations, not receipts: route availability never implies a hosted pass.
+# The end-state document named by orchestration was unavailable; this inventory
+# uses the explicit R-37/review requirements and the checked-in contracts.
+END_STATE_PHASES: Final = (
+    "fresh-install", "populated-r0-update", "interruption-recovery",
+    "rollback", "r2", "linux-app-guard",
+)
+END_STATE_TUPLE: Final = {
+    "app": "36ff224e3c9ad862e3f807e2548b997a36799543",
+    "agent": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+    "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+    "pinokio": "89ed7aacae72bb48eb97ff9f95c222bdd7e71e4",
+}
+
+# Each obligation has a stable ID, an actual route/assertion where one exists,
+# and a separate route state. "unimplemented" names the missing acceptance
+# route, even where a weaker executable or receipt predicate already exists.
+END_STATE_INVENTORY: Final = (
+    *(
+        {
+            "id": f"fresh-install:{row['job_id']}", "phase": "fresh-install",
+            "job_id": row["job_id"], "os": row["os"], "channel": row["mode"],
+            "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
+            "route": "ci_journey.py --leg fresh-install",
+            "route_state": "execution-capable" if row["mode"] != "direct" else "unimplemented",
+            "dependency": ("authenticated Pinokio adapter and hosted receipt" if row["mode"] != "direct"
+                           else "M-QUAL/M-CI: distinct direct fresh-install workflow row and receipt identity"),
+            "predicate": "hosted installed candidate, owned service, health, settled task, one Runtime, sentinel and cleanup",
+            "source": "ci_journey.py; check_journey_evidence.py:evaluate_release1_matrix",
+        } for row in RELEASE1_MATRIX
+    ),
+    *(
+        {
+            "id": f"populated-r0-update:{row['job_id']}", "phase": "populated-r0-update",
+            "job_id": row["job_id"], "os": row["os"], "channel": row["mode"], "owner": "M-QUAL",
+            "route": "journey_version_jumps.py:execute_release0_to_release1",
+            "route_state": "execution-capable", "dependency": "authentic hosted exact-tuple receipt",
+            "predicate": "frozen R0 provenance, seeded semantic data preserved, R1 identity, service, health, task and cleanup",
+            "source": "check_journey_evidence.py:evaluate_release1_matrix",
+        } for row in RELEASE1_MATRIX if row["mode"] == "direct"
+    ),
+    {
+        "id": "populated-v31-to-v33-backup-restore", "phase": "populated-r0-update",
+        "owner": "M-QUAL/M-RT", "route": None, "route_state": "unimplemented",
+        "dependency": "M-QUAL/M-RT: bind populated authentic R0 schema versions and backup/restore observations to a hosted journey",
+        "predicate": "authentic populated v31 migrates to v33 with semantic preservation and verified backup and restore",
+        "source": "ASTRA-REVIEW.md: migration; journey_version_jumps.py:execute_release0_to_release1",
+    },
+    *(
+        {
+            "id": f"interruption-recovery:{row['job_id']}", "phase": "interruption-recovery",
+            "job_id": row["job_id"], "os": row["os"], "channel": row["mode"],
+            "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
+            "route": "journey_failure_modes.py:scenario_errors(interruption_recovery)",
+            "route_state": "unimplemented", "dependency": "hosted native-service M4-6 adapter and authenticated receipt",
+            "predicate": "injected interruption, journal, explicit same-operation recovery, terminal identity and preserved data",
+            "source": "journey_failure_modes.py:_interruption_errors",
+        } for row in M4_6_MATRIX
+    ),
+    {
+        "id": "interrupted-migration-restore", "phase": "interruption-recovery", "owner": "M-QUAL/M-RT",
+        "route": None, "route_state": "unimplemented",
+        "dependency": "M-QUAL/M-RT: hosted migration interruption and restore observations",
+        "predicate": "interrupt populated v31-to-v33 migration, restore and verify preserved usable data",
+        "source": "ASTRA-REVIEW.md: migration",
+    },
+    *(
+        {
+            "id": f"rollback:{row['job_id']}", "phase": "rollback", "job_id": row["job_id"],
+            "os": row["os"], "channel": row["mode"],
+            "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
+            "route": "journey_failure_modes.py:scenario_errors(failed_candidate_rollback)",
+            "route_state": "unimplemented", "dependency": "hosted native-service M4-6 adapter and authenticated receipt",
+            "predicate": "controlled candidate failure; actual R0 executable identity, healthy restart and semantic data preserved",
+            "source": "journey_failure_modes.py:_rollback_errors",
+        } for row in M4_6_MATRIX
+    ),
+    *(
+        {
+            "id": f"{scenario}:{row['job_id']}", "phase": "rollback", "job_id": row["job_id"],
+            "os": row["os"], "channel": row["mode"],
+            "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
+            "route": f"journey_failure_modes.py:scenario_errors({scenario})", "route_state": "unimplemented",
+            "dependency": "hosted native-service M4-6 adapter and authenticated receipt",
+            "predicate": predicate, "source": f"journey_failure_modes.py:_{scenario.replace('keep_data_uninstall', 'uninstall')}_errors",
+        } for scenario, predicate in (
+            ("keep_data_uninstall", "remove program and service, retain workspace/CAS and semantic data, preserve sentinel"),
+            ("stop_safety", "refused and unknown stop do not update, retry, activate or change data or R0 identity"),
+        ) for row in M4_6_MATRIX
+    ),
+    *(
+        {
+            "id": row["scenario_id"], "phase": "r2", "job_id": row["job_id"], "os": row["os"],
+            "channel": row["channel"], "mode": row["mode"],
+            "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
+            "route": "ci_journey.py --shared-executor m4-5", "route_state": "unimplemented",
+            "dependency": "current-tuple M4-5 admission and authenticated installed boundary/hosted receipt",
+            "predicate": "visible installed R2 stand-in identity, channel trigger, preserved data, service, task and cleanup",
+            "source": "journey_release2.py:receipt_errors",
+        } for row in M4_5_MATRIX
+    ),
+    {
+        "id": "r0-to-r2-skip", "phase": "r2", "owner": "M-QUAL",
+        "route": None, "route_state": "unimplemented",
+        "dependency": "R-16 actual worker bridge execution and authentic R0-to-stand-in-R2 skip receipt",
+        "predicate": "actual worker executes authentic R0-to-R2 skip with bridge/job/journal linkage and preserved data",
+        "source": "ASTRA-TASK-REVIEWS.md: R-16",
+    },
+    {
+        "id": "linux-unsaved-draft-browser", "phase": "linux-app-guard", "os": "linux", "channel": "button",
+        "job_id": "direct-linux", "owner": "M-APP/M-QUAL",
+        "route": "release2-button-direct-linux:unsaved-draft", "route_state": "unimplemented",
+        "dependency": "current-tuple real installed browser/Runtime execution and authenticated receipt (I-AP-03/I-AP-08)",
+        "predicate": "failed save: zero POST/jobs; successful save: one POST and native job, installed R2; include chat drafts and stale marker",
+        "source": "journey_release2.py:_button_errors; ASTRA-TASK-REVIEWS.md: I-AP-03/I-AP-08",
+    },
+)
+
 
 def m4_4a_backend_job(job_id: str) -> dict:
     for row in M4_4A_BACKEND_MATRIX:
