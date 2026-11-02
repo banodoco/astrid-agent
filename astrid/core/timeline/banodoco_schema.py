@@ -515,7 +515,7 @@ def load_vendored_timeline_schema() -> dict[str, Any]:
     """
     configured = os.environ.get(ASTRID_TIMELINE_SCHEMA_PYTHONPATH)
     if configured is not None:
-        from astrid.core.rendering._local_schema import verified_schema_path
+        from astrid.core.timeline._local_schema import verified_schema_path
 
         verified_schema_path(Path(__file__).absolute().parents[3], configured)
     return cast(dict[str, Any], json.loads(_VENDORED_SCHEMA.read_text(encoding="utf-8")))
