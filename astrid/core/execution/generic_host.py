@@ -6847,7 +6847,9 @@ class GenericPackHost:
         if timeout <= 0:
             raise ValueError("Wan invocation deadline must be positive")
         manager = self.managed_tool_session
-        adapter = manager.adapter_for(token, begin=True)
+        # Validation only: the caller owns the single dispatch (review X-5). The generic
+        # route begins admission before invoke; the old path begins in _run_wan_session.
+        adapter = manager.adapter_for(token)
         if not isinstance(adapter, _ManagedWanChildAdapter):
             raise HostError("invocation does not own a Wan child")
         try:
@@ -10283,6 +10285,7 @@ class GenericPackHost:
         from astrid.packs.wan2gp.src.driver import compile_host_settings, materialize_host_result
 
         settings = compile_host_settings(inputs)
+        self.managed_tool_session.adapter_for(managed_token, begin=True)
         evidence = self.invoke_wan_session(
             managed_token,
             settings,
