@@ -163,7 +163,7 @@ _PRODUCER_FILES = {
     "pinokio/providers/r24-linux-binding.json": "aa081980bb143ea67eac9e36ca567af8f54a3cdcf7c6593ee130ed81a4d86d87",
     "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
 }
-# This immutable live producer input is bound to the published Release-1
+# This immutable live producer input is bound to the historical Release-1
 # tuple below.  It is not a release pin, evidence authority, or qualification
 # decision: callers still authenticate their candidate inputs and custody.
 LIVE_PRODUCER_REF = "7bb0ae88721fdd6b2d7b948760d886eeda9df282"

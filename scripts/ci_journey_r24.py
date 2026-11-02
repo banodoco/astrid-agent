@@ -21,11 +21,11 @@ except ImportError:
 
 
 PUBLISHED_CANDIDATE = {
-    "app": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
-    "agent": "2de0726d1eaea7f7bd141251e088aa9fdf224525",
-    "runtime": "5453366458f7b4ee874c94d15ae7952e3e82d3c3",
+    "app": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
     "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-    "manifest_sha256": "920477210d01615a6698cda30f248552f13c712734e86ea56f283300cb1a9c87",
+    "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
 }
 EXPORT_NAMES = frozenset({
     "junit.xml", "manifest.json", "observation-result.json",
@@ -217,6 +217,14 @@ def _validate_config(config: Any, checkouts: dict[str, Path]) -> dict[str, Any]:
     return config
 
 
+def _validate_producer_binding(binding: dict[str, Any], candidate: dict[str, str]) -> None:
+    """Require the audited producer binding to select this published candidate."""
+    if binding.get("candidate") != provider.LIVE_CANDIDATE:
+        raise JourneyProviderError("producer binding differs from immutable producer contract")
+    if binding["candidate"] != candidate:
+        raise JourneyProviderError("producer binding candidate differs from published tuple")
+
+
 def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
                     producer_root: Path, checkouts: dict[str, Path]) -> tuple[
                         provider.ProviderRequest, bytes, dict[str, Any], dict[str, Any]]:
@@ -226,8 +234,6 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
     selected = _object(selected, set(PUBLISHED_CANDIDATE), "candidate")
     if selected != PUBLISHED_CANDIDATE:
         raise JourneyProviderError("candidate differs from the published tuple")
-    if selected != provider.LIVE_CANDIDATE or selected["pinokio"] != provider.LIVE_STOP["ref"]:
-        raise JourneyProviderError("typed provider is not bound to the published tuple")
     if set(checkouts) != {"app", "agent", "runtime", "pinokio"}:
         raise JourneyProviderError("four candidate checkouts are required")
     roots = {name: _checkout(path, selected[name]) for name, path in checkouts.items()}
@@ -255,8 +261,9 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
             raise JourneyProviderError("producer source digest mismatch")
     binding_raw = _regular(producer_root / "pinokio/providers/r24-linux-binding.json")
     binding = _decode(binding_raw)
-    if binding.get("candidate") != selected:
-        raise JourneyProviderError("producer binding candidate differs from published tuple")
+    if not isinstance(binding, dict):
+        raise JourneyProviderError("producer binding is not an object")
+    _validate_producer_binding(binding, selected)
     if binding.get("runtime_execution_sources") != provider.LIVE_RUNTIME_EXECUTION_SOURCES:
         raise JourneyProviderError("producer runtime execution source inventory differs")
     stop = _regular(roots["pinokio"] / "pinokio/stop.js")

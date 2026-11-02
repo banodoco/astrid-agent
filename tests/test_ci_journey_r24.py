@@ -187,10 +187,20 @@ def test_export_rejects_identity_and_inventory_tamper(tmp_path, tamper):
         hook.validate_export(export, request, output)
 
 
-def test_published_tuple_is_not_replaced_by_stale_producer_binding():
-    assert hook.PUBLISHED_CANDIDATE["agent"] == "2de0726d1eaea7f7bd141251e088aa9fdf224525"
-    assert hook.PUBLISHED_CANDIDATE == provider.LIVE_CANDIDATE
+def test_published_tuple_rejects_stale_producer_binding():
+    assert hook.PUBLISHED_CANDIDATE == {
+        "app": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+        "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+        "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+        "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+        "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
+    }
+    assert hook.PUBLISHED_CANDIDATE != provider.LIVE_CANDIDATE
     assert provider.LIVE_STOP["ref"] == hook.PUBLISHED_CANDIDATE["pinokio"]
+    with pytest.raises(hook.JourneyProviderError,
+                       match="producer binding candidate differs from published tuple"):
+        hook._validate_producer_binding({"candidate": provider.LIVE_CANDIDATE},
+                                        hook.PUBLISHED_CANDIDATE)
 
 
 def test_hook_never_invokes_when_exact_candidate_validation_fails(tmp_path, monkeypatch):
