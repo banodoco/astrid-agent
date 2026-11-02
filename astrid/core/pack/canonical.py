@@ -492,6 +492,8 @@ def _normalize_declarations(data: dict[str, Any]) -> dict[str, Mapping[str, Any]
                     invocation["path"] = _role_path(
                         invocation["path"], f"{location}.invocation.path", "actions"
                     )
+                elif "session" in item:
+                    raise CanonicalPackValidationError(f"{location}.session requires a python invocation")
                 item["invocation"] = invocation
                 for slot in ("inputs", "outputs"):
                     if isinstance(item[slot], str):
