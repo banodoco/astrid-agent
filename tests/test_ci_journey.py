@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import ci_journey as journey
+from scripts import journey_version_jumps as jumps
 
 
 def app_checkout(tmp_path):
@@ -79,6 +80,171 @@ def test_tst_b1_installed_tuple_rejects_wrong_source(tmp_path):
     with pytest.raises(RuntimeError, match="Installed agent source differs"):
         journey.selected_tuple({"agent": {"sha": "expected"}, "runtime": {"sha": "right"}},
                                {"root": str(installed)})
+
+
+def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
+    """Create a retained release-0 state while stubbing only external products."""
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    version_root = root / "versions" / "release0"
+    version_root.mkdir(parents=True)
+    data.mkdir(parents=True)
+    journey.write_json(root / "install.json", {"data_root": str(data)})
+    journey.write_json(run_root / journey.OWNER_FILE, {
+        "schema_version": 1, "run_id": "a" * 32,
+        "root": str(root), "data_root": str(data),
+    })
+    (root / "current").write_text("release0\n", encoding="utf-8")
+    version_path = version_root / "version.json"
+    journey.write_json(version_path, {"root": str(version_root), "python": sys.executable, "env": {}})
+    release0_manifest = tmp_path / "release0-manifest.json"
+    release0_sources = {"agent": {"sha": "1" * 40}, "runtime": {"sha": "2" * 40}}
+    journey.write_json(release0_manifest, {"release": 0, **release0_sources, "tools": {}})
+    journey.write_json(version_root / "manifest.json", {"release": 0, **release0_sources, "tools": {}})
+    app = tmp_path / "app"
+    app.mkdir()
+    target_manifest = {
+        "release": 1, "agent": {"sha": "3" * 40},
+        "runtime": {"sha": "4" * 40, "schema_digest": "f" * 64},
+        "tools": {"python": {"version": "3.11.13"}},
+    }
+    candidate = {
+        "app": "5" * 40, "agent": "3" * 40, "runtime": "4" * 40, "pinokio": "6" * 40,
+        "manifest_sha256": "7" * 64, "artifacts": {"manifest": "7" * 64},
+    }
+    candidate_path = tmp_path / "candidate.json"
+    journey.write_json(candidate_path, candidate)
+    args = argparse.Namespace(
+        run_root=run_root, root=root, data_root=data, leg="release0-to-release1", mode="direct",
+        shell="sh", job_id=None, source_override=False, app_checkout=app, candidate=candidate_path,
+        candidate_agent_checkout=tmp_path / "agent", candidate_runtime_checkout=tmp_path / "runtime",
+        pinokio_checkout=tmp_path / "pinokio", release0_fixture=tmp_path / "fixture",
+        allow_release0_to_release1=True, diagnostic_start_at="release0-api-seed",
+        diagnostic_state=run_root / jumps.DIAGNOSTIC_STATE_NAME,
+    )
+    fixture_receipt = {"fixture_sums_sha256": "8" * 64, "manifest_sha256": "9" * 64}
+    checkouts = {name: {"sha": sha, "repo": str(tmp_path / name)} for name, sha in {
+        "app": "5" * 40, "agent": "3" * 40, "runtime": "4" * 40, "pinokio": "6" * 40,
+    }.items()}
+    monkeypatch.setattr(jumps, "release0_admission", lambda unused: (
+        tmp_path / "fixture", release0_manifest, fixture_receipt))
+    monkeypatch.setattr(journey, "selected_manifest", lambda *unused, **kwargs: (
+        tmp_path / "selected-manifest.json", target_manifest))
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *unused: target_manifest)
+    monkeypatch.setattr(journey, "candidate_checkouts", lambda unused: checkouts)
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", lambda *unused: {"manager": "test"})
+    monkeypatch.setattr(journey, "healthy", lambda *unused: {"pid": 42, "runtime_instance_id": "r0"})
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: None)
+    version_path, _, version = journey.installation(root, data)
+    args.candidate_checkouts = checkouts
+    if write_state:
+        jumps.write_diagnostic_release0_preconditions(
+            args, root, data, fixture_receipt=fixture_receipt, release0_manifest=release0_manifest,
+            target_manifest=target_manifest, candidate=candidate, version_path=version_path, version=version,
+        )
+    evidence = run_root / "evidence" / "release0-to-release1-diagnostic-release0-api-seed"
+    return args, root, data, evidence, version_path
+
+
+@pytest.mark.parametrize("case", ["absent", "stale", "wrong-version", "wrong-tuple"])
+def test_diagnostic_stage_start_fails_closed_for_invalid_preconditions(tmp_path, monkeypatch, case):
+    args, root, data, evidence, version_path = _diagnostic_release0_state(
+        tmp_path, monkeypatch, write_state=case != "absent")
+    if case == "stale":
+        state = journey.read_json(args.diagnostic_state)
+        state["run_id"] = "b" * 32
+        journey.write_json(args.diagnostic_state, state)
+    elif case == "wrong-version":
+        version = journey.read_json(version_path)
+        version["diagnostic_mutation"] = True
+        journey.write_json(version_path, version)
+    elif case == "wrong-tuple":
+        state = journey.read_json(args.diagnostic_state)
+        state["release1_candidate"]["tuple"]["agent"] = "a" * 40
+        journey.write_json(args.diagnostic_state, state)
+    calls = []
+    monkeypatch.setattr(jumps, "direct_workspace", lambda *unused: calls.append(unused))
+    with pytest.raises(RuntimeError, match="precondition file is absent|preconditions are stale"):
+        jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
+    assert calls == []
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert receipt["qualification"] == {
+        "eligible": False,
+        "reason": "stage-start diagnostics do not execute the complete lifecycle",
+    }
+
+
+def test_diagnostic_stage_runs_only_seed_block_after_validated_checkpoint(tmp_path, monkeypatch):
+    args, root, data, evidence, _ = _diagnostic_release0_state(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(journey, "verify", lambda *unused, **kwargs: calls.append("verify"))
+    monkeypatch.setattr(jumps, "task_after_update", lambda *unused: "task-1")
+    def workspace(_root, _version, _data, _evidence, action, request):
+        calls.append(action)
+        if action == "seed":
+            assert request == {"project": "tst-m4-3b-release0", "generation": "release0",
+                               "task_id": None, "create_project": True}
+            return {"project": "tst-m4-3b-release0"}
+        assert action == "snapshot"
+        assert request == {"project": "tst-m4-3b-release0", "task_id": "task-1"}
+        return {"snapshot": "ok"}
+    monkeypatch.setattr(jumps, "direct_workspace", workspace)
+    result = jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
+    assert calls == ["verify", "seed", "snapshot"]
+    assert result["status"] == "pass"
+    assert result["checks"] == {"preconditions": "pass", "seed": "pass", "snapshot": "pass"}
+    assert result["evidence_class"] == "diagnostic-only"
+    assert result["qualification"]["eligible"] is False
+
+
+def test_diagnostic_release0_admission_uses_explicit_stage_not_a_job_id(tmp_path, monkeypatch):
+    args = argparse.Namespace(
+        mode="direct", job_id=None, candidate=tmp_path / "candidate.json",
+        allow_release0_to_release1=True, release0_fixture=tmp_path / "fixture",
+        source_override=False, diagnostic_start_at="release0-api-seed",
+    )
+    expected = (tmp_path / "fixture", tmp_path / "manifest.json", {"fixture": "bound"})
+    monkeypatch.setattr(jumps, "verified_release0_fixture", lambda fixture: expected)
+    assert jumps.release0_admission(args) == expected
+    args.diagnostic_start_at = None
+    with pytest.raises(ValueError, match="scoped frozen-fixture direct admission"):
+        jumps.release0_admission(args)
+
+
+def test_diagnostic_stage_start_is_explicit_and_cannot_use_a_qualification_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "execute", lambda *unused: pytest.fail("must reject before execution"))
+    base = ["--leg", "release0-to-release1", "--mode", "direct", "--app-checkout", str(tmp_path),
+            "--run-root", str(tmp_path / "run"), "--root", str(tmp_path / "run" / "program"),
+            "--data-root", str(tmp_path / "run" / "data"), "--candidate", str(tmp_path / "candidate.json"),
+            "--candidate-agent-checkout", str(tmp_path / "agent"),
+            "--candidate-runtime-checkout", str(tmp_path / "runtime"),
+            "--pinokio-checkout", str(tmp_path / "pinokio"), "--release0-fixture", str(tmp_path / "fixture"),
+            "--allow-release0-to-release1", "--diagnostic-start-at", "release0-api-seed",
+            "--diagnostic-state", str(tmp_path / "run" / jumps.DIAGNOSTIC_STATE_NAME)]
+    with pytest.raises(SystemExit) as failure:
+        journey.main([*base, "--job-id", "direct-linux"])
+    assert failure.value.code == 2
+
+
+def test_default_journey_execution_does_not_enter_diagnostic_stage(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    args = argparse.Namespace(
+        run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+        leg="fresh-install", shell="sh", mode="direct", source_override=False,
+        diagnostic_start_at=None, retain_for_next_leg=False,
+    )
+    calls = []
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setattr(journey, "assert_host_available", lambda leg, *unused: calls.append(leg))
+    monkeypatch.setattr(journey, "snapshot_failure_evidence", lambda *unused: None)
+    monkeypatch.setattr(journey, "_execute_owned", lambda *unused: {"status": "pass"})
+    monkeypatch.setattr(jumps, "execute_diagnostic_release0_stage",
+                        lambda *unused: pytest.fail("default execution entered diagnostic mode"))
+    result = journey.execute(args)
+    assert result["status"] == "pass"
+    assert result["final_cleanup"] == "pass"
+    assert calls == ["fresh-install", "cleanup"]
 
 
 def test_tst_b1_failure_writes_small_result_with_unrun_checks(tmp_path, monkeypatch):
@@ -1127,6 +1293,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     monkeypatch.setattr(jumps, "workspace", workspace)
     monkeypatch.setattr(jumps, "task_after_update", task)
     monkeypatch.setattr(journey, "bootstrap", bootstrap)
+    monkeypatch.setattr(jumps, "write_diagnostic_release0_preconditions",
+                        lambda *_args, **_kwargs: tmp_path / jumps.DIAGNOSTIC_STATE_NAME)
 
     def verify(mode, _version, _data, directory, **_kwargs):
         if mode == "install":
