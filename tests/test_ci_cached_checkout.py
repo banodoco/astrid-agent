@@ -143,3 +143,28 @@ def test_workflow_uses_cache_path_only_when_cache_hit():
     assert '--candidate-agent-checkout "$env:AGENT_CHECKOUT"' in job
     assert '--candidate-runtime-checkout "$env:RUNTIME_CHECKOUT"' in job
     assert '--pinokio-checkout "$env:PINOKIO_CHECKOUT"' in job
+
+
+def test_shallow_cache_fetches_exact_commit_after_selected_ref_moves(cache):
+    root, workspace, repo, previous_sha = cache
+    source = root.parent.parent / 'source'
+    (source / 'proof.txt').write_text('new revision\n')
+    command('-C', source, 'add', 'proof.txt')
+    command('-C', source, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'new')
+    newer_sha = command('-C', source, 'rev-parse', 'HEAD')
+    command('-C', repo, 'fetch', '--depth=1', source.as_uri(), newer_sha)
+    command('-C', repo, 'update-ref', 'refs/heads/bundle-a-selected', newer_sha)
+    assert command('-C', repo, 'cat-file', '-t', previous_sha) == 'commit'
+    assert cached.checkout('agent', previous_sha, root, workspace)
+    dest = workspace / 'candidate-agent'
+    assert command('-C', dest, 'rev-parse', 'HEAD') == previous_sha
+    assert (dest / 'proof.txt').read_text() == 'immutable\n'
+    assert not (dest / '.git/objects/info/alternates').exists()
+
+
+def test_git_error_reports_only_operation_and_exit_code(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(cached.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=128, stderr='secret/path/token'))
+    with pytest.raises(RuntimeError, match=r'cache fetch failed \(exit 128\)') as exc:
+        cached.run(['fetch', '/private/path'], {})
+    assert 'secret' not in str(exc.value) and '/private' not in str(exc.value)

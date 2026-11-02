@@ -18,7 +18,8 @@ def run(args, env, *, allow_failure=False):
                "-c", "maintenance.auto=false", *args]
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180, check=False)
     if result.returncode and not allow_failure:
-        raise RuntimeError("Local Git cache checkout failed")
+        phase = next((arg for arg in args if arg in {"clone", "fetch", "checkout", "config", "cat-file", "rev-parse", "remote"}), "git")
+        raise RuntimeError(f"Local Git cache {phase} failed (exit {result.returncode})")
     return result
 
 
@@ -85,6 +86,10 @@ def checkout(name, sha, root, workspace):
         return False
     # Copy objects instead of leaving a mutable alternates dependency.
     run(["clone", "--local", "--no-hardlinks", "--no-checkout", str(repo), str(destination)], env)
+    # Local clone may omit a dangling exact commit after a cache ref moved.
+    # Fetch that exact object from the verified local bare repo, not the network.
+    run(["-C", str(destination), "-c", "protocol.file.allow=always", "fetch",
+         "--no-tags", "--depth=1", str(repo), sha], env)
     run(["-C", str(destination), "checkout", "--detach", sha], env)
     got = run(["-C", str(destination), "rev-parse", "HEAD"], env).stdout.strip()
     if got != sha:
@@ -118,6 +123,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except RuntimeError as exc:
+        print(f"Cached checkout refused: {exc}; no unsafe fallback after a partial checkout", file=sys.stderr)
+        raise SystemExit(1)
     except Exception:
-        print("Cached checkout refused; no unsafe fallback after a partial checkout", file=sys.stderr)
+        print("Cached checkout refused: system or data error; no unsafe fallback after a partial checkout", file=sys.stderr)
         raise SystemExit(1)
