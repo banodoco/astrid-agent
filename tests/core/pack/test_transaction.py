@@ -628,6 +628,31 @@ def test_durable_sync_failure_keeps_new_group_and_refresh_can_recover(
     assert old_commit != new_commit
 
 
+def test_default_empty_group_requires_sha_but_no_pack_digests(repo: Repository, packs_root: Path) -> None:
+    result = install_group(source=repo.bare, revision=repo.commit, packs={},
+                           packs_root=packs_root, python_packages={}, origin="default",
+                           intent="defaults", expected_digests={})
+    snapshot = read_group(packs_root)
+    assert result.revision == snapshot.revision == 1
+    assert not snapshot.paths
+
+    for revision in (None, "abc123"):
+        with pytest.raises(PackInstallError) as failure:
+            install_group(source=repo.bare, revision=revision, packs={},
+                          packs_root=packs_root, python_packages={}, origin="default",
+                          intent="defaults", expected_digests={})
+        assert failure.value.code == "invalid_pin"
+
+    for digests, code in (({}, "invalid_pin"), ({"shared": "0" * 64}, "pin_mismatch")):
+        with pytest.raises(PackInstallError) as failure:
+            install_group(source=repo.bare, revision=repo.commit, packs={"shared": "packs/shared"},
+                          packs_root=packs_root, python_packages={}, origin="default",
+                          intent="defaults", expected_digests=digests)
+        assert failure.value.code == code
+    assert read_group(packs_root).transaction_id == snapshot.transaction_id
+    assert not read_group(packs_root).paths
+
+
 def test_default_conflict_refuses_user_pack_without_changing_group(
         repo: Repository, packs_root: Path) -> None:
     install(repo, packs_root)
@@ -763,6 +788,33 @@ def test_folder_source_group_uses_real_pack_copy_and_folder_pins(
         assert pin["commit"] is None
         assert pin["digest"] is None
         assert not (path / ".git").exists()
+
+
+def test_folder_update_uses_each_installed_source_identity(repo: Repository, packs_root: Path) -> None:
+    install_group(source=repo.work, revision=None, packs=GROUP,
+                  packs_root=packs_root, python_packages={})
+    before = read_group(packs_root)
+    for pack_id, subpath in GROUP.items():
+        pin = read_pin(before.paths[pack_id] / "PIN")
+        assert pin["source"] == (repo.work / subpath).as_uri()
+        assert isinstance(pin["source"], str)
+
+    repo.write_pack("shared", "shared-v2\n")
+    repo.write_pack("alpha", "alpha-v2\n", dependencies=("shared",))
+    updated = install_group(source=repo.work, revision=None, packs=GROUP,
+                            packs_root=packs_root, python_packages={}, intent="update")
+    assert updated.revision == before.revision + 1
+    assert group_bytes(packs_root) == {"alpha": b"alpha-v2\n", "shared": b"shared-v2\n"}
+    after = read_group(packs_root)
+    for pack_id, subpath in GROUP.items():
+        assert read_pin(after.paths[pack_id] / "PIN")["source"] == (repo.work / subpath).as_uri()
+
+    with pytest.raises(PackInstallError) as failure:
+        install_group(source=repo.work, revision=None, packs={"alpha": "packs/shared"},
+                      packs_root=packs_root, python_packages={}, intent="update")
+    assert failure.value.code == "pin_mismatch"
+    assert read_group(packs_root).transaction_id == after.transaction_id
+    assert group_bytes(packs_root) == {"alpha": b"alpha-v2\n", "shared": b"shared-v2\n"}
 
 
 def test_committed_group_is_visible_through_real_loader_and_external_discovery(

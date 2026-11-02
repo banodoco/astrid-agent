@@ -751,13 +751,19 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             commit = revision
             source_text = _git_source(str(source)) if revision is not None and packs else None
             if intent == "update":
-                for pack_id in packs:
+                for pack_id, subpath in packs.items():
                     installed_pin_path = root / pack_id / "PIN"
                     if not installed_pin_path.is_file():
                         continue
                     installed_pin = read_pin(installed_pin_path)
+                    installed_source = installed_pin.get("source", "")
+                    if revision is None:
+                        expected_source = _directory(Path(source) / subpath).as_uri()
+                    else:
+                        expected_source = source_text
+                        installed_source = installed_source.split("#", 1)[0]
                     if (installed_pin.get("origin") != origin
-                            or installed_pin.get("source", "").split("#", 1)[0] != source_text):
+                            or installed_source != expected_source):
                         raise PackInstallError("pin_mismatch", f"Pack {pack_id} has a conflicting source PIN; update from its installed source.")
             for index, (pack_id, subpath) in enumerate(sorted(packs.items())):
                 prepared = work / str(index)
