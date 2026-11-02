@@ -1867,8 +1867,8 @@ def test_retain_named_evidence_stages_nested_release0_owner_assertion_only(tmp_p
     assert {path.name for path in staged.iterdir()} == {journey.OWNER_ASSERTION_SNAPSHOT}
 
 
-def test_windows_release1_task_failure_retains_nested_pack_host_readiness_diagnostics(tmp_path, monkeypatch):
-    """Exercise the nested Release-1 task failure path used by the hosted row."""
+def test_windows_release0_task_failure_retains_nested_pack_host_readiness_diagnostics(tmp_path, monkeypatch):
+    """Exercise the nested Release-0 task path where the hosted row stopped."""
     from scripts import journey_version_jumps as jumps
 
     run_root = tmp_path / "run"
@@ -1894,7 +1894,7 @@ def test_windows_release1_task_failure_retains_nested_pack_host_readiness_diagno
     monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
 
-    nested = evidence / "release1-working-task"
+    nested = evidence / "release0-api-seed" / "release0-task"
     with pytest.raises(RuntimeError, match="pack-host reached terminal failed state"):
         jumps.task_after_update({}, nested, "tst-m4-3b-release0")
     assert (nested / "pack-host-readiness-first-failed-poll.json").is_file()
@@ -1918,7 +1918,9 @@ def test_windows_release1_task_failure_retains_nested_pack_host_readiness_diagno
     assert first["path"] == (
         "evidence-upload/before-cleanup/"
         "runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log")
-    assert first["source_path"] == "release1-working-task/pack-host-readiness-first-failed-poll.json"
+    assert first["source_path"] == (
+        "release0-api-seed/release0-task/pack-host-readiness-first-failed-poll.json"
+    )
     assert first["capture"]["health"]["pack_host"]["last_exit"] == 23
     assert first["capture"]["logs"][0]["retained_evidence_path"] == (
         "evidence-upload/before-cleanup/"

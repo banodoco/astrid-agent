@@ -281,6 +281,17 @@ def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(
     runtime.mkdir()
     monkeypatch.setattr(journey, "EVIDENCE", evidence)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    profile = tmp_path / "profile.json"
+    declaration = tmp_path / "services.json"
+    profile.write_text(json.dumps({"service_declaration": str(declaration)}), encoding="utf-8")
+    declaration.write_text(json.dumps({"services": [{
+        "name": "pack-host",
+        "argv": ["python.exe", "-m", "astrid.core.execution.generic_host", "--api-key", "secret"],
+        "restart": "on-failure",
+        "ready": {"kind": "file", "path": "generic-host.ready.json"},
+        "env": {"API_KEY": "must-not-be-captured"},
+    }]}), encoding="utf-8")
+    monkeypatch.setattr(journey, "version", lambda: {"profile": str(profile)})
     (logs / "service-pack-host.log").write_text(
         "x" * (journey.PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES + 10) +
         "\napi_key=not-for-receipt\nAuthorization: Bearer also-not-for-receipt\n"
@@ -308,6 +319,33 @@ def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(
         "pack_host": {"name": "pack-host", "state": "starting", "last_exit": None,
                       "restart_count": 0},
     }
+    assert captured["predicates"] == {
+        "health_object": True,
+        "health_status_ok": True,
+        "pack_host_present": True,
+        "pack_host_running": False,
+        "ready_file_is_file": True,
+        "ready_json_object": True,
+        "ready_status_ready": False,
+        "runtime_instance_present": True,
+        "ready_runtime_instance_matches": False,
+        "accepted": False,
+    }
+    assert captured["service_action"] == {
+        "status": "observed",
+        "action": {
+            "name": "pack-host",
+            "restart": "on-failure",
+            "ready": {"kind": "file", "path": "generic-host.ready.json"},
+            "argv": ["python.exe", "-m", "astrid.core.execution.generic_host", "--api-key", "<redacted>"],
+        },
+        "child_output": {
+            "stdout": "service-pack-host.log",
+            "stderr": "redirected_to_stdout",
+        },
+    }
+    assert "env" not in captured["service_action"]["action"]
+    assert "secret" not in json.dumps(captured["service_action"])
     assert captured["logs"][0]["status"] == "captured"
     assert captured["logs"][0]["truncated"] is True
     assert captured["logs"][0]["captured_bytes"] <= journey.PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES
@@ -332,11 +370,27 @@ def test_first_failed_host_poll_records_unavailable_health_and_absent_diagnostic
     monkeypatch.setattr(journey, "EVIDENCE", evidence)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
     monkeypatch.setattr(journey, "health", lambda: None)
+    monkeypatch.setattr(journey, "version", lambda: (_ for _ in ()).throw(OSError("absent")))
 
     assert journey.host_ready() is False
 
     captured = json.loads((evidence / "pack-host-readiness-first-failed-poll.json").read_text())
     assert captured["health"] == {"status": "unavailable"}
+    assert captured["predicates"] == {
+        "health_object": False,
+        "health_status_ok": False,
+        "pack_host_present": False,
+        "pack_host_running": False,
+        "ready_file_is_file": False,
+        "ready_json_object": False,
+        "ready_status_ready": False,
+        "runtime_instance_present": False,
+        "ready_runtime_instance_matches": False,
+        "accepted": False,
+    }
+    assert captured["service_action"] == {
+        "status": "unavailable", "stage": "version", "error": "OSError",
+    }
     assert captured["logs"] == [
         {"source": "service-pack-host.log", "status": "missing"},
         {"source": "runtime-service.log", "status": "missing"},
@@ -373,6 +427,18 @@ def test_terminal_pack_host_failure_captures_service_exit_and_fails_fast(tmp_pat
     assert exited["health"]["pack_host"] == {
         "name": "pack-host", "state": "failed", "last_exit": 23,
         "restart_count": 4, "reason": "launch_failed",
+    }
+    assert exited["predicates"] == {
+        "health_object": True,
+        "health_status_ok": True,
+        "pack_host_present": True,
+        "pack_host_running": False,
+        "ready_file_is_file": False,
+        "ready_json_object": False,
+        "ready_status_ready": False,
+        "runtime_instance_present": True,
+        "ready_runtime_instance_matches": False,
+        "accepted": False,
     }
     assert (evidence / "pack-host-readiness-definitive-failure-service-pack-host.log").read_text() == (
         "launch failed\n"

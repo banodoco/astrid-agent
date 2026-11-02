@@ -590,7 +590,105 @@ def _pack_host_health_observation(value):
     return health
 
 
-def capture_pack_host_readiness_diagnostics(observation, health_value):
+def _load_pack_host_json(path):
+    details, content, _size = _read_pack_host_file(
+        path, limit=PACK_HOST_DIAGNOSTIC_MARKER_BYTES, tail=False,
+    )
+    if content is None:
+        return details, None
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return {"status": "malformed", "bytes": details["bytes"]}, None
+    if not isinstance(value, dict):
+        return {"status": "invalid_type", "type": type(value).__name__}, None
+    return {"status": "read", "bytes": details["bytes"]}, value
+
+
+def _redacted_pack_host_argv(value):
+    if not isinstance(value, list):
+        return _bounded_pack_host_value(value)
+    result = []
+    redact_next = False
+    for raw in value[:16]:
+        text = str(raw)
+        if redact_next:
+            result.append("<redacted>")
+            redact_next = False
+            continue
+        flag, separator, _argument = text.partition("=")
+        if _PACK_HOST_SECRET_FIELD.search(flag.lstrip("-/")):
+            result.append(flag + "=<redacted>" if separator else flag)
+            redact_next = not separator
+        else:
+            result.append(_bounded_pack_host_value(text))
+    if len(value) > 16:
+        result.append(f"<omitted: {len(value) - 16} additional entries>")
+    return result
+
+
+def _pack_host_service_action_observation():
+    """Read only the safe fields needed to reproduce the installed service action."""
+    try:
+        installed = version()
+        profile_path = installed.get("profile") if isinstance(installed, dict) else None
+        if not isinstance(profile_path, str) or not profile_path:
+            return {"status": "unavailable", "stage": "version", "error": "missing_profile"}
+        profile_details, profile = _load_pack_host_json(Path(profile_path))
+        if profile is None:
+            return {"status": "unavailable", "stage": "profile", "source": profile_details}
+        declaration_path = profile.get("service_declaration")
+        if not isinstance(declaration_path, str) or not declaration_path:
+            return {"status": "unavailable", "stage": "profile", "error": "missing_declaration"}
+        declaration_details, declaration = _load_pack_host_json(Path(declaration_path))
+        if declaration is None:
+            return {
+                "status": "unavailable", "stage": "service_declaration",
+                "source": declaration_details,
+            }
+        service = _pack_host_service(declaration)
+        if service is None:
+            return {"status": "missing", "stage": "service_declaration"}
+        action = {
+            name: _bounded_pack_host_value(service.get(name))
+            for name in ("name", "restart", "ready") if name in service
+        }
+        if "argv" in service:
+            action["argv"] = _redacted_pack_host_argv(service["argv"])
+        return {
+            "status": "observed",
+            "action": action,
+            # Runtime redirects the supervised child's stderr into this same
+            # stdout stream; the bounded log capture below retains its tail.
+            "child_output": {
+                "stdout": "service-pack-host.log",
+                "stderr": "redirected_to_stdout",
+            },
+        }
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        return {"status": "unavailable", "stage": "version", "error": type(exc).__name__}
+
+
+def _pack_host_readiness_predicates(value, service, ready_file_is_file, ready, accepted):
+    runtime_instance_id = value.get("runtime_instance_id") if isinstance(value, dict) else None
+    return {
+        "health_object": isinstance(value, dict),
+        "health_status_ok": isinstance(value, dict) and value.get("status") == "ok",
+        "pack_host_present": isinstance(service, dict),
+        "pack_host_running": isinstance(service, dict) and service.get("state") == "running",
+        "ready_file_is_file": ready_file_is_file,
+        "ready_json_object": isinstance(ready, dict),
+        "ready_status_ready": isinstance(ready, dict) and ready.get("status") == "ready",
+        "runtime_instance_present": bool(runtime_instance_id),
+        "ready_runtime_instance_matches": (
+            isinstance(ready, dict) and bool(runtime_instance_id) and
+            ready.get("runtime_instance_id") == runtime_instance_id
+        ),
+        "accepted": accepted,
+    }
+
+
+def capture_pack_host_readiness_diagnostics(observation, health_value, predicates):
     """Capture one bounded readiness snapshot without following untrusted paths."""
     if observation not in PACK_HOST_DIAGNOSTIC_OBSERVATIONS:
         raise ValueError(f"Unknown pack-host diagnostic observation: {observation}")
@@ -604,7 +702,9 @@ def capture_pack_host_readiness_diagnostics(observation, health_value):
     capture = {
         "schema_version": 1,
         "observation": observation,
+        "predicates": predicates,
         "health": _pack_host_health_observation(health_value),
+        "service_action": _pack_host_service_action_observation(),
         "logs": [
             _capture_pack_host_log(logs / "service-pack-host.log", "service-pack-host.log", observation),
             _capture_pack_host_log(logs / "runtime-service.log", "runtime-service.log", observation),
@@ -658,25 +758,32 @@ def host_ready():
     value = health()
     service = _pack_host_service(value)
     ready_path = data_root() / "runtime" / "generic-host.ready.json"
+    ready_file_is_file = ready_path.is_file()
     ready = None
-    if (isinstance(value, dict) and value.get("status") == "ok" and
-            isinstance(service, dict) and service.get("state") == "running" and ready_path.is_file()):
+    if ready_file_is_file:
         try:
             ready = json.loads(ready_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             ready = None
-    is_ready = (isinstance(ready, dict) and ready.get("status") == "ready" and
-                isinstance(value, dict) and bool(value.get("runtime_instance_id")) and
+    # This is the same conjunctive admission predicate as before, spelled out
+    # so one failed observation can report every independent input.
+    is_ready = (isinstance(value, dict) and value.get("status") == "ok" and
+                isinstance(service, dict) and service.get("state") == "running" and
+                ready_file_is_file and isinstance(ready, dict) and
+                ready.get("status") == "ready" and bool(value.get("runtime_instance_id")) and
                 ready.get("runtime_instance_id") == value["runtime_instance_id"])
+    predicates = _pack_host_readiness_predicates(
+        value, service, ready_file_is_file, ready, is_ready,
+    )
     if is_ready:
         save("pack-host-ready.json", ready)
         return True
 
-    capture_pack_host_readiness_diagnostics("first-failed-poll", value)
+    capture_pack_host_readiness_diagnostics("first-failed-poll", value, predicates)
     if _pack_host_service_exit_observed(service):
-        capture_pack_host_readiness_diagnostics("first-service-exit", value)
+        capture_pack_host_readiness_diagnostics("first-service-exit", value, predicates)
     if _pack_host_definitively_failed(service):
-        capture_pack_host_readiness_diagnostics("definitive-failure", value)
+        capture_pack_host_readiness_diagnostics("definitive-failure", value, predicates)
         raise RuntimeError("pack-host reached terminal failed state; see readiness diagnostics")
     return False
 
