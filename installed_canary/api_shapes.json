@@ -78,8 +78,19 @@
       "kind",
       "inputs",
       "child_key",
-      "stage",
-      "input_refs",
+      "wait",
+      "timeout_seconds"
+    ]
+  },
+  {
+    "module": "astrid.sdk.invocation",
+    "attribute": "invoke",
+    "positional": 1,
+    "keywords": [
+      "kind",
+      "inputs",
+      "child_key",
+      "wait",
       "timeout_seconds"
     ]
   },

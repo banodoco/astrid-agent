@@ -17,7 +17,8 @@ from installed_canary.child import audit_shapes
 from installed_canary.common import GateError, inventory, pages, read, save, sha
 from installed_canary.contract import ASSETS, BOUNDARIES, SOURCES, validate
 from installed_canary.evidence import assert_ready, restart_snapshot
-from installed_canary.journey import restart_and_validate, validate_child
+from installed_canary.journey import (child_policy, input_descriptor, restart_and_validate, restarted_owner, retain_admission,
+                                      terminal_state, validate_child, wait_for_restart)
 from installed_canary.tool import child_env, execute, fingerprint, main
 
 RUN = subprocess.run
@@ -227,7 +228,7 @@ class CanaryTests(unittest.TestCase):
 
     def test_reviewed_parent_golden_bytes(self):
         self.assertEqual(inventory(ASSETS), {
-            'actions/parent.py': 'e03ad1a3f46f9ee4a9765b199d15d34581f92c1cbe1099f52331d98f8bb22acd',
+            'actions/parent.py': '90af95bf904708bd230e48316727262da9d9463a2e070f27954218247913ef7c',
             'pack.yaml': 'd163d0c20efc54dcfdc2f942e5cc4c53a0db42b0905e3bca2838dab5e0789ace'})
 
     def test_matrix_mutation_rejected_even_when_repinned(self):
@@ -414,17 +415,20 @@ class CanaryTests(unittest.TestCase):
 
     def test_exact_api_inventory_has_unique_reviewed_shapes(self):
         rows = read(TOOL_ROOT / 'installed_canary/api_shapes.json')
-        self.assertEqual(len(rows), 31)
-        self.assertEqual(len({(r['module'], r['attribute']) for r in rows}), 31)
+        self.assertEqual(len(rows), 32)
+        self.assertEqual(len({(r['module'], r['attribute']) for r in rows}), 32)
         self.assertTrue(any(r['attribute'] == 'Backend.verify' and r['positional'] == 4 for r in rows))
 
     def test_child_validator_uses_exact_project_pins_inputs_and_binding(self):
-        binding = {'actual': {'kind': 'machine', 'id': 'test-machine'}, 'verification': {'verified': True}}
+        binding = {'actual': {'kind': 'machine', 'id': 'test-machine'},
+                   'verification': {'verified': True, 'method': 'credential_claim', 'evidence_digest': 'sha256:fixture'},
+                   'executor_incarnation': 'incarnation'}
         child = {'task_id': 'child', 'attempt_id': 'attempt', 'capability_id': 'h3_av.prepare',
                  'capability_digest': 'prepare-pin', 'project_id': 'project', 'input_object_ids': ['object'],
-                 'execution_binding': {'actual_target': binding['actual'], 'verification': {'verified': True}},
-                 'spec': {'delegated_parent': {'parent_task_id': 'parent', 'project_id': 'project',
-                          'stage': 'prepare', 'parent_placement': binding}}}
+                 'execution_binding': {'actual_target': binding['actual'], 'verification': binding['verification'],
+                                       'executor_incarnation': 'incarnation'},
+                 'spec': {'delegated_parent': {
+                          'parent_task_id': 'parent', 'project_id': 'project', 'parent_placement': binding}}}
         kwargs = dict(parent_id='parent', project_id='project', caps={'h3_av.prepare': 'prepare-pin'},
                       binding=binding, objects={'request': 'object'})
         validate_child(child, **kwargs)
@@ -432,6 +436,76 @@ class CanaryTests(unittest.TestCase):
                               ('input_object_ids', ['other']), ('attempt_id', None)]:
             with self.subTest(field=field), self.assertRaises(GateError):
                 validate_child({**child, field: wrong}, **kwargs)
+        with self.assertRaises(GateError):
+            validate_child({**child, 'spec': {**child['spec'], 'delegated_stage': 'other'}}, **kwargs)
+        for field, value in [('executor_incarnation', 'other'),
+                             ('verification', {**binding['verification'], 'evidence_digest': 'sha256:other'})]:
+            with self.subTest(field=field), self.assertRaises(GateError):
+                validate_child({**child, 'execution_binding': {**child['execution_binding'], field: value}}, **kwargs)
+
+    def test_parent_admission_retains_canonical_mutation_mapping_and_receipt(self):
+        # The generated client returns a dict subclass, not a dataclass.
+        class MutationResult(dict):
+            pass
+        admitted = MutationResult(task_id='parent', receipt={'txn_id': 'txn', 'event_ids': ['event']})
+        path = self.f.task / 'admission.json'
+        self.assertEqual(retain_admission(path, admitted), 'parent')
+        self.assertEqual(read(path), dict(admitted))
+
+    def test_terminal_states_follow_canonical_task_resource(self):
+        for state in ('succeeded', 'failed', 'cancelled'):
+            self.assertTrue(terminal_state({'state': state}))
+        for state in ('queued', 'running', 'completed'):
+            self.assertFalse(terminal_state({'state': state}))
+
+    def test_execution_input_uses_only_the_canonical_descriptor_fields(self):
+        descriptor = {'name': 'request', **input_descriptor('request', 'sha256:abc'), 'required': True}
+        self.assertEqual(set(descriptor), {'name', 'object_id', 'digest', 'filename', 'required'})
+        self.assertEqual(descriptor['object_id'], descriptor['digest'])
+
+    def test_parent_waits_for_and_propagates_failed_child_result(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('canary_parent_fixture', ASSETS / 'actions/parent.py')
+        parent = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(parent)
+        calls = []
+        class FailedResult:
+            kernel_task_id = 'child'
+            def raise_for_error(self):
+                raise RuntimeError('synthetic child failure')
+        invocation = types.ModuleType('astrid.sdk.invocation')
+        invocation.invoke_result = lambda *args, **kwargs: calls.append(kwargs) or FailedResult()
+        with patch.dict(sys.modules, {'astrid': types.ModuleType('astrid'),
+                'astrid.sdk': types.ModuleType('astrid.sdk'), 'astrid.sdk.invocation': invocation}):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic child failure'):
+                parent.run('sha256:request', 'sha256:bundle', {}, {})
+        self.assertIs(calls[0]['wait'], True)
+        self.assertNotIn('stage', calls[0])
+        self.assertNotIn('input_refs', calls[0])
+        policy = child_policy('sha256:pin', {'request': 'sha256:one', 'input_bundle': 'sha256:two'})
+        self.assertNotIn('stages', policy)
+        self.assertEqual(policy['input_object_ids'], ['sha256:one', 'sha256:two'])
+
+    def test_restart_waits_for_new_instance_and_ready_capabilities(self):
+        ctx = validate(self.f.tuple, self.f.task, self.f.work)
+        discovery_path = ctx.install / 'data/runtime/discovery.json'
+        discovery = read(discovery_path)
+        discovery.update(runtime_instance_id='old', endpoint='http://127.0.0.1:1000')
+        save(discovery_path, discovery)
+        with self.assertRaises(GateError):
+            restarted_owner(ctx, 'fake-realm', 'old', object)
+        owner = types.SimpleNamespace(list_capabilities=lambda **kw: (
+            [types.SimpleNamespace(capability_id=n, status='ready', definition_digest='sha256:fixture')
+             for n in ('installed_canary.parent', 'h3_av.prepare')], None))
+        calls = []
+        def advance(_):
+            discovery.update(runtime_instance_id='new', endpoint='http://127.0.0.1:2000')
+            save(discovery_path, discovery)
+        with patch('installed_canary.journey.owner_client', side_effect=lambda endpoint, path, cls: calls.append(endpoint) or owner):
+            found = wait_for_restart(lambda: restarted_owner(ctx, 'fake-realm', 'old', object),
+                lambda: {'ready_capabilities': ['installed_canary.parent', 'h3_av.prepare']}, sleep=advance)
+        self.assertIs(found, owner)
+        self.assertEqual(calls, ['http://127.0.0.1:2000'])
 
 
     def test_profile_escape_refused_before_children_or_writes(self):
@@ -491,7 +565,7 @@ class CanaryTests(unittest.TestCase):
             stage = 'cli' if '-m' in argv else argv[argv.index('--stage') + 1]; stages.append(stage)
             if stage == 'api':
                 save(ctx.evidence / 'api.json', {'result': 'PASS', 'api_invocations': 0,
-                     'checked': 31, 'fingerprint': fingerprint(ctx)})
+                     'checked': len(read(TOOL_ROOT / 'installed_canary/api_shapes.json')), 'fingerprint': fingerprint(ctx)})
             elif stage == 'identity':
                 save(ctx.evidence / 'identity.json', {'result': 'PASS', 'fingerprint': fingerprint(ctx)})
             elif stage == 'contracts':
@@ -572,7 +646,7 @@ class CanaryTests(unittest.TestCase):
         def process(argv, **kwargs):
             stages.append(argv[argv.index('--stage') + 1])
             save(ctx.evidence / 'api.json', {'result': 'PASS', 'api_invocations': 0,
-                 'checked': 31, 'fingerprint': fingerprint(ctx)})
+                 'checked': len(read(TOOL_ROOT / 'installed_canary/api_shapes.json')), 'fingerprint': fingerprint(ctx)})
             self.f.value['matrix']['added_row']['evidence_reason'] += ' changed'
             self.f.freeze()
             return types.SimpleNamespace(returncode=0)

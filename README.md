@@ -51,7 +51,7 @@ The JSON input has exactly these fields (placeholders must be replaced):
     }
   },
   "parent_inventory": {
-    "actions/parent.py": "e03ad1a3f46f9ee4a9765b199d15d34581f92c1cbe1099f52331d98f8bb22acd",
+    "actions/parent.py": "90af95bf904708bd230e48316727262da9d9463a2e070f27954218247913ef7c",
     "pack.yaml": "d163d0c20efc54dcfdc2f942e5cc4c53a0db42b0905e3bca2838dab5e0789ace"
   }
 }
@@ -89,7 +89,7 @@ be qualified; retain the ordinary installer's own failure evidence separately.
 `qualify` performs that capture, then uses only the selected installed interpreter
 with `-I -B` and a declared child environment. Its fixed stages are:
 
-1. Bind all 31 reviewed API shapes without invoking them; check installed origins
+1. Bind all 32 reviewed API shapes without invoking them; check installed origins
    and the real active realm. Pin the tuple and committed driver/asset bytes.
 2. Check interpreter, package origins, frozen source bytes and distribution RECORDs;
    run installed CLI help and the four installed composition contracts. Require
@@ -130,3 +130,6 @@ H3 operation, GPU behavior, readiness or canary authorization. Installed contrac
 and the real journey remain unproven until separately authorized installed runs.
 
 See [PROVENANCE.md](PROVENANCE.md) for extraction sources and proof limits.
+
+The installed SDK bridge supports un-staged child delegation; this canary does not
+prove Runtime staged-delegation policy or a delegated stage receipt.

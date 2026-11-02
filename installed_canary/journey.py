@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import sys
 import time
+from urllib.parse import urlsplit
 
 from .common import exact_path, inventory, pages, read, require, save, sha
 from .contract import ASSETS
@@ -40,6 +41,41 @@ def owner_client(endpoint, credential_path, client_cls, resolve=None):
     return client_cls(endpoint, token)
 
 
+def restarted_owner(ctx, realm, old_instance, client_cls):
+    discovery = read(ctx.install / 'data/runtime/discovery.json')
+    instance = discovery.get('runtime_instance_id')
+    require(isinstance(instance, str) and instance and instance != old_instance
+            and discovery.get('active_realm') == realm, 'restart-discovery', ctx.install,
+            'new Runtime instance in selected realm required')
+    endpoint = urlsplit(discovery['endpoint'])
+    require(endpoint.scheme in {'http', 'https'} and endpoint.hostname in {'127.0.0.1', '::1', 'localhost'}
+            and endpoint.username is None and endpoint.password is None,
+            'restart-discovery', ctx.install, 'local Runtime endpoint required')
+    credential = exact_path(discovery['credential_file'], kind='file')
+    require(credential.is_relative_to(ctx.install / 'data/credentials'),
+            'restart-discovery', credential, 'test-owned owner credential required')
+    return owner_client(discovery['endpoint'], credential, client_cls)
+
+
+def wait_for_restart(owner_factory, ready_factory, *, timeout=120, monotonic=time.monotonic, sleep=time.sleep):
+    """Wait for the new owner and both advertised capabilities before capturing."""
+    deadline = monotonic() + timeout
+    last_error = None
+    while monotonic() < deadline:
+        try:
+            owner = owner_factory()
+            ready = ready_factory()
+            rows = pages(owner.list_capabilities)
+            if all(name in ready['ready_capabilities'] and any(
+                    row.capability_id == name and row.status == 'ready' and row.definition_digest for row in rows)
+                    for name in ('installed_canary.parent', 'h3_av.prepare')):
+                return owner
+        except Exception as exc:
+            last_error = exc
+        sleep(.2)
+    raise RuntimeError(f'new Runtime and canary capabilities did not become ready: {last_error!r}')
+
+
 def run(ctx):
     from astrid.installer.backend import Backend
     from astrid.installer.core import current, write_json
@@ -71,6 +107,8 @@ def run(ctx):
     discovery = read(ctx.install / 'data/runtime/discovery.json')
     realm = discovery.get('active_realm')
     require(isinstance(realm, str) and realm.strip(), 'realm', ctx.install, 'active_realm missing')
+    old_instance = discovery.get('runtime_instance_id')
+    require(isinstance(old_instance, str) and old_instance, 'realm', ctx.install, 'Runtime instance missing')
     backend = Backend(ctx.install / 'program', ctx.install / 'canary.log', ctx.install / 'bin/uv')
     backend.stop(version, ctx.install / 'data')
     stopped_on_failure = False
@@ -93,18 +131,20 @@ def run(ctx):
         worker['session_config_digest'] = _digest(launch)
         worker['profile_digest'] = _digest({k:v for k,v in worker.items() if k != 'profile_digest'})
         write_json(worker_path, worker)
-        credential_path = exact_path(discovery['credential_file'], kind='file')
-        require(credential_path.is_relative_to(ctx.install / 'data/credentials'),
-                'credentials', credential_path, 'test-owned credential required')
-        owner = owner_client(discovery['endpoint'], credential_path, WorkspaceClient)
+        owner = None
+        def start_and_wait():
+            nonlocal owner
+            backend.start(version, ctx.install / 'data')
+            owner = wait_for_restart(lambda: restarted_owner(ctx, realm, old_instance, WorkspaceClient),
+                                     lambda: read(ctx.install / 'data/runtime/worker-astrid-ready.json'))
         def stop_on_failure():
             nonlocal stopped_on_failure
             stopped_on_failure = True
             backend.stop(version, ctx.install / 'data')
         restart_and_validate(ctx, worker_path,
-            start=lambda: backend.start(version, ctx.install / 'data'),
+            start=start_and_wait,
             verify=lambda: backend.verify(version, ctx.install / 'data', realm),
-            stop=stop_on_failure, list_capabilities=owner.list_capabilities)
+            stop=stop_on_failure, list_capabilities=lambda **kwargs: owner.list_capabilities(**kwargs))
         h3(ctx, owner)
     finally:
         # Only this selected test installation is stopped, including preparation failures.
@@ -127,13 +167,36 @@ def validate_child(child, *, parent_id, project_id, caps, binding, objects):
             and child['project_id'] == project_id, 'h3-claim', parent_id, 'child capability/project mismatch')
     lineage = child['spec']['delegated_parent']
     require(lineage['parent_task_id'] == parent_id and lineage['project_id'] == project_id
-            and lineage['stage'] == 'prepare' and lineage['parent_placement'] == binding,
+            and child['spec'].get('delegated_stage') is None and lineage['parent_placement'] == binding,
             'h3-lineage', parent_id, 'delegated project/stage/placement mismatch')
     placement = child['execution_binding']
     require(placement['actual_target']['kind'] == 'machine' and placement['actual_target'] == binding['actual']
+            and placement['verification'] == binding['verification']
+            and placement['verification']['method'] == 'credential_claim'
             and placement['verification']['verified'] is True
+            and placement['executor_incarnation'] == binding['executor_incarnation']
             and child['input_object_ids'] == list(objects.values()),
             'h3-placement', parent_id, 'verified placement/input identity mismatch')
+
+
+def retain_admission(path, admitted):
+    """Retain the generated client's mapping, including its committed receipt."""
+    save(path, dict(admitted))
+    return admitted['task_id']
+
+
+def terminal_state(task):
+    return task['state'] in {'failed', 'succeeded', 'cancelled'}
+
+
+def child_policy(digest, objects):
+    # The installed SDK child bridge sends input_object_ids, not staged input_refs.
+    return {'capabilities': [{'capability_id': 'h3_av.prepare', 'capability_digest': digest}],
+            'targets': [{'kind': 'default'}], 'input_object_ids': list(objects.values())}
+
+
+def input_descriptor(name, object_id):
+    return {'object_id': object_id, 'digest': object_id, 'filename': name + '.bin'}
 
 
 def h3(ctx, owner):
@@ -168,21 +231,15 @@ def h3(ctx, owner):
         value = owner.ingest_project_object(project_id, content, filename=name + '.bin',
                   media_type='application/octet-stream', idempotency_key='object-' + key + '-' + name)
         objects[name] = value.get('object_id') or value['digest']
-        files[name] = {'object_id': objects[name], 'digest': objects[name], 'filename': name + '.bin',
-                       'media_type': 'application/octet-stream', 'size': len(content)}
-    ordered = [{'name': name, 'root_object_id': oid} for name, oid in objects.items()]
-    policy = {'capabilities': [{'capability_id': 'h3_av.prepare', 'capability_digest': caps['h3_av.prepare']}],
-        'targets': [{'kind': 'default'}], 'input_object_ids': list(objects.values()),
-        'stages': [{'name': 'prepare', 'capability_id': 'h3_av.prepare', 'capability_digest': caps['h3_av.prepare'],
-                    'target': {'kind': 'default'}, 'inputs': ordered}]}
+        files[name] = input_descriptor(name, objects[name])
+    policy = child_policy(caps['h3_av.prepare'], objects)
     admitted = owner.admit_task(capability_id='installed_canary.parent', capability_digest=caps['installed_canary.parent'],
         project_id=project_id, input_object_ids=list(objects.values()),
         spec={'inputs': {'request_oid': objects['request'], 'bundle_oid': objects['input_bundle'], **files}},
         execution_request=normalize_execution_request({'target': {'kind': 'default'},
             'inputs': [{'name': name, **value, 'required': True} for name, value in files.items()]}),
         child_delegation=policy, idempotency_key='parent-' + key)
-    parent_id = admitted.task_id
-    save(ctx.evidence / 'h3-parent-admission-receipt.json', dataclasses.asdict(admitted))
+    parent_id = retain_admission(ctx.evidence / 'h3-parent-admission-receipt.json', admitted)
     deadline = time.monotonic() + 45
     child, events = None, []
     while time.monotonic() < deadline:
@@ -206,7 +263,7 @@ def h3(ctx, owner):
         final_child = task_resource(owner.get_task(child['task_id']))
         terminal = {'parent': parent, 'child': final_child, 'expected': 'both failed: deliberately invalid CPU input'}
         save(ctx.evidence / 'h3-terminal-receipts.json', terminal)
-        if all(item['state'] in {'failed', 'completed', 'cancelled'} for item in (parent, final_child)):
+        if all(terminal_state(item) for item in (parent, final_child)):
             break
         time.sleep(.1)
     all_events = [dataclasses.asdict(e) for e in pages(owner.list_events)]
