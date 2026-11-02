@@ -297,12 +297,18 @@ class ProviderHTTP:
                           "total": len(data), "sha256": _sha(data[body["offset"]:]), "etag": _sha(data)})
         if path == "/engine-proxy":
             binding = json.loads(self.claim_path.read_text())["lease"]["endpoint_binding"]
-            assert binding["state"] == "bound" and binding["loopback_url"].startswith("http://127.0.0.1:")
+            assert binding["state"] == "binding" and binding["pod_id"] == "pod-cpu"
+            assert "loopback_url" not in binding
             return reply({"ok": True})
         if "/engines/" in path:
+            binding = json.loads(self.claim_path.read_text())["lease"]["endpoint_binding"]
+            assert binding["state"] in {"bound", "ready"}
+            assert binding["loopback_url"].startswith("http://127.0.0.1:")
             operation = path.split("/", 3)[-1]
             if operation == "object_info":
                 return reply(self.schema)
+            if operation == "system_stats":
+                return reply({"system": {"os": "linux"}})
             if operation == "prompt":
                 self.prompts.append(body)
                 return reply({"prompt_id": "cpu-image", "number": 1, "node_errors": {}})
