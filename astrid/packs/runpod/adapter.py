@@ -112,6 +112,14 @@ class RunPodAdapter:
                 "offer_digest": offer.digest(self.lease_owner.selection.preferences)}
 
     def operate(self, operation, *, include_quote=False):
+        if operation == "setup":
+            if include_quote:
+                raise ValueError("setup does not observe offers")
+            return self.lease_owner.setup()
+        if operation == "ls":
+            if include_quote:
+                raise ValueError("ls does not observe offers")
+            return {"leases": self.lease_owner.ls()}
         if operation == "release":
             record = self.lease_owner.release(reason="explicit")
         elif operation == "status":
@@ -347,6 +355,10 @@ def prevalidate_task(policy, inputs, *, scratch):
             or any(value not in {"paid", "user_env"} for value in consent)):
         raise PaidSelectionError("fresh paid consent is required")
     _number(policy["max_usd"], "USD cap")
+    preferences = RunPodPreferences.from_mapping(policy["preferences"])
+    saved_cap = preferences.budget_cap_usd
+    if saved_cap is not None and policy["max_usd"] > saved_cap:
+        raise PaidSelectionError("invocation cap exceeds the saved RunPod budget ceiling")
     durations = [_number(policy[name], name, zero=True) for name in
                  ("preparation_seconds", "execution_seconds", "idle_seconds")]
     if sum(durations) <= 0 or (_utc(policy["deadline"]) - datetime.now(timezone.utc)).total_seconds() < sum(durations):
@@ -584,13 +596,19 @@ class TargetProviderBindings:
         return provider, retained[0], evidence
 
     def operate(self, policy, operation, *, include_quote=False):
+        if operation not in {"setup", "ls", "status", "release"}:
+            raise ValueError("unsupported retained target operation")
         if not isinstance(policy, dict) or set(policy) != {"kind", "engine", "preferences"}:
             raise ValueError("target operation requires one explicit provider policy")
         with self.lock:
             provider = self.provider if self.provider is not None and json.loads(self.signature)[0] == policy["kind"] else None
-            if provider is not None and json.loads(self.signature)[2] != policy["preferences"]:
+            if (operation != "setup" and provider is not None
+                    and json.loads(self.signature)[2] != policy["preferences"]):
                 raise ValueError("target operation preferences differ from the retained provider owner")
         if provider is None:
+            provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
+        elif operation == "setup" and json.loads(self.signature)[2] != policy["preferences"]:
+            # get() closes/rebuilds only after the old owner proves no lease is live.
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
         with self.lock:
             if provider is not self.provider:

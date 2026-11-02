@@ -227,6 +227,42 @@ class RunPodLeaseOwner:
                 return
         self.release(reason="restart", _expected_operation=record["operation_id"])
 
+    def setup(self) -> Mapping[str, Any]:
+        """Persist this owner's validated preferences while no lease is live.
+
+        This is configuration only. It never observes offers or acquires a
+        provider resource, and a saved cap remains a ceiling for a later,
+        separately consented invocation.
+        """
+        from .target_selection import PaidSelectionError, save_runpod_preferences
+
+        with self.lock:
+            record = self._read()
+            if record is not None and record.get("state") != "cleanup_complete":
+                raise RunPodWorkerOwnerError("cannot change RunPod preferences while an owned lease is unresolved")
+            preferences = self.selection.preferences
+            if preferences.budget_cap_usd is None:
+                raise PaidSelectionError("RunPod setup requires a positive budget_cap_usd preference")
+            path = save_runpod_preferences(preferences.as_mapping())
+            return {"state": "saved", "preferences": preferences.as_mapping(), "path": str(path)}
+
+    def ls(self) -> list[Mapping[str, Any]]:
+        """List this account owner's one current claim, without provider scans."""
+        with self.lock:
+            record = self._read()
+            if record is None or record.get("state") == "cleanup_complete":
+                return []
+            lease = record["lease"]
+            return [{
+                "operation_id": record["operation_id"],
+                "pod_id": record.get("pod_id"),
+                "provider_account_ref": record["provider_account_ref"],
+                "state": record["state"],
+                "lease": {key: lease.get(key) for key in (
+                    "state", "generation", "invocation_id", "paid_expires_at", "idle_expires_at",
+                )},
+            }]
+
     def _retry_recovery(self, operation: str) -> None:
         with self.lock:
             if self.closed:

@@ -78,11 +78,12 @@ class RunPodPreferences:
     datacenter_id: str | None = None
     idle_timeout_seconds: int = int(DEFAULT_IDLE_SECONDS)
     credential_ref: str | None = None
+    budget_cap_usd: float | None = None
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> RunPodPreferences:
         allowed = {"provider_account_ref", "gpu_types", "image", "volume", "datacenter_id",
-                   "idle_timeout_seconds", "credential_ref"}
+                   "idle_timeout_seconds", "credential_ref", "budget_cap_usd"}
         if set(raw) - allowed:
             raise PaidSelectionError("unsupported RunPod preferences; recover legacy journal locators explicitly")
         gpu_types = raw.get("gpu_types")
@@ -116,13 +117,16 @@ class RunPodPreferences:
             or not re.fullmatch(r"env:[A-Z][A-Z0-9_]*", credential_ref)
         ):
             raise PaidSelectionError("credential_ref must name an environment credential, never its bytes")
+        budget_cap = raw.get("budget_cap_usd")
+        if budget_cap is not None:
+            budget_cap = _number(budget_cap, "budget cap")
         return cls(
             _label(raw.get("provider_account_ref"), "provider account"), gpus, image,
             None if ephemeral else _label(volume.get("id"), "volume id"),
             None if ephemeral else _label(volume.get("name"), "volume name"),
             size, mount,
             _label(raw["datacenter_id"], "datacenter") if raw.get("datacenter_id") is not None else None,
-            idle, credential_ref,
+            idle, credential_ref, budget_cap,
         )
 
     def as_mapping(self) -> dict[str, Any]:
@@ -134,6 +138,7 @@ class RunPodPreferences:
                if self.volume_id is not None else {}),
             **({"datacenter_id": self.datacenter_id} if self.datacenter_id is not None else {}),
             **({"credential_ref": self.credential_ref} if self.credential_ref is not None else {}),
+            **({"budget_cap_usd": self.budget_cap_usd} if self.budget_cap_usd is not None else {}),
         }
 
 
@@ -202,6 +207,8 @@ class PaidRunConsent:
         if self.offer_digest != offer.digest(preferences):
             raise PaidSelectionError("offer or rate changed; disclose it and obtain fresh paid consent")
         cap = _number(self.max_usd, "USD cap")
+        if preferences.budget_cap_usd is not None and cap > preferences.budget_cap_usd:
+            raise PaidSelectionError("invocation cap exceeds the saved RunPod budget ceiling")
         seconds = sum(_number(value, name, zero=True) for name, value in (
             ("preparation seconds", self.preparation_seconds),
             ("execution seconds", self.execution_seconds), ("idle seconds", self.idle_seconds),
