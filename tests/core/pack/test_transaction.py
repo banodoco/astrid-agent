@@ -935,6 +935,7 @@ def test_real_cli_file_url_update_selects_dependency_added_by_verified_candidate
     dependency = external / "extdep"
     dependency.mkdir(parents=True)
     (dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    (dependency / "payload.txt").write_text("admitted-root\n", encoding="utf-8")
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
 
@@ -1154,6 +1155,72 @@ def test_external_root_change_after_composition_refuses_publish(
     assert calls == 1
     assert "changed during this transaction" in str(failure.value)
     assert read_group(packs_root).revision == 0
+
+
+@pytest.mark.parametrize("operation", ["update", "rollback"])
+def test_external_root_swap_at_exchange_rolls_back_complete_generation(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        operation: str) -> None:
+    from astrid.core.pack import transaction
+
+    monkeypatch.setattr(transaction, "build_pack_assets", contract_builder)
+    builds = contract_builds()
+    repo.write_pack("alpha", "alpha-v1\n", dependencies=("extdep",))
+    first_revision = repo.publish()
+    external = tmp_path / "external"
+    dependency = external / "extdep"
+    dependency.mkdir(parents=True)
+    (dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    (dependency / "payload.txt").write_text("admitted-root\n", encoding="utf-8")
+    replacement = tmp_path / "replacement"
+    replacement_dependency = replacement / "extdep"
+    replacement_dependency.mkdir(parents=True)
+    (replacement_dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    (replacement_dependency / "payload.txt").write_text("raced-root\n", encoding="utf-8")
+    retired_external = tmp_path / "retired-external"
+    selected_roots = (external,)
+
+    install(repo, packs_root, revision=first_revision, selected_roots=selected_roots, builds=builds)
+    if operation == "rollback":
+        second_revision = repo.next_revision()
+        install(repo, packs_root, revision=second_revision, selected_roots=selected_roots, builds=builds)
+
+    before_bytes = tree_bytes(packs_root)
+    before = read_group(packs_root)
+    before_admissions = dict(before.admissions)
+    assert before_admissions
+    original_publish = transaction._publish
+    calls = 0
+
+    def swap_in_exchange_window(stage: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # This runs after the final pre-publication revalidation and before
+            # the atomic directory exchange itself.
+            external.rename(retired_external)
+            replacement.rename(external)
+        original_publish(stage, destination)
+
+    monkeypatch.setattr(transaction, "_publish", swap_in_exchange_window)
+    with pytest.raises(PackInstallError, match="changed during this transaction"):
+        if operation == "update":
+            install_group(source=repo.bare, revision=first_revision, packs=GROUP,
+                          packs_root=packs_root, python_packages={}, intent="update",
+                          selected_roots=selected_roots, builds=builds)
+        else:
+            transaction.rollback_group(packs_root=packs_root, pack_ids=tuple(GROUP),
+                                        selected_roots=selected_roots, python_packages={})
+
+    # First exchange was rejected and the second atomically restored the prior
+    # directory. The collection bytes, its commit/admission records, and the
+    # collection revision are exactly the values captured before the attempt.
+    assert calls == 2
+    assert tree_bytes(packs_root) == before_bytes
+    after = read_group(packs_root)
+    assert after.revision == before.revision
+    assert after.transaction_id == before.transaction_id
+    assert dict(after.admissions) == before_admissions
 
 
 def test_real_cli_composes_facts_while_generation_writer_is_held_out(

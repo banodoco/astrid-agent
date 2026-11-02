@@ -411,6 +411,49 @@ def _compose_resulting_facts(facts: Mapping[str, Mapping[str, Any]], paths: Mapp
     return result, core_apis
 
 
+def _verify_external_root_digests(facts: Mapping[str, Mapping[str, Any]],
+                                  paths: Mapping[str, Path]) -> None:
+    """Verify external roots still match the facts admitted for publication."""
+    for pack_id, item in facts.items():
+        if (pack_id in paths or item.get("origin") == "core"
+                or "_selection_identity" not in item):
+            continue
+        canonical_root = item.get("canonical_root")
+        expected_digest = item.get("observed_digest")
+        if not isinstance(canonical_root, str) or not isinstance(expected_digest, str):
+            raise PackInstallError("selected_snapshot_changed",
+                                   f"Selected dependency {pack_id} has no admitted external-root digest.")
+        try:
+            current_digest = pack_digest(Path(canonical_root))
+        except (OSError, ValueError) as exc:
+            raise PackInstallError("selected_snapshot_changed",
+                                   f"Selected dependency {pack_id} changed during this transaction; retry.") from exc
+        if current_digest != expected_digest:
+            raise PackInstallError("selected_snapshot_changed",
+                                   f"Selected dependency {pack_id} changed during this transaction; retry.")
+
+
+def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mapping[str, Mapping[str, Any]],
+                                       paths: Mapping[str, Path], retired: Path, transaction_id: str,
+                                       revision: int) -> None:
+    """Publish, then restore the prior generation if an external root raced the exchange."""
+    _publish(candidate, root)
+    try:
+        _verify_external_root_digests(facts, paths)
+    except PackInstallError:
+        try:
+            # candidate now names the prior complete generation. Exchanging it
+            # back restores collection bytes and admission records atomically.
+            _publish(candidate, root)
+            _sync_directory(retired)
+            _sync_directory(root.parent)
+        except OSError as exc:
+            raise GroupCommitError(transaction_id, revision) from exc
+        except PackInstallError as exc:
+            raise GroupCommitError(transaction_id, revision) from exc
+        raise
+
+
 def _artifact_metadata(request: Mapping[str, Any], artifact: Mapping[str, Any],
                        committed_revision: int) -> dict[str, bytes]:
     """Encode the frozen browser records owned by this group publication."""
@@ -851,7 +894,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 python_packages=packages, release_pins=release_pins)
             if verified_facts != facts or verified_apis != core_apis:
                 raise PackInstallError("selected_snapshot_changed", "A selected dependency changed during this transaction; retry.")
-            _publish(candidate, root)
+            _publish_and_verify_external_roots(candidate, root, facts, _paths(candidate), retired, tx,
+                                               state["revision"])
             published = True  # Sole terminal-transition owner for this attempt.
             mark("swapped")
             try:
@@ -1074,7 +1118,8 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                 python_packages=packages, release_pins=pins)
             if verified_facts != facts or verified_apis != core_apis:
                 raise PackInstallError("selected_snapshot_changed", "A selected dependency changed during rollback; retry.")
-            _publish(candidate, root)
+            _publish_and_verify_external_roots(candidate, root, facts, _paths(candidate), retired, tx,
+                                               new_state["revision"])
             published = True
             _sync_directory(retired)
             _sync_directory(root.parent)
