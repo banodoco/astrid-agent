@@ -148,7 +148,9 @@ class ProviderHTTP:
         body = json.loads(request.content) if request.content and request.content[:1] == b"{" else {}
         self.events.append((method, host, path))
         def reply(data, status=200):
-            return httpx.Response(status, json=data, request=request)
+            encoded = json.dumps(data).encode()
+            return httpx.Response(status, stream=httpx.ByteStream(encoded), request=request,
+                headers={"Content-Type": "application/json", "Content-Length": str(len(encoded))})
         if host in {"api.runpod.io", "graphql.runpod.io"}:
             return reply({"data": self.graphql(body)})
         if host == "rest.runpod.io":
@@ -208,7 +210,8 @@ class ProviderHTTP:
                     {"filename": "cpu.png", "subfolder": "", "type": "output"}]}},
                     "status": {"status_str": "success", "completed": True, "messages": []}}})
             if operation == "view":
-                return httpx.Response(200, content=self.image, headers={"Content-Type": "image/png"}, request=request)
+                return httpx.Response(200, stream=httpx.ByteStream(self.image), request=request,
+                    headers={"Content-Type": "image/png", "Content-Length": str(len(self.image))})
             if operation == "queue":
                 return reply({"queue_running": [], "queue_pending": []})
         raise AssertionError((method, host, path))
@@ -234,11 +237,14 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     def http_send(client, request, **kwargs):
         if request.url.host in {"127.0.0.1", "localhost", "::1"}:
             return send(client, request, **kwargs)
-        return provider.handle(request)
+        response = provider.handle(request)
+        if not kwargs.get("stream"):
+            response.read()
+        return response
     def requests_send(session, request, **kwargs):
         response = provider.handle(httpx.Request(request.method, request.url, content=request.body))
         result = requests.Response()
-        result.status_code, result._content = response.status_code, response.content
+        result.status_code, result._content = response.status_code, response.read()
         return result
     connect = socket.socket.connect
     def local_connect(sock, address):
