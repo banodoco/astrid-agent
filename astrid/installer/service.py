@@ -36,6 +36,9 @@ from .core import (
     version_id,
     write_json,
 )
+from .diagnostics import check as diagnostic_check
+from .diagnostics import unavailable as diagnostic_unavailable
+from .diagnostics import unknown as diagnostic_unknown
 
 LABEL = "haus.astrid.runtime"
 TASK = "Astrid Runtime"
@@ -531,8 +534,29 @@ class Service:
         """Require the live launchd PID to still be the discovery-bound R0 Runtime."""
         state, pid = observation["state"], observation["pid"]
         if state == "not running" and pid is None:
+            diagnostic_check("stop", "launchd_stopped_without_pid", expected=True, observed=True,
+                             provenance="launchctl print service state")
+            diagnostic_unavailable("stop", "live_process_identity", expected="running launchd Runtime",
+                                   provenance="runtime process APIs", depends_on="launchd_stopped_without_pid",
+                                   reason="the selected service is stopped")
             return None
-        if state != "running" or owner_pid is None or pid != owner_pid or not isinstance(owner_birth_id, str):
+        state_matches = diagnostic_check("stop", "launchd_state_is_running", expected="running", observed=state,
+                                         provenance="launchctl print service state")
+        owner_pid_present = diagnostic_check("stop", "discovery_owner_pid_is_present", expected=True,
+                                              observed=type(owner_pid) is int and owner_pid > 0,
+                                              provenance="runtime/discovery.json")
+        pid_matches = diagnostic_check("stop", "launchd_pid_matches_discovery_pid", expected=owner_pid,
+                                       observed=pid, provenance="launchctl print; runtime/discovery.json")
+        birth_present = diagnostic_check("stop", "discovery_birth_id_is_present", expected=True,
+                                         observed=isinstance(owner_birth_id, str) and bool(owner_birth_id.strip()),
+                                         provenance="runtime/discovery.json")
+        if not state_matches or not owner_pid_present or not pid_matches or not birth_present:
+            for predicate in ("observed_process_pid_matches_launchd_pid", "observed_process_uid_matches_current_user",
+                              "discovery_birth_matches_observed_birth", "observed_executable_matches_launchd_program",
+                              "observed_executable_within_selected_root"):
+                diagnostic_unavailable("stop", predicate, expected="live process observation",
+                                       provenance="runtime process APIs", depends_on="launchd admission",
+                                       reason="launchd/discovery prerequisites did not admit a live owner")
             raise ValueError("The launchd service does not match the selected Runtime owner.")
         try:
             observed = platform.process_identity(pid)
@@ -542,19 +566,40 @@ class Service:
             resolved_executable = executable.resolve(strict=True)
             resolved_expected = expected.resolve(strict=True)
         except (OSError, RuntimeError, ValueError) as exc:
+            diagnostic_unknown("stop", "live_process_identity", expected="readable live process identity",
+                               provenance="runtime process APIs", reason=type(exc).__name__)
+            for predicate in ("observed_process_pid_matches_launchd_pid", "observed_process_uid_matches_current_user",
+                              "discovery_birth_matches_observed_birth", "observed_executable_matches_launchd_program",
+                              "observed_executable_within_selected_root"):
+                diagnostic_unavailable("stop", predicate, expected="live process observation",
+                                       provenance="runtime process APIs", depends_on="live_process_identity",
+                                       reason="process identity or path resolution was unavailable")
             raise ValueError("The launchd Runtime executable could not be validated.") from exc
-        if (not isinstance(observed, dict) or observed.get("pid") != pid
-                or observed.get("uid") != platform.current_user()
-                or not birth_ids_match(owner_birth_id, observed.get("birth_id"), owner_pid, observed.get("pid"))
-                or resolved_executable != resolved_expected
-                or not resolved_executable.is_relative_to(root)):
+        observed_pid = observed.get("pid") if isinstance(observed, dict) else None
+        observed_uid = observed.get("uid") if isinstance(observed, dict) else None
+        observed_birth_id = observed.get("birth_id") if isinstance(observed, dict) else None
+        current_uid = platform.current_user()
+        pid_bound = diagnostic_check("stop", "observed_process_pid_matches_launchd_pid", expected=pid,
+                                     observed=observed_pid, provenance="platform.process_identity; launchctl print")
+        uid_bound = diagnostic_check("stop", "observed_process_uid_matches_current_user", expected=current_uid,
+                                     observed=observed_uid, provenance="platform.process_identity; current user")
+        birth_bound = diagnostic_check("stop", "discovery_birth_matches_observed_birth", expected=True,
+                                       observed=birth_ids_match(owner_birth_id, observed_birth_id, owner_pid, observed_pid),
+                                       provenance="runtime/discovery.json; platform.process_identity")
+        executable_bound = diagnostic_check("stop", "observed_executable_matches_launchd_program",
+                                            expected=resolved_expected, observed=resolved_executable,
+                                            provenance="platform.process_executable; launchctl print program")
+        root_bound = diagnostic_check("stop", "observed_executable_within_selected_root", expected=True,
+                                      observed=resolved_executable.is_relative_to(root),
+                                      provenance="platform.process_executable; selected program root")
+        if not (pid_bound and uid_bound and birth_bound and executable_bound and root_bound):
             raise ValueError("The launchd service does not match the selected Runtime owner.")
         return {
             "format": "astrid-launchd-r0-live-owner/v1",
             "pid": pid,
             "discovery_birth_id": owner_birth_id,
-            "process_birth_id": observed["birth_id"],
-            "uid": observed["uid"],
+            "process_birth_id": observed_birth_id,
+            "uid": observed_uid,
             "executable": str(resolved_executable),
         }
 
@@ -941,21 +986,48 @@ class Service:
 
     def _publish_posix_launch_admission(self, version: Version, data: Path) -> None:
         if not self.path.exists() and not self.path.is_symlink():
+            diagnostic_check("admission", "existing_posix_service_is_present", expected=False, observed=False,
+                             provenance=str(self.path), reason="autostart is intentionally off")
+            diagnostic_unavailable("admission", "existing_posix_service_action_is_owned",
+                                   expected="known selected action", provenance=str(self.path),
+                                   depends_on="existing_posix_service_is_present",
+                                   reason="there is no existing service definition")
             return  # Autostart off stays off.
         message = f"The Astrid service {self.path} has an unknown or changed action/owner. Re-run the install line to repair it."
         selection = self.recorded()
-        observed_stat = self.path.lstat()
-        if (not stat.S_ISREG(observed_stat.st_mode) or not owned_by_current_user(self.path, observed_stat)
-                or selection.get("owner") != LABEL or selection.get("program_root") != str(self.root)
-                or selection.get("data_root") != str(data)):
+        try:
+            observed_stat = self.path.lstat()
+        except OSError as exc:
+            diagnostic_unknown("admission", "existing_posix_service_metadata_is_readable", expected=True,
+                               provenance=str(self.path), reason=type(exc).__name__)
+            raise
+        regular = stat.S_ISREG(observed_stat.st_mode)
+        owned = owned_by_current_user(self.path, observed_stat)
+        owner_matches = selection.get("owner") == LABEL
+        root_matches = selection.get("program_root") == str(self.root)
+        data_matches = selection.get("data_root") == str(data)
+        diagnostic_check("admission", "existing_posix_service_is_regular", expected=True, observed=regular,
+                         provenance=str(self.path))
+        diagnostic_check("admission", "existing_posix_service_is_user_owned", expected=True, observed=owned,
+                         provenance=str(self.path))
+        diagnostic_check("admission", "service_selection_owner_matches", expected=LABEL,
+                         observed=selection.get("owner"), provenance=str(self.selection))
+        diagnostic_check("admission", "service_selection_program_root_matches", expected=str(self.root),
+                         observed=selection.get("program_root"), provenance=str(self.selection))
+        diagnostic_check("admission", "service_selection_data_root_matches", expected=str(data),
+                         observed=selection.get("data_root"), provenance=str(self.selection))
+        if not regular or not owned or not owner_matches or not root_matches or not data_matches:
             raise ValueError(message)
         observed = self.path.read_bytes()
 
         def confirm_unchanged():
             latest = self.path.lstat()
-            if (any(getattr(latest, key) != getattr(observed_stat, key) for key in
-                    ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns"))
-                    or self.path.read_bytes() != observed):
+            unchanged = (not any(getattr(latest, key) != getattr(observed_stat, key) for key in
+                                 ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns"))
+                         and self.path.read_bytes() == observed)
+            diagnostic_check("admission", "service_definition_revalidated_before_mutation", expected=True,
+                             observed=unchanged, provenance=str(self.path))
+            if not unchanged:
                 raise ValueError(message)
 
         def flush_current():
@@ -970,17 +1042,26 @@ class Service:
         try:
             if self.system == "darwin":
                 document = plistlib.loads(observed)
+                diagnostic_check("admission", "launchd_label_matches", expected=LABEL, observed=document.get("Label"),
+                                 provenance=str(self.path))
                 if document.get("Label") != LABEL:
                     raise ValueError(message)
                 action = document["ProgramArguments"]
                 environment = document.get("EnvironmentVariables", {})
+                diagnostic_check("admission", "launchd_environment_is_object", expected=True,
+                                 observed=isinstance(environment, dict), provenance=str(self.path))
                 if not isinstance(environment, dict):
                     raise ValueError(message)
                 if action == canonical and "ASTRID_INSTALLER_OPERATION_ID" not in environment:
+                    diagnostic_check("admission", "launchd_action_is_canonical", expected=canonical, observed=action,
+                                     provenance=str(self.path))
                     flush_current()
                     return
                 script = action[-1] if isinstance(action, list) and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
-                if not self._known_launch_action(action, data, windows=False, script=script):
+                known = self._known_launch_action(action, data, windows=False, script=script)
+                diagnostic_check("admission", "launchd_action_is_known_owned_action", expected=True, observed=known,
+                                 provenance=str(self.path))
+                if not known:
                     raise ValueError(message)
                 document["ProgramArguments"] = canonical
                 environment.pop("ASTRID_INSTALLER_OPERATION_ID", None)
@@ -1013,12 +1094,17 @@ class Service:
                        for line in bindings):
                     raise ValueError(message)
                 if action == canonical and not bindings:
+                    diagnostic_check("admission", "systemd_action_is_canonical", expected=canonical, observed=action,
+                                     provenance=str(self.path))
                     flush_current()
                     if self.systemd():
                         self.run(["systemctl", "--user", "daemon-reload"])
                     return
                 script = action[-1] if action[1:5] == ["-X", "utf8", "-I", "-c"] else None
-                if not self._known_launch_action(action, data, windows=False, script=script):
+                known = self._known_launch_action(action, data, windows=False, script=script)
+                diagnostic_check("admission", "systemd_action_is_known_owned_action", expected=True, observed=known,
+                                 provenance=str(self.path))
+                if not known:
                     raise ValueError(message)
                 replacement = "".join("ExecStart=" + encode(canonical) + "\n" if line == actions[0] else line
                                       for line in lines if line not in bindings).encode("utf-8")

@@ -11,6 +11,9 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from .diagnostics import check as diagnostic_check
+from .diagnostics import enabled as diagnostics_enabled
+from .diagnostics import unavailable as diagnostic_unavailable
 from .launcher import install as install_launcher
 from .launcher import install_runtime
 from .support import HELP_MESSAGE
@@ -298,9 +301,33 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     must be fenced again because the process may have died between stop and
     publishing ``stopped``.
     """
-    transaction = read_json(absolute(root / "update-transaction.json"))
+    journal_path = absolute(root / "update-transaction.json")
+    transaction = read_json(journal_path)
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
+        diagnostic_check("recovery", "nonterminal_recovery_journal_is_present", expected=True,
+                         observed=bool(transaction) and transaction.get("step") not in TERMINAL_STEPS,
+                         provenance=str(journal_path))
+        diagnostic_unavailable("recovery", "recovery_stop_admission", expected="validated retained owner",
+                               provenance="recovery transaction", depends_on="nonterminal_recovery_journal_is_present",
+                               reason="there is no nonterminal recovery transaction")
         return
+    if diagnostics_enabled():
+        diagnostic_check("recovery", "recovery_journal_format_is_valid",
+                         expected="astrid-install-update/v1", observed=transaction.get("format"),
+                         provenance=str(journal_path))
+        diagnostic_check("recovery", "recovery_operation_id_is_valid", expected=True,
+                         observed=(isinstance(transaction.get("operation_id"), str)
+                                   and re.fullmatch(r"[0-9a-f]{32}", transaction["operation_id"]) is not None),
+                         provenance=str(journal_path))
+        try:
+            bound_data = absolute(transaction.get("data_root", "")) == absolute(data)
+        except (OSError, ValueError, TypeError):
+            bound_data = False
+        diagnostic_check("recovery", "recovery_data_root_matches", expected=True, observed=bound_data,
+                         provenance=str(journal_path))
+        diagnostic_check("recovery", "recovery_transaction_kind_is_allowed", expected=True,
+                         observed=transaction.get("transaction_kind") in {None, "migration", "app"},
+                         provenance=str(journal_path))
     if (transaction.get("format") != "astrid-install-update/v1"
             or not isinstance(transaction.get("operation_id"), str)
             or not re.fullmatch(r"[0-9a-f]{32}", transaction.get("operation_id", ""))
@@ -326,6 +353,8 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     if (transaction.get("step") == "staged"
             and transaction.get("transaction_kind") in {"migration", "app"}
             and transaction.get("backup") is None):
+        diagnostic_check("recovery", "staged_recovery_has_not_stopped_owner", expected=True, observed=True,
+                         provenance=str(journal_path))
         write_step("complete", outcome="recovered_before_stop")
         return
     realm = transaction["realm"]
@@ -333,8 +362,14 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     backup = transaction.get("backup")
     if backup and "root" in backup:
         retained = absolute(backup["root"])
+        diagnostic_check("recovery", "recovery_backup_root_is_inside_installation", expected=absolute(root / "backups"),
+                         observed=retained.parent, provenance=str(journal_path))
         if retained.parent != absolute(root / "backups"):
             raise ValueError("The interrupted update backup is outside this installation.")
+    elif diagnostics_enabled():
+        diagnostic_unavailable("recovery", "recovery_backup_root_is_inside_installation",
+                               expected="backup root inside installation", provenance=str(journal_path),
+                               depends_on="recovery_backup_is_present", reason="this transaction has no backup")
     install_runtime(root)
     publish = getattr(backend, "publish_launch_admission", None)
     if publish is not None:

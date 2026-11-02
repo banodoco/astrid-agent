@@ -37,6 +37,9 @@ from .core import (
     read_json,
     write_json,
 )
+from .diagnostics import check as diagnostic_check
+from .diagnostics import record as diagnostic_record
+from .diagnostics import unavailable as diagnostic_unavailable
 from .launcher import install_shim, owned_shim, remove_shim
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
@@ -749,6 +752,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             from runtime_protocol import process_control
 
             record = self.service.recorded()
+            diagnostic_check("stop", "selected_service_record_matches_installation", expected=True,
+                             observed=(not record or (record.get("owner") == LABEL
+                                                     and record.get("program_root") == str(self.root)
+                                                     and record.get("data_root") == str(data))),
+                             provenance=str(self.service.selection))
             if record and (record.get("owner") != LABEL
                            or record.get("program_root") != str(self.root)
                            or record.get("data_root") != str(data)):
@@ -787,6 +795,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if type(owner_pid) is not int or owner_pid <= 0:
                 owner_pid = None
             owner_birth_id = discovery.get("process_birth_id") if isinstance(discovery, dict) else None
+            if self.service.system == "linux":
+                # Runtime owns the native endpoint/PID/namespace validation.
+                # Agent must not replay it with a weaker adjacent probe.
+                diagnostic_unavailable("stop", "runtime_native_owner_predicates",
+                                       expected="Runtime C1 owner validation report",
+                                       provenance="astrid_runtime.bootstrap.down",
+                                       depends_on="Runtime-owned C1 validation",
+                                       reason="the installer does not duplicate Runtime authorization")
             # Read-only OS-manager probe. It stays ahead of C1 on every platform:
             # C1 busy admission runs later in down(), so an ownership refusal can
             # be reported before the busy message. On macOS the validated R0 job
@@ -912,12 +928,17 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                           stop_foreground=(stop_selected_foreground
                                            if restore_selection is None and isinstance(foreground, dict) else None),
                           restore_selection=restore_selection)
+            diagnostic_record("stop", "runtime_c1_stop_admission", expected="accepted", observed="accepted",
+                              result="pass", provenance="astrid_runtime.bootstrap.down")
             if (self.managed_by != "pinokio" and self.service.system == "darwin"
                     and (launchd_booted_out or launchd_identity is None)):
                 # This runs after C1's owner stop, so a job present now cannot
                 # be the selected R0 process and is never signaled or booted out.
                 self.service.verify_launchd_absent_after_bootout()
         except Exception as exc:
+            diagnostic_record("stop", "runtime_c1_stop_admission", expected="accepted", observed="refused",
+                              result="fail", provenance="astrid_runtime.bootstrap.down",
+                              reason=type(exc).__name__)
             raise self._stop_failure(exc) from exc
 
         # The Runtime fence has been released and C1 succeeded. Keep failures

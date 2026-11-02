@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from importlib import resources
 from pathlib import Path
 
+from .diagnostics import record as diagnostic_record
+
 _POLICY_SHA256 = "48cf8dea385ce30810ccf7e5a5091c8554097ef157ed3c4b35b57362f9956d50"
 
 def _policy():
@@ -195,7 +197,15 @@ def classify(health, discovery, version, manifest, manifest_bytes, version_path,
         problems.append('health runtime instance id is missing')
     if not isinstance(discovered_instance, str) or not discovered_instance.strip() or instance != discovered_instance:
         problems.append('health/discovery runtime instance ids do not match')
-    return not problems, {'mode': 'supported-legacy-schema', 'release_id': supported.get('id') if supported else None,
+    matches = not problems
+    # ``problems`` is assembled without short-circuiting the pinned predecessor
+    # checks.  Exposing the complete, read-only set is more useful than the
+    # normal aggregate admission result and cannot change that result.
+    diagnostic_record(
+        "admission", "legacy_schema_predicate_set", expected=[], observed=problems,
+        result="pass" if matches else "fail", provenance="legacy_identity.classify",
+    )
+    return matches, {'mode': 'supported-legacy-schema', 'release_id': supported.get('id') if supported else None,
                           'health_protocol': health.get('protocol'), 'health_schema_digest': health.get('schema_digest'),
                           'health_status': health.get('status'), 'health_runtime_epoch': health.get('runtime_epoch'),
                           'health_runtime_session_id': health.get('runtime_session_id'),

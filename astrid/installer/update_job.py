@@ -25,6 +25,9 @@ from runtime_protocol import platform
 
 from . import tools
 from .core import TERMINAL_STEPS, current, pending_transaction
+from .diagnostics import check as diagnostic_check
+from .diagnostics import enabled as diagnostics_enabled
+from .diagnostics import unknown as diagnostic_unknown
 
 if TYPE_CHECKING:
     from .backend import Backend
@@ -461,35 +464,94 @@ class _IdentityUnavailable(ValueError):
 
 
 def _probe_identity(data_root: Path) -> tuple[str, dict]:
-    discovery = read_json(data_root / "runtime" / "discovery.json")
+    discovery_path = data_root / "runtime" / "discovery.json"
+    try:
+        discovery = read_json(discovery_path)
+    except (OSError, ValueError, TypeError) as exc:
+        diagnostic_unknown("discovery", "discovery_document_is_readable", expected=True,
+                           provenance=str(discovery_path), reason=type(exc).__name__)
+        raise
     instance_id = discovery.get("runtime_instance_id")
     endpoint = discovery.get("endpoint") or discovery.get("door_endpoint")
+    diagnostic_check("discovery", "runtime_instance_id_is_present", expected=True,
+                     observed=isinstance(instance_id, str) and bool(instance_id), provenance=str(discovery_path))
+    diagnostic_check("discovery", "runtime_endpoint_is_present", expected=True,
+                     observed=isinstance(endpoint, str) and bool(endpoint), provenance=str(discovery_path))
     if not isinstance(instance_id, str) or not instance_id or not isinstance(endpoint, str) or not endpoint:
         raise _IdentityUnavailable("The live Runtime owner identity is unavailable.")
     from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
-    health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
+    try:
+        health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
+    except Exception as exc:
+        diagnostic_unknown("discovery", "runtime_health_identity_is_readable", expected=True,
+                           provenance="Runtime owner_startup_identity", reason=type(exc).__name__)
+        raise
     from astrid_runtime.identity import validate_live_owner_identity
     # Route identityless predecessor health through the closed installer gate.
+    diagnostic_check("discovery", "runtime_health_publishes_identity", expected=True,
+                     observed=isinstance(health, Mapping) and "identity" in health,
+                     provenance="Runtime owner_startup_identity")
     if isinstance(health, Mapping) and "identity" not in health:
         raise ValueError("Identityless Runtime predecessor requires installer admission.")
-    identity = validate_live_owner_identity(health, instance_id=instance_id)
+    try:
+        identity = validate_live_owner_identity(health, instance_id=instance_id)
+    except Exception as exc:
+        diagnostic_unknown("discovery", "runtime_identity_matches_instance", expected=instance_id,
+                           provenance="Runtime validate_live_owner_identity", reason=type(exc).__name__)
+        raise
+    diagnostic_check("discovery", "runtime_identity_matches_instance", expected=instance_id,
+                     observed=instance_id, provenance="Runtime validate_live_owner_identity")
     return instance_id, identity
 
 
 def _probe_legacy_identity(data_root: Path, old, root: Path, *, target_release) -> tuple[str, dict]:
     """Prove the selected identityless predecessor from one discovery snapshot."""
-    from .legacy_identity import admitted, allows_update
     from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+
+    from .legacy_identity import admitted, allows_update
     path = data_root / "runtime" / "discovery.json"
-    snapshot = path.read_bytes()
-    discovery = json.loads(snapshot)
+    try:
+        snapshot = path.read_bytes()
+        discovery = json.loads(snapshot)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+        diagnostic_unknown("discovery", "legacy_discovery_snapshot_is_readable", expected=True,
+                           provenance=str(path), reason=type(exc).__name__)
+        raise
     instance = discovery.get("runtime_instance_id")
     endpoint = discovery.get("endpoint") or discovery.get("door_endpoint")
+    diagnostic_check("discovery", "legacy_runtime_instance_id_is_present", expected=True,
+                     observed=isinstance(instance, str) and bool(instance), provenance=str(path))
+    diagnostic_check("discovery", "legacy_runtime_endpoint_is_present", expected=True,
+                     observed=isinstance(endpoint, str) and bool(endpoint), provenance=str(path))
     if not isinstance(instance, str) or not instance or not isinstance(endpoint, str) or not endpoint:
         raise ValueError("The live Runtime owner identity is unavailable.")
-    health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance)
-    if (not allows_update(target_release)
-            or not admitted(old, health, discovery, program_root=root) or path.read_bytes() != snapshot):
+    try:
+        health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance)
+    except Exception as exc:
+        diagnostic_unknown("discovery", "legacy_runtime_health_is_readable", expected=True,
+                           provenance="Runtime owner_startup_identity", reason=type(exc).__name__)
+        raise
+    allowed = allows_update(target_release)
+    diagnostic_check("admission", "legacy_target_release_is_pinned", expected=True, observed=allowed,
+                     provenance="astrid/installer/predecessors.json")
+    if diagnostics_enabled():
+        # These are read-only observations.  They deliberately do not replace
+        # the later enforcement condition or authorize an identityless owner.
+        legacy_admitted = admitted(old, health, discovery, program_root=root)
+        diagnostic_check("admission", "legacy_predecessor_matches_pinned_schema", expected=True,
+                         observed=legacy_admitted, provenance="legacy_identity.admitted")
+        try:
+            unchanged = path.read_bytes() == snapshot
+        except OSError as exc:
+            diagnostic_unknown("discovery", "legacy_discovery_snapshot_is_stable", expected=True,
+                               provenance=str(path), reason=type(exc).__name__)
+            unchanged = False
+        else:
+            diagnostic_check("discovery", "legacy_discovery_snapshot_is_stable", expected=True,
+                             observed=unchanged, provenance=str(path))
+        if not allowed or not legacy_admitted or not unchanged:
+            raise ValueError("The live Runtime identity cannot be verified.")
+    elif (not allowed or not admitted(old, health, discovery, program_root=root) or path.read_bytes() != snapshot):
         raise ValueError("The live Runtime identity cannot be verified.")
     return instance, {"release": 0, "managed_by": None}
 
