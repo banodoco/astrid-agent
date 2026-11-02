@@ -206,11 +206,15 @@ class _PinokioAdoptionProvider:
                 )
             pinned[path] = expected
 
-        command = _exact_fields(
-            adoption["command"],
-            {"argv", "cwd", "timeout_seconds"},
-            "platform_adapter.adoption.command",
-        )
+        command = _mapping(adoption["command"], "platform_adapter.adoption.command")
+        required = {"argv", "cwd", "timeout_seconds"}
+        optional_empty = {"env": {}, "inherit_env": [], "redact_env": [],
+                          "redact_argv_indices": []}
+        if not required <= set(command) or set(command) - required - set(optional_empty):
+            raise JourneyDriverError("platform_adapter.adoption.command has invalid fields")
+        for field, empty in optional_empty.items():
+            if field in command and (type(command[field]) is not type(empty) or command[field] != empty):
+                raise JourneyDriverError(f"platform_adapter.adoption.command.{field} must be empty")
         argv = command["argv"]
         if (
             not isinstance(argv, list)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -116,3 +117,38 @@ def test_direct_selection_does_not_call_adapter(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="direct path selected"):
         journey._execute_owned(args, tmp_path / "program", tmp_path / "data", tmp_path / "evidence",
                                SimpleNamespace(pid=123), "birth")
+
+
+def test_named_retry_action_matches_executor_schema(tmp_path):
+    checkout = tmp_path / "pinokio"
+    source = checkout / "pinokio"
+    source.mkdir(parents=True)
+    (source / "lib.js").write_text("""
+exports.createApp = () => ({
+  bootstrapScript(action) { return action; },
+  shellStep(message) { return {method: 'shell.run', params: {message}}; },
+  customStep(method) { return {method}; },
+  preflightStop() {},
+});
+""")
+    (source / "update.js").write_text("""
+const app = require('./lib');
+module.exports = async () => ({run: [
+  app.customStep(app.preflightStop),
+  {method:'shell.run', params:{message:'git', env:{ASTRID_PINOKIO_ENVIRONMENT:'1'}}},
+  app.shellStep(app.bootstrapScript('install')),
+]});
+""")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "add", "pinokio"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Test", "-c",
+                    "user.email=test@example.invalid", "commit", "-qm", "fixture"], check=True)
+    ref = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    steps = journey.build_pinokio_action(checkout, ref)["run"]
+    assert steps[0] == {"kind": "custom", "bootstrap_action": "preflightStop"}
+    raw = {"kind": "pinokio-action", "command": {"id": "retry", "argv": ["/bin/true"],
+           "cwd": str(tmp_path)}, "provenance": {"ref": ref, "sha256": "a" * 64}, "steps": steps}
+    adapter.pinokio_backend_executor._validate_action(raw, "actions.retry", ref, "a" * 64)
+    raw["steps"][0]["bootstrap_action"] = "foreign"
+    with pytest.raises(ValueError, match="candidate backend action array"):
+        adapter.pinokio_backend_executor._validate_action(raw, "actions.retry", ref, "a" * 64)

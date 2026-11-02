@@ -816,3 +816,17 @@ def test_factory_constructs_a_concrete_driver(tmp_path):
     constructed = factory(context)
     assert isinstance(driver, shared.JourneyDriver)
     assert isinstance(constructed, shared.JourneyDriver)
+
+
+def test_adoption_accepts_empty_template_command_fields_without_inheriting_environment(tmp_path, monkeypatch):
+    config, _ = _platform_config(tmp_path)
+    command = config["platform_adapter"]["adoption"]["command"]
+    command.update(env={}, inherit_env=[], redact_env=[], redact_argv_indices=[])
+    monkeypatch.setenv("ASTRID_TEST_SECRET", "private")
+    provider = shared._PinokioAdoptionProvider(config["platform_adapter"]["adoption"])
+    assert provider.invoke("pre-execution") is None
+    calls = json.loads(Path(command["argv"][2]).read_text())
+    assert calls == [{"stage": "pre-execution", "credential_inherited": False}]
+    command["inherit_env"] = ["ASTRID_TEST_SECRET"]
+    with pytest.raises(shared.JourneyDriverError, match="inherit_env must be empty"):
+        shared._PinokioAdoptionProvider(config["platform_adapter"]["adoption"])

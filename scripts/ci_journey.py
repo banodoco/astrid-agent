@@ -136,7 +136,7 @@ const injectedRequire = (name) => name === './lib' ? app : require(name);
 vm.runInNewContext(sourceText, { module, exports: module.exports, require: injectedRequire }, { filename: source });
 Promise.resolve(module.exports({}, {})).then((action) => {
   const normalize = (value) => {
-    if (typeof value === 'function') return { kind: 'custom', name: value.name || 'anonymous' };
+    if (typeof value === 'function') return { kind: 'custom', bootstrap_action: value.name || 'anonymous' };
     if (Array.isArray(value)) return value.map(normalize);
     if (!value || typeof value !== 'object') return value;
     if (value.method === 'shell.run') {
@@ -145,7 +145,7 @@ Promise.resolve(module.exports({}, {})).then((action) => {
       return { kind: params.env?.ASTRID_PINOKIO_ENVIRONMENT === '1' ? 'git-shell' : 'shell',
         message, bootstrap_action: value.__bootstrap_action || null };
     }
-    if (typeof value.method === 'function') return { kind: 'custom', name: value.method.name || 'anonymous' };
+    if (typeof value.method === 'function') return { kind: 'custom', bootstrap_action: value.method.name || 'anonymous' };
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalize(item)]));
   };
   process.stdout.write(JSON.stringify({ run: normalize(action.run || []), on: normalize(action.on || null) }));
