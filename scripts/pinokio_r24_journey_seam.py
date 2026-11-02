@@ -80,7 +80,7 @@ def _captured(receipt: object) -> dict[str, Any]:
     if row.get("status") != "captured-untrusted":
         raise PinokioR24SeamError("R-24 live hook did not capture an untrusted live observation")
     if row.get("candidate") != r24.R24_CANDIDATE:
-        raise PinokioR24SeamError("R-24 live receipt differs from the exact candidate")
+        raise PinokioR24SeamError("R-24 live receipt candidate differs from the exact candidate")
     if not isinstance(row.get("run_id"), str) or _HEX32.fullmatch(row["run_id"]) is None:
         raise PinokioR24SeamError("R-24 live receipt run ID is invalid")
     request_sha = _digest(row.get("request_sha256"), "R-24 request SHA-256")
