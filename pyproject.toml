@@ -130,6 +130,7 @@ astrid = [
     "core/**/*.json",
     "core/**/*.sql",
     "core/**/*.yaml",
+    "core/resources/skills/**/*.md",
     "core/rendering/fixtures/renderer_parity/*",
     "core/rendering/schemas/v1/*.json",
 
