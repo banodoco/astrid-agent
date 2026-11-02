@@ -8,6 +8,7 @@ from astrid.packs.rendering.actions.timeline_visualize.composed_frame import (
     FrameCaptureCache,
     FrameCaptureWorker,
     RemotionFrameProvider,
+    _pack_root_digests,
     frame_cache_key,
 )
 from astrid.packs.rendering.rendering.renderers.remotion.run import _resize_frame_outputs
@@ -139,6 +140,23 @@ def test_provider_uses_cache_on_second_request(tmp_path):
     assert provider.worker.started is True
     provider.close()
     assert provider.worker.started is False
+
+
+def test_pack_geometry_change_invalidates_pack_root_identity(tmp_path):
+    checkout = tmp_path / "checkout"
+    pack = checkout / "astrid" / "packs" / "astrid_motion"
+    element = pack / "rendering" / "elements" / "effects" / "am-snap-plate"
+    element.mkdir(parents=True)
+    (pack / "pack.yaml").write_text("schema_version: 3\nid: astrid_motion\n", encoding="utf-8")
+    geometry = element / "geometry.json"
+    geometry.write_text('{"safeArea":0.9}\n', encoding="utf-8")
+
+    first = _pack_root_digests(checkout)
+    geometry.write_text('{"safeArea":0.8,"edge":12}\n', encoding="utf-8")
+    second = _pack_root_digests(checkout)
+
+    assert first[0][0] == second[0][0] == "astrid_motion"
+    assert first[0][1] != second[0][1]
 
 
 def test_cache_identity_changes_when_renderer_source_changes(tmp_path, monkeypatch):
