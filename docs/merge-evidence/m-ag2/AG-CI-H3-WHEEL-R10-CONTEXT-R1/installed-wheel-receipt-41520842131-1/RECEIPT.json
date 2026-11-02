@@ -1,0 +1,136 @@
+{
+  "artifact_manifest": {
+    "path": "SHA256SUMS",
+    "sha256": "45b75be334c67f1876afe09fcbfaec0c3fbf2e61e6b0ff3d583aee8f087bcb31"
+  },
+  "artifacts": {
+    "dist/astrid-0.1.0-py3-none-any.whl": "4a65638567793d45a963b8fdca71c0d0201a85ef1599362fedfc48f79f4e094e",
+    "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f",
+    "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz.sha256": "21ee727f50515d5cc48964e6cf4283cd1512034a8a65610d5724f8e83932f019",
+    "remotion/package-lock.json": "7d0c50e072d8fe2f2f8e725ce749642acef29b900a123e42de3df96760916011",
+    "remotion/package.json": "bcd09a781367b9d6d3582366e6be5c36844d13045288f0785986c582b6b85c9d",
+    "runtime.lock.json": "859d67343dccbe71b216d114360e1f614fefd6629358038e4488c5b2a232e2a7"
+  },
+  "bundled_artifacts": {
+    "dist/astrid-0.1.0-py3-none-any.whl": {
+      "path": "artifacts/astrid-wheel.whl",
+      "sha256": "4a65638567793d45a963b8fdca71c0d0201a85ef1599362fedfc48f79f4e094e"
+    },
+    "remotion/.astrid-registry-state.json": {
+      "path": "artifacts/.astrid-registry-state.json",
+      "sha256": "528473482a4c9dc733f3bc4396df51f961cde834d758437d601a29d46fe61f71"
+    },
+    "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz": {
+      "path": "artifacts/timeline-composition.tgz",
+      "sha256": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f"
+    },
+    "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz.sha256": {
+      "path": "artifacts/timeline-composition.tgz.sha256",
+      "sha256": "21ee727f50515d5cc48964e6cf4283cd1512034a8a65610d5724f8e83932f019"
+    },
+    "remotion/package-lock.json": {
+      "path": "artifacts/remotion-package-lock.json",
+      "sha256": "7d0c50e072d8fe2f2f8e725ce749642acef29b900a123e42de3df96760916011"
+    },
+    "remotion/package.json": {
+      "path": "artifacts/remotion-package.json",
+      "sha256": "bcd09a781367b9d6d3582366e6be5c36844d13045288f0785986c582b6b85c9d"
+    },
+    "remotion/src/animations.generated.ts": {
+      "path": "artifacts/animations.generated.ts",
+      "sha256": "02326f12177879eb5905f9d9b6d476b2de185928ddeeeeb2321a68ebffb47ad6"
+    },
+    "remotion/src/effects.generated.ts": {
+      "path": "artifacts/effects.generated.ts",
+      "sha256": "078fc0d7b95eed50132bcb5a1912de8d41739eef224def96955820bd5a384a07"
+    },
+    "remotion/src/transitions.generated.ts": {
+      "path": "artifacts/transitions.generated.ts",
+      "sha256": "c46d6bbd88712e775812867ec1cbe6de67473664775266c5a0b9317344ceb989"
+    },
+    "runtime.lock.json": {
+      "path": "artifacts/runtime.lock.json",
+      "sha256": "859d67343dccbe71b216d114360e1f614fefd6629358038e4488c5b2a232e2a7"
+    }
+  },
+  "coverage": {
+    "profile": "installed",
+    "prohibited_options_absent": [
+      "--maxfail",
+      "-x"
+    ],
+    "selector": "tests/packs/h3_av/test_character_swap_cpu_boundary.py"
+  },
+  "generated_registry_hashes": {
+    "remotion/.astrid-registry-state.json": "528473482a4c9dc733f3bc4396df51f961cde834d758437d601a29d46fe61f71",
+    "remotion/src/animations.generated.ts": "02326f12177879eb5905f9d9b6d476b2de185928ddeeeeb2321a68ebffb47ad6",
+    "remotion/src/effects.generated.ts": "078fc0d7b95eed50132bcb5a1912de8d41739eef224def96955820bd5a384a07",
+    "remotion/src/transitions.generated.ts": "c46d6bbd88712e775812867ec1cbe6de67473664775266c5a0b9317344ceb989"
+  },
+  "inner_exits": {
+    "checkout": 0,
+    "install": 0,
+    "media": 0,
+    "node": 0,
+    "npm": 0,
+    "python": 0,
+    "receipt_init": 0,
+    "refs": 0,
+    "registry": 0,
+    "runtime_checkout": 0,
+    "runtime_pin": 0,
+    "selector": 0,
+    "wheel": 0
+  },
+  "installed_selector": {
+    "command": "ASTRID_HOST_EXECUTION_PROFILE=installed ASTRID_RUNTIME_CHECKOUT=$GITHUB_WORKSPACE/astrid-runtime ASTRID_REMOTION_PROJECT_DIR=$GITHUB_WORKSPACE/remotion $RUNNER_TEMP/installed-venv/bin/pytest -q -m installed --import-mode=importlib --junitxml=$GITHUB_WORKSPACE/installed-wheel-receipt/selector.junit.xml tests/packs/h3_av/test_character_swap_cpu_boundary.py",
+    "exit": 0,
+    "junit": {
+      "errors": 0,
+      "failures": 0,
+      "path": "selector.junit.xml",
+      "skipped": 0,
+      "tests": 3,
+      "valid": true
+    },
+    "result": "passed"
+  },
+  "logs": [
+    "install.log",
+    "media.log",
+    "npm.log",
+    "refs.log",
+    "registry.log",
+    "runtime-pin.log",
+    "selector.log",
+    "wheel.log"
+  ],
+  "repository": "banodoco/astrid-agent",
+  "schema": "ag-ci-h3-wheel-r8/v1",
+  "status": "green",
+  "tuple": {
+    "agent_effective": "5d030039dcbbcc7f66ed5e3d56a9733427086e48",
+    "agent_requested": "5d030039dcbbcc7f66ed5e3d56a9733427086e48",
+    "app_identity": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+    "composition": {
+      "artifact_sha256": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f",
+      "name": "@banodoco/timeline-composition",
+      "sidecar_matches": true,
+      "spec": "file:artifacts/banodoco-timeline-composition-0.0.17.tgz",
+      "version": "0.0.17"
+    },
+    "runtime_effective": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "runtime_requested": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+  },
+  "workflow": {
+    "file": ".github/workflows/lanes.yml",
+    "identity": "Lanes",
+    "job": "installed",
+    "name": "Lanes",
+    "requested_agent": "5d030039dcbbcc7f66ed5e3d56a9733427086e48",
+    "run_attempt": "1",
+    "run_id": "41520842131",
+    "run_ref": "refs/heads/lane/M-AG2/AG-CI-H3-WHEEL-R10-CONTEXT-R1",
+    "workflow_ref": "banodoco/astrid-agent/.github/workflows/lanes.yml@refs/heads/lane/M-AG2/AG-CI-H3-WHEEL-R10-CONTEXT-R1"
+  }
+}

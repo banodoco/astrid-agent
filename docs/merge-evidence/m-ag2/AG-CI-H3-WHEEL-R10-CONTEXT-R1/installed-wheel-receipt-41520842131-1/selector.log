@@ -1,0 +1,26 @@
+...                                                                      [100%]
+------------------ left out of this run by lane (21 entries) -------------------
+[integration] run by CI job lanes-integration
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_character_swap_digest_override_is_source_and_inventory_bound
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_character_swap_public_managed_cpu_boundary
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_cpu_harness_invokes_transform_unbound_without_request_or_target
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_cpu_public_parent_carries_attested_vibe_imports_to_real_runner[raise]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_cpu_public_parent_carries_attested_vibe_imports_to_real_runner[return_failure]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_cpu_public_parent_carries_attested_vibe_imports_to_real_runner[success]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_h3_public_workspace_helper_pin_matches_current_shared_fixture
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_parent_vibe_origin_and_exact_restoration
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_parent_vibe_rejects_foreign_origin_and_alias
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_profile_binds_actual_product_roots
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_profile_rejects_execution_drift[alias]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_profile_rejects_execution_drift[command]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_profile_rejects_execution_drift[environment]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_profile_rejects_execution_drift[profile]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_profile_rejects_execution_drift[python]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_profile_rejects_execution_drift[runtime]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_installed_cpu_profile_rejects_execution_drift[source]
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_managed_import_both_ports_use_valid_stable_distinct_keys_and_real_results
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_managed_import_legacy_key_is_rejected_by_real_sdk
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_public_cpu_boundary_preflight_does_not_require_a_prior_qualification_receipt
+  DESELECTED tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_source_cpu_profile_roots_remain_source_bound
+68 test(s) with no lane marker are not in this run's -m selection (counted, not listed; a run without that -m selection runs them)
+3 passed, 89 deselected in 4.18s

@@ -1,0 +1,40 @@
+{
+  "name": "tools-remotion",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": "=20.19.4",
+    "npm": "=10.8.2"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "bundle": "remotion bundle src/index.ts",
+    "render": "remotion render",
+    "smoke": "node __smoke__/bundle.mjs",
+    "gen-types": "python3 ../scripts/gen_remotion_types.py --include-element-registries",
+    "postinstall": "node scripts/apply-renderer-darwin-cpu-patch.mjs"
+  },
+  "dependencies": {
+    "@banodoco/timeline-composition": "file:artifacts/banodoco-timeline-composition-0.0.17.tgz",
+    "@react-three/fiber": "8.18.0",
+    "@remotion/cli": "4.0.509",
+    "@remotion/google-fonts": "4.0.509",
+    "@remotion/layout-utils": "4.0.509",
+    "@remotion/media": "4.0.509",
+    "@remotion/renderer": "4.0.509",
+    "@remotion/three": "4.0.509",
+    "@types/three": "0.185.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.509",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@remotion/bundler": "4.0.509",
+    "@types/node": "^25.6.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.8.3"
+  }
+}

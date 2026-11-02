@@ -1,0 +1,125 @@
+{
+  "task": "AG-CI-H3-WHEEL-R10-CONTEXT-R1",
+  "repository": "banodoco/astrid-agent",
+  "status": "ACCEPTED for M-INT handoff (validator focused checks and exact-head installed selector green); full Actions workflow failed on unrelated Runtime checkout collection; broader C-07 tuple qualification not claimed",
+  "published_product_base": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+  "r10_head": "b9fc2c93e398e8b3c942182e6ff10413a0d88a4a",
+  "source_merge": "ef8df6eb25c5de1691c357c2a6d0e3b87f5074c2",
+  "source_parents": [
+    "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "053640803bceed3ec01e12143379955af1996ea3"
+  ],
+  "head": "5d030039dcbbcc7f66ed5e3d56a9733427086e48",
+  "parents": [
+    "b9fc2c93e398e8b3c942182e6ff10413a0d88a4a",
+    "ef8df6eb25c5de1691c357c2a6d0e3b87f5074c2"
+  ],
+  "tree": "38f29532ae7170de90592c4d70c8a21c1baaf165",
+  "remote_refs_verified": {
+    "lane/M-AG2/AG-CI-H3-WHEEL-R10-CONTEXT-R1": "5d030039dcbbcc7f66ed5e3d56a9733427086e48",
+    "wip/M-AG2/AG-CI-H3-WHEEL-R10-CONTEXT-R1": "5d030039dcbbcc7f66ed5e3d56a9733427086e48"
+  },
+  "publication_commands": [
+    {
+      "command": "git push origin HEAD:refs/heads/wip/M-AG2/AG-CI-H3-WHEEL-R10-CONTEXT-R1",
+      "inner_exit": 0
+    },
+    {
+      "command": "git push origin HEAD:refs/heads/lane/M-AG2/AG-CI-H3-WHEEL-R10-CONTEXT-R1",
+      "inner_exit": 0
+    },
+    {
+      "command": "git ls-remote --heads origin lane/M-AG2/AG-CI-H3-WHEEL-R10-CONTEXT-R1 wip/M-AG2/AG-CI-H3-WHEEL-R10-CONTEXT-R1",
+      "inner_exit": 0
+    }
+  ],
+  "requested_product_tuple": {
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "composition_sha256": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f"
+  },
+  "changed_paths_vs_base": {
+    ".github/workflows/lanes.yml": {
+      "status": "modified",
+      "sha256": "ecfe0a9698b7c5aca294dab9d46e8a8420e13ca5294dfc4127d2296b6cc55d46"
+    },
+    "tests/ci/test_installed_wheel_receipt.py": {
+      "status": "added",
+      "sha256": "3a8864ba8088abf978b360e5608fede078d6735d819b14607c4820a4ea299cd5"
+    },
+    "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz.sha256": {
+      "status": "added",
+      "sha256": "21ee727f50515d5cc48964e6cf4283cd1512034a8a65610d5724f8e83932f019",
+      "content": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f"
+    }
+  },
+  "scope_audit": {
+    "versus_r10": "only landed sidecar added; workflow and test identical to R10",
+    "versus_source": "workflow and receipt test only; sidecar identical to #165",
+    "other_jobs": "YAML objects for every job except installed identical to #165",
+    "first_parent_chain": [
+      "5d030039dcbbcc7f66ed5e3d56a9733427086e48",
+      "b9fc2c93e398e8b3c942182e6ff10413a0d88a4a",
+      "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61"
+    ],
+    "source_is_ancestor_exit": 0
+  },
+  "checks": {
+    "focused": {
+      "command": "python3 -m unittest discover -s tests/ci -p test_installed_wheel_receipt.py -v",
+      "inner_exit": 0,
+      "result": "5 methods passed; synthetic positive and negative cases execute the embedded generator",
+      "log": "focused-tests.log",
+      "log_sha256": "610ebffd4b5bdeac2e86ef8dd3b8660c321c13cbb6f51eeb6f9f7fa0295444e5"
+    },
+    "workflow": {
+      "command": "python3 ../validate_workflow.py",
+      "inner_exit": 0,
+      "result": "YAML parsed, non-installed jobs match #165, 10 installed shell bodies passed bash -n, 2 embedded Python blocks compiled",
+      "helper_sha256": "3a9892c2885dd2b78b1fbf4761fe44891c764a1c508dd763041df5b453554091",
+      "log": "workflow-validation.log",
+      "log_sha256": "6d9692421ca21622a0b89ce5e104ee458bb55e71b74c2c45e1b2e901b480fc08",
+      "initial_helper_failure": "Initial helper exit 1 because its regex omitted heredoc quotes; fixed helper and reran successfully. See workflow-validation-initial.log, SHA-256 61d7237144872098f698ac7cd4bc09a5f3686a6592183e5f82d2d45a97ba750c."
+    },
+    "diff_check": {
+      "commands": [
+        "git diff --check ab43bad818ef65ca1e929b973a2f61cd9fc4bf61 HEAD",
+        "git diff --check b9fc2c93e398e8b3c942182e6ff10413a0d88a4a HEAD",
+        "git diff --check",
+        "git diff --cached --check"
+      ],
+      "inner_exit": 0
+    },
+    "composition": {
+      "archive_sha256": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f",
+      "sidecar_matches_archive": true
+    },
+    "generated_artifacts": "No hosted artifacts or generated registry output produced; focused tests use temporary synthetic fixtures."
+  },
+  "cosign": {
+    "requested_from": "M-CI",
+    "request_location": "/home/user/merge/ws/M-AG2/STATUS.md",
+    "result": "M-CI review of pre-correction b9fc2c93 failed for missing sidecar and exact installed evidence; corrected 5d030039 exact-head review requested with authenticated run 41520842131 receipt"
+  },
+  "limitations": [
+    "No hosted C-07 acceptance claimed or hosted run dispatched.",
+    "The inherited workflow builds its checkout and offers no separate product-ref input; harness head and requested Agent product base are distinct.",
+    "Focused synthetic receipts are validator tests and do not demonstrate the requested installed product tuple."
+  ],
+  "hosted_validation": {
+    "run_id": "41520842131",
+    "candidate_head": "5d030039dcbbcc7f66ed5e3d56a9733427086e48",
+    "evidence_root": "/home/user/repo/docs/merge-plan/evidence/actions/41520842131/installed-wheel-receipt-41520842131-1",
+    "receipt_sha256": "349889973a5c7e13ba32c8140fa553012c765a1267d14d7363ea166343cff612",
+    "junit_sha256": "16442d41b46a53a9adcb7e6b1d3716f97d3efedd14e47f811f38018ed2369865",
+    "selector": "tests/packs/h3_av/test_character_swap_cpu_boundary.py",
+    "selector_result": "3/3 passed; 13/13 inner exits zero; matching composition sidecar",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "app_identity": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+    "outer_workflow": "four integration shards failed collection because Runtime commit d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b was unavailable; these failures are separate from the installed job",
+    "m_ci_review": "R10 b9fc2c93 review failed for missing sidecar and installed evidence; corrected head 5d030039 now has both, exact-head review requested",
+    "handoff_pin_check": "PINS OK: Agent 5d030039 -> Runtime 2776ba97 (check-pins.sh exit 0)"
+  }
+}

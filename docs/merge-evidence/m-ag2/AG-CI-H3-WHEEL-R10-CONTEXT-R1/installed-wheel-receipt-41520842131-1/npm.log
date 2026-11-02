@@ -1,0 +1,23 @@
+
+> postinstall
+> node scripts/apply-renderer-darwin-cpu-patch.mjs
+
+{"package":"@remotion/renderer","version":"4.0.509","patchedFiles":2}
+
+added 280 packages, and audited 281 packages in 9s
+
+51 packages are looking for funding
+  run `npm fund` for details
+
+13 vulnerabilities (2 moderate, 11 high)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues possible, run:
+  npm audit fix --force
+
+Some issues need review, and may require choosing
+a different dependency.
+
+Run `npm audit` for details.

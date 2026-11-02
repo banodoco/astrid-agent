@@ -1,0 +1,10 @@
+test_failures_errors_skips_and_contradictory_elements_fail_closed (test_installed_wheel_receipt.InstalledWheelReceiptTests.test_failures_errors_skips_and_contradictory_elements_fail_closed) ... ok
+test_matching_sidecar_and_valid_junit_are_green (test_installed_wheel_receipt.InstalledWheelReceiptTests.test_matching_sidecar_and_valid_junit_are_green) ... ok
+test_missing_or_mismatched_sidecar_fails_closed (test_installed_wheel_receipt.InstalledWheelReceiptTests.test_missing_or_mismatched_sidecar_fails_closed) ... ok
+test_selector_exit_and_outcome_are_required (test_installed_wheel_receipt.InstalledWheelReceiptTests.test_selector_exit_and_outcome_are_required) ... ok
+test_unavailable_invalid_or_zero_test_junit_fails_closed (test_installed_wheel_receipt.InstalledWheelReceiptTests.test_unavailable_invalid_or_zero_test_junit_fails_closed) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 1.320s
+
+OK
