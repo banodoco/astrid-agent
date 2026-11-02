@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import json
+import builtins
+import hashlib
+import io
+import os
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -59,6 +64,221 @@ def _isolated_sources(monkeypatch: pytest.MonkeyPatch) -> None:
 def _two_call_scanner(root=None):
     # The historical algorithm remains available through the injected seam.
     return discover_packs(root)
+
+
+@pytest.fixture
+def resource_accesses(monkeypatch):
+    """Audit Path/io/builtin/descriptor opens and both SHA-256 entry paths."""
+    events = {"opens": [], "file_digests": [], "hash_bytes": []}
+
+    def wrap_open(real):
+        def record(file, *args, **kwargs):
+            if not isinstance(file, int):
+                events["opens"].append(Path(file).absolute())
+            return real(file, *args, **kwargs)
+        return record
+
+    for module in (builtins, io, os):
+        monkeypatch.setattr(module, "open", wrap_open(module.open))
+    real_sha256 = hashlib.sha256
+    real_file_digest = hashlib.file_digest
+    real_new = hashlib.new
+
+    class HashAudit:
+        def __init__(self, digest):
+            self.digest_object = digest
+
+        def update(self, data):
+            events["hash_bytes"].append(bytes(data))
+            return self.digest_object.update(data)
+
+        def __getattr__(self, name):
+            return getattr(self.digest_object, name)
+
+    def sha256(data=b"", **kwargs):
+        events["hash_bytes"].append(bytes(data))
+        return HashAudit(real_sha256(data, **kwargs))
+
+    def file_digest(stream, *args, **kwargs):
+        events["file_digests"].append(Path(stream.name).absolute())
+        return real_file_digest(stream, *args, **kwargs)
+
+    def new(name, data=b"", **kwargs):
+        digest = real_new(name, data, **kwargs)
+        if name.lower().replace("-", "") == "sha256":
+            events["hash_bytes"].append(bytes(data))
+            return HashAudit(digest)
+        return digest
+
+    monkeypatch.setattr(hashlib, "sha256", sha256)
+    monkeypatch.setattr(hashlib, "file_digest", file_digest)
+    monkeypatch.setattr(hashlib, "new", new)
+    return events
+
+
+@pytest.mark.parametrize("rejection", ["source_hidden", "external_hidden", "missing", "overlap", "descriptor"])
+def test_rejected_declared_resources_stay_unopened_in_warm_cache(
+    tmp_path: Path, monkeypatch, resource_accesses, rejection: str,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, "bundled")
+    extras = tmp_path / "extras"
+    extras.mkdir()
+    fields = {"resources": [{"path": "aa_payload.bin", "kind": "example"}]}
+    if rejection.endswith("hidden"):
+        fields["visibility"] = "hidden"
+    if rejection == "missing":
+        fields["resources"].append({"path": "zz_missing.bin", "kind": "example"})
+    if rejection == "overlap":
+        fields["authoring_only"] = [{"path": "rendering", "kind": "example", "reason": "Excluded"}]
+    rejected = _write_pack(source if rejection == "source_hidden" else extras, "rejected", **fields)
+    payload = rejected / "aa_payload.bin"
+    payload_bytes = b"UNSELECTED declared resource, never acquire these bytes"
+    payload.write_bytes(payload_bytes)
+    descriptor = rejected / "rendering/a.yaml"
+    valid_descriptor = descriptor.read_bytes()
+    if rejection == "descriptor":
+        descriptor.write_text('{"id":"wrong.renderer"}', encoding="utf-8")
+    monkeypatch.setattr(loader, "packs_root", lambda: source)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+        identity="empty-inventory", sources=(),
+    ))
+    extras_arg = (str(extras),)
+
+    def clear():
+        for values in resource_accesses.values():
+            values.clear()
+
+    def assert_unacquired(*, warm):
+        assert payload not in resource_accesses["opens"]
+        assert payload not in resource_accesses["file_digests"]
+        assert not any(payload_bytes in chunk for chunk in resource_accesses["hash_bytes"])
+        if warm or rejection != "descriptor":
+            assert descriptor not in resource_accesses["opens"]
+            assert descriptor not in resource_accesses["file_digests"]
+
+    clear()
+    with mock.patch.object(loader, "scan_packs", wraps=loader.scan_packs) as scans, pack_discovery_scope():
+        first = discover_pack_metadata(project_root=tmp_path, extra_pack_roots=extras_arg)
+        assert [row.id for row in first] == ["bundled"]
+        assert_unacquired(warm=False)
+        clear()
+        assert discover_pack_metadata(project_root=tmp_path, extra_pack_roots=extras_arg) == first
+        assert scans.call_count == 1
+        assert_unacquired(warm=True)
+        if rejection.endswith("hidden"):
+            assert pack_discovery.discover_canonical_pack_metadata(
+                project_root=tmp_path, extra_pack_roots=(str(rejected),),
+            ) == ()
+            assert_unacquired(warm=True)
+
+        # A rejected descriptor needs a stat-based edit signal; visibility,
+        # missing paths and authoring overlap are metadata transitions too.
+        if rejection == "descriptor":
+            descriptor.write_bytes(valid_descriptor)
+        elif rejection == "missing":
+            (rejected / "zz_missing.bin").write_bytes(b"now present")
+        else:
+            manifest_path = rejected / "pack.yaml"
+            manifest = json.loads(manifest_path.read_text())
+            manifest.pop("authoring_only", None)
+            manifest["visibility"] = "visible"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        clear()
+        admitted = discover_pack_metadata(project_root=tmp_path, extra_pack_roots=extras_arg)
+        assert {row.id for row in admitted} == {"bundled", "rejected"}
+        assert scans.call_count == 2
+        assert payload in resource_accesses["opens"]
+        assert payload in resource_accesses["file_digests"]
+        assert payload_bytes in resource_accesses["hash_bytes"]
+
+
+def test_valid_incompatible_api_is_rejected_before_declared_resource_reads(
+    tmp_path: Path, monkeypatch, resource_accesses,
+) -> None:
+    external = tmp_path / "external"
+    root = _write_pack(external, "incompatible", pack_api="99.0")
+    descriptor = root / "rendering/a.yaml"
+    monkeypatch.setattr(loader, "packs_root", lambda: tmp_path / "bundled")
+    for values in resource_accesses.values():
+        values.clear()
+    assert discover_packs(external) == ()
+    assert descriptor not in resource_accesses["opens"]
+    assert descriptor not in resource_accesses["file_digests"]
+
+
+def test_selected_descriptor_rejection_precedes_other_resource_acquisition(
+    tmp_path: Path, monkeypatch, resource_accesses,
+) -> None:
+    source = tmp_path / "source"
+    _write_pack(source, "bundled")
+    root = _write_pack(tmp_path / "extra", "changing", resources=[
+        {"path": "aa_payload.bin", "kind": "example"},
+    ])
+    payload = root / "aa_payload.bin"
+    payload_bytes = b"selected then rejected private resource"
+    payload.write_bytes(payload_bytes)
+    descriptor = root / "rendering/a.yaml"
+    valid_descriptor = descriptor.read_bytes()
+    monkeypatch.setattr(loader, "packs_root", lambda: source)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+        identity="empty-inventory", sources=(),
+    ))
+    kwargs = {"project_root": tmp_path, "extra_pack_roots": (str(root),)}
+    with pack_discovery_scope():
+        assert {row.id for row in discover_pack_metadata(**kwargs)} == {"bundled", "changing"}
+        before = descriptor.stat()
+        descriptor.write_text('{"id":"another.renderer"}', encoding="utf-8")
+        os.utime(descriptor, ns=(before.st_atime_ns, before.st_mtime_ns))
+        for values in resource_accesses.values():
+            values.clear()
+        assert [row.id for row in discover_pack_metadata(**kwargs)] == ["bundled"]
+        assert payload not in resource_accesses["opens"]
+        assert payload not in resource_accesses["file_digests"]
+        assert not any(payload_bytes in chunk for chunk in resource_accesses["hash_bytes"])
+        for values in resource_accesses.values():
+            values.clear()
+        assert [row.id for row in discover_pack_metadata(**kwargs)] == ["bundled"]
+        assert descriptor not in resource_accesses["opens"]
+        assert payload not in resource_accesses["opens"]
+        descriptor.write_bytes(valid_descriptor)
+        assert {row.id for row in discover_pack_metadata(**kwargs)} == {"bundled", "changing"}
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_source_symlink_add_remove_and_retarget_keep_strict_refusal(
+    tmp_path: Path, monkeypatch, resource_accesses, cached: bool,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    target = _write_pack(tmp_path / "targets", "target")
+    other = _write_pack(tmp_path / "other", "target")
+    link = source / "linked"
+    monkeypatch.setattr(loader, "packs_root", lambda: source)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+        identity="empty-inventory", sources=(),
+    ))
+    for values in resource_accesses.values():
+        values.clear()
+    with pack_discovery_scope() if cached else nullcontext():
+        assert discover_pack_metadata(project_root=tmp_path) == ()
+        empty_fingerprint = pack_discovery._tree_fingerprint(source, source_root=True)
+        fingerprints = []
+        for destination in (target, other):
+            link.symlink_to(destination, target_is_directory=True)
+            fingerprints.append(pack_discovery._tree_fingerprint(source, source_root=True))
+            assert fingerprints[-1] != empty_fingerprint
+            with pytest.raises(PackValidationError, match="symlink") as actual:
+                discover_pack_metadata(project_root=tmp_path)
+            with pytest.raises(PackValidationError) as strict:
+                loader.discover_packs()
+            assert str(actual.value) == str(strict.value)
+            link.unlink()
+            assert pack_discovery._tree_fingerprint(source, source_root=True) == empty_fingerprint
+            assert discover_pack_metadata(project_root=tmp_path) == ()
+        assert fingerprints[0] != fingerprints[1]
+    assert not any(path.is_relative_to(target) or path.is_relative_to(other)
+                   for path in resource_accesses["opens"])
 
 
 @pytest.mark.parametrize("layout", ["checkout", "site-packages"])

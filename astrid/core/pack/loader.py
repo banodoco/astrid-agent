@@ -21,6 +21,7 @@ from astrid.core.pack.canonical import (
     CanonicalPackValidationError,
     LEGACY_MANIFEST_NAMES,
     canonical_manifest_path,
+    read_normalize_validate,
     validate_canonical_pack,
 )
 from astrid.core.pack.permissions import (
@@ -129,7 +130,7 @@ def scan_packs(
             manifest_path = pack_manifest_path(child)
             if manifest_path is None:
                 continue
-            pack = load_pack_manifest(manifest_path)
+            pack = load_pack_metadata(manifest_path)
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
             legacy_version = _legacy_schema_refusal(manifest_path or (child / "pack.yaml"))
             if legacy_version is not None and not _fail_closed(child.name, required_pack_ids):
@@ -167,7 +168,26 @@ def scan_packs(
         packs.append(pack)
     packs, compatibility_quarantine = _isolate_incompatible_packs(packs)
     quarantined.extend(compatibility_quarantine)
-    return PackScan(tuple(packs), tuple(quarantined))
+    # Metadata decides visibility, duplicates and compatibility before full
+    # canonical admission can acquire any declared resource bytes.
+    admitted: list[PackDefinition] = []
+    for pack in packs:
+        try:
+            full_pack = load_pack_manifest(pack.manifest_path)
+            if full_pack.visibility == "hidden" and not include_hidden:
+                continue
+            admitted.append(full_pack)
+        except Exception as exc:  # noqa: BLE001 - optional scan boundary
+            if strict or _fail_closed(pack.root.name, required_pack_ids):
+                if isinstance(exc, PackValidationError):
+                    raise
+                raise PackValidationError(f"{pack.root}: {exc}") from exc
+            record = QuarantinedPack(pack.id, pack.root, pack.manifest_path, str(exc))
+            quarantined.append(record)
+            _quarantine_warning(record)
+    admitted, final_quarantine = _isolate_incompatible_packs(admitted)
+    quarantined.extend(final_quarantine)
+    return PackScan(tuple(admitted), tuple(quarantined))
 
 
 def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
@@ -333,6 +353,8 @@ def pack_quarantine_section() -> dict[str, Any]:
 
 def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None) -> PackDefinition:
     """Load one admitted v2/v3 pack through the canonical parser."""
+    # Projection validation (including taxonomy) must precede resource reads.
+    load_pack_metadata(path, expected_pack_id=expected_pack_id)
     manifest_path = Path(path).expanduser().resolve()
     if manifest_path.name != "pack.yaml" or not manifest_path.is_file():
         raise PackValidationError(
@@ -344,6 +366,27 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
         )
     except CanonicalPackValidationError as exc:
         raise PackValidationError(str(exc)) from exc
+    return _pack_definition(entry, manifest_path)
+
+
+def load_pack_metadata(path: str | Path, *, expected_pack_id: str | None = None) -> PackDefinition:
+    """Preflight canonical metadata without reading declared resource bytes.
+
+    This projection is only for selection. Call ``load_pack_manifest`` before
+    publishing an executable pack; it owns full canonical resource validation.
+    """
+    manifest_path = Path(path).expanduser()
+    try:
+        entry = read_normalize_validate(
+            manifest_path, source="local", resolve_resources=False,
+            expected_pack_id=expected_pack_id,
+        )
+    except CanonicalPackValidationError as exc:
+        raise PackValidationError(str(exc)) from exc
+    return _pack_definition(entry, manifest_path.resolve())
+
+
+def _pack_definition(entry, manifest_path: Path) -> PackDefinition:
     definition = entry.definition
     data = definition.to_dict()
     taxonomy = pack_taxonomy_from_manifest(data, status=definition.status)

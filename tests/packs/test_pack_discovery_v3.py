@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from astrid.core.pack import PackValidationError, discover_packs, load_pack_manifest, loader
-from astrid.core.pack.canonical import validate_canonical_pack
+from astrid.core.pack.canonical import read_normalize_validate, validate_canonical_pack
 from astrid.core.pack.discovery import (
     DiscoveredPack,
     discover_canonical_pack_metadata,
@@ -43,6 +43,38 @@ def inventory(monkeypatch, *roots: Path):
     monkeypatch.setattr("astrid.core.pack.source_setup.active_source_inventory", lambda: result)
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
     return result
+
+
+def test_metadata_preflight_does_not_replace_canonical_descriptor_validation(tmp_path: Path) -> None:
+    root = write_pack(tmp_path, rendering={
+        "backend": {"type": "renderer", "path": "rendering/backend.yaml"},
+    }, files={"rendering/backend.yaml": "id: another.backend\n"})
+    metadata = read_normalize_validate(root / "pack.yaml", source="extra", resolve_resources=False)
+    assert metadata.resources == ()
+    assert metadata.id == "demo"
+    with pytest.raises(PackValidationError, match="identity"):
+        load_pack_manifest(root / "pack.yaml")
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_source_symlink_target_manifest_presence_invalidates_cache(tmp_path: Path, monkeypatch, cached) -> None:
+    from contextlib import nullcontext
+    from astrid.core.pack.discovery import pack_discovery_scope
+
+    source = tmp_path / "source"
+    source.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    (source / "linked").symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(loader, "packs_root", lambda: source)
+    inventory(monkeypatch)
+    with pack_discovery_scope() if cached else nullcontext():
+        assert discover_pack_metadata(project_root=tmp_path) == ()
+        (target / "pack.yaml").write_text("{}", encoding="utf-8")
+        with pytest.raises(PackValidationError, match="symlink"):
+            discover_pack_metadata(project_root=tmp_path)
+        (target / "pack.yaml").unlink()
+        assert discover_pack_metadata(project_root=tmp_path) == ()
 
 
 def test_v3_loader_populates_exact_canonical_declarations_without_import(tmp_path: Path) -> None:

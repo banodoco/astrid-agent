@@ -730,7 +730,9 @@ def _validate_rendering_identities(root: Path, definition: CanonicalPackDefiniti
             raise CanonicalPackValidationError(f"{location}: descriptor identity {identity!r} must match {expected!r}")
 
 
-def _resource_handle(root: Path, path: str, kind: str) -> ResourceHandle:
+def _resource_handle(
+    root: Path, path: str, kind: str, *, read_payload: bool = True,
+) -> ResourceHandle:
     candidate = root.joinpath(*path.split("/"))
     try:
         reject_symlinked_path(candidate)
@@ -743,6 +745,8 @@ def _resource_handle(root: Path, path: str, kind: str) -> ResourceHandle:
         return ResourceHandle(path, root, resolved, kind, "directory", 0, "")
     if not candidate.is_file():
         raise CanonicalPackValidationError(f"resource {path!r} is not a regular file")
+    if not read_payload:
+        return ResourceHandle(path, root, resolved, kind, "file", 0, "")
     try:
         payload = candidate.read_bytes()
     except OSError as exc:
@@ -755,7 +759,7 @@ def _resource_handle(root: Path, path: str, kind: str) -> ResourceHandle:
 
 
 def _resolve_resources(
-    root: Path, definition: CanonicalPackDefinition
+    root: Path, definition: CanonicalPackDefinition, *, read_payload: bool = True,
 ) -> tuple[ResourceHandle, ...]:
     excluded = {x.path for x in definition.authoring_only}
     handles: dict[str, ResourceHandle] = {}
@@ -766,7 +770,7 @@ def _resolve_resources(
             raise CanonicalPackValidationError(
                 f"runtime resource {path!r} overlaps authoring-only path"
             )
-        handle = _resource_handle(root, path, role)
+        handle = _resource_handle(root, path, role, read_payload=False)
         file_role = role == "documentation" or role.endswith(
             (".invocation.path", ".entry", ".path", ".inputs", ".outputs", ".schema",
              ".arguments", ".recipe")
@@ -785,10 +789,15 @@ def _resolve_resources(
                         else None
                     )
                 if child.is_file():
-                    handles[rel] = _resource_handle(root, rel, role)
+                    handles[rel] = _resource_handle(root, rel, role, read_payload=False)
         else:
             handles[path] = handle
-    return tuple(handles[path] for path in sorted(handles))
+    # Check every declaration before acquiring any resource bytes. A later
+    # missing/wrong-type/overlapping resource must not expose earlier files.
+    return tuple(
+        _resource_handle(root, path, handles[path].kind) if read_payload else handles[path]
+        for path in sorted(handles)
+    )
 
 
 def _validate_path(manifest_path: str | Path) -> Path:
@@ -858,9 +867,10 @@ def _admit(
             default=list,
         ).encode()
     ).hexdigest()
-    resources = _resolve_resources(root, definition) if resolve_resources else ()
+    _resolve_resources(root, definition, read_payload=False)
     if resolve_resources and definition.schema_version == 3:
         _validate_rendering_identities(root, definition)
+    resources = _resolve_resources(root, definition) if resolve_resources else ()
     manifest = ResourceHandle(
         CANONICAL_MANIFEST_NAME,
         root,
@@ -886,6 +896,11 @@ def read_normalize_validate(
     resolve_resources: bool = True,
     expected_pack_id: str | None = None,
 ) -> CanonicalPackEntry:
+    """Validate metadata and paths; optionally read and validate resource bytes.
+
+    With ``resolve_resources=False`` this is a selection preflight, not full
+    admission: descriptor identities and resource digests remain unvalidated.
+    """
     value = source.value if isinstance(source, ExternalPackSource) else source
     if value not in {item.value for item in ExternalPackSource}:
         raise CanonicalPackValidationError(

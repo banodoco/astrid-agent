@@ -67,13 +67,16 @@ def pack_discovery_scope():
 def _tree_fingerprint(
     root: Path, *, pack_root: bool = False, pack_collection: bool = True,
     source_root: bool = False, expected_pack_id: str | None = None,
+    selected_roots: frozenset[Path] = frozenset(),
 ) -> str:
     """Fingerprint selected discovery content, including untracked resources.
 
     Candidate manifests stay in the key so changes to admission, visibility,
     or alternate-manifest presence invalidate discovery. Descendants are
-    included only for packs the real loader can admit; hidden, quarantined,
+    included only for roots returned by full admission; hidden, quarantined,
     duplicate, and scanner-ignored candidates contribute no payload bytes.
+    Path names/types remain inputs even for rejected candidates, so repairing
+    a missing resource or removing a forbidden symlink invalidates selection.
     """
     from astrid.core.pack import loader
     from astrid.core.pack.canonical import LEGACY_MANIFEST_NAMES
@@ -84,10 +87,13 @@ def _tree_fingerprint(
         digest.update(len(value).to_bytes(8, "big"))
         digest.update(value)
 
-    def visit(path: Path) -> None:
+    def visit(
+        path: Path, *, content: bool = True, track_changes: bool = False, recurse: bool = True,
+    ) -> None:
         add(os.fsencode(path.relative_to(root)))
         try:
-            mode = path.lstat().st_mode
+            state = path.lstat()
+            mode = state.st_mode
         except FileNotFoundError:
             add(b"missing")
             return
@@ -95,70 +101,101 @@ def _tree_fingerprint(
         if stat.S_ISLNK(mode):
             add(os.fsencode(os.readlink(path)))
         elif stat.S_ISDIR(mode):
+            if not recurse:
+                return
             for child in sorted(path.iterdir()):
-                if child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
+                if content and child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
                     continue
-                visit(child)
-        elif stat.S_ISREG(mode):
+                visit(child, content=content, track_changes=track_changes)
+        elif stat.S_ISREG(mode) and content:
             with path.open("rb") as stream:
                 add(hashlib.file_digest(stream, "sha256").digest())
-        else:
+        elif stat.S_ISREG(mode) and track_changes:
+            # Full admission can reject descriptor contents. Until selected,
+            # observe edits through filesystem metadata, never their bytes.
+            add(str((state.st_ino, state.st_size, state.st_mtime_ns, state.st_ctime_ns)).encode())
+        elif not stat.S_ISREG(mode):
             raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
 
-    def selected_pack(path: Path, *, include_descendants: bool) -> tuple[str, bool]:
+    def selected_pack(path: Path) -> PackDefinition | None:
         # Keep every scanner-recognized manifest name in the cache identity.
         # In particular, pack.yml appearing after a successful scan must
         # invalidate the cache so pack_manifest_path can enforce refusal.
+        visit(path, content=False, recurse=False)
         manifest = path / "pack.yaml"
-        visit(manifest)
+        visit(manifest, recurse=False)
         for legacy_name in LEGACY_MANIFEST_NAMES:
-            visit(path / legacy_name)
+            visit(path / legacy_name, recurse=False)
         try:
             manifest_path = loader.pack_manifest_path(path)
             if manifest_path is None:
-                return "", False
-            pack = loader.load_pack_manifest(
+                return None
+            visit(path, content=False)
+            pack = loader.load_pack_metadata(
                 manifest_path, expected_pack_id=expected_pack_id
             )
         except Exception:  # Match scanner admission; its caller owns refusal/isolation.
-            return "", False
+            return None
         if pack.visibility == "hidden" or (source_root and pack.schema_version != "3"):
-            return pack.id, False
-        if include_descendants:
-            for child in sorted(path.iterdir()):
-                if child.name == "pack.yaml" or child.name in LEGACY_MANIFEST_NAMES:
-                    continue
-                if child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
-                    continue
-                visit(child)
-        return pack.id, True
+            return None
+        return pack
+
+    def payload(path: Path) -> None:
+        for child in sorted(path.iterdir()):
+            if child.name == "pack.yaml" or child.name in LEGACY_MANIFEST_NAMES:
+                continue
+            if child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
+                continue
+            visit(child)
 
     def selected_collection(path: Path, *, source: bool) -> None:
         candidates = []
         for child in sorted(path.iterdir()):
-            if child.is_symlink() or not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
+            if child.name.startswith(".") or child.name == "__pycache__":
                 continue
-            candidates.append((child, *selected_pack(child, include_descendants=False)))
+            if child.is_symlink():
+                # The strict source scanner examines directory symlinks. Keep
+                # their lexical identity without following a target payload;
+                # scanner refusal, rather than the cache, owns the outcome.
+                if source:
+                    visit(child, content=False)
+                    # is_dir and manifest lookup are the only target state
+                    # consulted by the scanner before refusing a pack link.
+                    # Observe that metadata without traversing target content.
+                    add(str(child.is_dir()).encode())
+                    for name in ("pack.yaml", *sorted(LEGACY_MANIFEST_NAMES)):
+                        visit(child / name, content=False, recurse=False)
+                continue
+            if not child.is_dir():
+                continue
+            pack = selected_pack(child)
+            if pack is not None:
+                candidates.append(pack)
         # The source scanner refuses duplicate IDs. In that case normal
         # discovery must run and refuse; no candidate payload needs hashing.
-        ids = [pack_id for _, pack_id, admitted in candidates if admitted]
+        ids = [pack.id for pack in candidates]
         duplicates = source and len(ids) != len(set(ids))
         if duplicates:
             return
+        if source:
+            candidates, _ = loader._isolate_incompatible_packs(candidates)
         seen: set[str] = set()
-        for child, pack_id, admitted in candidates:
-            if not admitted or pack_id in seen:
+        for pack in candidates:
+            if pack.id in seen:
                 continue
-            seen.add(pack_id)
-            for content in sorted(child.iterdir()):
-                if content.name == "pack.yaml" or content.name in LEGACY_MANIFEST_NAMES:
-                    continue
-                if content.is_dir() and (content.name.startswith(".") or content.name == "__pycache__"):
-                    continue
-                visit(content)
+            seen.add(pack.id)
+            if pack.root in selected_roots:
+                payload(pack.root)
+            else:
+                visit(pack.root, content=False, track_changes=True)
 
     if pack_root:
-        selected_pack(root, include_descendants=True)
+        pack = selected_pack(root)
+        if pack is not None:
+            if root in selected_roots:
+                payload(root)
+            else:
+                visit(root, content=False, track_changes=True)
     elif pack_collection:
         add(os.fsencode(root.relative_to(root)))
         selected_collection(root, source=source_root)
@@ -167,7 +204,16 @@ def _tree_fingerprint(
     return digest.hexdigest()
 
 
-def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan):
+def _selection_key(project_root, extra_pack_roots, managed_inventory):
+    return (
+        "selected-roots", str(Path(project_root).resolve()), tuple(extra_pack_roots),
+        os.environ.get(ASTRID_PACKS_PATH_ENV, ""), managed_inventory.identity,
+    )
+
+
+def _discovery_fingerprint(
+    project_root, extra_pack_roots, managed_inventory, scan, *, selected_roots=None,
+):
     from astrid.core.pack import loader
 
     # Preserve registry-specific scanner seams; their arbitrary inputs cannot
@@ -175,6 +221,20 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
     if scan is not loader.discover_packs:
         return None
     project_root = Path(project_root).resolve()
+    if selected_roots is None:
+        cache = _discovery_cache.get()
+        selection = (cache or {}).get(
+            _selection_key(project_root, extra_pack_roots, managed_inventory),
+        )
+        metadata = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan,
+            selected_roots=frozenset(),
+        )
+        if selection is None or selection[0] != metadata:
+            # Previous selection grants no payload access after an observed
+            # edit. Re-admit first, including descriptor content validation.
+            return metadata
+        selected_roots = selection[1]
     raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
     # The project's former ``astrid/packs`` tree is not a discovery input.
     # Only the bundled source root and explicitly selected external roots
@@ -192,6 +252,7 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
                 _tree_fingerprint(
                     root.resolve(), pack_root=is_pack, pack_collection=is_collection,
                     source_root=is_source, expected_pack_id=expected_pack_id,
+                    selected_roots=selected_roots,
                 ),
             )
             for root, is_collection, is_pack, is_source, expected_pack_id in dict.fromkeys(roots)
@@ -328,6 +389,12 @@ def discover_canonical_pack_metadata(
     except ImportError:
         managed_inventory = None
     def add(path: Path, source: ExternalPackSource, *, source_record: Any | None = None) -> None:
+        metadata = read_normalize_validate(
+            path, source=source, resolve_resources=False,
+            expected_pack_id=source_record.pack_id if source_record is not None else None,
+        )
+        if metadata.definition.visibility == "hidden":
+            return
         entry = read_normalize_validate(
             path,
             source=source,
@@ -462,12 +529,17 @@ def discover_pack_metadata(
 
     cache = _discovery_cache.get()
     fingerprint = None
+    metadata_fingerprint = None
     if cache is not None and managed_inventory is not None:
         # active_source_inventory verifies revision, cleanliness, manifest and
         # tree digests even when an admitted inventory can be reused below.
         fingerprint = _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan)
         if fingerprint is not None and fingerprint in cache:
             return deepcopy(cache[fingerprint])
+        metadata_fingerprint = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan,
+            selected_roots=frozenset(),
+        )
 
     managed_by_root = {
         source.pack_root.resolve(): source
@@ -517,6 +589,7 @@ def discover_pack_metadata(
             )
             return
         seen: dict[str, Path] = {}
+        candidates: list[PackDefinition] = []
         for child in children:
             try:
                 if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
@@ -536,7 +609,7 @@ def discover_pack_metadata(
             if manifest_path is None:
                 continue
             try:
-                pack = load_pack_manifest(
+                pack = loader.load_pack_metadata(
                     manifest_path,
                     expected_pack_id=managed_by_root[resolved].pack_id
                     if source_kind == MANAGED_SOURCE_KIND and resolved in managed_by_root
@@ -563,6 +636,23 @@ def discover_pack_metadata(
                 )
                 continue
             seen[pack.id] = manifest_path
+            candidates.append(pack)
+        for candidate in candidates:
+            try:
+                pack = load_pack_manifest(
+                    candidate.manifest_path,
+                    expected_pack_id=managed_by_root[resolved].pack_id
+                    if source_kind == MANAGED_SOURCE_KIND and resolved in managed_by_root
+                    else None,
+                )
+            except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
+                _LOGGER.warning(
+                    "skipping %s pack %s: manifest failed to load: %s",
+                    source_kind, candidate.manifest_path, exc,
+                )
+                continue
+            if pack.visibility == "hidden":
+                continue
             _add(
                 pack,
                 source_kind,
@@ -589,11 +679,22 @@ def discover_pack_metadata(
             _scan_external_root(env_root, "env")
 
     result = tuple(discovered)
-    if fingerprint is not None and fingerprint == _discovery_fingerprint(
-        project_root, extra_pack_roots, managed_inventory, scan
+    if metadata_fingerprint is not None and metadata_fingerprint == _discovery_fingerprint(
+        project_root, extra_pack_roots, managed_inventory, scan, selected_roots=frozenset(),
     ):
-        # Do not publish a snapshot if its inputs changed during admission.
-        cache[fingerprint] = deepcopy(result)
+        selected_roots = frozenset(row.pack.root for row in result)
+        selected_fingerprint = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan, selected_roots=selected_roots,
+        )
+        if selected_fingerprint is not None and selected_fingerprint == _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan, selected_roots=selected_roots,
+        ):
+            # Only real admission owns this selection. Never infer payload
+            # ownership from visibility or metadata preflight alone.
+            cache[_selection_key(project_root, extra_pack_roots, managed_inventory)] = (
+                metadata_fingerprint, selected_roots,
+            )
+            cache[selected_fingerprint] = deepcopy(result)
     return result
 
 
