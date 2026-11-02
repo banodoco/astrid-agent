@@ -285,20 +285,25 @@ def _sdk_cpu_session_fixture(tmp_path, monkeypatch):
                            signals=signals, identity_reads=identity_reads, http=http, root=root)
 
 
+def _sdk_cpu_session_binding(profile):
+    from astrid.core.execution.managed_tool_session import SessionBinding
+    s = profile["vibecomfy_session"]
+    return SessionBinding(s["session_dir"], profile["runtime"]["runtime_instance_id"],
+                          s["process_birth_id"], s["server_url"], s["source_revision"], s["config_digest"],
+                          engine_birth_id=s["comfy_process_birth_id"])
+
+
 def _sdk_cpu_handoff_fixture(tmp_path, monkeypatch):
     import threading
     from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
-    from astrid.core.execution.managed_tool_session import CapabilityDescriptor, SessionBinding
+    from astrid.core.execution.managed_tool_session import CapabilityDescriptor
     f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
     f.threading = threading
     f.host = GenericPackHost(pack_roots=[tmp_path])
     f.host._native_engine_graph = None
+    binding = _sdk_cpu_session_binding(f.profile)
     f.bridge = _ManagedVibeSessionAdapter.from_host_session(hc03_profile=f.profile,
-        model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
-    s = f.profile["vibecomfy_session"]
-    binding = SessionBinding(s["session_dir"], f.profile["runtime"]["runtime_instance_id"],
-                             s["process_birth_id"], s["server_url"], s["source_revision"], s["config_digest"],
-                             engine_birth_id=s["comfy_process_birth_id"])
+        model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task", binding=binding)
     manager = f.host.managed_tool_session
     manager.open(capability=CapabilityDescriptor("vibecomfy.run"), binding=binding, adapter=f.bridge)
     f.token = manager.admit(capability_id="vibecomfy.run", invocation_id="unit-task")
@@ -488,10 +493,11 @@ def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeyp
 def test_sdk_cpu_handoff_factory_rejects_registry_drift(tmp_path, monkeypatch, field):
     from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
     f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
+    binding = _sdk_cpu_session_binding(f.profile)
     (f.session / field).write_text("different")
     with pytest.raises(Exception):
         _ManagedVibeSessionAdapter.from_host_session(hc03_profile=f.profile,
-            model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
+            model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task", binding=binding)
     assert not f.controls
 
 
@@ -515,10 +521,11 @@ def test_sdk_cpu_handoff_first_chain_is_redacted_before_secondary_cleanup(tmp_pa
 def test_sdk_cpu_handoff_factory_never_qualifies_unvalidated_profile(tmp_path, monkeypatch, invalid):
     from astrid.core.execution.generic_host import _ManagedVibeSessionAdapter
     f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
+    binding = _sdk_cpu_session_binding(f.profile)
     profile = None if invalid == "absent" else {"schema_version": "hc03-worker-readiness.v1"} if invalid == "partial" else dict(f.profile, status="not-ready")
     with pytest.raises(ValueError):
         _ManagedVibeSessionAdapter.from_host_session(hc03_profile=profile,
-            model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task")
+            model_id="fixture-model", template_id="fixture-template", invocation_identity="unit-task", binding=binding)
     assert not f.controls
 
 
