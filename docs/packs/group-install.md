@@ -32,9 +32,39 @@ the compatibility decision uses known installed distribution versions.
 Before publication, the group uses the single-pack source and PIN checks, the
 M2 pure compatibility validator and import checker, and the M4 asset builder.
 The builder is called for ordinary Python packs too; packs without browser
-entries produce no browser artifact manifest. Build outputs and admissions
-remain private until the entire group is committed. A source, validation, or
-build error leaves the current collection in place.
+entries produce no browser artifact manifest. A null/no-browser result is
+accepted only when the staged pack has no `.build` files, so it cannot publish
+leftover or unverified browser outputs.
+
+For a browser build, the transaction verifies the builder's artifact manifest
+and every listed file, then writes two files into the staged pack's `.build`
+directory:
+
+- `.build/<S>.artifact-manifest.json` contains the verified artifact manifest,
+  encoded as canonical UTF-8 JSON (sorted keys, compact separators, no trailing
+  line feed). `S` is the pack's full source digest.
+- `.build/admission.json` is canonical compact UTF-8 JSON with exactly these
+  fields: `version`, `packId`, `sourceDigest`, `digest`,
+  `artifactManifestDigest`, `committedRevision`, and `transactionId`.
+  `version` is integer `1`, `packId` is the installed pack ID,
+  `sourceDigest` is `S`, `committedRevision` is an integer, and `transactionId`
+  is the committing transaction's string ID.
+  `artifactManifestDigest` (`M`) is SHA-256 of the exact manifest file bytes;
+  `digest` is the browser entry digest `B`.
+
+Both files are written privately with the verified outputs. Before publication,
+the transaction rechecks source and PIN identity, all artifact paths, bytes,
+hashes and sizes, both metadata files, and the staged group record. It then
+syncs the complete candidate and publishes it with one directory swap; refresh
+is notified only after that swap is durable. The group admission summary is
+not a substitute for these per-pack files. Unchanged retained packs keep their
+existing admission record, including the revision and transaction ID at which
+that browser bundle was admitted. The existing group admission summary binds
+that original revision and transaction ID. Retained records and artifact files
+are also rechecked before publication; corrupt or missing records require an
+explicit rebuild of the affected pack. Reinstalling an earlier pinned source commit
+rebuilds its browser outputs, restoring the verified `B` and `M` while writing
+the new group revision and transaction ID.
 
 ## Defaults and removals
 
@@ -63,16 +93,17 @@ group while the transaction still holds that lock.
 `install_group` returns a `GroupResult` with the committed paths and a
 `retired_root` for the previous generation. Use
 `read_retired_group(packs_root=..., transaction_id=result.transaction_id)` to
-read that retained generation while artifact custody is being transferred.
-The transaction does not delete retired generations. If a refresh is still
-pending when another group commits, its changed-ID list carries forward all
+read that retained generation. Retired generations preserve their old artifact
+bytes for outstanding leases; this transaction does not delete or drain them.
+If a refresh is still pending when another group commits, its changed-ID list carries forward all
 changes since the last accepted acknowledgment.
 
 The commit record and all staged files are synced before the directory swap.
 A process crash before the swap leaves the previous complete collection; a
 crash after the swap exposes the complete new collection. The old generation
 is retained under the sibling `.astrid-retired` directory for artifact
-custody. This guarantee covers process interruption, not storage power loss.
+custody and remains available while leases need its bytes. This guarantee
+covers process interruption, not storage power loss.
 
 An optional trusted `refresh` callback runs only after the swap is durable. It
 receives the transaction ID, committed revision, and changed IDs, and must
@@ -80,3 +111,9 @@ return an accepted acknowledgment for that revision. A missing, failed, or
 invalid acknowledgment leaves a durable pending refresh; retry it with
 `retry_refresh(packs_root=..., refresh=...)`. A refresh failure does not undo a
 committed install. The callback is host code and is never loaded from a pack.
+`rollback_group` restores the selected prior pack trees from the generation
+retired by the active commit. For browser packs it uses the same canonical
+admission encoder as install, preserving bundle bytes and hashes while writing
+the rollback's new revision and transaction ID. Runtime reader interoperability
+is exercised separately against the pinned Runtime parser in the transaction
+test suite.

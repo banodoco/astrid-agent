@@ -125,4 +125,70 @@ def test_null_artifacts_only_succeed_for_no_browser_entry(built):
     with pytest.raises(PackInstallError):
         _verify_artifacts(request, result)
     request.update(entry=None, extension_manifest=None)
+    # Null build results cannot smuggle browser files/records past admission.
+    with pytest.raises(PackInstallError):
+        _verify_artifacts(request, result)
+    import shutil
+    shutil.rmtree(Path(request["stage_root"]) / ".build")
     assert _verify_artifacts(request, result) is None
+
+
+def stage_metadata(request, result, revision=7):
+    """Frozen file contract, independently encoded rather than using the writer."""
+    artifact = result["artifact_manifest"]
+    manifest_bytes = canonical(artifact)
+    build = Path(request["stage_root"]) / ".build"
+    path = build / f'{request["source_digest"]}.artifact-manifest.json'
+    path.write_bytes(manifest_bytes)
+    record = {"version": 1, "packId": request["pack_id"], "sourceDigest": request["source_digest"],
+              "digest": artifact["digest"], "artifactManifestDigest": digest(manifest_bytes),
+              "committedRevision": revision, "transactionId": request["transaction_id"]}
+    admission = build / "admission.json"
+    admission.write_bytes(canonical(record))
+    return path, admission
+
+
+def test_metadata_is_only_accepted_for_the_expected_committed_transaction(built):
+    request, result = built
+    expected = _verify_artifacts(request, result)
+    stage_metadata(request, result)
+    with pytest.raises(PackInstallError):
+        _verify_artifacts(request, result)  # Builder cannot supply its own records.
+    assert _verify_artifacts(request, result, committed_revision=7) == expected
+
+
+@pytest.mark.parametrize("fault", [
+    "manifest_lf", "manifest_content", "missing_manifest", "manifest_symlink", "unlisted_metadata",
+    "version", "packId", "sourceDigest", "digest", "artifactManifestDigest", "committedRevision",
+    "transactionId", "extra_field", "duplicate_field", "entry", "chunk", "missing_chunk",
+])
+def test_sealed_metadata_never_weakens_artifact_or_record_checks(built, fault):
+    request, result = built
+    manifest_path, record_path = stage_metadata(request, result)
+    record = json.loads(record_path.read_bytes())
+    if fault == "manifest_lf":
+        manifest_path.write_bytes(manifest_path.read_bytes() + b"\n")
+    elif fault == "manifest_content":
+        manifest_path.write_bytes(b"{}")
+    elif fault == "missing_manifest":
+        manifest_path.unlink()
+    elif fault == "manifest_symlink":
+        manifest_path.unlink()
+        manifest_path.symlink_to(record_path)
+    elif fault == "unlisted_metadata":
+        (record_path.parent / "extra.json").write_bytes(b"{}")
+    elif fault == "duplicate_field":
+        record_path.write_bytes(record_path.read_bytes()[:-1] + b',"version":1}')
+    elif fault in {"entry", "chunk", "missing_chunk"}:
+        item = next(f for f in result["artifact_manifest"]["files"]
+                    if (f["path"] == "index.js") == (fault == "entry"))
+        target = Path(request["stage_root"]) / item["disk"]
+        if fault == "missing_chunk":
+            target.unlink()
+        else:
+            target.write_bytes(b"tampered")
+    else:
+        record[fault] = True if fault in {"version", "committedRevision"} else "wrong"
+        record_path.write_bytes(canonical(record))
+    with pytest.raises(PackInstallError):
+        _verify_artifacts(request, result, committed_revision=7)
