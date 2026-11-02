@@ -10,6 +10,11 @@ on:
         description: Frozen JSON with app, agent, runtime and pinokio full commit SHAs plus bootstrap hashes
         required: true
         type: string
+      direct_os:
+        description: Run only one direct Release-0-to-Release-1 row (macos, linux, or windows); omit for the full matrix
+        required: false
+        default: ""
+        type: string
       old_launcher_ref:
         description: Full SHA for the approved pre-self-pull Pinokio backend action
         required: true
@@ -66,6 +71,11 @@ on:
       candidate:
         description: Frozen candidate JSON; hosted results are evidence, never a publish action
         required: true
+        type: string
+      direct_os:
+        description: Run only one direct Release-0-to-Release-1 row (macos, linux, or windows); omit for the full matrix
+        required: false
+        default: ""
         type: string
       old_launcher_ref:
         description: Full SHA for the approved pre-self-pull Pinokio backend action
@@ -147,6 +157,7 @@ jobs:
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
       matrix: ${{ steps.config.outputs.matrix }}
+      direct_os: ${{ steps.config.outputs.direct_os }}
     steps:
       - name: Check out reviewed Agent matrix contracts
         uses: actions/checkout@v4
@@ -159,6 +170,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE: ${{ inputs.candidate }}
+          DIRECT_OS: ${{ inputs.direct_os }}
           DRIVER_AGENT_REF: ${{ github.workflow_sha }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
           OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
@@ -233,6 +245,11 @@ jobs:
                   raise SystemExit("M4-5 requires its exact frozen Release-1 candidate tuple")
           m4_4b_enabled = os.environ["M4_4B_ENABLED"].lower() == "true"
           m4_6_enabled = os.environ["M4_6_ENABLED"].lower() == "true"
+          direct_os = os.environ["DIRECT_OS"]
+          if direct_os and direct_os not in {"macos", "linux", "windows"}:
+              raise SystemExit("direct_os must be one of: macos, linux, windows")
+          if direct_os and (backend_only or m4_5_enabled or m4_5_only or m4_4b_enabled or m4_6_enabled):
+              raise SystemExit("direct_os cannot be combined with other optional journey modes")
           m4_6_candidate = None
           if m4_6_enabled:
               try:
@@ -255,7 +272,9 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if backend_only:
+          if direct_os:
+              matrix = [row for row in matrix if row["job_id"] == f"direct-{direct_os}"]
+          elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
@@ -272,6 +291,7 @@ jobs:
                                   ("m4_6_enabled", str(m4_6_enabled).lower()),
                                   ("m4_6_candidate", m4_6_candidate),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
+                                  ("direct_os", direct_os),
                                   ("matrix", {"include": matrix})):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
@@ -693,7 +713,7 @@ jobs:
           path: receipts
           merge-multiple: true
       - name: Aggregate the exact Release-1 receipt matrix
-        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true' && needs.config.outputs.direct_os == ''
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
