@@ -161,6 +161,63 @@ def test_m4_4a_executor_fails_closed_when_config_is_not_explicit(tmp_path):
         ci_journey.execute_pinokio_backend(args, tmp_path)
 
 
+def test_linux_canonical_executor_invokes_typed_provider_before_driver(tmp_path, monkeypatch):
+    candidate = _candidate()
+    checkouts = {}
+    for name in candidate:
+        checkout = tmp_path / name
+        checkout.mkdir()
+        checkouts[name] = {"path": str(checkout), "ref": candidate[name]}
+    first = [{"kind": "git-shell", "bootstrap_action": None}]
+    retry = [{"kind": "custom", "name": "preflightStop"}]
+    config = {
+        "source_override_test_mode": False,
+        "platform": {"os": "linux", "runner": "local", "shell": "sh", "hosted": False},
+        "candidate_checkouts": checkouts,
+        "old_launcher": {"ref": "1" * 40},
+        "actions": {"first": {"steps": first}, "retry": {"steps": retry}},
+        "r24_linux_provider": {"request": {}, "config": {}, "producer_root": "/provider"},
+    }
+    config_path = tmp_path / "executor.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    args = argparse.Namespace(
+        pinokio_backend_config=config_path,
+        shell="sh",
+        candidate_checkouts={name: {"sha": value} for name, value in candidate.items()},
+        app_checkout=Path(checkouts["app"]["path"]),
+        candidate_agent_checkout=Path(checkouts["agent"]["path"]),
+        candidate_runtime_checkout=Path(checkouts["runtime"]["path"]),
+        pinokio_checkout=Path(checkouts["pinokio"]["path"]),
+        old_launcher_ref="1" * 40,
+    )
+    monkeypatch.setattr(ci_journey, "runner_identity", lambda: {
+        "runner_image": "local", "runner_provenance": {"observed_os_family": "linux"}})
+    monkeypatch.setattr(ci_journey, "validate_old_launcher_provenance", lambda *_: {
+        "ref": "1" * 40, "path": "pinokio/update.js", "sha256": "2" * 64})
+    actions = iter(({"run": first}, {"run": retry}))
+    monkeypatch.setattr(ci_journey, "build_pinokio_action", lambda *_args, **_kwargs: next(actions))
+
+    from scripts import ci_journey_pinokio_provider, shared_journey_driver
+    calls = []
+    monkeypatch.setattr(
+        ci_journey_pinokio_provider,
+        "invoke_linux_provider_for_journey",
+        lambda raw, evidence: calls.append((raw, evidence)),
+    )
+    monkeypatch.setattr(
+        shared_journey_driver.JourneyDriver,
+        "compose_pinokio_backend_config",
+        lambda _config: (_ for _ in ()).throw(
+            shared_journey_driver.JourneyDriverError("independent admission remains closed")
+        ),
+    )
+
+    evidence = (tmp_path / "evidence").resolve()
+    with pytest.raises(shared_journey_driver.JourneyDriverError, match="admission remains closed"):
+        ci_journey.execute_pinokio_backend(args, evidence)
+    assert calls == [(config["r24_linux_provider"], evidence)]
+
+
 def test_workflow_has_a_focused_backend_scope_and_explicit_provenance_inputs():
     workflow = (Path(__file__).parents[1] / ".github/workflows/journey.yml").read_text()
     assert "old_launcher_ref:" in workflow

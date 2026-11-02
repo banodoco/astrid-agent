@@ -69,6 +69,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+    "r24-provider.stderr.json",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 
@@ -379,6 +380,18 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
             or not isinstance(actions.get("retry"), dict)
             or actions["retry"].get("steps") != retry_steps):
         raise ValueError("M4-4a explicit action arrays must match the real immutable Pinokio action builder")
+    if expected_os == "linux":
+        # The typed call executes the immutable R-24 producer, but its result is
+        # structural only.  The existing driver still performs its independent
+        # action-runner and custody admission below; this call grants no bypass.
+        provider_input = config.get("r24_linux_provider")
+        if provider_input is None:
+            raise ValueError("Linux M4-4a requires r24_linux_provider inputs")
+        try:
+            from .ci_journey_pinokio_provider import invoke_linux_provider_for_journey
+        except ImportError:
+            from ci_journey_pinokio_provider import invoke_linux_provider_for_journey
+        invoke_linux_provider_for_journey(provider_input, evidence)
     try:
         from .shared_journey_driver import JourneyDriver
     except ImportError:
