@@ -1263,12 +1263,20 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if state == "crashed":
                 raise service_failure(crashed=True)
 
-    def sync_skills(self, version: Version) -> None:
+    def sync_skills(self, version: Version) -> dict:
         """Best-effort install of Astrid's skill view into detected harnesses."""
-        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync"]
+        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json"]
         failed = False
         try:
-            self.run(argv, extra_env=version.env, timeout=60)
+            output = self.run(argv, extra_env=version.env, timeout=60)
+            report = json.loads(output)
+            actions = report.get("actions", [])
+            destinations = sorted({
+                str(step["target"])
+                for action in actions if isinstance(action, dict)
+                for step in action.get("steps", [])
+                if isinstance(step, dict) and isinstance(step.get("target"), str)
+            })
             outcome = "Astrid skills sync completed successfully.\n"
         except (OSError, subprocess.SubprocessError) as exc:
             failed = True
@@ -1278,11 +1286,17 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if isinstance(output, bytes):
                 output = output.decode("utf-8", errors="replace")
             outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
+            destinations = []
+        except (ValueError, TypeError, AttributeError) as exc:
+            failed = True
+            outcome = f"Astrid skills sync returned an unreadable result ({type(exc).__name__}).\n"
+            destinations = []
         with self.log.open("a", encoding="utf-8") as stream:
             platform.owner_only(stream.fileno())
             stream.write(outcome)
         if failed:
             self.say("Couldn't add Astrid's skill to your agents; see the log.")
+        return {"ok": not failed, "destinations": destinations}
 
     def finish(self, old: Version | None, candidate: Version, backup: dict | None) -> None:
         # Keep the immediately previous program and backup. Failures cleaning an
@@ -1434,10 +1448,17 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 stream.write(line + "\n")
 
         shim = hint = None
+        error = None
         try:
             shim, hint = install_shim(self.service, say=report)
         except Exception as exc:  # noqa: BLE001 - the command shim is optional; installation must still finish
+            error = type(exc).__name__
             report(f"Astrid command shim setup failed ({type(exc).__name__}); use the run-astrid launcher.")
+        self.command_result = {
+            "path": str(shim) if shim else None,
+            "path_hint": hint,
+            "error": error,
+        }
         marker = self.root / "install.json"
         command_shim = shim if self.service.system == "win32" or hint is None else None
         write_json(marker, {**read_json(marker), "command_shim": str(command_shim) if command_shim else None})

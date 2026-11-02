@@ -352,6 +352,7 @@ class Installer:
     def __init__(self, root: Path, data: Path, backend, *, say=print, managed_by: str | None = None):
         self.root, self.data, self.backend, self.say = root, data, backend, say
         self.managed_by = managed_by
+        self.outcomes = {"startup": "not confirmed", "command": None, "skills": None}
 
     def _activate(self, version: Version, realm_id: str) -> None:
         self.backend.register(version, self.data)
@@ -369,10 +370,17 @@ class Installer:
 
     def _ready(self) -> None:
         if self.managed_by == "pinokio":
+            self.outcomes["startup"] = "Pinokio owns startup"
             self.say("Astrid is installed. Choose Pinokio's Start button.")
         else:
             self.say("Open https://astrid.haus")
+            self._open_command()
+
+    def _open_command(self) -> None:
+        try:
             self.backend.open()
+        finally:
+            self.outcomes["command"] = getattr(self.backend, "command_result", None)
 
     def _save_update(self, transaction: dict, step: str, **details) -> None:
         custody = getattr(self.backend, "_pinokio_custody", None)
@@ -574,9 +582,10 @@ class Installer:
             chat_changed = bool(repair_chat_command and repair_chat_command(old))
             if self.managed_by == "pinokio":
                 self.backend.register(old, self.data)
+                self.outcomes["startup"] = "registered; Pinokio owns startup"
                 install_launcher(self.root)
                 try:
-                    self.backend.sync_skills(old)
+                    self.outcomes["skills"] = self.backend.sync_skills(old)
                 except Exception:  # noqa: BLE001 - skill setup is best effort
                     self.say("Couldn't add Astrid's skill to your agents; see the log.")
                 self._ready()
@@ -588,6 +597,7 @@ class Installer:
             except VerificationError:
                 pass
             else:
+                self.outcomes["startup"] = "running and ready"
                 if not chat_changed and not self.backend.restart_required():
                     # The only repair path without registration still stamps
                     # legacy records, after recovery and healthy verification.
@@ -596,17 +606,19 @@ class Installer:
                         persist(old)
                     install_launcher(self.root)
                     self.say("Open https://astrid.haus")
-                    self.backend.open()
+                    self._open_command()
                     return
             self.say("Restarting Astrid with the installed version.")
             self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
             self.backend.register(old, self.data)
+            self.outcomes["startup"] = "registered; readiness not confirmed"
             install_launcher(self.root)
             self.backend.start(old, self.data)
             self.backend.verify(old, self.data, realm["realm_id"])
+            self.outcomes["startup"] = "running and ready"
             self.say("Open https://astrid.haus")
-            self.backend.open()
+            self._open_command()
             return
 
         has_workspace = self.backend.has_workspace(self.data)
@@ -645,13 +657,17 @@ class Installer:
             def activate(candidate: Version, data: Path, selected_realm: dict) -> None:
                 self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
                 self.backend.register(candidate, data)
+                self.outcomes["startup"] = "registered; readiness not confirmed"
                 if self.managed_by != "pinokio":
                     self.backend.start(candidate, data)
                     self.backend.verify(candidate, data, selected_realm["realm_id"])
+                    self.outcomes["startup"] = "running and ready"
                 elif self.backend.workspace(candidate, data)["realm_id"] != selected_realm["realm_id"]:
                     raise VerificationError("The installed workspace identity changed.")
+                else:
+                    self.outcomes["startup"] = "registered; Pinokio owns startup"
                 try:
-                    self.backend.sync_skills(candidate)
+                    self.outcomes["skills"] = self.backend.sync_skills(candidate)
                 except Exception:  # noqa: BLE001 - skill setup must never fail installation
                     self.say("Couldn't add Astrid's skill to your agents; see the log.")
 
@@ -695,18 +711,21 @@ class Installer:
             switch(self.root, candidate_version)
             self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
             self.backend.register(candidate_version, self.data)
+            self.outcomes["startup"] = "registered; readiness not confirmed"
             install_launcher(self.root)
             if self.managed_by != "pinokio":
                 self.backend.start(candidate_version, self.data)
             if self.managed_by != "pinokio":
                 self.backend.verify(candidate_version, self.data, realm["realm_id"])
+                self.outcomes["startup"] = "running and ready"
             else:
+                self.outcomes["startup"] = "registered; Pinokio owns startup"
                 # Creation/adoption/migration is verified through Runtime's
                 # workspace API; Pinokio starts and checks the browser door.
                 if self.backend.workspace(candidate_version, self.data)["realm_id"] != realm["realm_id"]:
                     raise VerificationError("The installed workspace identity changed.")
             try:
-                self.backend.sync_skills(candidate_version)
+                self.outcomes["skills"] = self.backend.sync_skills(candidate_version)
             except Exception:  # noqa: BLE001 - skill setup must never fail installation
                 self.say("Couldn't add Astrid's skill to your agents; see the log.")
             self.backend.finish(old, candidate_version, backup)

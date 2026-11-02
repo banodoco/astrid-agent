@@ -77,7 +77,8 @@ def test_cli_source_refusal_precedes_record_writes_and_stop(tmp_path, monkeypatc
 
     monkeypatch.setattr(cli, "Backend", FakeBackend)
     monkeypatch.setattr(cli, "write_json", lambda *args: writes.append(args))
-    argv = (["--root", str(root), "--data-root", str(data)] if selection_mode == "explicit-custom" else [])
+    argv = (["--root", str(root), "--data-root", str(data), "--yes"]
+            if selection_mode == "explicit-custom" else [])
     assert cli.main(argv) == 1
     output = capsys.readouterr().out
     assert SOURCE_REFUSAL in output
@@ -113,7 +114,7 @@ def test_real_source_guard_preserves_retained_ownership_bytes(tmp_path, monkeypa
     before = {path: path.read_bytes() for path in (profile, paths.catalog_path)}
     discovery_before = paths.discovery_path.read_bytes()
 
-    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 1
+    assert cli.main(["--root", str(root), "--data-root", str(data), "--yes"]) == 1
     assert SOURCE_REFUSAL in capsys.readouterr().out
     assert {path: path.read_bytes() for path in before} == before
     assert paths.discovery_path.read_bytes() == discovery_before
@@ -152,7 +153,7 @@ def test_real_cli_invalid_live_identity_refuses_before_writes_and_stop(tmp_path,
     monkeypatch.setattr(cli, "write_json", lambda *args: writes.append(args))
     monkeypatch.setattr(Backend, "preflight_stop", lambda *_args: stops.append("preflight"))
     monkeypatch.setattr(Backend, "stop", lambda *_args: stops.append("stop"))
-    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 1
+    assert cli.main(["--root", str(root), "--data-root", str(data), "--yes"]) == 1
     assert "Your work is kept" in capsys.readouterr().out
     assert "Live Runtime startup identity cannot be verified" in (tmp_path / "logs" / "install.log").read_text()
     assert writes == stops == []

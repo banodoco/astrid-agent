@@ -109,8 +109,9 @@ def test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs
     assert recovered == ["restoring_realm"]
     assert (data / "runtime" / "realms" / "original-realm").is_dir()
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
-    assert capsys.readouterr().out.splitlines()[-1] == (
-        "Recovered your previous version — run Update again")
+    lines = capsys.readouterr().out.splitlines()
+    assert "Recovered your previous version — run Update again" in lines
+    assert lines[-1].startswith("  Way back: ")
 
 
 @pytest.mark.parametrize("update_flag", [False, True], ids=["install", "update"])

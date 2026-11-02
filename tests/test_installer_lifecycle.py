@@ -899,7 +899,7 @@ def test_backend_skill_sync_logs_output_and_failure_result(tmp_path, monkeypatch
     version = Version(tmp_path / "version", Path(sys.executable), tmp_path / "profile.json", {})
     backend.sync_skills(version)
 
-    assert calls[0][0] == [Path(sys.executable), "-X", "utf8", "-I", "-m", "astrid.skills", "sync"]
+    assert calls[0][0] == [Path(sys.executable), "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json"]
     assert calls[0][2] == 60
     assert "sync diagnostic output" in log.read_text(encoding="utf-8")
     assert "Astrid skills sync failed (CalledProcessError)." in log.read_text(encoding="utf-8")
