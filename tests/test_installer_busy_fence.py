@@ -219,6 +219,62 @@ def test_unknown_owner_stop_failure_never_falls_back_to_manager(tmp_path, monkey
     assert_stopping_intent(paths, realm)
 
 
+def test_owner_validation_refusal_logs_redacted_adjacent_snapshot_without_changing_refusal(tmp_path, monkeypatch):
+    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    record = {
+        'pid': 123,
+        'process_birth_id': 'proc-start-ticks:42',
+        'runtime_instance_id': 'instance',
+        'active_realm': 'selected',
+        'realm_id': 'selected',
+        'realm_root': str(realm),
+        'endpoint': 'http://127.0.0.1:12345',
+    }
+    write_json(paths.discovery_path, record)
+    write_json(paths.instance_lock_path, record)
+
+    class RefusingBoundary(Boundary):
+        def validate_owner(self, **_kwargs):
+            return False
+
+    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary',
+                        lambda: RefusingBoundary(paths, calls))
+    discovery_before = paths.discovery_path.read_bytes()
+    lock_before = paths.instance_lock_path.read_bytes()
+
+    with pytest.raises(RuntimeOperationError) as raised:
+        backend.stop(old, data)
+
+    assert str(raised.value) == 'Runtime interruption refused: owner endpoint or process identity failed validation.'
+    assert raised.value.details is None
+    assert calls == []  # A diagnostic observation never admits or signals a manager stop.
+    assert paths.discovery_path.read_bytes() == discovery_before
+    assert paths.instance_lock_path.read_bytes() == lock_before
+    lines = backend.log.read_text(encoding='utf-8').splitlines()
+    marker = '[astrid owner-validation diagnostic v1] '
+    payload = json.loads(next(line.removeprefix(marker) for line in lines if line.startswith(marker)))
+    assert payload['authority'] == 'diagnostic_only'
+    assert payload['discovery']['endpoint'] == {
+        'state': 'available', 'scheme': 'http', 'host': '127.0.0.1',
+        'port': 12345, 'path_present': False,
+    }
+    assert payload['discovery']['pid'] == 123
+    assert payload['discovery']['birth']['raw'] == 'proc-start-ticks:42'
+    assert payload['discovery']['birth']['normalized']['start_ticks'] == '42'
+    assert payload['owner_lock']['owner']['pid'] == 123
+    assert payload['live_process']['state'] == 'absent'
+    assert payload['endpoint_health'].startswith('not_probed')
+
+
+def test_owner_validation_diagnostic_withholds_endpoint_credentials_and_opaque_birth():
+    from astrid.installer.backend import _diagnostic_birth, _diagnostic_endpoint
+
+    assert _diagnostic_endpoint('http://user:secret@127.0.0.1:12345/a?token=secret#fragment') == {
+        'state': 'withheld',
+    }
+    assert _diagnostic_birth('secret-birth-value') == {'state': 'unrecognized'}
+
+
 def test_unknown_owner_stop_retry_succeeds_once_failure_clears(tmp_path, monkeypatch):
     backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
     publish(paths, realm)

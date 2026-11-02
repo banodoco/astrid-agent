@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -16,6 +17,7 @@ import webbrowser
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from runtime_protocol import platform
 from runtime_protocol.door import DEFAULT_DOOR_PORT
@@ -97,6 +99,229 @@ def _runtime_json(output: str) -> dict:
     """Runtime's one JSON result, after any stderr notes merged into output."""
     start = next((match.start() for match in re.finditer(r"^\{", output, re.MULTILINE)), 0)
     return json.loads(output[start:])
+
+
+_OWNER_VALIDATION_REFUSAL = "Runtime interruption refused: owner endpoint or process identity failed validation."
+_OWNER_VALIDATION_DIAGNOSTIC_PREFIX = "[astrid owner-validation diagnostic v1] "
+_OWNER_DIAGNOSTIC_MAX_BYTES = 1024 * 1024
+
+
+def _diagnostic_endpoint(value) -> dict:
+    """Return only the non-secret address part of a recorded endpoint."""
+    if not isinstance(value, str) or not value:
+        return {"state": "missing"}
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return {"state": "invalid"}
+    # A diagnostic must never turn an endpoint path, query, fragment, or
+    # user-info into installer output.  C1 remains the only caller that reads
+    # the owner credential and contacts the endpoint.
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment):
+        return {"state": "withheld"}
+    return {
+        "state": "available",
+        "scheme": parsed.scheme,
+        "host": parsed.hostname,
+        "port": port,
+        "path_present": parsed.path not in {"", "/"},
+    }
+
+
+def _diagnostic_birth(value) -> dict:
+    """Describe only the supported Linux start-tick birth spelling.
+
+    This is presentation, never an admission or compatibility result.  Do not
+    echo arbitrary malformed input: owner publications are untrusted at this
+    diagnostic boundary and an opaque value could contain a secret.
+    """
+    if not isinstance(value, str) or not value:
+        return {"state": "missing"}
+    prefix = "proc-start-ticks:"
+    if not value.startswith(prefix):
+        return {"state": "unrecognized"}
+    tick, *parts = value[len(prefix):].split(";")
+    if not tick.isascii() or not tick.isdigit():
+        return {"state": "unrecognized"}
+    scope = {}
+    for part in parts:
+        key, separator, item = part.partition(":")
+        if (not separator or key not in {"boot", "pidns"} or not item
+                or key in scope):
+            return {"state": "unrecognized"}
+        scope[key] = item
+    boot = scope.get("boot")
+    if boot is not None:
+        try:
+            if str(uuid.UUID(boot)) != boot:
+                return {"state": "unrecognized"}
+        except ValueError:
+            return {"state": "unrecognized"}
+    pidns = scope.get("pidns")
+    if pidns is not None and (not pidns.isascii() or not pidns.isdigit()):
+        return {"state": "unrecognized"}
+    normalized = {"format": "linux-proc-start-ticks", "start_ticks": tick}
+    if boot is not None:
+        normalized["boot_id"] = boot
+    if pidns is not None:
+        normalized["pid_namespace"] = pidns
+    return {"state": "available", "raw": value, "normalized": normalized}
+
+
+def _diagnostic_digest(value) -> str | None:
+    """Compare opaque owner fields without recording arbitrary publisher data."""
+    if not isinstance(value, str) or not value or len(value) > 4096:
+        return None
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _diagnostic_owner_record(value) -> dict:
+    """Project an untrusted owner publication to fixed, non-secret fields."""
+    if not isinstance(value, Mapping):
+        return {"state": "missing_or_invalid"}
+    pid = value.get("pid")
+    return {
+        "state": "available",
+        "endpoint": _diagnostic_endpoint(value.get("endpoint")),
+        "pid": pid if type(pid) is int and pid > 0 else None,
+        "birth": _diagnostic_birth(value.get("process_birth_id")),
+        "runtime_instance_id_sha256": _diagnostic_digest(value.get("runtime_instance_id")),
+        "realm_id_sha256": _diagnostic_digest(value.get("active_realm") or value.get("realm_id")),
+        "realm_root_sha256": _diagnostic_digest(value.get("realm_root")),
+    }
+
+
+def _diagnostic_read_regular_json(path: Path) -> tuple[dict | None, str]:
+    """Read one bounded, regular, no-follow diagnostic snapshot.
+
+    This intentionally grants no authority: C1 owns the authoritative lock
+    parsing and validation.  The explicit no-follow read prevents a refusal
+    diagnostic from disclosing a linked file.
+    """
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "unreadable"
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return None, "not_regular"
+        chunks, remaining = [], _OWNER_DIAGNOSTIC_MAX_BYTES
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if remaining == 0 and os.read(descriptor, 1):
+            return None, "too_large"
+        value = json.loads(b"".join(chunks).decode("utf-8"))
+        return (value, "available") if isinstance(value, dict) else (None, "not_mapping")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None, "malformed_or_unreadable"
+    finally:
+        os.close(descriptor)
+
+
+def _diagnostic_live_process(pid: int | None) -> dict:
+    """Read Linux process facts without signalling or endpoint I/O."""
+    if type(pid) is not int or pid <= 0:
+        return {"state": "missing_pid"}
+    if sys.platform != "linux":
+        return {"state": "not_linux"}
+    root = Path("/proc") / str(pid)
+    try:
+        fields = (root / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+        if fields[0] in {"Z", "X", "x"}:
+            return {"state": "absent"}
+        start_ticks = fields[19]
+        if not start_ticks.isascii() or not start_ticks.isdigit():
+            return {"state": "unreadable"}
+        scopes = []
+        try:
+            boot_id = (Path("/proc") / "sys" / "kernel" / "random" / "boot_id").read_text(encoding="utf-8").strip()
+            if str(uuid.UUID(boot_id)) == boot_id:
+                scopes.append("boot:" + boot_id)
+        except (OSError, ValueError):
+            pass
+        try:
+            scopes.append("pidns:" + str((root / "ns" / "pid").stat().st_ino))
+        except OSError:
+            pass
+        birth = "proc-start-ticks:" + start_ticks + (";" + ";".join(scopes) if scopes else "")
+        try:
+            executable = str((root / "exe").resolve(strict=True))
+        except OSError:
+            executable = None
+        return {
+            "state": "available",
+            "pid": pid,
+            "birth": _diagnostic_birth(birth),
+            "executable": executable,
+            "start_ticks": start_ticks,
+        }
+    except FileNotFoundError:
+        return {"state": "absent"}
+    except (OSError, IndexError, ValueError, UnicodeDecodeError):
+        return {"state": "unreadable"}
+
+
+def _diagnostic_expected_executable(version: Version | None) -> dict:
+    if version is None:
+        return {"state": "unavailable"}
+    try:
+        configured = str(version.python)
+        return {"state": "available", "configured": configured,
+                "resolved": str(version.python.resolve(strict=True))}
+    except OSError:
+        return {"state": "unreadable"}
+
+
+def _diagnostic_same(left, right) -> bool | None:
+    return None if left is None or right is None else left == right
+
+
+def _owner_validation_diagnostic(paths, discovery, version: Version | None) -> dict:
+    """Build a bounded, non-authoritative adjacent snapshot after C1 refusal."""
+    lock, lock_state = _diagnostic_read_regular_json(paths.instance_lock_path)
+    expected = _diagnostic_owner_record(discovery)
+    observed = _diagnostic_owner_record(lock)
+    expected_birth = expected.get("birth", {})
+    observed_birth = observed.get("birth", {})
+    live = _diagnostic_live_process(expected.get("pid"))
+    live_birth = live.get("birth", {})
+    expected_normalized = expected_birth.get("normalized", {})
+    live_normalized = live_birth.get("normalized", {})
+    expected_executable = _diagnostic_expected_executable(version)
+    return {
+        "event": "runtime_owner_validation_refused",
+        "phase": "after_runtime_c1_refusal",
+        "authority": "diagnostic_only",
+        "discovery": expected,
+        "owner_lock": {"read_state": lock_state, "owner": observed},
+        "expected_service_executable": expected_executable,
+        "live_process": live,
+        "comparisons": {
+            "discovery_owner_lock_pid": _diagnostic_same(expected.get("pid"), observed.get("pid")),
+            "discovery_owner_lock_birth_raw": _diagnostic_same(expected_birth.get("raw"), observed_birth.get("raw")),
+            "discovery_owner_lock_instance": _diagnostic_same(
+                expected.get("runtime_instance_id_sha256"), observed.get("runtime_instance_id_sha256")),
+            "discovery_owner_lock_realm": _diagnostic_same(
+                expected.get("realm_id_sha256"), observed.get("realm_id_sha256")),
+            "discovery_owner_lock_root": _diagnostic_same(
+                expected.get("realm_root_sha256"), observed.get("realm_root_sha256")),
+            "discovery_live_pid": _diagnostic_same(expected.get("pid"), live.get("pid")),
+            "discovery_live_birth_raw": _diagnostic_same(expected_birth.get("raw"), live_birth.get("raw")),
+            "discovery_live_start_ticks": _diagnostic_same(
+                expected_normalized.get("start_ticks"), live_normalized.get("start_ticks")),
+            "expected_live_executable": _diagnostic_same(expected_executable.get("resolved"), live.get("executable")),
+        },
+        "endpoint_health": "not_probed; Runtime C1 remains the sole authenticated endpoint observer",
+    }
 
 
 class Backend:
@@ -535,6 +760,19 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         details = getattr(exc, "details", None)
         return RuntimeOperationError(str(exc), details={"cause_details": details})
 
+    def _record_owner_validation_diagnostic(self, paths, discovery, version: Version | None) -> None:
+        """Append a refusal snapshot without altering Runtime's decision or error."""
+        try:
+            payload = _owner_validation_diagnostic(paths, discovery, version)
+            with self.log.open("a", encoding="utf-8") as stream:
+                platform.owner_only(stream.fileno())
+                stream.write(_OWNER_VALIDATION_DIAGNOSTIC_PREFIX
+                             + json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+        except Exception:
+            # Observation failures are explicitly non-authoritative and must
+            # never replace, mask, or relax the C1 refusal being diagnosed.
+            return
+
     def _pending_restore_selection(self, data: Path):
         """Supply Runtime's narrow context for replaying an interrupted restore."""
         journal_path = self.root / "update-transaction.json"
@@ -918,6 +1156,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 # be the selected R0 process and is never signaled or booted out.
                 self.service.verify_launchd_absent_after_bootout()
         except Exception as exc:
+            if str(exc) == _OWNER_VALIDATION_REFUSAL:
+                self._record_owner_validation_diagnostic(paths, discovery, version)
             raise self._stop_failure(exc) from exc
 
         # The Runtime fence has been released and C1 succeeded. Keep failures
