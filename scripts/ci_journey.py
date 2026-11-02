@@ -2818,6 +2818,7 @@ def execute_authentic_r0_capture(args: argparse.Namespace) -> dict:
     version: dict | None = None
     capture_error: Exception | None = None
     bootstrap_attempted = False
+    bootstrap_succeeded = False
     try:
         assert_runner_identity(result["runner"])
         if __package__:
@@ -2834,6 +2835,7 @@ def execute_authentic_r0_capture(args: argparse.Namespace) -> dict:
         with without_provider_credentials(), isolated_environment(run_root, root, data):
             bootstrap_attempted = True
             jumps.bootstrap_release0(fixture, release0_manifest, args.shell, evidence / "release0", root, data)
+            bootstrap_succeeded = True
             jumps.start_direct_runtime(evidence / "release0")
             wait_ready(data)
             version_path, selected_data, version = installation(root, data)
@@ -2856,7 +2858,7 @@ def execute_authentic_r0_capture(args: argparse.Namespace) -> dict:
     except Exception as exc:
         capture_error = exc
         result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
-        if sys.platform == "linux" and bootstrap_attempted:
+        if sys.platform == "linux" and bootstrap_attempted and not bootstrap_succeeded:
             try:
                 result["failure_diagnostics"] = {
                     "release0_bootstrap": capture_authentic_r0_bootstrap_failure(output, evidence, run_root),

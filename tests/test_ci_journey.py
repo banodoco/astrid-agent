@@ -222,9 +222,9 @@ def test_authentic_r0_failed_bootstrap_records_missing_log(tmp_path, monkeypatch
     assert result["status"] == "failed"
     assert result["failure_diagnostics"]["release0_bootstrap"] == {
         "status": "missing",
-        "source_path": "$RUN_ROOT/evidence/authentic-r0-capture/release0/release0-bootstrap.log",
+        "source_path": "$RUN_ROOT/evidence/release0/release0-bootstrap.log",
         "chain": [{
-            "path": "$RUN_ROOT/evidence/authentic-r0-capture/release0/release0-bootstrap.log",
+            "path": "$RUN_ROOT/evidence/release0/release0-bootstrap.log",
             "kind": "absent",
         }],
         "path": None,
