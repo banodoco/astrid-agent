@@ -401,13 +401,15 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                   import_contract: ImportContract | None = None,
                   builds: Mapping[str, Mapping[str, Any]] | None = None,
                   toolchain: Mapping[str, Any] | None = None, remove: tuple[str, ...] = (),
-                  intent: Literal["explicit", "defaults"] = "explicit", refresh: Refresh | None = None,
+                  intent: Literal["explicit", "defaults", "update", "rollback"] = "explicit",
+                  refresh: Refresh | None = None,
                   boundary: Callable[[str], None] | None = None) -> GroupResult:
     """Validate -> build -> publish a same-source, same-commit dependency group.
 
-    Only explicitly named ids are updated. Defaults honor durable removal
-    tombstones and cannot take over user/folder packs. Dependencies are facts
-    from this candidate collection plus explicitly selected host/core facts;
+    Only explicitly named ids are updated. Defaults, updates, and rollbacks
+    honor durable removal tombstones; defaults also cannot take over
+    user/folder packs. Only an explicit install clears a removal. Dependencies
+    are facts from this candidate collection plus explicitly selected host/core facts;
     installation never fetches an undeclared dependency or pack update.
     ``boundary`` is a trusted host observability hook, never pack code.
     All mutation callers must use this orchestration rather than composing
@@ -416,7 +418,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
     root = _root(packs_root)
     packs = dict(packs)
     remove = tuple(remove)
-    if (intent not in {"explicit", "defaults"} or (intent == "defaults" and origin != "default")
+    if (intent not in {"explicit", "defaults", "update", "rollback"}
+            or (intent == "defaults" and origin != "default")
             or any(not isinstance(i, str) or not _ID.fullmatch(i) for i in (*packs, *remove))
             or set(packs) & set(remove) or set(remove) & {"personal", "core", "astrid"}):
         raise PackInstallError("invalid_request", "Use disjoint valid install/removal ids and an explicit default origin.")
@@ -439,9 +442,9 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
         root.mkdir(exist_ok=True)
         old = _state(root)
         tombstones = set(old["removals"]) | set(remove)
-        if intent == "defaults":
+        if intent in {"defaults", "update", "rollback"}:
             packs = {i: p for i, p in packs.items() if i not in tombstones}
-        else:
+        if intent == "explicit":
             tombstones.difference_update(packs)
         retired = _directory(root.parent / ".astrid-retired", create=True)
         candidate = retired / tx

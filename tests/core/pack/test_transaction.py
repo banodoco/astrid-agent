@@ -642,6 +642,46 @@ def test_removal_tombstone_survives_default_upgrades_and_rollbacks(repo: Reposit
     assert read_group(packs_root).removals == ("alpha",)
 
 
+@pytest.mark.parametrize("intent", ["update", "rollback"])
+def test_update_and_rollback_intents_keep_user_removals(
+        repo: Repository, packs_root: Path, intent: str) -> None:
+    old_commit = repo.commit
+    alpha_digest = pack_digest(repo.work / "packs" / "alpha")
+    shared_digest = pack_digest(repo.work / "packs" / "shared")
+    install_group(source=repo.bare, revision=old_commit, packs=GROUP, packs_root=packs_root,
+                  python_packages={}, origin="default", intent="defaults",
+                  expected_digests={"alpha": alpha_digest, "shared": shared_digest},
+                  release_pins={"alpha": {"commit": old_commit, "digest": alpha_digest},
+                                "shared": {"commit": old_commit, "digest": shared_digest}})
+    install_group(source=repo.bare, packs={}, packs_root=packs_root,
+                  python_packages={}, remove=("alpha",))
+    older_snapshot = read_group(packs_root)
+    assert "alpha" not in older_snapshot.paths
+    assert older_snapshot.removals == ("alpha",)
+
+    new_commit = repo.next_revision()
+    new_alpha_digest = pack_digest(repo.work / "packs" / "alpha")
+    new_shared_digest = pack_digest(repo.work / "packs" / "shared")
+    revision = new_commit if intent == "update" else old_commit
+    digests = ({"alpha": new_alpha_digest, "shared": new_shared_digest}
+               if intent == "update" else {"alpha": alpha_digest})
+    pins = ({"alpha": {"commit": new_commit, "digest": new_alpha_digest},
+             "shared": {"commit": new_commit, "digest": new_shared_digest}}
+            if intent == "update" else
+            {"alpha": {"commit": old_commit, "digest": alpha_digest}})
+    install_group(source=repo.bare, revision=revision,
+                  packs={"alpha": "packs/alpha", **({"shared": "packs/shared"} if intent == "update" else {})},
+                  packs_root=packs_root, python_packages={}, origin="default", intent=intent,
+                  expected_digests=digests, release_pins=pins)
+    snapshot = read_group(packs_root)
+    assert "alpha" not in snapshot.paths
+    assert snapshot.removals == ("alpha",)
+    if intent == "update":
+        assert read_pin(snapshot.paths["shared"] / "PIN")["commit"] == new_commit
+    else:
+        assert read_group(packs_root).revision == older_snapshot.revision + 1
+
+
 def test_removing_dependency_needed_by_retained_pack_refuses_whole_group(
         repo: Repository, packs_root: Path) -> None:
     install(repo, packs_root, refresh=accepted_refresh)

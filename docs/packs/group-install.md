@@ -46,8 +46,9 @@ an explicit user action instead of allowing the managed update to take over.
 
 Pass explicitly removed IDs in `remove`. The committed collection records
 those removals so a later default upgrade does not silently restore them.
-Defaults honor recorded removals. An explicit install of an ID clears its
-removal record. Removing a pack is itself part of the same group publication.
+Defaults, updates, and rollbacks honor recorded removals. An explicit install
+of an ID clears its removal record. Removing a pack is itself part of the
+same group publication.
 
 ## Publication and refresh
 
