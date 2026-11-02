@@ -217,7 +217,10 @@ class CanonicalPackDefinition:
     astrid_version: str | None
     resources: tuple[ResourceDeclaration, ...]
     authoring_only: tuple[AuthoringExclusion, ...]
+    pack_api: str | None = None
     actions: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    cli: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    engines: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     ui: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     rendering: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     documents: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
@@ -264,11 +267,13 @@ class CanonicalPackDefinition:
             }
         if self.astrid_version:
             result["astrid_version"] = self.astrid_version
+        if self.pack_api is not None:
+            result["pack_api"] = self.pack_api
         if self.schema_version == 3:
             result.pop("content")
             result.update({
                 name: _thaw(getattr(self, name))
-                for name in ("actions", "ui", "rendering", "documents")
+                for name in ("actions", "cli", "engines", "ui", "rendering", "documents")
             })
         return result
 
@@ -508,6 +513,19 @@ def _normalize_declarations(data: dict[str, Any]) -> dict[str, Mapping[str, Any]
     return result
 
 
+def _normalize_manifest_paths(
+    raw: Any, section: str, path_keys: tuple[str, ...]
+) -> Mapping[str, Mapping[str, Any]]:
+    values = _mapping(raw, section)
+    normalized: dict[str, Mapping[str, Any]] = {}
+    for key, value in sorted(values.items()):
+        item = dict(_mapping(value, f"{section}.{key}"))
+        for path_key in path_keys:
+            item[path_key] = _relative(item.get(path_key), f"{section}.{key}.{path_key}")
+        normalized[key] = _freeze(item, f"{section}.{key}")
+    return _freeze(normalized, section)
+
+
 def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
     schema_version = data["schema_version"]
     pack_id = _text(data.get("id"), "id")
@@ -646,7 +664,10 @@ def _normalize_definition(data: dict[str, Any]) -> CanonicalPackDefinition:
         _text(data["astrid_version"], "astrid_version") if "astrid_version" in data else None,
         tuple(sorted(resources, key=lambda r: r.path)),
         tuple(sorted(authoring, key=lambda a: a.path)),
+        data.get("pack_api"),
         **declarations,
+        cli=_normalize_manifest_paths(data.get("cli", {}), "cli", ("arguments",)),
+        engines=_normalize_manifest_paths(data.get("engines", {}), "engines", ("recipe",)),
     )
 
 
@@ -666,6 +687,8 @@ def _declared_paths(definition: CanonicalPackDefinition) -> tuple[tuple[str, str
                 paths.append((action[slot], f"{role}.{slot}"))
     paths += [(item["entry"], f"ui.{key}.entry") for key, item in definition.ui.items()]
     paths += [(item["path"], f"rendering.{key}.path") for key, item in definition.rendering.items()]
+    paths += [(item["arguments"], f"cli.{key}.arguments") for key, item in definition.cli.items()]
+    paths += [(item["recipe"], f"engines.{key}.recipe") for key, item in definition.engines.items()]
     paths += [
         (item["schema"], f"documents.{key}.schema")
         for key, item in definition.documents.items() if isinstance(item["schema"], str)
@@ -745,7 +768,8 @@ def _resolve_resources(
             )
         handle = _resource_handle(root, path, role)
         file_role = role == "documentation" or role.endswith(
-            (".invocation.path", ".entry", ".path", ".inputs", ".outputs", ".schema")
+            (".invocation.path", ".entry", ".path", ".inputs", ".outputs", ".schema",
+             ".arguments", ".recipe")
         )
         if definition.schema_version == 3 and file_role and handle.file_kind != "file":
             raise CanonicalPackValidationError(f"{role} must name a regular file: {path!r}")

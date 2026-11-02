@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from astrid.core.pack.identity import pack_digest
+
 RENDERER_IDENTITY = "astrid.remotion.frame-capture.v1|backend=1.0.0|remotion=4.0.509|fonts=local-bundle-v1"
 DEFAULT_MAX_ENTRIES = 256
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
@@ -209,6 +211,7 @@ def _digest_candidates(paths: Sequence[tuple[str, Path]]) -> list[tuple[str, Pat
 # {stat signature: content digest}: hashing every renderer source per frame cost
 # 30-120 ms a call; a stat walk tells whether anything changed since the last digest.
 _DIGEST_MEMO: dict[str, str] = {}
+_PACK_DIGEST_MEMO: dict[tuple[str, str], str] = {}
 
 
 def _digest_paths(paths: Sequence[tuple[str, Path]]) -> str:
@@ -243,6 +246,69 @@ def element_source_roots(checkout: Path) -> list[tuple[str, Path]]:
     packs = Path(checkout) / "astrid" / "packs"
     roots = sorted({*packs.glob("*/elements"), *packs.glob("*/rendering/elements")})
     return [(f"elements:{root.relative_to(packs).as_posix()}", root) for root in roots if root.is_dir()]
+
+
+def _cached_pack_digest(root: Path) -> str:
+    """Reuse a verified pack digest until its tree metadata changes."""
+    entries = []
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directories.sort()
+        files.sort()
+        for name in (*directories, *files):
+            path = current_path / name
+            facts = path.lstat()
+            entries.append(
+                f"{path.relative_to(root).as_posix()}|{facts.st_mode}|{facts.st_size}|{facts.st_mtime_ns}\0"
+            )
+    signature = hashlib.sha256("".join(entries).encode("utf-8")).hexdigest()
+    key = (str(root), signature)
+    if key not in _PACK_DIGEST_MEMO:
+        digest = pack_digest(root)
+        if len(_PACK_DIGEST_MEMO) > 128:
+            _PACK_DIGEST_MEMO.clear()
+        _PACK_DIGEST_MEMO[key] = digest
+    return _PACK_DIGEST_MEMO[key]
+
+
+def _pack_root_digests(checkout: Path) -> list[tuple[str, str]]:
+    """Return stable pack identities for every root that can supply card elements."""
+    roots: set[Path] = set()
+    collections = [Path(checkout) / "astrid" / "packs"]
+    configured = os.environ.get("ASTRID_PACKS_PATH")
+    if configured:
+        collections.extend(Path(value).expanduser() for value in configured.split(os.pathsep) if value)
+    for collection in collections:
+        try:
+            roots.update(
+                child.resolve(strict=True)
+                for child in collection.iterdir()
+                if not child.is_symlink() and child.is_dir() and (child / "pack.yaml").is_file()
+            )
+        except OSError:
+            continue
+
+    # Project element snapshots are staged as pack roots for the Remotion
+    # process. Their random staging directory is deliberately absent from the
+    # identity; pack_digest supplies the stable content key.
+    staged = os.environ.get("ASTRID_RENDER_PACK_ROOTS")
+    if staged:
+        try:
+            rows = json.loads(staged)
+        except (TypeError, json.JSONDecodeError):
+            rows = []
+        if isinstance(rows, list):
+            for row in rows:
+                raw = row.get("root") if isinstance(row, Mapping) else None
+                if isinstance(raw, str) and raw:
+                    roots.add(Path(raw).expanduser().absolute())
+
+    identities = []
+    for root in sorted(roots, key=lambda item: (item.name, str(item))):
+        if not root.is_dir() or not (root / "pack.yaml").is_file():
+            continue
+        identities.append((root.name, _cached_pack_digest(root)))
+    return sorted(identities)
 
 
 def _checkout_root() -> Path:
@@ -298,6 +364,7 @@ def renderer_environment_identity() -> str:
         "node": os.environ.get("ASTRID_NODE_EXECUTABLE"),
         "theme": os.environ.get("ASTRID_ACTIVE_THEME"),
         "font_bundle": os.environ.get("ASTRID_FONT_BUNDLE_ID"),
+        "pack_roots": _pack_root_digests(checkout),
         "sources": _digest_paths(paths),
     }
     return json.dumps(parts, sort_keys=True, separators=(",", ":"))

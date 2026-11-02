@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 import logging
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ from astrid.core.pack.permissions import (
     _normalize_pack_permissions,
     _optional_pack_extensions,
 )
+from astrid.pack_api import VERSION as PACK_API_VERSION
+from astrid.pack_validation import validate_pack as validate_pack_compatibility
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -121,12 +124,28 @@ def scan_packs(
     for child in sorted(source_root.iterdir(), key=lambda path: path.name):
         if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
             continue
+        manifest_path: Path | None = None
         try:
             manifest_path = pack_manifest_path(child)
             if manifest_path is None:
                 continue
             pack = load_pack_manifest(manifest_path)
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
+            legacy_version = _legacy_schema_refusal(manifest_path or (child / "pack.yaml"))
+            if legacy_version is not None and not _fail_closed(child.name, required_pack_ids):
+                reason = (
+                    "Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again."
+                    if legacy_version in {1, 2} else
+                    "Pack manifest schema is not supported. Use a supported pack schema version."
+                )
+                record = QuarantinedPack(
+                    pack_id=child.name, pack_dir=child,
+                    manifest_path=(child / "pack.yaml") if (child / "pack.yaml").is_file() else None,
+                    error=reason,
+                )
+                quarantined.append(record)
+                _quarantine_warning(record)
+                continue
             if strict or _fail_closed(child.name, required_pack_ids):
                 if isinstance(exc, PackValidationError):
                     raise
@@ -146,7 +165,90 @@ def scan_packs(
             raise PackValidationError(f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {manifest_path}")
         seen[pack.id] = manifest_path
         packs.append(pack)
+    packs, compatibility_quarantine = _isolate_incompatible_packs(packs)
+    quarantined.extend(compatibility_quarantine)
     return PackScan(tuple(packs), tuple(quarantined))
+
+
+def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
+    if manifest_path is None:
+        return None
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    version = raw.get("schema_version")
+    if type(version) is int and version != 3:
+        return version
+    return None
+
+
+def _isolate_incompatible_packs(
+    packs: list[PackDefinition],
+) -> tuple[list[PackDefinition], list[QuarantinedPack]]:
+    """Apply the shared pure compatibility validator to external pack inventory."""
+    executable: list[PackDefinition] = []
+    quarantined: list[QuarantinedPack] = []
+    for pack in packs:
+        if pack.schema_version != "3":
+            record = QuarantinedPack(
+                pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
+                error="Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.",
+            )
+            quarantined.append(record)
+            _quarantine_warning(record)
+        else:
+            executable.append(pack)
+    packs = executable
+    bundled_root = packs_root().resolve()
+    external = [pack for pack in packs if not pack.root.resolve().is_relative_to(bundled_root)]
+    external_ids = {pack.id for pack in external}
+    if not external:
+        return packs, quarantined
+    python_packages = {
+        dist.metadata.get("Name", "").lower().replace("_", "-").replace(".", "-"): dist.version
+        for dist in importlib_metadata.distributions()
+        if dist.metadata.get("Name")
+    }
+    active = packs
+    while True:
+        selected = {
+            pack.id: {
+                "id": pack.id,
+                "canonical_root": str(pack.root.resolve()),
+                "schema_version": int(pack.schema_version),
+                "pack_api": pack.pack_api or "",
+                "dependencies": pack.dependencies,
+                "commit": "",
+                "installed_digest": "",
+            }
+            for pack in active
+        }
+        rejected: dict[str, QuarantinedPack] = {}
+        for pack in active:
+            if pack.id not in external_ids:
+                continue
+            manifest = pack.to_dict()
+            manifest["schema_version"] = int(pack.schema_version)
+            result = validate_pack_compatibility(
+                mode="inventory", manifest=manifest, candidate=selected[pack.id],
+                selected=selected, core_api=PACK_API_VERSION, release_pins={},
+                python_packages=python_packages, import_violations=(),
+            )
+            if not result["ok"]:
+                reason = f"{result['reason']} {result['fix']}"
+                rejected[pack.id] = QuarantinedPack(
+                    pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
+                    error=" ".join(reason.split()),
+                )
+        if not rejected:
+            return active, quarantined
+        for record in rejected.values():
+            quarantined.append(record)
+            _quarantine_warning(record)
+        active = [pack for pack in active if pack.id not in rejected]
 
 
 def discover_packs(
@@ -154,11 +256,10 @@ def discover_packs(
     *,
     include_hidden: bool = False,
 ) -> tuple[PackDefinition, ...]:
-    """Return packs admitted by the strict canonical V3/V2 source parser.
+    """Return packs admitted by the strict canonical v3 source parser.
 
-    Optional quarantine is deliberately available only through the explicit
-    non-strict :func:`scan_packs` diagnostic seam; registries cannot silently
-    downgrade source admission to a folder walk.
+    Optional schema/compatibility failures are quarantined individually by
+    :func:`scan_packs`; malformed required manifests remain fail-closed.
     """
     return scan_packs(root, include_hidden=include_hidden, strict=True).packs
 
@@ -267,6 +368,10 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
         rendering=dict(data.get("rendering", {})),
         documents=dict(data.get("documents", {})),
         documentation=dict(data.get("documentation", {})),
+        pack_api=data.get("pack_api"),
+        dependencies=dict(data.get("dependencies", {})),
+        cli=dict(data.get("cli", {})),
+        engines=dict(data.get("engines", {})),
         **taxonomy,
     )
 

@@ -153,6 +153,21 @@ def test_cache_identity_changes_when_renderer_source_changes(tmp_path, monkeypat
     assert first != second
 
 
+def test_cache_identity_changes_when_personal_pack_digest_changes(tmp_path, monkeypatch):
+    packs_root = tmp_path / "packs"
+    personal = packs_root / "personal"
+    effects = personal / "rendering" / "elements" / "effects" / "sample"
+    effects.mkdir(parents=True)
+    (personal / "pack.yaml").write_text("schema_version: 3\nid: personal\n")
+    component = effects / "component.tsx"
+    component.write_text("export const value = 1;\n")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(packs_root))
+    first = frame_cache_key(_snapshot(), 1, [32, 18])
+    component.write_text("export const value = 2;\n")
+    second = frame_cache_key(_snapshot(), 1, [32, 18])
+    assert second != first
+
+
 @pytest.mark.parametrize("relative", [
     "astrid/packs/rendering/rendering/renderers/remotion/run.py",
     "astrid/packs/rendering/rendering/renderers/remotion/root_preparation.py",
