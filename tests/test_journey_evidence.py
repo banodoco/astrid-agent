@@ -12,7 +12,6 @@ spec.loader.exec_module(gate)
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     for contract in gate.RELEASE1_MATRIX:
-        contract = gate._migrate_macos_receipt_key(contract)
         runner_os, image_os = gate.RUNNER_PROVENANCE[contract["runner"]]
         service = {"required": True, "outcome": "pass", "manager": "native", "version": "1",
                    "foreground_fallback": False}
@@ -196,13 +195,37 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
+def test_release1_macos_rows_require_macos15_and_hosted_provenance(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    for job_id in ('direct-macos', 'pinokio-backend-macos', 'pinokio-fully-local-macos'):
+        receipt = tmp_path / job_id / 'journey-result.json'
+        original = json.loads(receipt.read_text())
+        for field, value, message in (
+            ('runner_image', 'macos-14', 'runner does not match'),
+            ('RUNNER_OS', 'Linux', 'hosted runner provenance'),
+            ('ImageOS', 'macos14', 'hosted runner provenance'),
+            ('ImageVersion', '', 'hosted runner provenance'),
+            ('os_build', 'Linux-6.8', 'OS build does not match'),
+        ):
+            bad = copy.deepcopy(original)
+            if field in ('RUNNER_OS', 'ImageOS', 'ImageVersion'):
+                bad['runner_provenance'][field] = value
+            else:
+                bad[field] = value
+            receipt.write_text(json.dumps(bad), encoding='utf-8')
+            assert any(job_id in error and message in error
+                       for error in gate.evaluate_release1_matrix(candidate, tmp_path)), (job_id, field)
+        receipt.write_text(json.dumps(original), encoding='utf-8')
+
+
 def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
-    for contract in gate.RELEASE1_MATRIX:
-        contract = gate._migrate_macos_receipt_key(contract)
-        assert f'"job_id":"{contract["job_id"]}"' in workflow
-        assert f'"mode":"{contract["mode"]}"' in workflow
-        assert f'"runner":"{contract["runner"]}"' in workflow
+    matrix_text = workflow.split('          matrix = [\n', 1)[1].split('          ]', 1)[0]
+    workflow_rows = [json.loads(line.strip().rstrip(',')) for line in matrix_text.splitlines()]
+    contract_rows = [{**row, 'leg': row.get('leg', 'fresh-install')} for row in gate.RELEASE1_MATRIX]
+    assert len(contract_rows) == len({row['job_id'] for row in contract_rows}) == 9
+    assert workflow_rows == contract_rows
     assert "--aggregate-release1" in workflow
     assert "journey-receipt-${{ matrix.job_id }}" in workflow
     assert "candidate-agent" in workflow and "pinokio" in workflow

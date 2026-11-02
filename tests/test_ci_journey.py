@@ -304,6 +304,50 @@ def test_tst_b1_hosted_runner_label_requires_matching_os_and_raw_image_fields(mo
         journey.assert_runner_identity(journey.runner_identity())
 
 
+@pytest.mark.parametrize("label", ["macos-14", "macos-15"])
+def test_tst_b1_macos_hosted_runner_identity(monkeypatch, label):
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", label)
+    monkeypatch.setenv("RUNNER_OS", "macOS")
+    monkeypatch.setenv("ImageOS", label.replace("-", ""))
+    monkeypatch.setenv("ImageVersion", "20261028.1")
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    journey.assert_runner_identity(journey.runner_identity())
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="disagrees with observed"):
+        journey.assert_runner_identity(journey.runner_identity())
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setenv("RUNNER_OS", "Linux")
+    with pytest.raises(RuntimeError, match="RUNNER_OS"):
+        journey.assert_runner_identity(journey.runner_identity())
+    monkeypatch.setenv("RUNNER_OS", "macOS")
+    for field in ("RUNNER_OS", "ImageOS", "ImageVersion"):
+        with monkeypatch.context() as missing:
+            missing.delenv(field)
+            with pytest.raises(RuntimeError, match=field):
+                journey.assert_runner_identity(journey.runner_identity())
+
+
+@pytest.mark.parametrize("job_id,mode,leg", [
+    ("direct-macos", "direct", "release0-to-release1"),
+    ("pinokio-backend-macos", "pinokio-backend", "fresh-install"),
+    ("pinokio-fully-local-macos", "pinokio-fully-local", "fresh-install"),
+])
+def test_tst_b1_macos15_matrix_job_reaches_candidate_checks(tmp_path, monkeypatch, job_id, mode, leg):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program",
+                              data_root=run_root / "data", leg=leg, shell="sh",
+                              job_id=job_id, mode=mode)
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    for key, value in {"ASTRID_CI_EXPECTED_RUNNER": "macos-15", "RUNNER_OS": "macOS",
+                       "ImageOS": "macos15", "ImageVersion": "20261028.1"}.items():
+        monkeypatch.setenv(key, value)
+    def reached_candidate_checks(_args):
+        raise RuntimeError("reached candidate checks")
+    monkeypatch.setattr(journey, "candidate_checkouts", reached_candidate_checks)
+    with pytest.raises(RuntimeError, match="reached candidate checks"):
+        journey.execute(args)
+
+
 def test_tst_b1_runner_mismatch_fails_before_host_or_installer(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     args = argparse.Namespace(run_root=run_root, root=run_root / "program",

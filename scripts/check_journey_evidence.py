@@ -74,14 +74,7 @@ RUNNER_PROVENANCE = {
 
 
 def _migrate_macos_receipt_key(contract):
-    """Keep the canonical evaluator on the live hosted macOS receipt key.
-
-    The immutable journey matrix remains the driver's source of job identity.
-    This evaluator-owned copy changes only the runner receipt contract for its
-    macOS rows; it neither creates a second matrix nor changes driver logic.
-    """
-    if contract.get("os") == "macos":
-        return {**contract, "runner": "macos-15"}
+    """Compatibility for existing receipt fixtures; the matrix now owns this key."""
     return contract
 
 
@@ -210,7 +203,7 @@ def evaluate_release1_matrix(candidate, results):
     must leave exactly one machine-readable ``journey-result.json`` receipt.
     """
     errors = []
-    expected = {row["job_id"]: _migrate_macos_receipt_key(row) for row in RELEASE1_MATRIX}
+    expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
     found = {}
     for path in Path(results).rglob("journey-result.json"):
         try:
@@ -379,8 +372,7 @@ def _sidecar_json(path: Path, *, expected_os: str, mode: str) -> tuple[dict | No
 def evaluate_m4_4a_backend_matrix(candidate, results):
     """Check the provisional M4-4a backend contract, never source evidence alone."""
     errors = []
-    expected = {row["job_id"]: _migrate_macos_receipt_key(row)
-                for row in M4_4A_BACKEND_MATRIX}
+    expected = {row["job_id"]: row for row in M4_4A_BACKEND_MATRIX}
     found = {}
     paths = {}
     for path in Path(results).rglob("journey-result.json"):
