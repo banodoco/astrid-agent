@@ -18,10 +18,12 @@ PHASES = ("before-cleanup", "after-cleanup")
 FIXTURE_ID = "r01-artifact-cap-measurement-v1"
 
 
-def _write_pattern(path: Path, *, phase: str, size: int) -> str:
+def _write_pattern(path: Path, *, size: int) -> str:
     """Write deterministic non-sparse bytes and return their SHA-256."""
     digest = hashlib.sha256()
-    pattern = (f"{FIXTURE_ID}:{phase}:oversized-bootstrap\n").encode("ascii")
+    # Cleanup copies of a single captured bootstrap stream must be byte-for-byte
+    # identical.  Phase identity lives in their receipt paths, not in the bytes.
+    pattern = f"{FIXTURE_ID}:duplicated-oversized-bootstrap\n".encode("ascii")
     remaining = size
     with path.open("wb") as stream:
         while remaining:
@@ -53,7 +55,7 @@ def build(root: Path, *, bootstrap_bytes: int = DEFAULT_BOOTSTRAP_BYTES) -> None
         folder = root / phase
         folder.mkdir()
         bootstrap = folder / "release0-bootstrap.log"
-        bootstrap_sha256 = _write_pattern(bootstrap, phase=phase, size=bootstrap_bytes)
+        bootstrap_sha256 = _write_pattern(bootstrap, size=bootstrap_bytes)
         (folder / "install.log").write_text(
             f"{FIXTURE_ID} {phase} named diagnostic retained for upload measurement\n",
             encoding="utf-8",

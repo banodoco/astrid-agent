@@ -31,6 +31,8 @@ def test_fixture_creates_two_truthful_non_qualifying_snapshots_and_boundary_reta
                          "runtime-service-service-seed-0001-stderr.log")
         }
 
+    assert len(set(originals.values())) == 1
+
     estimate = boundary.prepare(root, max_bytes=100_000)
 
     assert estimate < 100_000
