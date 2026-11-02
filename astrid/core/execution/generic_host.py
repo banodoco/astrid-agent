@@ -4653,37 +4653,100 @@ def _run_source_digest(record: "CapabilityRecord") -> str:
     return _source_digest_for_roots(_admitted_source_roots(record.source_root, record.definition))
 
 
-def _run_pack_provenance(record: Any, observed_digest: str | None) -> list[dict[str, Any]] | None:
-    """Capture provenance once from the selected pack generation at action start."""
+def _pack_stat_identity(path: Path) -> tuple[int, ...] | None:
+    """Return an entry's generation token without following the selected path."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise HostError(f"cannot inspect selected pack entry: {path}") from exc
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _selected_pack_generation(
+    record: Any,
+) -> tuple[str, Path, Path, tuple[int, ...], tuple[int, ...] | None] | None:
+    """Hold the declared pack path and its root/PIN identities for one capture."""
     metadata = record.definition.metadata
     pack_id = metadata.get("source_pack")
     raw_root = metadata.get("pack_root")
     if (not isinstance(pack_id, str) or not pack_id
             or not isinstance(raw_root, str) or not raw_root):
         return None
-    pack_root = Path(raw_root).expanduser().resolve()
-    if not pack_root.is_dir():
+    declared_root = Path(raw_root).expanduser().absolute()
+    pack_root = declared_root.resolve()
+    root_identity = _pack_stat_identity(pack_root)
+    if root_identity is None or not stat.S_ISDIR(root_identity[2]):
+        raise HostError("selected pack root disappeared or is not a directory")
+    pin_identity = _pack_stat_identity(pack_root / "PIN")
+    if pin_identity is not None and not stat.S_ISREG(pin_identity[2]):
+        raise HostError("selected pack PIN is not a regular file")
+    return pack_id, declared_root, pack_root, root_identity, pin_identity
+
+
+_UNSET_PACK_GENERATION = object()
+
+
+def _run_pack_provenance(
+    record: Any,
+    observed_digest: str | None,
+    selected_generation: tuple[str, Path, Path, tuple[int, ...], tuple[int, ...] | None] | None | object = _UNSET_PACK_GENERATION,
+) -> list[dict[str, Any]] | None:
+    """Capture identity, PIN and observed digest from one stable selected generation."""
+    generation = (
+        _selected_pack_generation(record)
+        if selected_generation is _UNSET_PACK_GENERATION
+        else selected_generation
+    )
+    if generation is None:
         return None
+    pack_id, declared_root, pack_root, root_identity, pin_identity = generation
+    metadata = record.definition.metadata
+    from astrid.core.pack.identity import pack_digest
+
     if not isinstance(metadata.get("action_invocation"), Mapping):
         # Legacy executor roots have an admission digest which also covers the
         # executor directory. Receipts identify the selected pack itself.
-        from astrid.core.pack.identity import pack_digest
-
         observed_digest = pack_digest(pack_root)
     if not isinstance(observed_digest, str):
         return None
+
     pin_path = pack_root / "PIN"
-    if pin_path.exists():
+    current_pin_identity = _pack_stat_identity(pin_path)
+    if current_pin_identity != pin_identity:
+        raise HostError("selected pack changed during provenance capture")
+    if current_pin_identity is not None:
         from astrid.core.pack.identity import read_pin
 
         pin = read_pin(pin_path)
         origin = pin["origin"]
         installed_digest = pin["digest"]
     else:
-        # Folder-selected packs may predate PIN creation; they remain visibly
-        # unpinned while still recording the observed run tree.
+        # Folder-selected packs remain visibly unpinned while recording their
+        # observed source tree.
         origin = "folder"
         installed_digest = None
+
+    # Rehash after PIN acquisition. Matching digests plus stable root/PIN
+    # identities prove the receipt facts still describe the captured tree.
+    verified_digest = pack_digest(pack_root)
+    try:
+        final_declared_root = declared_root.resolve()
+    except OSError as exc:
+        raise HostError("selected pack path changed during provenance capture") from exc
+    final_root_identity = _pack_stat_identity(pack_root)
+    final_pin_identity = _pack_stat_identity(pin_path)
+    if (final_declared_root != pack_root
+            or root_identity != final_root_identity
+            or pin_identity != current_pin_identity
+            or current_pin_identity != final_pin_identity
+            or observed_digest != verified_digest):
+        raise HostError("selected pack changed during provenance capture")
+
     return [{
         "pack_id": pack_id,
         "origin": origin,
@@ -10954,15 +11017,7 @@ class GenericPackHost:
             raise HostError(f"capability not discovered: {capability_id}")
 
         _terminal["record"] = record
-        run_source_digest = _run_source_digest(record)
-        _terminal["run_source_digest"] = run_source_digest
-        # Capture the selected identity, PIN and observed tree together before
-        # execution. Terminal writers only carry this immutable value forward.
-        provenance = _run_pack_provenance(record, run_source_digest)
-        _terminal["pack_provenance"] = (
-            tuple(MappingProxyType(dict(row)) for row in provenance)
-            if provenance is not None else None
-        )
+        run_source_digest: str | None = None
 
         def evidence_failure_diagnostic(error: BaseException) -> dict[str, Any] | None:
             if not isinstance(error, EvidenceCapError):
@@ -11010,6 +11065,22 @@ class GenericPackHost:
                     "deterministic admission failure was not recorded by Runtime"
                 ) from runtime_exc
             raise HostError(str(error)) from error
+
+        try:
+            selected_generation = _selected_pack_generation(record)
+            run_source_digest = _run_source_digest(record)
+            _terminal["run_source_digest"] = run_source_digest
+            # Capture the selected identity, PIN and observed tree together
+            # before execution. Terminal writers only carry this saved value.
+            provenance = _run_pack_provenance(
+                record, run_source_digest, selected_generation,
+            )
+            _terminal["pack_provenance"] = (
+                tuple(MappingProxyType(dict(row)) for row in provenance)
+                if provenance is not None else None
+            )
+        except Exception as exc:
+            fail_admission(exc)
 
         registration_error = self._registration_admission_reason()
         if registration_error:
