@@ -512,9 +512,16 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
         else:
             unit_path.write_text("Task Scheduler definition unavailable\n", encoding="utf-8")
         if sys.platform in {"linux", "darwin"} and completed.returncode:
-            manager["error"] = f"manager command exited {completed.returncode}"
-            print(f"Journey manager-state capture ({phase}) failed: {manager['error']}: "
-                  f"{(completed.stderr or completed.stdout).strip()}", file=sys.stderr, flush=True)
+            missing_service = (sys.platform == "darwin" and phase == "after-cleanup"
+                               and completed.returncode == 113
+                               and completed.stderr.strip() ==
+                               f'Could not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}')
+            if missing_service:
+                manager["service_state"] = "absent"
+            else:
+                manager["error"] = f"manager command exited {completed.returncode}"
+                print(f"Journey manager-state capture ({phase}) failed: {manager['error']}: "
+                      f"{(completed.stderr or completed.stdout).strip()}", file=sys.stderr, flush=True)
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         print(f"Journey evidence capture ({phase}) failed: {message}", file=sys.stderr, flush=True)

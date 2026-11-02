@@ -227,6 +227,46 @@ def test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root():
     assert not journey.windows_task_owned('present\nC:\\Users\\someone\\Astrid\\python.exe\n', root)
 
 
+@pytest.mark.parametrize("phase,returncode,stderr,absent", [
+    ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', True),
+    ("before-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),
+    ("after-cleanup", 113, "launchctl unavailable\n", False),
+    ("after-cleanup", 1, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\n', False),
+    ("after-cleanup", 113, 'Could not find service "other" in domain for user gui: 501\n', False),
+    ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 502\n', False),
+    ("after-cleanup", 113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 501\nextra error\n', False),
+])
+@pytest.mark.parametrize("unit_exists", [True, False])
+def test_darwin_manager_state_classifies_only_expected_cleanup_absence(
+        tmp_path, monkeypatch, capsys, phase, returncode, stderr, absent, unit_exists):
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setattr(journey.os, "getuid", lambda: 501)
+    calls = []
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=returncode, stdout="raw stdout\n", stderr=stderr)
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    data, evidence = tmp_path / "run" / "data", tmp_path / "evidence"
+    unit = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
+    if unit_exists:
+        unit.parent.mkdir(parents=True)
+        unit.write_bytes(b"raw plist\n")
+
+    journey.capture_manager_state(evidence, data, phase)
+
+    command = ["launchctl", "print", "gui/501/haus.astrid.runtime"]
+    assert calls == [(command, {"capture_output": True, "text": True, "timeout": 30, "check": False})]
+    manager = journey.read_json(evidence / f"manager-state-{phase}.json")
+    assert manager == {"platform": "darwin", "phase": phase, "command": command,
+                       "returncode": returncode, "stdout": "raw stdout\n", "stderr": stderr,
+                       "unit_file": str(unit) if unit_exists else None,
+                       **({"service_state": "absent"} if absent else
+                          {"error": f"manager command exited {returncode}"})}
+    expected_unit = b"raw plist\n" if unit_exists else f"Unit file unavailable: {unit}\n".encode()
+    assert (evidence / f"unit-file-{phase}.txt").read_bytes() == expected_unit
+    assert ("Journey manager-state capture" in capsys.readouterr().err) is not absent
+
+
 def test_tst_b1_final_cleanup_uses_exact_owned_roots_and_rechecks_manager(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     root, data = run_root / "program", run_root / "data"
