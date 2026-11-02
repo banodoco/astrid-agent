@@ -294,7 +294,7 @@ def test_composition_exemption_is_the_only_kernel_to_pack_allowed(
         tmp_path,
         "astrid/core/execution/generic_host.py",
         "from astrid.packs.vibecomfy.production_engine import load_workflow_path\n"
-        "from astrid.packs.wan2gp.src.driver import materialize_host_result\n",
+        "from astrid.packs.vibecomfy.shared.bundle_inputs import load_bundle_inputs\n",
     )
     _write(
         tmp_path,
@@ -334,7 +334,7 @@ def test_installed_relative_identity_preserves_edges_and_negative_core_import(
         installed,
         "astrid/core/execution/generic_host.py",
         "from astrid.packs.vibecomfy.production_engine import load_workflow_path\n"
-        "from astrid.packs.wan2gp.src.driver import materialize_host_result\n",
+        "from astrid.packs.vibecomfy.shared.bundle_inputs import load_bundle_inputs\n",
     )
     dispatch = _write(
         installed,

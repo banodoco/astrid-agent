@@ -4,7 +4,7 @@ The Runtime remains the durable task/settlement authority.  This module only
 owns the in-process lease around an engine session: its observed binding,
 capacity slot, lifecycle generation, and one-shot admission tokens.  Engine
 adapters are deliberately duck-typed so the same proof surface can cover
-VibeComfy, Wan2GP, and future local tools without making this module an engine
+VibeComfy, and future local tools without making this module an engine
 router.
 """
 

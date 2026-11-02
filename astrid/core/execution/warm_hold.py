@@ -1,6 +1,6 @@
 """Idle release for everything the pack host keeps warm between tasks.
 
-The Wan2GP child, the VibeComfy session and the Remotion frame owner stay
+The VibeComfy session and the Remotion frame owner stay
 resident after a task so the next one starts warm.  Each holder leases its
 hold while a task uses it.  A new lease cancels any pending expiry.  When the
 last lease ends and the holder still keeps something warm, one deadline is

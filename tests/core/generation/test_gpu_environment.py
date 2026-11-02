@@ -26,14 +26,11 @@ def test_plan_is_platform_specific_and_does_not_install(tmp_path, monkeypatch, p
     if platform != "win32":
         assert plan["managed"] is False
         assert plan["commands"] == []
-        if pack == "vibecomfy":
-            platform_name = {"linux": "Linux", "darwin": "macOS"}[platform]
-            assert plan["reason"] == (
-                f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
-                "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
-            )
-        else:
-            assert "admitted Wan2GP checkout and interpreter" in plan["reason"]
+        platform_name = {"linux": "Linux", "darwin": "macOS"}[platform]
+        assert plan["reason"] == (
+            f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
+            "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+        )
         return
     assert plan["managed"] is True
     assert Path(plan["python"]).parts[-2:] == ("Scripts", "python.exe")

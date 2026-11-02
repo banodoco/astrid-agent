@@ -1611,7 +1611,7 @@
       "stderr_kind": "print"
     }
   ],
-  "expected_parser_surface_count": 94,
+  "expected_parser_surface_count": 92,
   "expected_parser_surfaces": [
     {
       "builder": "build_parser",
@@ -2060,16 +2060,6 @@
     },
     {
       "builder": "build_parser",
-      "module": "astrid.packs.wan2gp.actions.generate_video.run",
-      "path": "astrid/packs/wan2gp/actions/generate_video/run.py"
-    },
-    {
-      "builder": "build_parser",
-      "module": "astrid.packs.wan2gp.actions.validate_settings.run",
-      "path": "astrid/packs/wan2gp/actions/validate_settings/run.py"
-    },
-    {
-      "builder": "build_parser",
       "module": "astrid.packs.youtube.actions.upload.run",
       "path": "astrid/packs/youtube/actions/upload/run.py"
     },
@@ -2206,7 +2196,7 @@
       ]
     }
   ],
-  "scanned_parser_surface_count": 92,
+  "scanned_parser_surface_count": 90,
   "scanned_parser_surfaces": [
     {
       "builder": "build_parser",
@@ -2815,20 +2805,6 @@
       "enum_arg_count": 2,
       "module": "astrid.packs.video_editing.actions.vary_grid.run",
       "path": "astrid/packs/video_editing/actions/vary_grid/run.py",
-      "prog": "-c"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.wan2gp.actions.generate_video.run",
-      "path": "astrid/packs/wan2gp/actions/generate_video/run.py",
-      "prog": "-c"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.wan2gp.actions.validate_settings.run",
-      "path": "astrid/packs/wan2gp/actions/validate_settings/run.py",
       "prog": "-c"
     },
     {
