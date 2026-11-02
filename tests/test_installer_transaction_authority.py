@@ -146,8 +146,23 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
                backend.service.selection, realm / "realm.sqlite3"]
     before = {path: path.read_bytes() for path in tracked}
     published = {}
+    stop_identities = []
+    stop_owner = boundary.stop_owner
+
+    def stop_selected_owner(**kwargs):
+        # Enforce the selected publication at the handoff, before the fake
+        # boundary reports a stop; a mere stop-call count cannot prove this.
+        actual = {key: kwargs[key] for key in (
+            "pid", "process_birth_id", "instance_id", "realm_id")}
+        stop_identities.append(actual)
+        assert actual == expected_stop_identity
+        return stop_owner(**kwargs)
+
+    boundary.stop_owner = stop_selected_owner
+    expected_stop_identity = None
 
     def replacement():
+        nonlocal expected_stop_identity
         identity = _publish_owner(paths)
         key, value = {
             "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
@@ -156,6 +171,10 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
             "root": ("realm_root", str(tmp_path / "different-realm")),
         }[changed]
         identity[key] = value
+        expected_stop_identity = {
+            "pid": identity["pid"], "process_birth_id": identity["process_birth_id"],
+            "instance_id": identity["runtime_instance_id"], "realm_id": identity["active_realm"],
+        }
         write_json(paths.discovery_path, identity)
         write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
         published.update({path: path.read_bytes()
@@ -209,6 +228,7 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
             assert replaced
         assert not core.is_lifecycle_refusal(raised.value)
         assert boundary.stop_calls == 0
+        assert stop_identities == []
         for path in tracked:
             assert path.read_bytes() == before[path], path
         for name in ("restore", "register", "start", "verify", "persist_identity"):
@@ -219,8 +239,50 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
     else:
         recover()
         assert boundary.stop_calls == 1
+        assert stop_identities == [expected_stop_identity]
         assert read_json(backend.root / "update-transaction.json")["step"] == "rolled_back"
         backend.start.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", ["migration", "app"])
+def test_recovery_preflight_refuses_owner_published_after_absent_discovery(tmp_path, monkeypatch, kind):
+    """An owner appearing between preflight reads cannot be mistaken for absence."""
+    import importlib
+
+    backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+        tmp_path, monkeypatch, kind)
+    paths.instance_lock_path.unlink(missing_ok=True)
+    assert not paths.discovery_path.exists()
+    tracked = [backend.root / "update-transaction.json", backend.root / "current",
+               backend.service.selection, realm / "realm.sqlite3"]
+    before = {path: path.read_bytes() for path in tracked}
+    bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+    read_support_json = bootstrap._read_support_json
+    published = {}
+
+    def publish_after_absent_discovery(path):
+        result = read_support_json(path)
+        if path == paths.discovery_path and not published:
+            assert result is None
+            identity = _publish_owner(paths, pid=888, birth="replacement-birth")
+            boundary.live = True
+            published.update({p: p.read_bytes() for p in (paths.discovery_path, paths.instance_lock_path)})
+            assert identity["pid"] == 888
+        return result
+
+    monkeypatch.setattr(bootstrap, "_read_support_json", publish_after_absent_discovery)
+    with pytest.raises(core.RuntimeOperationError, match="owner lock has no matching discovery") as raised:
+        recover()
+
+    assert core.is_lifecycle_refusal(raised.value)
+    assert published
+    assert {path: path.read_bytes() for path in published} == published
+    assert {path: path.read_bytes() for path in tracked} == before
+    assert boundary.stop_calls == 0
+    for name in ("restore", "register", "start", "verify", "persist_identity"):
+        getattr(backend, name).assert_not_called()
+    backend.service.disable.assert_not_called()
+    backend.service.stop.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["migration", "app"])
