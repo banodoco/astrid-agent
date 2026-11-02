@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Populate isolated Git caches and inspect the dedicated macOS runner."""
+import json
+import os
+import platform
+import plistlib
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+from pathlib import Path
+
+UID = 503
+MIN_FREE = 10 * 1024**3
+AGENT_BRANCH = "lane/M-R1FIX/UPD-R0-INTERRUPTION-R2"
+RUNTIME_SHA = "255ecda21ba904520eb867936ef173cc5f7d3ae4"
+REPOS = {name: f"https://github.com/banodoco/astrid-{name}.git"
+         for name in ("agent", "runtime", "pinokio")}
+
+
+def run(args, *, env=None, allow_failure=False):
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=300, check=False)
+    if result.returncode and not allow_failure:
+        raise RuntimeError("A required command failed; no credentials or raw command output retained")
+    return result
+
+
+def version(args):
+    if shutil.which(args[0]) is None:
+        return "missing"
+    result = run(args, allow_failure=True)
+    if result.returncode:
+        return "unavailable"
+    return (result.stdout or result.stderr).splitlines()[0][:160]
+
+
+def service_absent(uid):
+    result = run(["launchctl", "print", f"gui/{uid}/haus.astrid.runtime"], allow_failure=True)
+    missing = f'Could not find service "haus.astrid.runtime" in domain for user gui: {uid}'
+    return result.returncode == 113 and result.stderr.strip().replace("\r\n", "\n") in {missing, f"Bad request.\n{missing}"}
+
+
+def pinokio(home):
+    for app, label in ((Path("/Applications/Pinokio.app"), "/Applications/Pinokio.app"),
+                       (home / "Applications/Pinokio.app", "~/Applications/Pinokio.app")):
+        metadata = app / "Contents/Info.plist"
+        if metadata.is_file():
+            with metadata.open("rb") as f:
+                info = plistlib.load(f)
+            return {"installed": True, "location": label,
+                    "version": str(info.get("CFBundleShortVersionString") or info.get("CFBundleVersion") or "unknown")}
+    return {"installed": False, "location": "not found in standard app locations", "version": "missing"}
+
+
+def owned_directory(path):
+    if path.exists() or path.is_symlink():
+        st = path.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != UID or st.st_mode & 0o077:
+            raise RuntimeError("Cache directory is not a private runner-owned real directory")
+    else:
+        path.mkdir(mode=0o700)
+
+
+def verify_cache_tree(root):
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=lambda e: (_ for _ in ()).throw(e)):
+        for name in dirs + files:
+            item = Path(directory) / name
+            st = item.lstat()
+            if stat.S_ISLNK(st.st_mode) or st.st_uid != UID:
+                raise RuntimeError("Git cache contains a symlink or foreign-owned entry")
+
+
+def git(args, env):
+    # Disable helper/header and all inherited environment/config; do not echo output.
+    return run(["git", "-c", "credential.helper=", "-c", "http.extraHeader=",
+                "-c", "gc.auto=0", "-c", "maintenance.auto=false", *args], env=env).stdout.strip()
+
+
+def cached_repo(root, name, ref, env):
+    repo = root / f"{name}.git"
+    existed = repo.exists() or repo.is_symlink()
+    owned_directory(repo)
+    if not existed:
+        git(["init", "--bare", str(repo)], env)
+        git(["-C", str(repo), "remote", "add", "origin", REPOS[name]], env)
+    else:
+        verify_cache_tree(repo)
+        if git(["-C", str(repo), "config", "--get", "remote.origin.url"], env) != REPOS[name]:
+            raise RuntimeError("Existing Git cache has an unexpected origin")
+    if git(["-C", str(repo), "rev-parse", "--is-bare-repository"], env) != "true":
+        raise RuntimeError("Existing Git cache is not bare")
+    git(["-C", str(repo), "fetch", "--no-tags", "--depth=1", "origin", ref], env)
+    sha = git(["-C", str(repo), "rev-parse", "FETCH_HEAD^{commit}"], env)
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise RuntimeError("Fetched cache revision is invalid")
+    # Keep the fetched object reachable after subsequent fetches and Git GC.
+    git(["-C", str(repo), "update-ref", "refs/heads/bundle-a-selected", sha], env)
+    git(["-C", str(repo), "symbolic-ref", "HEAD", "refs/heads/bundle-a-selected"], env)
+    return sha
+
+
+def main():
+    if os.getuid() != UID or os.environ.get("RUNNER_NAME") != "hannah-mac":
+        raise RuntimeError("Bundle A requires the dedicated runner identity")
+    home = Path(pwd.getpwuid(UID).pw_dir)
+    temp = Path(os.environ["RUNNER_TEMP"])
+    expected_temp = home / "actions-runner/_work/_temp"
+    if temp != expected_temp or temp.resolve() != temp:
+        raise RuntimeError("Unexpected runner temp location")
+    domain = run(["launchctl", "print", f"gui/{UID}"], allow_failure=True)
+    port = run(["lsof", "-nP", "-iTCP:42000"], allow_failure=True)
+    if port.returncode == 1 and not port.stdout.strip() and not port.stderr.strip():
+        port_state = "empty"
+    elif port.returncode == 0:
+        port_state = "occupied"
+    else:
+        port_state = "unknown"
+    smoke_root = temp / "astrid-r1-direct-macos"
+    plist = home / "Library/LaunchAgents/haus.astrid.runtime.plist"
+    free = shutil.disk_usage(home).free
+    result = {"macos": platform.mac_ver()[0], "architecture": platform.machine(),
+              "pinokio": pinokio(home),
+              "versions": {name: version(args) for name, args in
+                           (("git", ["git", "--version"]), ("python3", ["python3", "--version"]),
+                            ("node", ["node", "--version"]), ("uv", ["uv", "--version"]))},
+              "port_42000": port_state, "gui_domain": "available" if domain.returncode == 0 else "unavailable",
+              "test_service": "absent" if service_absent(UID) else "present or unknown",
+              "test_root": "present" if smoke_root.exists() or smoke_root.is_symlink() else "absent",
+              "test_plist": "present" if plist.exists() or plist.is_symlink() else "absent",
+              "free_bytes_before": free, "caches": {}}
+    if (free < MIN_FREE or result["test_service"] != "absent" or result["test_root"] != "absent"
+            or result["test_plist"] != "absent"):
+        print(json.dumps(result, sort_keys=True))
+        raise RuntimeError("Preflight found insufficient disk or test-owned state")
+    if domain.returncode != 0:
+        print(json.dumps(result, sort_keys=True))
+        raise RuntimeError("Runner GUI domain is unavailable")
+    cache_parent = home / ".astrid-mac-bundle-cache"
+    owned_directory(cache_parent)
+    root = cache_parent / "bundle-a-v1"
+    owned_directory(root)
+    config_home = root / "git-home"
+    owned_directory(config_home)
+    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(config_home),
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+    if shutil.disk_usage(home).free < MIN_FREE: raise RuntimeError("Disk fell below the preflight minimum")
+    result["caches"]["agent"] = {"ref": AGENT_BRANCH, "sha": cached_repo(root, "agent", f"refs/heads/{AGENT_BRANCH}", env)}
+    if shutil.disk_usage(home).free < MIN_FREE: raise RuntimeError("Disk fell below the preflight minimum")
+    runtime = cached_repo(root, "runtime", RUNTIME_SHA, env)
+    if runtime != RUNTIME_SHA: raise RuntimeError("Runtime cache resolved the wrong commit")
+    result["caches"]["runtime"] = {"sha": runtime}
+    if shutil.disk_usage(home).free < MIN_FREE: raise RuntimeError("Disk fell below the preflight minimum")
+    symref = git(["ls-remote", "--symref", REPOS["pinokio"], "HEAD"], env)
+    match = re.search(r"(?m)^ref: refs/heads/([^\s]+)\s+HEAD$", symref)
+    if not match or not re.fullmatch(r"[A-Za-z0-9._/-]+", match.group(1)):
+        raise RuntimeError("Cannot determine Pinokio default branch")
+    branch = match.group(1)
+    result["caches"]["pinokio"] = {"ref": branch, "sha": cached_repo(root, "pinokio", f"refs/heads/{branch}", env)}
+    result["free_bytes_after"] = shutil.disk_usage(home).free
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        reason = str(exc) if type(exc) is RuntimeError else "System or data error during Bundle A"
+        print(json.dumps({"status": "failed", "reason": reason}))
+        raise SystemExit(1)
