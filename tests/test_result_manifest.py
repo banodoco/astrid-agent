@@ -304,6 +304,7 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
     listed_ids = non_exempt_ids | exempted_ids
     assert non_exempt_ids.isdisjoint(exempted_ids)
     assert runnable_ids <= listed_ids
+    assert parent_ids.isdisjoint(registry_ids)
     assert set(rows[capability_id]["kind"] for capability_id in parent_ids) == {"orchestrator"}
     for parent_id in parent_ids:
         parent = parent_registry.get(parent_id)
@@ -395,7 +396,7 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
         "hivemind.refresh_media",
         "hivemind.search",
     }
-    assert listed_ids - registry_ids == external_ids
+    assert listed_ids - runnable_ids == external_ids
     assert external_ids.isdisjoint(registry_ids)
     for executor_id in external_ids:
         assert rows[executor_id]["reasons"] == ["external-escape-hatch"]
