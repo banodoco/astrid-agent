@@ -52,7 +52,7 @@ def digest(path):
     return h.hexdigest()
 
 
-def environment(home, task, python_dir, node_dir):
+def environment(home, task, python_dir, node_dir, runner_temp):
     # Only deliberate runner and OS environment is inherited; no credentials/config.
     env = {key: os.environ[key] for key in ("RUNNER_OS", "RUNNER_NAME", "RUNNER_ENVIRONMENT", "CI", "GITHUB_ACTIONS") if key in os.environ}
     env.update(HOME=str(home), PATH="", GIT_CONFIG_NOSYSTEM="1",
@@ -60,6 +60,7 @@ def environment(home, task, python_dir, node_dir):
                GIT_TERMINAL_PROMPT="0", GIT_LFS_SKIP_SMUDGE="1", GIT_NO_REPLACE_OBJECTS="1",
                PIP_CONFIG_FILE="/dev/null", ASTRID_CI_EXPECTED_RUNNER="astrid-mac")
     env["PATH"] = ":".join((str(python_dir), str(node_dir), "/usr/bin", "/bin", "/usr/sbin", "/sbin"))
+    env["RUNNER_TEMP"] = str(runner_temp)
     for name in ("npm-user", "npm-global"):
         p = task / (name + ".conf")
         p.write_text(""); p.chmod(0o600)
@@ -89,14 +90,24 @@ def stage(name, argv, cwd, env, logs, home):
 def run_driver(argv, task, env, home, logs):
     """Keep watching disk; SIGINT asks the driver's own finally block to clean up."""
     with (logs / "journey.log").open("wb") as out:
-        proc = subprocess.Popen(argv, cwd=str(task), env=env, stdout=out, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(argv, cwd=str(task), env=env, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         interrupted = False
+        terminated = False
+        interrupted_at = None
         while proc.poll() is None:
             if not interrupted and shutil.disk_usage(home).free < 3_000_000_000:
-                proc.send_signal(signal.SIGINT)
+                try: os.killpg(proc.pid, signal.SIGINT)
+                except ProcessLookupError: pass
                 interrupted = True
+                interrupted_at = time.monotonic()
+            elif interrupted and not terminated and time.monotonic() - interrupted_at >= 300:
+                # Bounded grace for the driver's own cleanup; never kill a launchd service.
+                try: os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
+                terminated = True
             time.sleep(3)
-    return {"exit": proc.returncode, "disk_interrupt_requested": interrupted}
+    return {"exit": proc.returncode, "disk_interrupt_requested": interrupted,
+            "cleanup_grace_expired": terminated}
 
 
 def make_candidate(task):
@@ -109,11 +120,30 @@ def make_candidate(task):
     return candidate
 
 
-def export_evidence(home, task, result):
+def export_evidence(home, task, run_root, result):
     destination = task / "upload"
     destination.mkdir(mode=0o700, exist_ok=True)
     entries = []
-    sources = [task / "logs", task / "run/evidence", task / "run/evidence-upload"]
+    # Runner temp is cleaned after the job; preserve originals under runner home first.
+    retained = task / "retained"
+    retained.mkdir(mode=0o700, exist_ok=True)
+    omissions = []
+    for name in ("evidence", "evidence-upload"):
+        original = run_root / name
+        if not original.exists():
+            continue
+        for path in original.rglob("*"):
+            if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(run_root):
+                continue
+            relative = path.relative_to(run_root)
+            if shutil.disk_usage(home).free < 3_000_000_000 + path.stat().st_size:
+                omissions.append(str(relative))
+                continue
+            target = retained / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+    result["retention_omissions"] = omissions
+    sources = [task / "logs", retained / "evidence", retained / "evidence-upload"]
     for base in sources:
         if not base.exists(): continue
         for path in base.rglob("*"):
@@ -133,6 +163,22 @@ def export_evidence(home, task, result):
                 record["omitted"] = "over 16 MB; original retained in task"
             entries.append(record)
     result["evidence"] = entries
+    # Extract the complete predicate object before any issue-facing redaction.
+    source = task / "retained/evidence-upload/before-cleanup/install.log"
+    result["stop_identity"] = {"status": "unavailable"}
+    if source.is_file() and not source.is_symlink():
+        text = source.read_text(encoding="utf-8", errors="replace")
+        marker = "stop_identity="
+        for match in re.finditer(re.escape(marker), text):
+            try: value, length = json.JSONDecoder().raw_decode(text[match.end():])
+            except json.JSONDecodeError: continue
+            if isinstance(value, dict) and value.get("format") == "astrid-launchd-owner-predicate/v1":
+                raw = text[match.end():match.end() + length].encode()
+                safe = raw.replace(str(home).encode(), b"<RUNNER_HOME>")
+                (destination / "stop-identity.json").write_bytes(safe + b"\n")
+                result["stop_identity"] = {"status": "captured", "source_sha256": hashlib.sha256(raw).hexdigest(),
+                                           "artifact_sha256": hashlib.sha256(safe + b"\n").hexdigest()}
+                break
     (destination / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return destination
 
@@ -164,13 +210,20 @@ def main():
     parent = home / ".astrid-r18"
     if not parent.exists() and not parent.is_symlink(): parent.mkdir(mode=0o700)
     owned_dir(parent)
+    if stat.S_IMODE(parent.stat().st_mode) != 0o700: raise RuntimeError("Task parent is not private")
     run_id = os.environ.get("GITHUB_RUN_ID", "") + "-" + os.environ.get("GITHUB_RUN_ATTEMPT", "")
     if not re.fullmatch(r"[0-9]+-[0-9]+", run_id): raise RuntimeError("Invalid run id")
     task = parent / run_id; task.mkdir(mode=0o700)
     logs = task / "logs"; logs.mkdir(mode=0o700)
     upload = task / "upload"; upload.mkdir(mode=0o700)
     with open(os.environ["GITHUB_ENV"], "a") as out: out.write("R18_UPLOAD=" + str(upload) + "\n")
-    env = environment(home, task, py.parent, node.parent)
+    runner_temp = Path(os.environ.get("RUNNER_TEMP", ""))
+    if runner_temp != home / "actions-runner/_work/_temp":
+        raise RuntimeError("Unexpected GitHub runner temporary directory")
+    owned_dir(runner_temp)
+    run_root = runner_temp / ("r18-" + run_id)
+    if run_root.exists() or run_root.is_symlink(): raise RuntimeError("Run root already exists")
+    env = environment(home, task, py.parent, node.parent, runner_temp)
     result = {"status": "failed", "refs": {k:v[1] for k,v in REFS.items()},
               "interpreter": "runner-owned Astral CPython 3.11.18; requested Homebrew Python not used",
               "node": "runner bundled node20 " + node_version, "stages": {}, "disk_free_before": disk(home)}
@@ -193,7 +246,7 @@ def main():
             sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]
         if port == 17340: raise RuntimeError("Unexpected default port")
         env["ASTRID_RUNTIME_DOOR_PORT"] = str(port)
-        argv = [str(py), "-u", str(task / "driver/scripts/ci_journey.py"), "--job-id", "direct-macos", "--mode", "direct", "--leg", "release0-to-release1", "--candidate", str(task / "candidate.json"), "--app-checkout", str(task / "app"), "--candidate-agent-checkout", str(task / "candidate-agent"), "--candidate-runtime-checkout", str(task / "runtime"), "--pinokio-checkout", str(task / "pinokio"), "--run-root", str(task / "run"), "--root", str(task / "run/program"), "--data-root", str(task / "run/data"), "--shell", "sh", "--release0-fixture", str(task / "driver/tests/fixtures/release0"), "--allow-release0-to-release1"]
+        argv = [str(py), "-u", str(task / "driver/scripts/ci_journey.py"), "--job-id", "direct-macos", "--mode", "direct", "--leg", "release0-to-release1", "--candidate", str(task / "candidate.json"), "--app-checkout", str(task / "app"), "--candidate-agent-checkout", str(task / "candidate-agent"), "--candidate-runtime-checkout", str(task / "runtime"), "--pinokio-checkout", str(task / "pinokio"), "--run-root", str(run_root), "--root", str(run_root / "program"), "--data-root", str(run_root / "data"), "--shell", "sh", "--release0-fixture", str(task / "driver/tests/fixtures/release0"), "--allow-release0-to-release1"]
         disk(home)
         result["journey"] = run_driver(argv, task, env, home, logs)
         result["status"] = "journey-exited"
@@ -203,7 +256,7 @@ def main():
         result["disk_free_after"] = shutil.disk_usage(home).free
         try: result["service_absent_after"] = service_absent()
         except Exception: result["service_absent_after"] = "unverified"
-        export_evidence(home, task, result)
+        export_evidence(home, task, run_root, result)
         print(json.dumps({"status": result["status"], "service_absent_after": result["service_absent_after"], "journey": result.get("journey"), "run_id": run_id}))
     if result["status"] != "journey-exited" or result["journey"]["exit"] != 0: raise SystemExit(1)
 

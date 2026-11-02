@@ -40,7 +40,7 @@ def test_export_keeps_original_hash_and_redacts_runner_home(tmp_path):
     raw = (str(home) + '/private\ntoken=abc123\nstop_identity=astrid-launchd-owner-predicate/v1\n').encode()
     (logs / 'journey.log').write_bytes(raw)
     result = {}
-    upload = r18.export_evidence(home, task, result)
+    upload = r18.export_evidence(home, task, tmp_path / "runner-temp/run", result)
     safe = (upload / 'logs/journey.log').read_bytes()
     assert str(home).encode() not in safe and b'abc123' not in safe
     assert b'stop_identity=astrid-launchd-owner-predicate/v1' in safe
@@ -62,13 +62,18 @@ def test_service_absent_requires_exact_identity(monkeypatch, code, text, expecte
 def test_export_preserves_before_cleanup_evidence(tmp_path):
     home = tmp_path / 'home'
     task = home / 'task'
-    path = task / 'run/evidence-upload/before-cleanup/install.log'
+    run = tmp_path / 'runner-temp/run'
+    task.mkdir(parents=True)
+    path = run / 'evidence-upload/before-cleanup/install.log'
     path.parent.mkdir(parents=True)
-    path.write_text('stop_identity=astrid-launchd-owner-predicate/v1 {"outcome":"rejected"}\n')
+    path.write_text('stop_identity={"format":"astrid-launchd-owner-predicate/v1","root":"' + str(home) + '/test"}\n')
     result = {}
-    upload = r18.export_evidence(home, task, result)
-    assert (upload / 'run/evidence-upload/before-cleanup/install.log').read_text() == path.read_text()
-    assert result['evidence'][0]['source_sha256'] == result['evidence'][0]['artifact_sha256']
+    upload = r18.export_evidence(home, task, run, result)
+    assert '<RUNNER_HOME>/test' in (upload / 'retained/evidence-upload/before-cleanup/install.log').read_text()
+    assert (task / 'retained/evidence-upload/before-cleanup/install.log').read_text() == path.read_text()
+    assert result['stop_identity']['status'] == 'captured'
+    assert '<RUNNER_HOME>/test' in (upload / 'stop-identity.json').read_text()
+    assert result['evidence'][0]['source_sha256'] != result['evidence'][0]['artifact_sha256']
 
 
 def test_disk_floor_is_decimal_10_gb(monkeypatch, tmp_path):
@@ -77,3 +82,29 @@ def test_disk_floor_is_decimal_10_gb(monkeypatch, tmp_path):
         r18.disk(tmp_path)
     monkeypatch.setattr(r18.shutil, 'disk_usage', lambda _: SimpleNamespace(free=10_000_000_000))
     assert r18.disk(tmp_path) == 10_000_000_000
+
+
+def test_environment_preserves_genuine_runner_temp(tmp_path):
+    home = tmp_path / 'home'
+    task = home / 'task'
+    task.mkdir(parents=True)
+    runner_temp = home / 'actions-runner/_work/_temp'
+    env = r18.environment(home, task, home / 'python/bin', home / 'node/bin', runner_temp)
+    assert env['RUNNER_TEMP'] == str(runner_temp)
+    assert 'TMPDIR' not in env and 'GITHUB_TOKEN' not in env
+
+
+def test_low_disk_interrupts_driver_process_group(monkeypatch, tmp_path):
+    task = tmp_path / 'task'
+    logs = task / 'logs'
+    logs.mkdir(parents=True)
+    states = iter([None, 9])
+    process = SimpleNamespace(pid=765, returncode=130, poll=lambda: next(states))
+    monkeypatch.setattr(r18.subprocess, 'Popen', lambda *a, **kw: process)
+    monkeypatch.setattr(r18.shutil, 'disk_usage', lambda _: SimpleNamespace(free=2_999_999_999))
+    calls = []
+    monkeypatch.setattr(r18.os, 'killpg', lambda pid, sig: calls.append((pid, sig)))
+    monkeypatch.setattr(r18.time, 'sleep', lambda _: None)
+    result = r18.run_driver(['driver'], task, {}, task, logs)
+    assert calls == [(765, r18.signal.SIGINT)]
+    assert result['disk_interrupt_requested'] is True and result['exit'] == 130
