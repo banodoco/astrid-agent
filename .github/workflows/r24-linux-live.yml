@@ -1,0 +1,232 @@
+name: R-24 hosted Linux live materializer
+
+on:
+  push:
+    branches:
+      - venue/M-PIN-R-24-PUSH-ROUTE-R1-E53B11D1
+  workflow_call:
+    inputs:
+      runner_ref:
+        required: true
+        type: string
+      producer_ref:
+        required: true
+        type: string
+      confirmation:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      runner_ref:
+        description: Immutable commit on the R-24 materializer lane
+        required: true
+        type: string
+      producer_ref:
+        description: Immutable audited R-24 producer commit
+        required: true
+        default: d6aa33bf125ffdabed9e397fb1aea319b8a9badb
+        type: string
+      confirmation:
+        description: Required literal R24_LIVE_CURRENT_TUPLE
+        required: true
+        default: R24_LIVE_CURRENT_TUPLE
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r24-live-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  r24-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      R24_CHECKOUTS: ${{ github.workspace }}
+      R24_REQUESTED_RUNNER_REF: ${{ github.event_name == 'push' && github.sha || inputs.runner_ref }}
+      R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && 'd6aa33bf125ffdabed9e397fb1aea319b8a9badb' || inputs.producer_ref }}
+      R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_CURRENT_TUPLE' || inputs.confirmation }}
+      GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Checkout immutable candidate runner
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ env.R24_REQUESTED_RUNNER_REF }}
+          path: runner
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Admit request and require the workflow revision
+        working-directory: runner
+        run: |
+          set -euo pipefail
+          python3 -B scripts/ci_journey_r24_push_admission.py \
+            --runner-ref "$R24_REQUESTED_RUNNER_REF" \
+            --producer-ref "$R24_REQUESTED_PRODUCER_REF" \
+            --confirmation "$R24_REQUESTED_CONFIRMATION" \
+            --output "$RUNNER_TEMP/r24-push-route-request.json"
+          test "$(git rev-parse HEAD)" = "$R24_REQUESTED_RUNNER_REF"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Checkout published App
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: 933c53a6fb1a11e5f8a01335d6252016d703beec
+          path: app
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout published installed Agent
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ab43bad818ef65ca1e929b973a2f61cd9fc4bf61
+          path: installed-agent
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout published Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 2776ba973b6c8f3555b5629b0840d9691a98d3c2
+          path: runtime
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout published Pinokio candidate
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: 3a6a98ae251ca126505245286e2d3e760f4348e9
+          path: pinokio
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout audited provider producer
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ env.R24_REQUESTED_PRODUCER_REF }}
+          path: producer
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout pinned native Pinokio daemon
+        uses: actions/checkout@v4
+        with:
+          repository: pinokiocomputer/pinokiod
+          ref: add4a674ad1ba95bb62ec427fce519fe5bf0e9bf
+          path: pinokiod
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout pinned PTerm
+        uses: actions/checkout@v4
+        with:
+          repository: pinokiocomputer/pterm
+          ref: 5be43718701c448b43daf0ce51d8935f170065bb
+          path: pterm
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned native engine dependencies
+        run: |
+          set -euo pipefail
+          npm ci --omit=dev --silent --prefix "$R24_CHECKOUTS/pinokiod"
+          npm ci --omit=dev --silent --prefix "$R24_CHECKOUTS/pterm"
+      - id: execute
+        name: Materialize candidate, admit task, and invoke live provider
+        working-directory: runner
+        env:
+          REQUESTED_RUNNER_REF: ${{ env.R24_REQUESTED_RUNNER_REF }}
+          REQUESTED_PRODUCER_REF: ${{ env.R24_REQUESTED_PRODUCER_REF }}
+          REQUESTED_CONFIRMATION: ${{ env.R24_REQUESTED_CONFIRMATION }}
+        run: |
+          set +e
+          python3 -B scripts/ci_journey_r24_materializer.py \
+            --runner "$R24_CHECKOUTS/runner" \
+            --runner-ref "$REQUESTED_RUNNER_REF" \
+            --producer "$R24_CHECKOUTS/producer" \
+            --producer-ref "$REQUESTED_PRODUCER_REF" \
+            --app "$R24_CHECKOUTS/app" \
+            --agent "$R24_CHECKOUTS/installed-agent" \
+            --runtime "$R24_CHECKOUTS/runtime" \
+            --pinokio "$R24_CHECKOUTS/pinokio" \
+            --pterm "$R24_CHECKOUTS/pterm" \
+            --pinokiod "$R24_CHECKOUTS/pinokiod" \
+            --run-root "$RUNNER_TEMP/r24-live-run" \
+            --confirmation "$REQUESTED_CONFIRMATION"
+          inner_exit=$?
+          echo "inner_exit=$inner_exit" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload six unchanged provider export files
+        if: steps.execute.outputs.inner_exit == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r24-provider-export-${{ env.R24_REQUESTED_RUNNER_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          path: ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-export
+      - name: Upload run, job, task, and session bindings
+        if: steps.execute.outputs.inner_exit == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r24-runner-bindings-${{ env.R24_REQUESTED_RUNNER_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/r24-live-run/candidate.json
+            ${{ runner.temp }}/r24-live-run/config.json
+            ${{ runner.temp }}/r24-live-run/tst-b1-owner.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-materializer.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/project.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.stderr.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-running.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-settled.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/request.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/config.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/r24-invocation.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/hosted-binding.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stdout.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stderr.log
+            ${{ runner.temp }}/r24-push-route-request.json
+      - name: Upload bounded first-stop diagnostics
+        if: always() && steps.execute.outputs.inner_exit != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r24-first-stop-${{ env.R24_REQUESTED_RUNNER_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/r24-live-run/candidate.json
+            ${{ runner.temp }}/r24-live-run/config.json
+            ${{ runner.temp }}/r24-live-run/tst-b1-owner.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-materializer.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/pinokiod.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/install.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/start.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/project.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.stderr.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-running.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-running.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-settled.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-settled.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-cleanup.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-cleanup.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-live-route.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/stop.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/failure-stop.log
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live
+            ${{ runner.temp }}/r24-push-route-request.json
+      - name: Propagate inner execution result
+        if: always()
+        env:
+          INNER_EXIT: ${{ steps.execute.outputs.inner_exit }}
+        run: test "$INNER_EXIT" = 0
