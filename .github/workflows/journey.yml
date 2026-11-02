@@ -72,6 +72,11 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      macos_runner:
+        description: Direct-macos venue; only hosted or astrid-mac is accepted
+        required: false
+        default: hosted
+        type: string
   workflow_dispatch:
     inputs:
       candidate:
@@ -134,6 +139,14 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      macos_runner:
+        description: Direct-macos venue
+        required: false
+        default: hosted
+        type: choice
+        options:
+          - hosted
+          - astrid-mac
 
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
@@ -162,6 +175,7 @@ jobs:
       m4_6_enabled: ${{ steps.config.outputs.m4_6_enabled }}
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
+      macos_runner: ${{ steps.config.outputs.macos_runner }}
       matrix: ${{ steps.config.outputs.matrix }}
     steps:
       - name: Check out reviewed Agent matrix contracts
@@ -252,6 +266,7 @@ jobs:
           M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
           M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
           M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
+          MACOS_RUNNER: ${{ inputs.macos_runner || 'hosted' }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -327,16 +342,22 @@ jobs:
                   raise SystemExit("invalid m4_6_candidate: " + "; ".join(candidate_errors))
           else:
               m4_6_candidate = {}
+          macos_runner = os.environ["MACOS_RUNNER"].strip()
+          if macos_runner not in {"hosted", "astrid-mac"}:
+              raise SystemExit("macos_runner must be exactly hosted or astrid-mac")
+          direct_macos_runner = (["self-hosted", "astrid-mac"]
+                                 if macos_runner == "astrid-mac" else "macos-15")
+          direct_macos_venue = "self-hosted" if macos_runner == "astrid-mac" else "hosted"
           matrix = [
-              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
-              {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
-              {"job_id":"direct-windows", "mode":"direct", "leg":"release0-to-release1", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
-              {"job_id":"pinokio-backend-linux", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
-              {"job_id":"pinokio-backend-windows", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
-              {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
-              {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
+              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":direct_macos_runner, "shell":"sh", "os":"macos", "venue":direct_macos_venue},
+              {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux", "venue":"hosted"},
+              {"job_id":"direct-windows", "mode":"direct", "leg":"release0-to-release1", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows", "venue":"hosted"},
+              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos", "venue":"hosted"},
+              {"job_id":"pinokio-backend-linux", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux", "venue":"hosted"},
+              {"job_id":"pinokio-backend-windows", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows", "venue":"hosted"},
+              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos", "venue":"hosted"},
+              {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux", "venue":"hosted"},
+              {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows", "venue":"hosted"},
           ]
           if direct_only:
               matrix = [row for row in matrix if row["mode"] == "direct"]
@@ -357,6 +378,7 @@ jobs:
                                   ("m4_6_enabled", str(m4_6_enabled).lower()),
                                   ("m4_6_candidate", m4_6_candidate),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
+                                  ("macos_runner", macos_runner),
                                   ("matrix", {"include": matrix})):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
@@ -365,6 +387,9 @@ jobs:
     if: needs.config.outputs.m4_5_only != 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
+    concurrency:
+      group: ${{ matrix.venue == 'self-hosted' && matrix.job_id == 'direct-macos' && 'journey-self-hosted-direct-macos-astrid-mac' || format('journey-row-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.job_id) }}
+      cancel-in-progress: false
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -373,6 +398,27 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Assert the selected self-hosted direct-macOS venue
+        if: matrix.job_id == 'direct-macos' && matrix.venue == 'self-hosted'
+        shell: bash
+        env:
+          ACTIONS_RUNNER_NAME: ${{ runner.name }}
+          ACTIONS_RUNNER_OS: ${{ runner.os }}
+          EXPECTED_RUNNER_NAME: hannah-mac
+        run: |
+          set -euo pipefail
+          test "$ACTIONS_RUNNER_NAME" = "$EXPECTED_RUNNER_NAME"
+          test "$ACTIONS_RUNNER_OS" = macOS
+          test "${RUNNER_OS:-}" = macOS
+          test "$(uname -s)" = Darwin
+          # The existing nine-slot driver identifies this row as macos-15.
+          # Give it an explicit self-hosted platform marker only after the
+          # independent runner-context check above; the receipt venue binding
+          # below remains authoritative for venue identity.
+          {
+            echo 'ImageOS=self-hosted-macos'
+            printf 'ImageVersion=self-hosted-%s\n' "$(sw_vers -productVersion)"
+          } >> "$GITHUB_ENV"
       # The driver itself is pinned to the reviewed workflow source.  Candidate
       # Agent is checked out separately so the receipt proves both identities.
       - name: Check out reviewed Agent receipt harness
@@ -641,7 +687,10 @@ jobs:
           if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
         env:
-          ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          # The fixed Release-1 aggregate keeps macos-15 as its platform
+          # contract. The self-hosted venue is bound separately and fail-closed
+          # below, rather than allowing an uncontrolled runner identifier.
+          ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.venue == 'self-hosted' && 'macos-15' || matrix.runner }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
@@ -675,6 +724,83 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bind the self-hosted direct-macOS receipt venue
+        if: always() && matrix.job_id == 'direct-macos' && matrix.venue == 'self-hosted'
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+          RECEIPT_ROOT: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          HEAD_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ACTIONS_RUNNER_NAME: ${{ runner.name }}
+          ACTIONS_RUNNER_OS: ${{ runner.os }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          sha = re.compile(r"[0-9a-f]{40}$")
+          candidate = json.loads(os.environ["CANDIDATE"])
+          if (not isinstance(candidate, dict)
+                  or any(not sha.fullmatch(str(candidate.get(key, "")))
+                         for key in ("app", "agent", "runtime", "pinokio"))):
+              raise SystemExit("self-hosted receipt requires the exact four-SHA candidate tuple")
+          required = {
+              "repository": "banodoco/astrid-agent",
+              "runner_name": "hannah-mac",
+              "runner_os": "macOS",
+          }
+          observed = {
+              "repository": os.environ["REPOSITORY"],
+              "runner_name": os.environ["ACTIONS_RUNNER_NAME"],
+              "runner_os": os.environ["ACTIONS_RUNNER_OS"],
+          }
+          if observed != required:
+              raise SystemExit(f"self-hosted venue identity mismatch: {observed!r}")
+          for key in ("HEAD_SHA", "WORKFLOW_SHA"):
+              if not sha.fullmatch(os.environ[key]):
+                  raise SystemExit(f"self-hosted receipt requires a full {key.lower()}")
+          if not os.environ["REF"] or not re.fullmatch(r"[1-9][0-9]*", os.environ["RUN_ID"]):
+              raise SystemExit("self-hosted receipt requires an exact ref and positive run ID")
+          if not re.fullmatch(r"[1-9][0-9]*", os.environ["RUN_ATTEMPT"]):
+              raise SystemExit("self-hosted receipt requires a positive run attempt")
+          paths = sorted(Path(os.environ["RECEIPT_ROOT"]).glob("*/journey-result.json"))
+          if not paths:
+              raise SystemExit("self-hosted direct-macos produced no staged receipt")
+          venue = {
+              "kind": "self-hosted",
+              "repository": observed["repository"],
+              "ref": os.environ["REF"],
+              "head_sha": os.environ["HEAD_SHA"],
+              "workflow_sha": os.environ["WORKFLOW_SHA"],
+              "tuple": candidate,
+              "run_id": int(os.environ["RUN_ID"]),
+              "run_attempt": int(os.environ["RUN_ATTEMPT"]),
+              "runner": {
+                  "name": observed["runner_name"],
+                  "labels": ["self-hosted", "astrid-mac"],
+                  "os": observed["runner_os"],
+              },
+          }
+          for path in paths:
+              receipt = json.loads(path.read_text(encoding="utf-8"))
+              if receipt.get("job_id") != "direct-macos":
+                  raise SystemExit(f"unexpected self-hosted receipt job: {path}")
+              checkouts = receipt.get("candidate_checkouts")
+              if not isinstance(checkouts, dict) or any(
+                      (checkouts.get(key) or {}).get("sha") != candidate[key]
+                      for key in ("app", "agent", "runtime", "pinokio")):
+                  raise SystemExit(f"self-hosted receipt checkout tuple mismatch: {path}")
+              receipt["venue"] = venue
+              path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()
