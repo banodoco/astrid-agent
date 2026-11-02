@@ -140,7 +140,7 @@ def _validate_config(config: Any, checkouts: dict[str, Path]) -> dict[str, Any]:
             selected = Path(value).resolve(strict=True)
         except OSError as exc:
             raise JourneyProviderError(f"CONFIG checkout {name} is unavailable") from exc
-        if selected != checkout:
+        if Path(value) != checkout or Path(value).is_symlink() or selected != checkout:
             raise JourneyProviderError(f"CONFIG checkout {name} differs from candidate")
     for key in ("node_sha256", "pterm_entry_sha256", "unws_sha256"):
         if not isinstance(config[key], str) or not _HEX64.fullmatch(config[key]):
@@ -165,8 +165,11 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
         raise JourneyProviderError("candidate and producer checkouts must be distinct")
 
     manifest = _regular(roots["app"] / "public/install-manifest.json")
+    committed_manifest = _git(
+        roots["app"], "show", f"{selected['app']}:public/install-manifest.json")
     parsed_manifest = _decode(manifest)
     if (_sha(manifest) != selected["manifest_sha256"]
+            or _sha(committed_manifest) != selected["manifest_sha256"]
             or not isinstance(parsed_manifest, dict)
             or parsed_manifest.get("release") != 1
             or any((parsed_manifest.get(name) or {}).get("sha") != selected[name]
@@ -313,6 +316,11 @@ def execute_live_hook(*, run_root: Path, candidate_file: Path, config_file: Path
         receipt.update(status="fail", error=f"{type(exc).__name__}: {exc}",
                        invocation={"status": "failed", "exit": exc.returncode,
                                    "stdout": stdout, "stderr": stderr})
+        _write_receipt(receipt_path, receipt)
+        raise
+    except Exception as exc:
+        receipt.update(status="fail", error=f"{type(exc).__name__}: {exc}",
+                       invocation={"status": "rejected", "exit": None})
         _write_receipt(receipt_path, receipt)
         raise
     stdout = _stream_record(evidence / "provider-stdout.json", output.stdout)

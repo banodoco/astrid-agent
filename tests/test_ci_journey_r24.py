@@ -180,3 +180,20 @@ def test_invocation_error_retains_raw_streams_and_exit(tmp_path, monkeypatch):
     assert receipt["invocation"]["exit"] == 7
     assert (root / "evidence/r24-live/provider-stdout.json").read_bytes() == b"partial"
     assert (root / "evidence/r24-live/provider-stderr.log").read_bytes() == b"diagnostic"
+
+
+def test_post_validation_source_race_is_recorded_as_rejected(tmp_path, monkeypatch):
+    root = owner_root(tmp_path)
+    request = request_fixture()
+    monkeypatch.setattr(hook, "prepare_request", lambda **unused: (
+        request, b"{}", {"candidate": hook.PUBLISHED_CANDIDATE}, {"run_id": "a" * 32}))
+    monkeypatch.setattr(provider, "invoke_linux_provider_export", lambda *unused: (
+        _ for _ in ()).throw(provider.ProviderContractError("producer source digest mismatch")))
+    with pytest.raises(provider.ProviderContractError):
+        hook.execute_live_hook(
+            run_root=root, candidate_file=tmp_path / "candidate", config_file=tmp_path / "config",
+            producer_root=tmp_path / "producer",
+            checkouts={name: tmp_path / name for name in ("app", "agent", "runtime", "pinokio")})
+    receipt = json.loads((root / "evidence/r24-live/r24-invocation.json").read_bytes())
+    assert receipt["status"] == "fail"
+    assert receipt["invocation"] == {"status": "rejected", "exit": None}
