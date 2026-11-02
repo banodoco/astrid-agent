@@ -55,7 +55,7 @@ def test_official_managed_home_setup_is_exact_and_verified(tmp_path, monkeypatch
         calls.append((argv, kwargs))
         assert kwargs["env"]["PINOKIO_HOME"] == str(roots["home"])
         assert kwargs["env"]["HOME"] == str(roots["runner_home"])
-        assert kwargs["env"]["PINOKIO_SETUP_MODE"] == "javascript"
+        assert kwargs["env"]["PINOKIO_SETUP_MODE"] == "managed-conda"
         kwargs["receipt"].setdefault("commands", []).append({
             "label": kwargs["label"],
             "argv": argv,
@@ -94,7 +94,8 @@ def test_official_managed_home_setup_is_exact_and_verified(tmp_path, monkeypatch
         / "evidence/materializer/managed-home-provision.json"
     ).read_text())
     assert receipt["status"] == "complete"
-    assert receipt["setup_mode"] == "javascript"
+    assert receipt["setup_mode"] == "managed-conda"
+    assert receipt["setup_requirements"] == [{"name": "conda"}]
     assert receipt["environment_boundary"]["home_inside_pinokio_home"] is False
     assert [row["exit"] for row in receipt["commands"]] == [0, 0, 0]
 
@@ -102,10 +103,11 @@ def test_official_managed_home_setup_is_exact_and_verified(tmp_path, monkeypatch
 def test_local_setup_driver_only_corrects_pinned_initialization_order():
     raw = (SCRIPT.parent / "pinokiod-install-mode.cjs").read_text()
     assert raw.index("await kernel.bin.init()") < raw.index("await kernel.shell.init()")
-    assert "kernel.bin.preset(mode)" in raw
     assert "kernel.bin.check" in raw
-    assert "kernel.bin.install({ mode }" in raw
-    assert 'mode !== "javascript"' in raw
+    assert 'requirements: [{ name: "conda" }]' in raw
+    assert "kernel.bin.install({ params: checked.requirements }" in raw
+    assert "kernel.bin.mod.conda.check()" in raw
+    assert 'mode !== "managed-conda"' in raw
 
 
 def test_managed_home_setup_refuses_a_zero_exit_without_conda(tmp_path, monkeypatch):
