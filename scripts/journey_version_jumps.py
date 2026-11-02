@@ -397,7 +397,8 @@ def task_after_update(version: dict, evidence: Path, project: str) -> str:
 
 def release0_admission(args) -> tuple[Path, Path, dict]:
     """Make the harness exception uncallable outside its exact direct scope."""
-    if (getattr(args, "mode", None) != "direct" or not getattr(args, "job_id", None)
+    diagnostic = getattr(args, "diagnostic_start_at", None) == DIAGNOSTIC_START_STAGE
+    if (getattr(args, "mode", None) != "direct" or (not getattr(args, "job_id", None) and not diagnostic)
             or not getattr(args, "candidate", None) or not getattr(args, "allow_release0_to_release1", False)
             or getattr(args, "release0_fixture", None) is None):
         raise ValueError("release0-to-release1 requires its scoped frozen-fixture direct admission")

@@ -86,6 +86,7 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     version_root = root / "versions" / "release0"
     version_root.mkdir(parents=True)
     data.mkdir(parents=True)
+    journey.write_json(root / "install.json", {"data_root": str(data)})
     journey.write_json(run_root / journey.OWNER_FILE, {
         "schema_version": 1, "run_id": "a" * 32,
         "root": str(root), "data_root": str(data),
@@ -132,13 +133,12 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     monkeypatch.setattr(journey, "healthy", lambda *unused: {"pid": 42, "runtime_instance_id": "r0"})
     monkeypatch.setattr(journey, "assert_one_runtime", lambda *unused: None)
     version_path, _, version = journey.installation(root, data)
-    identity = jumps.diagnostic_release0_identity(
-        args, root, data, fixture_receipt=fixture_receipt, release0_manifest=release0_manifest,
-        target_manifest=target_manifest, candidate=candidate, candidate_checkouts=checkouts,
-        version_path=version_path, version=version,
-    )
+    args.candidate_checkouts = checkouts
     if write_state:
-        journey.write_json(args.diagnostic_state, identity)
+        jumps.write_diagnostic_release0_preconditions(
+            args, root, data, fixture_receipt=fixture_receipt, release0_manifest=release0_manifest,
+            target_manifest=target_manifest, candidate=candidate, version_path=version_path, version=version,
+        )
     evidence = run_root / "evidence" / "release0-to-release1-diagnostic-release0-api-seed"
     return args, root, data, evidence, version_path
 
@@ -172,6 +172,43 @@ def test_diagnostic_stage_start_fails_closed_for_invalid_preconditions(tmp_path,
     }
 
 
+def test_diagnostic_stage_runs_only_seed_block_after_validated_checkpoint(tmp_path, monkeypatch):
+    args, root, data, evidence, _ = _diagnostic_release0_state(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(journey, "verify", lambda *unused, **kwargs: calls.append("verify"))
+    monkeypatch.setattr(jumps, "task_after_update", lambda *unused: "task-1")
+    def workspace(_version, _data, _evidence, action, request):
+        calls.append(action)
+        if action == "seed":
+            assert request == {"project": "tst-m4-3b-release0", "generation": "release0",
+                               "task_id": None, "create_project": True}
+            return {"project": "tst-m4-3b-release0"}
+        assert action == "snapshot"
+        assert request == {"project": "tst-m4-3b-release0", "task_id": "task-1"}
+        return {"snapshot": "ok"}
+    monkeypatch.setattr(jumps, "workspace", workspace)
+    result = jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
+    assert calls == ["verify", "seed", "snapshot"]
+    assert result["status"] == "pass"
+    assert result["checks"] == {"preconditions": "pass", "seed": "pass", "snapshot": "pass"}
+    assert result["evidence_class"] == "diagnostic-only"
+    assert result["qualification"]["eligible"] is False
+
+
+def test_diagnostic_release0_admission_uses_explicit_stage_not_a_job_id(tmp_path, monkeypatch):
+    args = argparse.Namespace(
+        mode="direct", job_id=None, candidate=tmp_path / "candidate.json",
+        allow_release0_to_release1=True, release0_fixture=tmp_path / "fixture",
+        source_override=False, diagnostic_start_at="release0-api-seed",
+    )
+    expected = (tmp_path / "fixture", tmp_path / "manifest.json", {"fixture": "bound"})
+    monkeypatch.setattr(jumps, "verified_release0_fixture", lambda fixture: expected)
+    assert jumps.release0_admission(args) == expected
+    args.diagnostic_start_at = None
+    with pytest.raises(ValueError, match="scoped frozen-fixture direct admission"):
+        jumps.release0_admission(args)
+
+
 def test_diagnostic_stage_start_is_explicit_and_cannot_use_a_qualification_job(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "execute", lambda *unused: pytest.fail("must reject before execution"))
     base = ["--leg", "release0-to-release1", "--mode", "direct", "--app-checkout", str(tmp_path),
@@ -195,12 +232,15 @@ def test_default_journey_execution_does_not_enter_diagnostic_stage(tmp_path, mon
         diagnostic_start_at=None, retain_for_next_leg=False,
     )
     calls = []
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setattr(journey, "assert_host_available", lambda leg, *unused: calls.append(leg))
     monkeypatch.setattr(journey, "snapshot_failure_evidence", lambda *unused: None)
     monkeypatch.setattr(journey, "_execute_owned", lambda *unused: {"status": "pass"})
     monkeypatch.setattr(jumps, "execute_diagnostic_release0_stage",
                         lambda *unused: pytest.fail("default execution entered diagnostic mode"))
-    assert journey.execute(args) == {"status": "pass"}
+    result = journey.execute(args)
+    assert result["status"] == "pass"
+    assert result["final_cleanup"] == "pass"
     assert calls == ["fresh-install", "cleanup"]
 
 
