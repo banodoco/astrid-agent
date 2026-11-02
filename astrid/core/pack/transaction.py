@@ -392,6 +392,75 @@ def retry_refresh(*, packs_root: str | Path, refresh: Refresh) -> bool:
         return _refresh(root, state, refresh)
 
 
+def rollback_group(*, packs_root: str | Path, transaction_id: str,
+                   refresh: Refresh | None = None) -> GroupResult:
+    """Atomically restore the complete generation retired by a group commit.
+
+    The restored inventory is published as a new revision, so revision numbers
+    remain monotonic and refresh consumers see the rollback as a normal change.
+    The generation being rolled back remains retained under the rollback id.
+    """
+    if (not isinstance(transaction_id, str) or len(transaction_id) != 32
+            or any(c not in "0123456789abcdef" for c in transaction_id)):
+        raise PackInstallError("invalid_request", "Use the full transaction id to roll back the latest group commit.")
+    root = _root(packs_root)
+    with group_read_lock(root, exclusive=True):
+        current = _state(root)
+        if current["transaction_id"] != transaction_id:
+            raise PackInstallError("stale_rollback", "Only the current group commit can be rolled back.")
+        retired = _directory(root.parent / ".astrid-retired")
+        previous = _directory(retired / transaction_id)
+        previous_state = _state(previous)
+        if previous_state["revision"] == 0 or previous_state["transaction_id"] == transaction_id:
+            raise PackInstallError("uncommitted_generation", "This group commit has no previous committed generation.")
+
+        rollback_id = uuid4().hex
+        candidate = retired / rollback_id
+        candidate.mkdir(mode=0o700)
+        identity = (candidate.stat().st_dev, candidate.stat().st_ino)
+        published = False
+        try:
+            _tree(previous)
+            shutil.copytree(previous, candidate, dirs_exist_ok=True)
+            candidate.chmod(0o700)
+            (candidate / ".install.lock").unlink(missing_ok=True)
+            before_ids = set(_paths(root))
+            restored_ids = set(_paths(candidate))
+            changed_ids = tuple(sorted(before_ids | restored_ids))
+            new_state = {
+                "version": 1,
+                "revision": current["revision"] + 1,
+                "transaction_id": rollback_id,
+                "removals": previous_state["removals"],
+                "admissions": previous_state["admissions"],
+                "refresh": {"transaction_id": rollback_id,
+                            "revision": current["revision"] + 1,
+                            "changed_ids": list(changed_ids)},
+            }
+            _write_state(candidate, new_state)
+            _sync_tree(candidate)
+            _sync_directory(retired)
+            _publish(candidate, root)
+            published |= True
+            try:
+                _sync_directory(retired)
+                _sync_directory(root.parent)
+            except OSError as exc:
+                raise GroupCommitError(rollback_id, new_state["revision"]) from exc
+            pending = _refresh(root, new_state, refresh)
+            return GroupResult(rollback_id, new_state["revision"], changed_ids,
+                               _paths(root), pending, candidate)
+        finally:
+            if not published:
+                try:
+                    live = root.stat()
+                    published = (live.st_dev, live.st_ino) == identity
+                except OSError:
+                    pass
+            if not published:
+                shutil.rmtree(candidate, ignore_errors=True)
+
+
 def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: str | Path,
                   python_packages: Mapping[str, str], revision: str | None = None,
                   origin: Literal["user", "default", "folder"] | None = None,
@@ -598,5 +667,5 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 pass  # Housekeeping cannot mask a publication/durability result.
 
 
-__all__ = ["install_group", "read_group", "read_retired_group", "retry_refresh", "group_read_lock",
+__all__ = ["install_group", "rollback_group", "read_group", "read_retired_group", "retry_refresh", "group_read_lock",
            "GroupResult", "GroupSnapshot", "GroupCommitError"]
