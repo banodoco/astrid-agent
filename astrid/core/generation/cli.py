@@ -424,8 +424,16 @@ def _main(argv: list[str]) -> int:
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
     try:
         generate = getattr(_generate_facade(), parsed.modality)
-        if parsed.dry_run or (description is not None and description["source"] == "action" and parsed.target != 'runpod'):
+        if parsed.dry_run:
             result = generate(**kwargs)
+        elif description is not None and description["source"] == "action" and parsed.target != 'runpod':
+            from astrid.sdk.generation import _action_client_scope
+            with _action_client_scope(_open_client) as current_client:
+                result = generate(**kwargs)
+                client = current_client()
+                if client is not None and not parsed.no_wait:
+                    from .delivery import deliver_generation
+                    result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
         else:
             with _open_client() as client:
                 result = generate(client=client, **kwargs)

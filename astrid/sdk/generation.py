@@ -8,7 +8,8 @@ generation method is actually invoked.
 from __future__ import annotations
 
 import importlib
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
@@ -33,6 +34,29 @@ WorkflowFile = str | Path | Mapping[str, Any]
 
 # Accepted for explicit use while its default-route qualification is pending.
 _EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_v2a"})
+
+# A CLI caller can retain the validated action's connection through delivery.
+# Acquisition stays inside the SDK, after the action's preconditions succeed.
+_action_client_connection: ContextVar[Any] = ContextVar('generation_action_client_connection', default=None)
+
+
+@contextmanager
+def _action_client_scope(factory):
+    with ExitStack() as stack:
+        owner = None
+
+        @contextmanager
+        def connection():
+            nonlocal owner
+            if owner is None:
+                owner = stack.enter_context(factory())
+            yield owner
+
+        token = _action_client_connection.set(connection)
+        try:
+            yield lambda: owner
+        finally:
+            _action_client_connection.reset(token)
 
 
 class WorkflowInvocationClient(Protocol):
@@ -1572,7 +1596,9 @@ class GenerationFacade:
             if client is None and not dry_run:
                 # Reuse the ordinary owner launcher connection; the admitted
                 # parent, including prepared custody, stays in this context.
-                with sdk_module.AstridClient.open_from_launcher(start_pack_host=False) as owner:
+                connection = _action_client_connection.get()
+                with (connection() if connection is not None else
+                      sdk_module.AstridClient.open_from_launcher(start_pack_host=False)) as owner:
                     return owner.invoke_result("h3_av.transform", **controls)
             invoke = client.invoke_result if client is not None else sdk_module.invoke_result
             return invoke("h3_av.transform", **controls)
