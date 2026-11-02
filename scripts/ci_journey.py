@@ -58,6 +58,16 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
+PACK_HOST_READINESS_OBSERVATIONS = (
+    "first-failed-poll",
+    "first-service-exit",
+    "definitive-failure",
+)
+PACK_HOST_READINESS_EVIDENCE_NAMES = frozenset(
+    f"pack-host-readiness-{observation}{suffix}"
+    for observation in PACK_HOST_READINESS_OBSERVATIONS
+    for suffix in (".json", "-service-pack-host.log", "-runtime-service.log", "-generic-host.log")
+)
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
@@ -72,7 +82,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
-})
+}) | PACK_HOST_READINESS_EVIDENCE_NAMES
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 OWNER_CENSUS_MAX_RECORDS = 8
 OWNER_ASSERTION_SNAPSHOT = "runtime-owner-assertion.json"
@@ -684,6 +694,24 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 if manager.get("error"):
                     item["error"] = manager["error"]
             diagnostic[key] = item
+        if sys.platform == "win32":
+            pack_host = []
+            for observation in PACK_HOST_READINESS_OBSERVATIONS:
+                path = destination / f"pack-host-readiness-{observation}.json"
+                item = {
+                    "observation": observation,
+                    "status": "captured" if path.is_file() else "unavailable",
+                    "path": path.relative_to(run_root).as_posix() if path.is_file() else None,
+                }
+                if path.is_file():
+                    try:
+                        captured = read_json(path)
+                        item["capture_status"] = ("observed" if captured.get("schema_version") == 1
+                                                  else "malformed")
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        item["capture_status"] = "malformed"
+                pack_host.append(item)
+            diagnostic["pack_host_readiness"] = pack_host
         if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
             # This log is nested under release0, and must remain byte-for-byte
             # intact rather than taking the usual bounded tail of text logs.

@@ -1867,6 +1867,42 @@ def test_retain_named_evidence_stages_nested_release0_owner_assertion_only(tmp_p
     assert {path.name for path in staged.iterdir()} == {journey.OWNER_ASSERTION_SNAPSHOT}
 
 
+def test_windows_pack_host_readiness_capture_is_retained_and_receipted(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    journey.write_json(evidence / "journey-result.json", {"status": "fail", "scenario": "fresh-install"})
+    journey.write_json(evidence / "pack-host-readiness-first-failed-poll.json", {
+        "schema_version": 1, "observation": "first-failed-poll", "health": {"status": "ok"},
+    })
+    (evidence / "pack-host-readiness-first-failed-poll-service-pack-host.log").write_text(
+        "first service error\n", encoding="utf-8",
+    )
+    (evidence / "unrelated-secret.txt").write_text("must not stage", encoding="utf-8")
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+
+    staged = run_root / "evidence-upload" / "before-cleanup"
+    assert (staged / "pack-host-readiness-first-failed-poll.json").is_file()
+    assert (staged / "pack-host-readiness-first-failed-poll-service-pack-host.log").read_text() == (
+        "first service error\n"
+    )
+    assert not (staged / "unrelated-secret.txt").exists()
+    receipt = journey.read_json(staged / "journey-result.json")
+    assert receipt["failure_diagnostics"]["before-cleanup"]["pack_host_readiness"] == [
+        {
+            "observation": "first-failed-poll", "status": "captured",
+            "path": "evidence-upload/before-cleanup/pack-host-readiness-first-failed-poll.json",
+            "capture_status": "observed",
+        },
+        {"observation": "first-service-exit", "status": "unavailable", "path": None},
+        {"observation": "definitive-failure", "status": "unavailable", "path": None},
+    ]
+
+
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
 def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
     from scripts import journey_version_jumps as jumps
