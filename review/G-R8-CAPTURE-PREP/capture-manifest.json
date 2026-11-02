@@ -1,11 +1,9 @@
 {
   "capture_sequence": [
-    "Before session: resolve executable argv, owner-approved exact fixture bytes/digests and baseline; prepare per-case evidence paths and enumerate the census.",
-    "Separately gated canary must reach verified readiness and pass real H3 admission/claim before the owner-authorized R8 window; otherwise stop.",
-    "In the authorized session record installed tuple and per-case fixture identities; run static/help/preview and preflight cases, recording no acquisition and refusals.",
-    "Run admitted H3 role capture, composition/verification, then delivery/export and final receipt; retain the raw material, associations and publication-absence evidence.",
-    "Run scoped cancel/recovery/error and shared machinery cases only where their exact procedures and gates are resolved; preserve attempted count and transition evidence.",
-    "Review immutable raw inventory, truthful coverage and aliases; construct capture index and reviewed allowances, then compare against a compatible complete baseline."
+    "Attach the complete packet under P77 g/053/payload; verify SHA256SUMS and preserve older packets.",
+    "Before a separately authorized session, verify H outcome, installed executable/import origins, fixture availability/digests and exact per-scenario operation and controls; maintain A-only labels where no baseline is identified.",
+    "During the authorized session retain immutable raw evidence, actual argv/environment, exit/results and nonzero executed counts; observe no-acquisition and failure boundaries.",
+    "Review source-to-case coverage and aliases. Compare only where a compatible baseline exists; A-only is not parity."
   ],
   "cases": [
     {
@@ -18,9 +16,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P1",
-      "command_gap": "Exact interpreter, environment, package invocation, argv and fixture identities are not given by the coverage map. G0-RUN's old `python -m astrid h3 ...` invocations used an older tuple and are reference only.",
+      "command_gap": "Installed r10c console executable path and observed H3 help/SDK signature for the P1 surface matrix.",
       "cpu_preparable": [
-        "Enumerate parser/signature rows from authoritative R8 source refs; author argv and schema matrix only after source/fixture identities are supplied."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:4,8-9,22-23",
@@ -36,16 +34,8 @@
       ],
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P1",
-      "historical_command_template_note": "Derived from G0-RUN older tuple; confirm R8 installed interface before execution. These help probes alone do not satisfy P1.",
-      "historical_command_templates": [
-        "<installed-python> -m astrid h3 --help",
-        "<installed-python> -m astrid h3 plan --help",
-        "<installed-python> -m astrid h3 run --help",
-        "<installed-python> -m astrid h3 compose --help",
-        "<installed-python> -m astrid h3 edit --help"
-      ],
       "id": "P1-public-surface",
-      "inputs_fixture_identity": "Freeze request/spec variants, option values from choices/constants/request schemas, and SDK inputs; record one SHA256 per byte-identical input bundle. Historical G0 input fixtures are not approved R8 identities.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [],
       "public_operation": "CLI public verbs plan, run, compose, edit; SDK generation entry/invoke. Source coverage identifies packs/h3_av/cli.py and SDK generation signatures, but no runnable R8 invocation or complete case argv is supplied.",
       "r8_only": [
@@ -58,10 +48,90 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
+      "source_derived_proposal": {
+        "argv_templates": [
+          [
+            "<installed-astrid>",
+            "h3",
+            "--help"
+          ],
+          [
+            "<installed-astrid>",
+            "h3",
+            "plan",
+            "--help"
+          ],
+          [
+            "<installed-astrid>",
+            "h3",
+            "run",
+            "--help"
+          ],
+          [
+            "<installed-astrid>",
+            "h3",
+            "compose",
+            "--help"
+          ],
+          [
+            "<installed-astrid>",
+            "h3",
+            "edit",
+            "--help"
+          ]
+        ],
+        "source": "aligned Agent c5327cc: pyproject.toml [project.scripts], astrid/console.py and astrid/packs/h3_av/cli.py; static only",
+        "cwd": "future isolated capture directory, not yet selected",
+        "environment": "future explicit clean HOME, PATH and XDG; exact values not selected",
+        "expected": "stdout/stderr and exit status per invocation; parser help is a partial P1 surface only",
+        "result_interpretation": "help should exit 0 by argparse semantics; must be observed on installed r10c",
+        "fault_control": "none for these help probes; P1 refusal control is in map",
+        "limitation": "executable is a placeholder and installed route has not been observed; not a runnable command or capture"
+      },
+      "installed_verified_partial_observation": {
+        "confidence": "installed-r10c verified",
+        "argv": [
+          "/home/user/astrid/proof-codex/work/49/install/program/versions/c5327cc2-aa1c91d9-831068e1/py/bin/python",
+          "-I",
+          "-B",
+          "-m",
+          "astrid",
+          "--help"
+        ],
+        "cwd": "inherited by H post-verify.py; exact cwd not recorded",
+        "environment": {
+          "inheritance": "H launcher inherits ambient environment, unsets names matching ASTRID_*, VIBECOMFY_*, PYTHON*, UV_*, then exports the following. Not env -i.",
+          "HOME": "/home/user/astrid/proof-codex/work/49/install/home",
+          "PATH": "/home/user/astrid/proof-codex/work/49/install/bin:/home/user/astrid/proof-codex/work/49/install/home/.local/bin:/usr/local/bin:/usr/bin:/bin",
+          "TMPDIR": "/home/user/astrid/proof-codex/work/49/install/tmp",
+          "UV_CACHE_DIR": "/home/user/astrid/proof-codex/work/49/install/uv-cache",
+          "UV_PYTHON_INSTALL_DIR": "/home/user/astrid/proof-codex/work/49/install/xdg-data/astrid/bootstrap/python",
+          "UV_PYTHON_PREFERENCE": "only-managed",
+          "XDG_DATA_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-data",
+          "XDG_STATE_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-state",
+          "XDG_CONFIG_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-config",
+          "XDG_CACHE_HOME": "/home/user/astrid/proof-codex/work/49/install/xdg-cache",
+          "npm_config_cache": "/home/user/astrid/proof-codex/work/49/install/npm-cache",
+          "BUN_INSTALL_CACHE_DIR": "/home/user/astrid/proof-codex/work/49/install/bun-cache",
+          "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+          "ASTRID_RUNTIME_DOOR_PORT": "53541",
+          "BROWSER": "/bin/true",
+          "PYTHONDONTWRITEBYTECODE": "1",
+          "umask": "077"
+        },
+        "source": "H logs/post-verification-results.json and installed-cli-smoke.log; SHA256 e7f9b7b0263ea83a7c0d4f23b9241455d8cfa352994cbd4da627ded4244e2183 and c7923a556259956bdfd7117882790311cc47c9e4d4c56cab7fd0eabf1792a090",
+        "result": "exit 0; combined stdout/stderr root help lists H3 plan/run/compose/edit",
+        "scope": "partial root help observation only; no H3 subcommand, SDK signature or P1 capture verified; H installation path may be removed",
+        "fault_control": "none",
+        "raw_evidence": "H installed-cli-smoke.log combined stream and post-verification-results.json exit record; no capture index"
       }
     },
     {
@@ -73,9 +143,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P2",
-      "command_gap": "No R8 command, case matrix, fixture bytes or owner-approved readiness profile is supplied; old plan command is not transferable evidence.",
+      "command_gap": "Installed r10c preview entry/call with a bound scenario request and no-acquisition observation hook.",
       "cpu_preparable": [
-        "Build branch checklist and expected schema checklist; cannot assert exact output values without R8 source/schema and approved inputs."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:10",
@@ -91,12 +161,8 @@
       ],
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P2",
-      "historical_command_template_note": "Derived from G0-RUN older tuple; placeholders require approved bytes, safe paths and verified R8 interface. It is not complete branch coverage.",
-      "historical_command_templates": [
-        "<installed-python> -m astrid h3 plan --prompt <prompt> --duration <seconds> --reference <fixture> --asset-map <map> --out <output-directory>"
-      ],
       "id": "P2-preview-eligibility",
-      "inputs_fixture_identity": "Named immutable request/spec plus reference/managed-asset fixture per branch; exact fixture bytes and approved identities are absent.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P1 fixture/operation map",
         "P3 frozen input identities"
@@ -113,11 +179,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     },
     {
       "checks": [
@@ -129,9 +198,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P3",
-      "command_gap": "Missing approved fixture bytes, exact R8 path and invocation. Do not substitute historical synthetic fixture hashes.",
+      "command_gap": "Installed real-boundary preflight invocation and test-owned bundle tamper control for a named case.",
       "cpu_preparable": [
-        "Define expected inventory fields and confinement cases; approved fixture source/identity must be furnished before concrete rows can be filled."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:11",
@@ -149,7 +218,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P3",
       "id": "P3-frozen-inputs-assets",
-      "inputs_fixture_identity": "Exact approved request/spec/source files and asset bundle/member inventory required. G0-RUN reports missing pinned public_workspace.py (required SHA256 ce8a88a9e40965710bca31c9107bc3e61e0246b00137d63873e266bff4482d51) and absent approved T9 readiness profile; neither supplies approved R8 fixture identity.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario. Historical public workspace and NEW-IDENTITY workspace adapter are distinct approved identities; missing bytes/compatibility must be resolved without substituting one for the other.",
       "order_after": [
         "P1 case map"
       ],
@@ -166,11 +235,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario. Historical public workspace and NEW-IDENTITY workspace adapter are distinct approved identities; missing bytes/compatibility must be resolved without substituting one for the other."
     },
     {
       "checks": [
@@ -182,9 +254,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P4",
-      "command_gap": "Requires separately gated R8 GPU action and exact approved media/request fixtures. No CPU command can establish these engine outputs.",
+      "command_gap": "Installed real-boundary output-validation invocation and engine response control for a named role case.",
       "cpu_preparable": [
-        "Specify role/cardinality assertions and output naming; do not fabricate engine media or hashes."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:12",
@@ -201,7 +273,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P4",
       "id": "P4-raw-av-roles",
-      "inputs_fixture_identity": "Approved paired AV source and request fixtures with frozen bytes; exact R8 source identities and role matrix absent.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P3 frozen inputs",
         "P10 admitted and qualified execution context"
@@ -219,11 +291,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     },
     {
       "checks": [
@@ -236,9 +311,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P5",
-      "command_gap": "No approved fixture set, exact R8 invocation, or end-to-end product boundary contract to enumerate all expected values.",
+      "command_gap": "Installed compose/verify invocation and spool tamper control for a named media case.",
       "cpu_preparable": [
-        "Prepare schema and evidence checklist only; no media/hash claims."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:13",
@@ -257,7 +332,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P5",
       "id": "P5-compose-verify",
-      "inputs_fixture_identity": "Frozen approved source, mask, edit/continuation and AV fixtures; exact identities absent. Historical synthetic worker bytes are not R8 captures.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P3 frozen inputs",
         "P4 raw output roles"
@@ -276,11 +351,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     },
     {
       "checks": [
@@ -291,9 +369,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P6",
-      "command_gap": "Exact output destination, expected schemas, invocation and atomic failure injection are unspecified.",
+      "command_gap": "Installed managed export invocation and second-file staging failure control.",
       "cpu_preparable": [
-        "List schema assertions; exact failure injection mechanism unavailable."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:14",
@@ -312,7 +390,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P6",
       "id": "P6-managed-delivery-export",
-      "inputs_fixture_identity": "Approved delivery destination and output-role fixtures; exact identities absent.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P4 raw roles",
         "P5 verified compose output"
@@ -330,11 +408,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     },
     {
       "checks": [
@@ -346,9 +427,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P7",
-      "command_gap": "Need exact API entrypoints, status polling argv, schema version and run/task identity from accepted R8 source; cannot infer from historical receipt.",
+      "command_gap": "Installed receipt reader invocation and supported-version catalogue for a named version-refusal case.",
       "cpu_preparable": [
-        "Define required raw fields and association checks after exact schema available."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:15",
@@ -366,7 +447,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P7",
       "id": "P7-receipt-status",
-      "inputs_fixture_identity": "Same frozen request and run identity as linked P2-P6; exact R8 fixture and run association must be retained.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P5 verify",
         "P6 delivery"
@@ -384,11 +465,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     },
     {
       "checks": [
@@ -400,9 +484,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P8",
-      "command_gap": "Requires accepted live prompt and explicit API signatures, job isolation and race schedule absent from references.",
+      "command_gap": "Installed cancellation interface and controllable prompt/ACK race schedule.",
       "cpu_preparable": [
-        "Draft race schedule and ownership assertions; cannot establish engine queue semantics on CPU synthetic data."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:16",
@@ -420,7 +504,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P8",
       "id": "P8-cancellation",
-      "inputs_fixture_identity": "Approved cancel-capable R8 run and prompt/attempt identities; no accepted prompt fixture or successful lifecycle baseline documented.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P4 accepted prompt/run",
         "P10 qualified custody"
@@ -438,11 +522,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     },
     {
       "checks": [
@@ -454,9 +541,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P9",
-      "command_gap": "Need accepted tuple API entrypoints, crash injection/restart procedure, and exact durable identity fields. No runnable invocation specified.",
+      "command_gap": "Installed recovery interface and controlled response-loss or crash/restart schedule.",
       "cpu_preparable": [
-        "Prepare lifecycle assertion checklist; do not present manual synthetic settlement as R8 result."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:17",
@@ -475,7 +562,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P9",
       "id": "P9-follow-ack-recovery",
-      "inputs_fixture_identity": "Frozen request plus durable task/attempt/submission identities; exact R8 action and recovery fixture unavailable.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P3 frozen request",
         "P4 admitted action",
@@ -495,11 +582,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     },
     {
       "checks": [
@@ -513,9 +603,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P10",
-      "command_gap": "No approved readiness profile, complete source node, live endpoint or executable procedure supplied; GPU/lease boundary cannot be reproduced in CPU prep.",
+      "command_gap": "Exact installed invocation for the real H3 admission/claim and subsequent custody/lease case.",
       "cpu_preparable": [
-        "Specify fields and required audit points only; cannot assert qualification/custody from synthetic CPU harness."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:18",
@@ -535,7 +625,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P10",
       "id": "P10-qualification-lease-custody",
-      "inputs_fixture_identity": "Approved installed Agent/Runtime/VibeComfy tuple and owner-approved lifecycle/profile/manifest inputs. R8 tuple is frozen by brief but is not qualified by this inventory; historical fixture identity/profile are explicitly unapproved.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario. Historical public workspace and NEW-IDENTITY workspace adapter are distinct approved identities; missing bytes/compatibility must be resolved without substituting one for the other.",
       "order_after": [
         "separately gated installed readiness/claim pass"
       ],
@@ -554,11 +644,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario. Historical public workspace and NEW-IDENTITY workspace adapter are distinct approved identities; missing bytes/compatibility must be resolved without substituting one for the other."
     },
     {
       "checks": [
@@ -570,9 +663,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P11",
-      "command_gap": "Need authoritative error catalogue, input variants, CLI parsers and status API on exact R8 source; historical refusal samples cover only a subset.",
+      "command_gap": "Installed error/status entrypoint and exact input for each named refusal case.",
       "cpu_preparable": [
-        "Extract full error enum/schema after R8 source references provided; no inferred errors."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:19",
@@ -590,7 +683,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P11",
       "id": "P11-errors-status",
-      "inputs_fixture_identity": "One named invalid request per error family plus status-driving R8 lifecycle fixtures; exact error catalogue and request bytes are absent.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P1 option map",
         "P3 request fixtures",
@@ -609,11 +702,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     },
     {
       "checks": [
@@ -625,9 +721,9 @@
       ],
       "command": null,
       "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P12",
-      "command_gap": "Need authoritative operation schemas, workflow fixtures and live target/receipt identity. H3 staged proof alone is insufficient.",
+      "command_gap": "Installed shared-child/stitch invocation and dependency-failure control for a named case.",
       "cpu_preparable": [
-        "Enumerate operation/schema checklist once authoritative schemas and fixture identities exist."
+        "Review the 052 operation/fault map and 053 fixture authority; do not run a capture in this task."
       ],
       "evidence_refs": [
         "G0-COVERAGE.md:20",
@@ -646,7 +742,7 @@
       "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
       "family": "P12",
       "id": "P12-shared-machinery",
-      "inputs_fixture_identity": "Approved VibeComfy workflow and shared machinery fixtures with exact hashes; historical structural-only validate does not provide target/live identity.",
+      "inputs_fixture_identity": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario.",
       "order_after": [
         "P3 frozen shared inputs",
         "P10 qualified installed target where required"
@@ -664,11 +760,14 @@
       ],
       "state": "uncaptured",
       "tuple": {
-        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+        "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
         "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
         "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
-      }
+      },
+      "command_confidence": "unresolved",
+      "baseline_disposition": "A-only (no baseline)",
+      "fixture_binding": "No per-scenario baseline fixture identified in approved G0-FIXTURES report or 051 manifest; A-only (no baseline). Shared support identities are listed in fixture_authority; do not infer they cover this scenario."
     }
   ],
   "command_fault_map": "COMMAND-FAULT-MAP.md",
@@ -712,22 +811,77 @@
     }
   ],
   "global_gaps": [
-    "No exact R8 argv, environment, interpreter command, fixture bytes/approved identities or source-to-case mapping has been supplied for any complete P1-P12 manifest.",
-    "No historical G0 capture is R8 evidence: old tuples differ; all P coverage remains uncaptured, and reports explicitly describe partial coverage.",
-    "Concrete artifact filenames listed here are proposed raw capture names, not evidence that those files exist or that invocations are runnable.",
-    "The R8 brief governs the later GPU session and is not authorization for this helper to execute capture operations.",
-    "Historical H81\u2192A537 census is not a complete R8 source-to-case mapping or an approved complete baseline; owner must resolve compatibility or A-only disposition before parity acceptance.",
-    "P10 is phased: installed readiness/admission is a gate before P4; endpoint/lease/custody lifecycle scenarios require their own run and may span later phases. Never wait for all P10 outcomes before beginning P4."
+    "All 12 complete row commands remain null: installed r10c interface and scenario-specific controls have not been evidenced.",
+    "No complete compatible baseline exists; scenarios without an identified baseline fixture are A-only (no baseline).",
+    "Fixture approvals establish only the exact named digests, not available bytes, case associations, live readiness, or additional media identities.",
+    "All raw paths are proposed collection names; 0 real R8 captures or tuple qualification are established.",
+    "P10 readiness/admission is a gate before P4; lease lifecycle coverage may span later phases."
   ],
-  "packet_revision": "052 / 2026-11-02",
+  "packet_revision": "053 / 2026-11-02",
   "schema": "r8-g0-capture-manifest/v1",
   "state_rule": "All families and scenarios are uncaptured. Transition only after real immutable raw evidence, exact installed tuple and invocation, nonzero executed/collected count, and reviewed source-to-case/artifact mapping. Record actual exit codes, including expected zero.",
-  "status": "BLOCKED: scenario-level executable commands, approved fixtures, and compatible full baseline have not been established",
+  "status": "BLOCKED: no complete installed-r10c scenario command established; all rows uncaptured",
   "tuple": {
-    "agent": "35bae39a586711547722e2724f0a1d52895a2783",
-    "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+    "agent": "1bc0f7d43bf03e3c8442676e47cecff308053acc",
+    "agent_alignment": "H r10c launch records lock-only aligned Agent c5327cc208d21fd0f865fd28d16701bae9c1a9bc; qualification remains pending.",
     "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
     "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
   },
-  "tuple_status": "frozen for later R8 session; not qualified here"
+  "tuple_status": "frozen for later R8 session; not qualified here",
+  "installed_provenance": {
+    "status": "r10c installer exit 0, installed import and root CLI help smoke exit 0; child driver failed before admission/claim; final qualification not established",
+    "launch_record_sha256": "cf532d5a7c456458948f203af215b926df647aadf0ea70bee9798200dc07422a",
+    "effective_manifest_sha256": "5b407724f5270eba72acbf74912e759a11844bfd106d2cf92384fe33050c101f",
+    "aligned_agent": "c5327cc208d21fd0f865fd28d16701bae9c1a9bc",
+    "aligned_tree": "852c01bc81a68cc91e19355a080050a73eef528c",
+    "runtime_lock_before_sha256": "78fda498598dd0a3155ffe46be7cac9e7f45adbbf0b1b2c2ebcd19bbe84841c6",
+    "runtime_lock_after_sha256": "76a18e91d6948b9d391369781e027bc3d73deb2fc4e9eb07903a0700a6353f40",
+    "source": "49_R8_VERIFIED_LAUNCH-r10c/logs/launch-record.json and lock-alignment.json; independently checked local commit diff and lock bytes",
+    "installed_python": "/home/user/astrid/proof-codex/work/49/install/program/versions/c5327cc2-aa1c91d9-831068e1/py/bin/python",
+    "installed_purelib": "/home/user/astrid/proof-codex/work/49/install/program/versions/c5327cc2-aa1c91d9-831068e1/py/lib/python3.11/site-packages",
+    "post_install_state_sha256": "4d694e155caa6a1c9892ac977b836a239a7dde8fdfc4a1b6f943e90b16155fe7",
+    "installed_manifest_identity_sha256": "560cf87965ba14e509b0ceadd876337f247845ef80eaa23967c04220930628c8",
+    "installed_boundary_source_identity_sha256": "3ddecd2bc1e35ee842c0662f1459da516e63f0b4ec6f793f2ba7804f9e9a581a",
+    "limits": "Selected 11 modules matched frozen source; those modules do not establish the H3 console or SDK interface. H may clean up the installation; this is an observed identity, not a reusable path guarantee.",
+    "installed_interpreter_inventory_sha256": "4ad9a107da171f51406c27a642f4111530d6cae9a891fcc72f22b4eb4bab71ea",
+    "post_verification_results_sha256": "e7f9b7b0263ea83a7c0d4f23b9241455d8cfa352994cbd4da627ded4244e2183",
+    "installed_child_log_sha256": "a66143fae45612c1f8a573f49ccf75940a9f99d67a402e606742c15e46ed1332",
+    "child_failure": "installed-child.py:68 backend.verify(version,data) raised TypeError: Backend.verify() missing 1 required positional argument: realm_id; admission/claim not reached; await H outcome"
+  },
+  "fixture_authority": {
+    "directive": "M-GPU 2026-11-02 04:51Z approves exact identities in G0-FIXTURES report and 051 manifest, including the historical workspace fixture; approval does not create bytes, establish case association, a compatible baseline, or qualify synthetic readiness.",
+    "identities": [
+      {
+        "name": "historical public_workspace.py",
+        "sha256": "ce8a88a9e40965710bca31c9107bc3e61e0246b00137d63873e266bff4482d51",
+        "source": "051 manifest; reference/G0.md",
+        "availability": "reported missing; do not substitute"
+      },
+      {
+        "name": "NEW-IDENTITY workspace adapter",
+        "sha256": "f93d3129afd114a05c1542f468ed22db2f8ed6872b7deda9d703fe4a5aa1237c",
+        "source": "G0-FIXTURES/REPORT.md",
+        "availability": "historical identity; byte availability and compatibility not established"
+      },
+      {
+        "name": "test-only T9 template",
+        "sha256": "d29938b28ea11ac99b9f89b3787511d813484de70056f2776f3a47d0bffa464b",
+        "source": "G0-FIXTURES/REPORT.md",
+        "availability": "test-only; not installed readiness"
+      },
+      {
+        "name": "historical source profile",
+        "sha256": "d8c745aaec921c3e279abae4fbf9091bce2830fccaf2d8655364f08cbf6fb838",
+        "source": "G0-FIXTURES/REPORT.md",
+        "availability": "historical paths require regeneration; no regenerated identity approved by this task"
+      },
+      {
+        "name": "stopped-session synthetic CPU readiness profile",
+        "sha256": "2c50fedc3c1af033d27712a0605ea5b100137980e81a195feec10d9f21cb63ee",
+        "source": "G0-FIXTURES/REPORT.md",
+        "availability": "not reusable, not GPU-qualified"
+      }
+    ],
+    "row_disposition": "A-only (no baseline) where no per-scenario baseline fixture is identified by the approved sources; common support fixtures do not create scenario coverage."
+  }
 }
