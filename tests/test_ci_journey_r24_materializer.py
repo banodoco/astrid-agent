@@ -70,6 +70,34 @@ def test_pterm_and_documented_route_arguments_are_exact(tmp_path):
         )
 
 
+def test_install_candidate_preserves_the_first_identity_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(materializer, "_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        materializer,
+        "_installed",
+        lambda *args: (_ for _ in ()).throw(
+            materializer.MaterializerError("installed current selection mismatch")
+        ),
+    )
+    with pytest.raises(
+        materializer.MaterializerError,
+        match=(
+            "transport completed without a valid installed candidate: "
+            "installed current selection mismatch"
+        ),
+    ):
+        materializer._install_candidate(
+            node=tmp_path / "node",
+            pterm=tmp_path / "pterm",
+            resource=tmp_path / "resource",
+            manifest=tmp_path / "manifest.json",
+            home=tmp_path,
+            env={},
+            evidence=tmp_path,
+            receipt={},
+        )
+
+
 def test_runner_local_home_reaches_child_outside_pinokio_home(tmp_path):
     run_root = tmp_path / "run"
     pinokio_home = run_root / "pinokio-home"

@@ -285,7 +285,8 @@ def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Pat
         return _installed(resource / "app/astrid", manifest)
     except MaterializerError as exc:
         raise MaterializerError(
-            "pinokio-install transport completed without a valid installed candidate"
+            "pinokio-install transport completed without a valid installed candidate: "
+            f"{exc}"
         ) from exc
 
 
