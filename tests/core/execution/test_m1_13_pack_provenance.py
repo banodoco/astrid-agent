@@ -1,7 +1,9 @@
+import errno
 import json
 import mmap
 import os
 import shutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -573,14 +575,160 @@ def test_real_host_refuses_capture_while_writable_mmap_is_open(tmp_path, monkeyp
 
     monkeypatch.setattr(host, "_run_command_definition", execute)
     refused = False
-    with payload.open("r+b") as stream:
-        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE) as mapped:
-            mapped[:] = b"generation two\n"
-            mapped.flush()
-            try:
-                host.run_task(task, lease_token="lease-writable-mmap")
-            except (HostError, ValueError):
-                refused = True
+    stream = payload.open("r+b")
+    mapped = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE)
+    stream.close()
+    try:
+        mapped[:] = b"generation two\n"
+        mapped.flush()
+        try:
+            host.run_task(task, lease_token="lease-writable-mmap")
+        except (HostError, ValueError):
+            refused = True
+    finally:
+        mapped.close()
+
+    receipt_path = run_root / "result.json"
+    if receipt_path.exists():
+        assert not json.loads(receipt_path.read_text(encoding="utf-8")).get("pack_provenance")
+    assert refused
+    assert command_calls == []
+    assert runtime.failures
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux file leases are required")
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+def test_real_host_refuses_when_selected_pack_lease_is_unavailable(
+    tmp_path, monkeypatch, route,
+):
+    import fcntl
+
+    pack_root = (
+        _write_action_pack(tmp_path / "packs" / "hello_ext")
+        if route == "selected-action"
+        else _write_legacy_pack(tmp_path / "packs" / "hello_ext")
+    )
+    installed = pack_digest(pack_root)
+    write_pin(pack_root / "PIN", {
+        "version": 1, "source": "https://example.invalid/packs.git#hello_ext",
+        "commit": "1" * 40, "digest_rule": "pack-tree-v1",
+        "digest": installed, "origin": "user",
+    })
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    run_root = tmp_path / "run"
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], client=runtime, attempt_root=run_root)
+    host.discover()
+    task = _real_host_task(runtime, "hello_ext.run", "task-no-lease")
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    command_calls = []
+
+    def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        command_calls.append(True)
+        output_root.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(payload={}, process_id=12345, returncode=0)
+
+    monkeypatch.setattr(host, "_run_command_definition", execute)
+    original_fcntl = fcntl.fcntl
+    lease_calls = []
+
+    def no_lease(fd, operation, argument=0):
+        if operation == fcntl.F_SETLEASE:
+            lease_calls.append(fd)
+            raise OSError(errno.EOPNOTSUPP, "fixture lease unsupported")
+        return original_fcntl(fd, operation, argument)
+
+    monkeypatch.setattr(fcntl, "fcntl", no_lease)
+    refused = False
+    try:
+        host.run_task(task, lease_token="lease-no-lease")
+    except HostError:
+        refused = True
+
+    receipt_path = run_root / "result.json"
+    if receipt_path.exists():
+        assert not json.loads(receipt_path.read_text(encoding="utf-8")).get("pack_provenance")
+    assert lease_calls
+    assert refused
+    assert command_calls == []
+    assert runtime.failures
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux file leases are required")
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+def test_real_host_releases_partial_selected_pack_leases_on_failure(
+    tmp_path, monkeypatch, route,
+):
+    import fcntl
+
+    pack_root = (
+        _write_action_pack(tmp_path / "packs" / "hello_ext")
+        if route == "selected-action"
+        else _write_legacy_pack(tmp_path / "packs" / "hello_ext")
+    )
+    payload = pack_root / "generation.txt"
+    payload.write_text("generation one\n", encoding="utf-8")
+    installed = pack_digest(pack_root)
+    write_pin(pack_root / "PIN", {
+        "version": 1, "source": "https://example.invalid/packs.git#hello_ext",
+        "commit": "1" * 40, "digest_rule": "pack-tree-v1",
+        "digest": installed, "origin": "user",
+    })
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    run_root = tmp_path / "run"
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], client=runtime, attempt_root=run_root)
+    host.discover()
+    task = _real_host_task(runtime, "hello_ext.run", "task-partial-lease")
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    command_calls = []
+
+    def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        command_calls.append(True)
+        output_root.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(payload={}, process_id=12345, returncode=0)
+
+    monkeypatch.setattr(host, "_run_command_definition", execute)
+    original_fcntl = fcntl.fcntl
+    original_open = os.open
+    lease_calls = 0
+    leased_fds = []
+    fd_paths = {}
+
+    def track_open(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        fd_paths[fd] = Path(path)
+        return fd
+
+    def fail_later_lease(fd, operation, argument=0):
+        nonlocal lease_calls
+        if operation == fcntl.F_SETLEASE:
+            lease_calls += 1
+            if lease_calls == 4:
+                raise OSError(errno.EOPNOTSUPP, "fixture later lease unsupported")
+            result = original_fcntl(fd, operation, argument)
+            leased_fds.append((fd, fd_paths[fd]))
+            return result
+        return original_fcntl(fd, operation, argument)
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(fcntl, "fcntl", fail_later_lease)
+    refused = False
+    try:
+        host.run_task(task, lease_token="lease-partial-lease")
+    except HostError:
+        refused = True
+
+    assert lease_calls == 4
+    assert len(leased_fds) == 3
+    leased_sources = [path for _fd, path in leased_fds if path == payload]
+    assert leased_sources == [payload]
+    for fd, _path in leased_fds:
+        with pytest.raises(OSError) as closed:
+            os.fstat(fd)
+        assert closed.value.errno == errno.EBADF
+    writer_fd = original_open(payload, os.O_WRONLY | os.O_NONBLOCK)
+    os.close(writer_fd)
 
     receipt_path = run_root / "result.json"
     if receipt_path.exists():
