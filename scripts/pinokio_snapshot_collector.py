@@ -255,6 +255,16 @@ def validate_request(value: object) -> dict[str, Any]:
     targets = result.get("targets")
     if not isinstance(targets, Mapping) or targets.get("os") != expected_os:
         raise SnapshotCollectorError("request targets do not match the slot OS")
+    target_fields = {
+        "macos": {"os", "launchd_targets"},
+        "windows": {"os", "scheduled_task_paths", "service_names"},
+    }
+    if set(targets) != target_fields[expected_os]:
+        raise SnapshotCollectorError("request target fields differ for the slot OS")
+    for name in target_fields[expected_os] - {"os"}:
+        rows = targets.get(name)
+        if not isinstance(rows, list) or not all(isinstance(row, str) for row in rows):
+            raise SnapshotCollectorError(f"request targets.{name} must be a string list")
     _validate_tuple(result.get("tuple"))
     _validate_origin(result.get("origin"), str(slot_id))
     _validate_collector(result.get("collector"))
@@ -549,13 +559,22 @@ def platform_capture(request: Mapping[str, Any]) -> Capture:
     validated = validate_request(request)
     slot = str(validated["slot_id"])
     if slot.endswith("-macos"):
-        from scripts.pinokio_snapshot_macos import capture_snapshot
+        from scripts.pinokio_snapshot_macos import collect_snapshot
 
-        return capture_snapshot
+        def capture_macos(targets: Mapping[str, Any]) -> Mapping[str, Any]:
+            return collect_snapshot(targets["launchd_targets"])
+
+        return capture_macos
     if slot.endswith("-windows"):
-        from scripts.pinokio_snapshot_windows import capture_snapshot
+        from scripts.pinokio_snapshot_windows import collect_windows_snapshot
 
-        return capture_snapshot
+        def capture_windows(targets: Mapping[str, Any]) -> Mapping[str, Any]:
+            return collect_windows_snapshot(
+                scheduled_task_paths=targets["scheduled_task_paths"],
+                service_names=targets["service_names"],
+            )
+
+        return capture_windows
     raise SnapshotCollectorError("no fixed snapshot implementation for slot")
 
 

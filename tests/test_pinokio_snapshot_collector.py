@@ -149,6 +149,16 @@ def test_request_rejects_wrong_tuple_slot_artifact_and_duplicate_json(tmp_path: 
     with pytest.raises(collector.SnapshotCollectorError, match="action IDs"):
         collector.validate_request(request)
 
+    request = _request()
+    request["targets"]["unknown"] = []
+    with pytest.raises(collector.SnapshotCollectorError, match="target fields"):
+        collector.validate_request(request)
+
+    request = _request()
+    request["targets"]["launchd_targets"] = "gui/501/haus.astrid.runtime"
+    with pytest.raises(collector.SnapshotCollectorError, match="string list"):
+        collector.validate_request(request)
+
     path = (tmp_path / "request.json").resolve()
     path.write_text('{"schema":"one","schema":"two"}', encoding="utf-8")
     with pytest.raises(collector.SnapshotCollectorError, match="duplicate JSON key"):
@@ -181,3 +191,40 @@ def test_platform_observation_digest_is_recomputed(tmp_path: Path) -> None:
     with pytest.raises(collector.SnapshotCollectorError, match="structural digest"):
         with session.action("start", poll_interval_seconds=0.01):
             pass
+
+
+def test_platform_adapter_passes_only_os_specific_target_lists(monkeypatch) -> None:
+    mac_seen = []
+    windows_seen = []
+
+    monkeypatch.setattr(
+        "scripts.pinokio_snapshot_macos.collect_snapshot",
+        lambda targets: mac_seen.append(targets) or _capture({}),
+    )
+    mac_request = _request()
+    mac_capture = collector.platform_capture(mac_request)
+    mac_capture(mac_request["targets"])
+    assert mac_seen == [["gui/501/haus.astrid.runtime"]]
+
+    monkeypatch.setattr(
+        "scripts.pinokio_snapshot_windows.collect_windows_snapshot",
+        lambda **targets: windows_seen.append(targets) or _capture({}),
+    )
+    windows_request = _request()
+    windows_request["slot_id"] = "pinokio-fully-local-windows"
+    windows_request["origin"]["artifact_name"] = (
+        "r25-snapshots-pinokio-fully-local-windows-303-1"
+    )
+    windows_request["targets"] = {
+        "os": "windows",
+        "scheduled_task_paths": [r"\Astrid Runtime"],
+        "service_names": ["AstridRuntime"],
+    }
+    windows_capture = collector.platform_capture(windows_request)
+    windows_capture(windows_request["targets"])
+    assert windows_seen == [
+        {
+            "scheduled_task_paths": [r"\Astrid Runtime"],
+            "service_names": ["AstridRuntime"],
+        }
+    ]
