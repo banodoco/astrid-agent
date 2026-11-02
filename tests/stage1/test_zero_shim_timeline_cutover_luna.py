@@ -177,7 +177,7 @@ def test_runaway_schema_host_and_migration_are_absent() -> None:
 
 def test_pack_workers_are_result_only_and_have_no_timeline_write_binding() -> None:
     worker_paths = (
-        ROOT / "astrid/packs/video_editing/actions/cut/timeline_build.py",
+        ROOT / "astrid/packs/editorial/shared/timeline_build.py",
         ROOT / "astrid/packs/iteration/actions/assemble/run.py",
         ROOT / "astrid/packs/editorial/actions/refine/run.py",
     )
