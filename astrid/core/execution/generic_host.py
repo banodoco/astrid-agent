@@ -9727,9 +9727,12 @@ class GenericPackHost:
                                 "cancelled" if code == "cancelled" else "failed", minimal=True)
                 abort.set()
             try:
-                if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
-                    completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
-                                    fence=exact_fence, lease_id=lease_token)
+                if code == "cancelled":
+                    # Local containment is not a Runtime failure acknowledgement.
+                    # Match handle_guard_abort when cancellation is unavailable.
+                    if callable(getattr(self.client, "cancel", None)):
+                        completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
+                                        fence=exact_fence, lease_id=lease_token)
                 else:
                     ensure_failure(error)
             except BaseException as reporting_error:
