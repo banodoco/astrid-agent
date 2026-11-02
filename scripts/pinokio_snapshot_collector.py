@@ -318,7 +318,13 @@ class SnapshotSession:
         self._active: _ActionContext | None = None
         self._closed = False
         self._lock = threading.RLock()
-        _write_exclusive(self.output / "request.json", _canonical(self.request) + b"\n")
+        request_payload = _canonical(self.request) + b"\n"
+        self._request_file = {
+            "path": "request.json",
+            "sha256": _sha(request_payload),
+            "size_bytes": len(request_payload),
+        }
+        _write_exclusive(self.output / "request.json", request_payload)
 
     @property
     def binding_digest(self) -> str:
@@ -435,6 +441,28 @@ class SnapshotSession:
             paths = [row["path"] for row in self._files]
             if len(paths) != len(set(paths)):
                 raise SnapshotCollectorError("duplicate snapshot receipt path")
+            root_entries = {entry.name for entry in self.output.iterdir()}
+            if root_entries != {"request.json", "observations"}:
+                raise SnapshotCollectorError("snapshot receipt root contains missing or extra entries")
+            request_path = self.output / self._request_file["path"]
+            if request_path.is_symlink() or not request_path.is_file():
+                raise SnapshotCollectorError("snapshot request file is missing or substituted")
+            request_payload = request_path.read_bytes()
+            if (
+                len(request_payload) != self._request_file["size_bytes"]
+                or _sha(request_payload) != self._request_file["sha256"]
+            ):
+                raise SnapshotCollectorError("snapshot request bytes differ before finalization")
+            observations = self.output / "observations"
+            if observations.is_symlink() or not observations.is_dir():
+                raise SnapshotCollectorError("snapshot observation directory is substituted")
+            actual_observations: set[str] = set()
+            for entry in observations.iterdir():
+                if entry.is_symlink() or not entry.is_file():
+                    raise SnapshotCollectorError("snapshot observations contain a non-file entry")
+                actual_observations.add(f"observations/{entry.name}")
+            if actual_observations != set(paths):
+                raise SnapshotCollectorError("snapshot observations contain missing or extra files")
             for action in REQUIRED_ACTIONS:
                 phases = [row["phase"] for row in self._files if row["action"] == action]
                 if phases.count("before") != 1 or phases.count("boundary") != 1:
@@ -478,6 +506,7 @@ class SnapshotSession:
                         else "r36-external-origin-join-required"
                     ),
                 },
+                "request_file": dict(self._request_file),
                 "required_actions": list(REQUIRED_ACTIONS),
                 "actions": list(self._actions),
                 "files": list(self._files),

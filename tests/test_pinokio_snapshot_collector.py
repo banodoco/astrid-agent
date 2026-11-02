@@ -90,6 +90,12 @@ def test_exact_six_actions_write_bound_hashed_receipts(tmp_path: Path) -> None:
     assert receipt["status"] == "collector-complete"
     assert receipt["qualification"] == "requires-r36-verifier"
     assert receipt["m4_6_acceptance"] is False
+    request_raw = (session.output / "request.json").read_bytes()
+    assert receipt["request_file"] == {
+        "path": "request.json",
+        "sha256": hashlib.sha256(request_raw).hexdigest(),
+        "size_bytes": len(request_raw),
+    }
     assert len(receipt["files"]) == 18
     for row in receipt["files"]:
         raw = (session.output / row["path"]).read_bytes()
@@ -228,3 +234,27 @@ def test_platform_adapter_passes_only_os_specific_target_lists(monkeypatch) -> N
             "service_names": ["AstridRuntime"],
         }
     ]
+
+
+def test_finalization_rejects_unlisted_or_mutated_files(tmp_path: Path) -> None:
+    extra_session = collector.SnapshotSession(
+        _request(), tmp_path / "extra", capture=_capture
+    )
+    for action in collector.REQUIRED_ACTIONS:
+        with extra_session.action(action, poll_interval_seconds=0.01):
+            pass
+    (extra_session.output / "observations" / "unlisted.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    with pytest.raises(collector.SnapshotCollectorError, match="missing or extra"):
+        extra_session.finalize()
+
+    mutated_session = collector.SnapshotSession(
+        _request(), tmp_path / "mutated", capture=_capture
+    )
+    for action in collector.REQUIRED_ACTIONS:
+        with mutated_session.action(action, poll_interval_seconds=0.01):
+            pass
+    (mutated_session.output / "request.json").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(collector.SnapshotCollectorError, match="request bytes differ"):
+        mutated_session.finalize()
