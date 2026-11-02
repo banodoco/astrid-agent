@@ -436,11 +436,11 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     ``python_environment`` declares the locked interpreter and metadata index.
     This production caller constructs selected package facts from that index
     only after parsing the staged manifest, then passes them to the validator.
-    ``python_packages`` alternatively supplies an already verified inventory
-    of the locked Python environment, keyed by normalized name (lowercase, with dots
-    and underscores replaced by hyphens). Missing inventory fails closed.
-    Only names declared by the selected manifest are read from the inventory.
-    The two inventory forms are mutually exclusive; there is no ambient fallback.
+    Inventory keys use normalized names (lowercase, dots/underscores replaced
+    by hyphens). Only declared requirement names are read. Missing inventory
+    fails closed. Legacy ``python_packages`` snapshots are accepted for call
+    compatibility but supply no admission facts: package names/versions alone
+    cannot establish locked provenance. There is no ambient fallback.
     """
     if python_environment is not None and python_packages is not None:
         raise PackInstallError("python_inventory_failed", "Declare exactly one locked Python inventory.")
@@ -513,8 +513,7 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                 if python_environment is not None:
                     packages = python_environment.selected_packages(requirements)
                 else:
-                    inventory = python_packages if python_packages is not None else {}
-                    packages = {name: inventory[name] for name in requirements if name in inventory}
+                    packages = {}
                 candidate: PackFacts = {
                     "id": pack_id, "canonical_root": str(destination), "schema_version": 3,
                     "origin": origin, "source": source_text, "commit": commit,

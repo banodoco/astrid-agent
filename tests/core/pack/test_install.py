@@ -931,13 +931,16 @@ def test_selected_python_inventory_ignores_ambient_distributions(repo, root, tmp
         info = ambient / f"{name}-1.0.dist-info"
         info.mkdir(parents=True)
         (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+    locked = tmp_path / "locked/selected_demo-1.0.dist-info/METADATA"
+    locked.parent.mkdir(parents=True)
+    locked.write_text("Metadata-Version: 2.1\nName: selected_demo\nVersion: 1.0\n")
     script = r'''
 import importlib.metadata as metadata
 import os, sys
 from pathlib import Path
 from astrid.core.pack.install import install_pack, PackInstallError
 from astrid.core.pack.identity import read_pin
-source, root, ambient = map(Path, sys.argv[1:])
+source, root, ambient, locked = map(Path, sys.argv[1:])
 sys.path.insert(0, str(ambient))
 assert metadata.version('selected-demo') == '1.0'
 assert metadata.version('unrelated-demo') == '1.0'
@@ -971,12 +974,24 @@ class Inventory(dict):
     def __getitem__(self, name):
         assert name == 'selected-demo', name
         return super().__getitem__(name)
-inventory = Inventory({'selected-demo': '1.0', 'unrelated-demo': '1.0'})
-result = install_pack(source=source, pack_id='hello_ext', packs_root=root, python_packages=inventory)
+try:
+    install_pack(source=source, pack_id='hello_ext', packs_root=root,
+                 python_packages=Inventory({'selected-demo': '1.0', 'unrelated-demo': '1.0'}))
+except PackInstallError as error:
+    assert error.code == 'missing_python', error.code
+else:
+    raise AssertionError('unverified package-name facts were approved')
+assert first.path.stat().st_ino == inode
+assert {str(p.relative_to(first.path)): p.read_bytes() for p in first.path.rglob('*') if p.is_file()} == before
+from astrid.core.pack.install import LockedPythonEnvironment
+inventory = Inventory({'selected-demo': ('1.0', locked),
+                       'unrelated-demo': ('1.0', ambient / 'unrelated_demo-1.0.dist-info/METADATA')})
+result = install_pack(source=source, pack_id='hello_ext', packs_root=root,
+                      python_environment=LockedPythonEnvironment(Path(sys.executable), inventory))
 assert result.changed
 assert not accesses, accesses
 assert not list(root.glob('.install-*'))
 '''
-    child = subprocess.run([sys.executable, "-c", script, str(repo.pack), str(root), str(ambient)],
+    child = subprocess.run([sys.executable, "-c", script, str(repo.pack), str(root), str(ambient), str(locked)],
                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
     assert child.returncode == 0, child.stderr
