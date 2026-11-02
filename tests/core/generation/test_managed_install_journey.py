@@ -59,7 +59,7 @@ def test_symlink_path_and_other_engine_are_rejected(tmp_path):
     with pytest.raises(OSError):
         prepare_install(root=str(tmp_path / 'link' / 'engine'))
     with pytest.raises(ValueError, match='only the indexed'):
-        prepare_install(root=str(tmp_path / 'engine'), engine='wan2gp')
+        prepare_install(root=str(tmp_path / 'engine'), engine='retired-engine')
 
 
 def test_small_free_space_is_observed_without_inventing_required_space(tmp_path, monkeypatch):

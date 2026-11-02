@@ -122,7 +122,7 @@ def test_v3_pack_discovery_preserves_generation_verb_extensions(
     packs_root = tmp_path / "astrid" / "packs"
     packs_root.mkdir(parents=True)
     declarations = {
-        "wan2gp": [
+        "fixturepack": [
             {"name": "generate_video", "module": "fixture_generation_handlers", "handler": "wan"}
         ],
         "vibecomfy": [

@@ -212,7 +212,7 @@ def test_dry_run_writes_nothing_and_does_not_claim(route, monkeypatch):
 
 
 @pytest.mark.parametrize('changes', [dict(consent=()), dict(max_usd=None), dict(deadline=None),
-    dict(deadline='2020-01-01T00:00:00Z'), dict(max_usd=float('nan')), dict(engine='wan2gp')])
+    dict(deadline='2020-01-01T00:00:00Z'), dict(max_usd=float('nan')), dict(engine='retired-engine')])
 def test_missing_fresh_paid_authority_denies_before_claim(route, changes):
     with pytest.raises((ValueError, RuntimeError)) as raised:
         generate_route(route, **{**PAID, **changes})

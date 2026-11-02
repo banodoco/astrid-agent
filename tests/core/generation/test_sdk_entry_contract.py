@@ -241,7 +241,7 @@ def test_task129_h3_producer_controls_keep_declared_boolean_validation(monkeypat
 
 
 @pytest.mark.parametrize('kwargs', [
-    {'engine': 'wan2gp'}, {'target': 'runpod'}, {'consent': 'user_env'},
+    {'engine': 'retired-engine'}, {'target': 'runpod'}, {'consent': 'user_env'},
     {'consent': ('standing_grant',)},
 ])
 def test_launch_rejects_invalid_controls_before_selection(monkeypatch, kwargs):
