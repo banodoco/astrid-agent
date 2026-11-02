@@ -695,3 +695,62 @@ def test_shared_publication_operations_do_not_select_platform_policy():
         tree = ast.parse(inspect.getsource(operation))
         attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
         assert not attributes & {"platform", "CDLL", "for_platform", "renameat2", "renamex_np"}
+
+
+def test_selected_python_inventory_ignores_ambient_distributions(repo, root, tmp_path):
+    # Real metadata lives on the child's sys.path, but is not a declared locked
+    # inventory. Observe filesystem access only after proving it is discoverable.
+    ambient = tmp_path / "ambient"
+    for name in ("selected_demo", "unrelated_demo"):
+        info = ambient / f"{name}-1.0.dist-info"
+        info.mkdir(parents=True)
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+    script = r'''
+import importlib.metadata as metadata
+import os, sys
+from pathlib import Path
+from astrid.core.pack.install import install_pack, PackInstallError
+from astrid.core.pack.identity import read_pin
+source, root, ambient = map(Path, sys.argv[1:])
+sys.path.insert(0, str(ambient))
+assert metadata.version('selected-demo') == '1.0'
+assert metadata.version('unrelated-demo') == '1.0'
+first = install_pack(source=source, pack_id='hello_ext', packs_root=root)
+before = {str(p.relative_to(first.path)): p.read_bytes() for p in first.path.rglob('*') if p.is_file()}
+inode = first.path.stat().st_ino
+(source / 'pack.yaml').write_text((source / 'pack.yaml').read_text() +
+                                  'dependencies: {python_requirements: [selected_demo]}\n')
+accesses = []
+def observe(event, args):
+    if event in {'open', 'os.listdir', 'os.scandir'} and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        path = Path(os.fsdecode(args[0])).absolute()
+        if path == ambient or path.is_relative_to(ambient):
+            accesses.append((event, str(path)))
+sys.addaudithook(observe)
+try:
+    install_pack(source=source, pack_id='hello_ext', packs_root=root)
+except PackInstallError as error:
+    assert error.code == 'missing_python', error.code
+else:
+    raise AssertionError('ambient-only requirement was approved')
+assert first.path.stat().st_ino == inode
+assert {str(p.relative_to(first.path)): p.read_bytes() for p in first.path.rglob('*') if p.is_file()} == before
+assert read_pin(first.path / 'PIN')
+class Inventory(dict):
+    def __iter__(self):
+        raise AssertionError('inventory was enumerated')
+    def __contains__(self, name):
+        assert name == 'selected-demo', name
+        return super().__contains__(name)
+    def __getitem__(self, name):
+        assert name == 'selected-demo', name
+        return super().__getitem__(name)
+inventory = Inventory({'selected-demo': '1.0', 'unrelated-demo': '1.0'})
+result = install_pack(source=source, pack_id='hello_ext', packs_root=root, python_packages=inventory)
+assert result.changed
+assert not accesses, accesses
+assert not list(root.glob('.install-*'))
+'''
+    child = subprocess.run([sys.executable, "-c", script, str(repo.pack), str(root), str(ambient)],
+                           text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    assert child.returncode == 0, child.stderr

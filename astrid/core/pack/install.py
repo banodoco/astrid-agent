@@ -20,7 +20,6 @@ import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from importlib import metadata
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -30,7 +29,7 @@ from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.identity import _entry_path, pack_digest, read_pin, write_pin
 from astrid.core.pack.personal import resolve_personal_packs_root
 from astrid.pack_imports import ImportContract, check_pack_imports
-from astrid.pack_validation import CompatibilityResult, PackFacts, PinFacts, validate_pack
+from astrid.pack_validation import CompatibilityResult, PackFacts, PinFacts, _requirements, validate_pack
 
 _ID = re.compile(r"[a-z][a-z0-9_]*\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -364,6 +363,10 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     Atomic replacement is supported on Linux/macOS; others fail closed.
     ``publication`` supplies a trusted host exchange policy; the default is
     constructed once for the host when this module is loaded.
+    ``python_packages`` is a caller-supplied inventory of the locked Python
+    environment, keyed by normalized requirement name (lowercase, with dots
+    and underscores replaced by hyphens). Missing inventory fails closed.
+    Only names declared by the selected manifest are read from the inventory.
     """
     if not isinstance(pack_id, str) or not _ID.fullmatch(pack_id):
         raise PackInstallError("invalid_id", "Pack id must be a safe Python identifier.")
@@ -398,9 +401,6 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
         facade_exports=frozenset(pack_api.__all__), sdk_names=frozenset(sdk.__all__),
         core_pack_apis={key: f"astrid.packs.{key}.api" for key, facts in selected.items() if facts.get("origin") == "core"},
     )
-    packages = dict(python_packages) if python_packages is not None else {
-        dist.metadata["Name"]: dist.version for dist in metadata.distributions() if dist.metadata["Name"]
-    }
     try:
         with _install_lock(root):
             if destination.is_symlink():
@@ -433,6 +433,9 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                     raise PackInstallError("pin_mismatch", "Observed pack digest does not match the expected digest.")
                 # ONE strict parser/schema and ONE pure compatibility checker.
                 manifest = validate_canonical_pack(stage, expected_pack_id=pack_id).definition.to_dict()
+                requirements = _requirements(manifest) or []
+                inventory = python_packages if python_packages is not None else {}
+                packages = {name: inventory[name] for name in requirements if name in inventory}
                 candidate: PackFacts = {
                     "id": pack_id, "canonical_root": str(destination), "schema_version": 3,
                     "origin": origin, "source": source_text, "commit": commit,
