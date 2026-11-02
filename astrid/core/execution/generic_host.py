@@ -14352,6 +14352,37 @@ def _send_activation_frame(control: socket.socket, value: Mapping[str, Any]) -> 
     )
 
 
+def _custody_fd_diag(point):
+    """Diagnostic only (lane/M-GPU/p1-runtime-custody-diag): fd numbers and socket state, never contents."""
+    try:
+        import json as _json, os as _os, select as _select, socket as _socket, stat as _stat, sys as _sys, time as _time
+        fds = []
+        for fd in range(32):
+            try:
+                st = _os.fstat(fd)
+            except OSError:
+                continue
+            entry = {"fd": fd, "sock": _stat.S_ISSOCK(st.st_mode), "ino": st.st_ino}
+            if entry["sock"]:
+                peer = _socket.socket(fileno=_os.dup(fd))
+                try:
+                    entry["type"] = peer.getsockopt(_socket.SOL_SOCKET, _socket.SO_TYPE)
+                    entry["err"] = peer.getsockopt(_socket.SOL_SOCKET, _socket.SO_ERROR)
+                    ready, _, _ = _select.select([peer], [], [], 0)
+                    entry["readable"] = bool(ready)
+                    if ready:
+                        entry["eof"] = peer.recv(1, _socket.MSG_PEEK) == b""
+                finally:
+                    peer.close()
+            fds.append(entry)
+        record = {"point": point, "monotonic": _time.monotonic(), "pid": _os.getpid(), "fds": fds}
+        _sys.stderr.write("astrid.custody_fd_diag " + _json.dumps(record, sort_keys=True) + "\n")
+        _sys.stderr.flush()
+    except Exception as exc:
+        import sys as _sys2
+        _sys2.stderr.write("astrid.custody_fd_diag error " + type(exc).__name__ + "\n")
+
+
 def _await_worker_activation(
     descriptor: int,
     *,
@@ -14388,6 +14419,7 @@ def _await_worker_activation(
     control = socket.socket(fileno=descriptor)
     try:
         control.settimeout(timeout_seconds)
+        _custody_fd_diag("host_before_activation_read")
         grant = _read_activation_frame(control)
         identified_grant = "acceptance_mode" in grant
         local_receipt = grant.get("acceptance_mode") == _ACTIVATION_RECEIPT_MODE
