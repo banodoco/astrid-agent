@@ -188,7 +188,6 @@ jobs:
           repository: banodoco/VibeComfy
           ref: ${{ steps.vibecomfy-pin.outputs.revision }}
           path: vibecomfy-checkout
-          token: ${{ secrets.VIBECOMFY_READ_TOKEN }}
 
       - name: Record VibeComfy checkout
         shell: bash
@@ -308,7 +307,6 @@ jobs:
           repository: banodoco/VibeComfy
           ref: ${{ steps.vibecomfy-pin.outputs.revision }}
           path: vibecomfy-checkout
-          token: ${{ secrets.VIBECOMFY_READ_TOKEN }}
 
       - name: Record VibeComfy checkout
         shell: bash
