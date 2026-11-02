@@ -410,6 +410,24 @@ def test_pinokiod_port_preflight_rejects_existing_listener():
             materializer._require_port_free(port)
 
 
+def test_pinokiod_port_preflight_matches_all_interface_engine_bind(monkeypatch):
+    selected = {}
+
+    class Probe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def bind(self, address):
+            selected["address"] = address
+
+    monkeypatch.setattr(materializer.socket, "socket", lambda *_args: Probe())
+    materializer._require_port_free(42123)
+    assert selected["address"] == ("0.0.0.0", 42123)
+
+
 @pytest.mark.parametrize("value", [
     "http://127.0.0.1:17340@foreign.example",
     "https://127.0.0.1:17340",
