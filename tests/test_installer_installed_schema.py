@@ -169,7 +169,8 @@ print(json.dumps({name: importlib.import_module(name).__file__ for name in names
 def _installed_script(state, version, script, *args):
     return json.loads(state.backend.run(
         [version.python, "-X", "utf8", "-I", "-B", "-c", script,
-         state.product_root, ROOT, version.root / "a", *args], extra_env=version.env,
+         state.product_root, ROOT, version.root / "a", *args, version.python],
+        extra_env=version.env,
     ))
 
 
@@ -186,15 +187,20 @@ def test_stage_binds_installed_reader_validator_and_service_to_verified_schema(s
     # checkout or external package fallback cannot satisfy the assertions below.
     (version.root / "a" / SCHEMA).write_text("{}", encoding="utf-8")
     value = _installed_script(state, version, r'''
-import hashlib, importlib, json, os, sys
+import hashlib, importlib, json, os, sys, sysconfig
 from pathlib import Path
 import jsonschema
 from astrid.core.rendering import _local_schema
 from astrid.core.timeline import banodoco_schema as reader
 from astrid.core.execution.generic_host import source_checkout_digest
-root, checkout, acquired = map(Path, sys.argv[1:4])
+root, checkout, acquired, staged_python = map(Path, sys.argv[1:5])
 path = root / 'astrid/core/timeline/schema/timeline-config.schema.json'
-assert sys.flags.isolated and Path(sys.prefix) == root.parents[2]
+prefix = Path(sys.prefix).resolve()
+assert sys.flags.isolated
+assert Path(sys.executable).resolve() == staged_python.resolve()
+assert prefix == staged_python.parent.parent.resolve()
+assert root.resolve() == Path(sysconfig.get_path('purelib')).resolve()
+assert root.resolve().is_relative_to(prefix)
 assert Path.cwd() != checkout and not Path.cwd().is_relative_to(checkout)
 assert all(not Path(p).is_relative_to(checkout) and not Path(p).is_relative_to(acquired)
            for p in sys.path if p)
