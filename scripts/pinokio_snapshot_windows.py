@@ -57,6 +57,17 @@ function Error-Fact($record) {
     }
 }
 
+function Get-TaskByPath($service, [string]$path) {
+    $separator = $path.LastIndexOf('\')
+    if ($separator -lt 0 -or $separator -eq ($path.Length - 1)) {
+        throw "scheduled-task path is malformed"
+    }
+    $folderPath = if ($separator -eq 0) { '\' } else { $path.Substring(0, $separator) }
+    $taskName = $path.Substring($separator + 1)
+    $folder = $service.GetFolder($folderPath)
+    return $folder.GetTask($taskName)
+}
+
 $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
 if ($processes.Count -gt [int]$request.max_processes) {
     throw "Win32_Process capacity exceeded"
@@ -80,7 +91,7 @@ $scheduler.Connect()
 $taskRows = @($request.scheduled_task_paths | ForEach-Object {
     $target = [string]$_
     try {
-        $task = $scheduler.GetTask($target)
+        $task = Get-TaskByPath $scheduler $target
         $actionRows = @($task.Definition.Actions | ForEach-Object {
             [ordered]@{
                 type = [int]$_.Type

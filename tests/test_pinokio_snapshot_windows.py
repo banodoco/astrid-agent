@@ -117,6 +117,15 @@ def test_present_observation_uses_fixed_powershell_and_has_canonical_digest() ->
     json.dumps(result, allow_nan=False)
 
 
+def test_scheduled_task_lookup_uses_task_folder_api() -> None:
+    program = collector._POWERSHELL_PROGRAM
+
+    assert "function Get-TaskByPath" in program
+    assert "$service.GetFolder($folderPath)" in program
+    assert "$folder.GetTask($taskName)" in program
+    assert "$scheduler.GetTask($target)" not in program
+
+
 def test_absent_and_collection_error_targets_remain_distinct_observations() -> None:
     payload = _payload()
     payload["scheduled_tasks"] = [{"target": TASK, "status": "absent"}]
@@ -138,6 +147,37 @@ def test_absent_and_collection_error_targets_remain_distinct_observations() -> N
     assert result["scheduled_tasks"] == [{"target": TASK, "status": "absent"}]
     assert result["services"][0]["status"] == "collection-error"
     assert result["services"][0]["error"]["category"] == "PermissionDenied"
+
+
+def test_scheduled_task_collection_error_remains_fail_closed() -> None:
+    payload = _payload()
+    payload["scheduled_tasks"] = [
+        {
+            "target": TASK,
+            "status": "collection-error",
+            "error": {
+                "type": "System.Management.Automation.RuntimeException",
+                "hresult": -2146233087,
+                "fully_qualified_error_id": "MethodNotFound",
+                "category": "InvalidOperation",
+            },
+        }
+    ]
+
+    result = _collect(payload)
+
+    assert result["scheduled_tasks"] == [
+        {
+            "target": TASK,
+            "status": "collection-error",
+            "error": {
+                "type": "System.Management.Automation.RuntimeException",
+                "hresult": -2146233087,
+                "fully_qualified_error_id": "MethodNotFound",
+                "category": "InvalidOperation",
+            },
+        }
+    ]
 
 
 def test_duplicate_process_pid_is_refused() -> None:
