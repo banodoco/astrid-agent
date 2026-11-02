@@ -1,0 +1,64 @@
+{
+  "gap": "Durable example/render evidence is partial operational evidence only. Schema consumption and Composition execution remain unobserved; prototype cannot qualify.",
+  "observations": {
+    "app_manifest_sha256": "920477210d01615a6698cda30f248552f13c712734e86ea56f283300cb1a9c87",
+    "bootstrap_sha256": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+    "composition_execution": "unobserved",
+    "data_root_initially_empty": true,
+    "example_render": {
+      "checkout_imports": "none-observed-in-sys-path-or-module-origins",
+      "composition_execution": "unobserved",
+      "error": {
+        "command": {
+          "exit_code": 1,
+          "stdout": {
+            "code": "unavailable",
+            "message": "an [redacted] [redacted] is [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted] [redacted]"
+          },
+          "validation": "nonzero-exit"
+        },
+        "phase": "project-command",
+        "type": "RuntimeError"
+      },
+      "example": {},
+      "interpreter": "/home/runner/work/_temp/t11-v05-t11-rt-r1/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11",
+      "module_origins": {
+        "astrid": "/home/runner/work/_temp/t11-v05-t11-rt-r1/program/versions/2de0726d-54533664-e80f2256/py/lib/python3.11/site-packages/astrid/__init__.py",
+        "astrid.sdk.timeline.api": "/home/runner/work/_temp/t11-v05-t11-rt-r1/program/versions/2de0726d-54533664-e80f2256/py/lib/python3.11/site-packages/astrid/sdk/timeline/api.py",
+        "runtime_protocol": "/home/runner/work/_temp/t11-v05-t11-rt-r1/program/versions/2de0726d-54533664-e80f2256/py/lib/python3.11/site-packages/runtime_protocol/__init__.py"
+      },
+      "recorded_composition_archive": "recorded by installer harness static archive comparison",
+      "render": {},
+      "schema_consumption": "unobserved",
+      "status": "partial-failed",
+      "sys_path": [
+        "/home/runner/work/_temp/t11-v05-t11-rt-r1/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-linux-x86_64-gnu/lib/python311.zip",
+        "/home/runner/work/_temp/t11-v05-t11-rt-r1/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-linux-x86_64-gnu/lib/python3.11",
+        "/home/runner/work/_temp/t11-v05-t11-rt-r1/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-linux-x86_64-gnu/lib/python3.11/lib-dynload",
+        "/home/runner/work/_temp/t11-v05-t11-rt-r1/program/versions/2de0726d-54533664-e80f2256/py/lib/python3.11/site-packages"
+      ],
+      "tuple": {
+        "agent_sha": "2de0726d1eaea7f7bd141251e088aa9fdf224525",
+        "app_sha": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
+        "runtime_sha": "5453366458f7b4ee874c94d15ae7952e3e82d3c3"
+      },
+      "verified_schema": "recorded by installer harness static tuple comparison",
+      "working_directory": "/home/runner/work/_temp/t11-v05-t11-rt-r1/work"
+    },
+    "example_render_exit_code": 1,
+    "installer_manifest_sha256": "7dbdeb3cc23cd2ab548ce200daf5a5798186186a8249f37e8ad1aa954ae71a43",
+    "profile_data_root_declaration_matches": true,
+    "recorded_composition_archive_sha256": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f",
+    "requested_shas": {
+      "agent": "2de0726d1eaea7f7bd141251e088aa9fdf224525",
+      "app": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
+      "runtime": "5453366458f7b4ee874c94d15ae7952e3e82d3c3"
+    },
+    "schema_consumption": "unobserved",
+    "service_declaration_sha256": "da5d75a86da9a1839e3dbd6aae2559e428a9f136ce03f9c6888eb5d906043b5d",
+    "source_profile_sha256": "c4d6e6e8342f192ad858de6dd661ba621f94afa98e5e8d9ebab8a796672d82fd",
+    "verified_tuple_timeline_schema_sha256": "f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
+  },
+  "phase": "live-observation-unavailable",
+  "status": "not-qualified"
+}
