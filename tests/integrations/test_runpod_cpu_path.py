@@ -344,6 +344,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     # These are the only substitutions: provider HTTP, plus a fail-closed
     # socket guard. Runtime, host, admission, adapter, lease and transport run.
     send = httpx.Client.send
+    send_requests = requests.Session.send
     def provider_response(request):
         try:
             return provider.handle(request)
@@ -359,6 +360,8 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
             response.read()
         return response
     def requests_send(session, request, **kwargs):
+        if httpx.URL(request.url).host in {"127.0.0.1", "localhost", "::1"}:
+            return send_requests(session, request, **kwargs)
         response = provider_response(httpx.Request(request.method, request.url, content=request.body))
         result = requests.Response()
         result.status_code, result._content = response.status_code, response.read()
