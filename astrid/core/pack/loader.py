@@ -109,6 +109,7 @@ def scan_packs(
     strict: bool = True,
     required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
     _validate: bool = True,
+    personal_packs_root: str | Path | None = None,
 ) -> PackScan:
     """Scan a pack root without importing pack code.
 
@@ -126,18 +127,20 @@ def scan_packs(
         roots = (*_default_pack_roots(), *(source.pack_root for source in sources))
         return scan_pack_roots(roots, include_hidden=include_hidden, strict=strict,
                                required_pack_ids=required_pack_ids, _validate=_validate,
-                               source_records={source.pack_id: source for source in sources})
+                               source_records={source.pack_id: source for source in sources},
+                               personal_packs_root=personal_packs_root)
     source_root = Path(root)
     from astrid.core.pack.transaction import group_read_lock
 
     with group_read_lock(source_root):
         return _scan_packs_locked(source_root, include_hidden=include_hidden,
                                   strict=strict, required_pack_ids=required_pack_ids,
-                                  _validate=_validate)
+                                  _validate=_validate, personal_packs_root=personal_packs_root)
 
 
 def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
-                       required_pack_ids: frozenset[str], _validate: bool) -> PackScan:
+                       required_pack_ids: frozenset[str], _validate: bool,
+                       personal_packs_root: str | Path | None = None) -> PackScan:
     if not source_root.is_dir():
         return PackScan((), ())
     packs: list[PackDefinition] = []
@@ -190,7 +193,8 @@ def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
         seen[pack.id] = manifest_path
         packs.append(pack)
     if _validate:
-        packs, compatibility_quarantine = _isolate_incompatible_packs(packs, required_pack_ids=required_pack_ids)
+        packs, compatibility_quarantine = _isolate_incompatible_packs(
+            packs, required_pack_ids=required_pack_ids, personal_packs_root=personal_packs_root)
         quarantined.extend(compatibility_quarantine)
     return PackScan(tuple(packs), tuple(quarantined))
 
@@ -200,6 +204,7 @@ def scan_pack_roots(
     roots: tuple[str | Path, ...], *, include_hidden: bool = False,
     strict: bool = False, required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
     _validate: bool = True, source_records: dict[str, Any] | None = None,
+    personal_packs_root: str | Path | None = None,
 ) -> PackScan:
     """Collect and collision-check all roots before resolving dependencies."""
     if source_records is None:
@@ -213,7 +218,8 @@ def scan_pack_roots(
     quarantined = [record for scan in scans for record in scan.quarantined]
     if _validate:
         packs, rejected = _isolate_incompatible_packs(
-            packs, required_pack_ids=required_pack_ids, source_records=source_records)
+            packs, required_pack_ids=required_pack_ids, source_records=source_records,
+            personal_packs_root=personal_packs_root)
         quarantined.extend(rejected)
     return PackScan(tuple(packs), tuple(quarantined))
 
@@ -237,6 +243,7 @@ def _isolate_incompatible_packs(
     *,
     required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
     source_records: dict[str, Any] | None = None,
+    personal_packs_root: str | Path | None = None,
 ) -> tuple[list[PackDefinition], list[QuarantinedPack]]:
     """Apply the shared pure compatibility validator to external pack inventory."""
     seen: dict[str, Path] = {}
@@ -284,6 +291,13 @@ def _isolate_incompatible_packs(
                         and (pack.root / "api.py").is_file()},
     )
     source_records = source_records or {}
+    if personal_packs_root is None:
+        from astrid.core.pack.personal import resolve_personal_packs_root
+        personal_packs_root = resolve_personal_packs_root()
+    canonical_personal_root = (
+        str((Path(personal_packs_root) / "personal").expanduser().resolve())
+        if personal_packs_root is not None else None
+    )
     active = packs
     while True:
         selected = {
@@ -309,6 +323,7 @@ def _isolate_incompatible_packs(
                 selected=selected, core_api=PACK_API_VERSION, release_pins=release_pins,
                 python_packages=python_packages,
                 import_violations=check_pack_imports(pack.root, contract=contract, manifest=manifest),
+                canonical_personal_root=canonical_personal_root,
             )
             if not result["ok"]:
                 reason = f"{result['reason']} {result['fix']}"

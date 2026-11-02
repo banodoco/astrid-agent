@@ -524,6 +524,7 @@ def _filtered_packs(
     inventory = discover_pack_metadata(
         extra_pack_roots=tuple(raw_roots),
         include_hidden=show_hidden if include_hidden is None else include_hidden,
+        personal_packs_root=personal_root,
     )
     packs = [record.pack for record in inventory]
     category = getattr(args, "category", None)

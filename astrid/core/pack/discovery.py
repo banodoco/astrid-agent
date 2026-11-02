@@ -102,7 +102,10 @@ def _tree_fingerprint(root: Path) -> str:
     return digest.hexdigest()
 
 
-def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan):
+def _discovery_fingerprint(
+    project_root, extra_pack_roots, managed_inventory, scan, *, include_hidden=False,
+    personal_packs_root=None,
+):
     from astrid.core.pack import loader
 
     # Preserve registry-specific scanner seams; their arbitrary inputs cannot
@@ -113,6 +116,8 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
     raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
     roots = [loader.packs_root(), Path.home() / "Astrid" / "packs", project_root / "astrid" / "packs",
              Path(__file__).with_name("schemas")]
+    if personal_packs_root is not None:
+        roots.append(Path(personal_packs_root).expanduser())
     roots.extend(source.pack_root for source in managed_inventory.sources)
     for raw_root in (*extra_pack_roots, *filter(None, raw_env.split(os.pathsep))):
         root = Path(raw_root).expanduser()
@@ -122,7 +127,8 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
                       for root in dict.fromkeys(roots))
     except OSError:
         return None  # Unreadable/racing inputs use ordinary admission and its errors.
-    return (str(project_root), tuple(extra_pack_roots), raw_env, managed_inventory.identity, trees)
+    return (str(project_root), tuple(extra_pack_roots), raw_env, managed_inventory.identity,
+            bool(include_hidden), str(personal_packs_root) if personal_packs_root is not None else None, trees)
 
 
 def reuse_pack_projection(projection: Callable[[], Any]) -> Any:
@@ -353,6 +359,7 @@ def discover_pack_metadata(
     extra_pack_roots: tuple[str, ...] = (),
     discover_packs_fn: DiscoverPacksFn | None = None,
     include_hidden: bool = False,
+    personal_packs_root: str | Path | None = None,
 ) -> tuple[DiscoveredPack, ...]:
     """Return discovered packs in layered priority order.
 
@@ -367,6 +374,10 @@ def discover_pack_metadata(
     working. Defaults to :func:`astrid.core.pack.discover_packs`.
     """
     scan = discover_packs_fn if discover_packs_fn is not None else discover_packs
+    selected_personal_root = (
+        Path(personal_packs_root).expanduser().resolve(strict=False)
+        if personal_packs_root is not None else None
+    )
     project_pack_root = (Path(project_root) / "astrid" / "packs").resolve()
     # Discovery is observational. Do not materialize a project-local pack just
     # because a registry was loaded; only an explicitly-authored manifest is
@@ -382,10 +393,7 @@ def discover_pack_metadata(
 
     def _add(pack: PackDefinition, source_kind: str, *, source_record: Any | None = None) -> None:
         if pack.id == "personal":
-            from astrid.core.pack.personal import resolve_personal_packs_root
-
-            personal_root = resolve_personal_packs_root()
-            if personal_root is not None and pack.root.resolve() == personal_root.resolve():
+            if selected_personal_root is not None and pack.root.resolve() == (selected_personal_root / "personal").resolve():
                 source_kind = "personal"
         metadata: dict[str, Any] = {}
         if source_record is not None:
@@ -418,7 +426,10 @@ def discover_pack_metadata(
     if cache is not None and managed_inventory is not None:
         # active_source_inventory verifies revision, cleanliness, manifest and
         # tree digests even when an admitted inventory can be reused below.
-        fingerprint = _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan)
+        fingerprint = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan,
+            include_hidden=include_hidden, personal_packs_root=selected_personal_root,
+        )
         if fingerprint is not None and fingerprint in cache:
             return deepcopy(cache[fingerprint])
 
@@ -528,7 +539,7 @@ def discover_pack_metadata(
     # Collect every layer before compatibility checks, so dependencies may
     # resolve across roots. Preserve the injectable scanner seam for callers.
     source_packs = (loader.scan_packs(loader.packs_root(), strict=False, include_hidden=include_hidden,
-                                      _validate=False).packs
+                                      _validate=False, personal_packs_root=selected_personal_root).packs
                     if scan is _default_discover_packs else scan())
     for pack in source_packs:
         if pack.id == "local":
@@ -543,7 +554,7 @@ def discover_pack_metadata(
             source_packs
             if scan is _default_discover_packs and loader.packs_root().resolve() == project_pack_root
             else (loader.scan_packs(project_pack_root, strict=False, include_hidden=include_hidden,
-                                    _validate=False).packs
+                                    _validate=False, personal_packs_root=selected_personal_root).packs
                   if scan is _default_discover_packs else scan(project_pack_root))
         )
         for pack in local_packs:
@@ -572,7 +583,8 @@ def discover_pack_metadata(
         records = {item.pack.id: managed_by_root[item.pack.root.resolve()]
                    for item in discovered if item.pack.root.resolve() in managed_by_root}
         admitted, _ = loader._isolate_incompatible_packs(
-            [item.pack for item in discovered], source_records=records)
+            [item.pack for item in discovered], source_records=records,
+            personal_packs_root=selected_personal_root)
         admitted_roots = {pack.root.resolve() for pack in admitted}
         unique_roots: set[Path] = set()
         discovered = [item for item in discovered
@@ -581,7 +593,8 @@ def discover_pack_metadata(
                                or unique_roots.add(item.pack.root.resolve()))]
     result = tuple(discovered)
     if fingerprint is not None and fingerprint == _discovery_fingerprint(
-        project_root, extra_pack_roots, managed_inventory, scan
+        project_root, extra_pack_roots, managed_inventory, scan,
+        include_hidden=include_hidden, personal_packs_root=selected_personal_root,
     ):
         # Do not publish a snapshot if its inputs changed during admission.
         cache[fingerprint] = deepcopy(result)

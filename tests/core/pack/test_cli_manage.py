@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from astrid.core.pack.cli import main
 from astrid.core.pack.identity import pack_digest, write_pin
+from astrid.core.pack.personal import ensure_personal_pack
 from astrid.core.pack.transaction import read_group
 
 
@@ -182,3 +183,57 @@ def test_core_pack_owns_conflicting_user_id_even_with_pin(tmp_path: Path, monkey
     output = capsys.readouterr().out
     assert "Shared" in output
     assert "User Copy" not in output
+
+
+def test_initialized_personal_pack_is_discovered_and_listed_from_selected_root(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from astrid.core.pack.discovery import discover_pack_metadata
+
+    home = tmp_path / "home"
+    selected = tmp_path / "selected-packs"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+
+    default_personal = ensure_personal_pack()
+    default_records = discover_pack_metadata(
+        personal_packs_root=home / "Astrid" / "packs",
+        extra_pack_roots=(str(home / "Astrid" / "packs"),),
+    )
+    assert next(item for item in default_records if item.id == "personal").source_kind == "personal"
+    assert main(["list"]) == 0
+    assert "Personal" in capsys.readouterr().out
+    assert default_personal.is_dir()
+
+    home = tmp_path / "selected-home"
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(selected))
+    selected_personal = ensure_personal_pack()
+    selected_records = discover_pack_metadata(
+        personal_packs_root=selected,
+        extra_pack_roots=(str(selected),),
+    )
+    assert next(item for item in selected_records if item.id == "personal").source_kind == "personal"
+    assert main(["list"]) == 0
+    assert "Personal" in capsys.readouterr().out
+    assert selected_personal.is_dir()
+
+
+def test_personal_impostor_and_duplicate_are_rejected(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+
+    from astrid.core.pack._common import PackValidationError
+    from astrid.core.pack.discovery import discover_pack_metadata
+
+    canonical_root = tmp_path / "canonical"
+    impostor_root = tmp_path / "impostor"
+    ensure_personal_pack(canonical_root)
+    (impostor_root / "personal").mkdir(parents=True)
+    (impostor_root / "personal" / "pack.yaml").write_text(
+        (canonical_root / "personal" / "pack.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    monkeypatch.setenv("ASTRID_PACKS_PATH", "")
+    with pytest.raises(PackValidationError, match="reserved for the canonical personal root"):
+        discover_pack_metadata(
+            personal_packs_root=canonical_root,
+            extra_pack_roots=(str(canonical_root), str(impostor_root)),
+        )

@@ -5,7 +5,7 @@ import yaml
 
 from astrid.core.pack import loader
 from astrid.core.pack._common import PackValidationError
-from astrid.core.pack.discovery import discover_pack_metadata
+from astrid.core.pack.discovery import discover_pack_metadata, pack_discovery_scope
 
 
 def _make(root: Path, pack_id: str, *, dependencies=(), source="") -> Path:
@@ -29,6 +29,35 @@ def test_dependency_resolves_across_configured_roots(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(second))
     result = discover_pack_metadata(project_root=tmp_path, extra_pack_roots=(str(first),))
     assert {item.id for item in result} == {"consumer", "provider"}
+
+
+@pytest.mark.parametrize("call_order", [(True, False), (False, True)])
+def test_discovery_cache_separates_hidden_policy_in_both_call_orders(tmp_path, monkeypatch, call_order):
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    external = tmp_path / "external"
+    _make(external, "visible")
+    hidden = _make(external, "hidden")
+    manifest = yaml.safe_load((hidden / "pack.yaml").read_text(encoding="utf-8"))
+    manifest["visibility"] = "hidden"
+    (hidden / "pack.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(loader, "packs_root", lambda: bundled)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.setenv("ASTRID_PACKS_PATH", "")
+
+    observed = {}
+    with pack_discovery_scope():
+        for include_hidden in call_order:
+            observed[include_hidden] = {
+                item.id for item in discover_pack_metadata(
+                    project_root=tmp_path,
+                    extra_pack_roots=(str(external),),
+                    include_hidden=include_hidden,
+                )
+            }
+
+    assert observed[False] == {"visible"}
+    assert observed[True] == {"visible", "hidden"}
 
 
 def test_checker_refuses_forbidden_import(tmp_path, monkeypatch):
