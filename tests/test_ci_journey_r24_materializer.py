@@ -79,6 +79,8 @@ def test_install_candidate_preserves_the_first_identity_error(tmp_path, monkeypa
             materializer.MaterializerError("installed current selection mismatch")
         ),
     )
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
     with pytest.raises(
         materializer.MaterializerError,
         match=(
@@ -93,9 +95,49 @@ def test_install_candidate_preserves_the_first_identity_error(tmp_path, monkeypa
             manifest=tmp_path / "manifest.json",
             home=tmp_path,
             env={},
-            evidence=tmp_path,
+            evidence=evidence,
             receipt={},
         )
+
+
+def test_install_candidate_persists_bounded_identity_inputs(tmp_path, monkeypatch):
+    monkeypatch.setattr(materializer, "_run", lambda *args, **kwargs: None)
+    resource = tmp_path / "resource"
+    backend = resource / "app/astrid"
+    version = backend / "versions/v1"
+    version.mkdir(parents=True)
+    (tmp_path / "data").mkdir()
+    (backend / "install.json").write_text(
+        json.dumps({"owner": "haus.astrid.runtime", "managed_by": "pinokio",
+                    "data_root": str(tmp_path / "data")}), encoding="utf-8",
+    )
+    (backend / "current").write_text("v1\n", encoding="utf-8")
+    (version / "version.json").write_text(
+        json.dumps({"root": str(tmp_path / "wrong"),
+                    "python": str(version / "venv/bin/python"),
+                    "profile": str(version / "profile.json"),
+                    "identity": {"release": 1, "managed_by": "pinokio"}}),
+        encoding="utf-8",
+    )
+    (version / "manifest.json").write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "candidate.json"
+    manifest.write_text("{}", encoding="utf-8")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    receipt = {}
+    with pytest.raises(materializer.MaterializerError, match="version root mismatch"):
+        materializer._install_candidate(
+            node=tmp_path / "node", pterm=tmp_path / "pterm", resource=resource,
+            manifest=manifest, home=tmp_path, env={}, evidence=evidence, receipt=receipt,
+        )
+    diagnostic = json.loads((evidence / "installed-identity.json").read_text())
+    assert diagnostic["current"]["text"] == "v1\n"
+    assert diagnostic["install_json"]["json"]["owner"] == "haus.astrid.runtime"
+    assert diagnostic["version_json"]["json"]["root"] == str(tmp_path / "wrong")
+    assert diagnostic["installed_manifest"]["sha256"] == diagnostic["candidate_manifest"]["sha256"]
+    assert receipt["installed_identity_diagnostic"]["sha256"] == hashlib.sha256(
+        (evidence / "installed-identity.json").read_bytes()
+    ).hexdigest()
 
 
 def test_installed_mode_receipt_is_parsed_and_bound_without_deriving_from_route(tmp_path):
