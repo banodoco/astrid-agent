@@ -127,6 +127,7 @@ def test_install_candidate_preserves_the_first_identity_error(tmp_path, monkeypa
             env={},
             evidence=evidence,
             receipt={},
+            expected_vibecomfy={"sha": "a" * 40},
         )
 
 
@@ -239,6 +240,7 @@ def test_pterm_transport_success_is_not_install_success(monkeypatch, tmp_path):
             manifest=manifest, home=tmp_path / "pinokio-home",
             env={"HOME": str(tmp_path / "installer-home")},
             evidence=tmp_path / "evidence", receipt={"commands": []},
+            expected_vibecomfy={"sha": "a" * 40},
         )
     assert calls[0][0] == materializer.pterm_argv(tmp_path / "node", tmp_path / "pterm",
                                                    "pinokio/install.js")
@@ -556,7 +558,8 @@ def test_installed_candidate_selection_is_manifest_and_root_bound(tmp_path):
     python.symlink_to(real_python.name)
     profile.write_text("{}")
     manifest = tmp_path / "candidate.json"
-    manifest.write_text('{"candidate": true}')
+    manifest.write_text(json.dumps({"candidate": True,
+                                    "vibecomfy": {"sha": "a" * 40}}))
     (backend / "current").write_text("v1")
     (backend / "install.json").write_text(json.dumps({
         "owner": "haus.astrid.runtime", "managed_by": "pinokio",
@@ -568,13 +571,102 @@ def test_installed_candidate_selection_is_manifest_and_root_bound(tmp_path):
         "profile": str(profile.resolve()),
         "identity": {"release": 1, "managed_by": "pinokio"}, "env": {},
     }))
-    selected, selected_data = materializer._installed(backend, manifest)
+    selected, selected_data = materializer._installed(
+        backend, manifest, {"sha": "a" * 40})
     assert selected["python"] == str(python)
     assert python.is_symlink()
     assert selected_data == data.resolve()
     (version_root / "manifest.json").write_text('{"candidate": false}')
     with pytest.raises(materializer.MaterializerError, match="candidate identity"):
-        materializer._installed(backend, manifest)
+        materializer._installed(backend, manifest, {"sha": "a" * 40})
+
+
+def _identity_backend(tmp_path, installed_manifest, candidate_manifest=None):
+    backend = tmp_path / "backend"
+    version_root = backend / "versions/v1"
+    data = tmp_path / "data"
+    python = version_root / "bin/python"
+    profile = version_root / "profile.json"
+    python.parent.mkdir(parents=True)
+    data.mkdir()
+    real_python = python.with_name("python3")
+    real_python.write_bytes(b"python")
+    python.symlink_to(real_python.name)
+    profile.write_text("{}")
+    (backend / "current").write_text("v1")
+    (backend / "install.json").write_text(json.dumps({
+        "owner": "haus.astrid.runtime", "managed_by": "pinokio",
+        "data_root": str(data.resolve()),
+    }))
+    (version_root / "manifest.json").write_text(json.dumps(installed_manifest))
+    (version_root / "version.json").write_text(json.dumps({
+        "root": str(version_root.resolve()), "python": str(python),
+        "profile": str(profile.resolve()),
+        "identity": {"release": 1, "managed_by": "pinokio"}, "env": {},
+    }))
+    manifest = tmp_path / "candidate.json"
+    manifest.write_text(json.dumps(candidate_manifest or {"candidate": True}))
+    return backend, manifest
+
+
+def test_derived_vibecomfy_identity_is_exactly_accepted(tmp_path):
+    agent = tmp_path / "agent"
+    pin = agent / materializer.VIBECOMFY_PIN
+    pin.parent.mkdir(parents=True)
+    pin.write_text(json.dumps({"schema": "astrid.engine-pins.v1", "sources": {
+        "vibecomfy": {"repository": materializer.VIBECOMFY_REPOSITORY,
+                      "revision": "a" * 40}}}))
+    expected, binding = materializer._derive_vibecomfy_identity(
+        agent, validated_agent_ref="a" * 40)
+    assert expected == {"sha": "a" * 40}
+    assert binding["pin_path"] == str(materializer.VIBECOMFY_PIN)
+    backend, manifest = _identity_backend(
+        tmp_path / "installed", {"candidate": True, "vibecomfy": expected})
+    selected, _ = materializer._installed(backend, manifest, expected)
+    assert selected["identity"] == {"release": 1, "managed_by": "pinokio"}
+
+
+@pytest.mark.parametrize("installed", [
+    {"candidate": True},
+    {"candidate": True, "vibecomfy": None},
+    {"candidate": True, "vibecomfy": {"sha": 7}},
+])
+def test_installed_vibecomfy_missing_or_malformed_fails_closed(tmp_path, installed):
+    backend, manifest = _identity_backend(tmp_path, installed)
+    with pytest.raises(materializer.MaterializerError, match="candidate identity|malformed"):
+        materializer._installed(backend, manifest, {"sha": "a" * 40})
+
+
+def test_installed_vibecomfy_wrong_or_unknown_value_fails_closed(tmp_path):
+    for value in ({"sha": "b" * 40}, {"sha": "unknown"}):
+        case = tmp_path / value["sha"]
+        backend, manifest = _identity_backend(
+            case, {"candidate": True, "vibecomfy": value})
+        with pytest.raises(materializer.MaterializerError, match="candidate identity"):
+            materializer._installed(backend, manifest, {"sha": "a" * 40})
+
+
+def test_installed_vibecomfy_is_bound_to_candidate_agent_pin(tmp_path):
+    agent = tmp_path / "agent"
+    pin = agent / materializer.VIBECOMFY_PIN
+    pin.parent.mkdir(parents=True)
+    pin.write_text(json.dumps({"sources": {"vibecomfy": {
+        "repository": materializer.VIBECOMFY_REPOSITORY,
+        "revision": "b" * 40}}}))
+    expected, _ = materializer._derive_vibecomfy_identity(
+        agent, validated_agent_ref="b" * 40)
+    backend, manifest = _identity_backend(
+        tmp_path / "binding", {"candidate": True, "vibecomfy": {"sha": "a" * 40}})
+    with pytest.raises(materializer.MaterializerError, match="candidate identity"):
+        materializer._installed(backend, manifest, expected)
+
+
+def test_candidate_app_vibecomfy_source_mismatch_fails_closed(tmp_path):
+    with pytest.raises(materializer.MaterializerError, match="differs from App manifest"):
+        materializer._expected_installed_manifest(
+            {"candidate": True, "vibecomfy": {"sha": "b" * 40}},
+            {"sha": "a" * 40},
+        )
 
 
 def test_installed_agent_client_source_must_match_checkout(tmp_path):

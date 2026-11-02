@@ -41,6 +41,8 @@ TASK_DURATION_SECONDS = 300
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+VIBECOMFY_PIN = Path("astrid/packs/vibecomfy/pins.json")
+VIBECOMFY_REPOSITORY = "https://github.com/banodoco/VibeComfy.git"
 
 
 class MaterializerError(RuntimeError):
@@ -70,6 +72,57 @@ def _read(path: Path) -> Any:
     if path.is_symlink() or not path.is_file():
         raise MaterializerError(f"missing regular file: {path}")
     return json.loads(path.read_bytes())
+
+
+def _vibecomfy_identity(value: Any, *, label: str) -> dict[str, str]:
+    if (not isinstance(value, dict) or set(value) != {"sha"}
+            or not isinstance(value["sha"], str)
+            or not HEX40.fullmatch(value["sha"])):
+        raise MaterializerError(f"{label} VibeComfy identity is malformed or unknown")
+    return {"sha": value["sha"]}
+
+
+def _derive_vibecomfy_identity(agent: Path, *, validated_agent_ref: str
+                               ) -> tuple[dict[str, str], dict[str, str]]:
+    """Derive installed VibeComfy identity from the exact candidate Agent source."""
+    if not HEX40.fullmatch(validated_agent_ref):
+        raise MaterializerError("candidate Agent ref is malformed or unknown")
+    pin_path = agent / VIBECOMFY_PIN
+    if pin_path.is_symlink() or not pin_path.is_file():
+        raise MaterializerError("candidate Agent VibeComfy pin is unavailable")
+    try:
+        pins = _read(pin_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise MaterializerError("candidate Agent VibeComfy pin is unreadable") from exc
+    sources = pins.get("sources") if isinstance(pins, dict) else None
+    source = sources.get("vibecomfy") if isinstance(sources, dict) else None
+    if (not isinstance(source, dict) or set(source) != {"repository", "revision"}
+            or source.get("repository") != VIBECOMFY_REPOSITORY
+            or not isinstance(source.get("revision"), str)
+            or not HEX40.fullmatch(source["revision"])):
+        raise MaterializerError("candidate Agent VibeComfy pin is malformed or unknown")
+    identity = {"sha": source["revision"]}
+    return identity, {
+        "agent_ref": validated_agent_ref,
+        "pin_path": str(VIBECOMFY_PIN),
+        "pin_sha256": _sha(pin_path),
+        "repository": VIBECOMFY_REPOSITORY,
+        "revision": source["revision"],
+    }
+
+
+def _expected_installed_manifest(candidate: Any,
+                                 expected_vibecomfy: dict[str, str]) -> dict[str, Any]:
+    expected = _vibecomfy_identity(expected_vibecomfy, label="derived")
+    if not isinstance(candidate, dict):
+        raise MaterializerError("candidate manifest is malformed")
+    missing = object()
+    declared = candidate.get("vibecomfy", missing)
+    if declared is not missing and _vibecomfy_identity(declared, label="candidate") != expected:
+        raise MaterializerError("candidate Agent VibeComfy pin differs from App manifest")
+    result = dict(candidate)
+    result["vibecomfy"] = expected
+    return result
 
 
 def _git(root: Path, *args: str) -> str:
@@ -293,6 +346,7 @@ def _engine_environment(home: Path, runner_home: Path) -> dict[str, str]:
 def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Path,
                        home: Path, env: dict[str, str], evidence: Path,
                        receipt: dict[str, Any],
+                       expected_vibecomfy: dict[str, str],
                        install_script: str = "pinokio/install.js") -> tuple[dict[str, Any], Path]:
     """Run the real PTerm route and require its genuine installer result.
 
@@ -307,7 +361,7 @@ def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Pat
          log=evidence / "install.log", receipt=receipt, label="pinokio-install",
          env=env, cwd=home, timeout=3600)
     try:
-        return _installed(resource / "app/astrid", manifest)
+        return _installed(resource / "app/astrid", manifest, expected_vibecomfy)
     except MaterializerError as exc:
         diagnostic_path = evidence / "installed-identity.json"
         try:
@@ -494,7 +548,8 @@ def _installed_identity_diagnostic(backend: Path, candidate_manifest: Path) -> d
     return result
 
 
-def _installed(backend: Path, candidate_manifest: Path) -> tuple[dict[str, Any], Path]:
+def _installed(backend: Path, candidate_manifest: Path,
+               expected_vibecomfy: dict[str, str]) -> tuple[dict[str, Any], Path]:
     install = _read(backend / "install.json")
     if (install.get("owner") != "haus.astrid.runtime"
             or install.get("managed_by") != "pinokio"):
@@ -515,6 +570,8 @@ def _installed(backend: Path, candidate_manifest: Path) -> tuple[dict[str, Any],
         raise MaterializerError("installed version directory mismatch")
     version_root = version_path.resolve(strict=True)
     version = _read(version_root / "version.json")
+    expected_manifest = _expected_installed_manifest(
+        _read(candidate_manifest), expected_vibecomfy)
     python = Path(str(version.get("python", "")))
     profile = Path(str(version.get("profile", "")))
     declared_root = Path(str(version.get("root", "")))
@@ -536,7 +593,7 @@ def _installed(backend: Path, candidate_manifest: Path) -> tuple[dict[str, Any],
         raise MaterializerError("installed profile mismatch")
     if version_root not in profile.resolve(strict=True).parents:
         raise MaterializerError("installed profile escapes version root")
-    if _read(version_root / "manifest.json") != _read(candidate_manifest):
+    if _read(version_root / "manifest.json") != expected_manifest:
         raise MaterializerError(
             "installed candidate identity mismatch: manifest differs from candidate"
         )
@@ -795,6 +852,12 @@ def execute(args: argparse.Namespace) -> int:
         manifest = checkouts["app"] / "public/install-manifest.json"
         if _sha(manifest) != candidate["manifest_sha256"]:
             raise MaterializerError("published manifest digest mismatch")
+        expected_vibecomfy, source_binding = _derive_vibecomfy_identity(
+            checkouts["agent"], validated_agent_ref=candidate["agent"])
+        receipt["installed_identity"] = {
+            "derived_vibecomfy": expected_vibecomfy,
+            "source_binding": source_binding,
+        }
         selected_node = shutil.which("node")
         if selected_node is None:
             raise MaterializerError("Node executable is unavailable")
@@ -837,6 +900,7 @@ def execute(args: argparse.Namespace) -> int:
             node=node, pterm=pterm, resource=resource, manifest=manifest,
             home=home, env=engine_env, evidence=evidence, receipt=receipt,
             install_script=install_script,
+            expected_vibecomfy=expected_vibecomfy,
         )
         mode_path = resource / "app/install-mode.json"
         expected_install_mode = "local" if selected_mode == "fully-local" else "backend"
