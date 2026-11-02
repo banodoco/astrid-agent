@@ -23,7 +23,9 @@ def redact(text, home):
     text = re.sub(r"/Users/[^/\s\"']+", "<REDACTED_HOME>", text)
     text = re.sub(r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)", "<REDACTED_TOKEN>", text)
     text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+", r"\1<REDACTED>", text)
+    text = re.sub(r"(?i)(https?://)[^/\s:@]+(?::[^/\s@]*)?@", r"\1<REDACTED>@", text)
     text = re.sub(r'(?i)(["\'](?:token|api[_-]?key|secret|password)["\']\s*:\s*["\'])[^"\']*', r'\1<REDACTED>', text)
+    text = re.sub(r"(?i)(\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_?KEY)[A-Z0-9_]*\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)", r"\1<REDACTED>", text)
     return text
 
 
@@ -78,7 +80,7 @@ def stage_evidence(run_root, output, home, supervisor, status):
     (output / "results-tree.txt").write_text("\n".join(redact(path, home) for path in tree) + "\n")
     (output / "status.json").write_text(json.dumps(status, indent=2, sort_keys=True) + "\n")
     (output / "EVIDENCE-README.txt").write_text(
-        "SHA256SUMS hashes this redacted artifact. source-SHA256SUMS.txt, when present, "
+        "SHA256SUMS hashes this best-effort redacted artifact. source-SHA256SUMS.txt, when present, "
         "is the original sequence manifest for unredacted pre-cleanup files; it may name files removed by cleanup.\n")
     entries = []
     for path in sorted(output.rglob("*")):
@@ -121,20 +123,30 @@ def preflight(home, temp, env):
     return command(["brew", "--prefix", "python@3.11"], env) + "/bin/python3.11"
 
 
+def build_env(home, temp, search_path):
+    config = temp / "r25-git-config"
+    config.mkdir(mode=0o700)
+    cache = temp / "r25-private-cache"
+    cache.mkdir(mode=0o700)
+    return {"PATH": search_path, "HOME": str(home),
+            "USER": "astrid-runner", "LOGNAME": "astrid-runner", "TMPDIR": str(temp),
+            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "XDG_CONFIG_HOME": str(config), "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+            "GIT_CONFIG_KEY_1": "core.hooksPath", "GIT_CONFIG_VALUE_1": "/dev/null",
+            "NPM_CONFIG_USERCONFIG": "/dev/null", "NPM_CONFIG_GLOBALCONFIG": "/dev/null",
+            "PIP_CONFIG_FILE": "/dev/null", "NPM_CONFIG_CACHE": str(cache / "npm"),
+            "PIP_CACHE_DIR": str(cache / "pip"), "UV_CACHE_DIR": str(cache / "uv"),
+            "BUN_INSTALL_CACHE_DIR": str(cache / "bun")}
+
+
 def execute():
     temp = Path(os.environ["RUNNER_TEMP"])
     output = temp / "r25-artifact"
     output.mkdir(mode=0o700, exist_ok=False)
     supervisor = temp / "r25-supervisor.log"
     home = Path(pwd.getpwuid(UID).pw_dir)
-    config = temp / "r25-git-config"
-    config.mkdir(mode=0o700)
-    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"), "HOME": str(home),
-           "USER": "astrid-runner", "LOGNAME": "astrid-runner", "TMPDIR": str(temp),
-           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
-           "XDG_CONFIG_HOME": str(config), "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "2",
-           "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
-           "GIT_CONFIG_KEY_1": "core.hooksPath", "GIT_CONFIG_VALUE_1": "/dev/null"}
+    env = build_env(home, temp, os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"))
     run_root = None
     status = {"status": "failed", "command_exit": "not-run", "aborted_low_disk": False}
     supervisor.touch(mode=0o600)

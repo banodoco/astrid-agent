@@ -59,3 +59,24 @@ def test_success_is_rejected_when_any_stage_exit_is_missing(tmp_path):
     log.write_text("ok")
     status = r25.stage_evidence(None, tmp_path / "artifact", tmp_path, log, {"status": "complete"})
     assert status["status"] == "failed" and "missing or nonzero" in status["reason"]
+
+
+def test_redacts_environment_values_unquoted_secrets_and_url_credentials(tmp_path):
+    text = ('TOKEN=alpha PASSWORD="two words" api_key:bravo '
+            'https://user:pass@example.test/path https://access@example.test/')
+    output = r25.redact(text, tmp_path)
+    for secret in ("alpha", "two words", "bravo", "user:pass", "access@"):
+        assert secret not in output
+    assert output.count("<REDACTED>") >= 5
+
+
+def test_subprocess_environment_ignores_user_config_and_uses_owned_temp_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "sensitive")
+    env = r25.build_env(tmp_path / "home", tmp_path, "/usr/bin:/bin")
+    assert "GITHUB_TOKEN" not in env
+    for name in ("NPM_CONFIG_USERCONFIG", "NPM_CONFIG_GLOBALCONFIG", "PIP_CONFIG_FILE"):
+        assert env[name] == "/dev/null"
+    cache = tmp_path / "r25-private-cache"
+    assert cache.stat().st_mode & 0o777 == 0o700
+    for name in ("NPM_CONFIG_CACHE", "PIP_CACHE_DIR", "UV_CACHE_DIR", "BUN_INSTALL_CACHE_DIR"):
+        assert Path(env[name]).is_relative_to(cache)
