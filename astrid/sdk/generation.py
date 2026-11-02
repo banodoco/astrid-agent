@@ -168,6 +168,18 @@ def _runpod_paid_controls(controls):
     return dict(consent=consent, max_usd=cap, deadline=deadline)
 
 
+def _refuse_foley_runpod(model: str | None, target: str | None) -> None:
+    """Keep the Fal-only Foley model outside RunPod before owner setup."""
+    if model == 'hunyuan-video-foley' and target == 'runpod':
+        from astrid.core.contracts.errors import AstridError
+
+        raise AstridError(
+            'Hunyuan Video Foley is unsupported on RunPod; use the Fal route instead.',
+            code='foley_runpod_unsupported', field='target',
+            fix='Use the Fal Foley route for hunyuan-video-foley.',
+        )
+
+
 def _runpod_target_policy(controls, *, engine="comfyui"):
     """Snapshot the user's disclosed offer and preferences into the task."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
@@ -948,6 +960,7 @@ class GenerationFacade:
             generation_error, readiness_envelope, compare_versions,
         )
 
+        _refuse_foley_runpod(model, target)
         is_remote_target = target == 'runpod'
         if is_remote_target:
             _runpod_paid_controls(controls)
@@ -1690,6 +1703,7 @@ class GenerationFacade:
         **inputs: Any,
     ) -> Any:
         _reject_retired_generation_inputs(inputs)
+        _refuse_foley_runpod(model, inputs.get('target'))
         if mode == "tts":
             speech_inputs = _speech_inputs_from_audio_request(inputs)
             invoke_out, invoke_project = _resolve_invoke_destination(

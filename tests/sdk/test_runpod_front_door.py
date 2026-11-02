@@ -208,6 +208,41 @@ def test_host_endpoint_route_admits_local_task_with_only_policy(route, raw, monk
     assert route.owner.events == []
 
 
+def test_foley_runpod_refuses_before_owner_or_allocation(monkeypatch):
+    """Foley is Fal-only; refusal precedes registry, policy and owner work."""
+    from astrid.core.contracts.errors import AstridError
+    import astrid.sdk as sdk
+
+    calls = []
+
+    class NoOwnerClient:
+        @property
+        def runpod_generation_owner(self):
+            calls.append('owner')
+            pytest.fail('RunPod owner constructed or accessed')
+
+        def invoke_result(self, *args, **kwargs):
+            calls.append(('invoke', args, kwargs))
+
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: pytest.fail('catalog/owner setup'))
+    monkeypatch.setattr('astrid.sdk.generation._runpod_target_policy',
+                        lambda *args, **kwargs: pytest.fail('RunPod policy constructed'))
+    client = NoOwnerClient()
+
+    with pytest.raises(AstridError) as caught:
+        GenerationFacade().audio(model='hunyuan-video-foley', mode='sfx', target='runpod',
+                                 video_ref='clip.mp4', client=client)
+
+    assert caught.value.code == 'foley_runpod_unsupported'
+    assert 'Fal' in str(caught.value)
+    assert calls == []
+
+
+def test_foley_catalog_has_no_runpod_backend():
+    model = ModelRegistry.load_default().get('hunyuan-video-foley')
+    assert set(model.modes['sfx'].backends) == {'cloud'}
+
+
 def test_status_and_release_are_runtime_tasks(route, monkeypatch):
     from astrid.packs.runpod import target_selection
     preferences = {'provider_account_ref': 'account-a', 'gpu_types': ['gpu-a'],
