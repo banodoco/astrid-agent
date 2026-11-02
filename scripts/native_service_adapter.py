@@ -1253,6 +1253,11 @@ class NativeOwner:
         self.source_xml_sha256 = ""
         self.exported_xml_sha256 = ""
         self.task_semantic_sha256 = ""
+        # These records are made only from this owner's existing manager,
+        # process and data probes.  They are checkpoint metadata, not a second
+        # observer or an admission signal.
+        self.initial_checkpoint_census: dict[str, Any] | None = None
+        self.final_checkpoint_census: dict[str, Any] | None = None
 
     def _run(
         self,
@@ -1500,6 +1505,101 @@ class NativeOwner:
     def assert_absent(self) -> None:
         if self._query() is not None:
             raise RuntimeError("pre-existing native service target is registered")
+
+    def capture_initial_checkpoint_census(self) -> dict[str, Any]:
+        """Independently re-read the unregistered manager target before open."""
+        if self._query() is not None:
+            raise RuntimeError("initial native checkpoint census found a registered target")
+        census = {
+            "manager": self.manager,
+            "target": self.target,
+            "principal": self.principal,
+            "manager_target_absent": True,
+            "definition_path_known": self.definition_path is not None,
+            "definition_absent": (
+                not self.definition_path.exists() if self.definition_path is not None else None
+            ),
+            "raw_index": len(self.raw) - 1,
+        }
+        self.initial_checkpoint_census = census
+        return dict(census)
+
+    def checkpoint_poll(self, discovery: Mapping[str, Any]) -> dict[str, Any]:
+        """One in-step read using the existing manager/process/data collectors.
+
+        The product protocol reports discoveries only at action boundaries.
+        A poll must therefore avoid trusting a product-supplied PID while still
+        re-reading the manager definition, exhaustive action process set, and
+        exact run-owned data manifest.  Any ambiguity is a refusal.
+        """
+        query = self._query()
+        if query is None:
+            raise RuntimeError("in-step native checkpoint found the manager target absent")
+        self._validate_query(query, require_running=True)
+        data = self.data_probe.observe(discovery)
+        if self.spec is None:
+            raise RuntimeError("in-step native checkpoint has no registered service spec")
+        rows = self.process_probe.owned_action_processes(self.spec.action, os_name=self.os_name)
+        identities: list[dict[str, Any]] = []
+        for value in rows:
+            row = _mapping(value)
+            pid = row.get("pid")
+            birth = row.get("process_birth_id")
+            if (
+                type(pid) is not int
+                or pid <= 0
+                or (self.os_name == "windows" and pid > 0xFFFFFFFF)
+                or (
+                    not _valid_windows_process_birth_id(birth)
+                    if self.os_name == "windows"
+                    else not _nonempty(birth)
+                )
+            ):
+                raise RuntimeError("in-step native process census is malformed")
+            identities.append({"pid": pid, "process_birth_id": birth})
+        identities.sort(key=lambda row: (row["pid"], row["process_birth_id"]))
+        if not identities or len({(row["pid"], row["process_birth_id"]) for row in identities}) != len(identities):
+            raise RuntimeError("in-step native process census is absent or ambiguous")
+        if self.os_name == "windows":
+            instances = query.get("instances")
+            if not isinstance(instances, list) or len(instances) != 1:
+                raise RuntimeError("in-step Task Scheduler instance census is ambiguous")
+            manager = _mapping(instances[0])
+            manager_instance_id = manager.get("manager_instance_id")
+            manager_pid = manager.get("pid")
+        else:
+            manager_instance_id = query.get("manager_instance_id") or f"{self.target}:{query.get('pid')}"
+            manager_pid = query.get("pid")
+        if not _nonempty(manager_instance_id) or type(manager_pid) is not int or manager_pid <= 0:
+            raise RuntimeError("in-step native manager identity is unavailable")
+        return {
+            "manager_target": self.target,
+            "manager_instance_id": manager_instance_id,
+            "manager_pid": manager_pid,
+            "action_processes": identities,
+            "data_identity": _data_identity(data),
+            "data_identity_sha256": _sha256_bytes(_canonical(_data_identity(data))),
+            "raw_index": len(self.raw) - 1,
+        }
+
+    def capture_final_checkpoint_census(self, absence: Mapping[str, Any]) -> None:
+        """Store the provider's second, independent final absence census."""
+        if (
+            absence.get("manager_target_absent") is not True
+            or absence.get("all_authorized_incarnations_absent") is not True
+            or absence.get("owned_processes_after") != 0
+            or absence.get("data_identity_unchanged") is not True
+        ):
+            raise RuntimeError("final native checkpoint census is incomplete")
+        self.final_checkpoint_census = {
+            "manager_target_absent": True,
+            "all_authorized_incarnations_absent": True,
+            "owned_processes_after": 0,
+            "data_identity_unchanged": True,
+            "post_data_identity": copy.deepcopy(_mapping(absence.get("post_data_identity"))),
+            "post_data_identity_sha256": absence.get("post_data_identity_sha256"),
+            "raw_index": len(self.raw) - 1,
+        }
 
     def _validate_spec(self, spec: ServiceSpec) -> None:
         path = spec.definition_path
@@ -2033,6 +2133,7 @@ class NativeSession:
         platform_session: AuthenticatedPlatformSession | None = None,
         platform_binding: PlatformSessionBinding | None = None,
         custody_binding: CustodyBinding | None = None,
+        initial_checkpoint_census: Mapping[str, Any] | None = None,
     ) -> None:
         if platform_session is None:
             if platform_binding is not None or custody_binding is not None:
@@ -2049,6 +2150,15 @@ class NativeSession:
         self.controller_interruption: Mapping[str, Any] | None = None
         self._removal_authorization: dict[str, Any] | None = None
         self._controller_authorizations: dict[str, dict[str, Any]] = {}
+        self._initial_checkpoint_census = (
+            copy.deepcopy(dict(initial_checkpoint_census))
+            if initial_checkpoint_census is not None
+            else None
+        )
+        self._checkpoint_boundaries: list[dict[str, Any]] = []
+        self._checkpoint_polls: list[dict[str, Any]] = []
+        self._checkpoint_actions: dict[str, int] = {}
+        self._last_discovery: dict[str, Any] | None = None
 
     def _removal_scope(self, current: Mapping[str, Any]) -> dict[str, Any]:
         census_method = getattr(self.owner, "removal_census", None)
@@ -2153,7 +2263,104 @@ class NativeSession:
             ):
                 raise RuntimeError("prior Runtime incarnation remains after interruption")
         self.instances.append({"scenario": scenario, "phase": phase, **instance})
+        self._last_discovery = dict(discovery)
+        self._checkpoint_boundaries.append(
+            {
+                "step": f"{scenario}:{phase}",
+                "phase": phase,
+                "instance_identity": _instance_identity(instance),
+                "instance_identity_sha256": _sha256_bytes(
+                    _canonical(_instance_identity(instance))
+                ),
+            }
+        )
         return dict(instance)
+
+    def begin_checkpointed_product_action(self, action: str) -> None:
+        """Open one product-action checkpoint; the driver must poll before return."""
+        if self.platform_session is None:
+            return
+        if not _nonempty(action) or action in self._checkpoint_actions:
+            raise RuntimeError("checkpointed product action is absent or already active")
+        self._checkpoint_actions[action] = 0
+        if self._last_discovery is not None:
+            snapshot = self.owner.checkpoint_poll(self._last_discovery)
+            self._checkpoint_boundaries.append(
+                {
+                    "step": action,
+                    "phase": "before",
+                    "snapshot": snapshot,
+                    "snapshot_sha256": _sha256_bytes(_canonical(snapshot)),
+                }
+            )
+
+    def poll_checkpointed_product_action(self, action: str) -> None:
+        if self.platform_session is None:
+            return
+        if action not in self._checkpoint_actions:
+            raise RuntimeError("in-step checkpoint poll has no active product action")
+        if self._last_discovery is None:
+            raise RuntimeError("in-step checkpoint poll lacks a prior exact discovery")
+        snapshot = self.owner.checkpoint_poll(self._last_discovery)
+        self._checkpoint_polls.append(
+            {
+                "step": action,
+                "snapshot": snapshot,
+                "snapshot_sha256": _sha256_bytes(_canonical(snapshot)),
+            }
+        )
+        self._checkpoint_actions[action] += 1
+
+    def end_checkpointed_product_action(self, action: str, *, completed: bool) -> None:
+        if self.platform_session is None:
+            return
+        polls = self._checkpoint_actions.pop(action, None)
+        if polls is None:
+            raise RuntimeError("checkpointed product action is not active")
+        # Discovery-only bootstrap actions have no preceding exact data identity.
+        # Every mutating action follows a boundary discovery and must have an
+        # actual in-step sample, not merely a before/after pair.
+        if completed and self._last_discovery is not None and polls < 1:
+            raise RuntimeError("checkpointed product action has no in-step poll")
+
+    def checkpoint_evidence(self) -> dict[str, Any] | None:
+        """Return direct R1 checkpoint metadata, never an admission assertion."""
+        if self.platform_session is None:
+            return None
+        final = self.owner.final_checkpoint_census
+        if self._initial_checkpoint_census is None or final is None:
+            raise RuntimeError("independent direct checkpoint censuses are unavailable")
+        if self._checkpoint_actions:
+            raise RuntimeError("checkpointed product action did not close")
+        if not self._checkpoint_polls:
+            raise RuntimeError("direct checkpoint evidence has no in-step polling")
+        keep_before = next(
+            (
+                row
+                for row in self.instances
+                if row.get("scenario") == "keep_data_uninstall" and row.get("phase") == "before"
+            ),
+            None,
+        )
+        if keep_before is None or _data_identity(keep_before) != final.get("post_data_identity"):
+            raise RuntimeError("direct checkpoint data kept invariant differs")
+        return {
+            "schema_version": 1,
+            "evidence_class": "direct-r1-checkpoints",
+            "initial_census": copy.deepcopy(self._initial_checkpoint_census),
+            "step_boundaries": copy.deepcopy(self._checkpoint_boundaries),
+            "in_step_polls": copy.deepcopy(self._checkpoint_polls),
+            "final_census": copy.deepcopy(final),
+            "data_invariants": {
+                "kept_data_identity": _data_identity(keep_before),
+                "kept_data_identity_sha256": _sha256_bytes(
+                    _canonical(_data_identity(keep_before))
+                ),
+                "removed_manager_target": True,
+                "removed_authorized_incarnations": True,
+                "removed_owned_action_processes": True,
+            },
+        }
 
     def terminate_owned_runtime(
         self, expected: Mapping[str, Any], discovery: Mapping[str, Any]
@@ -3312,6 +3519,7 @@ def _adapter_closed_world_errors(observation: Mapping[str, Any]) -> list[str]:
             "removal",
             "raw_observations",
             "raw_observations_sha256",
+            "checkpoint_evidence",
         },
         "native_service",
         errors,
@@ -3818,6 +4026,205 @@ def _pinokio_custody_structural_errors(observation: Mapping[str, Any]) -> list[s
     return errors
 
 
+DIRECT_CHECKPOINT_POLL_ACTIONS: Final = (
+    "interruption-controller",
+    "interrupt-controller",
+    "interruption-recovery-after",
+    "recovery-controller",
+    "complete-recovery-controller",
+    "failed-candidate-rollback",
+    "stop-safety-refused-before",
+    "stop-safety-refused",
+    "stop-safety-unknown-before",
+    "stop-safety-unknown",
+    "keep-data-uninstall-before",
+    "remove-product",
+)
+
+
+def _direct_checkpoint_errors(observation: Mapping[str, Any]) -> list[str]:
+    """Validate R1 checkpoint facts without upgrading them to continuity proof."""
+    errors: list[str] = []
+    native = _mapping(observation.get("native_service"))
+    checkpoint = _exact_keys(
+        native.get("checkpoint_evidence"),
+        {
+            "schema_version",
+            "evidence_class",
+            "initial_census",
+            "step_boundaries",
+            "in_step_polls",
+            "final_census",
+            "data_invariants",
+        },
+        "native_service.checkpoint_evidence",
+        errors,
+    )
+    if checkpoint.get("schema_version") != 1 or checkpoint.get("evidence_class") != "direct-r1-checkpoints":
+        errors.append("native_service.checkpoint_evidence: exact direct R1 checkpoint class required")
+    initial = _exact_keys(
+        checkpoint.get("initial_census"),
+        {
+            "manager",
+            "target",
+            "principal",
+            "manager_target_absent",
+            "definition_path_known",
+            "definition_absent",
+            "raw_index",
+        },
+        "native_service.checkpoint_evidence.initial_census",
+        errors,
+    )
+    if (
+        initial.get("manager") != native.get("manager")
+        or initial.get("target") != native.get("target")
+        or initial.get("principal") != native.get("principal")
+        or initial.get("manager_target_absent") is not True
+        or type(initial.get("definition_path_known")) is not bool
+        or initial.get("definition_absent") not in {True, False, None}
+        or type(initial.get("raw_index")) is not int
+        or initial.get("raw_index", -1) < 0
+    ):
+        errors.append("native_service.checkpoint_evidence.initial_census: independent initial absence differs")
+    boundaries = checkpoint.get("step_boundaries")
+    if not isinstance(boundaries, list) or not boundaries:
+        errors.append("native_service.checkpoint_evidence.step_boundaries: non-empty list required")
+    else:
+        observed_instance_steps: set[str] = set()
+        for index, value in enumerate(boundaries):
+            row = _mapping(value)
+            if set(row) == {"step", "phase", "instance_identity", "instance_identity_sha256"}:
+                identity = _exact_keys(
+                    row.get("instance_identity"), set(INSTANCE_IDENTITY_FIELDS),
+                    f"native_service.checkpoint_evidence.step_boundaries[{index}].instance_identity",
+                    errors,
+                )
+                if (
+                    not _nonempty(row.get("step"))
+                    or row.get("phase") not in {"before", "after", "cleanup"}
+                    or row.get("instance_identity_sha256") != _sha256_bytes(_canonical(identity))
+                ):
+                    errors.append(f"native_service.checkpoint_evidence.step_boundaries[{index}]: identity binding differs")
+                observed_instance_steps.add(str(row.get("step")))
+            elif set(row) == {"step", "phase", "snapshot", "snapshot_sha256"}:
+                snapshot = _mapping(row.get("snapshot"))
+                if (
+                    not _nonempty(row.get("step"))
+                    or row.get("phase") != "before"
+                    or row.get("snapshot_sha256") != _sha256_bytes(_canonical(snapshot))
+                ):
+                    errors.append(f"native_service.checkpoint_evidence.step_boundaries[{index}]: snapshot binding differs")
+            else:
+                errors.append(f"native_service.checkpoint_evidence.step_boundaries[{index}]: unknown shape")
+        required_steps = {
+            "interruption_recovery:before",
+            "interruption_recovery:after",
+            "failed_candidate_rollback:after",
+            "keep_data_uninstall:before",
+            "keep_data_uninstall:cleanup",
+            "stop_safety.refused:before",
+            "stop_safety.refused:after",
+            "stop_safety.unknown:before",
+            "stop_safety.unknown:after",
+        }
+        if not required_steps.issubset(observed_instance_steps):
+            errors.append("native_service.checkpoint_evidence.step_boundaries: exact scenario boundaries are absent")
+    polls = checkpoint.get("in_step_polls")
+    if not isinstance(polls, list):
+        errors.append("native_service.checkpoint_evidence.in_step_polls: list required")
+    else:
+        found: set[str] = set()
+        for index, value in enumerate(polls):
+            row = _exact_keys(
+                value,
+                {"step", "snapshot", "snapshot_sha256"},
+                f"native_service.checkpoint_evidence.in_step_polls[{index}]",
+                errors,
+            )
+            snapshot = _exact_keys(
+                row.get("snapshot"),
+                {
+                    "manager_target",
+                    "manager_instance_id",
+                    "manager_pid",
+                    "action_processes",
+                    "data_identity",
+                    "data_identity_sha256",
+                    "raw_index",
+                },
+                f"native_service.checkpoint_evidence.in_step_polls[{index}].snapshot",
+                errors,
+            )
+            action_processes = snapshot.get("action_processes")
+            if (
+                row.get("step") not in DIRECT_CHECKPOINT_POLL_ACTIONS
+                or row.get("snapshot_sha256") != _sha256_bytes(_canonical(snapshot))
+                or snapshot.get("manager_target") != native.get("target")
+                or not _nonempty(snapshot.get("manager_instance_id"))
+                or type(snapshot.get("manager_pid")) is not int
+                or snapshot.get("manager_pid", 0) <= 0
+                or not isinstance(action_processes, list)
+                or not action_processes
+                or snapshot.get("data_identity_sha256")
+                != _sha256_bytes(_canonical(_mapping(snapshot.get("data_identity"))))
+                or type(snapshot.get("raw_index")) is not int
+                or snapshot.get("raw_index", -1) < 0
+            ):
+                errors.append(f"native_service.checkpoint_evidence.in_step_polls[{index}]: live poll differs")
+            found.add(str(row.get("step")))
+        if found != set(DIRECT_CHECKPOINT_POLL_ACTIONS):
+            errors.append("native_service.checkpoint_evidence.in_step_polls: every fixed action requires a poll")
+    final = _exact_keys(
+        checkpoint.get("final_census"),
+        {
+            "manager_target_absent",
+            "all_authorized_incarnations_absent",
+            "owned_processes_after",
+            "data_identity_unchanged",
+            "post_data_identity",
+            "post_data_identity_sha256",
+            "raw_index",
+        },
+        "native_service.checkpoint_evidence.final_census",
+        errors,
+    )
+    removal = _mapping(native.get("removal"))
+    if (
+        any(final.get(name) is not True for name in (
+            "manager_target_absent", "all_authorized_incarnations_absent", "data_identity_unchanged"
+        ))
+        or final.get("owned_processes_after") != 0
+        or _mapping(final.get("post_data_identity")) != _mapping(removal.get("post_data_identity"))
+        or final.get("post_data_identity_sha256") != removal.get("post_data_identity_sha256")
+        or type(final.get("raw_index")) is not int
+        or final.get("raw_index", -1) <= removal.get("absence_raw_index", -1)
+    ):
+        errors.append("native_service.checkpoint_evidence.final_census: independent final absence differs")
+    invariants = _exact_keys(
+        checkpoint.get("data_invariants"),
+        {
+            "kept_data_identity",
+            "kept_data_identity_sha256",
+            "removed_manager_target",
+            "removed_authorized_incarnations",
+            "removed_owned_action_processes",
+        },
+        "native_service.checkpoint_evidence.data_invariants",
+        errors,
+    )
+    if (
+        _mapping(invariants.get("kept_data_identity")) != _mapping(removal.get("post_data_identity"))
+        or invariants.get("kept_data_identity_sha256")
+        != _sha256_bytes(_canonical(_mapping(invariants.get("kept_data_identity"))))
+        or any(invariants.get(name) is not True for name in (
+            "removed_manager_target", "removed_authorized_incarnations", "removed_owned_action_processes"
+        ))
+    ):
+        errors.append("native_service.checkpoint_evidence.data_invariants: kept/removed identity differs")
+    return errors
+
+
 def _native_structural_errors(observation: Mapping[str, Any]) -> list[str]:
     errors = _adapter_closed_world_errors(observation)
     if tuple(failure.REQUIRED_SLOT_IDS) != REQUIRED_NATIVE_SLOT_IDS:
@@ -3945,6 +4352,10 @@ def _native_structural_errors(observation: Mapping[str, Any]) -> list[str]:
     if contract["mode"] != "direct":
         errors.extend(_pinokio_custody_structural_errors(observation))
         return errors
+    if observation.get("execution_scope") == HOSTED_SCOPE:
+        errors.extend(_direct_checkpoint_errors(observation))
+    elif "checkpoint_evidence" in _mapping(observation.get("native_service")):
+        errors.append("native_service.checkpoint_evidence: fixture scope cannot carry direct checkpoint evidence")
     native = _mapping(observation.get("native_service"))
     if native.get("manager") != MANAGERS[os_name]:
         errors.append("native_service.manager: platform manager differs")
@@ -4608,6 +5019,9 @@ def _execute_structural_collection(
     ):
         raise RuntimeError("fixed Pinokio custody owner proof is incomplete")
     owner.assert_absent()
+    initial_checkpoint_census = (
+        owner.capture_initial_checkpoint_census() if contract["mode"] == "direct" else None
+    )
     context["principal"] = owner.principal
     if driver is None:
         assert JOURNEY_DRIVER_FACTORY is not None
@@ -4734,6 +5148,7 @@ def _execute_structural_collection(
         platform_session=platform_session,
         platform_binding=platform_binding,
         custody_binding=custody_binding if platform_session is not None else None,
+        initial_checkpoint_census=initial_checkpoint_census,
     )
     try:
         values = dict(driver.run(context, session))
@@ -4750,6 +5165,19 @@ def _execute_structural_collection(
         owner_checkout_sha = _sha256_bytes(
             _canonical({name: candidate[name] for name in ("app", "agent", "runtime", "pinokio")})
         )
+        native_service = {
+            **capability,
+            "capability": "pass",
+            "registration": registration,
+            "instances": session.instances,
+            "controller_interruption": copy.deepcopy(session.controller_interruption),
+            "removal": dict(session.removal),
+            "raw_observations": owner.raw,
+            "raw_observations_sha256": _sha256_bytes(_canonical(owner.raw)),
+        }
+        checkpoint_evidence = session.checkpoint_evidence()
+        if checkpoint_evidence is not None:
+            native_service["checkpoint_evidence"] = checkpoint_evidence
         observation: dict[str, Any] = {
             "slot_id": slot_id,
             "job_id": slot_id,
@@ -4779,16 +5207,7 @@ def _execute_structural_collection(
                 "foreground_fallback": False,
                 "checkout_sha256": owner_checkout_sha,
             },
-            "native_service": {
-                **capability,
-                "capability": "pass",
-                "registration": registration,
-                "instances": session.instances,
-                "controller_interruption": copy.deepcopy(session.controller_interruption),
-                "removal": dict(session.removal),
-                "raw_observations": owner.raw,
-                "raw_observations_sha256": _sha256_bytes(_canonical(owner.raw)),
-            },
+            "native_service": native_service,
         }
         closed_world_errors = _adapter_closed_world_errors(observation)
         if closed_world_errors:

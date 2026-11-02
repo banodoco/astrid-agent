@@ -91,6 +91,9 @@ M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
 PINOKIO_M4_6_SLOT_IDS: Final = tuple(
     row["job_id"] for row in M4_6_MATRIX if row["mode"] != "direct"
 )
+DIRECT_M4_6_SLOT_IDS: Final = tuple(
+    row["job_id"] for row in M4_6_MATRIX if row["mode"] == "direct"
+)
 M4_6_SCENARIO_IDS: Final = (
     "interruption-recovery",
     "rollback",
@@ -161,6 +164,31 @@ DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS: Final = tuple(
     for scenario_id in M4_6_SCENARIO_IDS
 )
 
+# Rule 36 P13 applies the same separation to the three native direct slots.
+# Checkpoint observations are required in R1; they do not establish process
+# containment or gap-free history between samples.  Keep those claims visible
+# and explicitly deferred, rather than silently treating a checkpoint as proof.
+DIRECT_CHECKPOINT_DECISION: Final = "deferred-R1.x (M-INT rule 36 P13, 2026-11-02T22:04:52Z)"
+DIRECT_CHECKPOINT_DECISION_POINTER: Final = "ORCHESTRATOR.md:11776"
+DEFERRED_R1_X_DIRECT_CONTAINMENT_CONTINUITY_OBLIGATIONS: Final = tuple(
+    {
+        "id": f"{scenario_id}:{row['job_id']}",
+        "assertion_id": f"{scenario_id}:{row['job_id']}:containment-continuous-history",
+        "r1_snapshot_assertion_id": f"{scenario_id}:{row['job_id']}:checkpoint-end-state",
+        "release_scope": DIRECT_CHECKPOINT_DECISION,
+        "decision_pointer": DIRECT_CHECKPOINT_DECISION_POINTER,
+        "r1_gate": "excluded-deferred-R1.x",
+        "claim": "native manager/process containment and continuous-history custody",
+        "removal_authorization_relation": (
+            "direct-removal" if scenario_id == "keep_data_uninstall" else "slot-coupled-removal"
+        ),
+        "deferred_to": "R1.x direct containment/continuous-history collector work",
+    }
+    for row in M4_6_MATRIX
+    if row["mode"] == "direct"
+    for scenario_id in M4_6_SCENARIO_IDS
+)
+
 # Release end-state inventory.  These are obligations rather than receipts:
 # route availability never promotes an obligation to a passed release gate.
 # Keeping the mappings next to the matrices lets the one evidence checker show
@@ -209,24 +237,26 @@ END_STATE_INVENTORY: Final = (
             "id": f"interruption-recovery:{row['job_id']}", "phase": "interruption-recovery",
             "job_id": row["job_id"], "os": row["os"], "channel": row["mode"],
             "assertion_id": (
-                f"interruption-recovery:{row['job_id']}:end-state" if row["mode"] == "direct" else
+                f"interruption-recovery:{row['job_id']}:checkpoint-end-state" if row["mode"] == "direct" else
                 f"interruption-recovery:{row['job_id']}:snapshot-end-state"
             ),
             "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
             "route": "journey_failure_modes.py:scenario_errors(interruption_recovery)",
             "route_state": "unimplemented",
             "dependency": (
-                "hosted native-service M4-6 adapter and receipt" if row["mode"] == "direct" else
+                "hosted direct checkpoint bundle plus external M-CI run/job/artifact join" if row["mode"] == "direct" else
                 "authenticated Pinokio action-boundary snapshot receipt"
             ),
             "predicate": (
-                "injected interruption, journal, explicit same-operation recovery, terminal identity and preserved data"
+                "step-boundary snapshots, in-step polling, independent initial/final censuses, "
+                "injected interruption, journal, explicit same-operation recovery, terminal identity and preserved data; "
+                "containment/continuous-history deferred-R1.x"
                 if row["mode"] == "direct" else
                 "action-boundary snapshots, bounded polling, independent initial/final censuses, "
                 "exactly-one-owner, uninstall end-state and preserved data; no custody-continuity claim"
             ),
             "source": (
-                "journey_failure_modes.py:_interruption_errors" if row["mode"] == "direct" else
+                "journey_predicates.py:check_m4_6" if row["mode"] == "direct" else
                 "check_journey_evidence.py:_pinokio_snapshot_end_state_errors"
             ),
             "evidence_kind": "m4-6" if row["mode"] == "direct" else "m4-6-snapshot-end-state",
@@ -244,23 +274,25 @@ END_STATE_INVENTORY: Final = (
             "id": f"{scenario}:{row['job_id']}", "phase": "rollback-uninstall-stop", "job_id": row["job_id"],
             "os": row["os"], "channel": row["mode"],
             "assertion_id": (
-                f"{scenario}:{row['job_id']}:end-state" if row["mode"] == "direct" else
+                f"{scenario}:{row['job_id']}:checkpoint-end-state" if row["mode"] == "direct" else
                 f"{scenario}:{row['job_id']}:snapshot-end-state"
             ),
             "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
             "route": f"journey_failure_modes.py:scenario_errors({failure_name})",
             "route_state": "unimplemented",
             "dependency": (
-                "hosted native-service M4-6 adapter and receipt" if row["mode"] == "direct" else
+                "hosted direct checkpoint bundle plus external M-CI run/job/artifact join" if row["mode"] == "direct" else
                 "authenticated Pinokio action-boundary snapshot receipt"
             ),
             "predicate": (
-                predicate if row["mode"] == "direct" else
+                f"{predicate}; step-boundary snapshots, in-step polling, independent initial/final censuses, "
+                "data kept/removed invariants; containment/continuous-history deferred-R1.x"
+                if row["mode"] == "direct" else
                 f"{predicate}; action-boundary snapshots, bounded polling, independent initial/final "
                 "censuses, exactly-one-owner and uninstall/data end-state; no custody-continuity claim"
             ),
             "source": (
-                source if row["mode"] == "direct" else
+                "journey_predicates.py:check_m4_6" if row["mode"] == "direct" else
                 "check_journey_evidence.py:_pinokio_snapshot_end_state_errors"
             ),
             "evidence_kind": "m4-6" if row["mode"] == "direct" else "m4-6-snapshot-end-state",
