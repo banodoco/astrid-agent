@@ -154,6 +154,20 @@ def test_unregistered_managed_route_is_refused_before_any_session_acquisition(tm
     monkeypatch.setattr(gh, "_HostSessionChannel", _Recording)
     monkeypatch.setattr(host, "invoke_wan_session", lambda *a, **k: events.append("invoke") or {})
 
+    class _RecordingLock:
+        """Records session-lock acquisition; the early route check must run before it."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def acquire(self, *args, **kwargs):
+            events.append("session_lock")
+            return self._real.acquire(*args, **kwargs)
+
+        def release(self):
+            return self._real.release()
+
+    host._session_task_lock = _RecordingLock(host._session_task_lock)
     task = parity._task(tmp_path, dict(parity.EXPLICIT_INPUTS))
     client.tasks["wan-task"] = task
     with pytest.raises(gh.HostError, match="no registered host profile"):
