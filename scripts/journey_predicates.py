@@ -20,6 +20,12 @@ The current producer contract does not supply the independent R-30 section 5
 proofs.  Consequently this predicate is deliberately closed even after its
 structural checks pass; remove that refusal only when those proofs and their
 frozen parsing/binding rules are implemented.  It is not an evaluator.
+
+``check_pinokio_snapshot`` is the narrower R-25 binding predicate used by the
+same harness.  A successful result is not an M4-6 verdict: it only establishes
+that an already-authenticated index contains one complete R-25 artifact and
+separately retained action/filesystem records.  The existing M4-6 predicate
+continues to require every prior assertion and remains closed without them.
 """
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ from pathlib import PurePosixPath
 
 from . import journey_failure_modes as failure
 from . import native_service_adapter as native
+from . import r25_snapshot_verifier
 
 
 def _same_json(left: object, right: object) -> bool:
@@ -149,3 +156,12 @@ def check_m4_6(evidence: dict) -> tuple[bool, list[str]]:
         reasons.append("receipt: parsed failure-mode receipt is required")
     reasons.append("M4-6: independent section 5 observation proofs and frozen bindings unavailable")
     return False, reasons
+
+
+def check_pinokio_snapshot(evidence: dict) -> tuple[bool, list[str]]:
+    """Check one selected, externally authenticated R-25 snapshot binding.
+
+    This intentionally does not promote the binding to a full M4-6 acceptance;
+    the normal ``check_m4_6`` route remains responsible for that broader gate.
+    """
+    return r25_snapshot_verifier.check(evidence)
