@@ -44,4 +44,9 @@ Refusal or error:
 - Client-side timeout per request. No retry of `submit` (never resubmit).
 
 ## Parity contract (L3)
-- Same inputs to `_run_wan_session` (host path) and to the pack in-process action over the channel. Compare the evidence mapping after removing the documented allowed-diff keys (run ids, timing, scratch paths). Anything else must match exactly.
+- Same inputs to `_run_wan_session` (host path) and to the pack in-process action over the channel. Both evidence mappings are canonicalized, then compared exactly.
+- Ignored (run identity and timing only): `wan_native.token_id`, `wan_native.invocation_id`, `wan_native.birth`, `wan_native.process_id`, `wan_mapping.manifest.created`.
+- Run roots: `wan_native.source_root`, `wan_mapping.output_root` and `wan_mapping.manifest.spool` are replaced by `<root>`. File paths (`output_snapshots[].path`, `staged_outputs[].path`) are compared relative to their run root, so the relative structure must match exactly: same files, same names, same nesting. An extra, missing or renamed file fails parity.
+- Stat: only `st_size` is compared (index 2). `st_dev`, `st_ino`, `st_mtime_ns` and `st_ctime_ns` are scratch metadata. `size` and `sha256` stay exact through `manifest.outputs[].bytes`.
+- Cleanup links: no such key exists in the evidence, so nothing is compared for them. Recorded here as absent.
+- Any other difference is a parity failure. Types are compared, so `1` and `True` differ.
