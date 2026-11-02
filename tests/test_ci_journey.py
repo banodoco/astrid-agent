@@ -709,3 +709,56 @@ def test_windows_preflight_checkpoints_launch_and_unexpected_errors(tmp_path, mo
     assert "powershell unavailable" in calls[1]["origin"]["error"]
     assert record["query"]["classification"] == "error"
     assert "unexpected capture failure" in record["query"]["error"]
+    assert "Traceback (most recent call last)" in record["query"]["error"]
+    assert "raise ValueError" in record["query"]["error"]
+
+
+def test_windows_preflight_timeout_retains_partial_streams_and_traceback(tmp_path, monkeypatch):
+    import subprocess
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    def timeout(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 30, output=b"partial out", stderr=b"partial err")
+    monkeypatch.setattr(windows.subprocess, "run", timeout)
+    with pytest.raises(RuntimeError):
+        windows.scheduled_task_preflight()
+    record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    assert record["query"]["stdout"] == "partial out"
+    assert record["query"]["stderr"] == "partial err"
+    assert record["query"]["exit_code"] is None
+    assert record["query"]["classification"] == "error"
+    assert "Traceback (most recent call last)" in record["query"]["error"]
+    assert "TimeoutExpired" in record["query"]["error"]
+
+
+@pytest.mark.parametrize("module", [
+    'raise ImportError("import sentinel")\n',
+    'def scheduled_task_preflight():\n    raise ValueError("preflight sentinel")\n',
+])
+def test_windows_preflight_entrypoint_preserves_uncaught_tracebacks(tmp_path, module):
+    import subprocess
+    import sys
+    package = tmp_path / "scripts"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "ci_windows_journey.py").write_text(module)
+    entrypoint = journey.ROOT / "scripts/ci_windows_preflight.py"
+    result = subprocess.run([sys.executable, "-u", str(entrypoint)],
+                            env=dict(os.environ, PYTHONPATH=str(tmp_path), RUNNER_TEMP=str(tmp_path)),
+                            capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Traceback (most recent call last)" in result.stderr
+    assert "sentinel" in result.stderr
+
+
+def test_windows_preflight_workflow_captures_before_launch_and_uploads_on_failure():
+    workflow = (journey.ROOT / ".github/workflows/journey.yml").read_text()
+    step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split("      - name:", 1)[0]
+    assert step.index("Save-PreflightLaunch\n          try {") < step.index("$process = Start-Process")
+    assert "-RedirectStandardOutput $stdout -RedirectStandardError $stderr" in step
+    assert "$_.Exception.ToString()" in step
+    assert "$record.exit_code = $process.ExitCode" in step
+    assert "if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }" in step
+    upload = workflow.split("      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[1].split("      - name:", 1)[0]
+    assert "if: always()" in upload
+    assert "journey-manager-${{ matrix.job_id }}" in upload

@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.request
 
 
@@ -107,17 +108,20 @@ def scheduled_task_preflight(name="preflight-scheduled-task.txt", *, timeout=30)
     checkpoint()
     for label, record in records.items():
         argv = record["argv"]
+        def decoded(value):
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
         try:
             result = subprocess.run(argv, env=env, capture_output=True, encoding="utf-8",
                                     errors="replace", timeout=timeout, check=False)
             record.update(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
             record.pop("error")
         except subprocess.TimeoutExpired as exc:
-            def decoded(value):
-                return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
-            record.update(stdout=decoded(exc.stdout), stderr=decoded(exc.stderr), error="timeout")
+            record.update(stdout=decoded(exc.stdout), stderr=decoded(exc.stderr),
+                          error=traceback.format_exc())
         except Exception as exc:
-            record["error"] = f"{type(exc).__name__}: {exc}"
+            record.update(stdout=decoded(getattr(exc, "stdout", None)),
+                          stderr=decoded(getattr(exc, "stderr", None)))
+            record["error"] = traceback.format_exc()
         finally:
             if label == "query":
                 record["classification"] = ("error" if record["exit_code"] != 0 else
