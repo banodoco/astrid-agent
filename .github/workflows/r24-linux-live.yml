@@ -73,7 +73,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
-          ref: ce1502e94b935fe6ef1e2f363fc6b55aade4a204
+          ref: 933c53a6fb1a11e5f8a01335d6252016d703beec
           path: app
           fetch-depth: 1
           persist-credentials: false
@@ -81,7 +81,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-agent
-          ref: 2de0726d1eaea7f7bd141251e088aa9fdf224525
+          ref: ab43bad818ef65ca1e929b973a2f61cd9fc4bf61
           path: installed-agent
           fetch-depth: 1
           persist-credentials: false
@@ -89,7 +89,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
-          ref: 5453366458f7b4ee874c94d15ae7952e3e82d3c3
+          ref: 2776ba973b6c8f3555b5629b0840d9691a98d3c2
           path: runtime
           fetch-depth: 1
           persist-credentials: false

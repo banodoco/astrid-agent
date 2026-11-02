@@ -171,11 +171,11 @@ LIVE_PRODUCER_FILES = {
     "pinokio/providers/r24-linux.py": "978b52548281250ed264d7f08d8c8179419a1aa11035ddb1d6450960839e0dc9",
     "pinokio/providers/r24-action.cjs": "2901c4e75b11a96547d2033e62118ee64247670b8f9531fc6bbad9fb1b34be01",
     "pinokio/providers/r24-live-action.js": "32778884de8fd1e615cfbbb8d56f79aa9b57e7ddb5eb6239621d01de2e00db92",
-    "pinokio/providers/r24-linux-binding.json": "89582d987efb569bfc7f41a4ecb3ec800c9f3e10e7e849b0100a42a78b292f52",
+    "pinokio/providers/r24-linux-binding.json": "3cfde4fd777a6e285f07f96a97584966bd137c1d3ccfc1bd1f58f377b9b047ce",
     "pinokio/providers/r24-schema.json": "233f989b29f54d082e1287c200b70b14b0315a9d763d05bcff824e556c648ffc",
 }
 LIVE_INTERFACE_FILES = {
-    "pinokio/providers/R24-LINUX.md": "2a2eb76b14d90544dc8a800764b20283d56ef34622dc331eaebd59997800a03c",
+    "pinokio/providers/R24-LINUX.md": "4a5efde487359bdfbc557da475ef4a180ec0397bd038a743e38599fd126001a2",
 }
 # Preserve the internal names used by the R3 focused fixtures.
 _SUCCESS_PRODUCER_REF = LIVE_PRODUCER_REF
@@ -192,11 +192,11 @@ _CANDIDATE = {
 _STOP = {"ref": _CANDIDATE["pinokio"], "path": "pinokio/stop.js",
          "sha256": "f9d62e4e6a826fccd9791ee211dae933f46c8f99019e145abb3db3bf9595fd48"}
 LIVE_CANDIDATE = {
-    "app": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
-    "agent": "2de0726d1eaea7f7bd141251e088aa9fdf224525",
-    "runtime": "5453366458f7b4ee874c94d15ae7952e3e82d3c3",
+    "app": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
     "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-    "manifest_sha256": "920477210d01615a6698cda30f248552f13c712734e86ea56f283300cb1a9c87",
+    "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
 }
 LIVE_STOP = {"ref": LIVE_CANDIDATE["pinokio"], "path": "pinokio/stop.js",
              "sha256": "f9d62e4e6a826fccd9791ee211dae933f46c8f99019e145abb3db3bf9595fd48"}

@@ -20,11 +20,11 @@ except ImportError:
 
 
 PUBLISHED_CANDIDATE = {
-    "app": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
-    "agent": "2de0726d1eaea7f7bd141251e088aa9fdf224525",
-    "runtime": "5453366458f7b4ee874c94d15ae7952e3e82d3c3",
+    "app": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
     "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-    "manifest_sha256": "920477210d01615a6698cda30f248552f13c712734e86ea56f283300cb1a9c87",
+    "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
 }
 EXPORT_NAMES = frozenset({
     "junit.xml", "manifest.json", "observation-result.json",
