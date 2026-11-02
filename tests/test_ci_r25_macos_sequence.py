@@ -125,3 +125,22 @@ def test_r4_requires_dry_preflight_and_runner_owned_tools():
     assert source.index('"R25_PREFLIGHT_ONLY": "1"') < source.index('subprocess.Popen(')
     assert 'dry_dir.rmdir()' in source
     assert 'actions-runner/_work/_tool/Python/3.11.18/arm64' in source
+
+
+def test_runner_python_rejects_symlink_outside_owned_toolcache(tmp_path, monkeypatch):
+    import os
+    import pytest
+    monkeypatch.setattr(r25, "UID", os.getuid())
+    root = tmp_path / "actions-runner/_work/_tool/Python/3.11.18/arm64"
+    (root / "bin").mkdir(parents=True)
+    external = tmp_path / "external-python"
+    external.write_text("external")
+    python = root / "bin/python3.11"
+    python.symlink_to(external)
+    with pytest.raises(RuntimeError, match="escapes"):
+        r25.runner_python(tmp_path)
+    python.unlink()
+    actual = root / "bin/python-real"
+    actual.write_text("internal")
+    python.symlink_to(actual.name)
+    assert r25.runner_python(tmp_path) == python

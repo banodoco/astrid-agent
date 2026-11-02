@@ -102,6 +102,19 @@ def command(args, env, *, cwd=None, log=None):
     return result.stdout.strip()
 
 
+def runner_python(home):
+    """Reject Python aliases that resolve outside the owned runner toolcache."""
+    pyroot = home / "actions-runner/_work/_tool/Python/3.11.18/arm64"
+    python = pyroot / "bin/python3.11"
+    if (pyroot.is_symlink() or not pyroot.is_dir() or pyroot.stat().st_uid != UID
+            or pyroot != pyroot.resolve() or not python.is_file()):
+        raise RuntimeError("Runner-owned staged Python is unavailable")
+    resolved = python.resolve(strict=True)
+    if not resolved.is_relative_to(pyroot) or resolved.stat().st_uid != UID:
+        raise RuntimeError("Python executable escapes runner-owned toolcache")
+    return python
+
+
 def preflight(home, temp, env):
     if os.getuid() != UID or os.environ.get("RUNNER_NAME") != "hannah-mac":
         raise RuntimeError("Wrong runner identity")
@@ -121,10 +134,7 @@ def preflight(home, temp, env):
     port = subprocess.run(["lsof", "-nP", "-iTCP:42000"], env=env, capture_output=True, text=True, timeout=20, check=False)
     if port.returncode != 1 or port.stdout.strip() or port.stderr.strip():
         raise RuntimeError("Port 42000 is occupied or cannot be checked")
-    pyroot = home / "actions-runner/_work/_tool/Python/3.11.18/arm64"
-    python = pyroot / "bin/python3.11"
-    if pyroot.is_symlink() or not pyroot.is_dir() or pyroot.stat().st_uid != UID or not python.is_file():
-        raise RuntimeError("Runner-owned staged Python is unavailable")
+    python = runner_python(home)
     version = command([str(python), "-I", "-c", "import platform; print(platform.python_version())"], env)
     if version != "3.11.18": raise RuntimeError("Runner-owned Python version differs")
     return str(python)
