@@ -24,8 +24,8 @@ class FakeSession:
         self.progress_calls = 0
         self.submit_error = submit_error
 
-    def submit(self, settings: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
-        self.submit_calls.append((settings, timeout_seconds))
+    def submit(self, inputs: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        self.submit_calls.append((inputs, timeout_seconds))
         if self.submit_error is not None:
             raise self.submit_error
         return {"result": {"success": True, "errors": []}, "native_error": None}
@@ -38,8 +38,8 @@ class FakeSession:
         self.cancel_calls.append(reason)
         return {"accepted": True}
 
-    def validate_settings(self, settings: Any) -> None:
-        if settings.get("bad") is True:
+    def validate_settings(self, inputs: Any) -> None:
+        if inputs.get("bad") is True:
             raise ValueError("bad settings")
 
 
@@ -108,7 +108,7 @@ def _req(seq: int, op: str, args: dict[str, Any] | None = None, run_id: str = RU
     return {"version": version, "run_id": run_id, "seq": seq, "op": op, "args": args or {}}
 
 
-SUBMIT_ARGS = {"settings": {"prompt": "a fox"}, "timeout_seconds": 30}
+SUBMIT_ARGS = {"inputs": {"prompt": "a fox"}, "timeout_seconds": 30}
 
 
 def test_submit_success_forwards_args_and_returns_session_result(h):
@@ -198,7 +198,7 @@ def test_second_submit_is_submit_already_used_and_closes(h):
 
 
 def test_invalid_settings_returns_error_without_calling_submit(h):
-    args = {"settings": {"bad": True}, "timeout_seconds": 30}
+    args = {"inputs": {"bad": True}, "timeout_seconds": 30}
     resp = h.exchange(_req(1, "submit", args))
     assert resp["ok"] is False
     assert resp["error"]["code"] == "invalid_settings"
@@ -207,14 +207,14 @@ def test_invalid_settings_returns_error_without_calling_submit(h):
 
 
 def test_non_object_settings_is_invalid_settings(h):
-    resp = h.exchange(_req(1, "submit", {"settings": ["x"], "timeout_seconds": 30}))
+    resp = h.exchange(_req(1, "submit", {"inputs": ["x"], "timeout_seconds": 30}))
     assert resp["error"]["code"] == "invalid_settings"
     assert h.session.submit_calls == []
 
 
 @pytest.mark.parametrize("timeout", [0, -1, True, "30"])
 def test_bad_timeout_is_protocol_and_submit_not_called(h, timeout):
-    resp = h.exchange(_req(1, "submit", {"settings": {}, "timeout_seconds": timeout}))
+    resp = h.exchange(_req(1, "submit", {"inputs": {}, "timeout_seconds": timeout}))
     assert resp["error"]["code"] == "protocol"
     assert h.session.submit_calls == []
 

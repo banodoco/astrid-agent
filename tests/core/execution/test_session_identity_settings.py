@@ -30,9 +30,11 @@ class _Stub:
 
 def _adapter(stub: _Stub, tmp_path: Path):
     inputs = json.loads(FIXTURE.read_text(encoding="utf-8"))["inputs"]
+    profile = gh.ManagedToolProfile(compile_settings=compile_host_settings, invoke=stub.invoke_wan_session)
     adapter = gh._HostManagedSessionAdapter(
-        stub, managed_token=object(), inputs=inputs,
-        progress_path=tmp_path / "progress.json", timeout_cap=30.0, cancelled=lambda: False)
+        profile=profile, managed_token=object(), inputs=inputs,
+        progress_path=tmp_path / "progress.json", timeout_cap=30.0, cancelled=lambda: False,
+        cancel_session=lambda token, reason: None)
     return adapter, inputs
 
 
@@ -49,7 +51,7 @@ def test_mismatched_worker_settings_are_refused_before_any_invoke(tmp_path: Path
 def test_matching_settings_reach_invoke_once_with_host_compiled_settings(tmp_path: Path) -> None:
     stub = _Stub()
     adapter, inputs = _adapter(stub, tmp_path)
-    worker_copy = dict(compile_host_settings(inputs))
+    worker_copy = dict(inputs)
     adapter.validate_settings(worker_copy)
     adapter.submit(worker_copy, timeout_seconds=5.0)
     assert len(stub.invocations) == 1
@@ -59,7 +61,7 @@ def test_matching_settings_reach_invoke_once_with_host_compiled_settings(tmp_pat
 def test_submit_is_allowed_once_per_run(tmp_path: Path) -> None:
     stub = _Stub()
     adapter, inputs = _adapter(stub, tmp_path)
-    adapter.submit(dict(compile_host_settings(inputs)), timeout_seconds=5.0)
+    adapter.submit(dict(inputs), timeout_seconds=5.0)
     with pytest.raises(RuntimeError, match="once per run"):
-        adapter.submit(dict(compile_host_settings(inputs)), timeout_seconds=5.0)
+        adapter.submit(dict(inputs), timeout_seconds=5.0)
     assert len(stub.invocations) == 1

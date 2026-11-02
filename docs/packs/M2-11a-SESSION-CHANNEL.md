@@ -23,10 +23,10 @@ Refusal or error:
 ```
 
 ## Ops (the allow-list; anything else is refused)
-1. `submit`, args `{"settings": {...}, "timeout_seconds": <number>}`.
+1. `submit`, args `{"inputs": {...}, "timeout_seconds": <number>}`. `inputs` is the raw request inputs, not compiled settings; the worker never sends native settings.
    - Allowed once per run. A second submit is refused with code `submit_already_used`.
-   - The host validates `settings` with the same checks `_run_wan_session` applies before `invoke_wan_session`. Invalid settings: code `invalid_settings`.
-   - result: the evidence mapping `invoke_wan_session` returns today, unchanged in shape.
+   - The host compiles and validates `inputs` through the host-owned profile for the managed tool (`ManagedToolProfile.compile_settings`, the same checks applied before `invoke`). A non-object `inputs` or inputs the profile rejects: code `invalid_settings`.
+   - result: the evidence mapping the profile `invoke` returns today, unchanged in shape, plus `compiled_settings`: the non-secret echo of the host-compiled settings that were invoked.
 2. `progress`, args `{}`.
    - result `{"state": "running" | "terminal", "snapshot": {...}}`. After the run ends, progress returns `"terminal"` with the final snapshot, and the host then closes the channel.
 3. `cancel`, args `{"reason": "<str>"}`.
@@ -39,7 +39,7 @@ Refusal or error:
 - The channel closes at run end, on any host error, and on any refusal. Close is fail-closed.
 
 ## Worker client (L2)
-- `SessionClient(fd, run_id, timeout)` with `submit(settings, timeout_seconds)`, `progress()`, `cancel(reason)`.
+- `SessionClient(fd, run_id, timeout)` with `submit(inputs, timeout_seconds)`, `progress()`, `cancel(reason)`.
 - Raises `SessionChannelError` with `.code` on an error response, and on transport failure.
 - Client-side timeout per request. No retry of `submit` (never resubmit).
 

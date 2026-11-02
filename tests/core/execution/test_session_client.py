@@ -113,8 +113,8 @@ def _echo(request: dict[str, Any]) -> dict[str, Any]:
 
 def test_submit_round_trips_with_request_shape(channel_factory):
     ch = channel_factory(_echo)
-    settings = {"prompt": "a", "frames": 4}
-    result = ch.client.submit(settings, 5)
+    inputs = {"prompt": "a", "frames": 4}
+    result = ch.client.submit(inputs, 5)
     assert result == {"evidence": {"status": "done"}}
     (frame,) = ch.host.frames
     assert frame == {
@@ -122,7 +122,7 @@ def test_submit_round_trips_with_request_shape(channel_factory):
         "run_id": RUN_ID,
         "seq": 1,
         "op": "submit",
-        "args": {"settings": settings, "timeout_seconds": 5.0},
+        "args": {"inputs": inputs, "timeout_seconds": 5.0},
     }
 
 
