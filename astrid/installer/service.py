@@ -527,11 +527,11 @@ class Service:
         return raw, snapshot["mode"]
 
     def _launchd_live_pid_is_bound(self, identity: dict, observation: dict, *, owner_pid: int | None,
-                                    owner_birth_id: str | None) -> None:
+                                    owner_birth_id: str | None) -> dict | None:
         """Require the live launchd PID to still be the discovery-bound R0 Runtime."""
         state, pid = observation["state"], observation["pid"]
         if state == "not running" and pid is None:
-            return
+            return None
         if state != "running" or owner_pid is None or pid != owner_pid or not isinstance(owner_birth_id, str):
             raise ValueError("The launchd service does not match the selected Runtime owner.")
         try:
@@ -549,6 +549,58 @@ class Service:
                 or resolved_executable != resolved_expected
                 or not resolved_executable.is_relative_to(root)):
             raise ValueError("The launchd service does not match the selected Runtime owner.")
+        return {
+            "format": "astrid-launchd-r0-live-owner/v1",
+            "pid": pid,
+            "discovery_birth_id": owner_birth_id,
+            "process_birth_id": observed["birth_id"],
+            "uid": observed["uid"],
+            "executable": str(resolved_executable),
+        }
+
+    def _validated_launchd_bootout_identity(self, value: dict | None) -> dict | None:
+        """Validate the durable live tuple that can disambiguate pre-bootout recovery."""
+        if value is None:
+            return None
+        expected = {
+            "format", "pid", "discovery_birth_id", "process_birth_id", "uid", "executable",
+        }
+        if (not isinstance(value, dict) or set(value) != expected
+                or value.get("format") != "astrid-launchd-r0-live-owner/v1"
+                or type(value.get("pid")) is not int or value["pid"] <= 0
+                or not isinstance(value.get("discovery_birth_id"), str)
+                or not value["discovery_birth_id"].strip()
+                or not isinstance(value.get("process_birth_id"), str)
+                or not value["process_birth_id"].strip()
+                or type(value.get("uid")) is not int
+                or value["uid"] != platform.current_user()
+                or not isinstance(value.get("executable"), str)
+                or not value["executable"]):
+            raise ValueError("The retained R0 LaunchAgent live identity is invalid.")
+        try:
+            executable = Path(value["executable"])
+            root = self.root.resolve(strict=True)
+            if (not executable.is_absolute()
+                    or executable.resolve(strict=True) != executable
+                    or not executable.is_relative_to(root)):
+                raise ValueError("invalid retained executable")
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError("The retained R0 LaunchAgent live identity is invalid.") from exc
+        return dict(value)
+
+    def retain_launchd_bootout_identity(self, identity: dict) -> dict | None:
+        """Copy the admitted live tuple into the durable R0 recovery snapshot."""
+        if not isinstance(identity, dict):
+            raise ValueError("The admitted R0 LaunchAgent identity is invalid.")
+        return self._validated_launchd_bootout_identity(identity.get("live_owner"))
+
+    def launchd_bootout_identity_matches(self, identity: dict, retained: dict | None) -> bool:
+        """Match only the same live process; static definition equality is insufficient."""
+        expected = self._validated_launchd_bootout_identity(retained)
+        if expected is None or not isinstance(identity, dict):
+            return False
+        current = self._validated_launchd_bootout_identity(identity.get("live_owner"))
+        return current is not None and current == expected
 
     def admit_launchd_bootout(self, data: Path, *, owner_pid: int | None,
                               owner_birth_id: str | None, expected_identity: dict | None = None,
@@ -562,8 +614,6 @@ class Service:
                 return None
             raise
         identity, observation = self._launchd_stop_identity(value, data)
-        if expected_identity is not None and identity != expected_identity:
-            raise ValueError("The loaded launchd service changed before bootout.")
         if recovery_snapshot is not None:
             original, _mode = self._launchd_recovery_bytes(recovery_snapshot, data)
             if identity["plist"] != original:
@@ -571,9 +621,11 @@ class Service:
             action = plistlib.loads(original).get("ProgramArguments")
             if tuple(action) != identity["arguments"]:
                 raise ValueError("The loaded launchd action no longer matches the retained R0 definition.")
-        self._launchd_live_pid_is_bound(
+        identity["live_owner"] = self._launchd_live_pid_is_bound(
             identity, observation, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
         )
+        if expected_identity is not None and identity != expected_identity:
+            raise ValueError("The loaded launchd service changed before bootout.")
         return identity
 
     def bootout_admitted_launchd(self, data: Path, *, owner_pid: int | None,

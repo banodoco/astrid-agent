@@ -318,6 +318,115 @@ def test_fresh_recovery_bootouts_stopped_job_once_and_is_repeatable(tmp_path, mo
     ]
 
 
+def test_second_admission_refusal_recovers_the_same_retained_r0_job(tmp_path, monkeypatch):
+    backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    old, candidate = _version(backend, "old", 17), _version(backend, "candidate", 18)
+    core.switch(backend.root, old)
+    _publish_owner(paths)
+    backend.has_workspace = lambda *_: True
+    backend.workspace = lambda *_: {"realm_id": "realm-1", "realm_root": str(paths.realms_dir / "realm-1")}
+    backend.stage = lambda *_: candidate
+    backend.validate_candidate = lambda *_: None
+    backend.backup = lambda *_: None
+    backend.upgrade = lambda *_: None
+    backend.verify = lambda *_args, **_kwargs: None
+    events = []
+    _real_c1_stop(data, boundary, events)
+    loaded, observations, bootouts, target, _crash = _launchd_harness(
+        backend, data, old, boundary, events, monkeypatch,
+    )
+    original_r0_plist, original_r0_action = _r0_program_root_plist(backend.service, old, data)
+    loaded["action"] = original_r0_action
+    loaded["r0_action"] = original_r0_action
+    launchd_run = backend.service.run
+    print_count = 0
+
+    def refuse_second_admission(argv):
+        nonlocal print_count
+        if [str(value) for value in argv][:2] == ["launchctl", "print"]:
+            print_count += 1
+            if print_count == 2:
+                raise ValueError("second launchd admission refused")
+        return launchd_run(argv)
+
+    backend.service.run = refuse_second_admission
+
+    with pytest.raises(core.RuntimeOperationError, match="second launchd admission refused"):
+        core.Installer(backend.root, data, backend, say=lambda _line: None).run("update", {})
+
+    terminal = core.read_json(backend.root / "update-transaction.json")
+    retained = terminal["launchd_r0_plist"]["bootout_identity"]
+    assert terminal["step"] == "rolled_back"
+    assert retained["pid"] == 777
+    assert retained["process_birth_id"] == "birth-1"
+    assert bootouts == [("launchctl", "bootout", target)]
+    assert events.index("launchctl-bootout") < events.index("c1-stop-owner")
+    assert core.current(backend.root) == old
+    assert loaded["version"] == old
+    assert loaded["bootstrap_bytes"] == [original_r0_plist]
+    assert backend.service.path.read_bytes() == original_r0_plist
+    assert observations and all("pid = 777" in output for output in observations)
+
+
+def test_fresh_recovery_after_prebootout_interruption_restores_retained_r0(tmp_path, monkeypatch):
+    backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    old, candidate = _version(backend, "old", 17), _version(backend, "candidate", 18)
+    core.switch(backend.root, old)
+    _publish_owner(paths)
+    backend.has_workspace = lambda *_: True
+    backend.workspace = lambda *_: {"realm_id": "realm-1", "realm_root": str(paths.realms_dir / "realm-1")}
+    backend.stage = lambda *_: candidate
+    backend.validate_candidate = lambda *_: None
+    backend.verify = lambda *_args, **_kwargs: None
+    events = []
+    _real_c1_stop(data, boundary, events)
+    loaded, _observations, bootouts, target, _crash = _launchd_harness(
+        backend, data, old, boundary, events, monkeypatch,
+    )
+    original_r0_plist, original_r0_action = _r0_program_root_plist(backend.service, old, data)
+    loaded["action"] = original_r0_action
+    loaded["r0_action"] = original_r0_action
+    launchd_run = backend.service.run
+    print_count = 0
+
+    def interrupt_second_admission(argv):
+        nonlocal print_count
+        if [str(value) for value in argv][:2] == ["launchctl", "print"]:
+            print_count += 1
+            if print_count == 2:
+                raise _LaunchdControllerExit("controller died before bootout")
+        return launchd_run(argv)
+
+    backend.service.run = interrupt_second_admission
+    with pytest.raises(_LaunchdControllerExit, match="before bootout"):
+        core.Installer(backend.root, data, backend, say=lambda _line: None).run("update", {})
+
+    interrupted = core.read_json(backend.root / "update-transaction.json")
+    assert interrupted["step"] == "stopping"
+    assert interrupted["launchd_r0_plist"]["bootout_intent"] is True
+    assert interrupted["launchd_r0_plist"]["bootout_identity"]["pid"] == 777
+    assert bootouts == []
+    assert loaded["version"] == old
+
+    fresh = Backend(backend.root, tmp_path / "fresh-install.log", tmp_path / "fresh-uv")
+    fresh.service.system = "darwin"
+    fresh.service.path = fresh.service.home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+    fresh.service.selection = install_selection(fresh.service.home, "darwin")
+    fresh.service.run = backend.service.run
+    fresh._stop_boundary = boundary
+    fresh.verify = lambda *_args, **_kwargs: None
+
+    core.Installer(backend.root, data, fresh, say=lambda _line: None)._recover_update()
+
+    terminal = core.read_json(backend.root / "update-transaction.json")
+    assert terminal["step"] == "rolled_back"
+    assert bootouts == [("launchctl", "bootout", target)]
+    assert core.current(backend.root) == old
+    assert loaded["version"] == old
+    assert loaded["bootstrap_bytes"] == [original_r0_plist]
+    assert backend.service.path.read_bytes() == original_r0_plist
+
+
 @pytest.mark.parametrize("failure_point", ["backup", "candidate_verify"])
 def test_downstream_update_failure_runs_real_c1_rollback_and_keeps_old_selected(
         tmp_path, monkeypatch, failure_point):

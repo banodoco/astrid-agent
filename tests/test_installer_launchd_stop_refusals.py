@@ -462,6 +462,77 @@ def test_r0_post_bootout_reappearance_refuses_the_replacement_pid(tmp_path, monk
     assert _preserved_selection_workspace(backend, data, paths) == before
 
 
+def test_recovery_intent_refuses_same_definition_with_replacement_live_identity(tmp_path, monkeypatch):
+    backend, data, paths, boundary, version, outputs, queries, _bootouts, _stops, signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    original = _r0_program_root_plist(backend, data, version)
+    action = plistlib.loads(original)["ProgramArguments"]
+    transaction = {
+        "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+        "step": "stopping", "data_root": str(data), "old": version.document(),
+    }
+    write_json(backend.root / "update-transaction.json", transaction)
+    backend._update_transaction = (transaction, False)
+    backend.publish_launch_admission(version, data)
+    snapshot = transaction["launchd_r0_plist"]
+    _observe(backend, data, version, outputs, state="running", pid=777, loaded_action=action)
+    admitted = backend.service.admit_launchd_bootout(
+        data, owner_pid=777, owner_birth_id="birth-1", recovery_snapshot=snapshot,
+    )
+    backend._mark_launchd_bootout_intent(data, snapshot, admitted)
+    assert snapshot["bootout_identity"]["pid"] == 777
+
+    replacement = read_json(paths.discovery_path)
+    replacement.update(pid=888, process_birth_id="birth-2")
+    write_json(paths.discovery_path, replacement)
+    write_json(paths.instance_lock_path, replacement)
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {
+        "pid": pid, "uid": platform.current_user(), "birth_id": "birth-2",
+    })
+    _observe(backend, data, version, outputs, state="running", pid=888, loaded_action=action)
+    backend._update_transaction = (transaction, True)
+
+    with pytest.raises(RuntimeOperationError, match="appeared after the R0 bootout"):
+        backend.stop(version, data)
+
+    assert boundary.stop_calls == 0
+    assert signals == []
+    assert not any(argv[1:2] == ["bootout"] for argv in queries)
+
+
+def test_recovery_intent_refuses_stopped_job_without_exact_live_identity(tmp_path, monkeypatch):
+    backend, data, _paths, boundary, version, outputs, queries, _bootouts, _stops, signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    transaction = {
+        "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+        "step": "stopping", "data_root": str(data), "old": version.document(),
+    }
+    write_json(backend.root / "update-transaction.json", transaction)
+    backend._update_transaction = (transaction, False)
+    backend.publish_launch_admission(version, data)
+    snapshot = transaction["launchd_r0_plist"]
+    action = plistlib.loads(backend.service.path.read_bytes())["ProgramArguments"]
+    _observe(backend, data, version, outputs, state="not running", pid=None,
+             loaded_action=action)
+    admitted = backend.service.admit_launchd_bootout(
+        data, owner_pid=777, owner_birth_id="birth-1", recovery_snapshot=snapshot,
+    )
+    backend._mark_launchd_bootout_intent(data, snapshot, admitted)
+    assert snapshot["bootout_identity"] is None
+    _observe(backend, data, version, outputs, state="not running", pid=None,
+             loaded_action=action)
+    backend._update_transaction = (transaction, True)
+
+    with pytest.raises(RuntimeOperationError, match="appeared after the R0 bootout"):
+        backend.stop(version, data)
+
+    assert boundary.stop_calls == 0
+    assert signals == []
+    assert not any(argv[1:2] == ["bootout"] for argv in queries)
+
+
 def test_exact_owned_stopped_job_reaches_one_bootout_after_c1(tmp_path, monkeypatch):
     backend, data, paths, boundary, version, outputs, queries, _bootouts, manager_stops, signals = _prepared(
         tmp_path, monkeypatch,

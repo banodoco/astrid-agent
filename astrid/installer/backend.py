@@ -672,7 +672,22 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         write_json(journal, transaction)
         return True
 
-    def _mark_launchd_bootout_intent(self, data: Path, snapshot: dict) -> None:
+    def _launchd_bootout_intent(self, snapshot: dict) -> tuple[bool, dict | None]:
+        """Validate the durable boundary between an original R0 job and a replacement."""
+        intent = snapshot.get("bootout_intent", False)
+        if type(intent) is not bool:
+            raise ValueError("The retained R0 LaunchAgent bootout state is invalid.")
+        if not intent:
+            if "bootout_identity" in snapshot:
+                raise ValueError("The retained R0 LaunchAgent bootout state is invalid.")
+            return False, None
+        if "bootout_identity" not in snapshot:
+            raise ValueError("The retained R0 LaunchAgent bootout state is invalid.")
+        return True, self.service._validated_launchd_bootout_identity(
+            snapshot["bootout_identity"])
+
+    def _mark_launchd_bootout_intent(self, data: Path, snapshot: dict,
+                                     launchd_identity: dict) -> None:
         """Make post-bootout recovery fail closed even if the controller dies."""
         active = self._active_update_transaction()
         if active is None:
@@ -685,6 +700,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         journal = self.root / "update-transaction.json"
         if not journal.is_file() or linked(journal) or read_json(journal) != transaction:
             raise ValueError("The update journal changed before R0 LaunchAgent bootout.")
+        snapshot["bootout_identity"] = self.service.retain_launchd_bootout_identity(
+            launchd_identity)
         snapshot["bootout_intent"] = True
         write_json(journal, transaction)
 
@@ -800,16 +817,33 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                         is_retained_r0 = False
                     launchd_snapshot = (self._launchd_recovery_snapshot(data, active_only=True)
                                         if is_retained_r0 else None)
-                    if launchd_snapshot is not None and type(launchd_snapshot.get("bootout_intent", False)) is not bool:
-                        raise ValueError("The retained R0 LaunchAgent bootout state is invalid.")
-                    launchd_booted_out = bool((launchd_snapshot or {}).get("bootout_intent", False))
+                    if launchd_snapshot is not None:
+                        launchd_booted_out, retained_bootout_identity = self._launchd_bootout_intent(
+                            launchd_snapshot)
+                    else:
+                        launchd_booted_out, retained_bootout_identity = False, None
                     launchd_identity = self.service.admit_launchd_bootout(
                         data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
                         recovery_snapshot=launchd_snapshot,
                     )
                     if launchd_booted_out:
                         if launchd_identity is not None:
-                            raise ValueError("A launchd service appeared after the R0 bootout; refusing to stop it.")
+                            recovering = bool(active is not None and active[1])
+                            if (not recovering or not is_retained_r0
+                                    or not self.service.launchd_bootout_identity_matches(
+                                        launchd_identity, retained_bootout_identity)):
+                                raise ValueError(
+                                    "A launchd service appeared after the R0 bootout; refusing to stop it.")
+                            # The exact process admitted before the persisted
+                            # intent is still loaded, so the bootout cannot have
+                            # completed. Re-run the immediate admission and
+                            # bootout; a changed/reused PID or birth identity
+                            # remains a replacement and is refused above.
+                            self.service.bootout_admitted_launchd(
+                                data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
+                                expected_identity=launchd_identity,
+                                recovery_snapshot=launchd_snapshot,
+                            )
                     elif launchd_identity is not None:
                         # An update needs an exact durable R0 definition before
                         # changing launchd. Direct stop/uninstall has no rollback
@@ -817,7 +851,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                         if is_retained_r0 and launchd_snapshot is None:
                             raise ValueError("The update has no retained R0 LaunchAgent definition; refusing bootout.")
                         if launchd_snapshot is not None:
-                            self._mark_launchd_bootout_intent(data, launchd_snapshot)
+                            self._mark_launchd_bootout_intent(
+                                data, launchd_snapshot, launchd_identity)
                         self.service.bootout_admitted_launchd(
                             data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
                             expected_identity=launchd_identity, recovery_snapshot=launchd_snapshot,
