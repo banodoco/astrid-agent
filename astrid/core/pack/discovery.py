@@ -352,6 +352,7 @@ def discover_pack_metadata(
     project_root: str | Path = REPO_ROOT,
     extra_pack_roots: tuple[str, ...] = (),
     discover_packs_fn: DiscoverPacksFn | None = None,
+    include_hidden: bool = False,
 ) -> tuple[DiscoveredPack, ...]:
     """Return discovered packs in layered priority order.
 
@@ -514,7 +515,7 @@ def discover_pack_metadata(
                 continue
             if pack.id == "local":
                 continue
-            if pack.visibility == "hidden":
+            if pack.visibility == "hidden" and not include_hidden:
                 continue
             _add(
                 pack,
@@ -526,7 +527,8 @@ def discover_pack_metadata(
 
     # Collect every layer before compatibility checks, so dependencies may
     # resolve across roots. Preserve the injectable scanner seam for callers.
-    source_packs = (loader.scan_packs(loader.packs_root(), strict=False, _validate=False).packs
+    source_packs = (loader.scan_packs(loader.packs_root(), strict=False, include_hidden=include_hidden,
+                                      _validate=False).packs
                     if scan is _default_discover_packs else scan())
     for pack in source_packs:
         if pack.id == "local":
@@ -540,7 +542,8 @@ def discover_pack_metadata(
         local_packs = (
             source_packs
             if scan is _default_discover_packs and loader.packs_root().resolve() == project_pack_root
-            else (loader.scan_packs(project_pack_root, strict=False, _validate=False).packs
+            else (loader.scan_packs(project_pack_root, strict=False, include_hidden=include_hidden,
+                                    _validate=False).packs
                   if scan is _default_discover_packs else scan(project_pack_root))
         )
         for pack in local_packs:

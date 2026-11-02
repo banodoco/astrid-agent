@@ -165,7 +165,7 @@ def test_changed_folder_after_consent_is_rejected(tmp_path: Path, monkeypatch, c
 
 
 def test_core_pack_owns_conflicting_user_id_even_with_pin(tmp_path: Path, monkeypatch, capsys) -> None:
-    from astrid.core.pack import cli_basic
+    from astrid.core.pack import loader
 
     core_root = tmp_path / "core"
     user_root = tmp_path / "user"
@@ -176,7 +176,7 @@ def test_core_pack_owns_conflicting_user_id_even_with_pin(tmp_path: Path, monkey
         encoding="utf-8",
     )
     (user_root / "packs" / "shared" / "PIN").write_text("present\n", encoding="utf-8")
-    monkeypatch.setattr(cli_basic, "packs_root", lambda: core_root / "packs")
+    monkeypatch.setattr(loader, "packs_root", lambda: core_root / "packs")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     assert main(["list", "--pack-root", str(user_root / "packs")]) == 0
     output = capsys.readouterr().out

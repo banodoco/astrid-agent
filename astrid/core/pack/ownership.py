@@ -1,12 +1,12 @@
 """Shared first-owner policy for layered pack discovery."""
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable
 
 from astrid.core.pack._common import PackValidationError
 
 
-def first_pack_owner(items: Iterable[Any], *, source_kinds: Sequence[str] | None = None) -> list[Any]:
+def first_pack_owner(items: Iterable[Any]) -> list[Any]:
     """Apply the shared core, personal, and duplicate-id admission policy.
 
     Core/source and canonical personal roots have priority over later copies.
@@ -15,13 +15,12 @@ def first_pack_owner(items: Iterable[Any], *, source_kinds: Sequence[str] | None
     """
     winners: list[Any] = []
     seen: dict[str, tuple[Any, str]] = {}
-    for index, item in enumerate(items):
+    for item in items:
         pack = getattr(item, "pack", item)
         pack_id = getattr(pack, "id", None)
         if not isinstance(pack_id, str):
             continue
-        source_kind = (getattr(item, "source_kind", None)
-                       or (source_kinds[index] if source_kinds is not None else "external"))
+        source_kind = getattr(item, "source_kind", None) or "external"
         previous = seen.get(pack_id)
         if previous is not None:
             _, previous_kind = previous

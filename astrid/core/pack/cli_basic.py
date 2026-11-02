@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -18,7 +17,6 @@ from typing import Any
 import yaml
 
 from astrid.core.contracts.errors import AstridError
-from astrid.core.env_vars import ASTRID_PACKS_PATH
 from astrid.core.pack import (
     PackDefinition,
     discover_packs,
@@ -517,28 +515,17 @@ def _filtered_packs(
     args: argparse.Namespace, *, include_hidden: bool | None = None
 ) -> list[PackDefinition]:
     show_hidden = bool(getattr(args, "show_hidden", False))
-    roots = [packs_root()]
     personal_root = resolve_personal_packs_root()
+    raw_roots = list(getattr(args, "pack_roots", None) or ())
     if personal_root is not None:
-        roots.append(personal_root)
-    raw_roots = [
-        *tuple(getattr(args, "pack_roots", None) or ()),
-        *(item for item in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep) if item),
-    ]
-    roots.extend(Path(item).expanduser() for item in raw_roots)
-    candidates: list[PackDefinition] = []
-    source_kinds: list[str] = []
-    for index, root in enumerate(roots):
-        root_packs = list(discover_packs(
-            root,
-            include_hidden=show_hidden if include_hidden is None else include_hidden,
-        ))
-        candidates.extend(root_packs)
-        source_kind = ("source" if index == 0 else "personal"
-                       if personal_root is not None and root == personal_root else "external")
-        source_kinds.extend([source_kind] * len(root_packs))
-    from astrid.core.pack.ownership import first_pack_owner
-    packs = first_pack_owner(candidates, source_kinds=source_kinds)
+        raw_roots.append(str(personal_root))
+    from astrid.core.pack.discovery import discover_pack_metadata
+
+    inventory = discover_pack_metadata(
+        extra_pack_roots=tuple(raw_roots),
+        include_hidden=show_hidden if include_hidden is None else include_hidden,
+    )
+    packs = [record.pack for record in inventory]
     category = getattr(args, "category", None)
     status = getattr(args, "status", None)
     visibility = getattr(args, "visibility", None)
