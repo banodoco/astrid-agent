@@ -3084,3 +3084,15 @@ def test_generate_facade_maps_contract_failures_and_openai_rejection(
             out=tmp_path,
             project="demo",
         )
+
+
+SESSION_SDK_NAMES = ("SessionChannelError", "SessionClientProtocol")
+
+
+def test_sdk_exports_pack_facing_session_names() -> None:
+    """M2-11a: the pack-facing session names are part of the public SDK surface."""
+    sdk = importlib.import_module("astrid.sdk")
+    session = importlib.import_module("astrid.sdk.session")
+    for name in SESSION_SDK_NAMES:
+        assert name in sdk.__all__
+        assert getattr(sdk, name) is getattr(session, name)
