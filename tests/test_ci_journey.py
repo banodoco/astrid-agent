@@ -636,7 +636,9 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
     with pytest.raises(RuntimeError, match=r"release0-bootstrap.log: exit 37"):
         journey.execute(args)
 
-    staged = evidence.parent / "evidence-upload"
+    # The combined workflow uploads its allowlisted receipts from the run root.
+    # Keep this source-branch regression bound to that existing harness boundary.
+    staged = run_root / "evidence-upload"
     for phase in ("before-cleanup", "after-cleanup"):
         receipt = journey.read_json(staged / phase / "journey-result.json")
         entry = receipt["failure_diagnostics"][phase]["release0_bootstrap"]
