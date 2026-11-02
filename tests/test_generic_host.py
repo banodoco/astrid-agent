@@ -5036,12 +5036,22 @@ def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkey
 
 
 def test_wan_qualification_refuses_before_host_preflight(tmp_path, monkeypatch):
-    _write_manifest(tmp_path / 'wan', capability_id='wan2gp.generate_video')
+    """M2-11a: the shipped session-declared wan action runs the real availability
+    gate before preflight. Only the availability lookup is stubbed, to report the
+    route unqualified; no capability id is checked by the host predicate."""
+    import astrid.core.generation.availability as availability
+
+    monkeypatch.setattr(availability, "action_availability", lambda _route: {
+        "available": False,
+        "error": {"code": "generation_route_unqualified", "message": "wan2gp route has not been qualified"},
+    })
+    from astrid.core.pack.loader import _default_pack_roots
+
     runtime = FakeRuntime()
-    host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+    host = GenericPackHost(pack_roots=_default_pack_roots(), client=runtime)
     host.discover()
     task = {'task': {'id': 'wan-task', 'capability': 'wan2gp.generate_video', 'project_id': 'demo',
-                     'attempt_id': 'wan-attempt', 'fence': 1, 'spec': {'spec': {'inputs': {}}}}}
+                     'attempt_id': 'wan-attempt', 'fence': 1, 'spec': {'spec': {'inputs': {'prompt': 'x'}}}}}
     runtime.tasks['wan-task'] = task
     monkeypatch.setattr(host, 'preflight', lambda *_: pytest.fail('host preflight started'))
     monkeypatch.setattr(host, 'prepare_wan_session', lambda **_: pytest.fail('session started'))
