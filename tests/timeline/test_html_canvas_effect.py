@@ -25,10 +25,12 @@ class HtmlCanvasEffectExecutorTest(unittest.TestCase):
     def test_scaffold_writes_discoverable_personal_effect_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"
-            packs_root = Path(tmp) / "packs"
+            home = Path(tmp) / "home"
+            packs_root = home / "Astrid" / "packs"
             report_path = project / "runs" / "effect" / "report.json"
 
-            with patch.dict(os.environ, {"ASTRID_PACKS_PATH": str(packs_root)}):
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                os.environ.pop("ASTRID_PACKS_PATH", None)
                 report = scaffold(
                     effect_id="glass-product-card",
                     label="Glass Product Card",
@@ -57,12 +59,23 @@ class HtmlCanvasEffectExecutorTest(unittest.TestCase):
             self.assertTrue(manifest["metadata"]["render_requirements"]["uses_html_in_canvas"])
             self.assertEqual(manifest["metadata"]["render_requirements"]["final_renderer"], "rendering.render")
 
-            from astrid.core.element.registry import load_pack_elements
+            from astrid.packs.rendering.rendering.renderers.remotion import run as renderer
 
-            discovered = load_pack_elements(
-                project_root=project, extra_pack_roots=(str(personal_pack),)
-            )
-            self.assertIn("glass-product-card", {item.id for item in discovered})
+            # Exercise the same registry and staging path used by normal render
+            # admission; no extra root is passed by the test.
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                os.environ.pop("ASTRID_PACKS_PATH", None)
+                registry = renderer._load_render_element_registry()
+                self.assertIn("glass-product-card", {item.id for item in registry.list(kind="effects")})
+                staged = renderer._stage_effect_assets_for_timeline(
+                    {"clips": [report["timeline_clip"]]},
+                    project_dir=project,
+                    theme_path=None,
+                    render_hash="scaffold-test",
+                    registry=registry,
+                )
+            self.assertEqual(staged["effects"][0]["effect_id"], "glass-product-card")
+            self.assertEqual(Path(staged["effects"][0]["element_root"]), element_root)
             element = load_element_definition(element_root, kind="effects", source="pack:personal", editable=True, priority=10)
             self.assertEqual(element.id, "glass-product-card")
             self.assertEqual(element.metadata["pack_id"], "personal")

@@ -168,6 +168,37 @@ def test_cache_identity_changes_when_personal_pack_digest_changes(tmp_path, monk
     assert second != first
 
 
+def test_cache_identity_tracks_default_personal_pack_when_packs_path_is_unset(tmp_path, monkeypatch):
+    personal = tmp_path / "home" / "Astrid" / "packs" / "personal"
+    effects = personal / "rendering" / "elements" / "effects" / "sample"
+    effects.mkdir(parents=True)
+    (personal / "pack.yaml").write_text("schema_version: 3\nid: personal\n")
+    component = effects / "component.tsx"
+    component.write_text("export const value = 1;\n")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+
+    first = frame_cache_key(_snapshot(), 1, [32, 18])
+    component.write_text("export const value = 2;\n")
+    second = frame_cache_key(_snapshot(), 1, [32, 18])
+    assert second != first
+
+
+def test_cache_identity_tracks_configured_single_pack_root(tmp_path, monkeypatch):
+    personal = tmp_path / "personal"
+    effect = personal / "rendering" / "elements" / "effects" / "sample"
+    effect.mkdir(parents=True)
+    (personal / "pack.yaml").write_text("schema_version: 3\nid: personal\n")
+    component = effect / "component.tsx"
+    component.write_text("export const value = 1;\n")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(personal))
+
+    first = frame_cache_key(_snapshot(), 1, [32, 18])
+    component.write_text("export const value = 2;\n")
+    second = frame_cache_key(_snapshot(), 1, [32, 18])
+    assert second != first
+
+
 @pytest.mark.parametrize("relative", [
     "astrid/packs/rendering/rendering/renderers/remotion/run.py",
     "astrid/packs/rendering/rendering/renderers/remotion/root_preparation.py",

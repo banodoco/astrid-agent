@@ -275,16 +275,28 @@ def _pack_root_digests(checkout: Path) -> list[tuple[str, str]]:
     """Return stable pack identities for every root that can supply card elements."""
     roots: set[Path] = set()
     collections = [Path(checkout) / "astrid" / "packs"]
+    # The personal collection has a shared default-root policy. In particular,
+    # it remains selected when ASTRID_PACKS_PATH is unset.
+    from astrid.core.pack.personal import resolve_personal_packs_root
+
+    personal_collection = resolve_personal_packs_root()
+    if personal_collection is not None:
+        collections.append(personal_collection)
     configured = os.environ.get("ASTRID_PACKS_PATH")
     if configured:
         collections.extend(Path(value).expanduser() for value in configured.split(os.pathsep) if value)
     for collection in collections:
         try:
-            roots.update(
-                child.resolve(strict=True)
-                for child in collection.iterdir()
-                if not child.is_symlink() and child.is_dir() and (child / "pack.yaml").is_file()
-            )
+            if not collection.is_symlink() and collection.is_dir() and (collection / "pack.yaml").is_file():
+                # Pack discovery accepts a configured path that names one pack
+                # directly, as well as a collection containing pack folders.
+                roots.add(collection.resolve(strict=True))
+            else:
+                roots.update(
+                    child.resolve(strict=True)
+                    for child in collection.iterdir()
+                    if not child.is_symlink() and child.is_dir() and (child / "pack.yaml").is_file()
+                )
         except OSError:
             continue
 
