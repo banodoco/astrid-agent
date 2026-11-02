@@ -42,6 +42,7 @@ def test_generation_list_public_command_uses_shared_catalog(monkeypatch, capsys)
         "backend": "local", "availability": "unavailable", "reason": "test | reason",
         "template": "image/z_image_turbo", "source": "catalog",
     }])
+    monkeypatch.setattr(listing, "_targets", lambda: [])
 
     assert console.main(["generate", "list", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)
