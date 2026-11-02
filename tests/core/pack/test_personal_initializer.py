@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_ROOT = Path("/home/user/astrid/proof-codex/src/astrid-runtime")
 
 
-def _import_packs(home: Path, *, packs_root: Path | None = None) -> None:
+def _run_python(home: Path, script: str, *, packs_root: Path | None = None) -> None:
     env = os.environ.copy()
     env["HOME"] = str(home)
     env.pop("ASTRID_PACKS_PATH", None)
@@ -18,7 +18,7 @@ def _import_packs(home: Path, *, packs_root: Path | None = None) -> None:
         env["ASTRID_PACKS_PATH"] = str(packs_root)
     env["PYTHONPATH"] = os.pathsep.join((str(REPO_ROOT), str(RUNTIME_ROOT)))
     subprocess.run(
-        [sys.executable, "-c", "import astrid.packs; import importlib; importlib.reload(astrid.packs)"],
+        [sys.executable, "-c", script],
         cwd=REPO_ROOT,
         env=env,
         check=True,
@@ -27,9 +27,24 @@ def _import_packs(home: Path, *, packs_root: Path | None = None) -> None:
     )
 
 
-def test_first_import_creates_empty_personal_pack_in_home(tmp_path: Path) -> None:
+def test_import_with_read_only_home_does_not_create_files(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    _import_packs(home)
+    home.mkdir(exist_ok=True)
+    home.chmod(0o555)
+    try:
+        _run_python(home, "import astrid.packs")
+    finally:
+        home.chmod(0o755)
+    assert list(home.iterdir()) == []
+
+
+def test_explicit_initializer_creates_minimal_personal_pack_once(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _run_python(
+        home,
+        "from astrid.core.pack.personal import ensure_personal_pack; "
+        "ensure_personal_pack(); ensure_personal_pack()",
+    )
 
     personal = home / "Astrid" / "packs" / "personal"
     assert sorted(path.name for path in personal.iterdir()) == ["pack.yaml"]
@@ -43,7 +58,7 @@ def test_first_import_creates_empty_personal_pack_in_home(tmp_path: Path) -> Non
     )
 
 
-def test_existing_personal_pack_bytes_survive_reimport(tmp_path: Path) -> None:
+def test_existing_personal_pack_bytes_survive_initialization(tmp_path: Path) -> None:
     home = tmp_path / "home"
     personal = home / "Astrid" / "packs" / "personal"
     personal.mkdir(parents=True)
@@ -52,7 +67,7 @@ def test_existing_personal_pack_bytes_survive_reimport(tmp_path: Path) -> None:
     (personal / "pack.yaml").write_bytes(manifest_bytes)
     (personal / "notes.bin").write_bytes(other_bytes)
 
-    _import_packs(home)
+    _run_python(home, "from astrid.core.pack.personal import ensure_personal_pack; ensure_personal_pack()")
 
     assert (personal / "pack.yaml").read_bytes() == manifest_bytes
     assert (personal / "notes.bin").read_bytes() == other_bytes
@@ -61,7 +76,7 @@ def test_existing_personal_pack_bytes_survive_reimport(tmp_path: Path) -> None:
 def test_packs_path_override_gets_its_own_personal_pack(tmp_path: Path) -> None:
     home = tmp_path / "home"
     override = tmp_path / "configured-packs"
-    _import_packs(home, packs_root=override)
+    _run_python(home, "from astrid.core.pack.personal import ensure_personal_pack; ensure_personal_pack()", packs_root=override)
 
     assert (override / "personal" / "pack.yaml").is_file()
     assert not (home / "Astrid" / "packs").exists()

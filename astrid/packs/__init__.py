@@ -22,12 +22,13 @@ from importlib.machinery import ModuleSpec, PathFinder
 from pathlib import Path
 from typing import Sequence
 
+from astrid.core.pack.personal import resolve_personal_packs_root
+
 
 __all__: list[str] = []
 
 _LOG = logging.getLogger(__name__)
 _PACK_ID = re.compile(r"[a-z][a-z0-9_]*\Z")
-_PACKS_ENV = "ASTRID_PACKS_PATH"
 _PERSONAL_ID = "personal"
 _CORE_ROOT = Path(__file__).resolve().parent
 
@@ -47,57 +48,13 @@ def _child_directory_names(root: Path) -> tuple[str, ...]:
 
 
 def _visible_packs_root() -> Path | None:
-    """Resolve and initialize the one configurable visible folder-pack root."""
-    configured = os.environ.get(_PACKS_ENV)
-    if configured is None:
-        candidate = Path.home() / "Astrid" / "packs"
-    elif not configured.strip():
-        return None
-    else:
-        candidate = Path(configured).expanduser()
-        if not candidate.is_absolute():
-            _LOG.warning("ignoring relative %s pack root: %r", _PACKS_ENV, configured)
-            return None
-
-    try:
-        candidate.mkdir(parents=True, exist_ok=True)
-        resolved = candidate.resolve(strict=True)
-        if not resolved.is_dir():
-            _LOG.warning("ignoring non-directory %s pack root: %s", _PACKS_ENV, resolved)
-            return None
-    except (OSError, RuntimeError):
-        # An unusable default or explicit override leaves core packs usable.
+    """Expose an existing configurable folder-pack root without creating it."""
+    resolved = resolve_personal_packs_root()
+    if resolved is None or not resolved.is_dir():
         return None
     if resolved == _CORE_ROOT:
         return None
     return resolved
-
-
-def _initialize_personal_pack(root: Path) -> None:
-    """Create the reserved personal pack without changing existing user data."""
-    personal = root / _PERSONAL_ID
-    try:
-        personal.mkdir(exist_ok=True)
-        if personal.is_symlink() or not personal.is_dir():
-            _LOG.warning("ignoring unusable personal pack path: %s", personal)
-            return
-        manifest = personal / "pack.yaml"
-        payload = (
-            "schema_version: 3\n"
-            "id: personal\n"
-            "name: Personal\n"
-            "version: 0.1.0\n"
-            'pack_api: "1.0"\n'
-            "actions: {}\n"
-        ).encode("utf-8")
-        try:
-            descriptor = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            return
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-    except (OSError, RuntimeError) as exc:
-        _LOG.warning("could not initialize personal pack at %s: %s", personal, exc)
 
 
 class _CorePackCollisionFinder(MetaPathFinder):
@@ -137,7 +94,6 @@ if not any(isinstance(finder, _CorePackCollisionFinder) for finder in sys.meta_p
 
 _EXTERNAL_ROOT = _visible_packs_root()
 if _EXTERNAL_ROOT is not None:
-    _initialize_personal_pack(_EXTERNAL_ROOT)
     _external_names = _child_directory_names(_EXTERNAL_ROOT)
     for _name in _external_names:
         if _name == _PERSONAL_ID:
