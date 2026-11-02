@@ -681,45 +681,11 @@ jobs:
         shell: pwsh
         run: |
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
-          $allowedNames = @(
-            'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
-            'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
-            'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
-            'service-manager-prerequisite.log', 'direct-service-ownership.log',
-            'preflight-scheduled-task.txt',
-            'runtime-owner-processes.json', 'runtime-service-runtime.log',
-            'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
-            'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
-            'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
-          )
-          $maxArtifactBytes = 49000000
-          # Reserve 1 KiB per file for the stored ZIP entry and central directory.
-          $estimatedArtifactBytes = 0L
-          $receiptCount = 0
-          if (Test-Path -LiteralPath $evidenceRoot) {
-            foreach ($file in Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force) {
-              $relative = [IO.Path]::GetRelativePath($evidenceRoot, $file.FullName).Replace('\', '/')
-              if ($relative -notmatch '^(before-cleanup|after-cleanup)/([^/]+)$') {
-                throw "Unexpected staged evidence path: $relative"
-              }
-              $name = $Matches[2]
-              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$') {
-                throw "Unexpected staged evidence filename: $relative"
-              }
-              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "Staged evidence must be a regular file: $relative"
-              }
-              if ($name -eq 'journey-result.json') { $receiptCount++ }
-              $estimatedArtifactBytes += [long]$file.Length + 1024
-            }
-          }
-          if ($receiptCount -eq 0) {
-            throw "No staged journey-result.json receipt exists under $evidenceRoot"
-          }
-          if ($estimatedArtifactBytes -ge $maxArtifactBytes) {
-            throw "Named journey artifact estimate is $estimatedArtifactBytes bytes; limit is below $maxArtifactBytes bytes"
-          }
-          Write-Host "Validated named lifecycle artifact estimate: $estimatedArtifactBytes bytes (< $maxArtifactBytes)."
+          # The boundary operates over both before/after cleanup snapshots, keeps
+          # every named receipt and diagnostic, and refuses any invalid or
+          # over-cap artifact. Do not turn this failure into an upload.
+          python -u agent/scripts/journey_artifact_boundary.py $evidenceRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain only the named lifecycle evidence after a lifecycle failure
         if: always() && steps.evidence_boundary.outcome == 'success'
         uses: actions/upload-artifact@v4

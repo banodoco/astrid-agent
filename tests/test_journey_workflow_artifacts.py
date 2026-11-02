@@ -6,6 +6,7 @@ import re
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "journey.yml"
 COLLECTOR = REPO / "scripts" / "ci_journey.py"
+BOUNDARY = REPO / "scripts" / "journey_artifact_boundary.py"
 
 
 def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
@@ -25,20 +26,17 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     assert upload_path != "${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}"
     assert "compression-level: 0" in upload
 
-    max_bytes = int(re.search(r"\$maxArtifactBytes\s*=\s*(\d+)", guard).group(1))
-    assert max_bytes < 50_000_000
-    assert re.search(r"\$estimatedArtifactBytes\s+-ge\s+\$maxArtifactBytes", guard)
-    assert "[long]$file.Length + 1024" in guard
+    assert "python -u agent/scripts/journey_artifact_boundary.py $evidenceRoot" in guard
+    assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in guard
+    assert "continue-on-error" not in guard
 
-    names_block = guard.split("$allowedNames = @(", 1)[1].split("\n          )", 1)[0]
-    staged_names = set(re.findall(r"'([^']+)'", names_block))
-    assert "release0-bootstrap.log" in staged_names
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     collector_names = set(re.findall(r'^\s*"([^\"]+)"\s*,?\s*$', collector_block, re.M))
-    assert collector_names <= staged_names
-    assert "^runtime-service-service-.+\\.log$" in guard
-    assert "Unexpected staged evidence path" in guard
-    assert "Unexpected staged evidence filename" in guard
-    assert "No staged journey-result.json receipt" in guard
-    assert "Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force" in guard
-    assert "-ge $maxArtifactBytes" in guard
+    boundary_text = BOUNDARY.read_text(encoding="utf-8")
+    assert collector_names
+    assert "MAX_ARTIFACT_BYTES = 49_000_000" in boundary_text
+    assert 'PHASES = frozenset({"before-cleanup", "after-cleanup"})' in boundary_text
+    assert "Unexpected staged evidence path" in boundary_text
+    assert "Unexpected staged evidence filename" in boundary_text
+    assert "No staged journey-result.json receipt" in boundary_text
+    assert "minimum footprint cannot fit" in boundary_text
