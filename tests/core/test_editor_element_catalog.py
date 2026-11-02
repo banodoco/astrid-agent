@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
-import json
 from pathlib import Path
 
 from astrid.core.element import catalog
@@ -57,7 +57,7 @@ def _install_fake_public_composition(tmp_path: Path, monkeypatch) -> None:
     public = {
         kind: sorted(
             item["id"] for item in descriptors
-            if item["kind"] == kind
+            if item["kind"] == kind[:-1]
             and item["source"] == "pack:rendering"
             and item["renderability"]["preview"] == "unknown"
         )
@@ -154,8 +154,8 @@ def test_installed_animation_and_transition_fixture_remain_in_live_projection(
 
     installed = catalog.list_element_descriptors(pack_id=pack_id)
     assert {(item["kind"], item["id"]) for item in installed} == {
-        ("animations", "fixture-animation"),
-        ("transitions", "fixture-transition"),
+        ("animation", "fixture-animation"),
+        ("transition", "fixture-transition"),
     }
 
 
