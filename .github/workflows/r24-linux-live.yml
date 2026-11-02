@@ -24,7 +24,7 @@ on:
       producer_ref:
         description: Immutable audited R-24 producer commit
         required: true
-        default: 7bb0ae88721fdd6b2d7b948760d886eeda9df282
+        default: d6aa33bf125ffdabed9e397fb1aea319b8a9badb
         type: string
       confirmation:
         description: Required literal R24_LIVE_CURRENT_TUPLE
@@ -46,7 +46,7 @@ jobs:
     env:
       R24_CHECKOUTS: ${{ github.workspace }}
       R24_REQUESTED_RUNNER_REF: ${{ github.event_name == 'push' && github.sha || inputs.runner_ref }}
-      R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && '7bb0ae88721fdd6b2d7b948760d886eeda9df282' || inputs.producer_ref }}
+      R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && 'd6aa33bf125ffdabed9e397fb1aea319b8a9badb' || inputs.producer_ref }}
       R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_CURRENT_TUPLE' || inputs.confirmation }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:

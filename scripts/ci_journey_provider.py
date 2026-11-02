@@ -166,7 +166,7 @@ _PRODUCER_FILES = {
 # The diagnostic producer above is retained as a separate, non-admission path.
 # This live producer is an immutable invocation input, not a release pin or
 # evidence authority.  Its binding selects the published release tuple below.
-LIVE_PRODUCER_REF = "7bb0ae88721fdd6b2d7b948760d886eeda9df282"
+LIVE_PRODUCER_REF = "d6aa33bf125ffdabed9e397fb1aea319b8a9badb"
 LIVE_PRODUCER_FILES = {
     "pinokio/providers/r24-linux.py": "978b52548281250ed264d7f08d8c8179419a1aa11035ddb1d6450960839e0dc9",
     "pinokio/providers/r24-action.cjs": "2901c4e75b11a96547d2033e62118ee64247670b8f9531fc6bbad9fb1b34be01",

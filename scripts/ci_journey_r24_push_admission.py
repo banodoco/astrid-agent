@@ -12,7 +12,7 @@ from typing import Mapping
 REPOSITORY = "banodoco/astrid-agent"
 WORKFLOW_PATH = ".github/workflows/r24-linux-live.yml"
 VENUE_REF = "refs/heads/venue/M-PIN-R-24-PUSH-ROUTE-R1-E53B11D1"
-PRODUCER_REF = "7bb0ae88721fdd6b2d7b948760d886eeda9df282"
+PRODUCER_REF = "d6aa33bf125ffdabed9e397fb1aea319b8a9badb"
 CONFIRMATION = "R24_LIVE_CURRENT_TUPLE"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 
