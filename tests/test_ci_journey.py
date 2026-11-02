@@ -817,6 +817,17 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
                          "exit_code": 37, "sha256": hashlib.sha256(raw).hexdigest()}
         assert (run_root / entry["path"]).read_bytes() == raw
 
+    # Exercise the real snapshot receipt convention through overflow allocation.
+    from scripts import journey_artifact_boundary as boundary
+    assert boundary.prepare(staged, max_bytes=40_000) < 40_000
+    for phase in ("before-cleanup", "after-cleanup"):
+        entry = journey.read_json(staged / phase / "journey-result.json")["failure_diagnostics"][phase]["release0_bootstrap"]
+        retained = staged / phase / "release0-bootstrap.log"
+        assert entry["status"] == "truncated"
+        assert entry["original_sha256"] == hashlib.sha256(raw).hexdigest()
+        assert entry["sha256"] == hashlib.sha256(retained.read_bytes()).hexdigest()
+        assert entry["exit_code"] == 37
+
 
 def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
@@ -1161,15 +1172,19 @@ def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
         assert journey.execute(args)["status"] == "pass"
     assert not (evidence / "release0-api-seed").exists()
     staged = run_root / "evidence-upload" / "before-cleanup"
-    prefix = "runtime-service-service-seed-0001-"
+    prefix = "runtime-service-service-seed-" + hashlib.sha256(
+        b"release0-api-seed/seed-diagnostics/0001").hexdigest() + "-"
     request = (staged / (prefix + "input.log")).read_bytes()
     assert request == (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
     command = json.loads((staged / (prefix + "command.log")).read_bytes())
     assert command[:4] == [sys.executable, "-I", str(script), "seed"]
     assert command[-2:] == ["--request", str(evidence / "release0-api-seed" / "seed-request.json")]
     assert (staged / (prefix + "stdout.log")).read_bytes() == json.dumps({"payload": json.loads(request)}).encode() + b"\n"
-    assert (staged / (prefix + "stderr.log")).read_bytes() == b"diagnostic-" + b"x" * 1048600
-    assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": exit_code}
+    assert (staged / (prefix + "stderr.log")).read_bytes() == (b"diagnostic-" + b"x" * 1048600)[:journey.SEED_FILE_LIMIT]
+    exit_record = json.loads((staged / (prefix + "exit.log")).read_bytes())
+    assert exit_record["exit_code"] == exit_code
+    assert exit_record["streams"]["stderr"]["truncated"] is True
+    assert exit_record["streams"]["stderr"]["captured_bytes"] == 1048611
 
 
 def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch):
@@ -1190,10 +1205,11 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
     journey.retain_named_evidence(evidence, "before-cleanup")
     staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
     for index, generation in enumerate(("one", "two"), 1):
-        prefix = f"runtime-service-service-seed-{index:04d}-"
+        identity = hashlib.sha256(f"seed/seed-diagnostics/{index:04d}".encode()).hexdigest()
+        prefix = f"runtime-service-service-seed-{identity}-"
         assert json.loads((staged / (prefix + "input.log")).read_bytes()) == {"generation": generation}
         assert json.loads((staged / (prefix + "stdout.log")).read_bytes()) == {"generation": generation}
-        assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
+        assert json.loads((staged / (prefix + "exit.log")).read_bytes())["exit_code"] == 0
 
 
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])

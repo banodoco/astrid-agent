@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -71,6 +72,9 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
+SEED_STREAM_LIMIT = 256 * 1024
+SEED_FILE_LIMIT = 64 * 1024
+SEED_INVOCATION_LIMIT = 16
 
 
 def journey_os_label() -> str:
@@ -546,7 +550,7 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
               file=sys.stderr, flush=True)
 
 
-def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
+def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> dict:
     """Retain bounded tails of the run-owned Runtime and named service logs."""
     if sys.platform == "darwin":
         log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
@@ -555,7 +559,9 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
     else:
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
     paths = [log_dir / "install.log", log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    observations = {}
     for source in paths:
+        observations[source.name] = "unavailable"
         if source.is_symlink() or not source.is_file():
             continue
         name = ("install.log" if source.name == "install.log" else
@@ -566,9 +572,12 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
             with source.open("rb") as stream:
                 stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
                 target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            observations[source.name] = "captured"
         except Exception as exc:
             print(f"Journey Runtime log capture ({phase}) failed for {source.name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            observations[source.name] = "error"
+    return observations
 
 
 def retain_named_evidence(evidence: Path, phase: str) -> None:
@@ -599,31 +608,86 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
-    # The existing hosted boundary accepts this legacy service-log filename
-    # pattern. Flatten the seed directories into it without truncating bytes.
-    # Numbering follows sorted relative paths so distinct invocations survive.
-    seed_dirs = sorted(path for path in evidence.glob("**/seed-diagnostics/*")
-                       if len(path.name) >= 4 and path.name.isascii() and path.name.isdecimal())
-    for index, directory in enumerate(seed_dirs, 1):
-        if directory.is_symlink() or not directory.is_dir():
+    # Nested producers use the same basename in different directories. Hash the
+    # complete relative path so their names remain stable and collision-resistant.
+    for source in sorted(evidence.rglob("*-bootstrap.log")):
+        relative = source.relative_to(evidence)
+        if len(relative.parts) < 2 or source.is_symlink() or not source.is_file():
             continue
+        if any((evidence.joinpath(*relative.parts[:i])).is_symlink()
+               for i in range(1, len(relative.parts))):
+            continue
+        # Windows Release-0 has a separately receipted, raw copy below.
+        if sys.platform == "win32" and relative.as_posix() == "release0/release0-bootstrap.log":
+            continue
+        identity = hashlib.sha256(relative.as_posix().encode("utf-8")).hexdigest()
+        target = destination / f"runtime-service-service-bootstrap-{identity}.log"
+        try:
+            with source.open("rb") as stream:
+                stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+        except Exception as exc:
+            print(f"Journey bootstrap evidence copy ({phase}) failed for {relative}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    # Preserve already-captured nested logs if cleanup removed their sources.
+    if phase == "after-cleanup":
+        before = destination.parent / "before-cleanup"
+        for source in sorted(before.glob("runtime-service-service-bootstrap-*.log")):
+            target = destination / source.name
+            if not target.exists() and source.is_file() and not source.is_symlink():
+                shutil.copyfile(source, target)
+
+    # Bound the aggregate seed inventory as well as the subprocess streams.
+    # The summary makes each truncation and any omitted invocations explicit.
+    seed_dirs = sorted(path for path in evidence.glob("**/seed-diagnostics/*")
+                       if len(path.name) >= 4 and path.name.isascii() and path.name.isdecimal()
+                       and path.is_dir() and not path.is_symlink())
+    summary = {"invocations_observed": len(seed_dirs),
+               "invocations_retained": min(len(seed_dirs), SEED_INVOCATION_LIMIT),
+               "omitted_invocations": max(0, len(seed_dirs) - SEED_INVOCATION_LIMIT), "files": []}
+    for directory in seed_dirs[:SEED_INVOCATION_LIMIT]:
+        identity = hashlib.sha256(directory.relative_to(evidence).as_posix().encode("utf-8")).hexdigest()
         for kind in ("input", "command", "stdout", "stderr", "exit"):
             suffix = "json" if kind in {"input", "command", "exit"} else "txt"
             source = directory / f"{kind}.{suffix}"
+            if not source.is_file() or source.is_symlink():
+                continue
+            target = destination / f"runtime-service-service-seed-{identity}-{kind}.log"
+            try:
+                digest = hashlib.sha256()
+                total = 0
+                with source.open("rb") as stream, target.open("wb") as out:
+                    for chunk in iter(lambda: stream.read(65536), b""):
+                        digest.update(chunk)
+                        out.write(chunk[:max(0, SEED_FILE_LIMIT - total)])
+                        total += len(chunk)
+                summary["files"].append({"source": source.relative_to(evidence).as_posix(),
+                                         "path": target.name, "captured_bytes": total,
+                                         "retained_bytes": min(total, SEED_FILE_LIMIT),
+                                         "sha256": digest.hexdigest(),
+                                         "truncated": total > SEED_FILE_LIMIT})
+            except Exception as exc:
+                summary["files"].append({"source": source.relative_to(evidence).as_posix(),
+                                         "error": f"{type(exc).__name__}: {exc}"})
+                print(f"Journey seed evidence copy ({phase}) failed for {source}: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    if seed_dirs:
+        write_json(destination / "runtime-service-service-seed-summary.log", summary)
+    if phase == "after-cleanup":
+        # Cleanup may remove seed directories after the first snapshot.
+        before = destination.parent / "before-cleanup"
+        for source in sorted(before.glob("runtime-service-service-seed-*.log")):
             if source.is_file() and not source.is_symlink():
-                target = destination / f"runtime-service-service-seed-{index:04d}-{kind}.log"
-                try:
+                target = destination / source.name
+                if not target.exists():
                     shutil.copyfile(source, target)
-                except Exception as exc:
-                    print(f"Journey seed evidence copy ({phase}) failed for {source}: "
-                          f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
 def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:
     """Stage named diagnostics and bind their availability to the journey receipt."""
     result_path = evidence / "journey-result.json"
     try:
-        capture_runtime_service_logs(evidence, run_root, phase)
+        runtime_observations = capture_runtime_service_logs(evidence, run_root, phase) or {}
         capture_manager_state(evidence, data, phase)
         retain_named_evidence(evidence, phase)
         destination = evidence.parent.parent / "evidence-upload" / phase
@@ -640,6 +704,38 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 if manager.get("error"):
                     item["error"] = manager["error"]
             diagnostic[key] = item
+        def staged_item(paths):
+            paths = sorted(path for path in paths if path.is_file() and not path.is_symlink())
+            return {"status": "captured" if paths else "unavailable",
+                    "paths": [path.relative_to(run_root).as_posix() for path in paths]}
+
+        diagnostic["runtime_service"] = staged_item(
+            path for path in destination.glob("runtime-service-*.log")
+            if not path.name.startswith(("runtime-service-service-seed-", "runtime-service-service-bootstrap-")))
+        diagnostic["runtime_service"]["source_observations"] = runtime_observations
+        diagnostic["seed"] = staged_item(destination.glob("runtime-service-service-seed-*.log"))
+        diagnostic["bootstrap"] = staged_item(
+            list(destination.glob("*-bootstrap.log")) +
+            list(destination.glob("runtime-service-service-bootstrap-*.log")))
+        diagnostic["bootstrap"]["source_paths"] = [
+            source.relative_to(evidence).as_posix() for source in sorted(evidence.rglob("*-bootstrap.log"))
+            if source.is_file() and not source.is_symlink()]
+        diagnostic["uninstall"] = staged_item(
+            [destination / "uninstall.log", destination / "final-uninstall.log"])
+        diagnostic["uninstall"]["final_uninstall"] = (
+            "captured" if (destination / "final-uninstall.log").is_file() else
+            "not-yet-run" if phase == "before-cleanup" else "unavailable")
+        unit = destination / f"unit-file-{phase}.txt"
+        manager_path = destination / f"manager-state-{phase}.json"
+        manager = read_json(manager_path) if manager_path.is_file() else {}
+        diagnostic["unit_file"] = staged_item([unit])
+        diagnostic["unit_file"]["observation_status"] = (
+            "captured" if manager.get("unit_file") else
+            "error" if manager.get("error") else "unavailable")
+        diagnostic["receipt"] = {"status": "captured" if result_path.is_file() else "unavailable",
+                                 "path": (destination / "journey-result.json").relative_to(run_root).as_posix()
+                                 if result_path.is_file() else None}
+        diagnostic["install_log"]["source_observation"] = runtime_observations.get("install.log", "unavailable")
         if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
             # This log is nested under release0, and must remain byte-for-byte
             # intact rather than taking the usual bounded tail of text logs.
@@ -664,6 +760,10 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 item.update(status="captured", path=target.relative_to(run_root).as_posix(),
                             sha256=digest.hexdigest())
             diagnostic["release0_bootstrap"] = item
+            diagnostic["bootstrap"] = staged_item(
+                list(destination.glob("*-bootstrap.log")) +
+                list(destination.glob("runtime-service-service-bootstrap-*.log"))) | {
+                    "source_paths": diagnostic["bootstrap"]["source_paths"]}
         recorded.setdefault("failure_diagnostics", {})[phase] = diagnostic
         write_json(result_path, recorded)
         # Refresh the staged receipt after adding paths and observation status.
@@ -1122,22 +1222,47 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
     shutil.copyfile(request, invocation / "input.json")
     write_json(invocation / "command.json", argv)
     status = {"exit_code": None}
+    streams = {}
+    def drain(name, pipe):
+        digest = hashlib.sha256()
+        total = 0
+        with (invocation / f"{name}.txt").open("wb") as output:
+            for chunk in iter(lambda: pipe.read(65536), b""):
+                digest.update(chunk)
+                output.write(chunk[:max(0, SEED_STREAM_LIMIT - total)])
+                total += len(chunk)
+        pipe.close()
+        streams[name] = {"captured_bytes": total, "retained_bytes": min(total, SEED_STREAM_LIMIT),
+                         "sha256": digest.hexdigest(), "truncated": total > SEED_STREAM_LIMIT}
+    process = None
+    threads = []
     try:
-        with ((invocation / "stdout.txt").open("wb") as stdout,
-              (invocation / "stderr.txt").open("wb") as stderr):
-            result = subprocess.run(argv, env=env, stdout=stdout, stderr=stderr,
-                                    timeout=timeout, check=False)
-        status["exit_code"] = result.returncode
+        process = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+            thread = threading.Thread(target=drain, args=(name, pipe))
+            thread.start()
+            threads.append(thread)
+        try:
+            status["exit_code"] = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise
     except Exception as exc:
         status["error"] = f"{type(exc).__name__}: {exc}"
         raise
     finally:
+        for thread in threads:
+            thread.join()
+        status["streams"] = streams
         write_json(invocation / "exit.json", status)
-        shutil.copyfile(invocation / "stdout.txt", log)
-    output = log.read_text(encoding="utf-8-sig", errors="replace")
-    if result.returncode:
-        raise RuntimeError(f"{log.name}: exit {result.returncode}; see {invocation}")
-    return output
+        if (invocation / "stdout.txt").is_file():
+            shutil.copyfile(invocation / "stdout.txt", log)
+    if status["exit_code"]:
+        raise RuntimeError(f"{log.name}: exit {status['exit_code']}; see {invocation}")
+    if streams["stdout"]["truncated"]:
+        raise RuntimeError(f"{log.name}: seed stdout exceeded {SEED_STREAM_LIMIT} bytes; see {invocation}")
+    return log.read_text(encoding="utf-8-sig", errors="replace")
 
 
 def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
