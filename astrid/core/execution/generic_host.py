@@ -907,323 +907,7 @@ class _ManagedVibeSessionAdapter:
                 transport.close()
 
 
-class _ManagedWanChildAdapter:
-    """One MTS-owned interpreter, using the existing owned-process/JSONL seam."""
-
-    MAX_FRAME_BYTES = 1048576
-
-    def __init__(self, *, spec: Mapping[str, Any], binding: SessionBinding,
-                 readiness_timeout: float, release_timeout: float,
-                 track: Callable[[subprocess.Popen], None],
-                 untrack: Callable[[subprocess.Popen], None]) -> None:
-        self.spec = dict(spec)
-        self.binding = binding
-        self.readiness_timeout = readiness_timeout
-        self.release_timeout = release_timeout
-        self.track = track
-        self.untrack = untrack
-        self.process: subprocess.Popen | None = None
-        self.ready = False
-        self.fenced = threading.Event()
-        self._buffer = bytearray()
-        self._command_lock = threading.Lock()
-        self._write_lock = threading.Lock()
-        self._active_identity: dict[str, Any] | None = None
-        self._native_job_id: str | None = None
-        self._cancel_requested = False
-        self._terminal_frame: dict[str, Any] | None = None
-        self._owner_lock: Any = None
-        self._diagnostic: Any = None
-        self._pipe_reader: PipeReader | None = None
-        self._pipe_writer: PipeWriter | None = None
-
-    def start(self) -> None:
-
-        owner_dir = Path(self.spec["owner_dir"])
-        owner_dir.mkdir(parents=True, exist_ok=True)
-        from astrid.packs.wan2gp.src.driver import _custody_directory
-
-        # A fresh process birth owns a fresh spool, never owner/spool from a
-        # predecessor process. Native result lists supply file attribution.
-        spool = owner_dir / self.binding.process_birth_id / "spool"
-        with _custody_directory(spool, create=True):
-            pass
-        self.spec["init"]["output_dir"] = str(spool)
-        # Inherited by the child: a host crash cannot unlock a live orphan.
-        # Never read a PID file, adopt an orphan, or terminate a foreign child.
-        fd = os.open(owner_dir / "wan-child.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        self._owner_lock = os.fdopen(fd, "a+b")
-        try:
-            platform.lock_file(fd, blocking=False)
-        except BlockingIOError as exc:
-            self._owner_lock.close()
-            self._owner_lock = None
-            raise HostError("Wan child ownership is occupied; reconcile the prior host") from exc
-        self._diagnostic = (owner_dir / f"wan-{self.binding.process_birth_id}.stderr").open("xb")
-        environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "SYSTEMROOT") if key in os.environ}
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
-        self.process = popen_owned_group(
-            [self.spec["python"], "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", "--wan-session"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._diagnostic,
-            env=environment, pass_fds=(fd,), cwd=owner_dir,
-        )
-        self.track(self.process)
-        self._pipe_reader = PipeReader(self.process.stdout)
-        self._pipe_writer = PipeWriter(self.process.stdin)
-        deadline = time.monotonic() + self.readiness_timeout
-        self._write({"birth": self.binding.process_birth_id, "root": self.spec["root"],
-                     "init": self.spec["init"]}, deadline)
-        frame = self._read(deadline)
-        if frame.get("kind") != "ready" or frame.get("pid") != self.process.pid:
-            raise HostError(f"Wan child readiness failed: {frame.get('error', 'invalid readiness')}")
-        self.ready = True
-
-    def _write(self, frame: Mapping[str, Any], deadline: float) -> None:
-        data = json.dumps(frame, sort_keys=True).encode() + b"\n"
-        if len(data) > self.MAX_FRAME_BYTES:
-            raise HostError("Wan control frame exceeds bound")
-        if self.process is None or self.process.stdin is None:
-            raise HostError("Wan child is absent")
-        with self._write_lock:
-            def guard():
-                if self.process.poll() is not None:
-                    raise HostError("Wan child exited before command")
-            if self._pipe_writer is None:
-                self._pipe_writer = PipeWriter(self.process.stdin)
-            try:
-                self._pipe_writer.write(data, deadline=deadline, guard=guard)
-            except TimeoutError as error:
-                raise TimeoutError("Wan child write timed out") from error
-
-    def _read(self, deadline: float) -> dict[str, Any]:
-        if self.process is None or self.process.stdout is None:
-            raise HostError("Wan child is absent")
-        if self._pipe_reader is None:
-            self._pipe_reader = PipeReader(self.process.stdout)
-        def guard():
-            if self.fenced.is_set():
-                raise HostError("Wan invocation cancelled or fenced")
-        while b"\n" not in self._buffer:
-            guard()
-            try:
-                data = self._pipe_reader.read(deadline=deadline, guard=guard)
-            except TimeoutError as error:
-                raise TimeoutError("Wan child observation timed out") from error
-            if not data:
-                raise HostError("Wan child exited without terminal evidence")
-            self._buffer.extend(data)
-            if len(self._buffer) > self.MAX_FRAME_BYTES:
-                raise HostError("Wan child frame exceeds bound")
-        line, _, remainder = self._buffer.partition(b"\n")
-        self._buffer = bytearray(remainder)
-        frame = json.loads(line)
-        if not isinstance(frame, dict) or frame.get("birth") != self.binding.process_birth_id:
-            raise HostError("stale Wan child session frame")
-        return frame
-
-    @staticmethod
-    def _event_progress(event: Mapping[str, Any]) -> dict[str, Any] | None:
-        if event.get("kind") != "progress":
-            return None
-        data = event.get("data")
-        if not isinstance(data, Mapping):
-            return None
-        progress: dict[str, Any] = {}
-        for key in ("phase", "status"):
-            if data.get(key) is not None:
-                progress[key] = str(data[key])
-        for key in ("progress", "current_step", "total_steps"):
-            value = data.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                progress[{"progress": "percent", "current_step": "current", "total_steps": "total"}[key]] = value
-        return progress or None
-
-    def _record_event(self, frame: Mapping[str, Any], progress_path: Path | None) -> None:
-        if frame.get("identity") != self._active_identity:
-            raise HostError("stale or unexpected Wan invocation frame")
-        native_job_id = frame.get("native_job_id")
-        if not isinstance(native_job_id, str) or not native_job_id:
-            raise HostError("Wan frame lacks native job identity")
-        if frame.get("kind") == "job_started":
-            if self._native_job_id is not None:
-                raise HostError("duplicate native Wan job start")
-            self._native_job_id = native_job_id
-        elif native_job_id != self._native_job_id:
-            raise HostError("native Wan job identity changed during invocation")
-        if progress_path is not None:
-            event = frame.get("event")
-            if isinstance(event, Mapping):
-                progress = self._event_progress(event)
-                if progress:
-                    progress_path.parent.mkdir(parents=True, exist_ok=True)
-                    progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
-
-    @staticmethod
-    def identity(token: AdmissionToken) -> dict[str, Any]:
-        return {"token_id": token.token_id, "invocation_id": token.invocation_id,
-                "session_id": token.session_id,
-                "generation": token.generation, "binding_identity": list(token.binding_identity)}
-
-    def invoke(self, token: AdmissionToken, settings: Mapping[str, Any], *, timeout: float,
-               cancelled: Callable[[], bool], progress_path: str | Path | None = None) -> dict[str, Any]:
-        if not self._command_lock.acquire(blocking=False):
-            raise HostError("Wan child already has an executing command")
-        try:
-            if cancelled() or self.observe(binding=self.binding).get("ok") is not True:
-                raise HostError("Wan child is not admissible")
-            identity = self.identity(token)
-            self._active_identity = identity
-            self._native_job_id = None
-            self._cancel_requested = False
-            self._terminal_frame = None
-            progress = Path(progress_path).expanduser().resolve() if progress_path is not None else None
-            events: list[dict[str, Any]] = []
-            deadline = time.monotonic() + timeout
-            self._write({"birth": self.binding.process_birth_id, "op": "run",
-                         "identity": identity, "settings": dict(settings)}, deadline)
-            while True:
-                if cancelled() and not self._cancel_requested:
-                    self._send_cancel(identity, deadline)
-                    self._cancel_requested = True
-                read_deadline = min(deadline, time.monotonic() + 0.1)
-                try:
-                    frame = self._read(read_deadline)
-                except TimeoutError:
-                    if time.monotonic() >= deadline:
-                        raise
-                    # Keep the control pipe responsive while native result()
-                    # is still running so a Runtime cancellation can reach
-                    # SessionJob.cancel cooperatively.
-                    continue
-                kind = frame.get("kind")
-                if kind in {"job_started", "event", "event_error", "cancel_requested"}:
-                    self._record_event(frame, progress)
-                    if kind == "event":
-                        events.append(dict(frame))
-                    continue
-                if frame.get("identity") != identity or kind not in {"result", "error"}:
-                    raise HostError("stale or unexpected Wan invocation frame")
-                if kind == "result" or self._native_job_id is not None:
-                    self._record_event(frame, None)
-                self._terminal_frame = frame
-                result = frame.get("result") if kind == "result" else {
-                    "success": False,
-                    "errors": [frame.get("error", "native Wan job failed")],
-                    "generated_files": [],
-                }
-                return {**identity, "native_job_id": self._native_job_id,
-                        "events": events, "result": result,
-                        "birth": self.binding.process_birth_id,
-                        "process_id": self.process.pid,
-                        # The retained child stays alive; this is the native
-                        # command's terminal status, not a child exit code.
-                        "returncode": 0 if kind == "result" and isinstance(result, Mapping)
-                        and result.get("success") is True else 1,
-                        "terminal": kind == "result",
-                        "source_root": self.spec["init"]["output_dir"],
-                        "output_snapshots": frame.get("output_snapshots"),
-                        "native_error": frame.get("error")}
-        finally:
-            self._active_identity = None
-            self._command_lock.release()
-
-    def _send_cancel(self, identity: Mapping[str, Any], deadline: float) -> None:
-        self._write({"birth": self.binding.process_birth_id, "op": "cancel",
-                     "identity": dict(identity)}, deadline)
-
-    def observe(self, *, binding: SessionBinding) -> dict[str, Any]:
-        return {"ok": self.ready and not self.fenced.is_set()
-                and binding == self.binding and self.process is not None and self.process.poll() is None}
-
-    def fence(self, *, reason: str) -> dict[str, Any]:
-        self.fenced.set()
-        return {"ok": True, "fenced": True, "reason": reason}
-
-    def cancel(self, *, reason: str) -> dict[str, Any]:
-        identity = self._active_identity
-        if identity is None:
-            terminal = self._terminal_frame
-            result = terminal.get("result") if isinstance(terminal, Mapping) else None
-            cancelled = isinstance(result, Mapping) and not result.get("success", False)
-            return {"ok": bool(cancelled), "cancelled": bool(cancelled), "reason": reason,
-                    "native_job_id": self._native_job_id}
-        try:
-            self._send_cancel(identity, time.monotonic() + self.release_timeout)
-            self._cancel_requested = True
-            # The host remains fenced by ManagedToolSession until the native
-            # terminal result is observed by the invocation reader.
-            return {"ok": False, "cancelled": False, "cancel_requested": True,
-                    "reason": reason, "native_job_id": self._native_job_id}
-        except (HostError, OSError, TimeoutError):
-            self.fence(reason=reason)
-            return {"ok": False, "cancelled": False, "reason": reason}
-
-    def release(self, *, reason: str) -> dict[str, Any]:
-        self.fence(reason=reason)
-        process = self.process
-        if process is not None:
-            try:
-                if process.poll() is None:
-                    try:
-                        self._write({"birth": self.binding.process_birth_id, "op": "close"},
-                                    time.monotonic() + self.release_timeout)
-                        process.wait(timeout=self.release_timeout)
-                    except (OSError, ValueError, HostError, TimeoutError, subprocess.TimeoutExpired):
-                        _terminate_process_group(process, grace_seconds=self.release_timeout)
-                _release_owned_group(process)
-            finally:
-                if process.poll() is not None:
-                    close_pipe_workers(self._pipe_reader, self._pipe_writer, timeout=self.release_timeout)
-            # Close() or a clean leader exit alone cannot prove group release.
-            if sys.platform == "win32":
-                # The retained Job's closed handle proves tree release on
-                # Windows; a POSIX census cannot provide that evidence.
-                verify_tree_absent(process)
-            else:
-                snapshot = _process_snapshot()
-                if not snapshot:
-                    raise HostError("Wan child release census unavailable")
-                if sys.platform == "darwin":
-                    # _process_snapshot is the bounded, complete native census on
-                    # Darwin. A second ps process creates an avoidable descendant.
-                    group_live = any(info.pgid == process.pid for info in snapshot.values())
-                else:
-                    ps = subprocess.run(["/bin/ps", "-axo", "pid=,pgid="], stdin=subprocess.DEVNULL,
-                                        capture_output=True, timeout=1, check=False)
-                    if ps.returncode != 0:
-                        raise HostError("Wan child release census failed")
-                    members = [row.split() for row in ps.stdout.decode().splitlines()]
-                    group_live = any(len(row) == 2 and row[1] == str(process.pid) for row in members)
-                if process.poll() is None or group_live or any(info.pgid == process.pid for info in snapshot.values()):
-                    return {"ok": False, "released": False, "reason": reason}
-            # Retire the reader before closing/reusing pipe descriptors. The
-            # command may be unwinding concurrently with MTS replacement.
-            if not self._command_lock.acquire(timeout=self.release_timeout):
-                return {"ok": False, "released": False, "reason": reason}
-            try:
-                self._pipe_reader = self._pipe_writer = None
-                self.untrack(process)
-                for pipe in (process.stdin, process.stdout):
-                    if pipe is not None:
-                        pipe.close()
-            finally:
-                self._command_lock.release()
-        if self._diagnostic is not None:
-            self._diagnostic.close()
-        if self._owner_lock is not None:
-            self._owner_lock.close()
-            self._owner_lock = None
-        self.ready = False
-        return {"ok": True, "released": True, "exit_code": process.returncode if process else None}
-
-
-# The sessions the slot keeps warm after a settled task, and exactly what idle
-# release does to each; every other session is released when its task ends.
-# VibeComfy's /api/free acknowledgement is all the host sees, so whether GPU or
-# unified memory actually came back is not measured.
 _WARM_SESSION_ADAPTERS = {
-    _ManagedWanChildAdapter: "child process ended",
     _ManagedVibeSessionAdapter: "models unloaded; engine process kept; memory release not measured",
 }
 
@@ -6248,7 +5932,7 @@ class GenericPackHost:
         self._child_import_host_context: dict[str, Any] = {}
         self._evidence_observation_lock = threading.RLock()
         # Idle release for everything this host keeps warm between tasks: the
-        # session slot (Wan2GP, VibeComfy) and the Remotion frame owner.
+        # session slot (VibeComfy) and the Remotion frame owner.
         self.warm_holds = WarmHolds(on_change=self._publish_evidence_status)
         # A request's lifecycle.idle_timeout_seconds, for the task in flight.
         self._requested_idle_seconds: float | None = None
@@ -6602,7 +6286,7 @@ class GenericPackHost:
     def _release_idle_session(self) -> None:
         """Idle expiry of the session slot; the warm hold runs it under the slot's lock.
 
-        Wan2GP's release ends its child.  VibeComfy's unloads models and frees
+        VibeComfy's release unloads models and frees
         memory but keeps the engine process: the host cannot restart an engine
         the Runtime selected for it, so ending it would strand the capability.
         """
@@ -6615,100 +6299,6 @@ class GenericPackHost:
         except Exception as exc:
             # The slot stays poisoned and occupied, as after any unverified release.
             self._latch_cleanup_uncertainty(f"{warm[0]} session failed to release after idle: {exc}")
-
-    def prepare_wan_session(
-        self, *, owner_dir: str | Path, root: str | Path, python: str | Path,
-        source_digest: str, config_digest: str, readiness_timeout: float,
-        release_timeout: float, init_options: Mapping[str, Any] | None = None,
-    ) -> SessionBinding:
-        """Prepare one retained child in the host, before admission.
-
-        W2.2 calls this after Runtime claim/attestation, then admits its Runtime
-        invocation through this host's MTS. owner_dir must be the deployment's
-        stable host-local custody directory across host restarts (not an attempt
-        directory). No source discovery, orphan adoption or native install here.
-        """
-        if self._shutdown.is_set():
-            raise HostError("Wan child requires an active host")
-        if readiness_timeout <= 0 or release_timeout <= 0:
-            raise ValueError("Wan lifecycle deadlines must be positive")
-        options = dict(init_options or {})
-        if set(options) - {"config_path", "cli_args", "console_isatty"}:
-            raise ValueError("unsupported Wan initialization options")
-        owner = Path(owner_dir).expanduser().resolve()
-        engine_root = Path(root).expanduser().resolve()
-        # Preserve the venv executable path: resolving its symlink would select
-        # the base interpreter and lose the independently installed environment.
-        interpreter = Path(python).expanduser().absolute()
-        if not engine_root.is_dir() or not interpreter.is_file():
-            raise HostError("Wan child requires explicit source and interpreter paths")
-        spec = {"owner_dir": str(owner), "root": str(engine_root), "python": str(interpreter),
-                "source_digest": source_digest, "config_digest": config_digest,
-                "runtime_instance_id": str(self.runtime_state.get("runtime_instance_id") or self.executor_id),
-                "init": {**options, "root": str(engine_root), "output_dir": str(owner / "spool"),
-                         "console_output": False}}
-        spec = json.loads(json.dumps(spec, sort_keys=True))
-        identity = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
-        manager = self.managed_tool_session
-        current = manager.current_adapter
-        if (manager.active and isinstance(current, _ManagedWanChildAdapter)
-                and current.binding.execution_identity == identity):
-            manager.observe(current.binding)
-            return current.binding
-        birth = secrets_module.token_hex(16)
-        binding = SessionBinding(
-            session_id=str(owner), runtime_instance_id=spec["runtime_instance_id"],
-            process_birth_id=birth, endpoint="pipe:" + birth,
-            source_digest=source_digest, config_digest=config_digest,
-            execution_identity=identity, launch_generation=birth, engine_birth_id=birth,
-        )
-        # Construction is inert. MTS releases the previous slot before start()
-        # can allocate any native state, and retains failed startup custody.
-        adapter = _ManagedWanChildAdapter(
-            spec=spec, binding=binding, readiness_timeout=readiness_timeout,
-            release_timeout=release_timeout, track=self._track_process,
-            untrack=self._untrack_process,
-        )
-        manager.open(capability=CapabilityDescriptor("wan2gp.generate_video", warm_reuse_expected=True),
-                     binding=binding, adapter=adapter, start=adapter.start)
-        manager.observe(binding)
-        return binding
-
-
-    def invoke_wan_session(
-        self, token: AdmissionToken, settings: Mapping[str, Any], *,
-        timeout: float, cancelled: Callable[[], bool], progress_path: str | Path | None = None,
-    ) -> dict[str, Any]:
-        """Return fenced native evidence; caller retains admission until custody.
-
-        This does not claim, retry, publish or settle Runtime work. Failure or
-        cancellation fences the current session; release/replacement remains MTS
-        responsibility and must observe exit before another child starts.
-        """
-        if timeout <= 0:
-            raise ValueError("Wan invocation deadline must be positive")
-        manager = self.managed_tool_session
-        adapter = manager.adapter_for(token, begin=True)
-        if not isinstance(adapter, _ManagedWanChildAdapter):
-            raise HostError("invocation does not own a Wan child")
-        try:
-            evidence = adapter.invoke(
-                token,
-                settings,
-                timeout=timeout,
-                cancelled=cancelled,
-                progress_path=progress_path,
-            )
-            manager.adapter_for(token)
-            return evidence
-        except BaseException:
-            # A late failure from an old generation cannot poison its successor.
-            try:
-                manager.fence_admission(token, reason="wan_invocation_failed_or_cancelled")
-            except StaleAdmissionError:
-                pass
-            raise
-
 
     def shutdown(self) -> None:
         """Stop the host and every currently owned capability process."""
@@ -10048,102 +9638,6 @@ class GenericPackHost:
                 request_path.unlink(missing_ok=True)
                 result_path.unlink(missing_ok=True)
 
-    def _wan_session_context(self, task_data: Mapping[str, Any]) -> dict[str, Any]:
-        """Read the explicitly admitted Wan source/config/interpreter tuple."""
-        raw = task_data.get("wan_session")
-        if raw is None and isinstance(task_data.get("spec"), Mapping):
-            raw = task_data["spec"].get("wan_session")
-        if not isinstance(raw, Mapping):
-            raise HostError(
-                "wan2gp.generate_video requires an explicit wan_session admission "
-                "with root, config_path, python, owner_dir and identity digests"
-            )
-        required = (
-            "root",
-            "config_path",
-            "python",
-            "owner_dir",
-            "source_digest",
-            "config_digest",
-        )
-        missing = [key for key in required if not isinstance(raw.get(key), str) or not str(raw[key]).strip()]
-        for key in ("readiness_timeout", "release_timeout"):
-            value = raw.get(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
-                missing.append(key)
-        if missing:
-            raise HostError("Wan session admission is missing explicit fields: " + ", ".join(missing))
-        root = Path(str(raw["root"])).expanduser().resolve()
-        config = Path(str(raw["config_path"])).expanduser().resolve()
-        python = Path(str(raw["python"])).expanduser().absolute()
-        owner = Path(str(raw["owner_dir"])).expanduser().resolve()
-        if root.is_symlink() or not root.is_dir() or not (root / "shared" / "api.py").is_file():
-            raise HostError("Wan session source root is not an explicit upstream checkout")
-        if config.is_symlink() or not config.is_file():
-            raise HostError("Wan session config_path is not an explicit regular file")
-        if not python.is_file():
-            raise HostError("Wan session python is not an explicit interpreter file")
-        options = {"config_path": str(config)}
-        for key in ("cli_args", "console_isatty"):
-            if key in raw:
-                options[key] = raw[key]
-        return {
-            "owner_dir": owner,
-            "root": root,
-            "python": python,
-            "source_digest": str(raw["source_digest"]),
-            "config_digest": str(raw["config_digest"]),
-            "readiness_timeout": float(raw.get("readiness_timeout", 30.0)),
-            "release_timeout": float(raw.get("release_timeout", 30.0)),
-            "init_options": options,
-        }
-
-    def _run_wan_session(
-        self,
-        *,
-        inputs: Mapping[str, Any],
-        output_root: Path,
-        attempt: Path,
-        managed_token: AdmissionToken,
-        execution_deadline: float,
-        cancelled: Callable[[], bool],
-    ) -> Any:
-        from astrid.packs.wan2gp.src.driver import compile_host_settings, materialize_host_result
-
-        settings = compile_host_settings(inputs)
-        evidence = self.invoke_wan_session(
-            managed_token,
-            settings,
-            timeout=max(0.1, execution_deadline - time.monotonic()),
-            cancelled=cancelled,
-            progress_path=attempt / ".astrid-progress.json",
-        )
-        result = evidence.get("result") if isinstance(evidence, Mapping) else None
-        if not isinstance(result, Mapping) or result.get("success") is not True:
-            if cancelled():
-                return SimpleNamespace(payload={"wan_native": dict(evidence)})
-            errors = result.get("errors", []) if isinstance(result, Mapping) else []
-            if not errors and isinstance(evidence.get("native_error"), str):
-                errors = [evidence["native_error"]]
-            raise HostError(
-                "native Wan2GP job failed: " + "; ".join(str(item) for item in errors)
-            )
-        if cancelled():
-            raise HostCancelled("Wan attempt cancelled before output custody")
-        manager = self.managed_tool_session
-        manager.adapter_for(managed_token)
-        mapped = materialize_host_result(
-            evidence, attempt_root=output_root, inputs=inputs,
-            expected_identity=_ManagedWanChildAdapter.identity(managed_token),
-        )
-        manager.adapter_for(managed_token)
-        return SimpleNamespace(
-            payload={"wan_native": dict(evidence), "wan_mapping": mapped},
-            process_id=evidence.get("process_id"),
-            returncode=evidence.get("returncode"),
-            output_root=output_root,
-        )
-
     def _native_cpu_handoff_identity(self, adapter: Any, token: AdmissionToken | None) -> Any:
         """One eligibility predicate for recording and consuming residency."""
         if not isinstance(adapter, _ManagedVibeSessionAdapter) or token is None:
@@ -10976,9 +10470,6 @@ class GenericPackHost:
         # exceptions as well as unavailable results settle the exact lease.
         renderer_selection: dict[str, Any] | None = None
         try:
-            if capability_id == "wan2gp.generate_video":
-                from astrid.core.generation.availability import require_action_available
-                require_action_available(capability_id)
             self.preflight(capability_id)
             record = self.capabilities[capability_id]
             _terminal["record"] = record
@@ -11751,21 +11242,11 @@ class GenericPackHost:
                     if self._vibecomfy_warmth_hint == current_warmth_hint
                     else None
                 )
-            if capability_id == "wan2gp.generate_video":
-                managed_binding = self.prepare_wan_session(**self._wan_session_context(task_data))
-                managed_adapter = self.managed_tool_session.current_adapter
-                managed_capability = CapabilityDescriptor(
-                    capability_id=capability_id,
-                    residency_support="unknown",
-                    resources_claimed=tuple(record.resource_keys),
-                    warm_reuse_expected=True,
-                )
-            else:
-                self._open_managed_task_session(
-                    capability=managed_capability,
-                    binding=managed_binding,
-                    adapter=managed_adapter,
-                )
+            self._open_managed_task_session(
+                capability=managed_capability,
+                binding=managed_binding,
+                adapter=managed_adapter,
+            )
             managed_opened = True
             self.managed_tool_session.observe(managed_binding)
             managed_token = self.managed_tool_session.admit(
@@ -11812,21 +11293,8 @@ class GenericPackHost:
                 lifetime.begin_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
-                if capability_id != "wan2gp.generate_video":
-                    self.managed_tool_session.adapter_for(managed_token, begin=True)
-                if capability_id == "wan2gp.generate_video":
-                    result = self._run_wan_session(
-                        inputs=inputs,
-                        output_root=output_root,
-                        attempt=root,
-                        managed_token=managed_token,
-                        execution_deadline=execution_deadline,
-                        cancelled=cancelled,
-                    )
-                    effective_output_root = getattr(result, "output_root", None)
-                    if isinstance(effective_output_root, (str, Path)):
-                        output_root = Path(effective_output_root).expanduser().resolve()
-                elif record.definition.command is not None:
+                self.managed_tool_session.adapter_for(managed_token, begin=True)
+                if record.definition.command is not None:
                     result = self._run_command_definition(
                         record,
                         inputs,
@@ -11944,11 +11412,6 @@ class GenericPackHost:
             harvest_values = {**inputs, "out": str(output_root), "run_root": str(root), "python_exec": sys.executable}
             if record.definition.command is not None:
                 _, harvest_values = _bind_host_owned_command_outputs(record, harvest_values, output_root=output_root)
-            if capability_id == "wan2gp.generate_video":
-                from astrid.packs.wan2gp.src.driver import verify_host_result
-
-                self.managed_tool_session.adapter_for(managed_token)
-                verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
             try:
                 evidence_receipt = self.execution_policy.assert_evidence_cap(
                     root,
@@ -12048,8 +11511,6 @@ class GenericPackHost:
                     else None
                 ),
             ) if typed_outputs else []
-            if capability_id == "wan2gp.generate_video":
-                verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
             # Cancellation can arrive while staged outputs are being read or
             # uploaded. Never publish a completed settlement after that point.
             if cancelled():
