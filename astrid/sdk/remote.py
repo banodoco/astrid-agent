@@ -1245,7 +1245,7 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                         },
                     )
                 )
-            executor_inputs: dict[str, Any] = {
+            executor_inputs = {
                 "timeline_slug": timeline_ref,
                 "view": requested_view,
                 "formats": list(formats or ("md", "png")),
