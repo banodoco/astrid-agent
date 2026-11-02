@@ -891,7 +891,9 @@ def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
     assert command[-2:] == ["--request", str(evidence / "release0-api-seed" / "seed-request.json")]
     assert (staged / (prefix + "stdout.log")).read_bytes() == json.dumps({"payload": json.loads(request)}).encode() + b"\n"
     assert (staged / (prefix + "stderr.log")).read_bytes() == b"diagnostic-" + b"x" * 1048600
-    assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": exit_code}
+    status = json.loads((staged / (prefix + "exit.log")).read_bytes())
+    assert status["exit_code"] == exit_code
+    assert status["streams"]["stderr"] == {"total_bytes": 1048611, "retained_bytes": 1048611, "truncated": False}
 
 
 def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch):
@@ -915,4 +917,50 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
         prefix = f"runtime-service-service-seed-{index:04d}-"
         assert json.loads((staged / (prefix + "input.log")).read_bytes()) == {"generation": generation}
         assert json.loads((staged / (prefix + "stdout.log")).read_bytes()) == {"generation": generation}
-        assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
+        assert json.loads((staged / (prefix + "exit.log")).read_bytes())["exit_code"] == 0
+
+
+def test_seed_streams_are_drained_and_bounded(tmp_path):
+    script = tmp_path / "seed.py"
+    script.write_text("import sys\n"
+                      "sys.stdout.buffer.write(b'x' * 3000000)\n"
+                      "sys.stderr.buffer.write(b'y' * 3000000)\n")
+    request = tmp_path / "request.json"
+    request.write_text("{}")
+    with pytest.raises(RuntimeError, match="stdout exceeded"):
+        journey.run_seed([sys.executable, str(script), "--request", str(request)],
+                         tmp_path / "seed.json", env=None, timeout=30)
+    directory = tmp_path / "seed-diagnostics" / "0001"
+    status = json.loads((directory / "exit.json").read_text())
+    for name in ("stdout", "stderr"):
+        assert (directory / f"{name}.txt").stat().st_size == journey.SEED_STREAM_LIMIT
+        assert status["streams"][name] == {"total_bytes": 3000000,
+                                           "retained_bytes": journey.SEED_STREAM_LIMIT,
+                                           "truncated": True}
+
+
+def test_seed_stderr_truncation_survives_both_snapshots_and_boundary(tmp_path):
+    from scripts import journey_artifact_boundary
+
+    evidence = tmp_path / "run" / "evidence" / "leg"
+    evidence.mkdir(parents=True)
+    script = tmp_path / "seed.py"
+    script.write_text("import sys\nsys.stderr.buffer.write(b'e' * 3000000)\nprint('{}')\n")
+    request = evidence / "request.json"
+    request.write_text("{}")
+    assert json.loads(journey.run_seed([sys.executable, str(script), "--request", str(request)],
+                                       evidence / "seed.json", env=None, timeout=30)) == {}
+    journey.write_json(evidence / "journey-result.json", {"status": "pass"})
+    for phase in ("before-cleanup", "after-cleanup"):
+        journey.retain_named_evidence(evidence, phase)
+    upload = tmp_path / "run" / "evidence-upload"
+    assert journey_artifact_boundary.prepare(upload) < 49_000_000
+    for phase in ("before-cleanup", "after-cleanup"):
+        staged = upload / phase
+        stream = staged / "runtime-service-service-seed-0001-stderr.log"
+        meta = json.loads(stream.with_name(stream.name + ".metadata.log").read_text())
+        assert (staged / "journey-result.json").is_file()
+        assert stream.stat().st_size == journey.SEED_STREAM_LIMIT
+        assert int(meta["original_bytes"]) == 3000000
+        assert int(meta["retained_bytes"]) == journey.SEED_STREAM_LIMIT
+        assert meta["truncated"] == "1"

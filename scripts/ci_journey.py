@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -71,6 +72,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
+SEED_STREAM_LIMIT = 2 * 1024 * 1024
 
 
 def journey_os_label() -> str:
@@ -593,7 +595,7 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
     # The existing hosted boundary accepts this legacy service-log filename
-    # pattern. Flatten the seed directories into it without truncating bytes.
+    # pattern. The producer has already bounded the separate output streams.
     # Numbering follows sorted relative paths so distinct invocations survive.
     seed_dirs = sorted(path for path in evidence.glob("**/seed-diagnostics/*")
                        if len(path.name) >= 4 and path.name.isascii() and path.name.isdecimal())
@@ -1058,7 +1060,7 @@ def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: 
 
 
 def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> str:
-    """Preserve the exact seed request, argv and separate byte streams per call."""
+    """Drain both seed streams concurrently, retaining bounded prefixes and counts."""
     directory = log.parent / "seed-diagnostics"
     directory.mkdir(parents=True, exist_ok=True)
     index = 1
@@ -1072,13 +1074,44 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
     request = Path(argv[argv.index("--request") + 1])
     shutil.copyfile(request, invocation / "input.json")
     write_json(invocation / "command.json", argv)
-    status = {"exit_code": None}
+    status = {"exit_code": None, "streams": {
+        name: {"total_bytes": 0, "retained_bytes": 0, "truncated": False}
+        for name in ("stdout", "stderr")}}
+    errors = []
+    def drain(pipe, name):
+        total = retained = 0
+        try:
+            with pipe, (invocation / f"{name}.txt").open("wb") as target:
+                while chunk := pipe.read(65536):
+                    total += len(chunk)
+                    part = chunk[:max(0, SEED_STREAM_LIMIT - retained)]
+                    target.write(part)
+                    retained += len(part)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            status["streams"][name] = {"total_bytes": total, "retained_bytes": retained,
+                                        "truncated": total > retained}
     try:
-        with ((invocation / "stdout.txt").open("wb") as stdout,
-              (invocation / "stderr.txt").open("wb") as stderr):
-            result = subprocess.run(argv, env=env, stdout=stdout, stderr=stderr,
-                                    timeout=timeout, check=False)
-        status["exit_code"] = result.returncode
+        # Create both names even when process launch fails.
+        for name in ("stdout", "stderr"):
+            (invocation / f"{name}.txt").touch()
+        process = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        threads = [threading.Thread(target=drain, args=(pipe, name)) for pipe, name in
+                   ((process.stdout, "stdout"), (process.stderr, "stderr"))]
+        for thread in threads:
+            thread.start()
+        try:
+            status["exit_code"] = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise
+        finally:
+            for thread in threads:
+                thread.join()
+        if errors:
+            raise RuntimeError(f"Seed output capture failed: {errors[0]}")
     except Exception as exc:
         status["error"] = f"{type(exc).__name__}: {exc}"
         raise
@@ -1086,8 +1119,10 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
         write_json(invocation / "exit.json", status)
         shutil.copyfile(invocation / "stdout.txt", log)
     output = log.read_text(encoding="utf-8-sig", errors="replace")
-    if result.returncode:
-        raise RuntimeError(f"{log.name}: exit {result.returncode}; see {invocation}")
+    if status["exit_code"]:
+        raise RuntimeError(f"{log.name}: exit {status['exit_code']}; see {invocation}")
+    if status["streams"]["stdout"]["truncated"]:
+        raise RuntimeError(f"{log.name}: seed stdout exceeded {SEED_STREAM_LIMIT} bytes; see {invocation}")
     return output
 
 
