@@ -88,6 +88,44 @@ def _diagnostic_state_path(args, root: Path) -> Path:
     return path
 
 
+def _preseed_workspace_state(data: Path) -> dict:
+    """Return a fail-closed fingerprint of the selected release-0 realm.
+
+    The diagnostic seed starts after the normal lifecycle has retained the
+    release-0 installation.  Its checkpoint must therefore bind the actual
+    workspace bytes as well as the selected program version.  The journey owns
+    this realm and no API operation is in flight at either call site; if it is
+    nevertheless changing while it is read, decline the diagnostic rather than
+    treating an uncertain state as the original pre-seed realm.
+    """
+    realm = journey.workspace_root(data)
+
+    def entries() -> list[dict[str, str]]:
+        found = []
+        for path in sorted(realm.rglob("*"), key=lambda item: item.relative_to(realm).as_posix()):
+            relative = path.relative_to(realm).as_posix()
+            if path.is_symlink():
+                raise RuntimeError("Diagnostic pre-seed workspace contains a symlink")
+            if path.is_dir():
+                found.append({"path": relative, "kind": "directory"})
+            elif path.is_file():
+                found.append({"path": relative, "kind": "file",
+                              "sha256": _bytes_sha256(path, "pre-seed workspace file")})
+            else:
+                raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
+        return found
+
+    first = entries()
+    second = entries()
+    if first != second:
+        raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+    return {
+        "realm_root": str(realm),
+        "entry_count": len(first),
+        "tree_sha256": semantic_digest({"entries": first}),
+    }
+
+
 def diagnostic_release0_identity(args, root: Path, data: Path, *, fixture_receipt: dict,
                                  release0_manifest: Path, target_manifest: dict,
                                  candidate: dict, candidate_checkouts: dict,
@@ -116,7 +154,7 @@ def diagnostic_release0_identity(args, root: Path, data: Path, *, fixture_receip
     installed_manifest = Path(version["root"]) / "manifest.json"
     release0_tuple = journey.selected_tuple(journey.read_json(release0_manifest), version)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "release0-api-seed-diagnostic-preconditions",
         "stage": DIAGNOSTIC_START_STAGE,
         "run_id": owner["run_id"],
@@ -128,6 +166,7 @@ def diagnostic_release0_identity(args, root: Path, data: Path, *, fixture_receip
             "manifest_sha256": _bytes_sha256(installed_manifest, "installed manifest"),
             "tuple": release0_tuple,
         },
+        "preseed_workspace": _preseed_workspace_state(data),
         "release1_candidate": {
             "candidate_sha256": semantic_digest(candidate),
             "manifest_sha256": candidate.get("manifest_sha256"),
@@ -182,7 +221,10 @@ def _diagnostic_release0_context(args, root: Path, data: Path, evidence: Path) -
     state_path = _diagnostic_state_path(args, root)
     if state_path.is_symlink() or not state_path.is_file():
         raise RuntimeError("Diagnostic start precondition file is absent")
-    if journey.read_json(state_path) != identity:
+    checkpoint = journey.read_json(state_path)
+    if checkpoint != identity:
+        if checkpoint.get("preseed_workspace") != identity["preseed_workspace"]:
+            raise RuntimeError("Diagnostic start refuses a workspace changed after its pre-seed checkpoint")
         raise RuntimeError("Diagnostic start preconditions are stale or do not match the live version/tuple")
     service = journey.assert_direct_service_ownership(root, data)
     health = journey.healthy(data)
@@ -214,6 +256,7 @@ def execute_diagnostic_release0_stage(args, root: Path, data: Path, evidence: Pa
             "state_sha256": _bytes_sha256(context["state_path"], "precondition file"),
             "release0_tuple": context["identity"]["release0_version"]["tuple"],
             "release1_tuple": context["identity"]["release1_candidate"]["tuple"],
+            "preseed_workspace": context["identity"]["preseed_workspace"],
         }
         result["checks"]["preconditions"] = "pass"
         baseline = evidence / DIAGNOSTIC_START_STAGE
