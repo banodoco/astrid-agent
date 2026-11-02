@@ -52,7 +52,7 @@ def prepare_pack_host_shutdown(*, support_root: Path, source_checkout: Path,
             if state is not None:
                 if hosts._registered_host_status(state) == "foreign":
                     raise hosts.PackHostBootstrapError("registered process changed during Runtime shutdown")
-                hosts._retire_host_locked(state)
+                hosts._retire_host_locked(state, foreground=bool(state.get("runtime_service_launch_id")))
                 if hosts._registered_host_status(state) == "ours":
                     raise hosts.PackHostBootstrapError("pack host exit remains unverified after Runtime shutdown")
 
