@@ -84,6 +84,37 @@ def _json(value: Any) -> bytes:
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
+def _write_admission_record(pack_root: Path, *, artifact: Mapping[str, Any], committed_revision: int,
+                            transaction_id: str) -> dict[str, Any]:
+    """Persist the frozen browser manifest and admission before group publication."""
+    manifest_bytes = _json(dict(artifact))
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    source_digest = artifact["sourceDigest"]
+    build_root = pack_root / ".build"
+    _directory(build_root)
+    entries = (
+        (build_root / f"{source_digest}.artifact-manifest.json", manifest_bytes),
+        (build_root / "admission.json", _json({
+            "version": 1, "packId": artifact["packId"], "sourceDigest": source_digest,
+            "digest": artifact["digest"], "artifactManifestDigest": manifest_digest,
+            "committedRevision": committed_revision, "transactionId": transaction_id,
+        })),
+    )
+    for path, payload in entries:
+        if path.is_symlink():
+            raise PackInstallError("unsafe_path", "Build admission records cannot be symbolic links.")
+        temporary = build_root / f".{path.name}.{uuid4().hex}.tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    _sync_directory(build_root)
+    return {"packId": artifact["packId"], "sourceDigest": source_digest, "digest": artifact["digest"],
+            "artifactManifestDigest": manifest_digest, "artifact_manifest": dict(artifact)}
+
+
 def _sync_directory(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -346,8 +377,24 @@ def _verify_artifact_bytes(request: Mapping[str, Any], result: Mapping[str, Any]
     # Generated output is only admitted from the enumerated source-addressed set.
     physical = {relative for relative, _ in _tree(root / ".build")}
     expected = {item["disk"][len(".build/"):] for item in files}
-    if physical != expected:
+    metadata = {"admission.json", f"{source_digest}.artifact-manifest.json"}
+    extras = physical - expected
+    if extras and extras != metadata:
         refuse("incomplete_artifacts")
+    if extras:
+        manifest_bytes = (root / ".build" / f"{source_digest}.artifact-manifest.json").read_bytes()
+        admission = json.loads((root / ".build" / "admission.json").read_text(encoding="utf-8"))
+        if not isinstance(admission, dict):
+            refuse("hash_mismatch")
+        if (manifest_bytes != _json(artifact)
+                or admission != {"version": 1, "packId": request["pack_id"], "sourceDigest": source_digest,
+                                 "digest": artifact["digest"],
+                                 "artifactManifestDigest": hashlib.sha256(manifest_bytes).hexdigest(),
+                                 "committedRevision": admission.get("committedRevision"),
+                                 "transactionId": request["transaction_id"]}):
+            refuse("hash_mismatch")
+        if type(admission.get("committedRevision")) is not int or admission["committedRevision"] < 1:
+            refuse("hash_mismatch")
     return {"packId": request["pack_id"], "sourceDigest": source_digest, "digest": artifact["digest"],
             "artifactManifestDigest": hashlib.sha256(_json(artifact)).hexdigest(), "artifact_manifest": artifact}
 
@@ -541,6 +588,11 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 # Even an ordinary Python pack traverses the real M4 seam.
                 result = build_pack_assets(request)
                 admission = _verify_artifacts(request, result)
+                if admission is not None:
+                    admission = _write_admission_record(candidate / pack_id,
+                        artifact=admission["artifact_manifest"], committed_revision=old["revision"] + 1,
+                        transaction_id=tx)
+                    _verify_artifacts(request, result)
                 build_records.append((request, result))
                 if admission is not None:
                     admissions[pack_id] = admission
@@ -632,6 +684,9 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
 def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[str],
                    transaction_id: str | None = None,
                    expected_pins: Mapping[str, Mapping[str, Any]] | None = None,
+                   selected: Mapping[str, PackFacts] | None = None,
+                   release_pins: Mapping[str, PinFacts] | None = None,
+                   python_packages: Mapping[str, str] | None = None,
                    refresh: Refresh | None = None,
                    consent: Callable[[Mapping[str, Any]], bool] | None = None) -> GroupResult:
     """Restore selected packs from the generation retired by the active commit.
@@ -647,6 +702,9 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
     if not ids or any(not isinstance(i, str) or not _ID.fullmatch(i) for i in ids):
         raise PackInstallError("invalid_request", "Select one or more valid pack IDs to roll back.")
     expected_pins = {key: dict(value) for key, value in (expected_pins or {}).items()}
+    host_selected = {key: dict(value) for key, value in (selected or {}).items()}
+    pins = {key: dict(value) for key, value in (release_pins or {}).items()}
+    packages = dict(python_packages or {})
     with group_read_lock(root, exclusive=True):
         state = _state(root)
         active_tx = state["transaction_id"]
@@ -658,7 +716,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             raise PackInstallError("uncommitted_generation", "The active generation has no prior committed generation to restore.")
         current_paths = _paths(root)
         prior_paths = _paths(prior)
-        tombstones = set(state["removals"]) | set(prior_state["removals"])
+        tombstones = set(state["removals"])
         before = {}
         for pack_id in ids:
             current_pin = read_pin(current_paths[pack_id] / "PIN") if pack_id in current_paths and (current_paths[pack_id] / "PIN").is_file() else None
@@ -701,8 +759,15 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     # generation and must follow it through rollback.
                     shutil.copytree(prior_paths[pack_id], target)
                     if pack_id in prior_state["admissions"]:
-                        admissions[pack_id] = prior_state["admissions"][pack_id]
-            facts = {}
+                        prior_admission = prior_state["admissions"][pack_id]
+                        artifact = prior_admission.get("artifact_manifest")
+                        if isinstance(artifact, dict):
+                            admissions[pack_id] = _write_admission_record(
+                                target, artifact=artifact, committed_revision=state["revision"] + 1,
+                                transaction_id=tx)
+                        else:
+                            admissions[pack_id] = prior_admission
+            facts = dict(host_selected)
             for pack_id, path in _paths(candidate).items():
                 if pack_id == "personal":
                     continue
@@ -716,7 +781,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     continue
                 manifest, item = _facts(path)
                 checked = validate_pack(mode="inventory", manifest=manifest, candidate=item, selected=facts,
-                                        core_api=pack_api.VERSION, release_pins={}, python_packages={},
+                                        core_api=pack_api.VERSION, release_pins=pins, python_packages=packages,
                                         import_violations=check_pack_imports(path, contract=contract, manifest=manifest))
                 if not checked["ok"]:
                     raise PackInstallError(checked["code"], checked["reason"], compatibility=checked)
