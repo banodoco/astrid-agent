@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.packs.rendering.test_presenter_scene_capability import (
+from tests.packs.astrid_motion.test_presenter_scene_capability import (
     presenter_query as _presenter_query,
 )
 

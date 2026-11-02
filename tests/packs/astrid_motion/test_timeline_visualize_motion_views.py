@@ -626,7 +626,7 @@ def test_diff_view_scope_condition():
 # --- element motion: the element's own maths, the model as fallback ---------------------
 from astrid.packs.rendering.actions.timeline_visualize.motion import element_motion  # noqa: E402
 
-V6_PUSHED = json.loads((Path(__file__).resolve().parents[2] / "fixtures" / "v6_pushed_clips.json").read_text())
+V6_PUSHED = json.loads((Path(__file__).resolve().parent / "fixtures" / "v6_pushed_clips.json").read_text())
 
 
 def _v6_elements():

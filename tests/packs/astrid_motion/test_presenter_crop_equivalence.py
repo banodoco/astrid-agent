@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.packs.rendering.actions.timeline_visualize.motion import model
-from tests.packs.rendering.test_presenter_scene_capability import (
+from tests.packs.astrid_motion.test_presenter_scene_capability import (
     presenter_query as _presenter_query,
 )
 
