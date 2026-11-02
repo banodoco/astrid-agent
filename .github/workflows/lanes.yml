@@ -2,6 +2,7 @@
 # and opt_in. Nightly, on request, and on pushes to main/release-1, so regressions are seen promptly.
 # Lanes with no job (workstation, omp, gpu, app_checkout: a GPU, the owner's workstation files or another repo's checkout) are listed by name in every run (tests/lanes.py).
 name: Lanes
+run-name: ${{ inputs.c07_agent_sha && format('C-07 installed {0} via harness {1}', inputs.c07_agent_sha, inputs.c07_harness_sha) || github.workflow }}
 
 on:
   schedule:
@@ -10,6 +11,26 @@ on:
     inputs:
       launcher_ref:
         description: Optional full 40-character astrid-pinokio commit SHA; defaults to main
+        required: false
+        type: string
+      c07_harness_sha:
+        description: Full 40-hex Agent SHA used only to check out the C-07 harness
+        required: false
+        type: string
+      c07_agent_sha:
+        description: Full 40-hex Agent SHA installed by a C-07 tuple dispatch
+        required: false
+        type: string
+      c07_runtime_sha:
+        description: Full 40-hex Runtime SHA required by a C-07 tuple dispatch
+        required: false
+        type: string
+      c07_app_sha:
+        description: Full 40-hex App SHA required by a C-07 tuple dispatch
+        required: false
+        type: string
+      c07_pinokio_sha:
+        description: Full 40-hex Pinokio SHA required by a C-07 tuple dispatch
         required: false
         type: string
   push:
@@ -316,65 +337,585 @@ jobs:
     timeout-minutes: 120
     env:
       ASTRID_CI_JOB: lanes-installed
+      ASTRID_APP_IDENTITY: 933c53a6fb1a11e5f8a01335d6252016d703beec
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
       ASTRID_HOST_EXECUTION_PROFILE: installed
       ASTRID_REMOTION_PROJECT_DIR: ${{ github.workspace }}/remotion
+      ASTRID_INSTALLED_RECEIPT_DIR: ${{ github.workspace }}/installed-wheel-receipt
     steps:
-      - name: Check out repository
+      # The workflow definition is selected by GitHub's dispatch ref, while this
+      # checkout is the separately recorded C-07 harness.  The installed tuple
+      # replaces it only after the input binding below has validated every SHA.
+      - name: Check out C-07 harness
+        id: checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.c07_harness_sha || github.sha }}
+
+      - name: Prepare installed-wheel receipt
+        id: receipt_init
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ASTRID_INSTALLED_RECEIPT_DIR"
+          : > "$ASTRID_INSTALLED_RECEIPT_DIR/inner-exits.txt"
+
+      - name: Resolve C-07 tuple inputs
+        id: c07_identity
+        shell: bash
+        env:
+          INPUT_C07_HARNESS_SHA: ${{ inputs.c07_harness_sha }}
+          INPUT_C07_AGENT_SHA: ${{ inputs.c07_agent_sha }}
+          INPUT_C07_RUNTIME_SHA: ${{ inputs.c07_runtime_sha }}
+          INPUT_C07_APP_SHA: ${{ inputs.c07_app_sha }}
+          INPUT_C07_PINOKIO_SHA: ${{ inputs.c07_pinokio_sha }}
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/c07-identity.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/c07_identity.exit"; exit "$rc"' EXIT
+          actual_harness="$(git rev-parse HEAD)"
+          supplied=0
+          for value in "$INPUT_C07_HARNESS_SHA" "$INPUT_C07_AGENT_SHA" "$INPUT_C07_RUNTIME_SHA" "$INPUT_C07_APP_SHA" "$INPUT_C07_PINOKIO_SHA"; do
+            if [[ -n "$value" ]]; then
+              supplied=$((supplied + 1))
+            fi
+          done
+          if [[ "$supplied" -eq 0 ]]; then
+            echo "mode=normal" >> "$GITHUB_OUTPUT"
+            echo "harness_sha=$actual_harness" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "$actual_harness" > "$ASTRID_INSTALLED_RECEIPT_DIR/harness.sha"
+            exit 0
+          fi
+          if [[ "$supplied" -ne 5 ]]; then
+            echo "C-07 dispatch requires c07_harness_sha and every installed Agent/Runtime/App/Pinokio tuple SHA" >&2
+            exit 1
+          fi
+          for name in harness agent runtime app pinokio; do
+            input_name="INPUT_C07_${name^^}_SHA"
+            value="${!input_name}"
+            if [[ ! "$value" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "c07_${name}_sha must be a full 40-character hexadecimal commit SHA" >&2
+              exit 1
+            fi
+            printf -v "$name" '%s' "$(tr '[:upper:]' '[:lower:]' <<< "$value")"
+          done
+          if [[ "$actual_harness" != "$harness" ]]; then
+            echo "C-07 harness checkout $actual_harness does not match requested $harness" >&2
+            exit 1
+          fi
+          {
+            echo "mode=c07"
+            echo "harness_sha=$harness"
+            echo "agent_sha=$agent"
+            echo "runtime_sha=$runtime"
+            echo "app_sha=$app"
+            echo "pinokio_sha=$pinokio"
+          } >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$actual_harness" > "$ASTRID_INSTALLED_RECEIPT_DIR/harness.sha"
+
+      # A C-07 dispatch builds the installed wheel from this exact tuple member,
+      # never from the harness checkout above. clean:false preserves the receipt
+      # initialized before the checkout so bad identities remain observable.
+      - name: Check out installed Agent tuple member
+        id: installed_agent_checkout
+        if: ${{ steps.c07_identity.outputs.mode == 'c07' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.c07_identity.outputs.agent_sha }}
+          clean: false
 
       - name: Read the pinned Runtime commit
-        id: runtime-pin
-        run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
+        id: runtime_pin
+        shell: bash
+        env:
+          C07_MODE: ${{ steps.c07_identity.outputs.mode }}
+          C07_RUNTIME_SHA: ${{ steps.c07_identity.outputs.runtime_sha }}
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/runtime-pin.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/runtime_pin.exit"; exit "$rc"' EXIT
+          commit="$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')"
+          if [[ "$C07_MODE" == "c07" ]]; then
+            if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]] || [[ "$commit" != "$C07_RUNTIME_SHA" ]]; then
+              echo "installed Agent runtime.lock.json source_commit must equal C-07 Runtime $C07_RUNTIME_SHA" >&2
+              exit 1
+            fi
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Check out the Runtime (astrid-runtime)
+        id: runtime_checkout
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-pin.outputs.commit }}
+          ref: ${{ steps.runtime_pin.outputs.commit }}
           path: astrid-runtime
 
+      - name: Check out C-07 App tuple member
+        id: c07_app_checkout
+        if: ${{ always() && steps.c07_identity.outputs.mode == 'c07' }}
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ${{ steps.c07_identity.outputs.app_sha }}
+          path: c07-app
+
+      - name: Check out C-07 Pinokio tuple member
+        id: c07_pinokio_checkout
+        if: ${{ always() && steps.c07_identity.outputs.mode == 'c07' }}
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ steps.c07_identity.outputs.pinokio_sha }}
+          path: c07-pinokio
+
+      - name: Verify effective C-07 tuple identities
+        id: c07_effective
+        if: ${{ always() && steps.c07_identity.outputs.mode == 'c07' }}
+        shell: bash
+        env:
+          C07_AGENT_SHA: ${{ steps.c07_identity.outputs.agent_sha }}
+          C07_RUNTIME_SHA: ${{ steps.c07_identity.outputs.runtime_sha }}
+          C07_APP_SHA: ${{ steps.c07_identity.outputs.app_sha }}
+          C07_PINOKIO_SHA: ${{ steps.c07_identity.outputs.pinokio_sha }}
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/c07-effective.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/c07_effective.exit"; exit "$rc"' EXIT
+          agent="$(git rev-parse HEAD)"
+          runtime="$(git -C astrid-runtime rev-parse HEAD)"
+          app="$(git -C c07-app rev-parse HEAD)"
+          pinokio="$(git -C c07-pinokio rev-parse HEAD)"
+          test "$agent" = "$C07_AGENT_SHA"
+          test "$runtime" = "$C07_RUNTIME_SHA"
+          test "$app" = "$C07_APP_SHA"
+          test "$pinokio" = "$C07_PINOKIO_SHA"
+          {
+            echo "harness=$(cat "$ASTRID_INSTALLED_RECEIPT_DIR/harness.sha")"
+            echo "agent=$agent"
+            echo "runtime=$runtime"
+            echo "app=$app"
+            echo "pinokio=$pinokio"
+          } | tee "$ASTRID_INSTALLED_RECEIPT_DIR/c07-effective-refs.txt"
+
       - name: Record checked-out refs
+        id: refs
         shell: bash
         run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/refs.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/refs.exit"; exit "$rc"' EXIT
           {
             echo "## Effective checked-out refs"
             echo "- Agent: $(git rev-parse HEAD)"
             echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
+            if [[ "${{ steps.c07_identity.outputs.mode }}" == "c07" ]]; then
+              echo "- Harness: $(cat "$ASTRID_INSTALLED_RECEIPT_DIR/harness.sha")"
+              echo "- App: $(git -C c07-app rev-parse HEAD)"
+              echo "- Pinokio: $(git -C c07-pinokio rev-parse HEAD)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Python
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Set up Node.js from .node-version
+        id: node
         uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
 
       - name: Install system media tools
+        id: media
         run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/media.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/media.exit"; exit "$rc"' EXIT
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
       - name: Build exactly one wheel
+        id: wheel
         run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/wheel.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/wheel.exit"; exit "$rc"' EXIT
           python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock
           python -m build --wheel --no-isolation --outdir dist
           test "$(ls dist/*.whl | wc -l)" -eq 1
 
       # Not editable: astrid, the Runtime and its client are copied into the venv's site-packages.
       - name: Install the wheel and the Runtime into a venv
+        id: install
         run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/install.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/install.exit"; exit "$rc"' EXIT
           python -m venv "$RUNNER_TEMP/installed-venv"
           "$RUNNER_TEMP/installed-venv/bin/python" -m pip install "$(ls dist/*.whl)[dev]"
           "$RUNNER_TEMP/installed-venv/bin/python" -m pip install --no-deps ./astrid-runtime ./astrid-runtime/packages/python
 
       - name: Install the Remotion dependencies
-        run: npm ci --prefix remotion
+        id: npm
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/npm.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/npm.exit"; exit "$rc"' EXIT
+          npm ci --prefix remotion
+
+      # The installed selector verifies the wheel-owned registry carrier and
+      # its host-owned state.  Produce that state through the installed
+      # interpreter, just as an installed renderer does; the Composition
+      # package is a built artifact and supplies no TypeScript source tree.
+      - name: Generate the installed Remotion registry
+        id: registry
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/registry.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/registry.exit"; exit "$rc"' EXIT
+          "$RUNNER_TEMP/installed-venv/bin/python" -I - <<'PY'
+          import os
+          from pathlib import Path
+
+          from astrid.packs.rendering.rendering.renderers.remotion import run
+
+          project = Path(os.environ["ASTRID_REMOTION_PROJECT_DIR"])
+          run._regenerate_element_registries(project, None)
+          state = run._read_registry_state(project)
+          if state != run.gen_effect_registry.compute_generated_registry_state():
+              raise SystemExit("installed Remotion registry state does not match its generator")
+          if not run._registry_outputs_match_state(project, state):
+              raise SystemExit("installed Remotion registry outputs do not match their state")
+          PY
 
       - name: Installed tests
+        id: selector
         run: >-
+          set -o pipefail; set +e;
           "$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib
-          tests/packs/h3_av/test_character_swap_cpu_boundary.py
+          --junitxml="$ASTRID_INSTALLED_RECEIPT_DIR/selector.junit.xml"
+          tests/packs/h3_av/test_character_swap_cpu_boundary.py 2>&1 |
+          tee "$ASTRID_INSTALLED_RECEIPT_DIR/selector.log";
+          rc=${PIPESTATUS[0]}; printf '%s\n' "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/selector.exit"; exit "$rc"
+
+      - name: Collect installed-wheel receipt
+        id: receipt
+        if: ${{ always() }}
+        shell: bash
+        env:
+          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUTCOME_RECEIPT_INIT: ${{ steps.receipt_init.outcome }}
+          OUTCOME_C07_IDENTITY: ${{ steps.c07_identity.outcome }}
+          OUTCOME_INSTALLED_AGENT_CHECKOUT: ${{ steps.installed_agent_checkout.outcome }}
+          OUTCOME_RUNTIME_PIN: ${{ steps.runtime_pin.outcome }}
+          OUTCOME_RUNTIME_CHECKOUT: ${{ steps.runtime_checkout.outcome }}
+          OUTCOME_C07_APP_CHECKOUT: ${{ steps.c07_app_checkout.outcome }}
+          OUTCOME_C07_PINOKIO_CHECKOUT: ${{ steps.c07_pinokio_checkout.outcome }}
+          OUTCOME_C07_EFFECTIVE: ${{ steps.c07_effective.outcome }}
+          OUTCOME_REFS: ${{ steps.refs.outcome }}
+          OUTCOME_PYTHON: ${{ steps.python.outcome }}
+          OUTCOME_NODE: ${{ steps.node.outcome }}
+          OUTCOME_MEDIA: ${{ steps.media.outcome }}
+          OUTCOME_WHEEL: ${{ steps.wheel.outcome }}
+          OUTCOME_INSTALL: ${{ steps.install.outcome }}
+          OUTCOME_NPM: ${{ steps.npm.outcome }}
+          OUTCOME_REGISTRY: ${{ steps.registry.outcome }}
+          OUTCOME_SELECTOR: ${{ steps.selector.outcome }}
+          C07_MODE: ${{ steps.c07_identity.outputs.mode }}
+          C07_HARNESS_SHA: ${{ steps.c07_identity.outputs.harness_sha }}
+          C07_AGENT_SHA: ${{ steps.c07_identity.outputs.agent_sha }}
+          C07_RUNTIME_SHA: ${{ steps.c07_identity.outputs.runtime_sha }}
+          C07_APP_SHA: ${{ steps.c07_identity.outputs.app_sha }}
+          C07_PINOKIO_SHA: ${{ steps.c07_identity.outputs.pinokio_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ASTRID_INSTALLED_RECEIPT_DIR"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          import subprocess
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          root = Path.cwd()
+          receipt_dir = Path(os.environ["ASTRID_INSTALLED_RECEIPT_DIR"])
+          receipt_dir.mkdir(parents=True, exist_ok=True)
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          def command_output(*args, cwd=root):
+              try:
+                  return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+              except (OSError, subprocess.CalledProcessError):
+                  return "unavailable"
+
+          def read_int(path, fallback):
+              try:
+                  return int(path.read_text(encoding="utf-8").strip())
+              except (OSError, ValueError):
+                  return fallback
+
+          def outcome_exit(outcome):
+              # C-07-only checkout/verification steps are deliberately skipped
+              # on ordinary push, schedule and legacy dispatch runs.
+              return 0 if outcome in ("success", "skipped") else 1
+
+          c07_mode = os.environ.get("C07_MODE", "normal") or "normal"
+          outcomes = {
+              name.removeprefix("OUTCOME_").lower(): value
+              for name, value in os.environ.items()
+              if name.startswith("OUTCOME_")
+          }
+          step_names = (
+              "checkout", "receipt_init", "c07_identity", "installed_agent_checkout", "runtime_pin",
+              "runtime_checkout", "c07_app_checkout", "c07_pinokio_checkout", "c07_effective", "refs",
+              "python", "node", "media", "wheel", "install", "npm", "registry", "selector",
+          )
+          c07_steps = {"c07_identity", "installed_agent_checkout", "c07_app_checkout", "c07_pinokio_checkout", "c07_effective"}
+          inner_exits = {
+              name: read_int(
+                  receipt_dir / f"{name}.exit",
+                  outcome_exit(outcomes.get(name, "unknown" if c07_mode == "c07" and name in c07_steps else "skipped")),
+              )
+              for name in step_names
+          }
+          (receipt_dir / "inner-exits.txt").write_text(
+              "".join(f"{name}={value}\n" for name, value in inner_exits.items()), encoding="utf-8"
+          )
+
+          runtime_lock = root / "runtime.lock.json"
+          runtime_input = "unavailable"
+          if runtime_lock.is_file():
+              try:
+                  runtime_input = json.loads(runtime_lock.read_text(encoding="utf-8"))["source_commit"]
+              except (KeyError, json.JSONDecodeError):
+                  pass
+
+          def receipt_text(path):
+              try:
+                  return path.read_text(encoding="utf-8").strip() or "unavailable"
+              except OSError:
+                  return "unavailable"
+
+          harness_effective = receipt_text(receipt_dir / "harness.sha")
+          c07_harness = os.environ.get("C07_HARNESS_SHA") or os.environ.get("GITHUB_SHA", "unavailable")
+          c07_agent = os.environ.get("C07_AGENT_SHA") or os.environ.get("GITHUB_SHA", "unavailable")
+          c07_runtime = os.environ.get("C07_RUNTIME_SHA") or runtime_input
+          c07_app = os.environ.get("C07_APP_SHA") or os.environ.get("ASTRID_APP_IDENTITY", "unavailable")
+          c07_pinokio = os.environ.get("C07_PINOKIO_SHA") or "not-requested"
+          app_effective = command_output("git", "-C", "c07-app", "rev-parse", "HEAD") if c07_mode == "c07" else "not-requested"
+          pinokio_effective = command_output("git", "-C", "c07-pinokio", "rev-parse", "HEAD") if c07_mode == "c07" else "not-requested"
+
+          composition_package = root / "remotion" / "package.json"
+          composition_lock = root / "remotion" / "package-lock.json"
+          composition = "unavailable"
+          composition_version = "unavailable"
+          composition_artifact = None
+          composition_sidecar = None
+          try:
+              package = json.loads(composition_package.read_text(encoding="utf-8"))
+              dependency = package["dependencies"]["@banodoco/timeline-composition"]
+              composition_artifact = root / "remotion" / dependency.removeprefix("file:")
+              composition_sidecar = Path(f"{composition_artifact}.sha256")
+              composition_version = dependency.rsplit("-", 1)[-1].removesuffix(".tgz")
+              composition = dependency
+          except (KeyError, OSError, json.JSONDecodeError):
+              pass
+
+          junit = receipt_dir / "selector.junit.xml"
+          junit_counts = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+          junit_valid = False
+          try:
+              if not junit.is_file() or junit.stat().st_size == 0:
+                  raise ValueError("selector JUnit is missing or empty")
+              xml = ET.parse(junit).getroot()
+              suites = [xml] if xml.tag == "testsuite" else list(xml) if xml.tag == "testsuites" else []
+              if not suites or any(suite.tag != "testsuite" for suite in suites):
+                  raise ValueError("selector JUnit has no test suites")
+              for suite in suites:
+                  for key in junit_counts:
+                      value = int(suite.attrib[key])
+                      if value < 0:
+                          raise ValueError("negative JUnit count")
+                      junit_counts[key] += value
+                  if len(list(suite.iter("testcase"))) != int(suite.attrib["tests"]):
+                      raise ValueError("JUnit test count does not match its test cases")
+              # Do not accept contradictory aggregate counts or failure elements.
+              for key, value in junit_counts.items():
+                  if key in xml.attrib and int(xml.attrib[key]) != value:
+                      raise ValueError("inconsistent JUnit aggregate")
+              junit_valid = (
+                  junit_counts["tests"] > 0
+                  and all(junit_counts[key] == 0 for key in ("failures", "errors", "skipped"))
+                  and not any(next(xml.iter(tag), None) is not None for tag in ("failure", "error", "skipped"))
+              )
+          except (OSError, ET.ParseError, KeyError, ValueError, OverflowError):
+              junit_valid = False
+          selector_exit = read_int(receipt_dir / "selector.exit", 1)
+          selector_passed = (
+              outcomes.get("selector") == "success" and selector_exit == 0 and junit_valid
+          )
+          sidecar_matches = False
+          try:
+              sidecar_matches = (
+                  composition_artifact is not None and composition_sidecar is not None
+                  and composition_artifact.is_file() and composition_sidecar.is_file()
+                  and composition_sidecar.read_text(encoding="utf-8").strip() == sha256(composition_artifact)
+              )
+          except (OSError, UnicodeError):
+              pass
+
+          generated = {}
+          bundle_dir = receipt_dir / "artifacts"
+          bundle_dir.mkdir(parents=True, exist_ok=True)
+          bundled_artifacts = {}
+
+          def bundle(path, name):
+              if not path.is_file():
+                  return None
+              destination = bundle_dir / name
+              shutil.copy2(path, destination)
+              return destination
+
+          generated_paths = (
+              root / "remotion" / "src" / "effects.generated.ts",
+              root / "remotion" / "src" / "animations.generated.ts",
+              root / "remotion" / "src" / "transitions.generated.ts",
+              root / "remotion" / ".astrid-registry-state.json",
+          )
+          for path in generated_paths:
+              generated[str(path.relative_to(root))] = sha256(path) if path.is_file() else None
+              bundled = bundle(path, path.name)
+              if bundled is not None:
+                  bundled_artifacts[str(path.relative_to(root))] = {
+                      "path": str(bundled.relative_to(receipt_dir)),
+                      "sha256": sha256(bundled),
+                  }
+
+          artifact_hashes = {}
+          evidence_names = {
+              "runtime.lock.json": "runtime.lock.json",
+              "remotion/package.json": "remotion-package.json",
+              "remotion/package-lock.json": "remotion-package-lock.json",
+              "remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz.sha256": "timeline-composition.tgz.sha256",
+          }
+          for path in (root / "runtime.lock.json", composition_package, composition_lock, composition_artifact, composition_sidecar):
+              if path is not None and path.is_file():
+                  source = str(path.relative_to(root))
+                  artifact_hashes[source] = sha256(path)
+                  bundled = bundle(path, evidence_names.get(source, "timeline-composition.tgz"))
+                  bundled_artifacts[source] = {
+                      "path": str(bundled.relative_to(receipt_dir)),
+                      "sha256": sha256(bundled),
+                  }
+          for path in sorted((root / "dist").glob("*.whl")) if (root / "dist").is_dir() else ():
+              source = str(path.relative_to(root))
+              artifact_hashes[source] = sha256(path)
+              bundled = bundle(path, "astrid-wheel.whl")
+              bundled_artifacts[source] = {
+                  "path": str(bundled.relative_to(receipt_dir)),
+                  "sha256": sha256(bundled),
+              }
+
+          selector_command = (
+              "ASTRID_HOST_EXECUTION_PROFILE=installed "
+              "ASTRID_RUNTIME_CHECKOUT=$GITHUB_WORKSPACE/astrid-runtime "
+              "ASTRID_REMOTION_PROJECT_DIR=$GITHUB_WORKSPACE/remotion "
+              "$RUNNER_TEMP/installed-venv/bin/pytest -q -m installed --import-mode=importlib "
+              "--junitxml=$GITHUB_WORKSPACE/installed-wheel-receipt/selector.junit.xml "
+              "tests/packs/h3_av/test_character_swap_cpu_boundary.py"
+          )
+          receipt = {
+              "schema": "ag-ci-h3-wheel-r8/v1",
+              "status": "green" if all(value == 0 for value in inner_exits.values()) and selector_passed and sidecar_matches else "failed",
+              "repository": "banodoco/astrid-agent",
+              "workflow": {
+                  "name": os.environ.get("GITHUB_WORKFLOW", "unavailable"),
+                  "identity": os.environ.get("GITHUB_WORKFLOW", "unavailable"),
+                  "file": ".github/workflows/lanes.yml",
+                  "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF", "unavailable"),
+                  "run_id": os.environ.get("GITHUB_RUN_ID", "unavailable"),
+                  "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "unavailable"),
+                  "job": os.environ.get("GITHUB_JOB", "unavailable"),
+                  "run_ref": os.environ.get("GITHUB_REF", "unavailable"),
+                  "requested_agent": os.environ.get("GITHUB_SHA", "unavailable"),
+                  "requested_harness": c07_harness,
+                  "harness_effective": harness_effective,
+              },
+              "tuple": {
+                  "mode": c07_mode,
+                  "harness_requested": c07_harness,
+                  "harness_effective": harness_effective,
+                  "agent_requested": c07_agent,
+                  "agent_effective": command_output("git", "rev-parse", "HEAD"),
+                  "runtime_requested": c07_runtime,
+                  "runtime_effective": command_output("git", "-C", "astrid-runtime", "rev-parse", "HEAD"),
+                  "app_identity": c07_app,
+                  "app_effective": app_effective,
+                  "pinokio_requested": c07_pinokio,
+                  "pinokio_effective": pinokio_effective,
+                  "composition": {
+                      "name": "@banodoco/timeline-composition",
+                      "version": composition_version,
+                      "spec": composition,
+                      "artifact_sha256": artifact_hashes.get(str(composition_artifact.relative_to(root))) if composition_artifact and composition_artifact.is_file() else None,
+                      "sidecar_matches": sidecar_matches,
+                  },
+              },
+              "installed_selector": {
+                  "command": selector_command,
+                  "exit": selector_exit,
+                  "result": "passed" if selector_passed else "failed",
+                  "junit": {"path": "selector.junit.xml", "valid": junit_valid, **junit_counts},
+              },
+              "inner_exits": inner_exits,
+              "generated_registry_hashes": generated,
+              "artifacts": artifact_hashes,
+              "bundled_artifacts": bundled_artifacts,
+              "coverage": {
+                  "selector": "tests/packs/h3_av/test_character_swap_cpu_boundary.py",
+                  "profile": "installed",
+                  "prohibited_options_absent": ["--maxfail", "-x"],
+              },
+              "logs": [path.name for path in sorted(receipt_dir.glob("*.log"))],
+          }
+
+          receipt_path = receipt_dir / "RECEIPT.json"
+          receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          manifest_paths = [
+              path for path in sorted(receipt_dir.rglob("*"))
+              if path.is_file() and path.name not in {"SHA256SUMS", "RECEIPT.json"}
+          ]
+          manifest_lines = []
+          seen = set()
+          for path in manifest_paths:
+              if path in seen:
+                  continue
+              seen.add(path)
+              relative = path.relative_to(receipt_dir) if path.is_relative_to(receipt_dir) else path.relative_to(root)
+              manifest_lines.append(f"{sha256(path)}  {relative}")
+          manifest = receipt_dir / "SHA256SUMS"
+          manifest.write_text("".join(line + "\n" for line in manifest_lines), encoding="utf-8")
+          receipt["artifact_manifest"] = {"path": "SHA256SUMS", "sha256": sha256(manifest)}
+          receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload installed-wheel receipt
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-wheel-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/installed-wheel-receipt
+          if-no-files-found: warn
