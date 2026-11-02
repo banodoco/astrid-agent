@@ -5,6 +5,17 @@ pack-side process: discovery and execution happen here, while admission,
 leases, reservations, and settlement remain protocol operations on the daemon.
 """
 
+# Module map (symbol anchors keep this useful as the file evolves):
+# - Startup and process/source identity: _emit_startup_phase, source helpers,
+#   and the task-scope/process-control helpers.
+# - Adapter contracts and session lifecycle: AdapterSpec, AdapterRegistry,
+#   CapabilityRecord, and the engine/session adapters.
+# - Runtime protocol boundary: RuntimeProtocolClient and wire/error handling.
+# - Host lifecycle: GenericPackHost discovery/admission, invocation, output
+#   settlement, cancellation, handoff, and supervision.
+# - Local execution and entry points: LocalExecutionPreparation, publication
+#   and activation helpers, then _cli/module shutdown.
+
 from __future__ import annotations
 
 import argparse
@@ -152,16 +163,10 @@ from astrid.core.execution.process_group import (
     write_cleanup_latch,
 )
 from astrid.core.execution.process_group import (
-    group_exists as _owned_group_exists,
-)
-from astrid.core.execution.process_group import (
     process_birth_identity as _process_birth_identity,
 )
 from astrid.core.execution.process_group import (
     release_group as _release_owned_group,
-)
-from astrid.core.execution.process_group import (
-    signal_group as _signal_owned_group,
 )
 from astrid.core.execution.provider_route_grant import (
     ProviderRouteGrantAuthority,
@@ -1782,15 +1787,6 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return str(value)
-
-
-def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
-    _signal_owned_group(process, sig)
-    return
-
-
-def _process_group_exists(process: subprocess.Popen) -> bool:
-    return _owned_group_exists(process)
 
 
 def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
