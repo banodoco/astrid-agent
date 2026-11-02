@@ -450,8 +450,8 @@ def test_fresh_recovery_boots_out_matching_stopped_r0_without_owner_and_restores
     loaded["r0_action"] = original_r0_action
     loaded["running"] = False
     boundary.live = False
-    paths.discovery_path.unlink()
-    paths.instance_lock_path.unlink()
+    paths.discovery_path.unlink(missing_ok=True)
+    paths.instance_lock_path.unlink(missing_ok=True)
     launchd_run = backend.service.run
     print_count = 0
 
