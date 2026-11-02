@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from .install import PackInstallError
 from .personal import resolve_personal_packs_root
-from .transaction import _facts, install_group, read_group, rollback_group
+from .transaction import _facts, install_group, read_group, read_retired_group, rollback_group
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -60,29 +60,49 @@ def _validation_snapshot() -> tuple[Mapping[str, str], Mapping[str, Mapping[str,
     return MappingProxyType(packages), MappingProxyType(pins)
 
 
-def _selected_snapshot(root: Path) -> Mapping[str, Mapping[str, Any]]:
+def _selected_snapshot(root: Path, pack_ids: tuple[str, ...] | list[str], *, rollback: bool = False) -> Mapping[str, Mapping[str, Any]]:
     """Compose selected core/external facts once for a real management call.
 
-    Roots are explicit: the bundled core collection and configured external
-    roots. No ambient home, project, or unrelated checkout is searched.
+    Roots are explicit: the user collection, bundled core collection, and
+    configured external roots. Only manifest paths named by the selected
+    dependency closure are opened; unrelated roots and manifests are untouched.
     """
     from .loader import packs_root
 
-    roots = [packs_root()]
-    roots.extend(Path(item).expanduser() for item in os.environ.get("ASTRID_PACKS_PATH", "").split(os.pathsep) if item)
-    roots = list(dict.fromkeys(path.resolve() for path in roots if path.resolve() != root.resolve()))
+    user_root = root.resolve()
+    core_root = packs_root().resolve()
+    external_roots = [Path(item).expanduser().resolve()
+                      for item in os.environ.get("ASTRID_PACKS_PATH", "").split(os.pathsep) if item]
+    roots = list(dict.fromkeys((user_root, *external_roots, core_root)))
+    current = read_group(user_root)
+    selected_generation = (read_retired_group(packs_root=user_root, transaction_id=current.transaction_id)
+                          if rollback and current.transaction_id else current)
+    seed_paths = selected_generation.paths
     selected: dict[str, Mapping[str, Any]] = {}
-    for selected_root in roots:
-        if not selected_root.is_dir():
+    visited: set[str] = set()
+    pending = list(pack_ids)
+    while pending:
+        pack_id = pending.pop()
+        if pack_id in visited:
             continue
-        for child in sorted(selected_root.iterdir()):
-            if not child.is_dir() or child.is_symlink() or not (child / "pack.yaml").is_file():
-                continue
-            pack_id = child.name
-            if pack_id in selected:
-                continue
-            _, facts = _facts(child)
+        visited.add(pack_id)
+        path = seed_paths.get(pack_id)
+        if path is None:
+            path = next((candidate for selected_root in roots
+                         if (candidate := selected_root / pack_id).is_dir()
+                         and not candidate.is_symlink() and (candidate / "pack.yaml").is_file()), None)
+        if path is None:
+            continue
+        manifest, facts = _facts(path)
+        is_core = path.resolve().is_relative_to(core_root)
+        if is_core:
+            facts["origin"] = "core"
+        if path.resolve() != user_root / pack_id and pack_id not in seed_paths:
             selected[pack_id] = _freeze(dict(facts))
+        dependencies = manifest.get("dependencies", {})
+        declared = dependencies.get("packs", ()) if isinstance(dependencies, Mapping) else ()
+        if isinstance(declared, (list, tuple)):
+            pending.extend(dep for dep in declared if isinstance(dep, str) and dep and dep not in visited)
     return MappingProxyType(selected)
 
 
@@ -123,7 +143,7 @@ def _handle_update(args) -> int:
         packs = _pack_specs(args.packs)
         root = _selected_root(args.packs_root)
         packages, pins = _validation_snapshot()
-        selected = _selected_snapshot(root)
+        selected = _selected_snapshot(root, tuple(packs))
         result = install_group(source=args.source, revision=args.revision, packs=packs,
                                packs_root=root, python_packages=packages, release_pins=pins, selected=selected, intent="update",
                                consent=_confirm_update)
@@ -138,7 +158,7 @@ def _handle_rollback(args) -> int:
     try:
         root = _selected_root(args.packs_root)
         packages, pins = _validation_snapshot()
-        selected = _selected_snapshot(root)
+        selected = _selected_snapshot(root, tuple(args.pack_ids), rollback=True)
         result = rollback_group(packs_root=root, pack_ids=args.pack_ids,
                                 transaction_id=args.transaction_id, consent=_confirm_rollback,
                                 python_packages=packages, release_pins=pins, selected=selected)

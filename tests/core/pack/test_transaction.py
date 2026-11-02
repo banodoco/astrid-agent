@@ -895,14 +895,28 @@ def test_real_update_cli_uses_explicit_selected_external_dependency_roots(
     unrelated = tmp_path / "unselected-root"
     unrelated.mkdir()
     (unrelated / "do-not-read").write_text("unrelated", encoding="utf-8")
+    original_iterdir = Path.iterdir
+    def guard_unrelated(path):
+        if path.resolve() == unrelated.resolve():
+            raise AssertionError("unselected root was scanned")
+        return original_iterdir(path)
+    monkeypatch.setattr(Path, "iterdir", guard_unrelated)
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    if dependency_present:
+        from astrid.core.pack.transaction import _facts
+        _, external_facts = _facts(external / "extdep")
+        install_group(source=repo.bare, revision=target, packs={"alpha": "packs/alpha", "shared": "packs/shared"},
+                      packs_root=packs_root, python_packages={}, selected={"extdep": external_facts})
 
     result = packs_cli_main(["update", "--source", str(repo.bare), "--revision", target,
                              "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
                              "--pack", "shared=packs/shared"])
     if dependency_present:
         assert result == 0
+        assert "alpha" in read_group(packs_root).paths
+        assert packs_cli_main(["rollback", "--packs-root", str(packs_root),
+                               "--pack", "alpha", "--pack", "shared"]) == 0
         assert "alpha" in read_group(packs_root).paths
     else:
         assert result == 2
