@@ -4,6 +4,10 @@
     "comfyui": {
       "repository": "https://github.com/Comfy-Org/ComfyUI.git",
       "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9"
+    },
+    "vibecomfy": {
+      "repository": "https://github.com/banodoco/VibeComfy.git",
+      "revision": "b2123edfbe7b950848b5c98d575fd9554302fc73"
     }
   }
 }

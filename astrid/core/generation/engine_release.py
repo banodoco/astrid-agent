@@ -429,7 +429,7 @@ def _handoff_recipe(release, *, engine=HANDOFF_ENGINE):
         raise ReleaseError('unsupported handoff engine')
     site = Path(release) / 'site/astrid'
     try:
-        index = _json((site / 'packs/engine-index.json').read_bytes())
+        index = _json((site / 'core/generation/engine-index.json').read_bytes())
         if not isinstance(index, dict) or index.get('schema') != 'astrid.engine-index.v1':
             raise ReleaseError('invalid packaged recipe index')
         entries = [e for e in index['entries'] if isinstance(e, dict)

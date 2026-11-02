@@ -21,7 +21,7 @@ def _engine_resources():
     from astrid.core.generation.engine_recipe import load_recipe, load_recipe_index
     from astrid.core.generation.engine_runner import _A2_PATHS, _CODE_PATHS
 
-    resources = {'packs/engine-index.json', *_CODE_PATHS, *_A2_PATHS}
+    resources = {'core/generation/engine-index.json', *_CODE_PATHS, *_A2_PATHS}
     locks = set()
     for entry in load_recipe_index().entries:
         recipe = load_recipe(entry.engine, entry.platform)

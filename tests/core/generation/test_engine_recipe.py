@@ -65,17 +65,19 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
     entries = {(entry.engine, entry.platform): entry for entry in index.entries}
     comfy_entry = entries[("comfyui", platform)]
     h3_entry = entries[("vibecomfy-h3", platform)]
-    assert comfy_entry.recipe.path == "packs/comfyui/recipe.linux-cu130.json"
+    assert comfy_entry.recipe.path == "core/generation/engines/comfyui/recipe.linux-cu130.json"
     assert comfy_entry.recipe.sha256 == hashlib.sha256(
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
+    assert not (recipes._ROOT / "packs/comfyui").exists()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
     assert h3_entry.recipe.sha256 == "ab83572f93892fa8ac252fd592da31d88b32a2739967baf953e805a66511f1b9"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
+    assert recipe.pins.path == "core/generation/engines/comfyui/pins.json"
     requirements = recipe.environments[0].requirements.packaged_lock
-    assert requirements.path == "packs/comfyui/requirements.linux-cu130.lock"
+    assert requirements.path == "core/generation/engines/comfyui/requirements.linux-cu130.lock"
     assert requirements.sha256 == "75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"
     assert hashlib.sha256((recipes._ROOT / requirements.path).read_bytes()).hexdigest() == requirements.sha256
     lock_text = (recipes._ROOT / requirements.path).read_text(encoding="utf-8")
@@ -89,7 +91,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
     assert h3_requirements.path == "packs/runpod/requirements.linux-cu130.lock"
     assert h3_requirements.sha256 == "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
     assert hashlib.sha256((recipes._ROOT / h3_requirements.path).read_bytes()).hexdigest() == h3_requirements.sha256
-    assert recipe.models_lock.path == "packs/comfyui/models.lock.json"
+    assert recipe.models_lock.path == "core/generation/engines/comfyui/models.lock.json"
     assert recipe.models_lock.sha256 == hashlib.sha256(
         (recipes._ROOT / recipe.models_lock.path).read_bytes()
     ).hexdigest()
@@ -106,7 +108,7 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
     plain = recipes.load_recipe("comfyui", "linux-x86_64-cu130")
     packaged = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
     pins = recipes.load_pin_set(plain.pins)
-    assert plain.pins == packaged.pins
+    assert pins["vibecomfy"] == recipes.load_pin_set(packaged.pins)["vibecomfy"]
     for recipe in (plain, packaged):
         bindings = [source for source in recipe.sources if source.name == "vibecomfy"]
         assert len(bindings) == 1
@@ -117,7 +119,8 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
             "423cbd20511becb1f16122ab518e92e58bfa03d9")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
-                       for path in (recipes._ROOT / "packs").rglob("*.json"))
+                       for root in (recipes._ROOT / "packs", recipes._ROOT / "core/generation/engines")
+                       for path in root.rglob("*.json"))
     assert declarations == 3
 
 
@@ -195,7 +198,9 @@ def _recipe_workspace(tmp_path, monkeypatch, mutate):
     source_root = recipes._ROOT
     packs = tmp_path / "packs"
     shutil.copytree(source_root / "packs", packs)
-    index_path = packs / "engine-index.json"
+    index_path = tmp_path / "core/generation/engine-index.json"
+    index_path.parent.mkdir(parents=True)
+    shutil.copy2(source_root / "core/generation/engine-index.json", index_path)
     index = json.loads(index_path.read_text(encoding="utf-8"))
     entry = next(item for item in index["entries"] if item["engine"] == "vibecomfy")
     recipe_path = packs / entry["recipe"]["path"].removeprefix("packs/")

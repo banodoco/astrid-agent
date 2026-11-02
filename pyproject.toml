@@ -142,6 +142,7 @@ astrid = [
     # or build/planning material into the wheel.
     "resources/*.json",
     "core/**/*.json",
+    "core/**/*.lock",
     "core/**/*.sql",
     "core/**/*.yaml",
     "core/rendering/fixtures/renderer_parity/*",

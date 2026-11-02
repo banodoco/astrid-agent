@@ -21,7 +21,7 @@ from .engine_contracts import (
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
-_INDEX_PATH = _ROOT / "packs" / "engine-index.json"
+_INDEX_PATH = _ROOT / "core" / "generation" / "engine-index.json"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _ENGINE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -376,6 +376,17 @@ def serialize_model_lock(lock: ModelLock) -> str:
 def recipe_digest(recipe: EngineRecipe) -> str:
     payload = serialize_recipe(recipe).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+_COMFYUI_CORE_RECIPE_DIGEST = "85bcf357da5246bdb188c5abc93a3873fbab90287d1ef5b4d9d5cfd0d71f176e"
+_COMFYUI_PRE_CORE_RECEIPT_DIGEST = "1386ee3a72c58ef9e0d356f246841938ad3d2c4fdc9587199269a027570fd68f"
+
+
+def legacy_comfyui_recipe_digest(recipe: EngineRecipe) -> str | None:
+    """Return the exact pre-core-move digest for receipts of the moved recipe."""
+    if recipe.engine == "comfyui" and recipe_digest(recipe) == _COMFYUI_CORE_RECIPE_DIGEST:
+        return _COMFYUI_PRE_CORE_RECEIPT_DIGEST
+    return None
 
 
 __all__ = ["load_recipe_index", "load_recipe", "load_model_lock", "load_recipe_model_lock", "load_pin_set",

@@ -808,9 +808,9 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
         "engine": recipe_draft.engine, "platform": recipe_draft.platform,
         "recipe": {"path": recipe_rel, "sha256": hashlib.sha256(recipe_bytes).hexdigest()},
     }]}
-    (current_code_root / "packs/engine-index.json").write_text(json.dumps(cpu_index, sort_keys=True))
+    (current_code_root / "core/generation/engine-index.json").write_text(json.dumps(cpu_index, sort_keys=True))
     monkeypatch.setattr(engine_recipe, "_ROOT", current_code_root)
-    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", current_code_root / "packs/engine-index.json")
+    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", current_code_root / "core/generation/engine-index.json")
     recipe = engine_recipe.load_recipe("vibecomfy-h3", PLATFORM)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("ASTRID_INSTALL_UV", uv)
@@ -891,7 +891,7 @@ def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_s
     changed_helper = old_code_root / "core/generation/engine_contracts.py"
     changed_helper.write_bytes(changed_helper.read_bytes() + b"\n# prior helper fixture\n")
     monkeypatch.setattr(engine_recipe, "_ROOT", old_code_root)
-    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", old_code_root / "packs/engine-index.json")
+    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", old_code_root / "core/generation/engine-index.json")
 
     old_root = str(tmp_path / "old-engine")
     clean_root = old_root + "-clean"
@@ -1435,6 +1435,29 @@ def test_status_reads_legacy_receipt_without_diagnostics(setup):
         assert getattr(report, field) == getattr(receipt, field)
 
 
+def test_receipt_parser_accepts_pre_core_move_comfyui_recipe_digest(setup):
+    plan, context, adapter, deadline = setup
+    recipe = recipes.load_recipe("comfyui", PLATFORM)
+    context.recipe = recipe
+    plan = runner.plan_install(recipe, root=ROOT, placement="local")
+    comfy_setup = (plan, context, adapter, deadline)
+    receipt = install(comfy_setup)
+    raw = context.files[ROOT + "/" + runner._RECEIPT]
+    legacy_digest = recipes.legacy_comfyui_recipe_digest(recipe)
+    # Captured from recipe_digest() on the frozen pre-move reader at base
+    # 4b5bd6ca046a08626f8c42a450fe14c7297fb4bf.
+    assert legacy_digest == "1386ee3a72c58ef9e0d356f246841938ad3d2c4fdc9587199269a027570fd68f"
+    assert legacy_digest != plan.recipe_sha256
+    raw["recipe_sha256"] = legacy_digest
+    parsed = runner._parse_receipt(raw, plan)
+    assert parsed.status == receipt.status == "installed"
+    assert parsed.recipe_sha256 == legacy_digest
+
+    raw["recipe_sha256"] = "0" * 64
+    with pytest.raises(IntegrityError):
+        runner._parse_receipt(raw, plan)
+
+
 @pytest.mark.parametrize("field,value", [
     ("failed_step_id", "/arbitrary/private/path"), ("failed_step_id", "source:PRIVATE_INPUT_SENTINEL"),
     ("failed_step_id", ["health"]), ("failed_step_id", "health"),
@@ -1485,12 +1508,12 @@ def test_helper_closure_uses_relative_paths_exact_bytes_and_no_install_root(setu
     assert ROOT not in runner._json(manifest)
     for path, digest in manifest.items():
         assert hashlib.sha256((recipes._ROOT / path).read_bytes()).hexdigest() == digest
-    assert {"packs/engine-index.json", "packs/runpod/recipe.linux-cu130.json",
+    assert {"core/generation/engine-index.json", "packs/runpod/recipe.linux-cu130.json",
             setup[1].recipe.pins.path} <= manifest.keys()
 
 
 @pytest.mark.parametrize("path", ["core/generation/engine_runner.py", "core/generation/engine_runner_target.py",
-                                  "core/generation/model_downloader.py", "packs/engine-index.json"])
+                                  "core/generation/model_downloader.py", "core/generation/engine-index.json"])
 def test_helper_identity_changes_with_exact_code_or_index_bytes(setup, tmp_path, monkeypatch, path):
     recipe = setup[1].recipe
     original = runner.helper_manifest(recipe)
@@ -1499,7 +1522,7 @@ def test_helper_identity_changes_with_exact_code_or_index_bytes(setup, tmp_path,
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes((recipes._ROOT / relative).read_bytes())
     monkeypatch.setattr(recipes, "_ROOT", tmp_path)
-    monkeypatch.setattr(recipes, "_INDEX_PATH", tmp_path / "packs/engine-index.json")
+    monkeypatch.setattr(recipes, "_INDEX_PATH", tmp_path / "core/generation/engine-index.json")
     assert runner.helper_manifest(recipe) == original
     changed = tmp_path / path
     changed.write_bytes(changed.read_bytes() + b"\n")

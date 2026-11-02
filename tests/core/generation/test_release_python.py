@@ -106,7 +106,7 @@ def make_release(work, *, python, recipe=None, complete=True, index_sha=None):
         'site/astrid/__init__.py': PRODUCT_INIT,
         'site/astrid/console.py': CONSOLE,
         'site/astrid/packs/runpod/recipe.linux-cu130.json': recipe,
-        'site/astrid/packs/engine-index.json': json.dumps(index).encode(),
+        'site/astrid/core/generation/engine-index.json': json.dumps(index).encode(),
         'site/astrid-0.0.0.dist-info/METADATA': b'Metadata-Version: 2.1\nName: astrid\nVersion: 0.0.0\n',
         'site/astrid-0.0.0.dist-info/entry_points.txt': b'[console_scripts]\nastrid = astrid.console:main\n',
     }

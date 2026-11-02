@@ -270,7 +270,8 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
         path = root / relative
         if path.is_file():
             result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    result["packs/engine-index.json"] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
+    index_relative = recipes._INDEX_PATH.relative_to(root).as_posix()
+    result[index_relative] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
     entry = next(e for e in recipes.load_recipe_index().entries
                  if (e.engine, e.platform) == (recipe.engine, recipe.platform))
     refs = [entry.recipe, recipe.pins, recipe.models_lock]
@@ -869,9 +870,11 @@ def _parse_receipt(raw, plan):
     value = obj(raw, InstallReceipt)
     recipe = recipes.load_recipe(plan.engine, plan.platform)
     models_lock = recipes.load_model_lock(recipe.models_lock)
-    for key in ("engine", "platform", "placement", "root", "recipe_sha256", "models_lock_sha256"):
+    for key in ("engine", "platform", "placement", "root", "models_lock_sha256"):
         if value[key] != getattr(plan, key):
             raise IntegrityError("install receipt identity differs")
+    if value["recipe_sha256"] != plan.recipe_sha256 and value["recipe_sha256"] != recipes.legacy_comfyui_recipe_digest(recipe):
+        raise IntegrityError("install receipt identity differs")
     if (value["schema"] != "astrid.engine-install.v1" or value["qualified"] is not False
             or value["status"] not in ("installing", "installed", "failed")
             or not isinstance(value["receipt_id"], str) or not 1 <= len(value["receipt_id"]) <= 256):
