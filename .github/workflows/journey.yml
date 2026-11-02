@@ -23,6 +23,16 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      direct_only:
+        description: Run only the three direct rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
+      direct_os:
+        description: Select one direct row for rehearsal (all, linux, macos, windows); full qualification still requires all nine rows
+        required: false
+        default: all
+        type: string
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -79,6 +89,16 @@ on:
         description: JSON object keyed by linux/macos/windows containing complete explicit M4-4a executor configs
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
+        type: string
+      direct_only:
+        description: Run only the three direct rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
+      direct_os:
+        description: Select one direct row for rehearsal (all, linux, macos, windows); full qualification still requires all nine rows
+        required: false
+        default: all
         type: string
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
@@ -164,6 +184,8 @@ jobs:
           OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs }}
+          DIRECT_ONLY: ${{ inputs.direct_only }}
+          DIRECT_OS: ${{ inputs.direct_os }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled }}
           M4_5_ONLY: ${{ inputs.m4_5_only }}
@@ -208,7 +230,13 @@ jobs:
               raise SystemExit("m4_4a_executor_configs must contain exactly linux, macos and windows")
           if not m4_5_only and any(not isinstance(value, dict) for value in executor_configs.values()):
               raise SystemExit("each M4-4a executor config must be a JSON object")
+          direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
+          direct_os = os.environ["DIRECT_OS"] or "all"
+          if direct_os not in {"all", "linux", "macos", "windows"}:
+              raise SystemExit("direct_os must be one of all, linux, macos, windows")
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
+          if (direct_only or direct_os != "all") and (backend_only or m4_5_only):
+              raise SystemExit("direct selection cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
           if m4_5_only and not m4_5_enabled:
               raise SystemExit("m4_5_only requires m4_5_enabled")
@@ -255,7 +283,10 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if backend_only:
+          if direct_only or direct_os != "all":
+              matrix = [row for row in matrix if row["mode"] == "direct"
+                        and (direct_os == "all" or row["os"] == direct_os)]
+          elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
@@ -387,7 +418,7 @@ jobs:
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain the matrix receipt even after a lifecycle failure
-        if: always()
+        if: always() && matrix.job_id != 'direct-windows'
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
@@ -395,6 +426,22 @@ jobs:
           # Keep the job-id directory in the artifact so merge-multiple cannot
           # overwrite nine identically named journey-result.json files.
           path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}
+          if-no-files-found: warn
+
+      - name: Retain allowlisted Windows direct receipt and bootstrap evidence
+        if: always() && matrix.job_id == 'direct-windows'
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: journey-receipt-${{ matrix.job_id }}
+          # The root ownership record keeps run-root-relative receipt paths resolvable in the artifact.
+          path: |
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/tst-b1-owner.json
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/release0-to-release1/journey-result.json
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/before-cleanup/receipt.json
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/before-cleanup/release0-bootstrap.log
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/after-cleanup/receipt.json
+            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/after-cleanup/release0-bootstrap.log
           if-no-files-found: warn
 
   release2:
@@ -691,7 +738,7 @@ jobs:
         with:
           pattern: journey-receipt-*
           path: receipts
-          merge-multiple: true
+          merge-multiple: false
       - name: Aggregate the exact Release-1 receipt matrix
         if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
         shell: bash

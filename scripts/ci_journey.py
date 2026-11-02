@@ -827,11 +827,57 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
     return version_path, data, version
 
 
+def stage_windows_release0_evidence(evidence: Path, run_root: Path, phase: str) -> None:
+    """Bind the unmodified bootstrap bytes and observed exit to each cleanup phase."""
+    if sys.platform != "win32":
+        return
+    result_path = evidence / "journey-result.json"
+    if not result_path.is_file() or result_path.is_symlink():
+        return
+    try:
+        recorded = read_json(result_path)
+        if recorded.get("scenario") != "release0-to-release1":
+            return
+        destination = evidence.parent / "evidence-upload" / phase
+        destination.mkdir(parents=True, exist_ok=True)
+        previous = recorded.get("failure_diagnostics", {}).get("before-cleanup", {}).get("release0_bootstrap", {})
+        exit_code = previous.get("exit_code")
+        exit_path = evidence / "release0" / "release0-bootstrap-exit.json"
+        if exit_path.is_file() and not exit_path.is_symlink():
+            exit_code = read_json(exit_path).get("exit_code")
+        source = evidence / "release0" / "release0-bootstrap.log"
+        if not source.is_file() or source.is_symlink():
+            source = destination.parent / "before-cleanup" / "release0-bootstrap.log"
+        target = destination / "release0-bootstrap.log"
+        item = {"status": "unavailable", "path": None, "exit_code": exit_code, "sha256": None}
+        if source.is_file() and not source.is_symlink():
+            if source != target:
+                shutil.copyfile(source, target)
+            digest = hashlib.sha256()
+            with target.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            item.update(status="captured", path=target.relative_to(run_root).as_posix(),
+                        sha256=digest.hexdigest())
+        recorded.setdefault("failure_diagnostics", {})[phase] = {"release0_bootstrap": item}
+        write_json(result_path, recorded)
+        write_json(destination / "receipt.json", recorded)
+    except Exception as exc:
+        print(f"Windows bootstrap evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
 def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600) -> str:
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
+    if sys.platform == "win32" and log.name == "release0-bootstrap.log" and log.parent.name == "release0":
+        try:
+            write_json(log.parent / "release0-bootstrap-exit.json", {"exit_code": result.returncode})
+        except OSError as exc:
+            print(f"Journey bootstrap exit capture failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
     output = log.read_text(encoding="utf-8-sig", errors="replace")
     if result.returncode:
         raise RuntimeError(f"{log.name}: exit {result.returncode}; see {log}")
@@ -1188,6 +1234,7 @@ def execute(args: argparse.Namespace) -> dict:
             try:
                 result = _execute_owned(args, root, data, evidence, sentinel, birth)
             finally:
+                stage_windows_release0_evidence(evidence, run_root, "before-cleanup")
                 if not getattr(args, "retain_for_next_leg", False):
                     result_path = evidence / "journey-result.json"
                     try:
@@ -1219,6 +1266,8 @@ def execute(args: argparse.Namespace) -> dict:
                                         cleanup_error=f"{type(cleanup_error).__name__}: {cleanup_error}")
                         write_json(result_path, recorded)
                         raise
+                    finally:
+                        stage_windows_release0_evidence(evidence, run_root, "after-cleanup")
                 else:
                     result_path = evidence / "journey-result.json"
                     if result_path.is_file():
@@ -1227,6 +1276,7 @@ def execute(args: argparse.Namespace) -> dict:
                         write_json(result_path, recorded)
                     if "result" in locals():
                         result["final_cleanup"] = "retained-for-next-leg"
+                    stage_windows_release0_evidence(evidence, run_root, "after-cleanup")
             return result
 
 
