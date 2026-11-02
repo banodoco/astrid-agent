@@ -130,7 +130,12 @@ def test_bounded_typed_media_is_optional_until_gpu_output_proof():
 
 def test_provider_ledger_rows_are_networked_and_credential_dispositions_match():
     """B9.4: provider declarations cannot silently become offline executors."""
-    host = GenericPackHost(pack_roots=[Path("astrid/packs")])
+    # Source reconciliation requires the checkout's config path; the default
+    # packaged resource does not carry a checkout-relative source inventory.
+    host = GenericPackHost(
+        pack_roots=[Path("astrid/packs")],
+        capability_matrix=Path("config/astrid-beta-capabilities.json"),
+    )
     records = host.discover()
     provider_rows = [record for record in records if record.adapter.family == "provider"]
     assert provider_rows
