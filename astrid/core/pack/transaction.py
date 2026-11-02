@@ -396,6 +396,11 @@ def _retained_build_records(root: Path, admissions: Mapping[str, Any], group_rev
                     or not isinstance(source_digest, str) or len(source_digest) != 64
                     or any(c not in "0123456789abcdef" for c in source_digest)):
                 raise ValueError("invalid retained admission identity")
+            # .build is intentionally excluded from pack_digest, so bind the
+            # held browser admission back to the source tree it originally
+            # named before trusting its artifact bytes.
+            if pack_digest(root / pack_id) != source_digest:
+                raise ValueError("retained source digest differs from its admission")
             request = {"version": 1, "pack_id": pack_id, "transaction_id": tx,
                        "stage_root": str(root / pack_id), "source_digest": source_digest,
                        "entry": artifact["entry"], "extension_manifest": artifact["extensionManifest"],
@@ -710,7 +715,8 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                    release_pins: Mapping[str, PinFacts] | None = None,
                    python_packages: Mapping[str, str] | None = None,
                    refresh: Refresh | None = None,
-                   consent: Callable[[Mapping[str, Any]], bool] | None = None) -> GroupResult:
+                   consent: Callable[[Mapping[str, Any]], bool] | None = None,
+                   boundary: Callable[[str], None] | None = None) -> GroupResult:
     """Restore selected packs from the generation retired by the active commit.
 
     The rollback itself is a complete atomic collection publication. Current
@@ -721,12 +727,13 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
     """
     root = _root(packs_root)
     ids = tuple(sorted(set(pack_ids)))
-    if not ids or any(not isinstance(i, str) or not _ID.fullmatch(i) for i in ids):
+    if not ids or any(not isinstance(i, str) or not _ID.fullmatch(i) or i == "personal" for i in ids):
         raise PackInstallError("invalid_request", "Select one or more valid pack IDs to roll back.")
     expected_pins = {key: dict(value) for key, value in (expected_pins or {}).items()}
     host_selected = {key: dict(value) for key, value in (selected or {}).items()}
     pins = {key: dict(value) for key, value in (release_pins or {}).items()}
     packages = dict(python_packages or {})
+    mark = boundary or (lambda phase: None)
     with group_read_lock(root, exclusive=True):
         state = _state(root)
         active_tx = state["transaction_id"]
@@ -738,6 +745,17 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             raise PackInstallError("uncommitted_generation", "The active generation has no prior committed generation to restore.")
         current_paths = _paths(root)
         prior_paths = _paths(prior)
+        # Verify the retired generation's held admission files and every
+        # artifact byte before copying any restored pack or constructing a
+        # new admission epoch. Historical source pins are preserved, subject
+        # to any currently applicable authoritative release pin below.
+        prior_build_records = _retained_build_records(prior, prior_state["admissions"], prior_state["revision"])
+        prior_facts = {}
+        for pack_id, path in prior_paths.items():
+            if pack_id == "personal":
+                continue
+            prior_manifest, prior_item = _facts(path)
+            prior_facts[pack_id] = (prior_manifest, prior_item, read_pin(path / "PIN") if (path / "PIN").is_file() else {})
         tombstones = set(state["removals"])
         before = {}
         for pack_id in ids:
@@ -750,6 +768,12 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             if current_pin and prior_pin and (current_pin.get("source") != prior_pin.get("source")
                                                or current_pin.get("origin") != prior_pin.get("origin")):
                 raise PackInstallError("rollback_conflict", f"Pack {pack_id} has conflicting source pins; refusing rollback.")
+            if pack_id in prior_facts and pack_id in pins:
+                historical_pin = prior_facts[pack_id][2]
+                applicable = pins[pack_id]
+                if (historical_pin.get("commit") != applicable.get("commit")
+                        or historical_pin.get("digest") != applicable.get("digest")):
+                    raise PackInstallError("pin_mismatch", f"Historical pack {pack_id} does not match the applicable release pin; refusing rollback.")
             before[pack_id] = {"current": current_pin, "restore": prior_pin,
                                "current_digest": pack_digest(current_paths[pack_id]) if pack_id in current_paths else None,
                                "restore_digest": pack_digest(prior_paths[pack_id]) if pack_id in prior_paths else None}
@@ -764,6 +788,7 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
         identity = (candidate.stat().st_dev, candidate.stat().st_ino)
         published = False
         try:
+            mark("preparing")
             _tree(root)
             shutil.copytree(root, candidate, dirs_exist_ok=True)
             candidate.chmod(0o700)
@@ -780,19 +805,31 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     # M1-16 build-hook admission/artifact records belong to the
                     # generation and must follow it through rollback.
                     shutil.copytree(prior_paths[pack_id], target)
+                    prior_manifest, prior_item, prior_pin_fact = prior_facts[pack_id]
+                    if (pack_digest(target) != prior_item["observed_digest"]
+                            or (read_pin(target / "PIN") if (target / "PIN").is_file() else {}) != prior_pin_fact
+                            or validate_canonical_pack(target, expected_pack_id=pack_id).definition.to_dict() != prior_manifest):
+                        raise PackInstallError("pin_mismatch", f"Historical source/PIN facts for {pack_id} changed during rollback.")
                     if pack_id in prior_state["admissions"]:
                         prior_admission = prior_state["admissions"][pack_id]
                         artifact = prior_admission.get("artifact_manifest")
                         if isinstance(artifact, dict):
+                            next(record for record in prior_build_records if record[0]["pack_id"] == pack_id)
+                            # Keep the exact canonical manifest bytes that were
+                            # verified in the retired generation. Only the
+                            # transaction/revision record receives a new epoch.
                             rollback_request = {"pack_id": pack_id, "source_digest": prior_admission["sourceDigest"],
                                                 "transaction_id": tx}
                             committed_revision = state["revision"] + 1
+                            manifest_bytes = _json(artifact)
+                            manifest_path = target / ".build" / f'{rollback_request["source_digest"]}.artifact-manifest.json'
+                            if manifest_path.read_bytes() != manifest_bytes:
+                                raise PackInstallError("incomplete_artifacts", f"Retained artifact manifest for {pack_id} changed during rollback.")
                             metadata = _artifact_metadata(rollback_request, artifact, committed_revision)
-                            for name, encoded in metadata.items():
-                                (target / ".build" / name).write_bytes(encoded)
+                            (target / ".build" / "admission.json").write_bytes(metadata["admission.json"])
                             admissions[pack_id] = {"packId": pack_id, "sourceDigest": rollback_request["source_digest"],
                                 "digest": artifact["digest"],
-                                "artifactManifestDigest": hashlib.sha256(metadata[f'{rollback_request["source_digest"]}.artifact-manifest.json']).hexdigest(),
+                                "artifactManifestDigest": hashlib.sha256(manifest_bytes).hexdigest(),
                                 "artifact_manifest": artifact, "committedRevision": committed_revision, "transactionId": tx}
                         else:
                             admissions[pack_id] = prior_admission
@@ -814,6 +851,16 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                                         import_violations=check_pack_imports(path, contract=contract, manifest=manifest))
                 if not checked["ok"]:
                     raise PackInstallError(checked["code"], checked["reason"], compatibility=checked)
+            # Capture and verify the complete candidate source/PIN snapshot,
+            # then verify every retained admission against exact bytes before
+            # writing state or exposing the directory.
+            candidate_facts = {}
+            for pack_id, path in _paths(candidate).items():
+                if pack_id == "personal":
+                    continue
+                candidate_facts[pack_id] = (pack_digest(path), read_pin(path / "PIN") if (path / "PIN").is_file() else {})
+            _retained_build_records(candidate, admissions, state["revision"] + 1)
+            mark("prepared")
             changed_ids = tuple(sorted(set(ids) | (set(state["refresh"]["changed_ids"]) if state["refresh"] else set())))
             new_state = {"version": 1, "revision": state["revision"] + 1, "transaction_id": tx,
                          "removals": sorted(tombstones), "admissions": admissions,
@@ -822,6 +869,20 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             _write_state(candidate, new_state)
             _sync_tree(candidate)
             _sync_directory(retired)
+            mark("before_swap")
+            for pack_id, (digest, pin) in candidate_facts.items():
+                path = candidate / pack_id
+                if pack_digest(path) != digest or (read_pin(path / "PIN") if (path / "PIN").is_file() else {}) != pin:
+                    raise PackInstallError("pin_mismatch", "Rollback source/PIN changed after preparation; retry the rollback.")
+            for pack_id in ids:
+                if pack_id in prior_facts and pack_id not in tombstones and pack_id in prior_paths:
+                    _manifest, item, pin = prior_facts[pack_id]
+                    path = candidate / pack_id
+                    if pack_digest(path) != item["observed_digest"] or (read_pin(path / "PIN") if (path / "PIN").is_file() else {}) != pin:
+                        raise PackInstallError("pin_mismatch", f"Historical source/PIN facts for {pack_id} changed before rollback publication.")
+            _retained_build_records(candidate, admissions, new_state["revision"])
+            if _state(candidate) != new_state:
+                raise PackInstallError("invalid_state", "Prepared rollback record changed before publication; retry the transaction.")
             _publish(candidate, root)
             published = True
             _sync_directory(retired)
