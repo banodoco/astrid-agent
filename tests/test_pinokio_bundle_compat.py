@@ -11,7 +11,6 @@ from scripts import ci_journey_r24_push_admission as push_admission
 from scripts import pinokio_bundle_compat as compat
 from scripts import pinokio_linux_mode_actions as mode_actions
 
-
 CURRENT = {
     "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
     "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
