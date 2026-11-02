@@ -15,6 +15,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -68,6 +69,8 @@ PACK_HOST_READINESS_EVIDENCE_NAMES = frozenset(
     for observation in PACK_HOST_READINESS_OBSERVATIONS
     for suffix in (".json", "-service-pack-host.log", "-runtime-service.log", "-generic-host.log")
 )
+AUTHENTIC_R0_CAPTURE_LEG = "authentic-r0-capture"
+AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES = 256 * 1024
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
@@ -587,6 +590,341 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
+def _capture_sensitive_name(name: object) -> bool:
+    """Identify a field name whose value must not leave a capture runner."""
+    text = str(name).replace("-", "_").casefold()
+    return credential_name(text) or any(token in text for token in (
+        "token", "secret", "password", "credential", "authorization", "private_key",
+        "apikey", "api_key", "cookie", "bearer", "signature",
+    ))
+
+
+def _sanitize_capture_value(value: object, *, key: str = "") -> object:
+    """Keep structural observations while refusing credential-bearing values."""
+    if _capture_sensitive_name(key):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {str(name): _sanitize_capture_value(item, key=str(name))
+                for name, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_capture_value(item, key=key) for item in value]
+    if isinstance(value, str):
+        return windows._redact_pack_host_text(value)
+    return value
+
+
+def _capture_path_label(path: Path, run_root: Path) -> str:
+    """Use a stable run-root alias so receipts expose no account-specific home."""
+    try:
+        return "$RUN_ROOT" + ("" if path == run_root else "/" + path.relative_to(run_root).as_posix())
+    except ValueError:
+        home = Path.home()
+        try:
+            return "$HOME" + ("" if path == home else "/" + path.relative_to(home).as_posix())
+        except ValueError:
+            return windows._redact_pack_host_text(str(path))
+
+
+def _capture_path_kind(path: Path) -> str:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return "absent"
+    except OSError as exc:
+        return f"error:{type(exc).__name__}"
+    if path.is_symlink():
+        return "symlink"
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    return "other"
+
+
+def capture_path_chain(path: Path, run_root: Path, *, limit: int = 32) -> dict:
+    """Capture an explicit lstat/readlink chain instead of resolving aliases silently."""
+    current = path
+    chain = []
+    for _ in range(limit):
+        kind = _capture_path_kind(current)
+        row = {"path": _capture_path_label(current, run_root), "kind": kind}
+        if kind != "symlink":
+            chain.append(row)
+            return {"status": "observed" if kind != "absent" else "absent", "chain": chain}
+        try:
+            target = os.readlink(current)
+        except OSError as exc:
+            row["readlink_error"] = type(exc).__name__
+            chain.append(row)
+            return {"status": "error", "chain": chain}
+        row["target"] = windows._redact_pack_host_text(target)
+        chain.append(row)
+        target_path = Path(target)
+        current = target_path if target_path.is_absolute() else current.parent / target_path
+    return {"status": "error", "error": "symlink-chain-limit", "chain": chain}
+
+
+def _capture_symlink_inventory(paths: tuple[Path, ...], run_root: Path, *, limit: int = 128) -> dict:
+    """Inventory every observed run-owned link until a declared bounded limit."""
+    links: list[dict] = []
+    errors: list[str] = []
+    truncated = False
+    for base in paths:
+        if not base.exists() or base.is_symlink():
+            continue
+        try:
+            iterator = os.walk(base, followlinks=False)
+            for directory, names, files in iterator:
+                for name in [*names, *files]:
+                    candidate = Path(directory) / name
+                    if not candidate.is_symlink():
+                        continue
+                    links.append(capture_path_chain(candidate, run_root))
+                    if len(links) >= limit:
+                        truncated = True
+                        break
+                if truncated:
+                    break
+        except OSError as exc:
+            errors.append(f"{_capture_path_label(base, run_root)}:{type(exc).__name__}")
+        if truncated:
+            break
+    return {"status": "partial" if truncated else "observed", "limit": limit,
+            "truncated": truncated, "links": links, "errors": errors}
+
+
+def _capture_regular_file(source: Path, destination: Path, run_root: Path) -> dict:
+    """Copy a bounded, text-sanitized definition while binding its original bytes by hash."""
+    chain = capture_path_chain(source, run_root)
+    if chain["status"] != "observed":
+        return {"status": chain["status"], "path": _capture_path_label(source, run_root), "chain": chain["chain"]}
+    if not source.is_file() or source.is_symlink():
+        return {"status": "unavailable", "path": _capture_path_label(source, run_root),
+                "reason": "not-a-regular-file", "chain": chain["chain"]}
+    try:
+        raw = source.read_bytes()
+        text = raw[-AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES:].decode("utf-8", errors="replace")
+        sanitized = windows._redact_pack_host_text(text)
+        destination.write_text(sanitized, encoding="utf-8")
+    except OSError as exc:
+        return {"status": "error", "path": _capture_path_label(source, run_root),
+                "error": type(exc).__name__, "chain": chain["chain"]}
+    return {"status": "captured", "path": _capture_path_label(source, run_root),
+            "chain": chain["chain"], "raw_sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw), "truncated": len(raw) > AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+            "artifact": destination.name}
+
+
+def _capture_manager_state_sanitized(destination: Path, run_root: Path, root: Path, data: Path) -> dict:
+    """Record manager state without serializing live environment values or task arguments."""
+    value: dict[str, object] = {"platform": sys.platform}
+    try:
+        if sys.platform == "linux":
+            unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+            command: list[str] = ["systemctl", "--user", "show", "astrid.service",
+                                  "--property=LoadState,FragmentPath,ActiveState,SubState"]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            value.update(status="observed", command=command, returncode=completed.returncode,
+                         stdout=windows._redact_pack_host_text(completed.stdout),
+                         stderr=windows._redact_pack_host_text(completed.stderr),
+                         unit_path=_capture_path_label(unit, run_root))
+        elif sys.platform == "darwin":
+            unit = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
+            command = ["launchctl", "print", f"gui/{os.getuid()}/haus.astrid.runtime"]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            value.update(status="observed", command=command, returncode=completed.returncode,
+                         stdout=windows._redact_pack_host_text(completed.stdout),
+                         stderr=windows._redact_pack_host_text(completed.stderr),
+                         unit_path=_capture_path_label(unit, run_root))
+        elif sys.platform == "win32":
+            code = (
+                "$ErrorActionPreference='Stop'; $t=Get-ScheduledTask -TaskName 'Astrid Runtime' "
+                "-ErrorAction SilentlyContinue; if ($null -eq $t) { @{status='absent'} | "
+                "ConvertTo-Json -Compress } else { @{status='observed'; info=@($t | Get-ScheduledTaskInfo | "
+                "Select-Object TaskName,LastRunTime,LastTaskResult,NumberOfMissedRuns); task_path=$t.TaskPath} | "
+                "ConvertTo-Json -Depth 5 -Compress }")
+            env = {key: item for key, item in os.environ.items() if key.casefold() != "psmodulepath"}
+            command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                       "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " + code]
+            completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30, check=False)
+            parsed = None
+            try:
+                parsed = json.loads(completed.stdout) if completed.stdout.strip() else None
+            except json.JSONDecodeError:
+                pass
+            value.update(status="observed" if completed.returncode == 0 else "error", command="Get-ScheduledTaskInfo",
+                         returncode=completed.returncode, result=_sanitize_capture_value(parsed),
+                         stderr=windows._redact_pack_host_text(completed.stderr),
+                         service_definition="Export-ScheduledTask is captured separately")
+        else:
+            value.update(status="unavailable", error="unsupported-platform")
+    except (OSError, subprocess.SubprocessError) as exc:
+        value.update(status="error", error=type(exc).__name__)
+    write_json(destination, value)
+    return value
+
+
+def _capture_windows_service_definition(destination: Path) -> dict:
+    code = (
+        "$ErrorActionPreference='Stop'; Export-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'")
+    env = {key: item for key, item in os.environ.items() if key.casefold() != "psmodulepath"}
+    command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+               "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " + code]
+    try:
+        completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"status": "error", "error": type(exc).__name__}
+    if completed.returncode:
+        return {"status": "error", "returncode": completed.returncode,
+                "stderr": windows._redact_pack_host_text(completed.stderr)}
+    raw = completed.stdout.encode("utf-8")
+    destination.write_text(windows._redact_pack_host_text(completed.stdout), encoding="utf-8")
+    return {"status": "captured", "path": "Task Scheduler exported task definition",
+            "raw_sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
+            "artifact": destination.name}
+
+
+def _capture_posix_process_tree(pid: int) -> dict:
+    try:
+        completed = subprocess.run(["ps", "-ww", "-axo", "pid=,ppid=,lstart=,command="],
+                                   capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"status": "error", "error": type(exc).__name__, "records": []}
+    if completed.returncode:
+        return {"status": "error", "returncode": completed.returncode, "records": []}
+    all_rows: dict[int, dict] = {}
+    for line in completed.stdout.splitlines():
+        match = re.match(r"^\s*(\d+)\s+(\d+)\s+(.{24})\s(.*)$", line)
+        if match is None:
+            continue
+        candidate, parent, born, command = match.groups()
+        value = int(candidate)
+        all_rows[value] = {"pid": value, "parent_pid": int(parent), "native_birth": born.strip(),
+                           "command_sha256": hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest(),
+                           "runtime_owner_form": _runtime_owner_command(command)}
+    selected = {pid}
+    changed = True
+    while changed:
+        changed = False
+        for row in all_rows.values():
+            if row["parent_pid"] in selected and row["pid"] not in selected:
+                selected.add(row["pid"])
+                changed = True
+    records = [all_rows[item] for item in sorted(selected) if item in all_rows]
+    return {"status": "observed" if any(row["pid"] == pid for row in records) else "absent",
+            "root_pid": pid, "records": records}
+
+
+def _capture_windows_process_tree(pid: int, native_identity: object) -> dict:
+    code = r'''$ErrorActionPreference='Stop'
+$sha=[Security.Cryptography.SHA256]::Create()
+try {
+  $all=@(Get-CimInstance Win32_Process)
+  $wanted=New-Object 'System.Collections.Generic.HashSet[int]'
+  [void]$wanted.Add([int]''' + str(pid) + r''')
+  $changed=$true
+  while ($changed) { $changed=$false; foreach ($p in $all) {
+    if ($wanted.Contains([int]$p.ParentProcessId) -and $wanted.Add([int]$p.ProcessId)) { $changed=$true }
+  }}
+  @{status='observed';root_pid=''' + str(pid) + r''';records=@($all | Where-Object {$wanted.Contains([int]$_.ProcessId)} | ForEach-Object {
+    $line=[string]$_.CommandLine
+    @{pid=[int]$_.ProcessId;parent_pid=[int]$_.ParentProcessId;
+      creation_date=if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')} else {$null};
+      executable_path=[string]$_.ExecutablePath;command_length=$line.Length;
+      command_sha256=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($line))).Replace('-','').ToLowerInvariant())}
+  })} | ConvertTo-Json -Depth 5 -Compress
+} finally {$sha.Dispose()}'''
+    env = {key: item for key, item in os.environ.items() if key.casefold() != "psmodulepath"}
+    command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+               "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " + code]
+    try:
+        completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30, check=False)
+        value = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        return {"status": "error", "error": type(exc).__name__, "records": []}
+    if not isinstance(value, dict):
+        return {"status": "error", "error": "malformed-process-tree", "records": []}
+    value = _sanitize_capture_value(value)
+    value["native_root_identity"] = native_identity if isinstance(native_identity, str) else None
+    if value["native_root_identity"] is None:
+        value["native_birth_status"] = "unavailable"
+    else:
+        value["native_birth_status"] = "observed"
+    return value
+
+
+def capture_authentic_r0_observation(output: Path, *, phase: str, run_root: Path,
+                                     root: Path, data: Path, version: dict | None) -> dict:
+    """Produce a bounded, non-secret observation of a live or cleaned R0 installation."""
+    phase_root = output / phase
+    phase_root.mkdir(parents=True, exist_ok=True)
+    fields: dict[str, object] = {}
+    version_root = Path(version["root"]) if isinstance(version, dict) and isinstance(version.get("root"), str) else None
+    interesting = {
+        "program_root": root,
+        "data_root": data,
+        "selection": root / "current",
+        "program_service_env": root / "service-env.json",
+    }
+    if version_root is not None:
+        interesting.update(version_root=version_root, version_service_env=version_root / "service-env.json")
+        profile = version.get("profile")
+        if isinstance(profile, str) and profile:
+            interesting["profile"] = Path(profile)
+    fields["paths"] = {name: capture_path_chain(path, run_root) for name, path in interesting.items()}
+    fields["symlink_inventory"] = _capture_symlink_inventory((root, data), run_root)
+    discovery_path = data / "runtime" / "discovery.json"
+    if discovery_path.is_file() and not discovery_path.is_symlink():
+        try:
+            discovery = _sanitize_capture_value(read_json(discovery_path))
+            write_json(phase_root / "discovery.json", discovery)
+            fields["discovery"] = {"status": "captured", "artifact": "discovery.json",
+                                   "raw_sha256": hashlib.sha256(discovery_path.read_bytes()).hexdigest()}
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            discovery = None
+            fields["discovery"] = {"status": "error", "error": type(exc).__name__}
+    else:
+        discovery = None
+        fields["discovery"] = {"status": "absent"}
+    fields["service_manager"] = _capture_manager_state_sanitized(
+        phase_root / "manager-state.json", run_root, root, data)
+    if sys.platform == "win32":
+        fields["service_definition"] = _capture_windows_service_definition(phase_root / "service-definition.txt")
+    else:
+        unit = (data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+                if sys.platform == "linux" else
+                data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist")
+        fields["service_definition"] = _capture_regular_file(
+            unit, phase_root / "service-definition.txt", run_root)
+    pid = discovery.get("pid") if isinstance(discovery, dict) else None
+    if type(pid) is not int or pid <= 0:
+        fields["owners"] = {"status": "unavailable", "reason": "discovery-pid-unavailable"}
+        fields["process_tree"] = {"status": "unavailable", "reason": "discovery-pid-unavailable"}
+    else:
+        try:
+            owners = runtime_processes(data)
+            owner_rows = getattr(owners, "details", [])
+            owner_value = {"status": "observed", "selected_pid": pid, "raw_owner_pids": list(owners),
+                           "records": _sanitize_capture_value(owner_rows),
+                           "task_action": _sanitize_capture_value(getattr(owners, "task_action", None))}
+            write_json(phase_root / "owners.json", owner_value)
+            fields["owners"] = {"status": "captured", "artifact": "owners.json"}
+            native_identity = next((row.get("native_identity") for row in owner_rows
+                                    if isinstance(row, dict) and row.get("pid") == pid),
+                                   discovery.get("process_birth_id") if isinstance(discovery, dict) else None)
+        except Exception as exc:
+            native_identity = discovery.get("process_birth_id") if isinstance(discovery, dict) else None
+            fields["owners"] = {"status": "error", "error": type(exc).__name__}
+        tree = (_capture_windows_process_tree(pid, native_identity) if sys.platform == "win32"
+                else _capture_posix_process_tree(pid))
+        write_json(phase_root / "process-tree.json", tree)
+        fields["process_tree"] = {"status": tree.get("status", "error"), "artifact": "process-tree.json"}
+        fields["native_birth"] = {"status": "observed" if native_identity else "unavailable",
+                                  "value": native_identity if isinstance(native_identity, str) else None}
+    write_json(phase_root / "observation.json", {"phase": phase, "fields": fields})
+    return {"phase": phase, "fields": fields}
+
+
 def retain_named_evidence(evidence: Path, phase: str) -> None:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent.parent / "evidence-upload" / phase
@@ -785,7 +1123,7 @@ def run_scope(run_root: Path, root: Path, data: Path, leg: str, *,
                 not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", ""))) or
                 owner.get("root") != str(root) or owner.get("data_root") != str(data)):
             raise ValueError("Existing journey roots lack this run's ownership record")
-    elif leg == "fresh-install" or leg in VERSION_JUMP_LEGS:
+    elif leg in {"fresh-install", AUTHENTIC_R0_CAPTURE_LEG, *VERSION_JUMP_LEGS}:
         if run_root.exists() and any(run_root.iterdir()):
             raise ValueError("A fresh journey requires an empty run-owned directory")
         run_root.mkdir(parents=True, exist_ok=True)
@@ -2334,9 +2672,167 @@ def execute(args: argparse.Namespace) -> dict:
         raise
 
 
+def _capture_release0_sources(args: argparse.Namespace, refs: dict[str, str]) -> dict:
+    """Bind capture execution to immutable source checkouts named by frozen R0."""
+    checkouts = {
+        "agent": args.release0_agent_checkout,
+        "runtime": args.release0_runtime_checkout,
+    }
+    observed = {}
+    for name, checkout in checkouts.items():
+        if checkout.is_symlink() or not checkout.is_dir():
+            raise ValueError(f"frozen release-0 {name} checkout must be a non-symlink directory")
+        source = git_source(checkout)
+        if source["sha"] != refs[name]:
+            raise ValueError(f"frozen release-0 {name} checkout differs from fixture provenance")
+        observed[name] = source
+    return observed
+
+
+def _capture_file_hashes(root: Path) -> dict[str, str]:
+    """Bind every published capture artifact without self-hashing its receipt."""
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not path.is_symlink() and path.name != "capture-receipt.json"
+    }
+
+
+def execute_authentic_r0_capture(args: argparse.Namespace) -> dict:
+    """Install and observe frozen R0 only; this route can never invoke an R1 update."""
+    run_root, root, data, evidence = run_scope(
+        args.run_root, args.root, args.data_root, AUTHENTIC_R0_CAPTURE_LEG,
+    )
+    output = run_root / "capture-upload"
+    output.mkdir(parents=True, exist_ok=True)
+    receipt_path = output / "capture-receipt.json"
+    result: dict[str, object] = {
+        "schema_version": 1,
+        "receipt_kind": "authentic-post-r0-capture",
+        "evidence_class": "capture-only",
+        "qualification": {"eligible": False,
+                          "reason": "This capture installs and seeds frozen R0 only; no R1 update was invoked."},
+        "status": "not-run",
+        "os": journey_os_label(),
+        "runner": runner_identity(),
+        "run_roots": {"program": "$RUN_ROOT/program", "data": "$RUN_ROOT/data"},
+        "operations": ["release0-bootstrap", "release0-service-start", "release0-api-seed"],
+        "r1_update_invoked": False,
+        "release0_fixture": None,
+        "release0_source_checkouts": None,
+        "installed_tuple": None,
+        "observations": [],
+        "cleanup": {"status": "not-run"},
+        "limitations": [
+            "A successful capture is an authentic R0 observation, not a Release-1 journey result.",
+            "Only redacted, bounded service definitions and non-secret process/discovery fields are published.",
+        ],
+    }
+    version: dict | None = None
+    capture_error: Exception | None = None
+    try:
+        assert_runner_identity(result["runner"])
+        if __package__:
+            from . import journey_version_jumps as jumps
+        else:
+            import journey_version_jumps as jumps
+        fixture, release0_manifest, fixture_receipt = jumps.verified_release0_fixture(args.release0_fixture)
+        result["release0_fixture"] = fixture_receipt
+        refs = fixture_receipt["sources"]
+        if not isinstance(refs, dict):
+            raise RuntimeError("frozen release-0 fixture did not retain source refs")
+        result["release0_source_checkouts"] = _capture_release0_sources(args, refs)
+        assert_host_available("fresh-install", root, data)
+        with without_provider_credentials(), isolated_environment(run_root, root, data):
+            jumps.bootstrap_release0(fixture, release0_manifest, args.shell, evidence / "release0", root, data)
+            jumps.start_direct_runtime(evidence / "release0")
+            wait_ready(data)
+            version_path, selected_data, version = installation(root, data)
+            if selected_data != data or jumps.installed_release(version) != 0:
+                raise RuntimeError("frozen release-0 bootstrap did not select release 0")
+            manifest = read_json(release0_manifest)
+            installed = selected_tuple(manifest, version)
+            result["installed_tuple"] = installed
+            assert_one_runtime(data, evidence / "release0")
+            result["observations"].append(capture_authentic_r0_observation(
+                output, phase="post-install", run_root=run_root, root=root, data=data, version=version))
+            jumps.direct_workspace(root, version, data, evidence / "release0-api-seed", "seed", {
+                "project": "tst-authentic-r0-capture", "generation": "release0",
+                "task_id": None, "create_project": True,
+            })
+            assert_one_runtime(data, evidence / "release0-api-seed")
+            result["observations"].append(capture_authentic_r0_observation(
+                output, phase="post-seed", run_root=run_root, root=root, data=data, version=version))
+            result["status"] = "captured"
+    except Exception as exc:
+        capture_error = exc
+        result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        try:
+            result["observations"].append(capture_authentic_r0_observation(
+                output, phase="failure", run_root=run_root, root=root, data=data, version=version))
+        except Exception as observation_error:
+            result["failure_observation_error"] = f"{type(observation_error).__name__}: {observation_error}"
+    finally:
+        try:
+            with isolated_environment(run_root, root, data):
+                if version is not None:
+                    result["observations"].append(capture_authentic_r0_observation(
+                        output, phase="before-cleanup", run_root=run_root, root=root, data=data, version=version))
+                    installed_cli(version, ["install", "--uninstall", "--root", str(root),
+                                            "--data-root", str(data)], evidence, "final-uninstall.log", timeout=1800)
+                    if (root / "current").exists() or runtime_processes(data):
+                        raise RuntimeError("run-owned release-0 installation remained after cleanup")
+                elif runtime_processes(data):
+                    raise RuntimeError("refusing residual cleanup while a Runtime owner remains live")
+                result["observations"].append(capture_authentic_r0_observation(
+                    output, phase="after-cleanup", run_root=run_root, root=root, data=data, version=version))
+                residuals = []
+                for target in (root, data, run_root / "home", run_root / "localappdata", run_root / "appdata"):
+                    if not target.exists():
+                        continue
+                    if target.is_symlink() or target.parent != run_root:
+                        raise RuntimeError("refusing unsafe residual cleanup outside the run-owned root")
+                    shutil.rmtree(target)
+                    residuals.append(_capture_path_label(target, run_root))
+                result["cleanup"] = {"status": "pass", "removed_run_owned_paths": residuals}
+        except Exception as cleanup_error:
+            result["cleanup"] = {"status": "failed", "error": f"{type(cleanup_error).__name__}: {cleanup_error}"}
+            result["status"] = "failed"
+            if capture_error is None:
+                result["error"] = result["cleanup"]["error"]
+        result["artifacts"] = _capture_file_hashes(output)
+        write_json(receipt_path, result)
+    return result
+
+
+def _authentic_r0_capture_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Capture provenance-bound, authentic post-R0 observations only")
+    parser.add_argument("--run-root", required=True, type=Path)
+    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument("--shell", required=True)
+    parser.add_argument("--fixture", required=True, type=Path)
+    parser.add_argument("--release0-agent-checkout", required=True, type=Path)
+    parser.add_argument("--release0-runtime-checkout", required=True, type=Path)
+    args = parser.parse_args(argv)
+    if sys.platform not in {"linux", "darwin", "win32"}:
+        parser.error("unsupported capture operating system")
+    if (sys.platform == "win32" and args.shell != "powershell.exe") or (
+            sys.platform != "win32" and args.shell != "sh"):
+        parser.error("capture shell does not match the observed operating system")
+    args.release0_fixture = args.fixture
+    result = execute_authentic_r0_capture(args)
+    if result.get("status") != "captured":
+        print("Authentic R0 capture failed; receipt is retained for diagnosis.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _shared_executor_main(argv: list[str]) -> int:
     """Explicit shared routes for the independently owned executable modules."""
     route = argv[0] if argv else ""
+    if route == "authentic-r0-capture":
+        return _authentic_r0_capture_main(argv[1:])
     if route == "m4-4b":
         route_parser = argparse.ArgumentParser(description="M4-4b local-process smoke")
         route_parser.add_argument("--checkout", required=True, type=Path)

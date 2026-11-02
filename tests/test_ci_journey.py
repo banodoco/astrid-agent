@@ -37,6 +37,34 @@ def test_tst_b1_production_uses_shipped_manifest_bytes_without_source_override(t
     assert not (tmp_path / "evidence").exists()
 
 
+def test_authentic_r0_capture_path_chain_and_sanitizer_preserve_structure(tmp_path):
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    target = run_root / "program" / "service-env.json"
+    target.parent.mkdir()
+    target.write_text('TOKEN=do-not-publish\nPATH=/run-owned/path\n', encoding="utf-8")
+    link = run_root / "selected-env"
+    link.symlink_to(target.relative_to(run_root))
+
+    chain = journey.capture_path_chain(link, run_root)
+    assert chain["status"] == "observed"
+    assert chain["chain"][0] == {
+        "path": "$RUN_ROOT/selected-env", "kind": "symlink", "target": "program/service-env.json",
+    }
+    assert chain["chain"][-1] == {"path": "$RUN_ROOT/program/service-env.json", "kind": "file"}
+    assert journey._sanitize_capture_value({"access_token": "do-not-publish", "path": "Bearer local"}) == {
+        "access_token": "<redacted>", "path": "Bearer <redacted>",
+    }
+
+
+def test_authentic_r0_capture_shared_route_does_not_select_release1_driver(monkeypatch):
+    calls = []
+    monkeypatch.setattr(journey, "_authentic_r0_capture_main", lambda argv: calls.append(argv) or 0)
+
+    assert journey.main(["--shared-executor", "authentic-r0-capture", "--fixture", "fixture"]) == 0
+    assert calls == [["--fixture", "fixture"]]
+
+
 def test_tst_b1_local_sources_require_explicit_test_mode(tmp_path, monkeypatch):
     app, shipped = app_checkout(tmp_path)
     with pytest.raises(ValueError, match="--source-override"):
