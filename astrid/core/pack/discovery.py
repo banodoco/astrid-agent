@@ -407,6 +407,7 @@ def discover_pack_metadata(
         elif previous[0].resolve() == path.resolve():
             if pack_id is not None:
                 pack_names[path.name] = (path, pack_id)
+            return None
         elif pack_id is not None and previous[1] is not None and pack_id != previous[1]:
             raise PackValidationError(
                 f"duplicate pack directory name {path.name!r} across {previous[0]} and {path}"
@@ -435,6 +436,54 @@ def discover_pack_metadata(
         )
 
     _LOGGER = logging.getLogger(__name__)
+
+    # The managed source state can identify its roots without opening their
+    # manifests. Reserve all such directory names (and the regular discovery
+    # roots) before active_source_inventory verifies any selected checkout.
+    try:
+        from astrid.core.pack.source_setup import active_sources
+
+        provisional_managed_sources = active_sources(verify=False)
+    except ImportError:
+        provisional_managed_sources = ()
+    provisional_roots: list[str | Path] = [loader.packs_root(), project_pack_root]
+    provisional_roots.extend(source.pack_root for source in provisional_managed_sources)
+    if scan is _default_discover_packs:
+        provisional_roots.append(Path.home() / "Astrid" / "packs")
+    if selected_personal_root is not None:
+        provisional_roots.append(selected_personal_root)
+    provisional_roots.extend(extra_pack_roots)
+    provisional_roots.extend(root for root in os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep) if root)
+    provisional_paths: dict[str, Path] = {}
+    provisional_scanned: set[Path] = set()
+    canonical_core = Path(loader.packs_root()).expanduser().resolve()
+    for raw_root in provisional_roots:
+        root = Path(raw_root).expanduser()
+        if not root.is_absolute():
+            root = Path(project_root) / root
+        root = root.resolve()
+        if root in provisional_scanned or not root.is_dir():
+            continue
+        provisional_scanned.add(root)
+        try:
+            children = (root,) if (root / "pack.yaml").is_file() else tuple(root.iterdir())
+        except OSError as exc:
+            _LOGGER.warning("skipping unreadable ownership root %s: %s", root, exc)
+            continue
+        for child in children:
+            if not child.is_dir() or child.name == "__pycache__":
+                continue
+            previous = provisional_paths.get(child.name)
+            if previous is None or previous.resolve() == child.resolve():
+                provisional_paths[child.name] = child
+                continue
+            if previous.resolve().parent == canonical_core or child.resolve().parent == canonical_core:
+                raise PackValidationError(
+                    f"pack {child.name!r} conflicts with a core pack across {previous} and {child}"
+                )
+            raise PackValidationError(
+                f"duplicate pack directory name {child.name!r} across {previous} and {child}"
+            )
 
     try:
         from astrid.core.pack.source_setup import active_source_inventory
@@ -465,6 +514,55 @@ def discover_pack_metadata(
         if not candidate.is_absolute():
             candidate = Path(project_root) / candidate
         return candidate.resolve()
+
+    def _admit_root_names(raw_root: str | Path, *, label: str) -> None:
+        """Reserve every directory basename before any manifest is opened."""
+        root = _resolve_pack_root(raw_root)
+        if not root.is_dir():
+            return
+        try:
+            children = (root,) if (root / "pack.yaml").is_file() else tuple(root.iterdir())
+        except OSError as exc:
+            _LOGGER.warning("skipping unreadable %s root %s: %s", label, root, exc)
+            return
+        for child in children:
+            if not child.is_dir() or child.name == "__pycache__":
+                continue
+            previous = _register_pack_name(child)
+            if previous is not None:
+                previous_root = previous[0].resolve().parent
+                current_root = child.resolve().parent
+                if previous_root != current_root:
+                    if (previous_root == _resolve_pack_root(loader.packs_root())
+                            or current_root == _resolve_pack_root(loader.packs_root())):
+                        raise PackValidationError(
+                            f"pack {child.name!r} conflicts with a core pack across {previous[0]} and {child}"
+                        )
+                    raise PackValidationError(
+                        f"duplicate pack directory name {child.name!r} across {previous[0]} and {child}"
+                    )
+
+    # Name-only ownership admission spans every selected root. This deliberately
+    # includes hidden, malformed, and manifestless directories; the loaders below
+    # may filter visibility or isolate a bad manifest only after this pass.
+    core_root_for_names = loader.packs_root()
+    name_roots: list[tuple[str | Path, str]] = [(core_root_for_names, "bundled")]
+    name_roots.append((project_pack_root, "project"))
+    if managed_inventory is not None:
+        name_roots.extend((source.pack_root, "managed") for source in managed_inventory.sources)
+    if scan is _default_discover_packs:
+        name_roots.append((Path.home() / "Astrid" / "packs", "extra"))
+    if selected_personal_root is not None:
+        name_roots.append((selected_personal_root, "extra"))
+    name_roots.extend((root, "extra") for root in extra_pack_roots)
+    name_roots.extend((root, "env") for root in os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep) if root)
+    admitted_name_roots: set[Path] = set()
+    for raw_root, label in name_roots:
+        canonical = _resolve_pack_root(raw_root)
+        if canonical in admitted_name_roots:
+            continue
+        admitted_name_roots.add(canonical)
+        _admit_root_names(canonical, label=label)
 
     def _scan_external_root(raw_root: str | Path, source_kind: str) -> None:
         from astrid.core.pack.transaction import group_read_lock

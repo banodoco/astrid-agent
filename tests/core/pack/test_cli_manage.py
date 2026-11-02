@@ -335,11 +335,10 @@ def test_duplicate_directory_name_refuses_discovery_and_real_list(
     make_pack(core.parent, "collision")
     make_pack(source.parent, "collision")
     source_manifest = source / "collision" / "pack.yaml"
-    expected_message = "duplicate pack directory name"
+    expected_message = "conflicts with a core pack"
     if duplicate_kind == "hidden":
         source_manifest.write_text(source_manifest.read_text().replace(
             "documentation:", "visibility: hidden\ndocumentation:"), encoding="utf-8")
-        expected_message = "conflicts with a core pack"
     elif duplicate_kind == "malformed":
         source_manifest.write_text("schema_version: [malformed\n", encoding="utf-8")
     else:
@@ -353,6 +352,51 @@ def test_duplicate_directory_name_refuses_discovery_and_real_list(
     assert packs_cli_main(["list"]) != 0
     captured = capsys.readouterr()
     assert expected_message in captured.err
+
+
+@pytest.mark.parametrize("core_kind", ["hidden", "malformed", "manifestless"])
+@pytest.mark.parametrize("external_route", ["extra", "env"])
+def test_bundled_name_ownership_precedes_manifest_reads_and_visibility(
+    tmp_path: Path, monkeypatch, capsys, core_kind: str, external_route: str
+) -> None:
+    from astrid.core.pack import loader
+    from astrid.core.pack._common import PackValidationError
+    from astrid.core.pack.discovery import discover_pack_metadata
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    core = tmp_path / "core" / "packs"
+    external = tmp_path / "external" / "packs"
+    make_pack(core.parent, "reserved")
+    make_pack(external.parent, "reserved")
+    core_manifest = core / "reserved" / "pack.yaml"
+    if core_kind == "hidden":
+        core_manifest.write_text(core_manifest.read_text(encoding="utf-8").replace(
+            "documentation:", "visibility: hidden\ndocumentation:"), encoding="utf-8")
+    elif core_kind == "malformed":
+        core_manifest.write_text("schema_version: [malformed\n", encoding="utf-8")
+    else:
+        core_manifest.unlink()
+
+    monkeypatch.setattr(loader, "packs_root", lambda: core)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
+    reads: list[Path] = []
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path: Path, *args, **kwargs):
+        if path.name in {"pack.yaml", "pack.yml", "pack.json"}:
+            reads.append(path)
+            raise AssertionError(f"manifest read before ownership admission: {path}")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    expected = "conflicts with a core pack"
+    with pytest.raises(PackValidationError, match=expected):
+        discover_pack_metadata(extra_pack_roots=(str(external),) if external_route == "extra" else ())
+    assert reads == []
+    assert packs_cli_main(["list"]) != 0
+    assert reads == []
+    assert expected in capsys.readouterr().err
 
 
 def test_personal_impostor_refuses_real_list(tmp_path: Path, monkeypatch, capsys) -> None:
