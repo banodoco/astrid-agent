@@ -69,8 +69,15 @@ def test_cancel_evidence_carries_complete_fence_and_unknown_stop():
 
     client.cancel("task-1", attempt_id="attempt-1", fence=3, lease_id="lease-1",
                   outputs=outputs, result=result, stop_observed=True)
-    observed_key = client.generated.calls[1][2]["idempotency_key"]
+    observed_payload = client.generated.calls[1][2]
+    observed_key = observed_payload["idempotency_key"]
     assert observed_key != pending_key
+    # The transport preserves a positive observation supplied by an
+    # independent caller; the Agent's local cancellation paths above do not
+    # manufacture one from admission or cleanup state.
+    assert observed_payload["stop_observed"] is True
+    assert observed_payload["outputs"] == outputs
+    assert observed_payload["result"] == result
 
 
 def test_cancel_replay_reads_durable_result_after_observed_stop_clears_attempt():
