@@ -722,20 +722,24 @@ def _capture_manager_state_sanitized(destination: Path, run_root: Path, root: Pa
         if sys.platform == "linux":
             unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
             command: list[str] = ["systemctl", "--user", "show", "astrid.service",
-                                  "--property=LoadState,FragmentPath,ActiveState,SubState"]
+                                  "--property=LoadState,FragmentPath,ActiveState,SubState,MainPID"]
             completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            service_pid = next((int(value) for value in re.findall(r"(?m)^MainPID=(\d+)$", completed.stdout)
+                                if int(value) > 0), None)
             value.update(status="observed", command=command, returncode=completed.returncode,
                          stdout=windows._redact_pack_host_text(completed.stdout),
                          stderr=windows._redact_pack_host_text(completed.stderr),
-                         unit_path=_capture_path_label(unit, run_root))
+                         unit_path=_capture_path_label(unit, run_root), service_pid=service_pid)
         elif sys.platform == "darwin":
             unit = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
             command = ["launchctl", "print", f"gui/{os.getuid()}/haus.astrid.runtime"]
             completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            service_pid = next((int(value) for value in re.findall(r"(?m)^\s*pid = (\d+)", completed.stdout)
+                                if int(value) > 0), None)
             value.update(status="observed", command=command, returncode=completed.returncode,
                          stdout=windows._redact_pack_host_text(completed.stdout),
                          stderr=windows._redact_pack_host_text(completed.stderr),
-                         unit_path=_capture_path_label(unit, run_root))
+                         unit_path=_capture_path_label(unit, run_root), service_pid=service_pid)
         elif sys.platform == "win32":
             code = (
                 "$ErrorActionPreference='Stop'; $t=Get-ScheduledTask -TaskName 'Astrid Runtime' "
@@ -864,6 +868,7 @@ def capture_authentic_r0_observation(output: Path, *, phase: str, run_root: Path
         "program_root": root,
         "data_root": data,
         "selection": root / "current",
+        "program_install_record": root / "install.json",
         "program_service_env": root / "service-env.json",
         "run_selection_owner": run_root / "astrid-install.json",
         "home_selection_owner": data.parent / "home" / ".local" / "share" / "astrid-install.json",
@@ -876,7 +881,7 @@ def capture_authentic_r0_observation(output: Path, *, phase: str, run_root: Path
     fields["paths"] = {name: capture_path_chain(path, run_root) for name, path in interesting.items()}
     fields["symlink_inventory"] = _capture_symlink_inventory((root, data), run_root)
     owner_records = {}
-    for name in ("run_selection_owner", "home_selection_owner"):
+    for name in ("program_install_record", "run_selection_owner", "home_selection_owner"):
         source = interesting[name]
         owner_records[name] = _capture_regular_file(source, phase_root / f"{name}.json", run_root)
     fields["installer_owner_records"] = owner_records
@@ -926,6 +931,15 @@ def capture_authentic_r0_observation(output: Path, *, phase: str, run_root: Path
                 else _capture_posix_process_tree(pid))
         write_json(phase_root / "process-tree.json", tree)
         fields["process_tree"] = {"status": tree.get("status", "error"), "artifact": "process-tree.json"}
+        manager_pid = fields["service_manager"].get("service_pid") if isinstance(fields["service_manager"], dict) else None
+        if sys.platform in {"linux", "darwin"} and type(manager_pid) is int and manager_pid > 0:
+            manager_tree = _capture_posix_process_tree(manager_pid)
+            write_json(phase_root / "service-manager-process-tree.json", manager_tree)
+            fields["service_manager_process_tree"] = {
+                "status": manager_tree.get("status", "error"), "artifact": "service-manager-process-tree.json",
+            }
+        elif sys.platform in {"linux", "darwin"}:
+            fields["service_manager_process_tree"] = {"status": "unavailable", "reason": "manager-pid-unavailable"}
         fields["native_birth"] = {"status": "observed" if native_identity else "unavailable",
                                   "value": native_identity if isinstance(native_identity, str) else None}
     write_json(phase_root / "observation.json", {"phase": phase, "fields": fields})

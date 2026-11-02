@@ -68,6 +68,26 @@ def test_authentic_r0_capture_shared_route_does_not_select_release1_driver(monke
     assert calls == [["--fixture", "fixture"]]
 
 
+def test_authentic_r0_capture_manager_state_records_native_service_pid(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    unit = run_root / "home" / ".config" / "systemd" / "user" / "astrid.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Service]\n", encoding="utf-8")
+    data = run_root / "data"
+
+    class Completed:
+        returncode = 0
+        stdout = "LoadState=loaded\nMainPID=4242\n"
+        stderr = ""
+
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey.subprocess, "run", lambda *unused, **kwargs: Completed())
+    observed = journey._capture_manager_state_sanitized(tmp_path / "manager.json", run_root, run_root / "program", data)
+
+    assert observed["status"] == "observed"
+    assert observed["service_pid"] == 4242
+
+
 def test_authentic_r0_capture_executes_r0_seed_only_and_marks_receipt_ineligible(tmp_path, monkeypatch):
     run_root = tmp_path / "run"
     root, data, evidence = run_root / "program", run_root / "data", run_root / "evidence"

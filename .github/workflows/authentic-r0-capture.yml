@@ -204,9 +204,9 @@ jobs:
       - name: Capture frozen R0 only
         env:
           ASTRID_CI_EXPECTED_RUNNER: windows-2022
-          JOURNEY_LAUNCHER_PSEDITION: ${{ runner.os }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $env:JOURNEY_LAUNCHER_PSEDITION = $PSVersionTable.PSEdition
           $root = Join-Path $env:RUNNER_TEMP 'authentic-r0-capture-windows'
           python -u driver/scripts/ci_journey.py --shared-executor authentic-r0-capture `
             --run-root $root --root (Join-Path $root program) --data-root (Join-Path $root data) --shell powershell.exe `
