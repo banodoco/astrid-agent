@@ -781,3 +781,13 @@ class CredentialBoundaryTests(unittest.TestCase):
         redact_credentials(self.creds, log)
         self.assertEqual(log.read_text(), 'PASS 31 binds\n')
         self.assertEqual(log.stat().st_mtime_ns, before)
+
+
+class RestartOwnerTests(unittest.TestCase):
+    def test_capture_without_restarted_owner_is_a_gate_error(self):
+        from installed_canary.journey import _owner_or_refuse
+        with self.assertRaises(GateError) as caught:
+            _owner_or_refuse(None)
+        self.assertIn('restart did not complete', str(caught.exception))
+        marker = object()
+        self.assertIs(_owner_or_refuse(marker), marker)

@@ -32,6 +32,12 @@ def restart_and_validate(ctx, worker_path, *, start, verify, stop, list_capabili
         raise
 
 
+def _owner_or_refuse(owner):
+    # If the restarted Runtime never became ready, capture records this instead of an AttributeError.
+    require(owner is not None, 'restart-capture', 'owner', 'restarted Runtime owner unavailable; restart did not complete')
+    return owner
+
+
 def owner_client(endpoint, credential_path, client_cls, resolve=None):
     """Build the owner client exactly as the product does: the installed SDK decodes the canonical
     credential file (JSON {"token": ...} or a bare token) into the bearer token. Never pass file text."""
@@ -144,7 +150,7 @@ def run(ctx):
         restart_and_validate(ctx, worker_path,
             start=start_and_wait,
             verify=lambda: backend.verify(version, ctx.install / 'data', realm),
-            stop=stop_on_failure, list_capabilities=lambda **kwargs: owner.list_capabilities(**kwargs))
+            stop=stop_on_failure, list_capabilities=lambda **kwargs: _owner_or_refuse(owner).list_capabilities(**kwargs))
         h3(ctx, owner)
     finally:
         # Only this selected test installation is stopped, including preparation failures.
