@@ -414,6 +414,24 @@ jobs:
             echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
             echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Establish Linux user service manager
+        if: matrix.job_id == 'direct-linux'
+        shell: bash
+        timeout-minutes: 3
+        run: bash agent/.github/workflows/journey-linux-manager.sh
+      - name: Establish Windows Task Scheduler readiness
+        if: matrix.job_id == 'direct-windows'
+        shell: powershell
+        timeout-minutes: 3
+        run: ./agent/.github/workflows/journey-windows-manager.ps1
+      - name: Retain hosted service-manager prerequisite diagnostics
+        if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: journey-manager-${{ matrix.job_id }}
+          path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
+          if-no-files-found: warn
       - name: Freeze and validate candidate inputs
         shell: bash
         env:
