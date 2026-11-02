@@ -162,7 +162,7 @@ class ProviderHTTP:
             if path == "/v1/pods":
                 return reply(self.pods)
             return reply(self.pods[0] if self.pods else {}, 200 if self.pods else 404)
-        assert host == "pod-cpu-19123.proxy.runpod.net", host
+        assert host == "pod-cpu-8000.proxy.runpod.net", host
         if path == "/health":
             return reply({"ok": True, "protocol": 1})
         if path == "/jobs" and method == "POST":
@@ -286,6 +286,10 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert setup(preferences).ok
         retained = host._target_bindings.provider
         changed = {**preferences, "budget_cap_usd": 1.5}
+        mismatch = client.invoke_result("runpod.status", kind="action", project=None,
+            inputs={"target_policy": json.dumps({"kind": "runpod", "engine": "comfyui", "preferences": changed})},
+            wait=True, timeout_seconds=90, poll_seconds=0.02, read_managed_outputs=False)
+        assert not mismatch.ok and "runpod.setup" in str(mismatch.to_dict())
         assert setup(changed).ok
         assert host._target_bindings.provider is not retained and retained.lease_owner.closed
         assert not provider.events, "setup observed provider stock"

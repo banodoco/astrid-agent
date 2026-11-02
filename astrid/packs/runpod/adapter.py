@@ -605,7 +605,10 @@ class TargetProviderBindings:
             provider = self.provider if self.provider is not None and json.loads(self.signature)[0] == policy["kind"] else None
             if (operation != "setup" and provider is not None
                     and json.loads(self.signature)[2] != policy["preferences"]):
-                raise ValueError("target operation preferences differ from the retained provider owner")
+                raise ValueError(
+                    "target operation preferences differ from the retained provider owner; "
+                    "invoke runpod.setup to replace preferences after releasing any owned lease"
+                )
         if provider is None:
             provider = self.get(kind=policy["kind"], engine=policy["engine"], preferences=policy["preferences"])
         elif operation == "setup" and json.loads(self.signature)[2] != policy["preferences"]:
