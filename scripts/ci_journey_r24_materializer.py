@@ -31,9 +31,10 @@ except ImportError:
 
 PINOKIOD_REF = "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
 PTERM_REF = "5be43718701c448b43daf0ce51d8935f170065bb"
-# This is a provisional product fix, not a published tuple pin.  It is
-# accepted only by the bounded install-only diagnostic below.
-PROVISIONAL_PINOKIO_REF = "dbc837992be9cf2b489bd96b495add366261a575"
+# This is the final exact product candidate for the provisional diagnostic,
+# not a published tuple pin.  It is accepted only by the bounded install-only
+# diagnostic below.
+PROVISIONAL_PINOKIO_REF = "7955800419fc92b11e553d6f7acb7613090617e6"
 CONFIRMATION = "R24_LIVE_CURRENT_TUPLE"
 PORT = 42000
 TASK_DURATION_SECONDS = 300

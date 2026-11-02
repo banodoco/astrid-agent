@@ -37,7 +37,7 @@ def test_provisional_pinokio_binding_is_exact_and_install_only():
         pinokio_ref=materializer.PROVISIONAL_PINOKIO_REF,
         mode="fully-local", install_only=True,
     )
-    assert candidate["pinokio"] == "dbc837992be9cf2b489bd96b495add366261a575"
+    assert candidate["pinokio"] == "7955800419fc92b11e553d6f7acb7613090617e6"
     assert candidate["app"] == materializer.PUBLISHED_CANDIDATE["app"]
     assert candidate["agent"] == materializer.PUBLISHED_CANDIDATE["agent"]
     assert candidate["runtime"] == materializer.PUBLISHED_CANDIDATE["runtime"]
@@ -50,6 +50,11 @@ def test_provisional_pinokio_binding_is_exact_and_install_only():
     with pytest.raises(materializer.MaterializerError, match="allowlisted provisional"):
         materializer.provisional_candidate(
             pinokio_ref="b" * 40, mode="fully-local", install_only=True,
+        )
+    with pytest.raises(materializer.MaterializerError, match="allowlisted provisional"):
+        materializer.provisional_candidate(
+            pinokio_ref="dbc837992be9cf2b489bd96b495add366261a575",
+            mode="fully-local", install_only=True,
         )
 
 
@@ -398,7 +403,7 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "r25-linux-mode-actions" in raw
     assert mode_actions.MODE_PRODUCER_REF in raw
     assert "REQUESTED_MODE" in raw
-    assert "dbc837992be9cf2b489bd96b495add366261a575" in raw
+    assert "7955800419fc92b11e553d6f7acb7613090617e6" in raw
     assert "REQUESTED_PINOKIO_REF" in raw
     assert "REQUESTED_INSTALL_ONLY" in raw
     assert "runner_ref:" in registered
