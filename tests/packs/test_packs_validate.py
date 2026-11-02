@@ -39,6 +39,10 @@ def _write(path: Path, content: str) -> None:
 
 
 def _mirror_first_party_packs_root(dest: Path) -> None:
+    # Mirror the canonical asset declaration together with its selected files.
+    # A directory-only copy silently loses the engine resource authority.
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_FIRST_PARTY_PACKS_ROOT / "engine-index.json", dest / "engine-index.json")
     for child in sorted(_FIRST_PARTY_PACKS_ROOT.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
