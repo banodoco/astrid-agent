@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.util import process as _process
-from .birth_identity import _current_linux_scope, birth_ids_match
+from .birth_identity import birth_ids_match
 
 SHIM_MARKER = "Astrid managed command shim"
 PATH_HINT = 'Add ~/.local/bin to your PATH to run astrid from anywhere: export PATH="$HOME/.local/bin:$PATH"'
@@ -193,7 +193,7 @@ def publish_runtime_runner(root: Path) -> Path:
     custody_attach_source = (
         "import hashlib,hmac,secrets,socket\n"
         + "\n".join(inspect.getsource(function) for function in (
-            _current_linux_scope, birth_ids_match, _custody_identity_matches,
+            birth_ids_match, _custody_identity_matches,
         ))
         + '''
 def _custody_send(stream, value):
