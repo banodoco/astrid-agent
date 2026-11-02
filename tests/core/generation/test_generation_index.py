@@ -1,17 +1,31 @@
 from pathlib import Path
+from types import SimpleNamespace
 
-from astrid.core.generation import listing
 from scripts import gen_capability_index
 
 
-def test_generation_section_uses_shared_catalog(monkeypatch):
-    monkeypatch.setattr(listing, "catalog_rows", lambda: [{
-        "id": "example-model", "kind": "image", "mode": "t2i",
-        "backend": "local", "availability": "fixture-only", "reason": "test | reason",
-    }])
-    section = "\n".join(gen_capability_index._generation_section())
-    assert "| example-model | image | t2i | local | fixture-only | test \\| reason |" in section
-    assert "astrid generate list" in section
+def test_capability_index_excludes_installed_external_pack_rows(monkeypatch, tmp_path):
+    rows = [
+        SimpleNamespace(
+            id="bundled.render",
+            short_description="Bundled executor",
+            description="",
+            metadata={"pack_root": gen_capability_index.PACKS_ROOT / "rendering"},
+        ),
+        SimpleNamespace(
+            id="personal.render",
+            short_description="Personal executor",
+            description="",
+            metadata={"pack_root": tmp_path / "personal"},
+        ),
+    ]
+    monkeypatch.setattr(
+        gen_capability_index,
+        "load_executors",
+        lambda: SimpleNamespace(list=lambda: rows),
+    )
+
+    assert gen_capability_index._executor_rows() == [("bundled.render", "Bundled executor")]
 
 
 def test_committed_capability_index_is_generated_from_registry():

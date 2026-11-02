@@ -35,6 +35,7 @@ def _fixture_repo(tmp_path: Path, *, host_entry: str = "video-editor") -> Path:
         "id": "video_editing",
         "name": "Video Editing",
         "version": "1.0.0",
+        "pack_api": "1.0",
         "dependencies": {"npm": ["react@18.3.1"]},
         "ui": {
             "video-editor": {

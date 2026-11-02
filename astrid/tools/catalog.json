@@ -20,11 +20,11 @@
       "id": "video-editor",
       "manifest": {
         "path": "pack.yaml",
-        "sha256": "53ad0207af00cd880a3e8261c03f9caab69cc59b471064d141b4e8c36c125216"
+        "sha256": "0143298b9b2e297c578d1de0405bea495c26854b5dd239f8d421100a24a398b0"
       },
       "pack_id": "video_editing",
       "pack_version": "1.0.0",
-      "release_sha256": "b5acb2197122161fa78bd6687b3b6f03dc588d574d9a57fade26dbd51000657c",
+      "release_sha256": "7322682848f4a67aade580a2e468cfcfdc6bf4ff080a125072a5d6a29341d07c",
       "resources": [],
       "target": "astrid"
     }
