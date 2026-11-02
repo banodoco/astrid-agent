@@ -304,6 +304,50 @@ def test_tst_b1_hosted_runner_label_requires_matching_os_and_raw_image_fields(mo
         journey.assert_runner_identity(journey.runner_identity())
 
 
+@pytest.mark.parametrize("label", ["macos-14", "macos-15"])
+def test_tst_b1_macos_hosted_runner_identity(monkeypatch, label):
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", label)
+    monkeypatch.setenv("RUNNER_OS", "macOS")
+    monkeypatch.setenv("ImageOS", label.replace("-", ""))
+    monkeypatch.setenv("ImageVersion", "20261028.1")
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    journey.assert_runner_identity(journey.runner_identity())
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="disagrees with observed"):
+        journey.assert_runner_identity(journey.runner_identity())
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setenv("RUNNER_OS", "Linux")
+    with pytest.raises(RuntimeError, match="RUNNER_OS"):
+        journey.assert_runner_identity(journey.runner_identity())
+    monkeypatch.setenv("RUNNER_OS", "macOS")
+    for field in ("RUNNER_OS", "ImageOS", "ImageVersion"):
+        with monkeypatch.context() as missing:
+            missing.delenv(field)
+            with pytest.raises(RuntimeError, match=field):
+                journey.assert_runner_identity(journey.runner_identity())
+
+
+@pytest.mark.parametrize("job_id,mode,leg", [
+    ("direct-macos", "direct", "release0-to-release1"),
+    ("pinokio-backend-macos", "pinokio-backend", "fresh-install"),
+    ("pinokio-fully-local-macos", "pinokio-fully-local", "fresh-install"),
+])
+def test_tst_b1_macos15_matrix_job_reaches_candidate_checks(tmp_path, monkeypatch, job_id, mode, leg):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program",
+                              data_root=run_root / "data", leg=leg, shell="sh",
+                              job_id=job_id, mode=mode)
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    for key, value in {"ASTRID_CI_EXPECTED_RUNNER": "macos-15", "RUNNER_OS": "macOS",
+                       "ImageOS": "macos15", "ImageVersion": "20261028.1"}.items():
+        monkeypatch.setenv(key, value)
+    def reached_candidate_checks(_args):
+        raise RuntimeError("reached candidate checks")
+    monkeypatch.setattr(journey, "candidate_checkouts", reached_candidate_checks)
+    with pytest.raises(RuntimeError, match="reached candidate checks"):
+        journey.execute(args)
+
+
 def test_tst_b1_runner_mismatch_fails_before_host_or_installer(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     args = argparse.Namespace(run_root=run_root, root=run_root / "program",
@@ -430,3 +474,182 @@ def test_tst_b1_rejects_missing_foreign_or_duplicate_runtime_owner(tmp_path, mon
         journey.assert_one_runtime(tmp_path)
     monkeypatch.setattr(journey, "runtime_processes", lambda data: [4123])
     journey.assert_one_runtime(tmp_path)
+
+
+def test_failure_retains_install_and_manager_before_cleanup_and_preserves_primary(tmp_path, monkeypatch, capsys):
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="fresh-install", shell="sh", retain_for_next_leg=False)
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    real_run = journey.subprocess.run
+    manager_state = ["active"]
+    def fake_run(argv, *args, **kwargs):
+        if argv[0] == "systemctl":
+            return SimpleNamespace(returncode=0, stdout=f"ActiveState={manager_state[0]}\n", stderr="")
+        return real_run(argv, *args, **kwargs)
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    log = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs" / "install.log"
+    def failed_journey(*unused):
+        root.mkdir()
+        (root / "current").write_text("v1")
+        log.parent.mkdir(parents=True)
+        log.write_text("real installer detail\n")
+        evidence = run_root / "evidence" / "fresh-install"
+        journey.write_json(evidence / "journey-result.json", {"status": "fail", "error": "ValueError: primary"})
+        (evidence / "unrelated-secret.txt").write_text("exclude")
+        raise ValueError("primary")
+    monkeypatch.setattr(journey, "_execute_owned", failed_journey)
+    monkeypatch.setattr(journey, "installation", lambda *unused: (None, data, {"python": "python"}))
+    def failed_cleanup(*unused, **kwargs):
+        log.unlink()
+        manager_state[0] = "inactive"
+        raise RuntimeError("cleanup")
+    monkeypatch.setattr(journey, "installed_cli", failed_cleanup)
+    with pytest.raises(ValueError, match="primary"):
+        journey.execute(args)
+    output = capsys.readouterr().err
+    assert output.index("Journey failed: ValueError: primary") < output.index("Journey cleanup failed: RuntimeError: cleanup")
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    assert receipt["error"] == "ValueError: primary"
+    assert receipt["cleanup_error"] == "RuntimeError: cleanup"
+    assert receipt["final_cleanup"] == "fail"
+    before = receipt["failure_diagnostics"]["before-cleanup"]
+    assert before["install_log"]["status"] == "captured"
+    assert (run_root / before["install_log"]["path"]).read_text() == "real installer detail\n"
+    assert before["service_manager"]["status"] == "captured"
+    assert before["service_manager"]["observation_status"] == "observed"
+    assert journey.read_json(run_root / before["service_manager"]["path"])["stdout"] == "ActiveState=active\n"
+    assert not (run_root / "evidence" / "evidence-upload" / "before-cleanup" / "unrelated-secret.txt").exists()
+
+
+def test_failure_diagnostics_records_unavailable_install_and_manager_error(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+                              leg="fresh-install", shell="sh")
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: (_ for _ in ()).throw(ValueError("preflight")))
+    monkeypatch.setattr(journey.subprocess, "run", lambda *unused, **kwargs: SimpleNamespace(
+        returncode=1, stdout="", stderr="manager unavailable"))
+    with pytest.raises(ValueError, match="preflight"):
+        journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    before = receipt["failure_diagnostics"]["before-cleanup"]
+    assert before["install_log"] == {"status": "unavailable", "path": None}
+    assert before["service_manager"]["observation_status"] == "error"
+    assert before["service_manager"]["error"] == "manager command exited 1"
+    assert journey.read_json(run_root / before["service_manager"]["path"])["stderr"] == "manager unavailable"
+
+
+def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+                              leg="fresh-install", shell="sh", retain_for_next_leg=False)
+    monkeypatch.setattr(journey, "assert_host_available", lambda leg, *unused: None if leg != "cleanup" else
+                        (_ for _ in ()).throw(RuntimeError("cleanup only")))
+    def successful_journey(*unused):
+        journey.write_json(run_root / "evidence" / "fresh-install" / "journey-result.json", {"status": "pass"})
+        return {"status": "pass"}
+    monkeypatch.setattr(journey, "_execute_owned", successful_journey)
+    with pytest.raises(RuntimeError, match="cleanup only"):
+        journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert receipt["cleanup_error"] == "RuntimeError: cleanup only"
+    assert "before-cleanup" in receipt["failure_diagnostics"]
+
+
+def test_sentinel_cleanup_failure_does_not_replace_lifecycle_error(tmp_path, monkeypatch, capsys):
+    process = SimpleNamespace(pid=123, poll=lambda: None,
+                              terminate=lambda: (_ for _ in ()).throw(RuntimeError("sentinel cleanup")))
+    monkeypatch.setattr(journey.subprocess, "Popen", lambda *unused, **kwargs: process)
+    monkeypatch.setattr(journey, "process_birth", lambda *unused: "birth")
+    monkeypatch.setattr(journey, "sentinel_alive", lambda *unused: True)
+    evidence = tmp_path / "evidence" / "fresh-install"
+    journey.write_json(evidence / "journey-result.json", {"status": "fail", "error": "ValueError: primary"})
+    with pytest.raises(ValueError, match="primary"):
+        with journey.sentinel_process(tmp_path, evidence):
+            raise ValueError("primary")
+    assert "Journey sentinel cleanup failed: RuntimeError: sentinel cleanup" in capsys.readouterr().err
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["error"] == "ValueError: primary"
+    assert receipt["sentinel_cleanup_error"] == "RuntimeError: sentinel cleanup"
+
+
+def test_sentinel_setup_failure_records_failure_diagnostics(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+                              leg="fresh-install", shell="sh")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "process_birth", lambda *unused: None)
+    with pytest.raises(RuntimeError, match="sentinel process birth"):
+        journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert "sentinel process birth" in receipt["error"]
+    assert "before-cleanup" in receipt["failure_diagnostics"]
+
+
+def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp_path):
+    """Run the checked-in config program and require direct-only to retain the full gate."""
+    import subprocess
+    import sys
+    import textwrap
+
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text(encoding="utf-8")
+    config_step = workflow.split("      - id: config\n", 1)[1]
+    program = textwrap.dedent(config_step.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+    (tmp_path / "driver").symlink_to(journey.ROOT, target_is_directory=True)
+    output = tmp_path / "output"
+    candidate = {key: char * 40 for key, char in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    env = dict(os.environ, CANDIDATE=json.dumps(candidate), DRIVER_AGENT_REF="e" * 40,
+               WORKFLOW_REPOSITORY="banodoco/astrid-agent",
+               OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
+               STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
+               M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
+               M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
+               M4_6_ENABLED="false", M4_6_CANDIDATE="", GITHUB_OUTPUT=str(output))
+
+    def config(direct_only, **overrides):
+        output.write_text("", encoding="utf-8")
+        return subprocess.run([sys.executable, "-c", program], cwd=tmp_path,
+                              env=dict(env, DIRECT_ONLY=direct_only, **overrides), text=True, capture_output=True)
+
+    def matrix(direct_only, **overrides):
+        proc = config(direct_only, **overrides)
+        assert proc.returncode == 0, proc.stderr
+        values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+        return json.loads(values["matrix"])["include"]
+
+    unrestricted = matrix("false")
+    assert len(unrestricted) == 9
+    assert {row["job_id"] for row in unrestricted} == {
+        f"{mode}-{os_name}" for mode in ("direct", "pinokio-backend", "pinokio-fully-local")
+        for os_name in ("macos", "linux", "windows")
+    }
+    expected_direct = {
+        ("direct-linux", "direct", "ubuntu-24.04", "release0-to-release1"),
+        ("direct-macos", "direct", "macos-15", "release0-to-release1"),
+        ("direct-windows", "direct", "windows-2022", "release0-to-release1"),
+    }
+    assert {(row["job_id"], row["mode"], row["runner"], row["leg"])
+            for row in unrestricted if row["mode"] == "direct"} == expected_direct
+    gate = workflow.split("      - name: Aggregate the exact Release-1 receipt matrix\n", 1)[1].split("      - name:", 1)[0]
+    assert "if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'" in gate
+    assert "--aggregate-release1" in gate
+
+    rows = matrix("true")
+    assert len(rows) == 3
+    assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
+    assert workflow.count("      direct_only:\n") == 2
+    assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
+
+    backend_rows = matrix("false", M4_4A_BACKEND_ONLY="true")
+    assert {row["job_id"] for row in backend_rows} == {
+        "pinokio-backend-linux", "pinokio-backend-macos", "pinokio-backend-windows"
+    }
+    for override in ({"M4_4A_BACKEND_ONLY": "true"}, {"M4_5_ONLY": "true"}):
+        proc = config("true", **override)
+        assert proc.returncode != 0
+        assert "direct_only cannot be combined" in proc.stderr

@@ -29,6 +29,11 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      direct_only:
+        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -86,6 +91,11 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      direct_only:
+        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -127,7 +137,7 @@ on:
 
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -233,6 +243,7 @@ jobs:
           OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || 'bbba620e3d89eeff8021417f365e6ea584203105' }}
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
+          DIRECT_ONLY: ${{ inputs.direct_only || false }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
           M4_5_ONLY: ${{ inputs.m4_5_only || false }}
@@ -277,7 +288,10 @@ jobs:
               raise SystemExit("m4_4a_executor_configs must contain exactly linux, macos and windows")
           if not m4_5_only and any(not isinstance(value, dict) for value in executor_configs.values()):
               raise SystemExit("each M4-4a executor config must be a JSON object")
+          direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
+          if direct_only and (backend_only or m4_5_only):
+              raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
           if m4_5_only and not m4_5_enabled:
               raise SystemExit("m4_5_only requires m4_5_enabled")
@@ -324,7 +338,9 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if backend_only:
+          if direct_only:
+              matrix = [row for row in matrix if row["mode"] == "direct"]
+          elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
@@ -457,16 +473,61 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Retain the matrix receipt even after a lifecycle failure
+      - name: Validate the named lifecycle evidence artifact boundary
+        id: evidence_boundary
         if: always()
+        shell: pwsh
+        run: |
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
+          $allowedNames = @(
+            'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'install-bootstrap.log', 'update-bootstrap.log', 'start.log',
+            'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
+            'service-manager-prerequisite.log', 'direct-service-ownership.log',
+            'runtime-owner-processes.json', 'runtime-service-runtime.log',
+            'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
+            'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
+            'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
+          )
+          $maxArtifactBytes = 49000000
+          # Reserve 1 KiB per file for the stored ZIP entry and central directory.
+          $estimatedArtifactBytes = 0L
+          $receiptCount = 0
+          if (Test-Path -LiteralPath $evidenceRoot) {
+            foreach ($file in Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force) {
+              $relative = [IO.Path]::GetRelativePath($evidenceRoot, $file.FullName).Replace('\', '/')
+              if ($relative -notmatch '^(before-cleanup|after-cleanup)/([^/]+)$') {
+                throw "Unexpected staged evidence path: $relative"
+              }
+              $name = $Matches[2]
+              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$') {
+                throw "Unexpected staged evidence filename: $relative"
+              }
+              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Staged evidence must be a regular file: $relative"
+              }
+              if ($name -eq 'journey-result.json') { $receiptCount++ }
+              $estimatedArtifactBytes += [long]$file.Length + 1024
+            }
+          }
+          if ($receiptCount -eq 0) {
+            throw "No staged journey-result.json receipt exists under $evidenceRoot"
+          }
+          if ($estimatedArtifactBytes -ge $maxArtifactBytes) {
+            throw "Named journey artifact estimate is $estimatedArtifactBytes bytes; limit is below $maxArtifactBytes bytes"
+          }
+          Write-Host "Validated named lifecycle artifact estimate: $estimatedArtifactBytes bytes (< $maxArtifactBytes)."
+      - name: Retain only the named lifecycle evidence after a lifecycle failure
+        if: always() && steps.evidence_boundary.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
           name: journey-receipt-${{ matrix.job_id }}
-          # Keep the job-id directory in the artifact so merge-multiple cannot
-          # overwrite nine identically named journey-result.json files.
-          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}
+          # The collector stages only allowlisted names in these two phase folders.
+          # Keep the job-id directory in the artifact to avoid receipt collisions.
+          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
           if-no-files-found: warn
+          compression-level: 0
 
   release2:
     if: needs.config.outputs.m4_5_enabled == 'true'

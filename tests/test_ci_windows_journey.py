@@ -575,3 +575,102 @@ def test_non_powershell_child_keeps_explicit_environment(tmp_path, monkeypatch):
 
     assert captured["env"] is inherited
     assert inherited == {"PSModulePath": "caller-value", "KEEP_ME": "explicit"}
+
+
+@pytest.mark.parametrize(
+    ("case", "response", "exit_code"),
+    [
+        ("absent", {"status": "absent", "error": {
+            "type": "Microsoft.PowerShell.Cmdletization.Cim.CimJobException",
+            "fully_qualified_error_id": "CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask",
+            "message": "No matching task", "hresult": -2146233088, "category": "ObjectNotFound"}}, 0),
+        ("present", {"status": "present", "tasks": [
+            {"path": "\\", "executables": [r"C:\journey\program\python.exe"]}]}, 0),
+        ("error", {"status": "error", "error": {
+            "type": "System.UnauthorizedAccessException", "fully_qualified_error_id": "AccessDenied",
+            "message": "Access denied", "hresult": -2147024891, "category": "PermissionDenied"}}, 1),
+    ], ids=["absent", "present", "powershell-error"])
+def test_windows_scheduled_task_preflight_classification(tmp_path, monkeypatch, capsys, case, response, exit_code):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
+    def fake_run(argv, **kwargs):
+        assert argv[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
+        script = argv[-1]
+        assert "Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop" in script
+        assert "CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask" in script
+        assert "[System.Management.Automation.ErrorCategory]::ObjectNotFound" in script
+        assert "SilentlyContinue" not in script
+        assert script.count("exit 0") == 2 and "exit 1" in script
+        assert kwargs["capture_output"] and kwargs["timeout"] == 30
+        return subprocess.CompletedProcess(argv, exit_code, json.dumps(response).encode(), b"diagnostic stderr")
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    if case == "error":
+        with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+            journey.scheduled_task_preflight("fresh-install")
+    else:
+        assert journey.scheduled_task_preflight("fresh-install") == response
+    evidence = json.loads((tmp_path / "preflight-scheduled-task-fresh-install.json").read_text())
+    assert evidence["status"] == case
+    assert evidence["observation"] == response
+    assert evidence["exit_code"] == exit_code
+    assert evidence["stderr"] == "diagnostic stderr"
+    line = capsys.readouterr().out.strip()
+    prefix = "Scheduled Task preflight (fresh-install): "
+    assert line.startswith(prefix)
+    assert json.loads(line[len(prefix):]) == evidence
+
+
+def test_windows_scheduled_task_preflight_rejects_inconsistent_process_result(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
+    monkeypatch.setattr(journey.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a[0], 1, b'{"status":"absent"}', b"query failed"))
+    with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+        journey.scheduled_task_preflight("fresh-install")
+    evidence = json.loads((tmp_path / "preflight-scheduled-task-fresh-install.json").read_text())
+    assert evidence["status"] == "error"
+    assert evidence["protocol_error"] == "Unexpected query result or exit code"
+    assert evidence["stderr"] == "query failed"
+
+
+def test_windows_preflight_refuses_existing_task_and_allows_only_owned_nonfresh(tmp_path, monkeypatch):
+    monkeypatch.setattr(shared_journey.sys, "platform", "win32")
+    monkeypatch.setattr(shared_journey, "program_root", lambda: tmp_path / "default" / "program")
+    monkeypatch.setattr(shared_journey, "runtime_processes", lambda data: [])
+    root, data = Path(r"C:\journey\program"), tmp_path / "data"
+    observation = {"status": "present", "tasks": [
+        {"path": "\\", "executables": [r"C:\journey\program\python.exe"]}]}
+    monkeypatch.setattr(journey, "scheduled_task_preflight", lambda leg: observation)
+    with pytest.raises(RuntimeError, match="outside this journey"):
+        shared_journey.assert_host_available("fresh-install", root, data)
+    shared_journey.assert_host_available("stale-update", root, data)
+    observation["tasks"][0]["executables"].append(r"C:\other\python.exe")
+    with pytest.raises(RuntimeError, match="outside this journey"):
+        shared_journey.assert_host_available("stale-update", root, data)
+
+
+def test_windows_journey_success_returns_zero(tmp_path, monkeypatch):
+    monkeypatch.setattr(shared_journey.sys, "platform", "win32")
+    monkeypatch.setattr(shared_journey, "execute", lambda args: {"status": "pass"})
+    assert shared_journey.main([
+        "--leg", "fresh-install", "--app-checkout", str(tmp_path),
+        "--run-root", str(tmp_path / "run"), "--root", str(tmp_path / "run" / "program"),
+        "--data-root", str(tmp_path / "run" / "data"), "--shell", "powershell.exe",
+    ]) == 0
+    monkeypatch.setitem(sys.modules, "ci_journey", shared_journey)
+    monkeypatch.setattr(sys, "argv", ["ci_windows_journey.py", "journey", "--leg", "fresh-install",
+                                  "--app-checkout", str(tmp_path), "--run-root", str(tmp_path / "run"),
+                                  "--root", str(tmp_path / "run" / "program"),
+                                  "--data-root", str(tmp_path / "run" / "data")])
+    assert journey.main() == 0
+
+
+def test_windows_scheduled_task_preflight_records_timeout_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 30, output=b"partial output", stderr=b"partial error")
+    monkeypatch.setattr(journey.subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+        journey.scheduled_task_preflight("fresh-install")
+    evidence = json.loads((tmp_path / "preflight-scheduled-task-fresh-install.json").read_text())
+    assert evidence["status"] == "error" and evidence["exit_code"] is None
+    assert evidence["stdout"] == "partial output" and evidence["stderr"] == "partial error"
+    assert evidence["process_error"].startswith("TimeoutExpired:")
