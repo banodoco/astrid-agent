@@ -783,4 +783,4 @@ def test_default_parent_inventory_skips_legacy_folder_orchestrator_policy(tmp_pa
     assert set(relevant) == {child_id, parent_id}
     assert relevant[child_id]['kind'] == 'executor'
     assert relevant[parent_id]['kind'] == 'orchestrator'
-    assert relevant[parent_id]['source'] == str(pack / 'pack.yaml')
+    assert relevant[parent_id]['source'] == str((pack / 'pack.yaml').relative_to(project))
