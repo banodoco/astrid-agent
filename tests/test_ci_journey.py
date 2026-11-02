@@ -149,6 +149,97 @@ def test_authentic_r0_capture_executes_r0_seed_only_and_marks_receipt_ineligible
     assert (run_root / "capture-upload" / "capture-receipt.json").is_file()
 
 
+def _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, raw: bytes | None):
+    run_root = tmp_path / "run"
+    root, data, evidence = run_root / "program", run_root / "data", run_root / "evidence"
+    args = argparse.Namespace(
+        run_root=run_root, root=root, data_root=data, shell="sh",
+        release0_fixture=tmp_path / "fixture", release0_agent_checkout=tmp_path / "agent",
+        release0_runtime_checkout=tmp_path / "runtime",
+    )
+    fixture_receipt = {"sources": {"agent": "a" * 40, "runtime": "b" * 40}}
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "run_scope", lambda *unused, **kwargs: (run_root, root, data, evidence))
+    monkeypatch.setattr(journey, "runner_identity", lambda: {"runner_image": "local", "runner_provenance": {}})
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "_capture_release0_sources", lambda *unused: {
+        "agent": {"sha": "a" * 40}, "runtime": {"sha": "b" * 40},
+    })
+    monkeypatch.setattr(jumps, "verified_release0_fixture", lambda unused: (
+        tmp_path / "fixture", tmp_path / "release0-manifest.json", fixture_receipt))
+    monkeypatch.setattr(journey, "capture_authentic_r0_observation",
+                        lambda output, **kwargs: {"phase": kwargs["phase"]})
+    monkeypatch.setattr(journey, "runtime_processes", lambda unused: [])
+
+    def failed_bootstrap(*unused):
+        root.mkdir()
+        data.mkdir()
+        source = evidence / "release0" / "release0-bootstrap.log"
+        if raw is not None:
+            source.parent.mkdir(parents=True)
+            source.write_bytes(raw)
+        raise RuntimeError("release0-bootstrap.log: exit 1")
+
+    monkeypatch.setattr(jumps, "bootstrap_release0", failed_bootstrap)
+    return args, run_root, root, data
+
+
+def test_authentic_r0_failed_bootstrap_retains_redacted_bounded_log_before_cleanup(tmp_path, monkeypatch):
+    raw = (b"prelude\n" + b"x" * (journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES + 29) +
+           b"\nTOKEN=do-not-publish\nBearer secret-token-value\nfirst underlying bootstrap error\n")
+    args, run_root, root, data = _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, raw)
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    entry = result["failure_diagnostics"]["release0_bootstrap"]
+    artifact = run_root / entry["path"]
+    assert result["status"] == "failed"
+    assert result["evidence_class"] == "capture-only"
+    assert result["qualification"]["eligible"] is False
+    assert result["r1_update_invoked"] is False
+    assert entry["status"] == "captured"
+    assert entry["path"] == "capture-upload/failure/release0-bootstrap.log"
+    assert entry["raw_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert entry["artifact_sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert entry["bytes"] == len(raw)
+    assert entry["captured_bytes"] == artifact.stat().st_size <= journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+    assert entry["truncated"] is True
+    retained = artifact.read_text(encoding="utf-8")
+    assert "first underlying bootstrap error" in retained
+    assert "do-not-publish" not in retained and "secret-token-value" not in retained
+    assert result["cleanup"]["status"] == "pass"
+    assert not root.exists() and not data.exists()
+    assert artifact.is_file()
+    receipt = journey.read_json(run_root / "capture-upload" / "capture-receipt.json")
+    assert receipt["artifacts"]["failure/release0-bootstrap.log"] == entry["artifact_sha256"]
+
+
+def test_authentic_r0_failed_bootstrap_records_missing_log(tmp_path, monkeypatch):
+    args, run_root, root, data = _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, None)
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    assert result["status"] == "failed"
+    assert result["failure_diagnostics"]["release0_bootstrap"] == {
+        "status": "missing",
+        "source_path": "$RUN_ROOT/evidence/authentic-r0-capture/release0/release0-bootstrap.log",
+        "chain": [{
+            "path": "$RUN_ROOT/evidence/authentic-r0-capture/release0/release0-bootstrap.log",
+            "kind": "absent",
+        }],
+        "path": None,
+        "raw_sha256": None,
+        "artifact_sha256": None,
+        "bytes": None,
+        "captured_bytes": None,
+        "truncated": False,
+        "limit_bytes": journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+    }
+    assert result["cleanup"]["status"] == "pass"
+    assert not root.exists() and not data.exists()
+    assert not (run_root / "capture-upload" / "failure" / "release0-bootstrap.log").exists()
+
+
 def test_tst_b1_local_sources_require_explicit_test_mode(tmp_path, monkeypatch):
     app, shipped = app_checkout(tmp_path)
     with pytest.raises(ValueError, match="--source-override"):

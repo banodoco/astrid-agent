@@ -705,14 +705,54 @@ def _capture_regular_file(source: Path, destination: Path, run_root: Path) -> di
         raw = source.read_bytes()
         text = raw[-AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES:].decode("utf-8", errors="replace")
         sanitized = windows._redact_pack_host_text(text)
-        destination.write_text(sanitized, encoding="utf-8")
+        captured = sanitized.encode("utf-8")[-AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES:]
+        destination.write_bytes(captured)
     except OSError as exc:
         return {"status": "error", "path": _capture_path_label(source, run_root),
                 "error": type(exc).__name__, "chain": chain["chain"]}
     return {"status": "captured", "path": _capture_path_label(source, run_root),
             "chain": chain["chain"], "raw_sha256": hashlib.sha256(raw).hexdigest(),
-            "bytes": len(raw), "truncated": len(raw) > AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+            "bytes": len(raw), "captured_bytes": len(captured),
+            "truncated": len(raw) > AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
             "artifact": destination.name}
+
+
+def capture_authentic_r0_bootstrap_failure(output: Path, evidence: Path, run_root: Path) -> dict:
+    """Retain the failed Linux R0 bootstrap log before cleanup can remove its run state."""
+    source = evidence / "release0" / "release0-bootstrap.log"
+    target = output / "failure" / source.name
+    unavailable = {
+        "path": None,
+        "raw_sha256": None,
+        "artifact_sha256": None,
+        "bytes": None,
+        "captured_bytes": None,
+        "truncated": False,
+        "limit_bytes": AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        captured = _capture_regular_file(source, target, run_root)
+    except OSError as exc:
+        return {"status": "error", "source_path": _capture_path_label(source, run_root),
+                "error": type(exc).__name__, **unavailable}
+    if captured["status"] == "captured":
+        return {
+            "status": "captured",
+            "source_path": captured["path"],
+            "path": target.relative_to(run_root).as_posix(),
+            "raw_sha256": captured["raw_sha256"],
+            "artifact_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            "bytes": captured["bytes"],
+            "captured_bytes": captured["captured_bytes"],
+            "truncated": captured["truncated"],
+            "limit_bytes": AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+            "chain": captured["chain"],
+        }
+    status = "missing" if captured["status"] == "absent" else captured["status"]
+    return {"status": status, "source_path": captured["path"],
+            **{key: value for key, value in captured.items() if key not in {"status", "path"}},
+            **unavailable}
 
 
 def _capture_manager_state_sanitized(destination: Path, run_root: Path, root: Path, data: Path) -> dict:
@@ -2777,6 +2817,7 @@ def execute_authentic_r0_capture(args: argparse.Namespace) -> dict:
     }
     version: dict | None = None
     capture_error: Exception | None = None
+    bootstrap_attempted = False
     try:
         assert_runner_identity(result["runner"])
         if __package__:
@@ -2791,6 +2832,7 @@ def execute_authentic_r0_capture(args: argparse.Namespace) -> dict:
         result["release0_source_checkouts"] = _capture_release0_sources(args, refs)
         assert_host_available("fresh-install", root, data)
         with without_provider_credentials(), isolated_environment(run_root, root, data):
+            bootstrap_attempted = True
             jumps.bootstrap_release0(fixture, release0_manifest, args.shell, evidence / "release0", root, data)
             jumps.start_direct_runtime(evidence / "release0")
             wait_ready(data)
@@ -2814,6 +2856,18 @@ def execute_authentic_r0_capture(args: argparse.Namespace) -> dict:
     except Exception as exc:
         capture_error = exc
         result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        if sys.platform == "linux" and bootstrap_attempted:
+            try:
+                result["failure_diagnostics"] = {
+                    "release0_bootstrap": capture_authentic_r0_bootstrap_failure(output, evidence, run_root),
+                }
+            except Exception as diagnostic_error:
+                result["failure_diagnostics"] = {
+                    "release0_bootstrap": {
+                        "status": "error",
+                        "error": type(diagnostic_error).__name__,
+                    },
+                }
         try:
             result["observations"].append(capture_authentic_r0_observation(
                 output, phase="failure", run_root=run_root, root=root, data=data, version=version))
