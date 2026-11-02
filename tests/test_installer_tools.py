@@ -1,5 +1,6 @@
 """Use qualified PATH media tools or the pinned archive, with recorded selection."""
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -43,6 +44,30 @@ def test_download_sends_astrid_user_agent(tmp_path, monkeypatch):
     assert requests[0][0].get_header("User-agent") == f"astrid-installer/{tools.ASTRID_VERSION}"
     assert requests[0][1] == 120
     assert target.read_bytes() == b"archive bytes"
+
+
+def test_download_checksum_mismatch_records_digests_without_url_credentials(tmp_path, monkeypatch):
+    import io
+
+    received = b"unexpected archive bytes"
+    expected = hashlib.sha256(b"expected archive bytes").hexdigest()
+
+    def urlopen(*_args, **_kwargs):
+        return io.BytesIO(received)
+
+    monkeypatch.setattr(tools.urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(ValueError) as error:
+        tools.download(
+            "https://user:secret@example.invalid/archive.zip",
+            tmp_path / "archive.zip",
+            sha256=expected,
+        )
+
+    message = str(error.value)
+    assert f"expected SHA-256 {expected}" in message
+    assert f"received SHA-256 {hashlib.sha256(received).hexdigest()}" in message
+    assert "user:secret" not in message
 
 
 def media_binary(directory, name):

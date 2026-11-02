@@ -109,8 +109,13 @@ def download(url: str, target: Path, *, sha256: str | None = None) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": f"astrid-installer/{ASTRID_VERSION}"})
     with urllib.request.urlopen(request, timeout=120) as response, target.open("wb") as output:
         shutil.copyfileobj(response, output)
-    if sha256 and hashlib.sha256(target.read_bytes()).hexdigest() != sha256:
-        raise ValueError(f"Download checksum mismatch: {url}")
+    if sha256:
+        received = hashlib.sha256(target.read_bytes()).hexdigest()
+        if received != sha256:
+            raise ValueError(
+                f"Download checksum mismatch: expected SHA-256 {sha256}, "
+                f"received SHA-256 {received}."
+            )
 
 
 def archive_path(name: str) -> Path:
