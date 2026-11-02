@@ -148,6 +148,12 @@ def test_managed_skill_policy_resolves_saved_flags_and_explicit_developer(tmp_pa
     skills_cli._save_explicit_skill_policy(explicit)
     saved_values = json.loads(record.read_text(encoding="utf-8"))["choices"]
     assert saved_values == {"skills": True, "skill_copies": False}
+    assert skills_cli._skill_policy(developer) == (True, "symlink")
+
+    off = parser.parse_args(["sync", "--skills", "off"])
+    skills_cli._save_explicit_skill_policy(off)
+    assert skills_cli._skill_policy(saved) == (False, "symlink")
+    assert skills_cli._skill_policy(developer) == (True, "symlink")
 
 
 def test_explicit_skills_off_install_creates_no_skill_targets():
