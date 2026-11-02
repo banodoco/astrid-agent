@@ -121,6 +121,9 @@ astrid = [
     "packs/**/build/*",
     "packs/local/**",
 ]
+# Apply the legacy-pack exclusion at its discovered namespace-package root;
+# the broad astrid package-data patterns above otherwise include its assets.
+"astrid.packs.local" = ["**/*"]
 
 [tool.setuptools.package-data]
 astrid = [
