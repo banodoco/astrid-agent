@@ -318,7 +318,7 @@ def test_selected_registry_policy_cannot_read_same_id_unselected_manifest(monkey
     registry = load_executors()
     assert registry.get('policy_fixture.generate_image').metadata['pack_root'] == str(pack)
     expected = {
-        'id': 'policy_fixture.generate_image', 'result_contract': 'exempted',
+        'id': 'policy_fixture.generate_image', 'kind': 'executor', 'result_contract': 'exempted',
         'disposition': 'historical', 'reason': 'selected action owns this policy',
         'reasons': ['no-artifact'], 'source': str(pack / 'pack.yaml'),
     }
