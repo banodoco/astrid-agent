@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import json
 import os
 import re
 import shutil
@@ -55,6 +56,74 @@ class InstallResult:
     observed_digest: str
     origin: str
     changed: bool
+
+
+# Executed by the declared interpreter with site initialization disabled. Read
+# exact declared metadata files; importing distributions would enumerate paths
+# and could execute package/site startup code before admission.
+_PYTHON_INVENTORY = """
+import json, sys
+from email.parser import BytesParser
+
+packages = {}
+for name, expected, path in json.load(sys.stdin):
+    try:
+        with open(path, 'rb') as stream:
+            metadata = BytesParser().parse(stream, headersonly=True)
+    except OSError:
+        continue
+    names = metadata.get_all('Name', [])
+    versions = metadata.get_all('Version', [])
+    if (len(names) == len(versions) == 1
+            and names[0].lower().replace('_', '-').replace('.', '-') == name
+            and versions[0] == expected):
+        packages[name] = versions[0]
+print(json.dumps(packages))
+"""
+
+
+@dataclass(frozen=True)
+class LockedPythonEnvironment:
+    """Host-declared interpreter and locked distribution metadata index.
+
+    ``inventory`` maps normalized names to (locked version, absolute METADATA
+    path). The host owns this declaration, never the pack or ambient sys.path.
+    Only entries selected after canonical manifest parsing are read. The
+    interpreter reads their installed metadata without loading site or packages.
+    """
+
+    interpreter: Path
+    inventory: Mapping[str, tuple[str, Path]]
+    timeout: float = 30
+
+    def selected_packages(self, requirements: list[str]) -> dict[str, str]:
+        entries = []
+        for name in requirements:
+            if name in self.inventory:
+                version, metadata = self.inventory[name]
+                if not version or not Path(metadata).is_absolute():
+                    raise PackInstallError("python_inventory_failed", "Locked Python metadata must have a version and absolute path.")
+                entries.append((name, version, str(metadata)))
+        if not entries:
+            return {}
+        if not Path(self.interpreter).is_absolute():
+            raise PackInstallError("python_inventory_failed", "The locked Python interpreter must have an absolute path.")
+        try:
+            process = subprocess.run(
+                [str(self.interpreter), "-I", "-S", "-B", "-c", _PYTHON_INVENTORY],
+                input=json.dumps(entries), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=Path(self.interpreter).parent,
+                env={"PATH": os.defpath, "LC_ALL": "C"}, timeout=self.timeout, check=True,
+            )
+            packages = json.loads(process.stdout)
+            expected = {name: version for name, version, _ in entries}
+            if not isinstance(packages, dict) or any(
+                name not in expected or version != expected[name] for name, version in packages.items()
+            ):
+                raise ValueError("Unexpected locked Python inventory response")
+            return packages
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise PackInstallError("python_inventory_failed", "The declared locked Python inventory could not be read.") from exc
 
 
 def _directory(path: Path, *, create: bool = False) -> Path:
@@ -345,6 +414,7 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                  release_pins: Mapping[str, PinFacts] | None = None,
                  import_contract: ImportContract | None = None,
                  python_packages: Mapping[str, str] | None = None,
+                 python_environment: LockedPythonEnvironment | None = None,
                  before_swap: Callable[[Path], None] | None = None,
                  publication: PublicationPolicy = _PUBLICATION) -> InstallResult:
     """Stage, verify and atomically install a pack without executing its code.
@@ -363,11 +433,17 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     Atomic replacement is supported on Linux/macOS; others fail closed.
     ``publication`` supplies a trusted host exchange policy; the default is
     constructed once for the host when this module is loaded.
-    ``python_packages`` is a caller-supplied inventory of the locked Python
-    environment, keyed by normalized requirement name (lowercase, with dots
+    ``python_environment`` declares the locked interpreter and metadata index.
+    This production caller constructs selected package facts from that index
+    only after parsing the staged manifest, then passes them to the validator.
+    ``python_packages`` alternatively supplies an already verified inventory
+    of the locked Python environment, keyed by normalized name (lowercase, with dots
     and underscores replaced by hyphens). Missing inventory fails closed.
     Only names declared by the selected manifest are read from the inventory.
+    The two inventory forms are mutually exclusive; there is no ambient fallback.
     """
+    if python_environment is not None and python_packages is not None:
+        raise PackInstallError("python_inventory_failed", "Declare exactly one locked Python inventory.")
     if not isinstance(pack_id, str) or not _ID.fullmatch(pack_id):
         raise PackInstallError("invalid_id", "Pack id must be a safe Python identifier.")
     bundled_root = Path(__file__).resolve().parents[2] / "packs"
@@ -434,8 +510,11 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                 # ONE strict parser/schema and ONE pure compatibility checker.
                 manifest = validate_canonical_pack(stage, expected_pack_id=pack_id).definition.to_dict()
                 requirements = _requirements(manifest) or []
-                inventory = python_packages if python_packages is not None else {}
-                packages = {name: inventory[name] for name in requirements if name in inventory}
+                if python_environment is not None:
+                    packages = python_environment.selected_packages(requirements)
+                else:
+                    inventory = python_packages if python_packages is not None else {}
+                    packages = {name: inventory[name] for name in requirements if name in inventory}
                 candidate: PackFacts = {
                     "id": pack_id, "canonical_root": str(destination), "schema_version": 3,
                     "origin": origin, "source": source_text, "commit": commit,
@@ -475,4 +554,4 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
         raise PackInstallError("install_failed", "Pack staging or validation failed; the previous install is unchanged.") from exc
 
 
-__all__ = ["install_pack", "InstallResult", "PackInstallError", "PublicationPolicy"]
+__all__ = ["install_pack", "InstallResult", "PackInstallError", "PublicationPolicy", "LockedPythonEnvironment"]

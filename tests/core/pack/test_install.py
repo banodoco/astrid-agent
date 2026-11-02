@@ -550,6 +550,232 @@ def test_reachable_commit_with_unborn_remote_head_is_accepted(repo, root):
     assert install(repo, root).commit == repo.commit
 
 
+def _python_requirement(repo, requirement="locked-lib"):
+    (repo.pack / "pack.yaml").write_text(
+        manifest(extra=f"dependencies: {{python_requirements: [{requirement}]}}\n")
+    )
+    repo.publish()
+
+
+def test_locked_environment_uses_only_selected_metadata_in_real_install(repo, root, tmp_path):
+    install(repo, root)
+    before = snapshot(root / "hello_ext")
+    inode = (root / "hello_ext").stat().st_ino
+    _python_requirement(repo)
+    metadata = tmp_path / "locked.dist-info/METADATA"
+    metadata.parent.mkdir()
+    metadata.write_text("Metadata-Version: 2.1\nName: locked-lib\nVersion: 1.0\n\n")
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    marker = tmp_path / "sitecustomize-loaded"
+    # The install-caller process sees the hostile PYTHONPATH at startup. Its
+    # marker is cleared before auditing the actual inventory interpreter.
+    (ambient / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    script = r'''
+import importlib.metadata as metadata
+import json, os, sys
+from pathlib import Path
+from astrid.core.pack.install import LockedPythonEnvironment, install_pack
+
+marker = Path(sys.argv[5])
+marker.unlink(missing_ok=True)
+ambient = Path(sys.argv[4]).resolve()
+assert metadata.version("locked-lib") == "99.0"
+assert metadata.version("unrelated-trap") == "9.9"
+accesses, inventory_calls = [], []
+def audit(event, args):
+    if event == "subprocess.Popen" and len(args) >= 4:
+        command, env = args[1], args[3]
+        if isinstance(command, (list, tuple)) and "-I" in command:
+            inventory_calls.append((list(command), env))
+    if event in {"open", "os.listdir", "os.scandir"} and args:
+        value = args[0]
+        if isinstance(value, (str, bytes, os.PathLike)):
+            path = Path(os.fsdecode(value)).absolute()
+            if path == ambient or path.is_relative_to(ambient):
+                accesses.append(str(path))
+sys.addaudithook(audit)
+def watch(operation):
+    def observed(value, *args, **kwargs):
+        raw = os.fspath(value) if isinstance(value, os.PathLike) else value
+        if isinstance(raw, (str, bytes)):
+            path = Path(os.fsdecode(raw)).absolute()
+            if path == ambient or path.is_relative_to(ambient):
+                accesses.append(str(path))
+        return operation(value, *args, **kwargs)
+    return observed
+os.stat, os.lstat = watch(os.stat), watch(os.lstat)
+class Spy(dict):
+    def __getitem__(self, name):
+        assert name == "locked-lib", name
+        return super().__getitem__(name)
+    def __contains__(self, name):
+        assert name == "locked-lib", name
+        return super().__contains__(name)
+    def __iter__(self):
+        raise AssertionError("inventory must not be enumerated")
+    def __len__(self):
+        raise AssertionError("inventory must not be sized")
+env = LockedPythonEnvironment(Path(sys.executable), Spy({
+    "locked-lib": ("1.0", Path(sys.argv[2])),
+    "unrelated-trap": ("9.9", Path(sys.argv[3])),
+}))
+result = install_pack(source=sys.argv[1], revision=sys.argv[6], pack_id="hello_ext",
+                      packs_root=Path(sys.argv[7]), python_environment=env)
+assert result.changed
+assert not install_pack(source=sys.argv[1], revision=sys.argv[6], pack_id="hello_ext",
+                        packs_root=Path(sys.argv[7]), python_environment=env).changed
+assert len(inventory_calls) == 2, inventory_calls
+command, child_env = inventory_calls[0]
+assert command[0] == sys.executable, command
+assert command[1:4] == ["-I", "-S", "-B"], command
+assert child_env == {"PATH": os.defpath, "LC_ALL": "C"}, child_env
+assert not marker.exists(), "ambient sitecustomize ran in the inventory interpreter"
+assert not accesses, accesses
+print(json.dumps({"ok": True}))
+'''
+    # Trap metadata exists and is discoverable on the ambient path, but must
+    # never be read or selected by the locked inventory caller.
+    trap = ambient / "unrelated_trap-9.9.dist-info"
+    trap.mkdir()
+    (trap / "METADATA").write_text("Name: unrelated-trap\nVersion: 9.9\n\n")
+    poison = ambient / "locked_lib-99.0.dist-info"
+    poison.mkdir()
+    (poison / "METADATA").write_text("Name: locked-lib\nVersion: 99.0\n\n")
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join((str(ambient), os.environ.get("PYTHONPATH", ""))))
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(repo.bare), str(metadata), str(trap / "METADATA"),
+         str(ambient), str(marker), repo.commit, str(root)],
+        env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    assert json.loads(child.stdout) == {"ok": True}
+    assert snapshot(root / "hello_ext") != before
+    assert (root / "hello_ext").stat().st_ino != inode
+
+
+@pytest.mark.parametrize("failure", ["ambient_only", "wrong_name", "wrong_version", "missing_metadata", "bad_interpreter"])
+def test_locked_environment_refusals_preserve_pin_bytes_and_inode(repo, root, tmp_path, failure):
+    install(repo, root)
+    before = snapshot(root / "hello_ext")
+    inode = (root / "hello_ext").stat().st_ino
+    _python_requirement(repo)
+    metadata = tmp_path / "candidate.dist-info/METADATA"
+    metadata.parent.mkdir()
+    metadata.write_text("Name: locked-lib\nVersion: 1.0\n\n")
+    ambient = tmp_path / "ambient"
+    ambient_info = ambient / "locked_lib-1.0.dist-info"
+    ambient_info.mkdir(parents=True)
+    (ambient_info / "METADATA").write_text("Name: locked-lib\nVersion: 1.0\n\n")
+    script = r'''
+import json, sys
+from pathlib import Path
+from astrid.core.pack.install import LockedPythonEnvironment, PackInstallError, install_pack
+failure = sys.argv[4]
+if failure == "ambient_only":
+    import importlib.metadata as metadata
+    ambient = Path(sys.argv[6])
+    sys.path.insert(0, str(ambient))
+    assert metadata.version("locked-lib") == "1.0"
+    environment = LockedPythonEnvironment(Path(sys.executable), {})
+else:
+    data = {"wrong_name": "Name: other\nVersion: 1.0\n\n",
+            "wrong_version": "Name: locked-lib\nVersion: 2.0\n\n"}
+    if failure in data:
+        Path(sys.argv[2]).write_text(data[failure])
+    if failure == "missing_metadata":
+        path = Path(sys.argv[2]).with_name("absent-METADATA")
+    else:
+        path = Path(sys.argv[2])
+    interpreter = Path("/no/such/locked-python") if failure == "bad_interpreter" else Path(sys.executable)
+    environment = LockedPythonEnvironment(interpreter, {"locked-lib": ("1.0", path)})
+try:
+    install_pack(source=sys.argv[1], revision=sys.argv[5], pack_id="hello_ext",
+                 packs_root=Path(sys.argv[3]), python_environment=environment)
+except PackInstallError as error:
+    print(json.dumps({"code": error.code}))
+else:
+    raise AssertionError("invalid locked environment was accepted")
+'''
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(repo.bare), str(metadata), str(root), failure,
+         repo.commit, str(tmp_path / "ambient")],
+        env=dict(os.environ, PYTHONPATH=os.pathsep.join((str(ambient), os.environ.get("PYTHONPATH", "")))), text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    result = json.loads(child.stdout)
+    assert result["code"] == ("python_inventory_failed" if failure == "bad_interpreter" else "missing_python")
+    assert snapshot(root / "hello_ext") == before
+    assert (root / "hello_ext").stat().st_ino == inode
+    assert_clean(root)
+
+
+def test_canonical_manifest_refusal_does_not_access_locked_inventory(repo, root, tmp_path):
+    install(repo, root)
+    before = snapshot(root / "hello_ext")
+    inode = (root / "hello_ext").stat().st_ino
+    (repo.pack / "pack.yaml").write_text(manifest(extra="surprise: true\n"))
+    repo.publish()
+    script = r'''
+import sys
+from pathlib import Path
+from astrid.core.pack.install import LockedPythonEnvironment, PackInstallError, install_pack
+class Forbidden:
+    def __contains__(self, name):
+        raise AssertionError("inventory accessed before canonical parse")
+    def __getitem__(self, name):
+        raise AssertionError("inventory accessed before canonical parse")
+    def __iter__(self):
+        raise AssertionError("inventory enumerated before canonical parse")
+try:
+    install_pack(source=sys.argv[1], revision=sys.argv[2], pack_id="hello_ext",
+                 packs_root=Path(sys.argv[3]),
+                 python_environment=LockedPythonEnvironment(Path(sys.executable), Forbidden()))
+except PackInstallError:
+    print("refused")
+else:
+    raise AssertionError("non-canonical manifest was accepted")
+'''
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(repo.bare), repo.commit, str(root)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip() == "refused"
+    assert snapshot(root / "hello_ext") == before
+    assert (root / "hello_ext").stat().st_ino == inode
+
+
+def test_no_python_requirements_never_acquires_locked_inventory(repo, root, tmp_path):
+    script = r'''
+import sys
+from pathlib import Path
+from astrid.core.pack.install import LockedPythonEnvironment, install_pack
+class Forbidden:
+    def __contains__(self, name):
+        raise AssertionError("unselected inventory lookup")
+    def __iter__(self):
+        raise AssertionError("unselected inventory enumeration")
+environment = LockedPythonEnvironment(Path(sys.argv[3]), Forbidden())
+first = install_pack(source=sys.argv[1], pack_id="hello_ext", packs_root=sys.argv[2],
+                     python_environment=environment)
+inode = first.path.stat().st_ino
+assert first.changed
+assert not install_pack(source=sys.argv[1], pack_id="hello_ext", packs_root=sys.argv[2],
+                        python_environment=environment).changed
+assert first.path.stat().st_ino == inode
+'''
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(repo.pack), str(root), str(tmp_path / "absent-python")],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    assert_clean(root)
+
+
 def test_default_cannot_overwrite_an_existing_folder_without_a_pin(repo, root):
     folder = root / "hello_ext"
     folder.mkdir(parents=True)
