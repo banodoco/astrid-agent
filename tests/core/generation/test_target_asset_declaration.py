@@ -115,22 +115,24 @@ def test_attached_target_cannot_adopt_managed_inventory(tmp_path, monkeypatch):
         bundle.compile(schema_provider=provider, models_root=tmp_path / 'empty-host-registry')
 
 
-def test_linux_target_model_locks_project_the_reviewed_foley_asset_lock():
+def test_engine_model_locks_leave_foley_assets_in_the_workflow_declaration():
     import vibecomfy
     from astrid.core.generation import engine_recipe
     lock_path = Path(vibecomfy.__file__).resolve().parents[1] / (
         'ready_templates/sources/custom_nodes/hunyuan_foley/bobrandomnumber/assets.json')
     assets = json.loads(lock_path.read_text())['assets']
     assert len(assets) == 10
+    # assets.json owns the facts; the generated workflow carries that declaration.
+    declared = workflow_from_ready('audio/hunyuan_video_foley').metadata['model_assets']
+    fields = ('name', 'subdir', 'url', 'hf_revision', 'sha256', 'size_bytes')
+    assert [{key: asset[key] for key in fields} for asset in declared] == [
+        {key: asset[key] for key in fields} for asset in assets]
+    # Engine locks are mandatory for every start, including unrelated workflows.
+    for path in (engine_recipe._ROOT / 'packs').glob('*/models.lock.json'):
+        assert 'hunyuan_foley' not in path.read_text(), path
     for engine in ('comfyui', 'vibecomfy-h3'):
         models = engine_recipe.load_recipe_model_lock(engine, 'linux-x86_64-cu130').models
-        projected = {model.destination: model for model in models if model.destination.startswith('hunyuan_foley/')}
-        assert len(projected) == len(assets)
-        for asset in assets:
-            model = projected[asset['subdir'] + '/' + asset['name']]
-            assert (model.repository, model.revision, model.sha256, model.bytes) == (
-                asset['repository'], asset['hf_revision'], asset['sha256'], asset['size_bytes'])
-            assert model.path == asset['url'].split('/resolve/' + model.revision + '/')[1]
+        assert not any(model.destination.startswith('hunyuan_foley/') for model in models)
 
 
 def test_target_source_and_manifest_pins_use_the_current_custody_provider():

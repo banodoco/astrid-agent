@@ -32,11 +32,11 @@ def test_index_roundtrips_windows_and_linux_recipes_with_immutable_values():
     assert len(windows.environments[0].final_wheels) == 3
     assert windows.environments[0].requirements.mode == "resolve-once"
     assert {source.name for source in windows.sources} == {"comfyui", "vibecomfy", "h3-motion-context", "videohelpersuite"}
-    assert len(recipes.load_recipe_model_lock(linux.engine, linux.platform).models) == 15
-    assert [model.bytes for model in recipes.load_recipe_model_lock(linux.engine, linux.platform).models[:5]] == [
+    assert len(recipes.load_recipe_model_lock(linux.engine, linux.platform).models) == 5
+    assert [model.bytes for model in recipes.load_recipe_model_lock(linux.engine, linux.platform).models] == [
         20970379616, 27141342152, 2811065184, 605254808, 1956193000,
     ]
-    models = recipes.load_recipe_model_lock(linux.engine, linux.platform).models[:5]
+    models = recipes.load_recipe_model_lock(linux.engine, linux.platform).models
     assert [model.revision for model in models] == ["e5eb578a89295337b8ff433a035929ce0279e0b6"] * 5
     assert [model.sha256 for model in models] == [
         "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779",
@@ -70,7 +70,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "8b1f48bb33ad3101d6585bbb54f48b86a7ed807284c6a81f617bc41bb6cdb82c"
+    assert h3_entry.recipe.sha256 == "69c2f73ac3d0e348e318feecbc10b83d7a5255faa6926d7dbe8115a986d205ec"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
@@ -95,7 +95,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
     ).hexdigest()
     assert recipe.sources[0].name == "comfyui"
     assert recipe.start.argv[-1] == "{models_config}"
-    assert [model.destination for model in lock.models[:3]] == [
+    assert [model.destination for model in lock.models] == [
         "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
         "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
         "vae/qwen_image_2.1_vae_bf16.safetensors",

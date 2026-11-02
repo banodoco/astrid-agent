@@ -93,7 +93,7 @@
   "primary_environment": "comfy",
   "models_lock": {
     "path": "packs/runpod/models.lock.json",
-    "sha256": "075942d6d50fbe10bf9a1ab077429e63db718998039edf225e1bc9221fb2f9ad"
+    "sha256": "d86ca8584229010f39c326f2c2d5b6dd3c0aa7b3c06ec6deb0ab5dc5f89c61a5"
   },
   "start": {
     "argv": [

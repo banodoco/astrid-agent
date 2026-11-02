@@ -61,7 +61,7 @@
   "primary_environment": "comfy",
   "models_lock": {
     "path": "packs/comfyui/models.lock.json",
-    "sha256": "a2d1d252a1ebc7e87de34779cc5400e8712c49a8062285eef7196f13da82927d"
+    "sha256": "15644292198c752e4c4c37d4eb6f86afd2c7232181bc9606921ac0ef2dcff093"
   },
   "start": {
     "argv": [

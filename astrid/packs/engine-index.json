@@ -6,7 +6,7 @@
       "platform": "linux-x86_64-cu130",
       "recipe": {
         "path": "packs/comfyui/recipe.linux-cu130.json",
-        "sha256": "0c1486342703824c5baf13a5bddebdb860008b77362a38bf7a8035a7605b8e14"
+        "sha256": "8a9e5be03434c73270a27d6c7ec7e546c82c4836d961e4f8d4b40919e0cb3dfe"
       }
     },
     {
@@ -22,7 +22,7 @@
       "platform": "linux-x86_64-cu130",
       "recipe": {
         "path": "packs/runpod/recipe.linux-cu130.json",
-        "sha256": "8b1f48bb33ad3101d6585bbb54f48b86a7ed807284c6a81f617bc41bb6cdb82c"
+        "sha256": "69c2f73ac3d0e348e318feecbc10b83d7a5255faa6926d7dbe8115a986d205ec"
       }
     },
     {
