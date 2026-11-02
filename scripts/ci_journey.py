@@ -1279,6 +1279,7 @@ def _runtime_owner_detail(row: dict, command: str, matcher: str | None = None) -
         "command_tail_argument_count": (
             command_tail_argument_count
             if type(command_tail_argument_count) is int and command_tail_argument_count >= 0 else None),
+        "registered_arguments_match": row.get("RegisteredArgumentsMatch") is True,
         "creation_date": creation_date,
         "creation_date_truncated": creation_date_truncated,
         "executable_path": executable_path,
@@ -1362,6 +1363,7 @@ try {
     # This PowerShell process carries the census source in its own command
     # line, including the owner matcher literals below.  Do not count it as a
     # Runtime owner; all other live processes remain in the census.
+    $ownerTails = @{}
     $owners = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object {
         $command = [string]$_.CommandLine
         $matcher = $null
@@ -1392,6 +1394,7 @@ try {
                     $tail = @($argv | Select-Object -Skip 1)
                     $tailHash = [AstridOwnerCensus.Native]::ArgumentVectorSha256($tail)
                     $tailCount = $tail.Length
+                    $ownerTails[[string]$_.ProcessId] = $tail
                 }
             } catch {}
             [pscustomobject]@{
@@ -1415,6 +1418,7 @@ try {
         }
     })
     $taskAction = @{ status = 'unavailable'; reason = 'task action query did not run' }
+    $registeredTail = $null
     try {
         $tasks = @(Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop)
         if ($tasks.Count -ne 1) { throw "expected one Astrid Runtime task, found $($tasks.Count)" }
@@ -1430,6 +1434,7 @@ try {
         $parsed = [AstridOwnerCensus.Native]::CommandLineArguments(('x ' + $arguments))
         if ($null -eq $parsed -or $parsed.Length -lt 1) { throw 'task action arguments were unparsable' }
         $tail = @($parsed | Select-Object -Skip 1)
+        $registeredTail = $tail
         $taskAction = @{
             status = 'observed'
             task_path = [string]$tasks[0].TaskPath
@@ -1439,6 +1444,23 @@ try {
         }
     } catch {
         $taskAction = @{ status = 'unavailable'; reason = $_.Exception.GetType().Name }
+    }
+    foreach ($owner in $owners) {
+        $matchesRegisteredArguments = $false
+        $ownerTail = $ownerTails[[string]$owner.ProcessId]
+        if ($null -ne $ownerTail -and $null -ne $registeredTail -and
+                $ownerTail.Length -eq $registeredTail.Length) {
+            $matchesRegisteredArguments = $true
+            for ($index = 0; $index -lt $ownerTail.Length; $index++) {
+                if ($ownerTail[$index] -cne $registeredTail[$index]) {
+                    $matchesRegisteredArguments = $false
+                    break
+                }
+            }
+        }
+        # This Boolean is calculated from the unredacted native parser output
+        # before JSON serialization. The raw tails are never emitted.
+        $owner | Add-Member -NotePropertyName RegisteredArgumentsMatch -NotePropertyValue $matchesRegisteredArguments
     }
     @{ owners = @($owners); task_action = $taskAction } | ConvertTo-Json -Compress -Depth 4
 } finally {
@@ -1543,7 +1565,7 @@ def _windows_tail_matches(detail: dict, action: dict) -> bool:
     action_count = action.get("argument_count")
     return (isinstance(owner_digest, str) and re.fullmatch(r"[0-9a-f]{64}", owner_digest) is not None and
             owner_digest == action_digest and type(owner_count) is int and owner_count >= 0 and
-            owner_count == action_count)
+            owner_count == action_count and detail.get("registered_arguments_match") is True)
 
 
 def _windows_creation_before(parent: dict, child: dict) -> bool:
@@ -1679,6 +1701,7 @@ def _owner_snapshot_record(detail: dict, asserted_pids: set[int]) -> dict:
             "argument_count": _owner_snapshot_value(
                 detail.get("command_tail_argument_count"),
                 unavailable="native parsed command-tail argument count was unavailable"),
+            "matches_registered_task_arguments": detail.get("registered_arguments_match") is True,
         },
         "executable_path": _owner_snapshot_value(
             detail.get("executable_path"), unavailable="Win32_Process.ExecutablePath was unavailable", limit=1024),

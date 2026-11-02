@@ -930,26 +930,31 @@ def _artifact_shaped_windows_owners(*, child_identity="windows-creation:13438120
                                     action_image=_ARTIFACT_VENV,
                                     parent_tail=_ARTIFACT_TAIL_SHA256,
                                     child_tail=_ARTIFACT_TAIL_SHA256,
+                                    child_arguments_match=True,
                                     action_tail=_ARTIFACT_TAIL_SHA256,
+                                    parent_created="2026-11-02T19:15:27.791539+00:00",
+                                    child_created="2026-11-02T19:15:27.801933+00:00",
                                     extra=()):
     """The retained 41507782325 process topology, without secret command text."""
     parent = {
         "pid": 6976,
         "parent_pid": 1880,
-        "creation_date": "2026-11-02T19:15:27.791539+00:00",
+        "creation_date": parent_created,
         "native_identity": "windows-creation:134381205277915396",
         "executable_path": _ARTIFACT_VENV,
         "command_tail_sha256": parent_tail,
         "command_tail_argument_count": 4,
+        "registered_arguments_match": True,
     }
     child = {
         "pid": 5224,
         "parent_pid": child_parent,
-        "creation_date": "2026-11-02T19:15:27.801933+00:00",
+        "creation_date": child_created,
         "native_identity": child_identity,
         "executable_path": child_image,
         "command_tail_sha256": child_tail,
         "command_tail_argument_count": 4,
+        "registered_arguments_match": child_arguments_match,
     }
     task_action = {
         "status": "observed",
@@ -996,9 +1001,39 @@ def test_tst_b1_windows_artifact_shaped_venv_redirector_is_one_logical_owner(
     }
 
 
+def test_tst_b1_windows_census_retains_raw_pair_and_redacted_task_action(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owners = _artifact_shaped_windows_owners()
+    observation = {
+        "owners": [{
+            "ProcessId": row["pid"], "ParentProcessId": row["parent_pid"],
+            "CreationDate": row["creation_date"], "NativeIdentity": row["native_identity"],
+            "ExecutablePath": row["executable_path"], "Matcher": "astrid_runtime-cli-run",
+            "CommandLength": 3710, "CommandSha256": "a" * 64,
+            "CommandTailSha256": row["command_tail_sha256"],
+            "CommandTailArgumentCount": row["command_tail_argument_count"],
+            "RegisteredArgumentsMatch": row["registered_arguments_match"],
+            "SanitizedCommandLine": "-c <astrid_runtime.cli main(['run', ...])>",
+        } for row in owners.details],
+        "task_action": owners.task_action,
+    }
+
+    def powershell(code, *unused, **_kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        return json.dumps(observation)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    retained = journey.runtime_processes(tmp_path)
+    assert list(retained) == [6976, 5224]
+    assert retained.task_action == owners.task_action
+    assert [row["parent_pid"] for row in retained.details] == [1880, 6976]
+    assert all(row["registered_arguments_match"] for row in retained.details)
+
+
 @pytest.mark.parametrize("case", [
     "wrong-base-image", "changed-argv", "unreadable-pyvenv-cfg", "missing-selected-identity",
-    "unrelated-parent", "third-owner", "genuine-second-interpreter",
+    "missing-discovery-identity", "unrelated-parent", "creation-order", "third-owner",
+    "genuine-second-interpreter",
 ])
 def test_tst_b1_windows_logical_owner_normalization_rejects_every_unproven_owner(
         tmp_path, monkeypatch, case):
@@ -1008,8 +1043,11 @@ def test_tst_b1_windows_logical_owner_normalization_rejects_every_unproven_owner
         kwargs["child_image"] = r"D:\foreign\pythonw.exe"
     elif case == "changed-argv":
         kwargs["child_tail"] = "f" * 64
+        kwargs["child_arguments_match"] = False
     elif case == "missing-selected-identity":
         kwargs["child_identity"] = None
+    elif case == "creation-order":
+        kwargs["parent_created"] = "2026-11-02T19:15:27.901933+00:00"
     elif case == "unrelated-parent":
         kwargs["child_parent"] = 1880
     elif case == "third-owner":
@@ -1020,6 +1058,7 @@ def test_tst_b1_windows_logical_owner_normalization_rejects_every_unproven_owner
             "executable_path": _ARTIFACT_VENV,
             "command_tail_sha256": _ARTIFACT_TAIL_SHA256,
             "command_tail_argument_count": 4,
+            "registered_arguments_match": True,
         },)
     elif case == "genuine-second-interpreter":
         kwargs["extra"] = ({
@@ -1029,9 +1068,13 @@ def test_tst_b1_windows_logical_owner_normalization_rejects_every_unproven_owner
             "executable_path": _ARTIFACT_BASE,
             "command_tail_sha256": _ARTIFACT_TAIL_SHA256,
             "command_tail_argument_count": 4,
+            "registered_arguments_match": True,
         },)
     owners = _artifact_shaped_windows_owners(**kwargs)
-    monkeypatch.setattr(journey, "healthy", lambda _data: _artifact_shaped_discovery())
+    discovery = _artifact_shaped_discovery()
+    if case == "missing-discovery-identity":
+        discovery.pop("process_birth_id")
+    monkeypatch.setattr(journey, "healthy", lambda _data: discovery)
     monkeypatch.setattr(journey, "runtime_processes", lambda _data: owners)
     monkeypatch.setattr(journey, "_windows_venv_base_executable",
                         lambda _path: None if case == "unreadable-pyvenv-cfg" else _ARTIFACT_BASE)
@@ -1056,12 +1099,13 @@ def test_tst_b1_windows_venv_cfg_requires_one_readable_absolute_home(monkeypatch
         def read_text(self, **_kwargs):
             return self.text
 
-    config = Config("home = D:\\base\\cpython-3.11.13\\ninclude-system-site-packages = false\\n")
+    config = Config("home = D:\\base\\cpython-3.11.13\n"
+                    "include-system-site-packages = false\n")
     monkeypatch.setattr(journey, "Path", lambda _path: config)
     assert journey._windows_venv_base_executable(_ARTIFACT_VENV) == r"D:\base\cpython-3.11.13\pythonw.exe"
-    config.text = "home = D:\\one\\nhome = D:\\two\\n"
+    config.text = "home = D:\\one\nhome = D:\\two\n"
     assert journey._windows_venv_base_executable(_ARTIFACT_VENV) is None
-    config.text = "home = relative\\python\\n"
+    config.text = "home = relative\\python\n"
     assert journey._windows_venv_base_executable(_ARTIFACT_VENV) is None
 
 
