@@ -68,7 +68,9 @@ def test_ready_snapshot_retains_declared_source_and_loads_in_production(template
 
     original = resolve_ready_template(template).path
     before = load_bundle(original, trust=Provenance.USER_CONFIRMED)
-    declared = repo_ready_template_root().parent / before.workflow.metadata['source_workflow_path']
+    metadata = before.workflow.metadata
+    declared = repo_ready_template_root().parent / (
+        metadata.get('source_workflow_path') or metadata.get('source_path') or metadata['source_workflow'])
     members = {p: p.read_bytes() for p in (original, original.with_suffix('.vibe.json'), declared)}
     with _snapshot_generation_workflow(original) as frozen:
         assert frozen.parent != original.parent
