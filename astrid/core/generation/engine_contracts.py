@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
+from typing import ContextManager, Literal, Mapping, Protocol, TypeAlias
 
-from astrid.core.pack._placement import parse_placement, validate_placement
+from astrid.core.pack._placement import EngineError
+from astrid.core.pack._placement import PlacementDescriptor as PlacementDescriptor
+from astrid.core.pack._placement import UnsupportedPlacement as UnsupportedPlacement
 
 EngineId: TypeAlias = str
 PlatformKey: TypeAlias = Literal["linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130", "windows-x86_64-cu128", "windows-x86_64-cu130"]
@@ -12,21 +14,6 @@ Placement: TypeAlias = Literal["local", "runpod"]
 Digest: TypeAlias = str
 Deadline: TypeAlias = float
 TargetPath: TypeAlias = str
-
-
-class EngineError(RuntimeError):
-    """Stable, secret-free public error shape shared by engine adapters."""
-
-    code: ClassVar[str] = "engine_error"
-
-    def __init__(self, message: str, *, step_id: str | None = None,
-                 retryable: bool = False, recovery_handle: str | None = None):
-        super().__init__(message)
-        self.code = type(self).code
-        self.message = message
-        self.step_id = step_id
-        self.retryable = retryable
-        self.recovery_handle = recovery_handle
 
 
 class RecipeError(EngineError):
@@ -83,10 +70,6 @@ class EndpointOwnershipError(EngineError):
 
 class EndpointHealthError(EngineError):
     code = "endpoint_unhealthy"
-
-
-class UnsupportedPlacement(EngineError):
-    code = "unsupported_placement"
 
 
 class AttestationError(EngineError):
@@ -442,41 +425,3 @@ class InstallReceipt:
     error_code: str | None
     # Read-only status diagnostic; absent in receipts written before this field.
     failed_step_id: str | None = None
-
-
-@dataclass(frozen=True)
-class PlacementDescriptor:
-    """Inert placement metadata; validation never looks up recipes or providers."""
-
-    schema: Literal["astrid.generation-placement.v1"]
-    supported: tuple[Placement, ...]
-    default: Placement
-    engine: EngineId | None
-    requires_endpoint: bool
-
-    def __post_init__(self) -> None:
-        validate_placement(
-            self.schema, self.supported, self.default, self.engine, self.requires_endpoint
-        )
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> PlacementDescriptor:
-        """Parse the complete wire object without coercing malformed values."""
-        return cls(**parse_placement(data))
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "schema": self.schema,
-            "supported": list(self.supported),
-            "default": self.default,
-            "engine": self.engine,
-            "requires_endpoint": self.requires_endpoint,
-        }
-
-    def resolve(self, placement: Placement | None = None) -> Placement:
-        """Resolve an omitted choice or reject unsupported data before execution."""
-        if placement is None:
-            return self.default
-        if not isinstance(placement, str) or placement not in self.supported:
-            raise UnsupportedPlacement("placement is not supported by this backend")
-        return placement

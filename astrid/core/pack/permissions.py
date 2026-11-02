@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from astrid.core.pack._placement import normalize_placement
 from astrid.core.pack._common import (
     PACK_ALIAS_KINDS,
     PACK_PERMISSION_IDS,
@@ -16,6 +15,7 @@ from astrid.core.pack._common import (
     _require_string,
     qualified_id_pack_id,
 )
+from astrid.core.pack._placement import PlacementDescriptor
 from astrid.core.pack.definition import PackPermission
 
 
@@ -313,7 +313,9 @@ def _normalize_generation_backends(value: Any, *, path: str) -> list[dict[str, A
             )
         if "placement" in backend:
             try:
-                normalized_backend["placement"] = normalize_placement(backend["placement"])
+                normalized_backend["placement"] = PlacementDescriptor.from_dict(
+                    backend["placement"]
+                ).to_dict()
             except ValueError as exc:
                 raise PackValidationError(f"{backend_path}.placement: {exc}") from exc
         normalized.append(normalized_backend)
