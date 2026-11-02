@@ -48,7 +48,7 @@ import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import IO, TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
 from urllib.parse import quote, urlsplit
 
@@ -4654,17 +4654,24 @@ def _run_source_digest(record: "CapabilityRecord") -> str:
 
 
 def _run_pack_provenance(record: Any, observed_digest: str | None) -> list[dict[str, Any]] | None:
-    """Build receipt provenance from the selected pack and its start digest."""
+    """Capture provenance once from the selected pack generation at action start."""
     metadata = record.definition.metadata
-    if not isinstance(metadata.get("action_invocation"), Mapping):
-        return None
     pack_id = metadata.get("source_pack")
     raw_root = metadata.get("pack_root")
-    if not isinstance(pack_id, str) or not pack_id or not isinstance(raw_root, str) or not raw_root:
-        return None
-    if not isinstance(observed_digest, str):
+    if (not isinstance(pack_id, str) or not pack_id
+            or not isinstance(raw_root, str) or not raw_root):
         return None
     pack_root = Path(raw_root).expanduser().resolve()
+    if not pack_root.is_dir():
+        return None
+    if not isinstance(metadata.get("action_invocation"), Mapping):
+        # Legacy executor roots have an admission digest which also covers the
+        # executor directory. Receipts identify the selected pack itself.
+        from astrid.core.pack.identity import pack_digest
+
+        observed_digest = pack_digest(pack_root)
+    if not isinstance(observed_digest, str):
+        return None
     pin_path = pack_root / "PIN"
     if pin_path.exists():
         from astrid.core.pack.identity import read_pin
@@ -10418,9 +10425,7 @@ class GenericPackHost:
             resolved_options=options, cost=cost, warnings=warnings,
             settled=terminal.get("settled"), settlement=terminal.get("settlement"),
             effect=terminal.get("effect"),
-            pack_provenance=_run_pack_provenance(
-                record, terminal.get("run_source_digest"),
-            ) if record is not None else None,
+            pack_provenance=terminal.get("pack_provenance"),
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
@@ -10951,6 +10956,13 @@ class GenericPackHost:
         _terminal["record"] = record
         run_source_digest = _run_source_digest(record)
         _terminal["run_source_digest"] = run_source_digest
+        # Capture the selected identity, PIN and observed tree together before
+        # execution. Terminal writers only carry this immutable value forward.
+        provenance = _run_pack_provenance(record, run_source_digest)
+        _terminal["pack_provenance"] = (
+            tuple(MappingProxyType(dict(row)) for row in provenance)
+            if provenance is not None else None
+        )
 
         def evidence_failure_diagnostic(error: BaseException) -> dict[str, Any] | None:
             if not isinstance(error, EvidenceCapError):
