@@ -1,0 +1,70 @@
+.F...................................................................... [ 97%]
+..                                                                       [100%]
+=================================== FAILURES ===================================
+_________ test_private_dispatch_freezes_real_installed_producer_recipe _________
+
+retained_producer = namespace(preparation=<astrid.core.execution.generic_host.LocalExecutionPreparation object at 0x7f1d92a3bcd0>, request...'A precise blue bird\nwith UTF-8 plumage: 🐦', real_prepare=<function _prepare_verified_image_recipe at 0x7f1d941e49a0>)
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1d93b78990>
+
+    def test_private_dispatch_freezes_real_installed_producer_recipe(retained_producer, monkeypatch):
+        """Exercise socket dispatcher through actual catalog binding and compiler."""
+        fixture = retained_producer
+        monkeypatch.setattr(generation, "_prepare_verified_image_recipe", fixture.real_prepare)
+        monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
+        monkeypatch.setattr(preflight, "_comfyui_runtime_available", lambda: pytest.fail("installation probed"))
+        observed = []
+        def object_info(client):
+            observed.append(client.target.url)
+            return target_info(vaes=("ae.safetensors",))
+        def forbidden(*args, **kwargs):
+            pytest.fail("private producer submitted a provider request")
+        monkeypatch.setattr(ComfyTargetClient, "object_info", object_info)
+        monkeypatch.setattr(ComfyTargetClient, "request_json", forbidden)
+        monkeypatch.setattr(ComfyTargetClient, "submit_prompt", forbidden)
+>       result = fixture.preparation.dispatch(fixture.request)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/core/execution/test_generic_host_verified_preparation_gr03.py:185: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+astrid/core/execution/generic_host.py:15169: in dispatch
+    return self._dispatch_bound(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+astrid/core/execution/generic_host.py:15195: in _dispatch_bound
+    return self._prepare_image_recipe(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+astrid/core/execution/generic_host.py:13829: in _prepare_image_recipe
+    recipe = _prepare_verified_image_recipe(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any,
+                                       model_root: Any) -> bytes:
+        """Freeze the installed image producer for its host's private control receiver.
+    
+        This is an implementation helper, not an authority entrypoint. Its target
+        client and model root must come from the receiving host's retained state;
+        neither is decoded from creative inputs. It never invokes the facade.
+        """
+        import base64
+        import hashlib
+        import json
+        import math
+        import secrets
+        from tempfile import TemporaryDirectory
+    
+        from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+        from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+        from astrid.core.generation.model_root import (
+            ModelRootBinding, validate_model_root_binding,
+        )
+        from astrid.core.model_catalog import registry as catalog
+        from astrid.core.model_catalog.schema import validate_registry_with_backends
+        from astrid.core.model_catalog.taxonomy import GenerationTaxonomyRegistry
+        from astrid.core.generation.features import backend_descriptors_from_pack
+        from astrid.core.pack import load_pack_manifest
+>       from vibecomfy.model_assets import _referenced_model_values
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+astrid/sdk/generation.py:444: ModuleNotFoundError
+=========================== short test summary info ============================
+FAILED tests/core/execution/test_generic_host_verified_preparation_gr03.py::test_private_dispatch_freezes_real_installed_producer_recipe
+1 failed, 73 passed in 2.26s

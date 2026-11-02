@@ -1,0 +1,469 @@
+EEEEEEEEEEEEE......FFFEEE.                                               [100%]
+==================================== ERRORS ====================================
+_ ERROR at setup of test_prefreeze_ensure_uses_original_live_session_and_actual_file_readback_once _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058738710>, {'engine': 'vibecomfy-h3',...e_uses_ori0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_prefreeze_ensure_uses_ori0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f505acb8410>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_changed_original_claim_cannot_park_or_ensure_twice[operation_id] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058838ad0>, {'engine': 'vibecomfy-h3',...l_claim_ca0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_changed_original_claim_ca0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f505872f810>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_changed_original_claim_cannot_park_or_ensure_twice[pod_id] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f505ac39fd0>, {'engine': 'vibecomfy-h3',...l_claim_ca0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_changed_original_claim_ca0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f505ab34350>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_changed_original_claim_cannot_park_or_ensure_twice[provider_account_ref] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f505a8f0710>, {'engine': 'vibecomfy-h3',...l_claim_ca0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_changed_original_claim_ca0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f505ac39890>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_changed_original_claim_cannot_park_or_ensure_twice[network_volume_id] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f505ac33190>, {'engine': 'vibecomfy-h3',...l_claim_ca0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_changed_original_claim_ca0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f505a8f01d0>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_hashed_profile_and_closed_slot_refuse_before_attachment[hash] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058305010>, {'engine': 'vibecomfy-h3',...and_closed0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_hashed_profile_and_closed0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f505a84ab50>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_hashed_profile_and_closed_slot_refuse_before_attachment[duplicate] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f50588fae10>, {'engine': 'vibecomfy-h3',...and_closed0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_hashed_profile_and_closed0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f50591a3950>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_hashed_profile_and_closed_slot_refuse_before_attachment[token-name] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058c36d90>, {'engine': 'vibecomfy-h3',...and_closed0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_hashed_profile_and_closed0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f50584b1d10>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_hashed_profile_and_closed_slot_refuse_before_attachment[token-parent] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f505aaf2a90>, {'engine': 'vibecomfy-h3',...and_closed0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_hashed_profile_and_closed0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f505a975f10>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_hashed_profile_and_closed_slot_refuse_before_attachment[extra] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058839690>, {'engine': 'vibecomfy-h3',...and_closed0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_hashed_profile_and_closed0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5058655fd0>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_hashed_profile_and_closed_slot_refuse_before_attachment[pod] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058755390>, {'engine': 'vibecomfy-h3',...and_closed0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_hashed_profile_and_closed0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f505acbde90>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_hashed_profile_and_closed_slot_refuse_before_attachment[account] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058407090>, {'engine': 'vibecomfy-h3',...and_closed0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_hashed_profile_and_closed0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5058407f50>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_hashed_profile_and_closed_slot_refuse_before_attachment[session-url] _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058c912d0>, {'engine': 'vibecomfy-h3',...and_closed0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_hashed_profile_and_closed0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5058404750>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_attached_checkout_constructor_failure_closes_only_transport _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058c3b690>, {'engine': 'vibecomfy-h3',...ut_constru0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_attached_checkout_constru0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5058c3b2d0>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_claim_change_before_finalization_never_attaches_or_probes _
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f50584b2490>, {'engine': 'vibecomfy-h3',...fore_final0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_claim_change_before_final0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5058c3a650>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+_ ERROR at setup of test_existing_endpoint_evidence_and_snapshot_are_retained __
+
+session = (<astrid.core.generation.engine_custody.LinuxEngineServiceClient object at 0x7f5058839850>, {'engine': 'vibecomfy-h3',...nt_evidenc0/install/mode'), PosixPath('/tmp/pytest-of-root/pytest-23/test_existing_endpoint_evidenc0/install/started'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f5058c398d0>
+
+    @pytest.fixture
+    def installed_consumer(session, monkeypatch):
+        """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+    
+        The receipt has the canonical lock inventory but this fixture does not
+        download/qualify those models or claim a real installation.
+        """
+        from types import SimpleNamespace
+        from astrid.core.generation import engine_recipe
+        from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+        from astrid.core.generation.engine_runner import _plain, plan_install
+        from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+        from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+>       from vibecomfy.runtime import session as vibe
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/test_engine_custody.py:1026: ModuleNotFoundError
+=================================== FAILURES ===================================
+_ test_installed_host_argv_env_and_separate_action_main_refusal[explicit-request] _
+
+installed_agent = PosixPath('/tmp/pytest-of-root/pytest-23/bridge-installed0/installed')
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-23/test_installed_host_argv_env_a0')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x7f505ab1fc50>, _basetemp=PosixPath('/tmp/pytest-of-root/pytest-23'), _retention_count=3, _retention_policy='failed')
+mode = 'explicit-request'
+
+    @pytest.mark.parametrize("mode", ["explicit-request", "missing-request", "bad-hash"])
+    def test_installed_host_argv_env_and_separate_action_main_refusal(installed_agent, tmp_path, tmp_path_factory, mode):
+        """Installed data wiring/refusal evidence, deliberately not output acceptance."""
+        from tests.core.generation.backends.test_checkout_server import _hc03_profile
+        from astrid.core.generation.engine_contracts import HealthEvidence, RunPodAttestation
+        from dataclasses import asdict
+    
+        tmp_path.chmod(0o700)
+>       profile = _hc03_profile(tmp_path)
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/core/execution/test_workflow_endpoint_handoff.py:405: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-23/test_installed_host_argv_env_a0')
+
+    def _hc03_profile(tmp_path: Path, *, model_digest: str = "sha256:" + "a" * 64) -> dict[str, object]:
+>       from vibecomfy.runtime.session import (
+            current_source_content_digest,
+            current_source_revision,
+        )
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/backends/test_checkout_server.py:502: ModuleNotFoundError
+_ test_installed_host_argv_env_and_separate_action_main_refusal[missing-request] _
+
+installed_agent = PosixPath('/tmp/pytest-of-root/pytest-23/bridge-installed0/installed')
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-23/test_installed_host_argv_env_a1')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x7f505ab1fc50>, _basetemp=PosixPath('/tmp/pytest-of-root/pytest-23'), _retention_count=3, _retention_policy='failed')
+mode = 'missing-request'
+
+    @pytest.mark.parametrize("mode", ["explicit-request", "missing-request", "bad-hash"])
+    def test_installed_host_argv_env_and_separate_action_main_refusal(installed_agent, tmp_path, tmp_path_factory, mode):
+        """Installed data wiring/refusal evidence, deliberately not output acceptance."""
+        from tests.core.generation.backends.test_checkout_server import _hc03_profile
+        from astrid.core.generation.engine_contracts import HealthEvidence, RunPodAttestation
+        from dataclasses import asdict
+    
+        tmp_path.chmod(0o700)
+>       profile = _hc03_profile(tmp_path)
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/core/execution/test_workflow_endpoint_handoff.py:405: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-23/test_installed_host_argv_env_a1')
+
+    def _hc03_profile(tmp_path: Path, *, model_digest: str = "sha256:" + "a" * 64) -> dict[str, object]:
+>       from vibecomfy.runtime.session import (
+            current_source_content_digest,
+            current_source_revision,
+        )
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/backends/test_checkout_server.py:502: ModuleNotFoundError
+___ test_installed_host_argv_env_and_separate_action_main_refusal[bad-hash] ____
+
+installed_agent = PosixPath('/tmp/pytest-of-root/pytest-23/bridge-installed0/installed')
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-23/test_installed_host_argv_env_a2')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x7f505ab1fc50>, _basetemp=PosixPath('/tmp/pytest-of-root/pytest-23'), _retention_count=3, _retention_policy='failed')
+mode = 'bad-hash'
+
+    @pytest.mark.parametrize("mode", ["explicit-request", "missing-request", "bad-hash"])
+    def test_installed_host_argv_env_and_separate_action_main_refusal(installed_agent, tmp_path, tmp_path_factory, mode):
+        """Installed data wiring/refusal evidence, deliberately not output acceptance."""
+        from tests.core.generation.backends.test_checkout_server import _hc03_profile
+        from astrid.core.generation.engine_contracts import HealthEvidence, RunPodAttestation
+        from dataclasses import asdict
+    
+        tmp_path.chmod(0o700)
+>       profile = _hc03_profile(tmp_path)
+                  ^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/core/execution/test_workflow_endpoint_handoff.py:405: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-23/test_installed_host_argv_env_a2')
+
+    def _hc03_profile(tmp_path: Path, *, model_digest: str = "sha256:" + "a" * 64) -> dict[str, object]:
+>       from vibecomfy.runtime.session import (
+            current_source_content_digest,
+            current_source_revision,
+        )
+E       ModuleNotFoundError: No module named 'vibecomfy'
+
+tests/core/generation/backends/test_checkout_server.py:502: ModuleNotFoundError
+=========================== short test summary info ============================
+FAILED tests/core/execution/test_workflow_endpoint_handoff.py::test_installed_host_argv_env_and_separate_action_main_refusal[explicit-request]
+FAILED tests/core/execution/test_workflow_endpoint_handoff.py::test_installed_host_argv_env_and_separate_action_main_refusal[missing-request]
+FAILED tests/core/execution/test_workflow_endpoint_handoff.py::test_installed_host_argv_env_and_separate_action_main_refusal[bad-hash]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_prefreeze_ensure_uses_original_live_session_and_actual_file_readback_once
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_changed_original_claim_cannot_park_or_ensure_twice[operation_id]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_changed_original_claim_cannot_park_or_ensure_twice[pod_id]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_changed_original_claim_cannot_park_or_ensure_twice[provider_account_ref]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_changed_original_claim_cannot_park_or_ensure_twice[network_volume_id]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_hashed_profile_and_closed_slot_refuse_before_attachment[hash]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_hashed_profile_and_closed_slot_refuse_before_attachment[duplicate]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_hashed_profile_and_closed_slot_refuse_before_attachment[token-name]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_hashed_profile_and_closed_slot_refuse_before_attachment[token-parent]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_hashed_profile_and_closed_slot_refuse_before_attachment[extra]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_hashed_profile_and_closed_slot_refuse_before_attachment[pod]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_hashed_profile_and_closed_slot_refuse_before_attachment[account]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_hashed_profile_and_closed_slot_refuse_before_attachment[session-url]
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_attached_checkout_constructor_failure_closes_only_transport
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_claim_change_before_finalization_never_attaches_or_probes
+ERROR tests/core/execution/test_workflow_endpoint_handoff.py::test_existing_endpoint_evidence_and_snapshot_are_retained
+3 failed, 7 passed, 16 errors in 7.67s

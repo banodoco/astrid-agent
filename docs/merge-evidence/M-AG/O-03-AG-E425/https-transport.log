@@ -1,0 +1,173 @@
+...F.FF                                                                  [100%]
+=================================== FAILURES ===================================
+_____________ test_https_claim_persists_only_token_file_reference ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-22/test_https_claim_persists_only0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7faf044142d0>
+
+    def test_https_claim_persists_only_token_file_reference(tmp_path, monkeypatch):
+        monkeypatch.setattr("runpod_lifecycle.preflight.preflight_transport", lambda *_a, **_kw: None)
+        monkeypatch.setattr(claim.RunPodConfig, "from_env", staticmethod(lambda **kw: RunPodConfig(api_key="test", **kw)))
+        async def volume(*_args):
+            return {"id": "v", "name": "backup", "size": 200, "dataCenterId": "DC"}
+        monkeypatch.setattr(claim, "_require_existing_volume", volume)
+        async def acquire(config, *, attempt, **_kwargs):
+            token_path = Path(attempt["https_token_file"])
+            assert read_token_file(token_path) == config.https_token
+            raw = json.dumps(attempt)
+            assert config.https_token not in raw
+            assert attempt["transport"] == "https"
+            raise RuntimeError("stop before paid provider")
+        monkeypatch.setattr(claim, "acquire_target", acquire)
+        path = tmp_path / "claim.json"
+>       args = claim._parser().parse_args(["--transport", "https", "--handle-path", str(path),
+                                           "--provider-account-ref", "test-account"])
+
+tests/packs/runpod/test_https_transport.py:140: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.11/argparse.py:1889: in parse_args
+    self.error(msg % ' '.join(argv))
+/usr/lib/python3.11/argparse.py:2652: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = ArgumentParser(prog='pytest', usage=None, description="Claim an RTX 5090 on the existing Astrid ``backup`` volume.\n\n...es to terminate the pod.\n", formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2
+message = 'pytest: error: unrecognized arguments: --transport https\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+/usr/lib/python3.11/argparse.py:2639: SystemExit
+----------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [--gpu-type GPU_TYPE] [--storage-name STORAGE_NAME]
+              [--provider-account-ref PROVIDER_ACCOUNT_REF]
+              [--container-disk-gb CONTAINER_DISK_GB] [--image WORKER_IMAGE]
+              [--allowed-cuda-versions ALLOWED_CUDA_VERSIONS]
+              [--template-id TEMPLATE_ID] [--release-root RELEASE_ROOT]
+              [--min-memory-gb MIN_MEMORY_GB] [--pod-id POD_ID] [--resume]
+              [--allow-pod-release] [--poll-seconds POLL_SECONDS]
+              [--capacity-window-seconds CAPACITY_WINDOW_SECONDS]
+              [--max-wait-seconds MAX_WAIT_SECONDS]
+              [--ready-timeout-seconds READY_TIMEOUT_SECONDS]
+              [--name-prefix NAME_PREFIX] [--handle-path HANDLE_PATH]
+              [--lifecycle-policy {leave_running}]
+pytest: error: unrecognized arguments: --transport https
+__ test_https_claim_resume_reuses_original_token_and_rejects_transport_change __
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-22/test_https_claim_resume_reuses0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7faf043fa790>
+
+    def test_https_claim_resume_reuses_original_token_and_rejects_transport_change(tmp_path, monkeypatch):
+        monkeypatch.setattr("runpod_lifecycle.preflight.preflight_transport", lambda *_a, **_kw: None)
+        monkeypatch.setattr(claim.RunPodConfig, "from_env", staticmethod(lambda **kw: RunPodConfig(api_key="test", **kw)))
+        async def volume(*_args):
+            return {"id": "v", "name": "backup", "size": 200, "dataCenterId": "DC"}
+        monkeypatch.setattr(claim, "_require_existing_volume", volume)
+        tokens = []
+        async def stop(config, *, attempt, **_kwargs):
+            tokens.append(config.https_token)
+            assert config.https_token == read_token_file(attempt["https_token_file"])
+            raise RuntimeError("offline stop")
+        monkeypatch.setattr(claim, "acquire_target", stop)
+        monkeypatch.setattr(claim, "reconcile_target", stop)
+        path = tmp_path / "claim.json"
+        argv = ["--transport", "https", "--handle-path", str(path), "--provider-account-ref", "test-account"]
+        for suffix in ([], ["--resume"]):
+            with pytest.raises(RuntimeError, match="offline stop"):
+>               asyncio.run(claim._claim(claim._parser().parse_args(argv + suffix)))
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/packs/runpod/test_https_transport.py:175: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.11/argparse.py:1889: in parse_args
+    self.error(msg % ' '.join(argv))
+/usr/lib/python3.11/argparse.py:2652: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = ArgumentParser(prog='pytest', usage=None, description="Claim an RTX 5090 on the existing Astrid ``backup`` volume.\n\n...es to terminate the pod.\n", formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2
+message = 'pytest: error: unrecognized arguments: --transport https\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+/usr/lib/python3.11/argparse.py:2639: SystemExit
+----------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [--gpu-type GPU_TYPE] [--storage-name STORAGE_NAME]
+              [--provider-account-ref PROVIDER_ACCOUNT_REF]
+              [--container-disk-gb CONTAINER_DISK_GB] [--image WORKER_IMAGE]
+              [--allowed-cuda-versions ALLOWED_CUDA_VERSIONS]
+              [--template-id TEMPLATE_ID] [--release-root RELEASE_ROOT]
+              [--min-memory-gb MIN_MEMORY_GB] [--pod-id POD_ID] [--resume]
+              [--allow-pod-release] [--poll-seconds POLL_SECONDS]
+              [--capacity-window-seconds CAPACITY_WINDOW_SECONDS]
+              [--max-wait-seconds MAX_WAIT_SECONDS]
+              [--ready-timeout-seconds READY_TIMEOUT_SECONDS]
+              [--name-prefix NAME_PREFIX] [--handle-path HANDLE_PATH]
+              [--lifecycle-policy {leave_running}]
+pytest: error: unrecognized arguments: --transport https
+_________ test_https_claim_preflight_failure_leaves_no_intent_or_token _________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-22/test_https_claim_preflight_fai0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7faf0466d010>
+
+    def test_https_claim_preflight_failure_leaves_no_intent_or_token(tmp_path, monkeypatch):
+        def denied(transport):
+            assert transport == "https"
+            raise RuntimeError("offline egress denied")
+        monkeypatch.setattr("runpod_lifecycle.preflight.preflight_transport", denied)
+        path = tmp_path / "claim.json"
+>       args = claim._parser().parse_args(["--transport", "https", "--handle-path", str(path),
+                                           "--provider-account-ref", "test-account"])
+
+tests/packs/runpod/test_https_transport.py:195: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.11/argparse.py:1889: in parse_args
+    self.error(msg % ' '.join(argv))
+/usr/lib/python3.11/argparse.py:2652: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = ArgumentParser(prog='pytest', usage=None, description="Claim an RTX 5090 on the existing Astrid ``backup`` volume.\n\n...es to terminate the pod.\n", formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2
+message = 'pytest: error: unrecognized arguments: --transport https\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+/usr/lib/python3.11/argparse.py:2639: SystemExit
+----------------------------- Captured stderr call -----------------------------
+usage: pytest [-h] [--gpu-type GPU_TYPE] [--storage-name STORAGE_NAME]
+              [--provider-account-ref PROVIDER_ACCOUNT_REF]
+              [--container-disk-gb CONTAINER_DISK_GB] [--image WORKER_IMAGE]
+              [--allowed-cuda-versions ALLOWED_CUDA_VERSIONS]
+              [--template-id TEMPLATE_ID] [--release-root RELEASE_ROOT]
+              [--min-memory-gb MIN_MEMORY_GB] [--pod-id POD_ID] [--resume]
+              [--allow-pod-release] [--poll-seconds POLL_SECONDS]
+              [--capacity-window-seconds CAPACITY_WINDOW_SECONDS]
+              [--max-wait-seconds MAX_WAIT_SECONDS]
+              [--ready-timeout-seconds READY_TIMEOUT_SECONDS]
+              [--name-prefix NAME_PREFIX] [--handle-path HANDLE_PATH]
+              [--lifecycle-policy {leave_running}]
+pytest: error: unrecognized arguments: --transport https
+------------------- left out of this run by lane (3 entries) -------------------
+[integration] run by CI job lanes-integration
+  DESELECTED tests/packs/runpod/test_https_transport.py::test_https_production_composition_selects_claim_token_and_cleanup_needs_no_sidecar[claimed]
+  DESELECTED tests/packs/runpod/test_https_transport.py::test_https_production_composition_selects_claim_token_and_cleanup_needs_no_sidecar[cleanup_pending]
+  DESELECTED tests/packs/runpod/test_https_transport.py::test_https_production_composition_selects_claim_token_and_cleanup_needs_no_sidecar[release_pending]
+=========================== short test summary info ============================
+FAILED tests/packs/runpod/test_https_transport.py::test_https_claim_persists_only_token_file_reference
+FAILED tests/packs/runpod/test_https_transport.py::test_https_claim_resume_reuses_original_token_and_rejects_transport_change
+FAILED tests/packs/runpod/test_https_transport.py::test_https_claim_preflight_failure_leaves_no_intent_or_token
+3 failed, 4 passed, 3 deselected in 2.86s
