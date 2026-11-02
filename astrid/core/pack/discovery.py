@@ -446,13 +446,15 @@ def discover_pack_metadata(
         provisional_managed_sources = active_sources(verify=False)
     except ImportError:
         provisional_managed_sources = ()
-    provisional_roots: list[str | Path] = [loader.packs_root(), project_pack_root]
+    # Explicit extras are caller ordered and can precede bundled roots. The
+    # admission result is identical regardless of which selected root is seen
+    # first, because no manifest is consulted during this pass.
+    provisional_roots: list[str | Path] = [*extra_pack_roots, loader.packs_root(), project_pack_root]
     provisional_roots.extend(source.pack_root for source in provisional_managed_sources)
     if scan is _default_discover_packs:
         provisional_roots.append(Path.home() / "Astrid" / "packs")
     if selected_personal_root is not None:
         provisional_roots.append(selected_personal_root)
-    provisional_roots.extend(extra_pack_roots)
     provisional_roots.extend(root for root in os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep) if root)
     provisional_paths: dict[str, Path] = {}
     provisional_scanned: set[Path] = set()
