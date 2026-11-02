@@ -1,0 +1,9 @@
+{
+  "agent_ref": "9b7a54aab69902bb7edc3e3e7d413603797fadf6",
+  "runtime_ref": "1e6d899efa77a2d6ec247c38250f9748330bb587",
+  "app_ref": "ae95eb455408b8c0e185bfded67798e2b307a6f6",
+  "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+  "command": "\"$RUNNER_TEMP/installed-venv/bin/pytest\" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py",
+  "artifact_paths": "venue-c07-output/runs/**\n",
+  "slot": "1"
+}
