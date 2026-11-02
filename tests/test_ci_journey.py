@@ -109,7 +109,8 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
-    assert workflow.count("repository: banodoco/astrid-app") == 3
+    assert workflow.count("repository: banodoco/astrid-app") == 4
+    assert workflow.count("name: Check out frozen App candidate") == 3
     assert "repository: banodoco/reigh-app" not in workflow
 
 
@@ -1011,9 +1012,10 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
         manager_action("stop" if "Stop-ScheduledTask" in code else "start")
         return ""
 
-    def workspace(version, _data, _evidence, action, request):
+    def workspace(version, _data, _evidence, action, request, *, realm):
         # A second RuntimeService would fail this simulated exclusive lock.
         assert not state["running"] and not state["local"]
+        assert realm == tmp_path / "realm"
         state["local"] = True
         try:
             calls.append(action)
@@ -1052,6 +1054,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     monkeypatch.setattr(journey, "assert_direct_service_ownership", ownership)
     monkeypatch.setattr(journey, "assert_one_runtime", one_runtime)
     monkeypatch.setattr(journey, "runtime_processes", lambda _: [state["pid"]] if state["running"] else [])
+    monkeypatch.setattr(journey, "workspace_root", lambda _: tmp_path / "realm" if state["running"]
+                        else pytest.fail("discovery is unavailable after shutdown"))
     monkeypatch.setattr(journey, "healthy", lambda _: {"pid": state["pid"],
                                                        "runtime_instance_id": str(state["pid"])})
     monkeypatch.setattr(journey, "process_birth", lambda pid: str(pid) if pid == state["pid"] else None)
@@ -1082,8 +1086,9 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: None)
     monkeypatch.setattr(journey, "wait_ready", lambda *_: None)
     monkeypatch.setattr(journey, "runtime_processes", lambda *_: [1] if state["running"] else [])
+    monkeypatch.setattr(journey, "workspace_root", lambda *_: tmp_path / "realm")
     monkeypatch.setattr(journey, "run", lambda argv, *_args, **_kw: state.update(running=argv[2] == "start"))
-    def fail(*_args):
+    def fail(*_args, **_kwargs):
         assert not state["running"]
         raise ValueError("workspace failed")
     monkeypatch.setattr(jumps, "workspace", fail)

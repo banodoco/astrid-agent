@@ -35,14 +35,15 @@ RELEASE0_REQUIRED = frozenset({
 CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
 
 
-def workspace(version: dict, data: Path, evidence: Path, action: str, request: dict) -> dict:
+def workspace(version: dict, data: Path, evidence: Path, action: str, request: dict,
+              *, realm: Path | None = None) -> dict:
     evidence.mkdir(parents=True, exist_ok=True)
     request_path = evidence / (action + "-request.json")
     journey.write_json(request_path, request)
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(version["env"])
     output = journey.run([version["python"], "-I", journey.ROOT / "scripts/journey_workspace.py",
-                          action, "--run-root", data.parent, "--realm", journey.workspace_root(data),
+                          action, "--run-root", data.parent, "--realm", realm or journey.workspace_root(data),
                           "--request", request_path], evidence / (action + ".json"), env=env, timeout=120)
     return json.loads(output)
 
@@ -182,6 +183,8 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
     """Temporarily release the installed owner for the local workspace helper."""
     service = journey.assert_direct_service_ownership(root, data)
     journey.assert_one_runtime(data)
+    # Shutdown can remove discovery.json, so resolve and validate its realm while live.
+    realm = journey.workspace_root(data)
     evidence.mkdir(parents=True, exist_ok=True)
     manager = service["manager"]
     if manager == "systemd-user":
@@ -206,7 +209,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             if time.monotonic() >= deadline:
                 raise RuntimeError("Installed Runtime did not stop for workspace access")
             time.sleep(1)
-        return workspace(version, data, evidence, action, request)
+        return workspace(version, data, evidence, action, request, realm=realm)
     finally:
         if manager == "task-scheduler":
             journey.windows.EVIDENCE = evidence
