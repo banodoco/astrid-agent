@@ -141,3 +141,107 @@ class ProviderResult:
         if kinds != {"busy", "unknown", "restoration"}:
             raise ProviderContractError("incomplete observations")
         return cls(request.sha256, tuple(observations))
+
+# This immutable producer implements only the diagnostic API below. It does not
+# supply session identity, qualifying observations, or authenticated custody.
+# Consequently this entry point must never be used to open the Stop route.
+_PRODUCER_REF = "a51721d482117158ddf809f1449047c37a803c01"
+_PRODUCER_FILES = {
+    "pinokio/providers/r24-linux.py": "70bae007103ddbc43ae6d2f667c833497e11646daa7dd9a7b544ad7cb2ed0e5c",
+    "pinokio/providers/r24-action.cjs": "679f07658574667fbcc6f92392fe01a85d127a9889569e3771143536bf52b1bb",
+    "pinokio/providers/r24-linux-binding.json": "aa081980bb143ea67eac9e36ca567af8f54a3cdcf7c6593ee130ed81a4d86d87",
+    "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
+}
+_CANDIDATE = {
+    "app": "5c95abb00525e1a77d00c32042b6453d9f14f4e7",
+    "agent": "e425903f7a9fa5b82973281d15054c0716b46e2d",
+    "runtime": "5453366458f7b4ee874c94d15ae7952e3e82d3c3",
+    "pinokio": "2f085c5fc0cde192ac4a022065883c85dcccd0de",
+    "manifest_sha256": "a6eef2804e58e198d56899f1b36d97688d5cbc4a0847a82078ba144df4a207eb",
+}
+_STOP = {"ref": _CANDIDATE["pinokio"], "path": "pinokio/stop.js",
+         "sha256": "f9d62e4e6a826fccd9791ee211dae933f46c8f99019e145abb3db3bf9595fd48"}
+
+
+@dataclass(frozen=True)
+class DiagnosticResult:
+    """A source-backed diagnostic, never an admission or custody assertion."""
+
+    request_sha256: str
+    status: str = "not-qualified"
+
+
+def invoke_linux_diagnostic(request: ProviderRequest, config_json: str | bytes,
+                            producer_root: str) -> DiagnosticResult:
+    """Invoke the pinned producer's REQUEST CONFIG API; never qualify its output.
+
+    The producer additionally validates clean candidate checkouts, manifest, Stop,
+    config dependencies and its own sources before it invokes its action. This
+    entry point does not authenticate the daemon or evidence and must only be
+    called by the controlled runner with its real materialized config.
+    """
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    import tempfile
+
+    if not isinstance(request, ProviderRequest):
+        raise ProviderContractError("typed request required")
+    parsed = ProviderRequest.parse(request.canonical)
+    if parsed != request:
+        raise ProviderContractError("request integrity mismatch")
+    data = _decode(request.canonical)
+    if (data["candidate"] != _CANDIDATE or data["stop"] != _STOP or
+            data["provider"] != {"ref": _PRODUCER_REF, "sources": _PRODUCER_FILES}):
+        raise ProviderContractError("producer or candidate binding mismatch")
+    config = _decode(config_json)
+    _object(config, {"checkouts", "pterm", "node", "node_sha256",
+                     "pterm_entry_sha256", "unws_sha256"}, "config")
+    _object(config["checkouts"], {"app", "agent", "runtime", "pinokio"}, "checkouts")
+    if hashlib.sha256(_canonical(config)).hexdigest() != data["config_sha256"]:
+        raise ProviderContractError("config digest mismatch")
+    if not isinstance(producer_root, str) or not os.path.isabs(producer_root):
+        raise ProviderContractError("absolute producer checkout required")
+    root = Path(producer_root)
+    try:
+        if root.is_symlink() or not root.is_dir():
+            raise ProviderContractError("invalid producer checkout")
+        root = root.resolve(strict=True)
+        def git(*args: str) -> bytes:
+            return subprocess.check_output(["git", "-C", str(root), *args],
+                                           stderr=subprocess.DEVNULL, timeout=30).strip()
+        if (Path(os.fsdecode(git("rev-parse", "--show-toplevel"))).resolve() != root or
+                git("rev-parse", "HEAD").decode() != _PRODUCER_REF or
+                git("status", "--porcelain=v1", "--untracked-files=all")):
+            raise ProviderContractError("producer checkout identity or cleanliness mismatch")
+        for rel, digest in _PRODUCER_FILES.items():
+            path = root / rel
+            if path.is_symlink() or not path.is_file():
+                raise ProviderContractError("producer source missing")
+            blob = subprocess.check_output(["git", "-C", str(root), "show", f"{_PRODUCER_REF}:{rel}"],
+                                           stderr=subprocess.DEVNULL, timeout=30)
+            if (hashlib.sha256(path.read_bytes()).hexdigest() != digest or
+                    hashlib.sha256(blob).hexdigest() != digest):
+                raise ProviderContractError("producer source digest mismatch")
+        with tempfile.TemporaryDirectory(prefix="r24-diagnostic-") as tmp:
+            request_path, config_path = Path(tmp) / "request.json", Path(tmp) / "config.json"
+            request_path.write_bytes(request.canonical)
+            config_path.write_bytes(_canonical(config))
+            proc = subprocess.run([sys.executable, "-I", "-B", str(root / "pinokio/providers/r24-linux.py"),
+                                   str(request_path), str(config_path)], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, timeout=150, check=False)
+        if proc.returncode != 0:
+            raise ProviderContractError("producer failed or did not run")
+        output = _object(_decode(proc.stdout), {"schema", "request_sha256", "action", "busy", "unknown",
+                                                "restoration", "runtime_identity", "custody", "protected_state"},
+                         "diagnostic")
+        if (output["schema"] != "astrid.r24.producer-diagnostic.v1" or
+                output["request_sha256"] != request.sha256 or
+                output["busy"] != "not-run" or output["unknown"] != "not-run" or
+                any(output[k] != "unknown" for k in ("restoration", "runtime_identity", "custody", "protected_state")) or
+                not isinstance(output["action"], dict)):
+            raise ProviderContractError("unexpected or contradictory diagnostic")
+        return DiagnosticResult(request.sha256)
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        raise ProviderContractError("producer invocation unavailable") from exc

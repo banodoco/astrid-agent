@@ -95,3 +95,79 @@ def test_result_does_not_follow_changed_tuple_source_stop_config_or_run():
         elif field == "run": changed["run_id"] = "f" * 32
         with pytest.raises(ProviderContractError):
             ProviderResult.parse(result, ProviderRequest.parse(encode(changed)))
+
+
+def diagnostic_fixture(tmp_path, monkeypatch):
+    """Synthetic subprocess fixture: exercises parsing only, not custody or a journey."""
+    import hashlib
+    import subprocess
+    from types import SimpleNamespace
+    from scripts import ci_journey_provider as provider
+
+    root = tmp_path / "producer"
+    files = {}
+    for path in provider._PRODUCER_FILES:
+        file = root / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(path.encode())
+        files[path] = hashlib.sha256(path.encode()).hexdigest()
+    monkeypatch.setattr(provider, "_PRODUCER_FILES", files)
+    config = {"checkouts": {k: "/fixture/" + k for k in ("app", "agent", "runtime", "pinokio")},
+              "pterm": "/fixture/pterm", "node": "/fixture/node", "node_sha256": "a" * 64,
+              "pterm_entry_sha256": "b" * 64, "unws_sha256": "c" * 64}
+    request = {"schema": REQUEST_SCHEMA, "candidate": provider._CANDIDATE.copy(),
+               "provider": {"ref": provider._PRODUCER_REF, "sources": files.copy()},
+               "stop": provider._STOP.copy(), "config_sha256": hashlib.sha256(provider._canonical(config)).hexdigest(),
+               "run_id": "a" * 32}
+    parsed = ProviderRequest.parse(encode(request))
+    output = {"schema": "astrid.r24.producer-diagnostic.v1", "request_sha256": parsed.sha256,
+              "action": {"end": "observer-error", "settlement": "unknown"}, "busy": "not-run",
+              "unknown": "not-run", "restoration": "unknown", "runtime_identity": "unknown",
+              "custody": "unknown", "protected_state": "unknown"}
+    def fake_git(argv, **kwargs):
+        args = argv[3:]
+        if args == ["rev-parse", "--show-toplevel"]: return str(root).encode()
+        if args == ["rev-parse", "HEAD"]: return provider._PRODUCER_REF.encode()
+        if args[0] == "status": return b""
+        if args[0] == "show": return args[1].split(":", 1)[1].encode()
+        raise AssertionError(args)
+    monkeypatch.setattr(subprocess, "check_output", fake_git)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0, stdout=encode(output).encode()))
+    return provider, root, config, request, output
+
+
+def test_source_backed_diagnostic_invocation_is_never_qualification(tmp_path, monkeypatch):
+    provider, root, config, request, _ = diagnostic_fixture(tmp_path, monkeypatch)
+    parsed = ProviderRequest.parse(encode(request))
+    assert provider.invoke_linux_diagnostic(parsed, encode(config), str(root)) == provider.DiagnosticResult(parsed.sha256)
+
+
+@pytest.mark.parametrize("mutation", ["tuple", "provider_ref", "source", "stop", "config", "forged_request"])
+def test_diagnostic_invocation_rejects_wrong_binding(tmp_path, monkeypatch, mutation):
+    provider, root, config, request, _ = diagnostic_fixture(tmp_path, monkeypatch)
+    if mutation == "tuple": request["candidate"]["agent"] = "f" * 40
+    elif mutation == "provider_ref": request["provider"]["ref"] = "f" * 40
+    elif mutation == "source": request["provider"]["sources"][next(iter(provider._PRODUCER_FILES))] = "f" * 64
+    elif mutation == "stop": request["stop"]["sha256"] = "f" * 64
+    parsed = ProviderRequest.parse(encode(request))
+    if mutation == "config": config["node"] = "/other"
+    if mutation == "forged_request": parsed = ProviderRequest(parsed.canonical, "f" * 64)
+    with pytest.raises(ProviderContractError):
+        provider.invoke_linux_diagnostic(parsed, encode(config), str(root))
+
+
+@pytest.mark.parametrize("mutation", ["schema", "request", "busy", "unknown", "restoration", "runtime_identity", "custody", "protected_state", "missing", "extra"])
+def test_diagnostic_invocation_rejects_unexpected_output(tmp_path, monkeypatch, mutation):
+    provider, root, config, request, output = diagnostic_fixture(tmp_path, monkeypatch)
+    if mutation == "missing": del output["busy"]
+    elif mutation == "extra": output["session"] = "untrusted"
+    else: output[{"request": "request_sha256"}.get(mutation, mutation)] = "unexpected"
+    with pytest.raises(ProviderContractError):
+        provider.invoke_linux_diagnostic(ProviderRequest.parse(encode(request)), encode(config), str(root))
+
+
+def test_diagnostic_invocation_rejects_altered_source(tmp_path, monkeypatch):
+    provider, root, config, request, _ = diagnostic_fixture(tmp_path, monkeypatch)
+    (root / next(iter(provider._PRODUCER_FILES))).write_text("changed")
+    with pytest.raises(ProviderContractError):
+        provider.invoke_linux_diagnostic(ProviderRequest.parse(encode(request)), encode(config), str(root))
