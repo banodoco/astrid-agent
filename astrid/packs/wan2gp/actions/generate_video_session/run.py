@@ -53,8 +53,8 @@ def generate_video_session(
         "steps": steps,
         "loras": loras,
     }
-    # Pack defaults of "" mean "not provided" (the command path omitted them too).
-    clean: dict[str, Any] = {k: v for k, v in inputs.items() if v is not None and v != ""}
+    # Absent inputs are None; the caller's explicit values (including "") pass through.
+    clean: dict[str, Any] = {k: v for k, v in inputs.items() if v is not None}
 
     # Invalid inputs raise ValueError here, before anything is submitted.
     compile_host_settings(clean)

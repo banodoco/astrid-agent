@@ -1800,6 +1800,7 @@ class ManagedToolProfile:
     needs_warm_slot: bool = False
     prepare: Callable[[Mapping[str, Any], Any], tuple[Any, Any, Any]] | None = None
     verify: Callable[..., None] | None = None
+    flatten_result: Callable[[Any], dict[str, Any]] | None = None
 
 
 # Native admission identifiers the host keeps to itself (review S-3).
@@ -1810,8 +1811,8 @@ _HOST_IDENTITY_EVIDENCE_KEYS = frozenset({
 
 
 def _present_inputs(inputs: Mapping[str, Any]) -> dict[str, Any]:
-    """Inputs with absent values removed: None and "" both mean not provided."""
-    return {key: value for key, value in dict(inputs).items() if value is not None and value != ""}
+    """Inputs with absent (None) values removed; an explicit "" is a provided value."""
+    return {key: value for key, value in dict(inputs).items() if value is not None}
 
 
 class _HostManagedSessionAdapter:
@@ -1828,7 +1829,7 @@ class _HostManagedSessionAdapter:
         self._profile = profile
         self._token = managed_token
         self._cancel_session = cancel_session
-        # None and "" both mean "not provided" on both sides of the comparison below.
+        # None means not provided on both sides of the comparison below.
         self._inputs = _present_inputs(inputs)
         self._progress_path = progress_path
         self._timeout_cap = timeout_cap
@@ -6338,6 +6339,7 @@ class GenericPackHost:
                 needs_warm_slot=True,
                 prepare=self._wan_prepare,
                 verify=self._wan_verify,
+                flatten_result=self._wan_flatten_result,
             ),
         }
         self.capability_matrix_path = Path(capability_matrix).expanduser().resolve() if capability_matrix else self._default_matrix_path()
@@ -10601,6 +10603,14 @@ class GenericPackHost:
         )
         return managed_binding, managed_adapter, managed_capability
 
+    def _wan_flatten_result(self, action_result: Any) -> dict[str, Any]:
+        """Consumer-visible wan result shape: wan_native and wan_mapping at the top of
+        the result, as the pre-swap route produced them (parity)."""
+        inner = action_result.get("payload") if isinstance(action_result, Mapping) else None
+        if not isinstance(inner, Mapping) or "wan_mapping" not in inner or "wan_native" not in inner:
+            raise HostError("wan2gp result carries no wan_native/wan_mapping")
+        return {"wan_native": inner["wan_native"], "wan_mapping": inner["wan_mapping"]}
+
     def _wan_verify(self, result: Any, *, output_root: Path, managed_token: Any, stage: str) -> None:
         from astrid.packs.wan2gp.src.driver import verify_host_result
 
@@ -12295,6 +12305,9 @@ class GenericPackHost:
                 payload["manifest_ref"] = {
                     "object_id": producer_manifest["digest"], "size": producer_manifest["size"],
                 }
+            result_profile = self._managed_profile_for(record)
+            if result_profile is not None and result_profile.flatten_result is not None:
+                payload.update(result_profile.flatten_result(payload.pop("action_result", None)))
             if capability_id == "h3_av.transform" and child_bridge is not None:
                 action_result = payload.get("action_result")
                 if not isinstance(action_result, Mapping):

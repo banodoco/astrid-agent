@@ -70,43 +70,35 @@ actions:
       - name: negative_prompt
         type: string
         required: false
-        default: ""
         description: Negative prompt.
         artifact_type: prompt
       - name: resolution
         type: string
         required: false
-        default: ""
         description: Output resolution WxH (e.g. 1280x720).
       - name: frames
         type: integer
         required: false
-        default: ""
         description: Number of frames / video_length.
       - name: fps
         type: string
         required: false
-        default: ""
         description: Frames per second (stringified to force_fps).
       - name: seed
         type: integer
         required: false
-        default: ""
         description: Deterministic seed.
       - name: guidance_scale
         type: number
         required: false
-        default: ""
         description: Guidance scale.
       - name: steps
         type: integer
         required: false
-        default: ""
         description: Sampling steps (num_inference_steps alias).
       - name: loras
         type: string
         required: false
-        default: ""
         description: LoRAs JSON or path.
     outputs:
       - name: generated_videos
