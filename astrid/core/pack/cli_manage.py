@@ -105,7 +105,9 @@ def _handle_add(args: argparse.Namespace) -> int:
     try:
         packages, pins = _validation_snapshot()
         result = install_group(source=source, revision=args.revision, packs={pack_id: subpath},
-                              packs_root=root, python_packages=packages, release_pins=pins,
+                              packs_root=root,
+                              selected_roots=_composition_roots(root, include_default=args.packs_root is None),
+                              core_root=_core_root(), python_packages=packages, release_pins=pins,
                               origin="folder" if args.revision is None else "user", consent=consent)
     except PackInstallError as exc:
         if exc.code in {"user_cancelled", "source_changed"} and not root_was_present:
@@ -131,7 +133,8 @@ def _handle_remove(args: argparse.Namespace) -> int:
         return 1
     packages, pins = _validation_snapshot()
     result = install_group(source=".", packs={}, packs_root=root,
-                          python_packages=packages, release_pins=pins, remove=ids)
+                          selected_roots=_composition_roots(root, include_default=args.packs_root is None),
+                          core_root=_core_root(), python_packages=packages, release_pins=pins, remove=ids)
     print(f"Removed {', '.join(ids)} (transaction {result.transaction_id}).")
     if result.refresh_pending:
         print("Refresh acknowledgment is pending; retry the committed transaction refresh.", file=sys.stderr)
@@ -178,23 +181,35 @@ def build_remove_parser(subparsers: Any) -> None:
     parser.add_argument("--yes", action="store_true", help="Confirm the removal transaction.")
     parser.set_defaults(handler=_handle_remove_error)
 def _selected_root(override: str | None) -> Path:
-    # Management storage remains selectable with the historical single
-    # collection setting. Discovery treats this variable as additional roots
-    # and never uses it to identify the personal pack.
-    configured = override
-    if configured is None:
-        raw = os.environ.get("ASTRID_PACKS_PATH")
-        if raw is not None:
-            entries = raw.split(os.pathsep)
-            if len(entries) != 1 or not entries[0].strip():
-                raise PackInstallError(
-                    "unsafe_path", "Configure one absolute user pack collection before managing packs."
-                )
-            configured = entries[0]
-    root = resolve_personal_packs_root(configured)
+    # ASTRID_PACKS_PATH extends discovery; it does not choose the collection
+    # that management commands mutate. Only --packs-root may override the
+    # default writable personal collection.
+    default_root = Path.home() / "Astrid" / "packs"
+    root = resolve_personal_packs_root(override if override is not None else default_root)
     if root is None:
-        raise PackInstallError("unsafe_path", "Configure an absolute user pack collection with ASTRID_PACKS_PATH.")
+        raise PackInstallError("unsafe_path", "Use an absolute writable collection with --packs-root.")
     return root
+
+
+def _composition_roots(target_root: Path, *, include_default: bool) -> tuple[Path, ...]:
+    """Freeze the host's explicitly selected external roots at CLI entry."""
+    configured = os.environ.get("ASTRID_PACKS_PATH")
+    values = ([Path.home() / "Astrid" / "packs"] if include_default else [])
+    if configured is not None:
+        values.extend(Path(item).expanduser() for item in configured.split(os.pathsep) if item)
+    roots = []
+    for value in values:
+        if not value.is_absolute():
+            raise PackInstallError("unsafe_path", "Selected external pack roots must be absolute paths.")
+        resolved = value.resolve()
+        if resolved != target_root.resolve():
+            roots.append(resolved)
+    return tuple(dict.fromkeys(roots))
+
+
+def _core_root() -> Path:
+    from .loader import packs_root
+    return packs_root().resolve()
 
 
 def _validation_snapshot() -> tuple[Mapping[str, str], Mapping[str, Mapping[str, str]]]:
@@ -258,9 +273,12 @@ def _handle_update(args: argparse.Namespace) -> int:
     try:
         packs = _pack_specs(args.packs)
         root = _selected_root(args.packs_root)
+        selected_roots = _composition_roots(root, include_default=args.packs_root is None)
         packages, pins = _validation_snapshot()
         result = install_group(source=args.source, revision=args.revision, packs=packs,
-                               packs_root=root, python_packages=packages, release_pins=pins, intent="update",
+                               packs_root=root, selected_roots=selected_roots,
+                               core_root=_core_root(),
+                               python_packages=packages, release_pins=pins, intent="update",
                                consent=_confirm_update)
     except (PackInstallError, OSError, EOFError) as exc:
         print(str(exc), file=sys.stderr)
@@ -272,9 +290,11 @@ def _handle_update(args: argparse.Namespace) -> int:
 def _handle_rollback(args: argparse.Namespace) -> int:
     try:
         root = _selected_root(args.packs_root)
+        selected_roots = _composition_roots(root, include_default=args.packs_root is None)
         packages, pins = _validation_snapshot()
         result = rollback_group(packs_root=root, pack_ids=args.pack_ids,
                                 transaction_id=args.transaction_id, consent=_confirm_rollback,
+                                selected_roots=selected_roots, core_root=_core_root(),
                                 python_packages=packages, release_pins=pins)
     except (PackInstallError, OSError, EOFError) as exc:
         print(str(exc), file=sys.stderr)

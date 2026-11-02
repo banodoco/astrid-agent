@@ -234,7 +234,9 @@ def validate_pack(*, mode: Literal["install", "inventory", "execute"],
             elif _has_cycle(pack_id, deps, selected):
                 fail("cycle")
             elif any(dep in release_pins and isinstance(selected.get(dep), Mapping) and
-                     selected[dep].get("commit") != release_pins[dep].get("commit") for dep in deps):
+                     (selected[dep].get("commit") != release_pins[dep].get("commit") or
+                      selected[dep].get("installed_digest") != release_pins[dep].get("digest"))
+                     for dep in deps):
                 fail("default_pin_conflict")
             elif mode == "install" and pack_id in release_pins and (
                 candidate.get("commit") != release_pins[pack_id].get("commit") or
