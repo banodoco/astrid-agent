@@ -12,6 +12,32 @@ from astrid.core.execution.generic_host import GenericPackHost, HostCancelled
 from tests.test_generic_host import _write_manifest
 
 
+def test_capability_launch_failure_clears_secret_environment_and_request(tmp_path, monkeypatch):
+    """A failed Popen has no child finalizer, so the host owns cleanup."""
+    _write_manifest(tmp_path / "echo")
+    host = GenericPackHost(pack_roots=[tmp_path])
+    definition, admission = host.admit("executor", "test.echo")
+    attempt = tmp_path / "attempt"
+    seen = {}
+
+    def fail_launch(*_args, **kwargs):
+        seen["env"] = kwargs["env"]
+        seen["secret_seen"] = kwargs["env"]["PROVIDER_TOKEN"] == "launch-only-secret"
+        raise OSError("simulated Popen failure")
+
+    monkeypatch.setattr(generic_host, "spawn_task_scope", fail_launch)
+    with pytest.raises(OSError, match="simulated Popen failure"):
+        host.invoke_capability(
+            capability_kind="executor", capability_id="test.echo", request={}, attempt=attempt,
+            definition=definition, admission=admission,
+            child_env={"PROVIDER_TOKEN": "launch-only-secret"},
+        )
+    assert seen["secret_seen"]
+    assert seen["env"] == {}
+    assert not (attempt / ".astrid-capability-request.json").exists()
+    assert not (attempt / ".astrid-capability-result.json").exists()
+
+
 @pytest.mark.parametrize("cancelled", [False, True])
 @pytest.mark.parametrize("entrypoint", ["command", "capability"])
 def test_render_command_keeps_inherited_group_and_observes_until_cleanup(tmp_path, monkeypatch, cancelled, entrypoint):

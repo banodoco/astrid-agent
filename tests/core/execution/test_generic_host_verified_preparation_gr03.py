@@ -17,9 +17,9 @@ from astrid.core.execution import generic_host as host
 from astrid.core.generation import preflight
 from astrid.core.generation.backends.comfy_target import ComfyTargetClient
 from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+from astrid.core.model_catalog.registry import ModelRegistry
 from astrid.core.generation.model_root import canonical_model_inventory_digest
 from astrid.sdk import generation
-from tests.core.generation.backends.test_comfy_model_resolution import target_info
 
 
 VERSION = "runtime.local-image-recipe/v1"
@@ -40,8 +40,9 @@ def retained_producer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Real model validation, fake already-prepared graph, no processes or RPCs."""
     root = tmp_path / "model-base" / "models"
     inventory = []
-    for subdir, name in (("diffusion_models", "z_image_turbo_bf16.safetensors"),
-                         ("text_encoders", "qwen_3_4b.safetensors"), ("vae", "ae.safetensors")):
+    for subdir, name in (("diffusion_models", "qwen_image_2.1_turbo_int8_convrot.safetensors"),
+                         ("text_encoders", "qwen3vl_8b_int8_convrot.safetensors"),
+                         ("vae", "qwen_image_2.1_vae_bf16.safetensors")):
         model = root / subdir / name
         model.parent.mkdir(parents=True, exist_ok=True)
         model.write_bytes(("fixture:" + name).encode())
@@ -114,8 +115,7 @@ def retained_producer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                "channel_id": "channel", "owner_epoch": "epoch", "request_id": "request-1",
                "inputs": [{"name": "prompt", "object_id": _digest(prompt_bytes), "digest": _digest(prompt_bytes),
                            "filename": "prompt.txt", "bytes_base64": base64.b64encode(prompt_bytes).decode("ascii")}],
-               "controls": {"seed": 42, "size": "512x384", "steps": 2, "guidance_scale": 1.0,
-                            "negative_prompt": "blur"}}
+               "controls": {"seed": 42, "size": "512x384", "negative_prompt": "blur"}}
     recipe = {"version": "astrid.local-image-recipe/v1", "fixture": "complete helper result"}
     recipe_bytes = _canonical(recipe)
     calls = []
@@ -176,7 +176,69 @@ def test_private_dispatch_freezes_real_installed_producer_recipe(retained_produc
     observed = []
     def object_info(client):
         observed.append(client.target.url)
-        return target_info(vaes=("ae.safetensors",))
+        from vibecomfy.porting.object_info import get_class
+        from vibecomfy.registry.ready import workflow_from_ready
+
+        spec = ModelRegistry.load_default().get("qwen-image-2.1-turbo").modes["t2i"].backends["local"]
+        info = {}
+        for node in workflow_from_ready(spec.template).runtime_nodes().values():
+            entry = get_class(node.class_type)
+            if entry is None:
+                if node.class_type == "TextEncodeQwenImage21":
+                    info[node.class_type] = {
+                        "input": {"required": {
+                            "prompt": ["STRING", {"default": ""}],
+                            "negative_prompt": ["STRING", {"default": ""}],
+                            "resolution": ["INT", {"default": 1024}],
+                            "clip": ["CLIP"],
+                        }},
+                        "input_order": {"required": ["prompt", "negative_prompt", "resolution", "clip"]},
+                        "output": ["CONDITIONING", "CONDITIONING", "CONDITIONING"],
+                        "output_name": ["positive", "negative", "conditioning"],
+                        "output_is_list": [False, False, False],
+                    }
+                    continue
+                if node.class_type == "QwenImage21Cache":
+                    info[node.class_type] = {
+                        "input": {"required": {
+                            "device": ["STRING", {"default": "auto"}],
+                            "dtype": ["STRING", {"default": "default"}],
+                            "model": ["MODEL"],
+                        }},
+                        "input_order": {"required": ["device", "dtype", "model"]},
+                        "output": ["MODEL"], "output_name": ["model"], "output_is_list": [False],
+                    }
+                    continue
+                def schema(value):
+                    if isinstance(value, bool):
+                        kind = "BOOLEAN"
+                    elif isinstance(value, int):
+                        kind = "INT"
+                    elif isinstance(value, float):
+                        kind = "FLOAT"
+                    else:
+                        kind = "STRING"
+                    return [kind, {"default": value}]
+                info[node.class_type] = {
+                    "input": {"required": {key: schema(value) for key, value in node.inputs.items()}},
+                    "input_order": {"required": list(node.inputs)},
+                    "output": [], "output_name": [], "output_is_list": [],
+                }
+                continue
+            info[node.class_type] = {
+                "input": copy.deepcopy(entry["inputs"]),
+                "input_order": copy.deepcopy(entry["input_order"]),
+                "output": [item["type"] for item in entry["outputs"]],
+                "output_name": [item["name"] for item in entry["outputs"]],
+                "output_is_list": [item["is_list"] for item in entry["outputs"]],
+            }
+        for cls, field, names in (
+            ("UNETLoader", "unet_name", ("qwen_image_2.1_turbo_int8_convrot.safetensors",)),
+            ("CLIPLoader", "clip_name", ("qwen3vl_8b_int8_convrot.safetensors",)),
+            ("VAELoader", "vae_name", ("qwen_image_2.1_vae_bf16.safetensors",)),
+        ):
+            info[cls]["input"]["required"][field] = [list(names)]
+        return info
     def forbidden(*args, **kwargs):
         pytest.fail("private producer submitted a provider request")
     monkeypatch.setattr(ComfyTargetClient, "object_info", object_info)
@@ -188,7 +250,7 @@ def test_private_dispatch_freezes_real_installed_producer_recipe(retained_produc
     assert result["recipe_digest"] == _digest(raw)
     recipe = json.loads(raw)
     assert raw == _canonical(recipe)
-    assert recipe["entry"] == "z-image"
+    assert recipe["entry"] == "qwen-image-2.1-turbo"
     assert recipe["effective_inputs"]["prompt"] == fixture.prompt
     assert recipe["resolved_randomness"] == {"seed": 42}
     assert recipe["effective_inputs"]["seed"] == 42

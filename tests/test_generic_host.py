@@ -4245,7 +4245,7 @@ def test_readiness_preserves_network_guard_in_final_command_popen_environment(tm
     class ReachedOwnedLaunch(Exception):
         pass
     def launch(argv, **kwargs):
-        captured.append(kwargs['env'])
+        captured.append(dict(kwargs['env']))
         raise ReachedOwnedLaunch
     monkeypatch.setattr(generic_host, 'spawn_task_scope', launch)
     attempt = tmp_path / 'attempt'

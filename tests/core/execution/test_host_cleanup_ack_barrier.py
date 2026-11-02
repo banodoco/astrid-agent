@@ -152,6 +152,7 @@ def test_failed_cleanup_ack_does_not_release_exit_barrier(monkeypatch):
         client.close()
 
 
+@pytest.mark.darwin_native
 def test_real_private_peer_delayed_cleanup_ack_before_exit(tmp_path):
     """Actual kernel peer and protected role designation; no authentication doubles."""
     from astrid.core.execution import custody_broker as custody

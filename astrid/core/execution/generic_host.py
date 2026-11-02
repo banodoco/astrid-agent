@@ -9399,6 +9399,11 @@ class GenericPackHost:
             digest = getattr(object_row, "digest", None)
             if not digest:
                 raise HostError("generated object upload returned no canonical digest")
+            returned_media_type = getattr(object_row, "media_type", None)
+            returned_filename = getattr(object_row, "original_name", None)
+            if ((returned_media_type is not None and returned_media_type != media_type)
+                    or (returned_filename is not None and returned_filename != filename)):
+                raise RuntimeError("output metadata does not match existing object")
             uploaded_row = {
                 "name": descriptor.get("name"),
                 "kind": "object",
@@ -9697,6 +9702,12 @@ class GenericPackHost:
         finally:
             if source_channel is not None:
                 source_channel.close()
+            if "process" not in locals():
+                # Popen never returned, so the normal child finalizer is not
+                # reachable. Clear launch-scoped authority on every launch
+                # preparation/transport failure.
+                env.clear()
+                secrets.clear()
         if import_receipt is not None:
             import_receipt.launched(process)
         self._track_process(process)
@@ -10012,6 +10023,13 @@ class GenericPackHost:
         finally:
             if source_channel is not None:
                 source_channel.close()
+            if "process" not in locals():
+                # No worker owns this request or its environment when launch
+                # fails. Remove both before exposing the original error.
+                env.clear()
+                secret_values.clear()
+                request_path.unlink(missing_ok=True)
+                result_path.unlink(missing_ok=True)
         self._track_process(process)
         output_capture = _TaskOutputCapture(attempt_path, secret_values, self._scrub_secret_text)
         output_capture.start(process)
@@ -10119,6 +10137,7 @@ class GenericPackHost:
                 if remotion_lease is not None:
                     remotion_lease.close()
                 env.clear()
+                secret_values.clear()
                 request_path.unlink(missing_ok=True)
                 result_path.unlink(missing_ok=True)
 
@@ -10528,11 +10547,25 @@ class GenericPackHost:
                     kwargs["request_path"] = terminal["root"] / (
                         "settle-request.json" if operation == self.client.settle else "fail-request.json")
                 terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
-            result = self._handoff_settlement_call(operation, *args, **kwargs)
+                # A deadline guard must distinguish a call still blocked in
+                # transport from a lost acknowledgement. Only the former is
+                # safe to supersede with the fenced timeout failure.
+                terminal["completion_state"] = "in_flight"
+            try:
+                result = self._handoff_settlement_call(operation, *args, **kwargs)
+            except BaseException:
+                with completion_lock:
+                    if (operation == self.client.settle
+                            and terminal.get("completion_state") == "in_flight"
+                            and not terminal.get("recorded")):
+                        # Do not race a possibly committed settlement. The
+                        # reconciliation owner retains the frozen request.
+                        terminal["completion_state"] = "unknown"
+                raise
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
                     raise HostCancelled("settlement returned after the attempt was terminated")
-                terminal.update(recorded=True, completion=result)
+                terminal.update(recorded=True, completion=result, completion_state="acknowledged")
             return result
 
         def lease_call(operation, *args, **kwargs):
@@ -10616,7 +10649,8 @@ class GenericPackHost:
                 terminal["lease_diagnostic"] = diagnostic
 
         def ensure_failure(error):
-            if (terminal.get("recorded") or terminal.get("evidence_pending")
+            if (terminal.get("recorded") or terminal.get("failure_published")
+                    or (terminal.get("evidence_pending") and not terminal.get("forced"))
                     or terminal.get("pending_status") == "cancelled"
                     or self.client is None or not exact_attempt or exact_fence is None):
                 return
@@ -10791,7 +10825,8 @@ class GenericPackHost:
             next_poll = time.monotonic() + _LEASE_POLL_SECONDS
             while not stop.wait(0.05):
                 if lifetime.expired():
-                    if terminal.get("publication_pending"):
+                    if (terminal.get("publication_pending")
+                            and terminal.get("completion_state") != "in_flight"):
                         terminal["reconcile_cancel"] = True
                     else:
                         force_abort("timeout")
@@ -11590,7 +11625,15 @@ class GenericPackHost:
                 # original failure and publish an empty result; only an upload
                 # failure leaves evidence awaiting Runtime recovery.
                 _terminal["evidence_error"] = type(evidence_error).__name__
-                if not upload_started:
+                if (not upload_started or (
+                        isinstance(evidence_error, RuntimeError)
+                        and str(evidence_error) == "output metadata does not match existing object")):
+                    # A reused digest with incompatible immutable metadata is
+                    # not a transport loss. Never retry or attach that output
+                    # to the failure settlement; retain only its local spool.
+                    if (isinstance(evidence_error, RuntimeError)
+                            and str(evidence_error) == "output metadata does not match existing object"):
+                        _terminal["retain_spool"] = True
                     warnings = _terminal.setdefault("evidence_warnings", [])
                     warnings.append(f"terminal evidence unavailable: {type(evidence_error).__name__}")
                     result_value = {
@@ -12502,23 +12545,30 @@ class GenericPackHost:
                     recovery=getattr(original_error or exc, "recovery_command", ""),
                 )
             evidence_outputs, evidence_result = collect_terminal_evidence("failed", original_error)
-            completion_call(self.client.fail,
-                task_id,
-                lease_token,
-                failure_message,
-                retryable=False,
-                attempt_id=attempt_id,
-                fence=fence,
-                failure_diagnostic=(
+            failure_kwargs = {
+                "retryable": False,
+                "attempt_id": attempt_id,
+                "fence": fence,
+                "failure_diagnostic": (
                     {**(storage_failure_receipt or evidence_failure_receipt or {}),
                      "child_import_receipt": original_error.child_import_receipt}
                     if getattr(original_error, "child_import_receipt", None) is not None
                     else storage_failure_receipt or evidence_failure_receipt
                 ),
-                outputs=evidence_outputs,
-                result=evidence_result,
                 **_structured_failure_kwargs(original_error),
+            }
+            # A failure with no verified output reference must not synthesize
+            # a result/evidence attachment merely to carry its error. Runtime
+            # receives the structured terminal failure alone.
+            if evidence_outputs:
+                failure_kwargs.update(outputs=evidence_outputs, result=evidence_result)
+            completion_call(self.client.fail,
+                task_id,
+                lease_token,
+                failure_message,
+                **failure_kwargs,
             )
+            _terminal["failure_published"] = True
             raise
         finally:
             # Keep the lease pump alive through harvesting, upload, and

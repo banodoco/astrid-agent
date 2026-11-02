@@ -46,8 +46,11 @@ def settlement_case(host_case, tmp_path, monkeypatch):
     project = service.create_project({"slug": "bug14", "name": "BUG14"})
     source = (FIXTURES / "bug14/qwen_image_2_1_turbo.py").read_bytes()
     assert hashlib.sha256(source).hexdigest() == "a47e24e6da4dfb7a41413e563fa90dd4e2d45a49a423ee132e5c00cbc27371b9"
+    # Deliberately collide with the test output's name while retaining the
+    # incompatible source media type. The pinned Runtime rejects the output
+    # metadata, exercising the exact-owner failure path.
     service.ingest(project["id"], source, media_type="text/x-python",
-                   original_name="qwen_image_2_1_turbo.py", idempotency_key="source")
+                   original_name="evidence-source-source.json", idempotency_key="source")
 
     pack = case.host.capabilities["test.echo"].manifest_path
     definition = json.loads(pack.read_text())
@@ -207,23 +210,36 @@ def _assert_resolved(case, state):
 
 def test_conflict_fails_exact_owner_without_conflicting_evidence(settlement_case):
     case = settlement_case
+    # The worker-facing Runtime protocol normally settles inline. Force the
+    # equivalent bound upload path so the host can inspect the immutable CAS
+    # metadata Runtime returned before it publishes an output reference.
+    case.host.client.INLINE_SETTLEMENT_OUTPUTS = False
+    def conflicting_upload(path, **_kwargs):
+        assert path.name == "evidence-source-source.json"
+        return SimpleNamespace(
+            digest="sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            size=path.stat().st_size,
+            media_type="text/x-python",
+            original_name="evidence-source-source.json",
+        )
+    case.host.client.upload_object = conflicting_upload
     with pytest.raises(RuntimeError, match="output metadata does not match existing object"):
         _run(case)
     _assert_resolved(case, "failed")
-    assert len(case.writes) == len(case.failures) == 1
+    assert not case.writes and len(case.failures) == 1
     attempt_id, body, key = case.failures[0]
     assert attempt_id == case.attempt["attempt_id"]
     assert key == f"fail-{attempt_id}-{case.attempt['fence']}"
     assert {k: body[k] for k in ("lease_id", "fence", "runtime_epoch")} == {
         k: case.attempt[k] for k in ("lease_id", "fence", "runtime_epoch")}
     assert "outputs" not in body and "result" not in body
-    assert body["error"]["code"] == "publication_rejected"
+    assert body["error"]["code"] == "executor_failed"
     assert "output metadata does not match existing object" in body["error"]["message"]
     assert case.root.exists() and (case.root / "outputs/manifest.json").exists()
     assert case.host.last_cleanup_receipt["intended_disposition"] == "retained"
-    request = json.loads((case.root / "settle-request.json").read_text())
-    assert request == {"operation": "settle_attempt", "identifier": case.writes[0][0],
-                       "idempotency_key": case.writes[0][2], "body": case.writes[0][1]}
+    request = json.loads((case.root / "fail-request.json").read_text())
+    assert request["operation"] == "fail_attempt"
+    assert request["identifier"] == attempt_id and request["body"] == body
 
 
 def test_lost_ack_reads_success_without_duplicate_submission(settlement_case):
