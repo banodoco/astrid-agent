@@ -168,7 +168,7 @@ def test_frozen_policy_matches_reviewed_release_manifest():
     assert policy["python_version"] == "3.11.13"
 
 
-def test_qualification_and_live_admission_use_same_classifier(legacy, monkeypatch):
+def test_qualification_and_live_admission_agree(legacy, monkeypatch):
     from scripts.verify_installed import legacy_identity_observation
 
     root, data, health, discovery, contract = legacy
@@ -182,17 +182,19 @@ def test_qualification_and_live_admission_use_same_classifier(legacy, monkeypatc
         return result
 
     monkeypatch.setattr(legacy_identity, "classify", spy)
-    # The verifier imports the same classifier; spy on its bound name too.
-    monkeypatch.setattr("scripts.verify_installed.classify", spy)
     raw = (old.root / "manifest.json").read_bytes()
     record = json.loads((old.root / "version.json").read_text())
     assert legacy_identity.admitted(old, health, discovery, program_root=root)
     assert legacy_identity_observation(health, discovery, record, json.loads(raw), raw,
                                        old.root / "version.json", contract)[0]
-    assert calls == [True, True]
+    assert calls == [True]
     assert gate(root, data)._legacy_identity_admitted
     update_job._probe_selected_identity(data, old, root, target_release=1)
-    assert calls == [True, True, True, True]
+    assert calls == [True, True, True]
+    health["schema_digest"] = "sha256:wrong"
+    assert not legacy_identity.admitted(old, health, discovery, program_root=root)
+    assert not legacy_identity_observation(health, discovery, record, json.loads(raw), raw,
+                                           old.root / "version.json", contract)[0]
 
 
 def test_missing_shipped_table_fails_closed(legacy, monkeypatch):

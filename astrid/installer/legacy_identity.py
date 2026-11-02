@@ -17,7 +17,7 @@ from pathlib import Path
 def _policy():
     """Load the closed, shipped predecessor list; malformed data refuses admission."""
     try:
-        rows = json.loads(resources.files("astrid.installer").joinpath("omp", "predecessors.json").read_text(encoding="utf-8"))
+        rows = json.loads(resources.files("astrid.installer").joinpath("omp").joinpath("predecessors.json").read_text(encoding="utf-8"))
         if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
                 or rows[0].get("action") != "update" or type(rows[0].get("target_release")) is not int
                 or rows[0].get("target_release") != 1):
