@@ -809,6 +809,55 @@ def test_windows_diagnostics_workflow_retains_launch_and_original_command():
     assert "if: always()" in upload and "journey-manager-${{ matrix.job_id }}" in upload
 
 
+@pytest.mark.parametrize("failure", ["nonzero", "exception"])
+def test_windows_diagnostics_hosted_failure_is_recorded_and_driver_fails_closed(tmp_path, monkeypatch, failure):
+    from scripts import ci_windows_journey as windows
+
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    calls = []
+    origin = '{"PSVersion":"5.1","ModulePath":"scheduler.psd1"}'
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=0, stdout=origin, stderr="origin stderr")
+        if len(calls) == 2:
+            if failure == "exception":
+                raise OSError("complete launch exception sentinel")
+            return SimpleNamespace(returncode=7, stdout="query stdout", stderr="query stderr")
+        return SimpleNamespace(returncode=7, stdout=b'{"status":"error","error":"query failed"}',
+                               stderr=b"driver query stderr")
+
+    monkeypatch.setattr(windows.subprocess, "run", run)
+    with pytest.raises(RuntimeError):
+        windows.scheduled_task_diagnostics()
+    record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    assert record["origin"] == {"argv": calls[0], "stdout": origin, "stderr": "origin stderr", "exit_code": 0}
+    query = record["query"]
+    assert query["argv"] == calls[1] and query["argv"][-1].endswith(windows.SCHEDULED_TASK_QUERY)
+    assert query["classification"] == "error"
+    if failure == "exception":
+        assert query["exit_code"] is None and query["stdout"] == query["stderr"] == ""
+        assert "Traceback (most recent call last)" in query["error"]
+        assert "OSError: complete launch exception sentinel" in query["error"]
+    else:
+        assert (query["stdout"], query["stderr"], query["exit_code"]) == ("query stdout", "query stderr", 7)
+
+    workflow = (journey.ROOT / ".github/workflows/journey.yml").read_text()
+    step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split(
+        "      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[0]
+    tail = step.split("          } finally {\n            Save-PreflightLaunch\n          }\n", 1)[1]
+    assert not any(line.strip() and not line.strip().startswith("#") for line in tail.splitlines())
+
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+        journey.release1_manager_prerequisite(SimpleNamespace(job_id="direct-windows", mode="direct"), tmp_path)
+    preflight = json.loads((tmp_path / "preflight-scheduled-task-manager-prerequisite.json").read_text())
+    assert preflight["status"] == "error" and preflight["exit_code"] == 7
+    assert preflight["argv"] == calls[2] and preflight["argv"][-1] == windows.SCHEDULED_TASK_PREFLIGHT
+    assert preflight["stderr"] == "driver query stderr" and "query failed" in preflight["stdout"]
+
+
 @pytest.mark.parametrize("module_source, expected", [
     ("raise ImportError('import sentinel')\n", "ImportError: import sentinel"),
     ("def scheduled_task_diagnostics():\n    print('partial stdout', flush=True)\n    raise RuntimeError('preflight sentinel')\n", "RuntimeError: preflight sentinel"),
