@@ -74,6 +74,11 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      combined_native_capture:
+        description: Diagnostic-only single direct-Linux owner comparison; never release evidence
+        required: false
+        default: false
+        type: boolean
       candidate:
         description: Frozen candidate JSON; hosted results are evidence, never a publish action
         required: true
@@ -144,6 +149,7 @@ permissions:
 
 jobs:
   config:
+    if: inputs.combined_native_capture != true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -362,7 +368,7 @@ jobs:
           PY
 
   journey:
-    if: needs.config.outputs.m4_5_only != 'true'
+    if: inputs.combined_native_capture != true && needs.config.outputs.m4_5_only != 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
@@ -733,7 +739,7 @@ jobs:
           compression-level: 0
 
   release2:
-    if: needs.config.outputs.m4_5_enabled == 'true'
+    if: inputs.combined_native_capture != true && needs.config.outputs.m4_5_enabled == 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -816,7 +822,7 @@ jobs:
           if-no-files-found: warn
 
   m4_4b_local:
-    if: needs.config.outputs.m4_4b_enabled == 'true'
+    if: inputs.combined_native_capture != true && needs.config.outputs.m4_4b_enabled == 'true'
     needs: config
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -865,7 +871,7 @@ jobs:
           if-no-files-found: warn
 
   failure_modes:
-    if: needs.config.outputs.m4_6_enabled == 'true'
+    if: inputs.combined_native_capture != true && needs.config.outputs.m4_6_enabled == 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -978,9 +984,234 @@ jobs:
           path: ${{ runner.temp }}/m4-6-${{ matrix.job_id }}/output
           if-no-files-found: warn
 
+  combined_native_capture:
+    name: Diagnostic direct-Linux owner comparison
+    if: inputs.combined_native_capture == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      R0_DRIVER_AGENT: d5b7694218394cc69d72647dc98f48a231392a18
+      R0_APP: ee66de5d100e0a9b8cf5198961556a68b24cad3e
+      R0_RUNTIME: 8e6b7e26b30cfc0bb199bda4979ff2da3f21e8b3
+      R0_PINOKIO: 3a6a98ae251ca126505245286e2d3e760f4348e9
+      R0_RUN_ROOT: ${{ runner.temp }}/astrid-r1-direct-linux
+      R0_OUT: ${{ runner.temp }}/combined-native-capture
+    steps:
+      - name: Check out immutable diagnostic driver
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: d5b7694218394cc69d72647dc98f48a231392a18
+          path: driver
+          persist-credentials: false
+      - name: Check out exact App source
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ee66de5d100e0a9b8cf5198961556a68b24cad3e
+          path: app
+          persist-credentials: false
+      - name: Check out diagnostic Agent execution carrier
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ github.sha }}
+          path: candidate-agent
+          persist-credentials: false
+      - name: Check out exact diagnostic Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 8e6b7e26b30cfc0bb199bda4979ff2da3f21e8b3
+          path: runtime
+          persist-credentials: false
+      - name: Check out exact Pinokio verifier input
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: 3a6a98ae251ca126505245286e2d3e760f4348e9
+          path: pinokio
+          persist-credentials: false
+      - name: Regenerate disposable manifest and run unchanged admission gates
+        shell: bash
+        env:
+          REQUESTED_CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$R0_OUT"
+          printf '%s\n' "$REQUESTED_CANDIDATE" > "$R0_OUT/candidate.json"
+          test "$(git -C driver rev-parse HEAD)" = "$R0_DRIVER_AGENT"
+          test "$(git -C app rev-parse HEAD)" = "$R0_APP"
+          test "$(git -C runtime rev-parse HEAD)" = "$R0_RUNTIME"
+          test "$(git -C pinokio rev-parse HEAD)" = "$R0_PINOKIO"
+          test "$(git -C candidate-agent rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C candidate-agent merge-base --is-ancestor "$R0_DRIVER_AGENT" HEAD
+          (
+            cd app
+            node scripts/installer/update-manifest.mjs \
+              --runtime-checkout ../runtime \
+              --agent-checkout ../candidate-agent \
+              --runtime-lock ../candidate-agent/runtime.lock.json \
+              --write
+            node scripts/installer/pin.mjs --check
+          ) 2>&1 | tee "$R0_OUT/pin-gates.log"
+          test "$(sha256sum app/public/install | awk '{print $1}')" = 100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d
+          test "$(sha256sum app/public/install.sh | awk '{print $1}')" = 591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285
+          test "$(sha256sum app/public/install.ps1 | awk '{print $1}')" = bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258
+          python3 -u driver/scripts/check_journey_evidence.py \
+            --candidate "$R0_OUT/candidate.json" \
+            --app-checkout app --prepare-only \
+            2>&1 | tee "$R0_OUT/prepare-verifier.log"
+          {
+            printf 'driver_agent=%s\n' "$(git -C driver rev-parse HEAD)"
+            printf 'app=%s\n' "$(git -C app rev-parse HEAD)"
+            printf 'agent_carrier=%s\n' "$(git -C candidate-agent rev-parse HEAD)"
+            printf 'agent_carrier_base=%s\n' "$R0_DRIVER_AGENT"
+            printf 'runtime=%s\n' "$(git -C runtime rev-parse HEAD)"
+            printf 'pinokio=%s\n' "$(git -C pinokio rev-parse HEAD)"
+          } > "$R0_OUT/effective-checkouts.txt"
+          sha256sum app/public/install app/public/install.sh app/public/install.ps1 \
+            app/public/install-manifest.json "$R0_OUT/candidate.json" \
+            > "$R0_OUT/candidate-input-hashes.txt"
+          cp app/public/install-manifest.json "$R0_OUT/disposable-install-manifest.json"
+      - name: Establish authentic Linux user systemd from the immutable driver
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          set -Eeuo pipefail
+          sed -n '445,527p' driver/.github/workflows/journey.yml | \
+            sed 's/^          //' > "$R0_OUT/establish-linux-user-service-manager.sh"
+          bash "$R0_OUT/establish-linux-user-service-manager.sh"
+          cp "$RUNNER_TEMP/journey-manager-direct-linux/prerequisite.log" \
+            "$R0_OUT/systemd-prerequisite.log"
+      - name: Execute exactly one unchanged direct-Linux Release-0 to Release-1 journey
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          export ASTRID_CI_EXPECTED_RUNNER=ubuntu-24.04
+          export ASTRID_RUNTIME_OWNER_DIAGNOSTICS=1
+          systemctl --user show astrid.service \
+            --property=LoadState,FragmentPath,ActiveState,SubState,MainPID,ExecMainStatus \
+            > "$R0_OUT/systemd-before.txt" 2>&1 || true
+          set +e
+          python3 -u driver/scripts/ci_journey.py \
+            --job-id direct-linux \
+            --mode direct \
+            --leg release0-to-release1 \
+            --candidate "$R0_OUT/candidate.json" \
+            --app-checkout app \
+            --candidate-agent-checkout candidate-agent \
+            --candidate-runtime-checkout runtime \
+            --pinokio-checkout pinokio \
+            --run-root "$R0_RUN_ROOT" \
+            --root "$R0_RUN_ROOT/program" \
+            --data-root "$R0_RUN_ROOT/data" \
+            --shell sh \
+            --release0-fixture driver/tests/fixtures/release0 \
+            --allow-release0-to-release1 \
+            2>&1 | tee "$R0_OUT/journey-driver.log"
+          R0_INNER_EXIT=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$R0_INNER_EXIT" > "$R0_OUT/inner-exit.txt"
+          printf 'R0_INNER_EXIT=%s\n' "$R0_INNER_EXIT"
+          log="$R0_RUN_ROOT/evidence-upload/before-cleanup/install.log"
+          if test -f "$log"; then
+            grep -nF 'ASTRID_OWNER_DIAGNOSTICS ' "$log" \
+              > "$R0_OUT/runtime-owner-diagnostics.txt" || true
+            grep -nF '[astrid owner-validation diagnostic v1]' "$log" \
+              > "$R0_OUT/agent-owner-diagnostics.txt" || true
+          fi
+      - name: Prove Runtime 8e is installed in the actual bootstrap Python
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          R0_RUNTIME_SOURCE="$GITHUB_WORKSPACE/runtime" \
+            app/public/bootstrap-venv/bin/python -I - <<'PY' \
+              > "$R0_OUT/bootstrap-runtime-imports.json" \
+              2> "$R0_OUT/bootstrap-runtime-imports.stderr"
+          import hashlib, importlib.util, json, sys
+          from pathlib import Path
+
+          expected = {
+              "astrid_runtime.bootstrap": "ed92c27bca3e504853e151e5853d91154c12cc7859377b6055d91a408b8955fc",
+              "astrid_runtime.runtime_boundary": "ff72b0290edadc331c78235f2c3b66afb1ec8ba65ac2b9224433ba05d26e5ffe",
+              "astrid_runtime.owner_diagnostics": "74f95be3d7e9f580893551e620041c5147349859b1f3d22e32525242676a7750",
+          }
+          prefix = Path(sys.prefix).resolve()
+          observed = {"executable": sys.executable, "prefix": str(prefix), "modules": {}}
+          for name, wanted in expected.items():
+              path = Path(importlib.util.find_spec(name).origin).resolve()
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if not path.is_relative_to(prefix) or digest != wanted:
+                  raise SystemExit(f"bootstrap Runtime import mismatch: {name}")
+              observed["modules"][name] = {"origin": str(path), "sha256": digest}
+          from astrid_runtime import owner_diagnostics
+          if owner_diagnostics._SWITCH != "ASTRID_RUNTIME_OWNER_DIAGNOSTICS":
+              raise SystemExit("bootstrap Runtime diagnostic switch mismatch")
+          print(json.dumps(observed, sort_keys=True))
+          PY
+          printf '%s\n' "$?" > "$R0_OUT/bootstrap-runtime-imports.exit"
+          exit 0
+      - name: Retain evidence, hashes, systemd after-state, and cleanup result
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          systemctl --user show astrid.service \
+            --property=LoadState,FragmentPath,ActiveState,SubState,MainPID,ExecMainStatus \
+            > "$R0_OUT/systemd-after.txt" 2>&1
+          printf '%s\n' "$?" > "$R0_OUT/systemd-after.exit"
+          if test -d "$R0_RUN_ROOT/evidence-upload"; then
+            cp -a "$R0_RUN_ROOT/evidence-upload" "$R0_OUT/evidence-upload"
+          fi
+          result="$R0_RUN_ROOT/evidence-upload/before-cleanup/journey-result.json"
+          if test -f "$result"; then
+            python3 - "$result" <<'PY' > "$R0_OUT/cleanup-result.json"
+          import json, sys
+          row = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(json.dumps({
+              "status": row.get("status"),
+              "error": row.get("error"),
+              "final_cleanup": row.get("final_cleanup"),
+              "cleanup_error": row.get("cleanup_error"),
+              "service_manager_prerequisite": row.get("service_manager_prerequisite"),
+          }, sort_keys=True))
+          PY
+          fi
+          (
+            cd "$R0_OUT"
+            find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | \
+              xargs -0 -r sha256sum > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+          exit 0
+      - name: Upload the diagnostic receipt even though the inner journey refuses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-native-owner-capture
+          path: ${{ runner.temp }}/combined-native-capture
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
+      - name: Preserve the diagnostic inner failure as the job result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$R0_OUT/runtime-owner-diagnostics.txt"
+          test -s "$R0_OUT/agent-owner-diagnostics.txt"
+          test "$(cat "$R0_OUT/bootstrap-runtime-imports.exit")" = 0
+          inner=$(cat "$R0_OUT/inner-exit.txt")
+          test "$inner" = 1
+          exit "$inner"
+
   gate:
     name: Journey evidence (exact tuple)
-    if: always()
+    if: always() && inputs.combined_native_capture != true
     needs: [config, journey, release2, m4_4b_local, failure_modes]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
