@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Build a pinned Agent wheel using runner-owned disposable resources."""
+import json
+import os
+import platform
+import plistlib
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+from pathlib import Path
+
+UID = 503
+MIN_FREE = 10 * 1024**3
+AGENT_BRANCH = "lane/M-R1FIX/UPD-R0-INTERRUPTION-R2"
+RUNTIME_SHA = "255ecda21ba904520eb867936ef173cc5f7d3ae4"
+REPOS = {name: f"https://github.com/banodoco/astrid-{name}.git"
+         for name in ("agent", "runtime", "pinokio")}
+
+
+def run(args, *, env=None, allow_failure=False):
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=300, check=False)
+    if result.returncode and not allow_failure:
+        raise RuntimeError("A required command failed; no credentials or raw command output retained")
+    return result
+
+
+def version(args):
+    if shutil.which(args[0]) is None:
+        return "missing"
+    result = run(args, allow_failure=True)
+    if result.returncode:
+        return "unavailable"
+    return (result.stdout or result.stderr).splitlines()[0][:160]
+
+
+def service_absent(uid):
+    result = run(["launchctl", "print", f"gui/{uid}/haus.astrid.runtime"], allow_failure=True)
+    missing = f'Could not find service "haus.astrid.runtime" in domain for user gui: {uid}'
+    return result.returncode == 113 and result.stderr.strip().replace("\r\n", "\n") in {missing, f"Bad request.\n{missing}"}
+
+
+def pinokio(home):
+    for app, label in ((Path("/Applications/Pinokio.app"), "/Applications/Pinokio.app"),
+                       (home / "Applications/Pinokio.app", "~/Applications/Pinokio.app")):
+        metadata = app / "Contents/Info.plist"
+        if metadata.is_file():
+            with metadata.open("rb") as f:
+                info = plistlib.load(f)
+            return {"installed": True, "location": label,
+                    "version": str(info.get("CFBundleShortVersionString") or info.get("CFBundleVersion") or "unknown")}
+    return {"installed": False, "location": "not found in standard app locations", "version": "missing"}
+
+
+def owned_directory(path):
+    if path.exists() or path.is_symlink():
+        st = path.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != UID or st.st_mode & 0o077:
+            raise RuntimeError("Cache directory is not a private runner-owned real directory")
+    else:
+        path.mkdir(mode=0o700)
+
+
+def verify_cache_tree(root):
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=lambda e: (_ for _ in ()).throw(e)):
+        for name in dirs + files:
+            item = Path(directory) / name
+            st = item.lstat()
+            if stat.S_ISLNK(st.st_mode) or st.st_uid != UID:
+                raise RuntimeError("Git cache contains a symlink or foreign-owned entry")
+
+
+def git(args, env):
+    # Disable helper/header and all inherited environment/config; do not echo output.
+    return run(["git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "http.extraHeader=",
+                "-c", "gc.auto=0", "-c", "maintenance.auto=false", *args], env=env).stdout.strip()
+
+
+def validate_cache_config(name, content):
+    # A strict allowlist prevents includes, URL rewrites, redirects, extra
+    # headers, helpers and hooks from affecting later Git commands.
+    allowed = {
+        "core.repositoryformatversion": {"0"},
+        "core.filemode": {"true", "false"},
+        "core.bare": {"true"},
+        "core.ignorecase": {"true", "false"},
+        "core.precomposeunicode": {"true", "false"},
+        "remote.origin.url": {REPOS[name]},
+        "remote.origin.fetch": {"+refs/heads/*:refs/remotes/origin/*"},
+    }
+    seen = set()
+    for entry in content.split("\0"):
+        if not entry:
+            continue
+        key, sep, value = entry.partition("\n")
+        key = key.lower()
+        if not sep or key in seen or key not in allowed or value not in allowed[key]:
+            raise RuntimeError("Existing Git cache has unexpected local configuration")
+        seen.add(key)
+    if not {"core.repositoryformatversion", "core.bare", "remote.origin.url", "remote.origin.fetch"} <= seen:
+        raise RuntimeError("Existing Git cache is missing required local configuration")
+
+
+
+def cached_repo(root, name, ref, env, expected):
+    repo = root / f"{name}.git"
+    existed = repo.exists() or repo.is_symlink()
+    owned_directory(repo)
+    if not existed:
+        git(["init", "--bare", str(repo)], env)
+        git(["-C", str(repo), "remote", "add", "origin", REPOS[name]], env)
+    else:
+        verify_cache_tree(repo)
+    for alternate in (repo / "objects/info/alternates", repo / "objects/info/http-alternates"):
+        if alternate.exists() or alternate.is_symlink():
+            raise RuntimeError("Git cache contains alternate object sources")
+    config = git(["-C", str(repo), "config", "--local", "--no-includes", "--null", "--list"], env)
+    validate_cache_config(name, config)
+    if git(["-C", str(repo), "rev-parse", "--is-bare-repository"], env) != "true":
+        raise RuntimeError("Existing Git cache is not bare")
+    git(["-C", str(repo), "fetch", "--no-tags", "--depth=1", "origin", ref], env)
+    sha = git(["-C", str(repo), "rev-parse", "FETCH_HEAD^{commit}"], env)
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise RuntimeError("Fetched cache revision is invalid")
+    if sha != expected:
+        raise RuntimeError("A requested branch no longer points to its expected commit")
+    # Keep the fetched object reachable after subsequent fetches and Git GC.
+    git(["-C", str(repo), "update-ref", "refs/heads/bundle-b-selected", sha], env)
+    return sha
+
+
+
+AGENT_BRANCH_B = "lane/M-R1FIX/UPD-R0-CANDIDATE-PIN"
+AGENT_SHA_B = "f4f4fc99b42bcf4421f2aa27ad07ddad85fc18f9"
+PINOKIO_BRANCH_B = "lane/M-PIN/R-25-MAC-WORKFLOW-MODE-R1"
+PINOKIO_SHA_B = "292ab95d0d95065e449d08d5c170188b72aff520"
+PYTHON = "/opt/homebrew/opt/python@3.11/bin/python3.11"
+
+
+def fetch_exact(root, name, branch, expected, env):
+    actual = cached_repo(root, name, "refs/heads/" + branch, env, expected)
+    if actual != expected:
+        raise RuntimeError("A requested branch no longer points to its expected commit")
+    return actual
+
+
+def main():
+    import hashlib
+    import tempfile
+    if os.getuid() != UID or os.environ.get("RUNNER_NAME") != "hannah-mac":
+        raise RuntimeError("Bundle B requires the dedicated runner identity")
+    home = Path(pwd.getpwuid(UID).pw_dir)
+    temp = Path(os.environ["RUNNER_TEMP"])
+    expected_temp = home / "actions-runner/_work/_temp"
+    if temp != expected_temp or temp.resolve() != temp:
+        raise RuntimeError("Unexpected runner temp location")
+    cache_parent = home / ".astrid-mac-bundle-cache"
+    owned_directory(cache_parent)
+    cache = cache_parent / "bundle-a-v1"
+    owned_directory(cache)
+    config_home = cache / "git-home"
+    owned_directory(config_home)
+    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(config_home),
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": "/dev/null",
+           "GIT_CONFIG_GLOBAL": "/dev/null", "XDG_CONFIG_HOME": str(config_home),
+           "GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1",
+           "PIP_CONFIG_FILE": "/dev/null", "PIP_NO_INPUT": "1",
+           "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PYTHONNOUSERSITE": "1"}
+    if shutil.disk_usage(home).free < MIN_FREE:
+        raise RuntimeError("Insufficient free disk for Bundle B")
+    agent = fetch_exact(cache, "agent", AGENT_BRANCH_B, AGENT_SHA_B, env)
+    pinokio = fetch_exact(cache, "pinokio", PINOKIO_BRANCH_B, PINOKIO_SHA_B, env)
+    scratch_parent = cache_parent / "bundle-b-v1"
+    owned_directory(scratch_parent)
+    scratch = Path(tempfile.mkdtemp(prefix="build-", dir=scratch_parent))
+    source = scratch / "agent"
+    # Clone without hardlinks to avoid changing the previously retained cache.
+    git(["clone", "--no-checkout", "--no-local", "--no-hardlinks", "--",
+         str(cache / "agent.git"), str(source)], env)
+    git(["-C", str(source), "checkout", "--detach", agent], env)
+    if git(["-C", str(source), "rev-parse", "HEAD^{commit}"], env) != AGENT_SHA_B:
+        raise RuntimeError("Agent source checkout revision mismatch")
+    result = run([PYTHON, "-c", "import sys; assert sys.version_info[:2] == (3, 11)"], env=env)
+    venv = scratch / "venv"
+    run([PYTHON, "-m", "venv", str(venv)], env=env)
+    python = str(venv / "bin/python")
+    run([python, "-m", "pip", "install", "setuptools==80.9.0", "wheel==0.46.3"], env=env)
+    dist = scratch / "wheelhouse"
+    dist.mkdir(mode=0o700)
+    run([python, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps",
+         "--wheel-dir", str(dist), str(source)], env=env)
+    wheels = list(dist.glob("*.whl"))
+    if len(wheels) != 1 or wheels[0].is_symlink() or not wheels[0].is_file():
+        raise RuntimeError("Expected exactly one regular Agent wheel")
+    wheel = wheels[0]
+    digest = hashlib.sha256()
+    with wheel.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    print(json.dumps({"status": "complete", "agent_sha": agent, "pinokio_sha": pinokio,
+                      "python": "3.11", "wheel": wheel.name, "wheel_sha256": digest.hexdigest(),
+                      "scratch_id": scratch.name, "free_bytes_after": shutil.disk_usage(home).free}, sort_keys=True))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        reason = str(exc) if type(exc) is RuntimeError else "System or data error during Bundle B"
+        print(json.dumps({"status": "failed", "reason": reason}))
+        raise SystemExit(1)
