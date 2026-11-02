@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Stage runner-owned Python/pwsh and service settings; never restart the runner."""
+import hashlib
+import json
+import os
+import posixpath
+import pwd
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+from pathlib import Path
+
+UID = 503
+PY_VERSION = "3.11.18"
+PY_URL = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.11.18%2B20261026-aarch64-apple-darwin-install_only.tar.gz"
+PY_SHA = "cba3455e18516fbe8668cff2820c9b6a53447c552d612443c2b2fb60d390a908"
+PS_URL = "https://github.com/PowerShell/PowerShell/releases/download/v7.6.9/powershell-7.6.9-osx-arm64.tar.gz"
+PS_SHA = "a1c7e98ac403da4be5ba75c1c5855af272de7787a91d478c4267466fe58fc1af"
+
+
+def real_dir(path):
+    st = path.lstat()
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != UID or path != path.resolve():
+        raise RuntimeError("Expected a runner-owned real directory")
+
+
+def owned_subdir(parent, name):
+    real_dir(parent)
+    path = parent / name
+    if path.exists() or path.is_symlink():
+        real_dir(path)
+    else:
+        path.mkdir(mode=0o700)
+        real_dir(path)
+    return path
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def extract_safe(archive, dest):
+    """Extract a checksum-verified archive with no external link or path targets."""
+    with tarfile.open(str(archive), "r:gz") as tf:
+        for item in tf.getmembers():
+            name = posixpath.normpath(item.name)
+            if name in ("", ".") or name.startswith("/") or name == ".." or name.startswith("../"):
+                raise RuntimeError("Archive has an unsafe member path")
+            if not (item.isfile() or item.isdir() or item.issym() or item.islnk()):
+                raise RuntimeError("Archive contains an unsupported entry")
+            if item.issym() or item.islnk():
+                link = item.linkname
+                if link.startswith("/"):
+                    raise RuntimeError("Archive has an absolute link")
+                base = posixpath.dirname(name) if item.issym() else ""
+                resolved = posixpath.normpath(posixpath.join(base, link))
+                if resolved == ".." or resolved.startswith("../"):
+                    raise RuntimeError("Archive link escapes staging")
+        tf.extractall(str(dest))
+
+
+def download(url, target, digest):
+    subprocess.run(["/usr/bin/curl", "-q", "--proto", "=https", "--proto-redir", "=https",
+                    "-fsSL", "--retry", "3", "--output", str(target), url],
+                   env={"PATH": "/usr/bin:/bin", "HOME": str(target.parent)},
+                   check=True, timeout=300, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if sha(target) != digest:
+        raise RuntimeError("Downloaded archive checksum differs")
+
+
+def read_owned(path):
+    if not path.exists() and not path.is_symlink():
+        return None, None
+    st = path.lstat()
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != UID:
+        raise RuntimeError("Runner settings file is not runner-owned")
+    return path.read_bytes(), stat.S_IMODE(st.st_mode)
+
+
+def replace_owned(path, content, mode):
+    temporary = path.with_name(path.name + ".prereqs-new")
+    fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(str(temporary), str(path))
+    finally:
+        if temporary.exists(): temporary.unlink()
+
+
+def stage(home, runner, toolcache, temp):
+    if shutil.disk_usage(home).free < 10_000_000_000:
+        raise RuntimeError("Insufficient disk for runner prerequisites")
+    real_dir(home); real_dir(runner); real_dir(toolcache); real_dir(temp)
+    if os.environ.get("RUNNER_TOOL_CACHE") != str(toolcache) or os.environ.get("RUNNER_TEMP") != str(temp):
+        raise RuntimeError("Runner tool cache or temp differs from expected work directory")
+    root = home / ".astrid-runner-prereqs-v1"
+    if root.exists() or root.is_symlink():
+        raise RuntimeError("Prerequisite journal already exists; inspect before retry")
+    python_root = owned_subdir(toolcache, "Python")
+    py_parent = owned_subdir(python_root, PY_VERSION)
+    py_dest = py_parent / "arm64"
+    marker = py_parent / "arm64.complete"
+    if py_dest.exists() or py_dest.is_symlink() or marker.exists() or marker.is_symlink():
+        raise RuntimeError("Python cache entry already exists; refusing replacement")
+    original_path, original_mode = read_owned(runner / ".path")
+    if original_path is None: raise RuntimeError("Runner .path is absent")
+    old_path = original_path.decode("utf-8").strip()
+    ps_dest = root / "powershell-7.6.9"
+    if not old_path or "\n" in old_path or str(ps_dest) in old_path.split(":"):
+        raise RuntimeError("Runner PATH is empty, invalid or already configured")
+    new_path = (str(ps_dest) + ":" + old_path + "\n").encode("utf-8")
+    root.mkdir(mode=0o700)
+    backup = root / "path.backup"
+    backup.write_bytes(original_path); backup.chmod(0o600)
+    journal = {"schema": 1, "state": "staging", "run_id": os.urandom(16).hex(), "before": {"path": {
+                   "exists": True, "mode": original_mode, "sha256": hashlib.sha256(original_path).hexdigest()}},
+               "new_sha256": {"path": hashlib.sha256(new_path).hexdigest()},
+               "python_source": "astral-python-build-standalone-20261026",
+               "python_version": PY_VERSION, "python_sha256": PY_SHA,
+               "powershell_version": "7.6.9", "powershell_sha256": PS_SHA}
+    journal_path = root / "journal.json"
+    journal_path.write_text(json.dumps(journal, sort_keys=True) + "\n"); journal_path.chmod(0o600)
+    archives = root / "staging"; archives.mkdir(mode=0o700)
+    pyarchive = archives / "python.tar.gz"; psarchive = archives / "powershell.tar.gz"
+    download(PY_URL, pyarchive, PY_SHA); download(PS_URL, psarchive, PS_SHA)
+    pyextract = archives / "python-extract"; pyextract.mkdir(mode=0o700)
+    psextract = archives / "powershell-extract"; psextract.mkdir(mode=0o700)
+    extract_safe(pyarchive, pyextract); extract_safe(psarchive, psextract)
+    py_src = pyextract / "python"; psbin = psextract / "pwsh"
+    if not py_src.is_dir() or py_src.is_symlink() or not psbin.is_file() or psbin.is_symlink():
+        raise RuntimeError("Downloaded runtime layout is unexpected")
+    psbin.chmod(psbin.stat().st_mode | stat.S_IXUSR)
+    if subprocess.check_output([str(psbin), "-NoLogo", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], text=True).strip() != "7.6.9":
+        raise RuntimeError("PowerShell version check failed")
+    # Create destinations exclusively; never replace an unexpectedly present directory.
+    def move_to_new_owned_dir(source, destination):
+        if (source / ".astrid-prereq-owner").exists():
+            raise RuntimeError("Archive collides with the ownership marker")
+        destination.mkdir(mode=0o700)
+        owner = destination / ".astrid-prereq-owner"
+        owner.write_text(journal["run_id"])
+        owner.chmod(0o600)
+        for child in source.iterdir():
+            os.rename(str(child), str(destination / child.name))
+    move_to_new_owned_dir(py_src, py_dest)
+    code = ("import json,platform,sqlite3,ssl,sys; print(json.dumps({"
+            "'version':platform.python_version(),'arch':platform.machine(),"
+            "'prefix':sys.prefix}))")
+    info = json.loads(subprocess.check_output([str(py_dest / "bin/python"), "-I", "-c", code], text=True))
+    if info != {"version": PY_VERSION, "arch": "arm64", "prefix": str(py_dest)}:
+        raise RuntimeError("Runner-owned standalone Python failed identity checks")
+    move_to_new_owned_dir(psextract, ps_dest)
+    fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as stream: stream.write(journal["run_id"])
+    current_path, current_mode = read_owned(runner / ".path")
+    if current_path != original_path or current_mode != original_mode:
+        raise RuntimeError("Runner PATH changed during staging")
+    replace_owned(runner / ".path", new_path, original_mode)
+    journal["state"] = "pending-restart"
+    journal_path.write_text(json.dumps(journal, sort_keys=True) + "\n")
+    print(json.dumps({"status": "pending-restart", "python_version": PY_VERSION,
+                      "python_provenance": journal["python_source"], "powershell_version": "7.6.9",
+                      "tool_cache_writable": os.access(str(toolcache), os.W_OK),
+                      "runner_temp_writable": os.access(str(temp), os.W_OK)}))
+
+
+def rollback(home, runner, toolcache):
+    """Restore unchanged settings and remove only journalled owned tools."""
+    real_dir(home); real_dir(runner); real_dir(toolcache)
+    root = home / ".astrid-runner-prereqs-v1"; real_dir(root)
+    journal_path = root / "journal.json"
+    journal_data, _ = read_owned(journal_path)
+    if journal_data is None: raise RuntimeError("Prerequisite journal is absent")
+    journal = json.loads(journal_data)
+    if journal.get("schema") != 1 or journal.get("state") not in {"staging", "pending-restart", "rollback-in-progress"}:
+        raise RuntimeError("Prerequisite journal is not rollback-ready")
+    run_id = journal.get("run_id")
+    if not isinstance(run_id, str) or len(run_id) != 32 or any(c not in "0123456789abcdef" for c in run_id):
+        raise RuntimeError("Prerequisite journal identity is invalid")
+    before = journal["before"]["path"]
+    backup, _ = read_owned(root / "path.backup")
+    if backup is None or hashlib.sha256(backup).hexdigest() != before["sha256"]:
+        raise RuntimeError("Runner settings backup is missing or changed")
+    current, mode = read_owned(runner / ".path")
+    if (current is None or mode != before["mode"] or hashlib.sha256(current).hexdigest()
+            not in {before["sha256"], journal["new_sha256"]["path"]}):
+        raise RuntimeError("Runner settings changed since staging; refusing rollback")
+    py = toolcache / "Python" / PY_VERSION / "arm64"
+    marker = py.parent / "arm64.complete"
+    ps = root / "powershell-7.6.9"
+    present = []
+    for directory in (py, ps):
+        if directory.exists() or directory.is_symlink():
+            real_dir(directory)
+            owner, _ = read_owned(directory / ".astrid-prereq-owner")
+            if owner is None or owner.decode("ascii") != run_id:
+                raise RuntimeError("Prerequisite owner marker is missing or changed")
+            present.append(directory)
+    if marker.exists() or marker.is_symlink():
+        marker_data, _ = read_owned(marker)
+        if marker_data is None or marker_data.decode("ascii") != run_id:
+            raise RuntimeError("Cache marker is invalid")
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise RuntimeError("Safe directory removal is unavailable")
+    for directory in present:
+        result = subprocess.run(["/usr/sbin/lsof", "-n", "+D", str(directory)], capture_output=True,
+                                text=True, timeout=60, check=False)
+        if result.returncode != 1 or result.stdout.strip() or result.stderr.strip():
+            raise RuntimeError("A prerequisite is in use or cannot be checked")
+    journal["state"] = "rollback-in-progress"
+    journal_path.write_text(json.dumps(journal, sort_keys=True) + "\n")
+    if current != backup:
+        replace_owned(runner / ".path", backup, before["mode"])
+    if marker.exists(): marker.unlink()
+    for directory in present: shutil.rmtree(str(directory))
+    journal["state"] = "rolled-back-restart-required"
+    journal_path.write_text(json.dumps(journal, sort_keys=True) + "\n")
+    print(json.dumps({"status": "rolled-back-restart-required"}))
+
+
+def main():
+    if os.getuid() != UID or os.environ.get("RUNNER_NAME") != "hannah-mac":
+        raise RuntimeError("Wrong runner identity")
+    home = Path(pwd.getpwuid(UID).pw_dir)
+    runner = home / "actions-runner"
+    if sys.argv[1:] == ["stage"]:
+        stage(home, runner, runner / "_work/_tool", runner / "_work/_temp")
+    elif sys.argv[1:] == ["rollback"]:
+        rollback(home, runner, runner / "_work/_tool")
+    else:
+        raise RuntimeError("Expected stage or rollback")
+
+
+if __name__ == "__main__":
+    try: main()
+    except Exception:
+        print(json.dumps({"status": "failed", "reason": "Operation refused or failed; inspect runner-owned journal before retry"}))
+        raise SystemExit(1)
