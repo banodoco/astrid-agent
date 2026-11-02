@@ -17,7 +17,7 @@ from typing import Any
 HOST = "127.0.0.1"
 PORT = 42000
 PINOKIOD_REF = "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
-SETUP_MODE = "javascript"
+SETUP_MODE = "managed-conda"
 SETUP_TIMEOUT_SECONDS = 2400
 MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
 FAILURE_MARKER = b"ASTRID_PINOKIO_FAILURE"
@@ -224,6 +224,7 @@ def _provision_managed_home(
         "stage": "official-setup",
         "pinokiod_ref": PINOKIOD_REF,
         "setup_mode": SETUP_MODE,
+        "setup_requirements": [{"name": "conda"}],
         "environment_boundary": {
             "pinokio_home": str(selected_home),
             "home": str(selected_runner_home),
@@ -235,8 +236,8 @@ def _provision_managed_home(
             "conda_module_sha256": _sha(conda_source),
         },
         "local_setup_patch": (
-            "initialize the pinned Bin modules before Shells; preserve the "
-            "official javascript preset, check, install, and retry paths"
+            "initialize the pinned Bin modules before Shells and request only "
+            "managed Conda through the official check/install/retry paths"
         ),
         "disk": {
             "minimum_free_bytes": MIN_FREE_BYTES,

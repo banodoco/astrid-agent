@@ -2,8 +2,10 @@
 
 // Local venue driver for the pinned setup API. The stock install-mode helper
 // initializes Shells before Bin has injected the Kernel into each bin module;
-// Aria2.env() then dereferences an unset kernel. Keep the official preset,
-// checks, installer modules, and retry behavior, but initialize Bin first.
+// Aria2.env() then dereferences an unset kernel. Initialize Bin first and ask
+// the official API for its managed Conda requirement only. This retains the
+// pinned downloader, package pins, checks, installer, and retry behavior while
+// avoiding unrelated JavaScript-preset tools.
 const fs = require("fs");
 const path = require("path");
 
@@ -14,7 +16,7 @@ async function main() {
   const root = fs.realpathSync(process.argv[2]);
   const mode = process.env.PINOKIO_SETUP_MODE;
   const home = process.env.PINOKIO_HOME;
-  if (mode !== "javascript" || !home || !path.isAbsolute(home)) {
+  if (mode !== "managed-conda" || !home || !path.isAbsolute(home)) {
     throw new Error("exact local Pinokio setup environment required");
   }
 
@@ -28,10 +30,15 @@ async function main() {
   if (kernel.refresh_interval) clearInterval(kernel.refresh_interval);
   kernel.server_running = true;
 
-  await kernel.bin.check({ bin: kernel.bin.preset(mode) });
-  await kernel.bin.install({ mode }, (packet) => {
+  const setup = { requirements: [{ name: "conda" }], conda_requirements: [] };
+  const checked = await kernel.bin.check({ bin: setup });
+  await kernel.bin.install({ params: checked.requirements }, (packet) => {
     if (packet && typeof packet.raw === "string") process.stdout.write(packet.raw);
   });
+  await kernel.bin.refreshInstalled();
+  if (!(await kernel.bin.mod.conda.check())) {
+    throw new Error("managed Conda post-check failed");
+  }
   if (kernel.refresh_interval) clearInterval(kernel.refresh_interval);
   console.log("[local-seed] completed");
 }
