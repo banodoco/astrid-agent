@@ -93,3 +93,49 @@ def test_local_descriptor_rejects_unsupported_choice_with_stable_error(value):
     assert caught.value.code == "unsupported_placement"
     assert caught.value.retryable is False
     assert caught.value.recovery_handle is None
+
+
+def test_descriptor_public_identity_and_subclass_roundtrip():
+    import pickle
+
+    from astrid.core.generation.backends import registry
+    from astrid.core.generation import engine_contracts
+
+    assert registry.PlacementDescriptor is engine_contracts.PlacementDescriptor is PlacementDescriptor
+    assert PlacementDescriptor.__module__ == "astrid.core.generation.engine_contracts"
+    descriptor = PlacementDescriptor.from_dict(VALID)
+    assert type(pickle.loads(pickle.dumps(descriptor))) is PlacementDescriptor
+
+    class CustomPlacement(PlacementDescriptor):
+        pass
+
+    assert type(CustomPlacement.from_dict(VALID)) is CustomPlacement
+
+
+@pytest.mark.parametrize("placement", [
+    VALID,
+    {**VALID, "schema": "invalid"},
+    {**VALID, "supported": ["local", "local"]},
+    {**VALID, "supported": "local"},
+    {**VALID, "default": "remote"},
+    {**VALID, "engine": None},
+    {**VALID, "requires_endpoint": 1},
+    {**VALID, "extra": False},
+    None,
+])
+def test_pack_normalization_matches_descriptor_and_preserves_errors(placement):
+    from astrid.core.pack import PackValidationError
+    from astrid.core.pack.permissions import _normalize_generation_backends
+
+    backend = {"id": "probe", "module": "example", "class": "Adapter", "placement": placement}
+    try:
+        descriptor = PlacementDescriptor.from_dict(placement)
+    except ValueError as expected:
+        with pytest.raises(PackValidationError) as caught:
+            _normalize_generation_backends([backend], path="extensions.generation.backends")
+        assert str(caught.value) == f"extensions.generation.backends[0].placement: {expected}"
+        assert type(caught.value.__cause__) is ValueError
+        assert str(caught.value.__cause__) == str(expected)
+    else:
+        normalized = _normalize_generation_backends([backend], path="extensions.generation.backends")
+        assert normalized[0]["placement"] == descriptor.to_dict()

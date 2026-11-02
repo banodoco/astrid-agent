@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
 
+from astrid.core.pack._placement import parse_placement, validate_placement
+
 EngineId: TypeAlias = str
 PlatformKey: TypeAlias = Literal["linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130", "windows-x86_64-cu128", "windows-x86_64-cu130"]
 Placement: TypeAlias = Literal["local", "runpod"]
@@ -453,45 +455,14 @@ class PlacementDescriptor:
     requires_endpoint: bool
 
     def __post_init__(self) -> None:
-        import re
-
-        if not isinstance(self.schema, str) or self.schema != "astrid.generation-placement.v1":
-            raise ValueError("placement.schema must be astrid.generation-placement.v1")
-        if not isinstance(self.supported, tuple) or not self.supported:
-            raise ValueError("placement.supported must be a non-empty tuple")
-        if any(not isinstance(value, str) or value not in ("local", "runpod")
-               for value in self.supported):
-            raise ValueError("placement.supported contains an invalid placement")
-        if len(set(self.supported)) != len(self.supported):
-            raise ValueError("placement.supported must not contain duplicates")
-        if not isinstance(self.default, str) or self.default not in self.supported:
-            raise ValueError("placement.default must be a supported placement")
-        if self.engine is not None and (
-            not isinstance(self.engine, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", self.engine)
-        ):
-            raise ValueError("placement.engine must be a valid engine ID or null")
-        if type(self.requires_endpoint) is not bool:
-            raise ValueError("placement.requires_endpoint must be a boolean")
-        if self.requires_endpoint and self.engine is None:
-            raise ValueError("placement.requires_endpoint requires an engine ID")
+        validate_placement(
+            self.schema, self.supported, self.default, self.engine, self.requires_endpoint
+        )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> PlacementDescriptor:
         """Parse the complete wire object without coercing malformed values."""
-        if not isinstance(data, Mapping):
-            raise ValueError("placement must be an object")
-        fields = {"schema", "supported", "default", "engine", "requires_endpoint"}
-        if set(data) != fields:
-            raise ValueError("placement must contain exactly schema, supported, default, engine, requires_endpoint")
-        if not isinstance(data["supported"], list):
-            raise ValueError("placement.supported must be an array")
-        return cls(
-            schema=data["schema"],
-            supported=tuple(data["supported"]),
-            default=data["default"],
-            engine=data["engine"],
-            requires_endpoint=data["requires_endpoint"],
-        )
+        return cls(**parse_placement(data))
 
     def to_dict(self) -> dict[str, object]:
         return {
