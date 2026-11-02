@@ -181,8 +181,10 @@ class ExecutorRunResult:
 class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunResult, ExecutorDefinition]):
     """Executor binding of the shared :class:`CapabilityRunner` skeleton."""
 
-    def __init__(self, *, admission: Mapping[str, Any] | None = None) -> None:
+    def __init__(self, *, admission: Mapping[str, Any] | None = None, session: Any = None) -> None:
         self._admission = admission
+        # Per-run session client (M2-11a). Passed only to python actions that declare `session`.
+        self._session = session
 
     def load_default_registry(self) -> ExecutorRegistry:
         return load_default_registry()
@@ -240,7 +242,7 @@ class ExecutorCapabilityRunner(CapabilityRunner[ExecutorRunRequest, ExecutorRunR
         return _prepare_dry_run_request(request)
 
     def run_inner(self, request: ExecutorRunRequest, definition: ExecutorDefinition) -> ExecutorRunResult:
-        return _run_executor_inner(request, definition, _admission=self._admission)
+        return _run_executor_inner(request, definition, _admission=self._admission, _session=self._session)
 
     def finalize_project(
         self,
@@ -266,13 +268,14 @@ _EXECUTOR_RUNNER = ExecutorCapabilityRunner()
 
 
 def run_executor(request: ExecutorRunRequest, registry: ExecutorRegistry | None = None,
-                 *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
-    runner = ExecutorCapabilityRunner(admission=_admission) if _admission is not None else _EXECUTOR_RUNNER
+                 *, _admission: Mapping[str, Any] | None = None, _session: Any = None) -> ExecutorRunResult:
+    runner = (ExecutorCapabilityRunner(admission=_admission, session=_session)
+              if _admission is not None or _session is not None else _EXECUTOR_RUNNER)
     return runner.run(request, registry)
 
 
 def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinition,
-                        *, _admission: Mapping[str, Any] | None = None) -> ExecutorRunResult:
+                        *, _admission: Mapping[str, Any] | None = None, _session: Any = None) -> ExecutorRunResult:
     _validate_scoped_configs_at_dispatch(executor)
     invocation = executor.metadata.get("action_invocation")
     python_action = isinstance(invocation, Mapping) and invocation.get("kind") == "python"
@@ -313,7 +316,7 @@ def _run_executor_inner(request: ExecutorRunRequest, executor: ExecutorDefinitio
         )
 
     if python_action:
-        return _run_python_action(executor, request, values, _admission=_admission)
+        return _run_python_action(executor, request, values, _admission=_admission, _session=_session)
     if executor.kind == "built_in" and "pipeline_step" in executor.metadata:
         return _run_builtin_executor(executor, request)
     return _run_external_executor(executor, request, values)
@@ -331,8 +334,20 @@ def _action_input_values(executor: ExecutorDefinition, request: ExecutorRunReque
 
 
 
+def _declares_session(function: Any) -> bool:
+    import inspect
+
+    try:
+        parameter = inspect.signature(function).parameters.get("session")
+    except (TypeError, ValueError):
+        return False
+    return parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+
+
 def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest,
-                       values: Mapping[str, Any], *, _admission: Mapping[str, Any] | None) -> ExecutorRunResult:
+                       values: Mapping[str, Any], *, _admission: Mapping[str, Any] | None,
+                       _session: Any = None) -> ExecutorRunResult:
     from astrid.core.execution.generic_host import _verify_action_admission
     from astrid.sdk.actions import validate_action_output_definition
 
@@ -363,7 +378,11 @@ def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest
     function = getattr(module, function_name, None)
     if not callable(function):
         raise ExecutorRunnerError(f"Python action function {function_name!r} is missing or not callable")
-    action_result = function(**dict(values))
+    call_values = dict(values)
+    if _session is not None and _declares_session(function):
+        # The session client is passed by keyword and only to actions that declare it.
+        call_values["session"] = _session
+    action_result = function(**call_values)
     validate_action_output_definition(executor, action_result)
     return ExecutorRunResult(executor_id=executor.id, kind=executor.kind,
                              payload={"action_result": action_result}, returncode=0,

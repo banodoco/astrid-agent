@@ -244,7 +244,22 @@ def run(payload_path: str | Path, *, captured=None) -> int:
         from astrid.core.execution.executor.schema import validate_executor_definition
 
         registry = ExecutorRegistry([validate_executor_definition(definition_payload)])
-        result = run_executor(_request_object(request_payload, kind=kind, capability_id=capability_id), registry, _admission=admission)
+        session_client = None
+        channel_fd = payload.get("run_channel_fd")
+        if channel_fd is not None:
+            # Per-run session channel (M2-11a): one client over the inherited child end.
+            # The worker holds no token; the host serves every op against its admission.
+            if type(channel_fd) is not int or channel_fd < 3:
+                raise ValueError("invalid inherited session channel")
+            from astrid.core.execution.session_client import SessionClient
+
+            session_client = SessionClient(
+                channel_fd, run_id=str(request_payload.get("run_id") or ""), timeout_seconds=60.0)
+        try:
+            result = run_executor(_request_object(request_payload, kind=kind, capability_id=capability_id), registry, _admission=admission, _session=session_client)
+        finally:
+            if session_client is not None:
+                session_client.close()
     else:
         from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
         from astrid.core.execution.orchestrator.schema import validate_orchestrator_definition
