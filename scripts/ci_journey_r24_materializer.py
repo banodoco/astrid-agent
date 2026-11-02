@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -79,12 +80,16 @@ def _read_discovery(path: Path) -> Any:
     if path.is_symlink():
         raise MaterializerError(f"missing regular file: {path}")
     try:
-        if not path.is_file():
-            raise DiscoveryMissing(f"discovery file not available yet: {path}")
-        return json.loads(path.read_bytes())
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise MaterializerError(f"missing regular file: {path}")
+        try:
+            return json.loads(path.read_bytes())
+        except FileNotFoundError as exc:
+            # The Runtime may remove or replace the file between the type check
+            # and the read. Treat that narrow race like initial startup absence.
+            raise DiscoveryMissing(f"discovery file not available yet: {path}") from exc
     except FileNotFoundError as exc:
-        # The Runtime may remove or replace the file between the type check and
-        # the read.  Treat that narrow race like initial startup absence.
+        # The Runtime may not have created the file on this poll yet.
         raise DiscoveryMissing(f"discovery file not available yet: {path}") from exc
 
 

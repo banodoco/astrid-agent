@@ -512,6 +512,16 @@ def test_wait_runtime_rejects_invalid_discovery_without_retry(monkeypatch, tmp_p
         materializer._wait_runtime(tmp_path / "data", _RuntimeStart(), timeout=10)
 
 
+def test_wait_runtime_rejects_non_regular_discovery_without_retry(monkeypatch, tmp_path):
+    discovery = tmp_path / "data/runtime/discovery.json"
+    discovery.mkdir(parents=True)
+    monkeypatch.setattr(materializer.time, "sleep",
+                        lambda _seconds: pytest.fail("invalid discovery must not retry"))
+
+    with pytest.raises(materializer.MaterializerError, match="missing regular file"):
+        materializer._wait_runtime(tmp_path / "data", _RuntimeStart(), timeout=10)
+
+
 def test_wait_runtime_preserves_runtime_identity_check(monkeypatch, tmp_path):
     discovery = tmp_path / "data/runtime/discovery.json"
     discovery.parent.mkdir(parents=True)
