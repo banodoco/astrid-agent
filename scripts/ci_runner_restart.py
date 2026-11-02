@@ -24,7 +24,7 @@ def owned(path, directory=False):
         raise RuntimeError("Unexpected runner-owned path")
 
 
-def identity(home):
+def configured_identity(home):
     runner = home / "actions-runner"
     owned(home, True); owned(runner, True)
     service = runner / ".service"
@@ -43,7 +43,12 @@ def identity(home):
             or path.name != label + ".plist"
             or str(runner / "runsvc.sh") not in plist.get("ProgramArguments", [])):
         raise RuntimeError("Service identity changed")
-    target = "gui/503/" + label
+    return "gui/503/" + label, path
+
+
+def identity(home):
+    target, _ = configured_identity(home)
+    runner = home / "actions-runner"
     loaded = subprocess.run(["/bin/launchctl", "print", target], capture_output=True, text=True, timeout=15, check=True)
     if str(runner / "runsvc.sh") not in loaded.stdout:
         raise RuntimeError("Loaded service command changed")
@@ -53,6 +58,54 @@ def identity(home):
 def workers_exist():
     output = subprocess.run(["/bin/ps", "-axo", "uid=,command="], capture_output=True, text=True, timeout=10, check=True).stdout
     return any(re.match(r"^\s*503\s", line) and "/Runner.Worker" in line for line in output.splitlines())
+
+
+def listener_pid(home):
+    executable = str(home / "actions-runner/bin/Runner.Listener")
+    output = subprocess.run(["/bin/ps", "-axo", "uid=,pid=,command="], capture_output=True,
+                            text=True, timeout=10, check=True).stdout
+    pids = []
+    for line in output.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) == 3 and fields[0] == "503" and fields[2].split(None, 1)[0] == executable:
+            pids.append(int(fields[1]))
+    if len(pids) != 1:
+        return None
+    try:
+        os.kill(pids[0], 0)
+    except OSError:
+        return None
+    return pids[0]
+
+
+def recover(home):
+    target, plist = configured_identity(home)
+    probe = subprocess.run(["/bin/launchctl", "print", target], capture_output=True, text=True, timeout=15)
+    if probe.returncode != 0:
+        # Bootstrapping this exact pinned plist is safe only if it is absent.
+        if "Could not find service" not in probe.stderr:
+            raise RuntimeError("Cannot prove service is absent")
+        subprocess.run(["/bin/launchctl", "bootstrap", "gui/503", str(plist)], capture_output=True, text=True, timeout=30, check=True)
+    else:
+        if str(home / "actions-runner/runsvc.sh") not in probe.stdout:
+            raise RuntimeError("Loaded service command changed")
+    subprocess.run(["/bin/launchctl", "kickstart", target], capture_output=True, text=True, timeout=30, check=True)
+
+
+def remove_own_helper(run_dir):
+    label = "haus.astrid.runner-restart." + run_dir.name
+    target = "gui/503/" + label
+    result = subprocess.run(["/bin/launchctl", "print", target], capture_output=True, text=True, timeout=15)
+    if result.returncode != 0:
+        if "Could not find service" in result.stderr:
+            return "already-absent"
+        raise RuntimeError("Cannot inspect helper label")
+    if ("/usr/bin/python3" not in result.stdout
+            or str(run_dir / "helper.py") not in result.stdout
+            or re.search(r"^\s*pid = [0-9]+\s*$", result.stdout, re.MULTILINE)):
+        raise RuntimeError("Helper label is mismatched or still running")
+    subprocess.run(["/bin/launchctl", "remove", label], capture_output=True, text=True, timeout=15, check=True)
+    return "removed"
 
 
 def restart(home, timeout=1200):
@@ -75,8 +128,24 @@ def restart(home, timeout=1200):
     target = identity(home)
     if workers_exist():
         raise RuntimeError("Runner worker appeared")
-    subprocess.run(["/bin/launchctl", "kickstart", "-k", target], capture_output=True, text=True, timeout=30, check=True)
-    return {"status": "restart-requested", "coordinated_quiet_window_required": True}
+    before = listener_pid(home)
+    if before is None:
+        raise RuntimeError("Expected one running listener")
+    try:
+        subprocess.run(["/bin/launchctl", "kickstart", "-k", target], capture_output=True, text=True, timeout=30, check=True)
+        wait_until = time.monotonic() + 45
+        while time.monotonic() < wait_until:
+            after = listener_pid(home)
+            if after is not None and after != before:
+                identity(home)
+                return {"status": "restart-verified", "old_listener_pid": before,
+                        "new_listener_pid": after, "coordinated_quiet_window_required": True}
+            time.sleep(2)
+        raise RuntimeError("New listener not observed")
+    except Exception:
+        # Recovery is restricted to the same already-pinned runner plist and GUI domain.
+        recover(home)
+        raise
 
 
 def main():
@@ -99,9 +168,14 @@ def main():
         report = run_dir / "result.json"
         owned(report)
         result = json.loads(report.read_bytes())
-        if result.get("status") != "restart-requested":
-            raise RuntimeError("Helper did not request restart")
-        print(json.dumps({"status": "runner-online", "restart_request": "observed"}))
+        if result.get("status") != "restart-verified":
+            raise RuntimeError("Helper did not verify restart")
+        current = listener_pid(home)
+        if current != result.get("new_listener_pid"):
+            raise RuntimeError("Verified listener changed or is absent")
+        cleanup = remove_own_helper(run_dir)
+        print(json.dumps({"status": "runner-online", "old_listener_pid": result["old_listener_pid"],
+                          "new_listener_pid": current, "helper_cleanup": cleanup}))
     elif sys.argv[1:] == ["helper"]:
         report = run_dir / "result.json"
         try:
