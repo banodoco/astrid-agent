@@ -280,6 +280,15 @@ def discover_canonical_pack_metadata(
         )
 
     def scan(raw_root: str | Path, source: ExternalPackSource) -> None:
+        from astrid.core.pack.transaction import group_read_lock
+
+        root = Path(raw_root).expanduser()
+        if not root.is_absolute():
+            root = project_root / root
+        with group_read_lock(root.resolve()):
+            scan_locked(root, source)
+
+    def scan_locked(raw_root: str | Path, source: ExternalPackSource) -> None:
         root = Path(raw_root).expanduser()
         if not root.is_absolute():
             root = project_root / root
@@ -418,6 +427,13 @@ def discover_pack_metadata(
         return candidate.resolve()
 
     def _scan_external_root(raw_root: str | Path, source_kind: str) -> None:
+        from astrid.core.pack.transaction import group_read_lock
+
+        resolved = _resolve_pack_root(raw_root)
+        with group_read_lock(resolved):
+            _scan_external_root_locked(resolved, source_kind)
+
+    def _scan_external_root_locked(raw_root: str | Path, source_kind: str) -> None:
         """Scan one external root, isolating failures per pack manifest.
 
         A readable root contributes every loadable pack; one bad manifest

@@ -252,18 +252,23 @@ def _fetch_tree(work: Path, source: str, revision: str, subpath: str, stage: Pat
 
 @contextmanager
 def _install_lock(root: Path):
-    try:
-        import fcntl
-    except ImportError as exc:
-        raise PackInstallError("atomic_swap_unsupported", "Atomic pack installs require a supported POSIX filesystem.") from exc
-    descriptor = os.open(root / ".install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode) or os.fstat(descriptor).st_nlink != 1:
-            raise PackInstallError("unsafe_path", "Install lock must be a regular file with one link.")
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
-    finally:
-        os.close(descriptor)
+    # Stable collection custody also serializes whole-group publication.
+    # Keep the original per-directory lock and all of its trust checks.
+    from astrid.core.pack.transaction import group_read_lock
+
+    with group_read_lock(root, exclusive=True):
+        try:
+            import fcntl
+        except ImportError as exc:
+            raise PackInstallError("atomic_swap_unsupported", "Atomic pack installs require a supported POSIX filesystem.") from exc
+        descriptor = os.open(root / ".install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode) or os.fstat(descriptor).st_nlink != 1:
+                raise PackInstallError("unsafe_path", "Install lock must be a regular file with one link.")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(descriptor)
 
 
 def _publish(stage: Path, destination: Path) -> None:
@@ -364,6 +369,8 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     }
     try:
         with _install_lock(root):
+            if (root / ".group.json").exists() or (root / ".group.json").is_symlink():
+                raise PackInstallError("group_transaction_required", "Use install_group to update a committed dependency group.")
             if destination.is_symlink():
                 raise PackInstallError("unsafe_path", "Install destination is a symlink.")
             if destination.exists():

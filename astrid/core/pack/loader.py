@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from importlib import metadata as importlib_metadata
 import logging
 import os
+from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +16,13 @@ from astrid.core.pack._common import (
     PackValidationError,
     _optional_string,
 )
-from astrid.core.pack.definition import PackDefinition
 from astrid.core.pack.canonical import (
-    CanonicalPackValidationError,
     LEGACY_MANIFEST_NAMES,
+    CanonicalPackValidationError,
     canonical_manifest_path,
     validate_canonical_pack,
 )
+from astrid.core.pack.definition import PackDefinition
 from astrid.core.pack.permissions import (
     _normalize_pack_permissions,
     _optional_pack_extensions,
@@ -115,7 +115,16 @@ def scan_packs(
     neighbours.  Required and runtime-owned folders remain fail-closed in both
     modes.
     """
+    from astrid.core.pack.transaction import group_read_lock
+
     source_root = Path(root) if root is not None else packs_root()
+    with group_read_lock(source_root):
+        return _scan_packs_locked(source_root, include_hidden=include_hidden,
+                                  strict=strict, required_pack_ids=required_pack_ids)
+
+
+def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
+                       required_pack_ids: frozenset[str]) -> PackScan:
     if not source_root.is_dir():
         return PackScan((), ())
     packs: list[PackDefinition] = []
