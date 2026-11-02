@@ -60,7 +60,7 @@ GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
-    "install-bootstrap.log", "update-bootstrap.log", "start.log",
+    "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
@@ -572,7 +572,7 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
 
 
 def retain_named_evidence(evidence: Path, phase: str) -> None:
-    """Copy only the allowlisted journey evidence, clipping verbose text logs."""
+    """Copy allowlisted evidence, preserving the release-0 bootstrap log in full."""
     destination = evidence.parent.parent / "evidence-upload" / phase
     try:
         destination.mkdir(parents=True, exist_ok=True)
@@ -589,7 +589,7 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             continue
         target = destination / name
         try:
-            if source.suffix == ".log":
+            if source.suffix == ".log" and name != "release0-bootstrap.log":
                 with source.open("rb") as stream:
                     stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
                     target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))

@@ -2,6 +2,8 @@
 from pathlib import Path
 import re
 
+from scripts import ci_journey
+
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "journey.yml"
@@ -33,7 +35,7 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     names_block = guard.split("$allowedNames = @(", 1)[1].split("\n          )", 1)[0]
     staged_names = set(re.findall(r"'([^']+)'", names_block))
     collector_block = COLLECTOR.read_text(encoding="utf-8").split("JOURNEY_EVIDENCE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
-    collector_names = set(re.findall(r'^\s*"([^\"]+)"\s*,?\s*$', collector_block, re.M))
+    collector_names = set(re.findall(r'"([^\"]+)"', collector_block))
     assert collector_names <= staged_names
     assert "^runtime-service-service-.+\\.log$" in guard
     assert "Unexpected staged evidence path" in guard
@@ -41,3 +43,20 @@ def test_journey_upload_is_allowlisted_staged_evidence_under_size_limit():
     assert "No staged journey-result.json receipt" in guard
     assert "Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force" in guard
     assert "-ge $maxArtifactBytes" in guard
+
+
+def test_release0_bootstrap_log_is_preserved_for_hosted_upload(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+    original = b"bootstrap start\r\n" + b"x" * (ci_journey.EVIDENCE_LOG_LIMIT + 1) + b"\x00failure\r\n"
+    (evidence / "release0-bootstrap.log").write_bytes(original)
+    (evidence / "journey-result.json").write_text('{"status":"failed"}', encoding="utf-8")
+
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    guard = workflow.split("$allowedNames = @(", 1)[1].split("\n          )", 1)[0]
+    assert "release0-bootstrap.log" in set(re.findall(r"'([^']+)'", guard))
+    for phase in ("before-cleanup", "after-cleanup"):
+        ci_journey.retain_named_evidence(evidence, phase)
+        staged = tmp_path / "run" / "evidence-upload" / phase
+        assert (staged / "release0-bootstrap.log").read_bytes() == original
+        assert (staged / "journey-result.json").is_file()
