@@ -35,12 +35,22 @@ def test_removes_only_runner_checkout(isolated, capsys):
     assert not target.exists() and temp.exists() and other.exists()
 
 
-def test_refuses_symlink_with_no_deletion(isolated):
+def test_unlinks_symlink_entry_without_touching_external_target(isolated):
     temp, target, other = isolated
-    (target / "symlink").symlink_to(other)
+    (other / "keep").write_text("preserve")
+    (target / "symlink").symlink_to(other, target_is_directory=True)
+    cleanup.main()
+    assert not target.exists() and (other / "keep").read_text() == "preserve" and temp.exists()
+
+
+def test_refuses_symlink_checkout_root(isolated):
+    _, target, other = isolated
+    (target / "file").unlink()
+    target.rmdir()
+    target.symlink_to(other, target_is_directory=True)
     with pytest.raises(RuntimeError, match="symlink"):
         cleanup.main()
-    assert target.exists() and other.exists()
+    assert target.is_symlink() and other.exists()
 
 
 def test_refuses_existing_smoke_root_and_service(isolated, monkeypatch):
@@ -111,5 +121,21 @@ def test_smoke_root_created_during_final_check_refuses(isolated, monkeypatch):
             (temp / "astrid-r1-direct-macos").mkdir()
     monkeypatch.setattr(cleanup, "assert_checkout_not_open", check)
     with pytest.raises(RuntimeError, match="appeared"):
+        cleanup.main()
+    assert target.exists()
+
+
+def test_rejects_mounted_filesystem_entries(isolated, monkeypatch):
+    from pathlib import Path
+    _, target, _ = isolated
+    mounted = target / "file"
+    original = Path.lstat
+    def lstat(path):
+        info = original(path)
+        if path == mounted:
+            return SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev + 1)
+        return info
+    monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(RuntimeError, match="mounted filesystem"):
         cleanup.main()
     assert target.exists()

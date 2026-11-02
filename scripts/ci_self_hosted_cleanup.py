@@ -60,8 +60,12 @@ def assert_tree_safe(root):
     for directory, dirs, files in os.walk(root, followlinks=False, onerror=lambda e: (_ for _ in ()).throw(e)):
         for name in dirs + files:
             st = (Path(directory) / name).lstat()
-            if stat.S_ISLNK(st.st_mode) or st.st_dev != device:
-                raise RuntimeError("Checkout contains a symlink or mounted filesystem")
+            # rmtree's fd-safe implementation unlinks symlink entries rather
+            # than following them; compare devices only for real entries.
+            if stat.S_ISLNK(st.st_mode):
+                continue
+            if st.st_dev != device:
+                raise RuntimeError("Checkout contains a mounted filesystem")
 
 
 def main():
