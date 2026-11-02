@@ -653,7 +653,8 @@ def _under(path: Path, parent: Path) -> bool:
     return path != parent and path.is_relative_to(parent)
 
 
-def run_scope(run_root: Path, root: Path, data: Path, leg: str) -> tuple[Path, Path, Path, Path]:
+def run_scope(run_root: Path, root: Path, data: Path, leg: str, *,
+              diagnostic_start_at: str | None = None) -> tuple[Path, Path, Path, Path]:
     """Fail closed before a lifecycle command can touch login-managed state."""
     if not all(path.is_absolute() for path in (run_root, root, data)):
         raise ValueError("--run-root, --root and --data-root must be absolute")
@@ -668,7 +669,17 @@ def run_scope(run_root: Path, root: Path, data: Path, leg: str) -> tuple[Path, P
         raise ValueError("--root and --data-root must be the run-owned program/data children")
     root, data = root.resolve(), data.resolve()
     owner_path = run_root / OWNER_FILE
-    if leg == "fresh-install" or leg in VERSION_JUMP_LEGS:
+    if diagnostic_start_at is not None:
+        if diagnostic_start_at != "release0-api-seed":
+            raise ValueError("Unknown diagnostic start stage")
+        if owner_path.is_symlink():
+            raise ValueError("Journey ownership record cannot be a symlink")
+        owner = read_json(owner_path)
+        if (owner.get("schema_version") != 1 or
+                not re.fullmatch(r"[0-9a-f]{32}", str(owner.get("run_id", ""))) or
+                owner.get("root") != str(root) or owner.get("data_root") != str(data)):
+            raise ValueError("Existing journey roots lack this run's ownership record")
+    elif leg == "fresh-install" or leg in VERSION_JUMP_LEGS:
         if run_root.exists() and any(run_root.iterdir()):
             raise ValueError("A fresh journey requires an empty run-owned directory")
         run_root.mkdir(parents=True, exist_ok=True)
@@ -689,7 +700,9 @@ def run_scope(run_root: Path, root: Path, data: Path, leg: str) -> tuple[Path, P
                    run_root / "home" / ".local", run_root / "home" / ".local" / "share"):
         if scoped != scoped.resolve():
             raise ValueError("Journey environment path cannot alias another installation")
-    evidence = run_root / "evidence" / leg
+    evidence_leg = (f"{leg}-diagnostic-{diagnostic_start_at}"
+                    if diagnostic_start_at is not None else leg)
+    evidence = run_root / "evidence" / evidence_leg
     if evidence != evidence.resolve():
         raise ValueError("Journey evidence cannot alias another path")
     return run_root, root, data, evidence
@@ -1414,9 +1427,26 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
 
 
 def execute(args: argparse.Namespace) -> dict:
-    run_root, root, data, evidence = run_scope(args.run_root, args.root, args.data_root, args.leg)
+    diagnostic_start_at = getattr(args, "diagnostic_start_at", None)
+    run_root, root, data, evidence = run_scope(
+        args.run_root, args.root, args.data_root, args.leg,
+        diagnostic_start_at=diagnostic_start_at,
+    )
     windows.EVIDENCE = evidence
     identity = runner_identity()
+    if diagnostic_start_at is not None:
+        # This path deliberately does not enter the normal lifecycle/cleanup
+        # wrapper.  It can only exercise its named retained-state block and
+        # records an ineligible diagnostic receipt rather than a matrix result.
+        assert_runner_identity(identity)
+        with isolated_environment(run_root, root, data):
+            if __package__:
+                from . import journey_version_jumps
+            else:
+                import journey_version_jumps
+            return journey_version_jumps.execute_diagnostic_release0_stage(
+                args, root, data, evidence,
+            )
     try:
         assert_runner_identity(identity)
         if getattr(args, "job_id", None):
@@ -1769,10 +1799,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runtime-checkout", type=Path)
     parser.add_argument("--retain-for-next-leg", action="store_true",
                         help="keep only this run's installed service for the next named leg")
+    parser.add_argument("--diagnostic-start-at", choices=("release0-api-seed",),
+                        help="DIAGNOSTIC ONLY: run one retained release-0 stage, never qualification")
+    parser.add_argument("--diagnostic-state", type=Path,
+                        help="exact run-owned precondition checkpoint for --diagnostic-start-at")
     args = parser.parse_args(argv)
+    diagnostic = args.diagnostic_start_at is not None
     if (args.leg == "update-over-old-declaration") != (args.old_declaration is not None):
         parser.error("--old-declaration is required only for update-over-old-declaration")
-    if bool(args.job_id) != bool(args.candidate):
+    if bool(args.diagnostic_state) != diagnostic:
+        parser.error("--diagnostic-state is required only with --diagnostic-start-at")
+    if diagnostic:
+        if args.job_id:
+            parser.error("diagnostic stage starts cannot use a qualification job id")
+        if args.mode != "direct" or args.leg != "release0-to-release1":
+            parser.error("diagnostic stage starts are limited to the direct release0-to-release1 leg")
+        if args.source_override:
+            parser.error("diagnostic stage starts never admit --source-override")
+        if args.candidate is None or not all((args.candidate_agent_checkout,
+                                              args.candidate_runtime_checkout,
+                                              args.pinokio_checkout)):
+            parser.error("diagnostic stage starts require frozen candidate and all candidate checkouts")
+        if args.retain_for_next_leg:
+            parser.error("diagnostic stage starts retain their validated state automatically")
+    elif bool(args.job_id) != bool(args.candidate):
         parser.error("--job-id and --candidate are required together for Release-1 receipts")
     if args.job_id:
         try:
@@ -1795,7 +1845,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.old_launcher_ref or args.stopped_path_agent_ref:
         parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
     if args.leg == "release0-to-release1":
-        if not (args.job_id and args.mode == "direct" and args.candidate):
+        if not ((diagnostic or args.job_id) and args.mode == "direct" and args.candidate):
             parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
         if args.release0_fixture is None or not args.allow_release0_to_release1:
             parser.error("release0-to-release1 requires --release0-fixture and --allow-release0-to-release1")
