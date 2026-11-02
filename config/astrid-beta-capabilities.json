@@ -932,6 +932,16 @@
    "required_packages": []
   },
   {
+   "id": "runpod.release",
+   "disposition": "optional",
+   "evidence_reason": "Retained target release through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
    "id": "runpod.session",
    "disposition": "optional",
    "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
@@ -939,6 +949,16 @@
    "resource_keys": [
     "provider"
    ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.status",
+   "disposition": "optional",
+   "evidence_reason": "Retained target status through the existing host owner.",
+   "adapter_family": "cpu",
+   "resource_keys": ["cpu"],
    "required_env": [],
    "required_binaries": [],
    "required_packages": []

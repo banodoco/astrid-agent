@@ -52,6 +52,10 @@ def _common_options(command):
     command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
     command.add_argument('--max-usd', action=_Once, type=float)
     command.add_argument('--deadline', action=_Once, help='Absolute UTC execution deadline.')
+    command.add_argument('--offer-digest', action=_Once, help='Accept the digest returned by target description.')
+    command.add_argument('--preparation-seconds', action=_Once, type=float)
+    command.add_argument('--execution-seconds', action=_Once, type=float)
+    command.add_argument('--idle-seconds', action=_Once, type=float)
     command.add_argument('--recovery-path', action=_Once, help='Save the exact Runtime admission receipt.')
 
 
@@ -236,7 +240,8 @@ def _controls(parsed):
     controls = {}
     if parsed.no_wait:
         controls['wait'] = False
-    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path'):
+    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path', 'offer_digest',
+                 'preparation_seconds', 'execution_seconds', 'idle_seconds'):
         value = getattr(parsed, name, None)
         if value is not None and value != []:
             controls[name] = value

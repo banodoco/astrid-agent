@@ -496,6 +496,11 @@ actions:
       required: false
       type: string
     - default: ''
+      description: Target policy for the retained host; endpoint selection remains host owned.
+      name: target_policy
+      required: false
+      type: string
+    - default: ''
       description: Optional URL for an existing loopback ComfyUI server.
       name: comfy_url
       required: false
@@ -558,6 +563,7 @@ actions:
     - run
     metadata:
       catalog_source: none_declared
+      host_target_policy: true
       cli_module: vibecomfy.cli
       command_names:
       - run

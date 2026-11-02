@@ -851,6 +851,53 @@ actions:
       runtime_entrypoint: main
       runtime_file: actions/session/run.py
       runtime_module: astrid.packs.runpod.actions.session.run
+  status:
+    name: Retained target status
+    version: 0.1.0
+    short_description: Inspect the retained target and optionally observe an offer.
+    description: Read the retained host's target custody and current offer.
+    inputs:
+    - name: target_policy
+      type: string
+      required: true
+      description: Provider policy snapshot.
+    - name: include_quote
+      type: boolean
+      default: false
+      required: false
+      description: Observe the current offer.
+    outputs: []
+    resources: []
+    cache: {mode: none}
+    conditions: []
+    graph: {consumes: [], provides: []}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: status}
+    invocation:
+      kind: command
+      command:
+        argv: ['{python_exec}', '-c', 'pass']
+  release:
+    name: Retained target release
+    version: 0.1.0
+    short_description: Release the exact retained target.
+    description: Ask the retained host to drain and verify release of its target.
+    inputs:
+    - name: target_policy
+      type: string
+      required: true
+      description: Provider policy snapshot.
+    outputs: []
+    resources: []
+    cache: {mode: none}
+    conditions: []
+    graph: {consumes: [], provides: []}
+    isolation: {mode: subprocess, network: false}
+    metadata: {host_target_operation: release}
+    invocation:
+      kind: command
+      command:
+        argv: ['{python_exec}', '-c', 'pass']
 resources:
 - kind: implementation
   path: shared/common.py

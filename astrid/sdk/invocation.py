@@ -4633,6 +4633,14 @@ def invoke(
         effective_inputs = _validate_manifest_preview_inputs(
             capability, inputs=effective_inputs, orchestrator_args=(),
         )
+        # Empty defaults on optional file ports are command-line sentinels,
+        # not Runtime object identities. Leave omitted files out of child
+        # admission; the executor still applies its manifest defaults.
+        for port in capability.inputs:
+            if (str(port.type).lower() == "file" and not port.required
+                    and port.name not in request_inputs and port.default == ""
+                    and effective_inputs.get(port.name) == ""):
+                effective_inputs.pop(port.name)
         return _invoke_bridge_child(
             capability, registries=registries, inputs=effective_inputs,
             bridge=_child_bridge._bridge, child_key=child_key,

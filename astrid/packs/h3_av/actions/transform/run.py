@@ -1676,7 +1676,8 @@ def _execute_verified_pass(
         inputs={
             **bundle_inputs,
             "python_execution_consent": "confirmed",
-            **({} if endpoint is not None else {"workflow_inputs": json.dumps(
+            **({} if endpoint is not None or (managed_client is not None and
+                managed_client.plan.get("controls", {}).get("target_policy") is not None) else {"workflow_inputs": json.dumps(
                 compilation["workflow_inputs"],
                 sort_keys=True,
                 separators=(",", ":"),
@@ -2559,6 +2560,7 @@ def _compile_plan(request, bundle: Path, destination: Path, *, endpoint_client=N
     from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
     from astrid.packs.h3_av.actions.compile.compile import compile_preparation
     from astrid.packs.h3_av.shared.input_bundle import bundle_digest, resolve_preparation_assets
+    from astrid.packs.vibecomfy.invocation_preflight import _assert_no_unresolved_placeholders
 
     paths, identities = materialize_input_bundle(request, bundle, destination / "assets")
     preparation = prepare_request(request, asset_map=paths)
@@ -2566,6 +2568,7 @@ def _compile_plan(request, bundle: Path, destination: Path, *, endpoint_client=N
     preparation["input_bundle_sha256"] = bundle_digest(bundle)
     preparation = resolve_preparation_assets(preparation, bundle, destination / "compile-assets")
     compilation = compile_preparation(preparation, out_dir=destination / "compile")
+    _assert_no_unresolved_placeholders(compilation["workflow_inputs"])
     sealed = _sealed_plan(compilation)
     if endpoint_client is not None:
         from astrid.core.generation.preflight import require_h3_graph_readiness
@@ -2580,13 +2583,8 @@ def _compile_plan(request, bundle: Path, destination: Path, *, endpoint_client=N
     return sealed
 
 
-def preflight_endpoint(inputs: Mapping[str, Any], endpoint_client) -> dict[str, Any]:
-    """Compose or refuse locally before the endpoint owner may acquire/retain.
-
-    The endpoint route currently supports one sampling pass. Worker placement,
-    qualification and caller endpoint overrides cannot enter this local route.
-    """
-    import tempfile
+def _validate_endpoint_inputs(inputs: Mapping[str, Any]):
+    """Check endpoint-only H3 controls before any paid acquisition."""
     from astrid.packs.h3_av.shared.spec import canonical_spec
 
     if "ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE" in environ:
@@ -2598,6 +2596,14 @@ def preflight_endpoint(inputs: Mapping[str, Any], endpoint_client) -> dict[str, 
     request = normalize_request(load_request_document(inputs["request"]))
     if len(canonical_spec(request).sampling_passes()) != 1:
         raise AstridError("H3 endpoint route requires exactly one sampling pass")
+    return request
+
+
+def preflight_endpoint(inputs: Mapping[str, Any], endpoint_client) -> dict[str, Any]:
+    """Compose or refuse locally before the endpoint owner may acquire/retain."""
+    import tempfile
+
+    request = _validate_endpoint_inputs(inputs)
     with tempfile.TemporaryDirectory(prefix="astrid-h3-endpoint-") as temporary:
         root = Path(temporary)
         bundle = build_input_bundle(request, _json_mapping(Path(inputs["asset_map"])), root / "inputs.zip")
@@ -2616,7 +2622,9 @@ def _sealed_plan(compilation: Mapping[str, Any]) -> dict[str, Any]:
     digest = compilation.get("compilation_digest")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise AstridError("H3 compilation has no sealed identity")
-    return {"compilation_digest": digest, "output_contract": contract, "intent": intent}
+    return {"compilation_digest": digest, "output_contract": contract, "intent": intent,
+            "workflow_members": {name: row["sha256"] for name, row in compilation["workflow"].items()},
+            "workflow_inputs_sha256": _stable_digest(compilation["workflow_inputs"])}
 
 
 def _import(client, project: str, data: bytes, filename: str) -> dict[str, Any]:
@@ -2694,11 +2702,19 @@ def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry,
     if not isinstance(project, str) or not project:
         raise AstridError("H3 Runtime project has no canonical identity")
     controls = public_controls(inputs)
+    target_policy = inputs.get("target_policy")
+    if target_policy is not None:
+        if (not isinstance(target_policy, Mapping) or h3_endpoint is not None
+                or controls["run_execution_request"] is not None or inputs.get("prepared_worker") is not None):
+            raise AstridError("host target policy requires ordinary local child placement")
+        _validate_endpoint_inputs({key: value for key, value in inputs.items()
+                                   if key not in {"target_policy", "project"}})
+        controls["target_policy"] = json.loads(json.dumps(target_policy, allow_nan=False))
     if h3_endpoint is not None:
         if controls["run_execution_request"] is not None or inputs.get("prepared_worker") is not None:
             raise AstridError("H3 endpoint executors require the default local target")
         controls["h3_endpoint"] = json.loads(json.dumps(h3_endpoint))
-    if set(inputs) - ({"request", "asset_map", "project", "editorial_approved"} | PUBLIC_CONTROLS):
+    if set(inputs) - ({"request", "asset_map", "project", "editorial_approved", "target_policy"} | PUBLIC_CONTROLS):
         raise AstridError("unsupported tracked H3 parent controls or caller-supplied roots")
     if type(inputs.get("editorial_approved", False)) is not bool:
         raise AstridError("H3 editorial approval must be an explicit boolean")
@@ -2811,6 +2827,9 @@ class ManagedParentClient:
         if stage is None:
             raise AstridError("H3 parent attempted an undeclared stage")
         values = dict(inputs)
+        target_policy = self.plan.get("controls", {}).get("target_policy")
+        if target_policy is not None and stage == "run":
+            values["target_policy"] = json.dumps(target_policy, sort_keys=True, separators=(",", ":"), allow_nan=False)
         endpoint = self.plan.get("controls", {}).get("h3_endpoint")
         if endpoint is not None and stage == "run":
             if (values.get("comfy_url") != endpoint["target"]["comfy_url"]

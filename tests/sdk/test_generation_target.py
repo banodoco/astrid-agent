@@ -239,6 +239,14 @@ def test_user_entry_named_like_bundled_wan_is_not_filtered(monkeypatch, explicit
 
 
 def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(network, monkeypatch, tmp_path):
+    import builtins
+
+    original_import = builtins.__import__
+    def reject_remote_import(name, *args, **kwargs):
+        if name == 'astrid.packs.runpod' or name.startswith('astrid.packs.runpod.'):
+            raise AssertionError('local generation imported the remote provider')
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', reject_remote_import)
     client, requests = install_target(network, target_info())
     attached_without_managed(monkeypatch)
     seen = {}

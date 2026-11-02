@@ -40,13 +40,14 @@ def prepare_retained_generation(
     lease_owner: RunPodLeaseOwner, placement: RemotePlacement,
     installation: RunPodInstallation, validate: Callable[[RunPodPreparationRequest], None],
     requested_idle_seconds: float | None = None,
+    on_acquired: Callable[[RunPodLease], None] | None = None,
 ) -> PreparedRunPodLease:
     """A4 handoff under A3's existing lock and journal, without a worker on pod.
 
     Static request/source/recipe checks precede paid admission. A3 alone owns
     settle, expiry, reconciliation and release; no second account lock is taken.
     """
-    if (request.entry.get("engine", "comfyui") != "comfyui"
+    if (request.entry.get("engine", "comfyui") != installation.engine
             or request.max_usd != consent.max_usd or request.deadline != consent.deadline
             or request.consent != consent.consent or request.execution_request is not None
             or lease_owner.selection.preferences.mount_path != "/workspace"
@@ -69,6 +70,8 @@ def prepare_retained_generation(
                      or prior_preparation["bootstrap_digest"] != bootstrap_digest)):
             raise PreparedWorkerError("retained preparation is unresolved or has different source bytes")
         invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds)
+        if on_acquired is not None:
+            on_acquired(invocation)
         claimed = lease_owner.preparation_claim(invocation)
         previous = claimed["lease"].get("preparation")
         preparation = {

@@ -5,6 +5,7 @@ import json
 import socket
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -214,6 +215,196 @@ def test_path_loaded_adapter_cold_and_warm_use_exact_placement_canonical_install
     assert c.deletes == ["pod-1"]
     assert c.read()["state"] == "cleanup_complete"
     assert c.read()["cleanup"]["absence"]["exact_get_status"] == 404
+
+
+def test_retained_endpoint_records_custody_before_proxy_and_binds_once(retained, monkeypatch):
+    import hashlib
+    from runpod_lifecycle import engine_bridge, https
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient, HTTP_TRANSFER_SECONDS, MAX_JSON_BYTES
+
+    c = retained
+    events = []
+    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy",
+                        lambda self, endpoint, port: events.append(("enable", endpoint, port)),
+                        raising=False)
+
+    class Bridge:
+        def __init__(self, transport, config):
+            assert c.read()["lease"]["endpoint_binding"]["state"] == "binding"
+            self.transport, self.url = transport, "http://127.0.0.1:12345"
+            events.append(("bridge", config))
+
+        def close(self):
+            events.append(("close",))
+            self.transport.disconnect()
+
+    def probe(self, path, *, timeout, response_limit):
+        assert c.read()["lease"]["endpoint_binding"]["state"] == "bound"
+        assert c.read()["lease"]["endpoint_binding"]["loopback_url"] == self.http_origin
+        assert timeout == HTTP_TRANSFER_SECONDS and response_limit == MAX_JSON_BYTES
+        events.append(("probe", path))
+        return c.context.health_objects
+
+    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
+    monkeypatch.setattr(ComfyTargetClient, "request_json", probe)
+    kept = []
+    prepared, evidence = c.adapter.bind_endpoint(
+        c.request, c.grant, begin_lease=lambda lease: None,
+        retain_bridge=lambda lease, bridge: kept.append((lease, bridge)),
+        retire_bridge=lambda lease, **kwargs: None)
+    assert len(kept) == 1 and kept[0][0] == prepared.lease
+    assert [event[0] for event in events] == ["enable", "bridge", "probe"]
+    assert evidence == c.read()["lease"]["endpoint_binding"]
+    assert evidence["state"] == "ready" and evidence["pod_id"] == "pod-1"
+    assert evidence["object_info_encoding"] == "json-utf8-sorted-v1"
+    canonical = json.dumps(c.context.health_objects, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False, allow_nan=False).encode("utf-8")
+    assert evidence["object_info_sha256"] == "sha256:" + hashlib.sha256(canonical).hexdigest()
+    assert evidence["invocation_id"] == prepared.lease.invocation_id
+    assert evidence["installed_receipt_sha256"] == prepared.installed["receipt_sha256"]
+    kept[0][1].close()
+    c.host.release()
+    assert c.read()["state"] == "cleanup_complete"
+
+
+def test_retained_endpoint_failure_closes_bridge_and_releases_same_lease(retained, monkeypatch):
+    from runpod_lifecycle import engine_bridge, https
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+
+    c = retained
+    closed = []
+    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy", lambda *args: None,
+                        raising=False)
+
+    class Bridge:
+        url = "http://127.0.0.1:12345"
+
+        def __init__(self, transport, config):
+            self.transport = transport
+
+        def close(self):
+            closed.append(True)
+            self.transport.disconnect()
+
+    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
+    monkeypatch.setattr(ComfyTargetClient, "request_json", lambda self, path, **kwargs: {})
+    with pytest.raises(ValueError, match="canonical readiness"):
+        c.adapter.bind_endpoint(c.request, c.grant, begin_lease=lambda lease: None,
+                                retain_bridge=lambda lease, bridge: None,
+                                retire_bridge=lambda lease, **kwargs: None)
+    assert closed == [True] and c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
+
+
+def test_retained_installation_accepts_only_the_existing_h3_recipe_and_root():
+    from astrid.core.generation import engine_recipe, engine_runner
+    from astrid.packs.runpod.remote_placement import RunPodInstallation
+    from astrid.packs.runpod.target_selection import RunPodLeaseCompatibility
+
+    recipe = engine_recipe.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    root = "/workspace/astrid/engines/vibecomfy-h3"
+    expected = engine_runner.plan_install(recipe, root=root, placement="local")
+    vibe = next(source for source in recipe.sources if source.name == "vibecomfy")
+    compatibility = RunPodLeaseCompatibility(
+        "sha256:" + expected.recipe_sha256, "sha256:" + expected.models_lock_sha256,
+        "1a275bb339ae897e52a5be5e1da99e846e402037", vibe.pin.revision,
+    ).as_mapping()
+    installation = RunPodInstallation(compatibility, engine="vibecomfy-h3", root=root)
+    assert installation.plan() == expected
+    with pytest.raises(Exception, match="unsupported retained installation"):
+        replace(installation, root="/workspace/astrid/engines/comfyui").plan()
+
+
+@pytest.mark.parametrize("release_race", [False, True])
+def test_real_pack_host_binding_composes_retained_owner_adapter_and_release(retained, tmp_path, monkeypatch, release_race):
+    from astrid.core.execution.target_provider import resolve_target_provider
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient, HTTP_TRANSFER_SECONDS, MAX_JSON_BYTES
+    from astrid.packs.runpod import target_selection
+    from runpod_lifecycle import engine_bridge, https
+    from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    c = retained
+    c.host.close()
+    c.clock.now = datetime.now(timezone.utc).timestamp()
+    monkeypatch.setattr(target_selection, "resolve_runtime_data_root", lambda: tmp_path / "machine")
+    monkeypatch.setattr(https.HttpsPodTransport, "enable_engine_proxy", lambda *args: None, raising=False)
+    events = []
+
+    class Bridge:
+        url = "http://127.0.0.1:12345"
+
+        def __init__(self, transport, config):
+            self.transport = transport
+            events.append("bridge")
+
+        def close(self):
+            events.append("close")
+            self.transport.disconnect()
+
+    monkeypatch.setattr(engine_bridge, "EngineBridge", Bridge)
+    def probe(self, path, *, timeout, response_limit):
+        assert c.read()["lease"]["endpoint_binding"]["state"] == "bound"
+        assert self.http_origin == Bridge.url and path == "/object_info"
+        assert timeout == HTTP_TRANSFER_SECONDS and response_limit == MAX_JSON_BYTES
+        events.append("probe")
+        return c.context.health_objects
+    monkeypatch.setattr(ComfyTargetClient, "request_json", probe)
+    roots = (Path(__file__).resolve().parents[3] / "astrid" / "packs",)
+    bindings = resolve_target_provider("runpod", roots).TargetProviderBindings(pack_roots=roots, holds=c.host.holds,
+        credentials=lambda name: "fake-only", environ={"ASTRID_RUNPOD_SOURCE_ROOT": str(c.placement.source_root)})
+    selection = {"kind": "runpod", "engine": "comfyui", "preferences": c.prefs.as_mapping()}
+    provider = bindings.get(**selection)
+    c.owner = provider.lease_owner.selection
+    provider.lease_owner.clock, provider.lease_owner.timer = c.clock, c.clock.timer
+    c.owner.clock = lambda: datetime.fromtimestamp(c.clock(), timezone.utc)
+    c.owners.append(provider.lease_owner)
+    quote = provider.quote()
+    deadline = (datetime.fromtimestamp(c.clock(), timezone.utc) + timedelta(hours=2)).isoformat()
+    policy = {**selection, "offer_digest": quote["offer_digest"], "consent": ["paid"],
+              "max_usd": 1.0, "deadline": deadline, "preparation_seconds": 60,
+              "execution_seconds": 60, "idle_seconds": 1800}
+
+    root = tmp_path / "canonical"
+    root.mkdir()
+    source = root / "source.json"
+    source.write_text(json.dumps({"nodes": [{"id": 1, "type": "SaveImage", "inputs": [],
+                                              "widgets_values": ["proof"]}], "links": []}))
+    workflow = VibeWorkflow("retained-proof", WorkflowSource("retained-proof"))
+    workflow.add_node("SaveImage", _id="1", uid="sink", filename_prefix="proof")
+    workflow.register_input("filename_prefix", "1", "filename_prefix", "proof", type="STRING")
+    emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+    inputs = {"python": str(root / "workflow.py"), "companion": str(root / "workflow.vibe.json"),
+              "source": str(source), "workflow_inputs": "{}"}
+    import threading
+    cancelled = threading.Event()
+    owner, invocation, evidence = bindings.bind(policy, inputs, invocation_id="task:attempt:1",
+                                                scratch=tmp_path, cancel=cancelled)
+    assert owner is provider and events == ["bridge", "probe"] and c.creates == 1
+    assert c.read()["lease"]["endpoint_binding"] == evidence
+    foreign = {**selection, "preferences": {**selection["preferences"], "provider_account_ref": "foreign"}}
+    with pytest.raises(ValueError, match="preferences differ"):
+        bindings.operate(foreign, "release")
+    assert c.deletes == []
+    if release_race:
+        results, errors = [], []
+        def release():
+            try:
+                results.append(bindings.operate(selection, "release"))
+            except BaseException as exc:
+                errors.append(exc)
+        thread = threading.Thread(target=release)
+        thread.start()
+        assert cancelled.wait(timeout=10)
+        bindings.finish(owner, invocation, success=False)
+        thread.join(timeout=10)
+        assert not thread.is_alive() and not errors and results[0]["state"] == "cleanup_complete"
+    else:
+        bindings.finish(owner, invocation, success=True)
+        assert bindings.operate(selection, "status")["lease"]["state"] == "idle"
+        assert bindings.operate(selection, "release")["state"] == "cleanup_complete"
+    assert events == ["bridge", "probe", "close"] and c.deletes == ["pod-1"]
+    bindings.close()
 
 
 @pytest.mark.parametrize("change", ["denied", "cap", "rate", "datacenter", "stock", "engine", "tuple", "dirty", "validate"])

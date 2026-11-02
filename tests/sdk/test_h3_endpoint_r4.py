@@ -1,4 +1,4 @@
-"""Connected CPU contracts: real H3 compiler/schema, fake paid owner/Runtime.
+"""Connected CPU contracts: retained-host tasks and real H3 compiler/schema.
 
 The inert transport never starts a listener, reads a bearer, or contacts a pod.
 The existing production EngineEndpointTransport identity checks still run.
@@ -23,14 +23,42 @@ from astrid.packs.h3_av.actions.transform import run
 from astrid.sdk import invocation
 from astrid.sdk.generation import GenerationFacade
 from tests.sdk.test_runpod_front_door import FakeOwner, PAID
+from tests.integrations.test_runpod_host_endpoint_r5 import (
+    retained_host, tuple_sources, retained, small_lease, lease_selection_case, sources,
+)
+
+
+def _admit_host_h3(r, inputs, **kwargs):
+    return GenerationFacade().video(entry='h3', target='runpod', client=r.client,
+        project=r.project, wait=False, **inputs, **{**r.paid, **kwargs})
+
+
+def _host_h3_refusal(r, inputs, **kwargs):
+    from astrid.sdk.exceptions import AstridSDKError
+    try:
+        result = _admit_host_h3(r, inputs, **kwargs)
+    except AstridSDKError as exc:
+        envelope = preflight.generation_error(exc).to_envelope()
+    else:
+        assert not result.ok and result.kernel_task_id is None
+        envelope = result.error
+    assert envelope['status'] == 'blocked' and envelope['issues']
+    assert r.c.creates == 0 and not r.c.owner.path.exists() and not r.state.events
+    return envelope
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(autouse=True)
 def no_external_io(monkeypatch):
-    monkeypatch.setattr(socket.socket, 'connect', lambda *a, **k: pytest.fail('network used'))
-    monkeypatch.setattr(socket, 'create_connection', lambda *a, **k: pytest.fail('network used'))
+    connect = socket.socket.connect
+    def local_only(sock, address):
+        if isinstance(address, tuple):
+            assert address[0] in {'127.0.0.1', '::1', 'localhost'}, 'external network used'
+        else:
+            assert sock.family == socket.AF_UNIX, 'external network used'
+        return connect(sock, address)
+    monkeypatch.setattr(socket.socket, 'connect', local_only)
 
 
 @pytest.fixture(scope='module')
@@ -199,46 +227,52 @@ def setup_sdk(monkeypatch, tmp_path, endpoint, *, project_parent=False):
     return owner, client, calls
 
 
-def test_sdk_preflight_and_parent_freeze_one_endpoint_with_all_local_stages(
-        monkeypatch, tmp_path, endpoint, h3_inputs):
-    owner, client, calls = setup_sdk(monkeypatch, tmp_path, endpoint, project_parent=True)
-    projected, policy = GenerationFacade().video(entry='h3', target='runpod', client=client,
-        project='project-a', wait=False, **h3_inputs, **PAID)
-    assert len(calls) == 1
-    assert 'prepared_worker' not in calls[0][1]['inputs']
-    assert 'execution_request' not in calls[0][1]
-    assert [event[0] if isinstance(event, tuple) else event for event in owner.events] == [
-        'validate-h3', 'validate-target', 'prepare-h3']
-    handoff = owner.events[-1][1]['inputs']['_h3_endpoint']
-    assert projected['plan']['controls']['h3_endpoint'] == handoff
-    assert handoff['warm_lease_seconds'] == 1800
-    assert handoff['target'] == preflight.freeze_h3_endpoint(endpoint)
-    assert projected['plan']['compilation_digest'] == handoff['preflight']['compilation_digest']
-    assert policy['targets'] == [{'kind': 'default'}]
-    assert all(stage['target'] == {'kind': 'default'} for stage in policy['stages'])
-    assert len(client._generation_prepared_owners) == 1
+def test_sdk_preflight_and_parent_freeze_one_endpoint_with_all_local_stages(retained_host, h3_inputs):
+    r = retained_host
+    result = _admit_host_h3(r, h3_inputs)
+    spec = r.show(result.kernel_task_id)['spec']
+    spec = spec.get('spec', spec)
+    plan = spec['inputs']['plan']
+    target = plan['controls']['target_policy']
+    assert target == {**r.selection, **r.paid, 'engine': 'vibecomfy-h3', 'consent': ['paid']}
+    assert 'prepared_worker' not in spec['inputs'] and 'h3_endpoint' not in plan['controls']
+    assert all(stage['target'] == {'kind': 'default'} for stage in plan['stages'])
+    assert not getattr(r.client, '_generation_prepared_owners', {})
+    assert r.c.creates == 0 and not r.c.owner.path.exists() and not r.state.events
+
 
 
 @pytest.mark.parametrize('fault', ['missing-node', 'controls', 'changed-endpoint', 'cold', 'approval-type', 'multipass', 'placeholder', 't9', 't9-empty'])
-def test_sdk_unsupported_cases_never_prepare_or_admit(monkeypatch, tmp_path, endpoint, h3_inputs, fault):
-    owner, client, calls = setup_sdk(monkeypatch, tmp_path, endpoint)
-    if fault == 'missing-node':
-        endpoint.endpoint_transport.schema.clear()
-    elif fault == 'controls':
-        h3_inputs['prepared_worker'] = 'untrusted.json'
-    elif fault == 'changed-endpoint':
-        # Ready endpoint identity changes during schema observation.
-        original = endpoint.object_info
-        def substitute():
-            result = original()
-            endpoint.endpoint_transport._endpoint = replace(endpoint.endpoint_transport.endpoint,
-                lifecycle_owner=replace(endpoint.endpoint_transport.endpoint.lifecycle_owner, owner_id='other'))
-            return result
-        monkeypatch.setattr(endpoint, 'object_info', substitute)
-    elif fault == 'cold':
-        owner.validation = ComfyTargetClient(ComfyTarget('http://127.0.0.1:18188', 'attached'))
-    elif fault == 'approval-type':
-        h3_inputs['editorial_approved'] = 'yes'
+def test_sdk_unsupported_cases_never_prepare_or_admit(retained_host, h3_inputs, monkeypatch, fault):
+    r = retained_host
+    if fault in {'missing-node', 'cold'}:
+        # Cold engines can only be observed after acquiring the disclosed
+        # lease. Canonical readiness still refuses inference and releases it.
+        if fault == 'missing-node':
+            r.state.schema.pop('UNETLoader')
+        else:
+            r.state.schema.clear()
+        r.start()
+        admitted = r.generate()
+        result = r.follow(admitted.kernel_task_id)
+        assert not result.ok and not r.state.prompts
+        assert r.c.creates == 1 and r.c.deletes == ['pod-1']
+        assert r.c.read()['state'] == 'cleanup_complete'
+        return
+    if fault == 'changed-endpoint':
+        r.start()
+        assert r.generate(wait=True).task_id
+        saved = r.c.read()
+        changed = deepcopy(saved)
+        changed['lease']['endpoint_binding']['loopback_url'] = 'http://127.0.0.1:28188'
+        r.c.owner.path.write_text(json.dumps(changed))
+        assert not r.release().ok and not r.c.deletes
+        assert r.c.creates == len(r.state.prompts) == 1
+        r.c.owner.path.write_text(json.dumps(saved))
+        assert r.release().ok
+        return
+    if fault == 'controls': h3_inputs['prepared_worker'] = 'untrusted.json'
+    elif fault == 'approval-type': h3_inputs['editorial_approved'] = 'yes'
     elif fault == 'multipass':
         from tests.packs.h3_av.test_planner import _source_edit
         multiple = _source_edit(extra_video=({'during': [3, 4], 'area': {'full_frame': True}, 'action': 'generate'},))
@@ -249,76 +283,75 @@ def test_sdk_unsupported_cases_never_prepare_or_admit(monkeypatch, tmp_path, end
         document = json.loads(Path(h3_inputs['request']).read_text())
         document['content']['prompt'] = '{{PROMPT}}'
         Path(h3_inputs['request']).write_text(json.dumps(document))
-    with pytest.raises(Exception, match='T9 substitute' if fault.startswith('t9') else None):
-        GenerationFacade().video(entry='h3', target='runpod', client=client, project='project-a',
-                                 **h3_inputs, **PAID)
-    assert not calls
-    assert not any(isinstance(event, tuple) and event[0] == 'prepare-h3' for event in owner.events)
+    refusal = _host_h3_refusal(r, h3_inputs)
+    if fault.startswith('t9'):
+        assert 'T9 substitute' in json.dumps(refusal)
+    elif fault == 'placeholder':
+        assert 'placeholder' in json.dumps(refusal)
 
 
-def test_recovery_reuses_retained_endpoint_and_refuses_substitution(monkeypatch, tmp_path, endpoint, h3_inputs):
-    owner, client, calls = setup_sdk(monkeypatch, tmp_path, endpoint)
-    path = tmp_path / 'parent-recovery.json'
-    facade = GenerationFacade()
-    kwargs = dict(entry='h3', target='runpod', client=client, project='project-a',
-                  recovery_path=path, **h3_inputs, **PAID)
-    facade.video(**kwargs)
-    follow = {key: value for key, value in kwargs.items() if key not in PAID}
-    assert facade.video(**follow, resume=True) == {'task_id': 'parent-a'}
-    assert sum(isinstance(event, tuple) and event[0] == 'prepare-h3' for event in owner.events) == 1
-    retained = invocation._prepared_owner_for(client, path, 'h3_av.transform')
-    task = {'task_id': 'parent-a', 'run_id': 'run-a', 'capability_id': 'h3_av.transform', 'state': 'succeeded'}
-    retained(task)
-    with monkeypatch.context() as finished:
-        finished.setattr(retained, 'verify_h3_endpoint', lambda: pytest.fail('reopened a terminal owner bridge'))
-        retained(task)
-    assert sum(isinstance(event, tuple) and event[0] == 'retire' for event in owner.events) == 1
-    endpoint.endpoint_transport._endpoint = replace(endpoint.endpoint_transport.endpoint,
-        lifecycle_owner=replace(endpoint.endpoint_transport.endpoint.lifecycle_owner, owner_id='substitute'))
-    with pytest.raises(Exception, match='endpoint identity changed'):
-        facade.video(**kwargs, resume=True)
-    assert len(calls) == 2
+
+def test_recovery_reuses_retained_endpoint_and_refuses_substitution(retained_host, h3_inputs):
+    r = retained_host
+    receipt = r.tmp / 'parent-recovery.json'
+    admitted = _admit_host_h3(r, h3_inputs, recovery_path=receipt)
+    resumed = _admit_host_h3(r, h3_inputs, recovery_path=receipt, resume=True)
+    assert resumed.kernel_task_id == admitted.kernel_task_id
+    refused = _host_h3_refusal(r, h3_inputs, recovery_path=receipt, resume=True,
+                             idle_seconds=600)
+    assert 'request/project identity mismatch' in json.dumps(refused)
+    assert r.c.creates == 0 and not r.c.owner.path.exists() and not r.state.events
+
 
 
 @pytest.mark.parametrize('substitution', ['origin', 'attestation', 'owner', 'warm-lease'])
-def test_prepared_endpoint_cannot_replace_readiness_target(monkeypatch, tmp_path, endpoint, h3_inputs, substitution):
-    owner, client, calls = setup_sdk(monkeypatch, tmp_path, endpoint)
-    original = owner.prepare_h3
-    def prepare(**kwargs):
-        prepared = original(**kwargs)
-        transport = endpoint.endpoint_transport
-        if substitution == 'origin':
-            transport.origin = 'http://127.0.0.1:28188'
-        elif substitution == 'attestation':
-            transport._endpoint = replace(transport.endpoint,
-                attestation=replace(transport.endpoint.attestation, install_receipt_sha256='d' * 64))
-        elif substitution == 'owner':
-            transport._endpoint = replace(transport.endpoint,
-                lifecycle_owner=replace(transport.endpoint.lifecycle_owner, owner_id='foreign'))
-        else:
-            prepared = replace(prepared, h3_warm_lease_seconds=600)
-        return prepared
-    owner.prepare_h3 = prepare
-    with pytest.raises(ValueError, match='1800 second warm lease' if substitution == 'warm-lease' else 'substituted the selected endpoint'):
-        GenerationFacade().video(entry='h3', target='runpod', client=client, project='project-a',
-                                 **h3_inputs, **PAID)
-    assert not calls and not getattr(client, '_generation_prepared_owners', {})
-    assert sum(isinstance(event, tuple) and event[0] == 'prepare-h3' for event in owner.events) == 1
+def test_prepared_endpoint_cannot_replace_readiness_target(retained_host, h3_inputs, substitution):
+    r = retained_host
+    if substitution == 'warm-lease':
+        receipt = r.tmp / 'warm-policy.json'
+        admitted = _admit_host_h3(r, h3_inputs, recovery_path=receipt)
+        task = r.show(admitted.kernel_task_id)
+        spec = task['spec'].get('spec', task['spec'])
+        assert spec['inputs']['plan']['controls']['target_policy']['idle_seconds'] == 1800
+        refused = _host_h3_refusal(r, h3_inputs, recovery_path=receipt, resume=True, idle_seconds=600)
+        assert 'request/project identity mismatch' in json.dumps(refused)
+        assert r.c.creates == 0
+        return
+    r.start()
+    assert r.generate(wait=True).task_id
+    saved = r.c.read()
+    changed = deepcopy(saved)
+    binding = changed['lease']['endpoint_binding']
+    if substitution == 'origin': binding['loopback_url'] = 'http://127.0.0.1:28188'
+    elif substitution == 'attestation': binding['installed_receipt_sha256'] = 'sha256:' + 'd' * 64
+    else: binding['owner_epoch'] = 'foreign-owner'
+    r.c.owner.path.write_text(json.dumps(changed))
+    owner = r.bindings.provider.lease_owner
+    denied = r.release()
+    assert not denied.ok and r.c.deletes == []
+    assert r.bindings.provider.lease_owner is owner
+    assert r.c.creates == len(r.state.prompts) == 1
+    r.c.owner.path.write_text(json.dumps(saved))
+    assert r.release().ok and r.c.deletes == ['pod-1']
 
 
-def test_parent_rechecks_input_bytes_after_paid_handoff(monkeypatch, tmp_path, endpoint, h3_inputs):
-    owner, client, _ = setup_sdk(monkeypatch, tmp_path, endpoint, project_parent=True)
-    original = owner.prepare_h3
-    def prepare(**kwargs):
-        prepared = original(**kwargs)
-        from PIL import Image
-        Image.new('RGB', (32, 32), (80, 90, 100)).save(tmp_path / 'look.png')
-        return prepared
-    owner.prepare_h3 = prepare
-    client.media.import_bytes = lambda **k: pytest.fail('import before frozen input comparison')
-    with pytest.raises(RuntimeError, match='inputs changed after pre-acquisition'):
-        GenerationFacade().video(entry='h3', target='runpod', client=client, project='project-a',
-                                 **h3_inputs, **PAID)
+
+def test_parent_rechecks_input_bytes_after_paid_handoff(retained_host, h3_inputs):
+    r = retained_host
+    receipt = r.tmp / 'input-recovery.json'
+    admitted = _admit_host_h3(r, h3_inputs, recovery_path=receipt)
+    spec = r.show(admitted.kernel_task_id)['spec']
+    spec = spec.get('spec', spec)
+    plan = spec['inputs']['plan']
+    original_bundle = r.client.media.read_bytes(plan['roots']['input_bundle']['object_id'])
+    assert 'sha256:' + hashlib.sha256(original_bundle).hexdigest() == plan['roots']['input_bundle']['object_id']
+    from PIL import Image
+    Image.new('RGB', (32, 32), (80, 90, 100)).save(r.tmp / 'look.png')
+    resumed = _admit_host_h3(r, h3_inputs, recovery_path=receipt, resume=True)
+    assert resumed.kernel_task_id == admitted.kernel_task_id
+    assert r.client.media.read_bytes(plan['roots']['input_bundle']['object_id']) == original_bundle
+    assert r.c.creates == 0 and not r.c.owner.path.exists()
+
 
 
 def test_recovery_receipt_binds_endpoint_snapshot_in_the_existing_request(monkeypatch, tmp_path, endpoint):
@@ -361,54 +394,28 @@ def test_recovery_receipt_binds_endpoint_snapshot_in_the_existing_request(monkey
 
 
 @pytest.mark.parametrize('tamper', [False, True], ids=['exact', 'changed-bindings'])
-def test_staged_parent_hands_exact_graph_to_local_run(monkeypatch, tmp_path, endpoint, compilation, h3_inputs, tamper):
+def test_staged_parent_hands_exact_graph_to_local_run(retained_host, compilation, h3_inputs, tamper):
+    r = retained_host
     compiled, sealed = compilation
-    owner, client, _ = setup_sdk(monkeypatch, tmp_path, endpoint, project_parent=True)
-    projected, policy = GenerationFacade().video(entry='h3', target='runpod', client=client,
-        project='project-a', **h3_inputs, **PAID)
-    plan = projected['plan']
+    admitted = _admit_host_h3(r, h3_inputs)
+    spec = r.show(admitted.kernel_task_id)['spec']
+    spec = spec.get('spec', spec)
+    plan = spec['inputs']['plan']
     assert plan['compilation_digest'] == sealed['compilation_digest']
-    assert policy['targets'] == [{'kind': 'default'}]
-    parent = run.ManagedParentClient(plan, tmp_path)
+    assert plan['workflow_members'] == {name: row['sha256'] for name, row in compiled['workflow'].items()}
+    parent = run.ManagedParentClient(plan, r.tmp)
+    parent.verify_compilation(compiled)
     if tamper:
         compiled['workflow_inputs']['prompt'] = 'Changed after admission.'
-    manifest = tmp_path / 'staged-compilation.json'
-    manifest.write_text(json.dumps(compiled))
-    files = {'compilation': manifest, 'managed_assets': Path(compiled['managed_assets']['path'])}
-    files.update({port: Path(compiled['workflow'][name]['path'])
-                  for port, name in (('python', 'workflow.py'), ('companion', 'workflow.vibe.json'), ('source', 'source.json'))})
-    def materialize(_client, _result, port, *_args, **kwargs):
-        path = files[port]
-        return path, {'object_id': 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()}
-    calls = []
-    monkeypatch.setattr(run, '_materialize_output', materialize)
-    monkeypatch.setattr(run, '_invoke_stage', lambda _client, capability, **k: calls.append((capability, k)) or object())
-    class ReadyForGpu(RuntimeError):
-        pass
-    def gpu(_client, **kwargs):
-        assert _client is parent
-        assert kwargs['placement'] == 'local' and kwargs['execution_request'] is None
-        assert kwargs['inputs']['comfy_url'] == endpoint.http_origin
-        assert json.loads(kwargs['inputs']['workflow_inputs']) == compiled['workflow_inputs']
-        assert kwargs['inputs']['python']['object_id'] == 'sha256:' + compiled['workflow']['workflow.py']['sha256']
-        calls.append(('vibecomfy.run', kwargs))
-        raise ReadyForGpu('ready for GPU')
-    monkeypatch.setattr(run, '_invoke_canonical_run', gpu)
-    prepared = {'bundle_descriptor': {}, 'source_inputs': {}, 'preparation_path': tmp_path / 'preparation.json',
-                'preparation_row': {'object_id': 'sha256:' + 'e' * 64},
-                'preparation': {'request_digest': compiled['request_digest']}}
-    args = SimpleNamespace(_managed_client=parent, project='project-a', resume=False)
-    with pytest.raises(RuntimeError, match='graph differs' if tamper else 'ready for GPU'):
-        run._execute_verified_pass(parent, args=args, root=tmp_path, request=None, raw_request={}, asset_map={},
-            journal=None, idempotency_context={}, local_engine=None, prepared_selection=None,
-            execution_request=None, placement='local', prepared_input=prepared)
-    assert [capability for capability, _ in calls] == (
-        ['h3_av.compile'] if tamper else ['h3_av.compile', 'vibecomfy.validate', 'vibecomfy.run'])
-    if not tamper:
-        # Structural/security validation stays offline; concrete target checks
-        # remain in the run adapter immediately before prompt submission.
-        assert calls[1][1]['inputs']['python_execution_consent'] == 'confirmed'
-        assert 'workflow_inputs' not in calls[1][1]['inputs']
+        with pytest.raises(Exception, match='changed the admitted sealed plan'):
+            parent.verify_compilation(compiled)
+    else:
+        assert plan['workflow_inputs_sha256'] == run._stable_digest(compiled['workflow_inputs'])
+        stage = next(stage for stage in plan['stages'] if stage['name'] == 'run')
+        assert stage['target'] == {'kind': 'default'} and 'execution_request' not in stage
+        assert plan['controls']['target_policy']['kind'] == 'runpod'
+    assert r.c.creates == 0 and not r.state.prompts
+
 
 
 def test_parent_run_rejects_url_substitution_before_child_admission(monkeypatch, tmp_path, endpoint):

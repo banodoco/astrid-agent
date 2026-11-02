@@ -1555,13 +1555,11 @@ def _bind_host_owned_command_values(
         else:
             values["readiness_profile_json"] = "{}"
     if "readiness_profile_path" in declared:
-        values["readiness_profile_path"] = os.environ.get(
-            "ASTRID_HOST_READINESS_PROFILE_PATH"
-        ) or "-"
+        values["readiness_profile_path"] = ("-" if (admission or {}).get("host_target_bound") else
+            os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH") or "-")
     if "readiness_profile_hash" in declared:
-        values["readiness_profile_hash"] = os.environ.get(
-            "ASTRID_HOST_READINESS_PROFILE_HASH"
-        ) or "-"
+        values["readiness_profile_hash"] = ("-" if (admission or {}).get("host_target_bound") else
+            os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH") or "-")
     return values
 
 
@@ -2445,7 +2443,8 @@ runpy.run_module(config['module'], run_name='__main__', alter_sys=True)
 """
 
 
-def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str], *, broker_required: bool) -> list[str]:
+def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str], *, broker_required: bool,
+                          admitted_module: str | None = None) -> list[str]:
     """Host-selected strict startup, independent of action environment flags."""
     arguments = list(argv[1:])
     flags = []
@@ -2457,7 +2456,12 @@ def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str]
             del arguments[:2]
         else:
             break
-    if len(arguments) < 2 or arguments[0] != "-m" or arguments[1] != "astrid.core.execution.generic_host_worker":
+    worker = len(arguments) >= 2 and arguments[:2] == ["-m", "astrid.core.execution.generic_host_worker"]
+    direct = (len(arguments) >= 2 and arguments[0] == "-m" and isinstance(admitted_module, str)
+              and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", admitted_module)
+              and arguments[1] == admitted_module and argv
+              and Path(argv[0]).resolve() == Path(sys.executable).resolve())
+    if not worker and not direct:
         raise HostError("strict network startup requires the host Python worker")
     policy_path = Path(__file__).with_name("network_policy.py").resolve()
     config = {
@@ -2468,7 +2472,7 @@ def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str]
         "imports": [path for path in env.get("PYTHONPATH", "").split(os.pathsep) if path],
         "module": arguments[1],
         "broker_required": broker_required,
-        "captured": "--external-source-fd" in arguments,
+        "captured": "--external-source-fd" in arguments or bool(direct),
     }
     return [argv[0], *flags, "-I", "-S", "-c", _STRICT_NETWORK_STARTUP,
             json.dumps(config, sort_keys=True), *arguments[2:]]
@@ -6316,6 +6320,9 @@ class GenericPackHost:
         # Idle release for everything this host keeps warm between tasks: the
         # session slot (Wan2GP, VibeComfy) and the Remotion frame owner.
         self.warm_holds = WarmHolds(on_change=self._publish_evidence_status)
+        self._target_bindings = None
+        self._target_bindings_kind = None
+        self._target_bindings_lock = threading.RLock()
         # A request's lifecycle.idle_timeout_seconds, for the task in flight.
         self._requested_idle_seconds: float | None = None
         # Queued tasks already reported as unclaimable, as (task_id, reason).
@@ -6869,9 +6876,35 @@ class GenericPackHost:
                 graph.abort()
             except BaseException as exc:
                 errors.append(exc)
+        if self._handoff_accounting_owner is self and self._target_bindings is not None:
+            try:
+                self._target_bindings.close()
+            except BaseException as exc:
+                errors.append(exc)
         if errors:
             self._latch_cleanup_uncertainty("; ".join(str(error) for error in errors))
             raise CleanupUncertainError("host graph cleanup remains unresolved") from errors[0]
+
+    def _host_target_bindings(self, kind):
+        """Lazily share selected target custody across this host's claim slots."""
+        owner = self._handoff_accounting_owner
+        with owner._target_bindings_lock:
+            if owner._target_bindings is None:
+                from astrid.core.execution.target_provider import resolve_target_provider
+
+                module = resolve_target_provider(kind, owner.pack_roots)
+                factory = getattr(module, "TargetProviderBindings", None)
+                if not callable(factory):
+                    raise HostError("target provider has no retained host binding")
+                owner._target_bindings = factory(
+                    pack_roots=owner.pack_roots, holds=owner.warm_holds, environ=os.environ,
+                    credentials=lambda name: _resolve_credential_value(
+                        owner.credential_source, name, explicit=owner._credential_source_is_explicit),
+                )
+                owner._target_bindings_kind = kind
+            elif owner._target_bindings_kind != kind:
+                raise HostError("host already retains a different target provider")
+            return owner._target_bindings
 
     def boot_manifest_provenance(self) -> dict[str, str] | None:
         """Return completion provenance for the root-owned manifest stamp."""
@@ -8957,7 +8990,7 @@ class GenericPackHost:
             # host-side preflight headless too; the actual Comfy daemon keeps
             # its normal route-registration environment in its own process.
             explicit["VIBECOMFY_HEADLESS"] = "1"
-            profile = _read_readiness_profile_document()
+            profile = None if (admission or {}).get("host_target_bound") else _read_readiness_profile_document()
             session = profile.get("vibecomfy_session") if isinstance(profile, Mapping) else None
             if isinstance(session, Mapping):
                 explicit["ASTRID_VIBECOMFY_SESSION_OWNERSHIP_ATTESTED"] = "1"
@@ -8980,7 +9013,7 @@ class GenericPackHost:
                 receipt_dir = os.environ.get(MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV)
                 if receipt_dir:
                     explicit[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = receipt_dir
-            elif os.environ.get(LOCAL_ENGINE_HOST_ENV):
+            elif os.environ.get(LOCAL_ENGINE_HOST_ENV) and not (admission or {}).get("host_target_bound"):
                 # Local placement without a readiness profile: the binding is attested by
                 # the installed engine's own receipt, never by a profile or the ambient env.
                 explicit.update(self._local_engine_model_root_env(os.environ[LOCAL_ENGINE_HOST_ENV]))
@@ -9419,7 +9452,7 @@ class GenericPackHost:
         workflow_policy = None
         if record.id == "vibecomfy.run":
             from astrid.packs.vibecomfy.endpoint_checkout import load_workflow_endpoint, workflow_endpoint_network_policy
-            profile = _read_readiness_profile_document()
+            profile = None if command_admission.get("host_target_bound") else _read_readiness_profile_document()
             runpod = isinstance(workflow_request, Mapping) and workflow_request.get("target", {}).get("kind") == "runpod"
             if runpod:
                 if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
@@ -9638,7 +9671,11 @@ class GenericPackHost:
                 argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                         "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
             if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
-                argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
+                admitted_module = (record.definition.metadata.get("runtime_module")
+                                   if command_admission.get("host_target_bound")
+                                   and record.definition.metadata.get("action_invocation") else None)
+                argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None,
+                                             admitted_module=admitted_module)
             if source_channel is not None:
                 argv = _captured_worker_argv(argv)
             # Rendering can create native descendants that change groups.
@@ -10434,6 +10471,8 @@ class GenericPackHost:
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
+        if terminal.get("target_binding") is not None:
+            receipt["target_binding"] = dict(terminal["target_binding"])
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -11622,6 +11661,8 @@ class GenericPackHost:
                 raise
         child_bridge = None
         session_hold = None
+        target_context = target_provider = target_invocation = None
+        target_operation_result = None
         try:
             session_hold = self._hold_session_slot()
             # Admission readback is bounded transport work under the lease pump.
@@ -11685,6 +11726,39 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            target_policy = inputs.get("target_policy")
+            if record.definition.metadata.get("host_target_operation") and not target_policy:
+                raise HostError("host target operation requires a target policy")
+            if target_policy:
+                target_operation = record.definition.metadata.get("host_target_operation")
+                if not target_operation and not record.definition.metadata.get("host_target_policy"):
+                    raise HostError("capability does not admit a host target policy")
+                if not isinstance(target_policy, str) or len(target_policy.encode("utf-8")) > 16384:
+                    raise HostError("host target policy must be bounded JSON")
+                try:
+                    policy = json.loads(target_policy)
+                except ValueError as exc:
+                    raise HostError("host target policy is not valid JSON") from exc
+                if not isinstance(policy, dict):
+                    raise HostError("host target policy must be an object")
+                if cancelled():
+                    raise HostCancelled("task cancelled before target acquisition")
+                target_context = self._host_target_bindings(policy.get("kind"))
+                if target_operation:
+                    include_quote = inputs.get("include_quote", False)
+                    if type(include_quote) is not bool:
+                        raise HostError("target quote selection must be boolean")
+                    target_operation_result = target_context.operate(policy, target_operation, include_quote=include_quote)
+                    inputs.pop("include_quote", None)
+                else:
+                    target_provider, target_invocation, evidence = target_context.bind(
+                        policy, inputs, invocation_id=f"{task_id}:{attempt_id}:{fence}",
+                        scratch=root, cancel=cancel_signal)
+                    _terminal["target_binding"] = evidence
+                    inputs["comfy_url"] = evidence["loopback_url"]
+                    readiness_profile = None
+                    vibe_session = None
+                inputs.pop("target_policy", None)
             if capability_id == "h3_av.transform":
                 if "host_output_root" in inputs or child_bridge is None:
                     raise HostError("H3 parent requires host-owned output custody and delegated admission")
@@ -12078,7 +12152,8 @@ class GenericPackHost:
                         admission={**network_admission, **(
                             {"workflow_execution_request": execution_contract}
                             if capability_id == "vibecomfy.run" and execution_contract is not None else {}
-                        ), **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {})},
+                        ), **({"comfy_invocation": comfy_invocation} if comfy_invocation is not None else {}),
+                            **({"host_target_bound": True} if target_invocation is not None else {})},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
@@ -12300,6 +12375,8 @@ class GenericPackHost:
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
             }
+            if target_operation_result is not None:
+                payload["target_operation"] = target_operation_result
             producer_manifest = next((row for row in outputs
                                       if row.get("output_port", row.get("name")) == "result_manifest"
                                       and row.get("role") == "manifest"), None)
@@ -12339,6 +12416,8 @@ class GenericPackHost:
             provenance = self.boot_manifest_provenance()
             if provenance is not None:
                 payload["provenance"] = provenance
+            if _terminal.get("target_binding") is not None:
+                payload["target_binding"] = dict(_terminal["target_binding"])
             if self.attempt_root is not None:
                 scratch_disposition = "caller_owned_pending"
                 retained_owner = "caller"
@@ -12593,6 +12672,15 @@ class GenericPackHost:
                 not managed_opened or self.managed_tool_session.current_adapter is not managed_adapter
             ):
                 endpoint_transport.close()
+            if target_invocation is not None:
+                if cleanup_errors or retain_for_unresolved_scope or self._active_processes:
+                    cleanup_errors.append("target invocation drain remains unresolved")
+                else:
+                    try:
+                        target_context.finish(target_provider, target_invocation,
+                                              success=bool(settled and managed_settled))
+                    except Exception as exc:
+                        cleanup_errors.append(f"target release or retention: {exc}")
             if capability_id == "vibecomfy.run" and not settled:
                 self._vibecomfy_warmth_hint = None
                 self._vibecomfy_current_warmth_hint = None
@@ -13153,7 +13241,9 @@ class GenericPackHost:
         slot._evidence_observation_binding = dict(self._evidence_observation_binding)
         slot._child_import_host_context = dict(self._child_import_host_context)
         slot._evidence_observation_lock = self._evidence_observation_lock
-        slot._handoff_accounting_owner = self
+        # Delegated children may create another slot from an existing slot.
+        # All levels must share the coordinating host's retained resources.
+        slot._handoff_accounting_owner = self._handoff_accounting_owner
         # Parallel slots own private attempts, but claim/handoff accounting
         # must remain visible on the coordinating host without a false zero.
         for name in ("_handoff_enter_claim_rpc", "_handoff_leave_claim_rpc",

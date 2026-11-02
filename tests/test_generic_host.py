@@ -5049,3 +5049,15 @@ def test_wan_qualification_refuses_before_host_preflight(tmp_path, monkeypatch):
         host.run_task(task, lease_token='lease')
     assert runtime.failures[0][3]['structured_error']['code'] == 'generation_route_unqualified'
     assert not runtime.settlements
+
+
+def test_nested_claim_slots_share_the_coordinating_host(idle_remotion_host):
+    host = idle_remotion_host.host
+    first = host._new_claim_slot()
+    nested = first._new_claim_slot()
+    try:
+        assert first._handoff_accounting_owner is host
+        assert nested._handoff_accounting_owner is host
+    finally:
+        nested.shutdown()
+        first.shutdown()

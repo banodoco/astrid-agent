@@ -36,7 +36,7 @@ from astrid.sdk._child_bridge import (
 from astrid.sdk.execution_request import ExecutionRequestError, normalize_execution_request
 
 from .generic_host import (
-    HostError, _assert_verified_placement_binding, _execution_contract, _verify_admitted_source,
+    HostError, _admitted_task_spec, _assert_verified_placement_binding, _execution_contract, _verify_admitted_source,
 )
 
 _MAX_FRAME = 1048576
@@ -624,6 +624,19 @@ class HostChildBridge:
         record = self.host.capabilities.get(child["capability_id"])
         if record is None or record.capability_digest != child["capability_digest"]:
             raise ChildBridgeError("child capability digest disagrees with admitted source")
+        if record.definition.metadata.get("host_target_policy"):
+            parent_inputs = _admitted_task_spec(self.task).get("inputs", {})
+            plan = parent_inputs.get("plan", {}) if isinstance(parent_inputs, Mapping) else {}
+            controls = plan.get("controls", {}) if isinstance(plan, Mapping) else {}
+            expected = controls.get("target_policy") if isinstance(controls, Mapping) else None
+            supplied = inputs.get("target_policy")
+            if expected is not None or supplied:
+                try:
+                    observed = json.loads(supplied) if isinstance(supplied, str) else None
+                except ValueError as exc:
+                    raise ChildBridgeError("child target policy is invalid") from exc
+                if not staged_request or not isinstance(expected, Mapping) or observed != expected:
+                    raise ChildBridgeError("child target policy differs from the admitted parent")
         if not record.definition.metadata.get("action_invocation"):
             raise ChildBridgeError("child bridge requires a declared action")
         _, admission = self.host.admit("executor", record.id)

@@ -148,8 +148,8 @@ class RunPodInstallation:
         from .target_selection import RunPodLeaseCompatibility
 
         expected = RunPodLeaseCompatibility(**dict(self.compatibility)).as_mapping()
-        if (self.engine != "comfyui" or self.platform != "linux-x86_64-cu130"
-                or self.root != "/workspace/astrid/engines/comfyui"):
+        if (self.engine not in {"comfyui", "vibecomfy-h3"} or self.platform != "linux-x86_64-cu130"
+                or self.root != f"/workspace/astrid/engines/{self.engine}"):
             raise RemotePlacementError("unsupported retained installation route")
         recipe = engine_recipe.load_recipe(self.engine, self.platform)
         plan = engine_runner.plan_install(recipe, root=self.root, placement="local")
