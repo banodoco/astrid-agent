@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail closed on missing or mismatched installed-product journey evidence."""
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -79,10 +80,243 @@ RUNNER_PROVENANCE = {
     "macos-15": ("macOS", "macos15"),
 }
 
+# This is deliberately not an alias in RUNNER_PROVENANCE.  Hosted matrix
+# validation remains closed over GitHub-hosted images; the self-hosted route is
+# admitted only by the separate trusted-context predicate below.
+SELF_HOSTED_MACOS_VENUE = "self-hosted"
+SELF_HOSTED_MACOS_RUNNER_NAME = "hannah-mac"
+SELF_HOSTED_MACOS_LABEL = "astrid-mac"
+SELF_HOSTED_MACOS_CONTEXT_FIELDS = frozenset((
+    "schema_version", "source", "repository", "workflow_path", "workflow_id", "workflow_sha", "ref", "head_sha",
+    "run_id", "run_attempt", "job_id", "matrix_job_id", "runner_name",
+    "runner_labels", "runner_os", "runner_arch", "conclusion", "candidate",
+    "receipt_sha256", "collector_profile", "collector_version", "collector_sha256",
+    "job_started_at", "job_completed_at",
+))
+SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS = frozenset((
+    "repository", "workflow_path", "workflow_id", "workflow_sha", "ref", "head_sha", "run_id", "run_attempt",
+    "job_id", "matrix_job_id", "runner_name", "runner_labels", "runner_os",
+    "runner_arch", "collector_profile", "collector_version", "collector_sha256",
+))
+SELF_HOSTED_MACOS_COLLECTION_FIELDS = frozenset((
+    "schema_version", "prepared_only", "started_at", "ended_at", "initial_census",
+    "final_census", "event_sequence", "loss_counters", "inner_exit", "freshness_seconds",
+))
+SELF_HOSTED_MACOS_COLLECTOR_PROFILE = "release1-installed-lifecycle"
+SELF_HOSTED_MACOS_COLLECTOR_VERSION = 2
+SELF_HOSTED_MACOS_MAX_FRESHNESS_SECONDS = 900
+
 
 def _migrate_macos_receipt_key(contract):
     """Compatibility for existing receipt fixtures; the matrix now owns this key."""
     return contract
+
+
+def _positive_integer(value):
+    return type(value) is int and value > 0
+
+
+def _rfc3339(value):
+    """Parse a UTC RFC-3339 timestamp without accepting a local-time claim."""
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _labels(value, *, subject):
+    """Return a duplicate-free API label set, or a precise closed-profile error."""
+    if not isinstance(value, list) or not value:
+        return None, f"{subject}: runner labels are absent"
+    if any(not isinstance(label, str) or not label.strip() for label in value):
+        return None, f"{subject}: runner labels must be non-empty strings"
+    labels = frozenset(value)
+    if len(labels) != len(value):
+        return None, f"{subject}: runner labels contain a duplicate"
+    required = {"self-hosted", "macOS", SELF_HOSTED_MACOS_LABEL}
+    missing = sorted(required - labels)
+    if missing:
+        return None, f"{subject}: runner labels are missing {', '.join(missing)}"
+    return labels, None
+
+
+def _self_hosted_collection_errors(receipt, trusted_context):
+    """Require the R-30 collector facts rather than treating a pass bit as proof.
+
+    The API cannot observe the private lifecycle itself.  These fields therefore
+    remain receipt claims, but they are closed, digest-bound, time-bounded by
+    API job timestamps, and fail closed until an independent collector supplies
+    them.  In particular, a prepared-only receipt cannot be relabelled as a
+    completed journey.
+    """
+    errors = []
+    collection = receipt.get("self_hosted_collection") if isinstance(receipt, dict) else None
+    if not isinstance(collection, dict):
+        return ["self-hosted macOS: collector evidence is absent"]
+    missing = sorted(SELF_HOSTED_MACOS_COLLECTION_FIELDS - set(collection))
+    unknown = sorted(set(collection) - SELF_HOSTED_MACOS_COLLECTION_FIELDS)
+    if missing:
+        errors.append("self-hosted macOS: collector evidence is missing " + ", ".join(missing))
+    if unknown:
+        errors.append("self-hosted macOS: collector evidence has unknown fields " + ", ".join(unknown))
+    if collection.get("schema_version") != 1:
+        errors.append("self-hosted macOS: collector evidence schema version is not 1")
+    if collection.get("prepared_only") is not False or receipt.get("evidence_class") == "prepared-only":
+        errors.append("self-hosted macOS: prepared-only evidence is not admissible")
+
+    started = _rfc3339(collection.get("started_at"))
+    ended = _rfc3339(collection.get("ended_at"))
+    job_started = _rfc3339(trusted_context.get("job_started_at"))
+    job_completed = _rfc3339(trusted_context.get("job_completed_at"))
+    if started is None or ended is None or ended < started:
+        errors.append("self-hosted macOS: collector start/end times are absent or malformed")
+    if job_started is None or job_completed is None or job_completed < job_started:
+        errors.append("self-hosted macOS: trusted job time bounds are absent or malformed")
+    if None not in (started, ended, job_started, job_completed):
+        if started < job_started or ended > job_completed:
+            errors.append("self-hosted macOS: collector times fall outside API job bounds")
+        freshness = collection.get("freshness_seconds")
+        observed_freshness = int((job_completed - ended).total_seconds())
+        if (type(freshness) is not int or freshness < 0
+                or freshness != observed_freshness
+                or freshness > SELF_HOSTED_MACOS_MAX_FRESHNESS_SECONDS):
+            errors.append("self-hosted macOS: collector freshness is absent, stale, or inconsistent")
+
+    for name in ("initial_census", "final_census"):
+        census = collection.get(name)
+        if (not isinstance(census, dict) or set(census) != {"source", "sha256", "count"}
+                or census.get("source") != "independent"
+                or not DIGEST.fullmatch(str(census.get("sha256", "")))
+                or type(census.get("count")) is not int or census["count"] < 0):
+            errors.append(f"self-hosted macOS: {name.replace('_', ' ')} is absent or not independent")
+
+    sequence = collection.get("event_sequence")
+    if not isinstance(sequence, dict) or set(sequence) != {"first", "last", "count", "sha256"}:
+        errors.append("self-hosted macOS: complete event sequence is absent")
+        event_count = None
+    elif (type(sequence.get("first")) is not int or type(sequence.get("last")) is not int
+          or type(sequence.get("count")) is not int or sequence["first"] < 1
+          or sequence["last"] < sequence["first"]
+          or sequence["count"] != sequence["last"] - sequence["first"] + 1
+          or not DIGEST.fullmatch(str(sequence.get("sha256", "")))):
+        errors.append("self-hosted macOS: event sequence is incomplete or malformed")
+        event_count = None
+    else:
+        event_count = sequence["count"]
+
+    losses = collection.get("loss_counters")
+    if (not isinstance(losses, dict) or set(losses) != {"emitted", "persisted", "dropped"}
+            or any(type(losses.get(key)) is not int or losses[key] < 0 for key in losses)
+            or losses.get("dropped") != 0 or event_count is None
+            or losses.get("emitted") != event_count or losses.get("persisted") != event_count):
+        errors.append("self-hosted macOS: event loss counters are absent, nonzero, or incomplete")
+    if collection.get("inner_exit") != 0:
+        errors.append("self-hosted macOS: inner exit is missing or nonzero")
+    return errors
+
+
+def self_hosted_macos_identity_errors(candidate, receipt, trusted_context, receipt_sha256):
+    """Bind a self-hosted receipt to context fetched outside that runner.
+
+    ``trusted_context`` is intentionally a separate checker input.  It must be
+    assembled by the trusted aggregate from the GitHub Actions run/job API and
+    the downloaded artifact bytes, never by the self-hosted job or its upload.
+    The receipt identity contains only claims which are compared against that
+    independently reconstructed record.
+    """
+    errors = []
+    if not isinstance(trusted_context, dict):
+        return ["self-hosted macOS: trusted Actions context is absent"]
+    missing = sorted(SELF_HOSTED_MACOS_CONTEXT_FIELDS - set(trusted_context))
+    unknown = sorted(set(trusted_context) - SELF_HOSTED_MACOS_CONTEXT_FIELDS)
+    if missing:
+        errors.append("self-hosted macOS: trusted context is missing " + ", ".join(missing))
+    if unknown:
+        errors.append("self-hosted macOS: trusted context has unknown fields " + ", ".join(unknown))
+    if trusted_context.get("schema_version") != 2:
+        errors.append("self-hosted macOS: trusted context schema version is not 2")
+    if trusted_context.get("source") != "github-actions-api":
+        errors.append("self-hosted macOS: trusted context must be GitHub Actions API-originated")
+    if trusted_context.get("repository") != "banodoco/astrid-agent":
+        errors.append("self-hosted macOS: trusted repository is not banodoco/astrid-agent")
+    if trusted_context.get("workflow_path") != ".github/workflows/journey.yml":
+        errors.append("self-hosted macOS: trusted workflow path is not journey.yml")
+    if not _positive_integer(trusted_context.get("workflow_id")):
+        errors.append("self-hosted macOS: trusted workflow ID is absent or malformed")
+    if not SHA.fullmatch(str(trusted_context.get("workflow_sha", ""))):
+        errors.append("self-hosted macOS: trusted workflow SHA is absent or malformed")
+    elif trusted_context.get("workflow_sha") != trusted_context.get("head_sha"):
+        errors.append("self-hosted macOS: trusted workflow SHA differs from the API run head")
+    ref = trusted_context.get("ref")
+    if not isinstance(ref, str) or not ref.startswith("refs/") or "\n" in ref or "\r" in ref:
+        errors.append("self-hosted macOS: trusted ref is absent or malformed")
+    if not SHA.fullmatch(str(trusted_context.get("head_sha", ""))):
+        errors.append("self-hosted macOS: trusted head SHA is absent or malformed")
+    for field in ("run_id", "run_attempt", "job_id"):
+        if not _positive_integer(trusted_context.get(field)):
+            errors.append(f"self-hosted macOS: trusted {field} is absent or malformed")
+    if trusted_context.get("matrix_job_id") != "direct-macos":
+        errors.append("self-hosted macOS: trusted job is not direct-macos")
+    if trusted_context.get("runner_name") != SELF_HOSTED_MACOS_RUNNER_NAME:
+        errors.append("self-hosted macOS: trusted runner name is not hannah-mac")
+    labels, label_error = _labels(
+        trusted_context.get("runner_labels"), subject="self-hosted macOS trusted context"
+    )
+    if label_error:
+        errors.append(label_error)
+    if trusted_context.get("runner_os") != "macOS":
+        errors.append("self-hosted macOS: trusted runner OS is not macOS")
+    if trusted_context.get("runner_arch") not in {"ARM64", "X64"}:
+        errors.append("self-hosted macOS: trusted runner architecture is absent or unsupported")
+    elif labels is not None and trusted_context["runner_arch"] not in labels:
+        errors.append("self-hosted macOS: trusted runner architecture is not an API runner label")
+    if trusted_context.get("conclusion") != "success":
+        errors.append("self-hosted macOS: trusted job conclusion is not success")
+    if trusted_context.get("candidate") != candidate:
+        errors.append("self-hosted macOS: trusted tuple differs from frozen candidate")
+    if trusted_context.get("collector_profile") != SELF_HOSTED_MACOS_COLLECTOR_PROFILE:
+        errors.append("self-hosted macOS: trusted collector profile is wrong")
+    if trusted_context.get("collector_version") != SELF_HOSTED_MACOS_COLLECTOR_VERSION:
+        errors.append("self-hosted macOS: trusted collector version is wrong")
+    if not DIGEST.fullmatch(str(trusted_context.get("collector_sha256", ""))):
+        errors.append("self-hosted macOS: trusted collector hash is absent or malformed")
+    if _rfc3339(trusted_context.get("job_started_at")) is None or _rfc3339(trusted_context.get("job_completed_at")) is None:
+        errors.append("self-hosted macOS: trusted API job times are absent or malformed")
+    if not isinstance(receipt_sha256, str) or not DIGEST.fullmatch(receipt_sha256):
+        errors.append("self-hosted macOS: checker did not hash the receipt bytes")
+    elif trusted_context.get("receipt_sha256") != receipt_sha256:
+        errors.append("self-hosted macOS: trusted receipt digest differs from parsed receipt bytes")
+
+    if not isinstance(receipt, dict):
+        return errors + ["self-hosted macOS: receipt is absent or malformed"]
+    if receipt.get("venue") != SELF_HOSTED_MACOS_VENUE:
+        errors.append("self-hosted macOS: receipt venue is not self-hosted")
+    if receipt.get("runner_image") not in {"local", "self-hosted"}:
+        errors.append("self-hosted macOS: receipt is relabelled hosted evidence or has an unknown runner image")
+    identity = receipt.get("execution_identity")
+    if not isinstance(identity, dict):
+        return errors + ["self-hosted macOS: receipt execution identity is absent"]
+    missing = sorted(SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS - set(identity))
+    unknown = sorted(set(identity) - SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS)
+    if missing:
+        errors.append("self-hosted macOS: receipt identity is missing " + ", ".join(missing))
+    if unknown:
+        errors.append("self-hosted macOS: receipt identity has unknown fields " + ", ".join(unknown))
+    for field in SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS - {"runner_labels"}:
+        if identity.get(field) != trusted_context.get(field):
+            errors.append(f"self-hosted macOS: receipt {field} differs from trusted context")
+    receipt_labels, receipt_label_error = _labels(
+        identity.get("runner_labels"), subject="self-hosted macOS receipt"
+    )
+    if receipt_label_error:
+        errors.append(receipt_label_error)
+    if receipt_labels is not None and labels is not None and receipt_labels != labels:
+        errors.append("self-hosted macOS: receipt runner labels differ from trusted context")
+    errors.extend(_self_hosted_collection_errors(receipt, trusted_context))
+    return errors
 
 
 REQUIRED = {
@@ -324,6 +558,92 @@ def evaluate_release1_matrix(candidate, results):
             errors.append(f"{job_id}: missing receipt")
             continue
         errors.extend(_release1_row_errors(candidate, contract, row))
+    return errors
+
+
+def evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_path):
+    """Admit only the separately authenticated hannah-mac direct-macOS receipt.
+
+    This profile never relaxes the normal hosted aggregate: its API-built
+    context is a separate input, and its lifecycle proof is still evaluated by
+    the same Release-1 direct-macOS predicate after identity is authenticated.
+    """
+    receipt_path = Path(receipt_path)
+    trusted_context_path = Path(trusted_context_path)
+    if receipt_path.resolve() == trusted_context_path.resolve():
+        return ["self-hosted macOS: trusted context cannot be supplied by the receipt artifact"]
+    try:
+        receipt = read(receipt_path)
+    except (OSError, ValueError) as exc:
+        return [f"self-hosted macOS: receipt is unreadable: {exc}"]
+    try:
+        trusted_context = read(trusted_context_path)
+    except (OSError, ValueError) as exc:
+        return [f"self-hosted macOS: trusted Actions context is unreadable: {exc}"]
+
+    errors = self_hosted_macos_identity_errors(
+        candidate, receipt, trusted_context, digest(receipt_path)
+    )
+    contract = next(row for row in RELEASE1_MATRIX if row["job_id"] == "direct-macos")
+    if receipt.get("job_id") != contract["job_id"]:
+        errors.append("self-hosted macOS: receipt job is not direct-macos")
+
+    # Do not let a producer pretend to be a hosted image.  The local copy is
+    # only for reusing every lifecycle predicate; API runner authentication is
+    # exclusively the trusted context validated above.
+    lifecycle = dict(receipt)
+    lifecycle["runner_image"] = contract["runner"]
+    lifecycle["runner_provenance"] = {
+        "RUNNER_OS": "macOS", "ImageOS": "macos15", "ImageVersion": "trusted-self-hosted-profile",
+    }
+    errors.extend(_release1_row_errors(candidate, contract, lifecycle))
+    return errors
+
+
+def evaluate_release1_with_self_hosted_macos(candidate, results, receipt_path, trusted_context_path):
+    """Require eight hosted rows and exactly one authenticated direct-macOS row."""
+    errors = []
+    expected = {row["job_id"]: row for row in RELEASE1_MATRIX if row["job_id"] != "direct-macos"}
+    found = {}
+    receipt_path = Path(receipt_path).resolve()
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            resolved = path.resolve()
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        if resolved == receipt_path:
+            errors.append(f"{path}: self-hosted receipt must not be included in hosted results")
+            continue
+        # The collector intentionally retains the pre-cleanup copy as failure
+        # diagnostics.  It can never be an admitted final receipt; each
+        # artifact's post-cleanup copy is the sole canonical matrix input.
+        if path.parent.name == "before-cleanup":
+            continue
+        if path.parent.name != "after-cleanup":
+            errors.append(f"{path}: hosted receipt is not in the canonical after-cleanup location")
+            continue
+        job_id = row.get("job_id")
+        if job_id == "direct-macos":
+            errors.append(f"{path}: hosted results must not include a direct-macos receipt")
+            continue
+        if not isinstance(job_id, str) or job_id not in expected:
+            errors.append(f"{path}: unknown or absent hosted Release-1 job id")
+            continue
+        if job_id in found:
+            errors.append(f"{path}: duplicate receipt for {job_id}")
+            continue
+        found[job_id] = row
+    for job_id, contract in expected.items():
+        row = found.get(job_id)
+        if row is None:
+            errors.append(f"{job_id}: missing receipt")
+            continue
+        if row.get("venue") not in (None, "hosted"):
+            errors.append(f"{job_id}: hosted row is relabelled as self-hosted")
+        errors.extend(_release1_row_errors(candidate, contract, row))
+    errors.extend(evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_path))
     return errors
 
 
@@ -925,6 +1245,14 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact nine Release-1 job receipts under --results")
+    parser.add_argument("--aggregate-self-hosted-macos", action="store_true",
+                        help="require one separately API-authenticated hannah-mac direct-macOS receipt")
+    parser.add_argument("--aggregate-release1-with-self-hosted-macos", action="store_true",
+                        help="require eight hosted Release-1 rows plus one authenticated direct-macOS receipt")
+    parser.add_argument("--self-hosted-macos-receipt", type=Path,
+                        help="downloaded direct-macOS journey-result.json, never the trusted context")
+    parser.add_argument("--trusted-context", type=Path,
+                        help="gate-built GitHub Actions API context for a self-hosted macOS receipt")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
                         help="require all three hosted Pinokio backend M4-4a receipts")
     parser.add_argument("--aggregate-m4-5", action="store_true",
@@ -940,8 +1268,10 @@ def main():
     args = parser.parse_args()
     errors = []
     try:
-        aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
-                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu))
+        aggregate_modes = sum((args.aggregate_release1, args.aggregate_self_hosted_macos,
+                               args.aggregate_release1_with_self_hosted_macos, args.aggregate_m4_4a,
+                               args.aggregate_m4_5, args.aggregate_m4_4b_local,
+                               args.aggregate_m4_6_local, args.aggregate_gpu))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
         if args.report_end_state_obligations and aggregate_modes:
@@ -974,6 +1304,30 @@ def main():
             if args.results is None or args.allow_source_override or args.required or args.prepare_only:
                 raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
             errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))
+        elif args.aggregate_self_hosted_macos:
+            if (args.self_hosted_macos_receipt is None or args.trusted_context is None
+                    or args.results is not None or args.expected_runner is not None
+                    or args.expected_shell is not None or args.required or args.allow_source_override
+                    or args.prepare_only):
+                raise ValueError(
+                    "self-hosted macOS aggregate requires only --candidate, --app-checkout, "
+                    "--self-hosted-macos-receipt and --trusted-context"
+                )
+            errors.extend(evaluate_self_hosted_macos_receipt(
+                candidate, args.self_hosted_macos_receipt, args.trusted_context
+            ))
+        elif args.aggregate_release1_with_self_hosted_macos:
+            if (args.results is None or args.self_hosted_macos_receipt is None
+                    or args.trusted_context is None or args.expected_runner is not None
+                    or args.expected_shell is not None or args.required or args.allow_source_override
+                    or args.prepare_only):
+                raise ValueError(
+                    "combined self-hosted macOS aggregate requires --candidate, --app-checkout, --results, "
+                    "--self-hosted-macos-receipt and --trusted-context"
+                )
+            errors.extend(evaluate_release1_with_self_hosted_macos(
+                candidate, args.results, args.self_hosted_macos_receipt, args.trusted_context
+            ))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
@@ -990,7 +1344,9 @@ def main():
             if args.allow_source_override:
                 raise ValueError("M4-5 aggregate never admits a source override")
             errors.extend(evaluate_m4_5_matrix(args.results))
-        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and not args.prepare_only:
+        elif (not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local
+              and not args.aggregate_self_hosted_macos
+              and not args.aggregate_release1_with_self_hosted_macos and not args.prepare_only):
             if args.cadence == "release-candidate":
                 raise ValueError("release-candidate evidence requires --aggregate-release1")
             if args.results is None or args.expected_runner is None or args.expected_shell is None:

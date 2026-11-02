@@ -72,6 +72,11 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      macos_runner:
+        description: Direct-macos venue; only hosted or astrid-mac is accepted
+        required: false
+        default: hosted
+        type: string
   workflow_dispatch:
     inputs:
       candidate:
@@ -134,12 +139,21 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      macos_runner:
+        description: Direct-macos venue
+        required: false
+        default: hosted
+        type: choice
+        options:
+          - hosted
+          - astrid-mac
 
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -162,6 +176,7 @@ jobs:
       m4_6_enabled: ${{ steps.config.outputs.m4_6_enabled }}
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
+      macos_runner: ${{ steps.config.outputs.macos_runner }}
       matrix: ${{ steps.config.outputs.matrix }}
     steps:
       - name: Check out reviewed Agent matrix contracts
@@ -252,6 +267,7 @@ jobs:
           M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
           M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
           M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
+          MACOS_RUNNER: ${{ inputs.macos_runner || 'hosted' }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -327,6 +343,9 @@ jobs:
                   raise SystemExit("invalid m4_6_candidate: " + "; ".join(candidate_errors))
           else:
               m4_6_candidate = {}
+          macos_runner = os.environ.get("MACOS_RUNNER", "hosted").strip()
+          if macos_runner not in {"hosted", "astrid-mac"}:
+              raise SystemExit("macos_runner must be exactly hosted or astrid-mac")
           matrix = [
               {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
@@ -338,6 +357,10 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
+          if macos_runner == "astrid-mac":
+              direct_macos = next(row for row in matrix if row["job_id"] == "direct-macos")
+              direct_macos["runner"] = ["self-hosted", "astrid-mac"]
+              direct_macos["venue"] = "self-hosted"
           if direct_only:
               matrix = [row for row in matrix if row["mode"] == "direct"]
           elif backend_only:
@@ -357,14 +380,19 @@ jobs:
                                   ("m4_6_enabled", str(m4_6_enabled).lower()),
                                   ("m4_6_candidate", m4_6_candidate),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
+                                  ("macos_runner", macos_runner),
                                   ("matrix", {"include": matrix})):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
 
   journey:
+    name: Journey ${{ matrix.job_id }}
     if: needs.config.outputs.m4_5_only != 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
+    concurrency:
+      group: ${{ matrix.venue == 'self-hosted' && matrix.job_id == 'direct-macos' && 'journey-self-hosted-direct-macos-astrid-mac' || format('journey-row-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.job_id) }}
+      cancel-in-progress: false
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -373,6 +401,26 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Assert the selected self-hosted direct-macOS venue
+        if: matrix.job_id == 'direct-macos' && matrix.venue == 'self-hosted'
+        shell: bash
+        env:
+          ACTIONS_RUNNER_NAME: ${{ runner.name }}
+          ACTIONS_RUNNER_OS: ${{ runner.os }}
+          EXPECTED_RUNNER_NAME: hannah-mac
+        run: |
+          set -euo pipefail
+          test "$ACTIONS_RUNNER_NAME" = "$EXPECTED_RUNNER_NAME"
+          test "$ACTIONS_RUNNER_OS" = macOS
+          test "${RUNNER_OS:-}" = macOS
+          test "$(uname -s)" = Darwin
+          # The Release-1 driver retains macos-15 as its lifecycle platform
+          # contract.  Venue identity is bound separately below and then
+          # authenticated by the hosted gate from the Actions API.
+          {
+            echo 'ImageOS=self-hosted-macos'
+            printf 'ImageVersion=self-hosted-%s\n' "$(sw_vers -productVersion)"
+          } >> "$GITHUB_ENV"
       # The driver itself is pinned to the reviewed workflow source.  Candidate
       # Agent is checked out separately so the receipt proves both identities.
       - name: Check out reviewed Agent receipt harness
@@ -641,7 +689,7 @@ jobs:
           if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
         env:
-          ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.venue == 'self-hosted' && 'macos-15' || matrix.runner }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
@@ -675,6 +723,135 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bind self-hosted direct-macOS receipt claims for gate authentication
+        if: always() && matrix.job_id == 'direct-macos' && matrix.venue == 'self-hosted'
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          API_URL: ${{ github.api_url }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RECEIPT_ROOT: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
+          COLLECTOR_PATH: agent/scripts/ci_journey.py
+          EXPECTED_RUNNER_NAME: hannah-mac
+          EXPECTED_JOB_NAME: Journey direct-macos
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.request
+          from pathlib import Path
+
+          SHA = re.compile(r"[0-9a-f]{40}$")
+          DIGEST = re.compile(r"[0-9a-f]{64}$")
+
+          def fail(message):
+              raise SystemExit("self-hosted receipt claim binding: " + message)
+
+          def api(path):
+              request = urllib.request.Request(
+                  os.environ["API_URL"] + path,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          repository = os.environ["REPOSITORY"]
+          if repository != "banodoco/astrid-agent":
+              fail("workflow repository is not banodoco/astrid-agent")
+          try:
+              candidate = json.loads(os.environ["CANDIDATE"])
+          except json.JSONDecodeError as exc:
+              fail("candidate is not JSON: " + str(exc))
+          if (not isinstance(candidate, dict) or any(
+                  not SHA.fullmatch(str(candidate.get(key, "")))
+                  for key in ("app", "agent", "runtime", "pinokio"))):
+              fail("candidate must contain exactly the four full SHA identities")
+          run_id = int(os.environ["RUN_ID"])
+          attempt = int(os.environ["RUN_ATTEMPT"])
+          run = api(f"/repos/{repository}/actions/runs/{run_id}")
+          if (run.get("id") != run_id or run.get("run_attempt") != attempt
+                  or (run.get("repository") or {}).get("full_name") != repository
+                  or run.get("head_sha") != os.environ["HEAD_SHA"]
+                  or type(run.get("workflow_id")) is not int or run["workflow_id"] <= 0):
+              fail("Actions API run identity disagrees with workflow context")
+          workflow_path, marker, workflow_ref = str(run.get("path", "")).partition("@")
+          if workflow_path != ".github/workflows/journey.yml" or not marker:
+              fail("Actions API run is not journey.yml")
+          head_branch = run.get("head_branch")
+          api_ref = "refs/heads/" + head_branch if isinstance(head_branch, str) and head_branch else None
+          if api_ref != os.environ["REF"] or workflow_ref != api_ref:
+              fail("Actions API run ref disagrees with workflow context")
+          jobs = api(f"/repos/{repository}/actions/runs/{run_id}/jobs?per_page=100").get("jobs")
+          if not isinstance(jobs, list):
+              fail("Actions API jobs response is malformed")
+          matches = [job for job in jobs if job.get("name") == os.environ["EXPECTED_JOB_NAME"]]
+          if len(matches) != 1:
+              fail("Actions API must expose exactly one direct-macos matrix job")
+          job = matches[0]
+          if type(job.get("id")) is not int or job["id"] <= 0:
+              fail("Actions API job ID is absent")
+          if job.get("runner_name") != os.environ["EXPECTED_RUNNER_NAME"]:
+              fail("Actions API runner name is not hannah-mac")
+          labels = job.get("labels")
+          required_labels = {"self-hosted", "macOS", "astrid-mac"}
+          if (not isinstance(labels, list) or any(not isinstance(label, str) or not label for label in labels)
+                  or len(set(labels)) != len(labels) or not required_labels.issubset(labels)):
+              fail("Actions API runner labels are absent or wrong")
+          architectures = sorted(set(labels) & {"ARM64", "X64"})
+          if len(architectures) != 1:
+              fail("Actions API runner architecture label is absent or ambiguous")
+          collector_path = Path(os.environ["COLLECTOR_PATH"])
+          collector_hash = hashlib.sha256(collector_path.read_bytes()).hexdigest()
+          if not DIGEST.fullmatch(collector_hash):
+              fail("collector hash is malformed")
+          receipts = sorted(Path(os.environ["RECEIPT_ROOT"]).glob("after-cleanup/journey-result.json"))
+          if len(receipts) != 1:
+              fail("expected exactly one canonical after-cleanup receipt")
+          identity = {
+              "repository": repository,
+              "workflow_path": workflow_path,
+              "workflow_id": run["workflow_id"],
+              "workflow_sha": run["head_sha"],
+              "ref": api_ref,
+              "head_sha": run["head_sha"],
+              "run_id": run_id,
+              "run_attempt": attempt,
+              "job_id": job["id"],
+              "matrix_job_id": "direct-macos",
+              "runner_name": job["runner_name"],
+              "runner_labels": labels,
+              "runner_os": "macOS",
+              "runner_arch": architectures[0],
+              "collector_profile": "release1-installed-lifecycle",
+              "collector_version": 2,
+              "collector_sha256": collector_hash,
+          }
+          for receipt_path in receipts:
+              receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+              if receipt.get("job_id") != "direct-macos":
+                  fail(f"unexpected receipt job: {receipt_path}")
+              checkouts = receipt.get("candidate_checkouts")
+              if (not isinstance(checkouts, dict) or any(
+                      (checkouts.get(key) or {}).get("sha") != candidate[key]
+                      for key in ("app", "agent", "runtime", "pinokio"))):
+                  fail(f"receipt checkout tuple mismatch: {receipt_path}")
+              receipt["venue"] = "self-hosted"
+              receipt["runner_image"] = "self-hosted"
+              receipt["execution_identity"] = identity
+              receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()
@@ -1023,19 +1200,209 @@ jobs:
         with:
           python-version: "3.11"
       - name: Download every per-job receipt
+        if: needs.config.outputs.macos_runner != 'astrid-mac' || needs.config.outputs.m4_4a_backend_only == 'true'
         uses: actions/download-artifact@v4
         with:
           pattern: journey-receipt-*
           path: receipts
           merge-multiple: true
+      - name: Download hosted direct-linux receipt for self-hosted macOS aggregate
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-direct-linux
+          path: receipts/direct-linux
+      - name: Download hosted direct-windows receipt for self-hosted macOS aggregate
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-direct-windows
+          path: receipts/direct-windows
+      - name: Download hosted Pinokio backend macOS receipt for self-hosted macOS aggregate
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-pinokio-backend-macos
+          path: receipts/pinokio-backend-macos
+      - name: Download hosted Pinokio backend Linux receipt for self-hosted macOS aggregate
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-pinokio-backend-linux
+          path: receipts/pinokio-backend-linux
+      - name: Download hosted Pinokio backend Windows receipt for self-hosted macOS aggregate
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-pinokio-backend-windows
+          path: receipts/pinokio-backend-windows
+      - name: Download hosted Pinokio fully-local macOS receipt for self-hosted macOS aggregate
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-pinokio-fully-local-macos
+          path: receipts/pinokio-fully-local-macos
+      - name: Download hosted Pinokio fully-local Linux receipt for self-hosted macOS aggregate
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-pinokio-fully-local-linux
+          path: receipts/pinokio-fully-local-linux
+      - name: Download hosted Pinokio fully-local Windows receipt for self-hosted macOS aggregate
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-pinokio-fully-local-windows
+          path: receipts/pinokio-fully-local-windows
+      - name: Download the isolated self-hosted direct-macOS receipt
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: journey-receipt-direct-macos
+          path: self-hosted-receipt
+      - name: Build the self-hosted direct-macOS trusted Actions context
+        if: needs.config.outputs.macos_runner == 'astrid-mac' && needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        shell: bash
+        env:
+          API_URL: ${{ github.api_url }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          EXPECTED_REF: ${{ github.ref }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+          RECEIPT_ROOT: self-hosted-receipt
+          CONTEXT_PATH: ${{ runner.temp }}/trusted-actions-context.json
+          COLLECTOR_PATH: agent/scripts/ci_journey.py
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import urllib.request
+          from pathlib import Path
+
+          SHA = re.compile(r"[0-9a-f]{40}$")
+
+          def fail(message):
+              raise SystemExit("trusted Actions context: " + message)
+
+          def api(path):
+              request = urllib.request.Request(
+                  os.environ["API_URL"] + path,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          repository = os.environ["REPOSITORY"]
+          if repository != "banodoco/astrid-agent":
+              fail("workflow repository is not banodoco/astrid-agent")
+          run_id = int(os.environ["RUN_ID"])
+          attempt = int(os.environ["RUN_ATTEMPT"])
+          run = api(f"/repos/{repository}/actions/runs/{run_id}")
+          if (run.get("id") != run_id or run.get("run_attempt") != attempt
+                  or (run.get("repository") or {}).get("full_name") != repository
+                  or type(run.get("workflow_id")) is not int or run["workflow_id"] <= 0):
+              fail("run ID or attempt differs from the authenticated API run")
+          workflow_path, marker, workflow_ref = str(run.get("path", "")).partition("@")
+          if workflow_path != ".github/workflows/journey.yml" or not marker:
+              fail("API run does not identify journey.yml")
+          head_branch = run.get("head_branch")
+          api_ref = "refs/heads/" + head_branch if isinstance(head_branch, str) and head_branch else None
+          if (api_ref != os.environ["EXPECTED_REF"] or workflow_ref != api_ref
+                  or run.get("head_sha") != os.environ["EXPECTED_HEAD_SHA"]
+                  or not SHA.fullmatch(str(run.get("head_sha", "")))):
+              fail("API repo/ref/head does not match this gate")
+          jobs_payload = api(f"/repos/{repository}/actions/runs/{run_id}/jobs?per_page=100")
+          jobs = jobs_payload.get("jobs")
+          if not isinstance(jobs, list):
+              fail("API jobs response is malformed")
+          matches = [job for job in jobs if job.get("name") == "Journey direct-macos"]
+          if len(matches) != 1:
+              fail("API must return exactly one Journey direct-macos job")
+          job = matches[0]
+          labels = job.get("labels")
+          required_labels = {"self-hosted", "macOS", "astrid-mac"}
+          if (type(job.get("id")) is not int or job["id"] <= 0
+                  or job.get("runner_name") != "hannah-mac"
+                  or job.get("status") != "completed" or job.get("conclusion") != "success"
+                  or not isinstance(labels, list) or any(not isinstance(label, str) or not label for label in labels)
+                  or len(set(labels)) != len(labels) or not required_labels.issubset(labels)):
+              fail("API job does not prove the selected hannah-mac direct-macos execution")
+          architectures = sorted(set(labels) & {"ARM64", "X64"})
+          if len(architectures) != 1:
+              fail("API job runner architecture label is absent or ambiguous")
+          for key in ("started_at", "completed_at"):
+              if not isinstance(job.get(key), str) or not job[key].endswith("Z"):
+                  fail("API job time bound is absent: " + key)
+          try:
+              candidate = json.loads(os.environ["CANDIDATE"])
+          except json.JSONDecodeError as exc:
+              fail("frozen candidate is not JSON: " + str(exc))
+          if (not isinstance(candidate, dict) or any(
+                  not SHA.fullmatch(str(candidate.get(key, "")))
+                  for key in ("app", "agent", "runtime", "pinokio"))):
+              fail("frozen candidate lacks a full exact tuple")
+          receipts = sorted(Path(os.environ["RECEIPT_ROOT"]).glob("after-cleanup/journey-result.json"))
+          if len(receipts) != 1:
+              fail("isolated artifact lacks exactly one canonical after-cleanup receipt")
+          receipt_bytes = receipts[0].read_bytes()
+          collector_hash = hashlib.sha256(Path(os.environ["COLLECTOR_PATH"]).read_bytes()).hexdigest()
+          context = {
+              "schema_version": 2,
+              "source": "github-actions-api",
+              "repository": repository,
+              "workflow_path": workflow_path,
+              "workflow_id": run["workflow_id"],
+              "workflow_sha": run["head_sha"],
+              "ref": api_ref,
+              "head_sha": run["head_sha"],
+              "run_id": run_id,
+              "run_attempt": attempt,
+              "job_id": job["id"],
+              "matrix_job_id": "direct-macos",
+              "runner_name": job["runner_name"],
+              "runner_labels": labels,
+              "runner_os": "macOS",
+              "runner_arch": architectures[0],
+              "conclusion": job["conclusion"],
+              "candidate": candidate,
+              "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+              "collector_profile": "release1-installed-lifecycle",
+              "collector_version": 2,
+              "collector_sha256": collector_hash,
+              "job_started_at": job["started_at"],
+              "job_completed_at": job["completed_at"],
+          }
+          Path(os.environ["CONTEXT_PATH"]).write_text(
+              json.dumps(context, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
       - name: Aggregate the exact Release-1 receipt matrix
-        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
+        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true' && needs.config.outputs.macos_runner != 'astrid-mac'
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1
+      - name: Aggregate eight hosted rows with the authenticated self-hosted direct-macOS receipt
+        if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true' && needs.config.outputs.macos_runner == 'astrid-mac'
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+          TRUSTED_CONTEXT: ${{ runner.temp }}/trusted-actions-context.json
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --self-hosted-macos-receipt self-hosted-receipt/after-cleanup/journey-result.json --trusted-context "$TRUSTED_CONTEXT" --aggregate-release1-with-self-hosted-macos
       - name: Aggregate the exact M4-4a Pinokio backend receipts
         if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only == 'true'
         shell: bash
