@@ -567,7 +567,8 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
-        journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data, True)
+        journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data,
+                         legacy_bootstrap=True)
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
         version_path, selected_data, version = journey.installation(root, data)
