@@ -99,12 +99,19 @@ def main():
     if len(sys.argv) != 3:
         raise RuntimeError("Invalid cache checkout arguments")
     root = Path.home() / ".astrid-mac-bundle-cache" / "bundle-a-v1"
-    workspace = Path(os.environ["GITHUB_WORKSPACE"])
-    if not workspace.is_absolute() or workspace != workspace.resolve():
-        raise RuntimeError("Checkout workspace path is invalid")
+    temp = Path(os.environ["RUNNER_TEMP"])
+    if temp != Path.home() / "actions-runner/_work/_temp" or temp != temp.resolve():
+        raise RuntimeError("Runner temp path is invalid")
+    workspace = temp / "astrid-cached-checkouts"
+    workspace.mkdir(mode=0o700, exist_ok=True)
+    st = workspace.lstat()
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != UID or st.st_mode & 0o077:
+        raise RuntimeError("Cache checkout directory is not private and runner-owned")
     hit = checkout(sys.argv[1], sys.argv[2], root, workspace)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         print(f"hit={str(hit).lower()}", file=output)
+        if hit:
+            print(f"path={workspace / DESTINATIONS[sys.argv[1]]}", file=output)
     print("Frozen checkout: cache hit" if hit else "Frozen checkout: cache miss; use network checkout")
 
 

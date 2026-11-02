@@ -504,15 +504,19 @@ jobs:
           python-version: "3.11"
       - name: Record effective immutable checkouts
         shell: bash
+        env:
+          AGENT_CHECKOUT: ${{ steps.cache_agent.outputs.path || format('{0}/candidate-agent', github.workspace) }}
+          RUNTIME_CHECKOUT: ${{ steps.cache_runtime.outputs.path || format('{0}/runtime', github.workspace) }}
+          PINOKIO_CHECKOUT: ${{ steps.cache_pinokio.outputs.path || format('{0}/pinokio', github.workspace) }}
         run: |
           {
             echo "## Effective Release-1 journey tuple"
             echo "- Trigger: ${{ github.event_name }} / ${{ github.sha }}"
             echo "- Driver Agent: $(git -C agent rev-parse HEAD)"
             echo "- Candidate App: $(git -C app rev-parse HEAD)"
-            echo "- Candidate Agent: $(git -C candidate-agent rev-parse HEAD)"
-            echo "- Candidate Runtime: $(git -C runtime rev-parse HEAD)"
-            echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
+            echo "- Candidate Agent: $(git -C "$AGENT_CHECKOUT" rev-parse HEAD)"
+            echo "- Candidate Runtime: $(git -C "$RUNTIME_CHECKOUT" rev-parse HEAD)"
+            echo "- Candidate Pinokio: $(git -C "$PINOKIO_CHECKOUT" rev-parse HEAD)"
             echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze and validate candidate inputs
@@ -727,6 +731,9 @@ jobs:
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          AGENT_CHECKOUT: ${{ steps.cache_agent.outputs.path || format('{0}/candidate-agent', github.workspace) }}
+          RUNTIME_CHECKOUT: ${{ steps.cache_runtime.outputs.path || format('{0}/runtime', github.workspace) }}
+          PINOKIO_CHECKOUT: ${{ steps.cache_pinokio.outputs.path || format('{0}/pinokio', github.workspace) }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
@@ -755,8 +762,8 @@ jobs:
           python -u agent/scripts/ci_journey.py `
             --job-id '${{ matrix.job_id }}' --mode '${{ matrix.mode }}' --leg '${{ matrix.leg }}' `
             --candidate "$env:RUNNER_TEMP/candidate.json" `
-            --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
-            --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
+            --app-checkout "$pwd/app" --candidate-agent-checkout "$env:AGENT_CHECKOUT" `
+            --candidate-runtime-checkout "$env:RUNTIME_CHECKOUT" --pinokio-checkout "$env:PINOKIO_CHECKOUT" `
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

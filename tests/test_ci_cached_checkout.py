@@ -107,3 +107,39 @@ def test_cache_git_disables_hooks_and_replacement_objects(cache, monkeypatch):
     assert calls
     assert all("core.hooksPath=/dev/null" in args for args, _ in calls)
     assert all(env.get("GIT_NO_REPLACE_OBJECTS") == "1" for _, env in calls)
+
+
+def test_main_uses_private_runner_temp_without_mutating_existing_workspace(tmp_path, monkeypatch):
+    home = tmp_path / 'runner'
+    temp = home / 'actions-runner/_work/_temp'
+    temp.mkdir(parents=True)
+    workspace = home / 'actions-runner/_work/astrid-agent/astrid-agent'
+    old = workspace / 'candidate-agent'
+    old.mkdir(parents=True)
+    (old / 'preserve').write_text('existing data')
+    output = tmp_path / 'output'
+    monkeypatch.setattr(cached, 'UID', os.getuid())
+    monkeypatch.setenv('RUNNER_NAME', 'hannah-mac')
+    monkeypatch.setenv('RUNNER_TEMP', str(temp))
+    monkeypatch.setenv('GITHUB_WORKSPACE', str(workspace))
+    monkeypatch.setenv('GITHUB_OUTPUT', str(output))
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    monkeypatch.setattr(cached.sys, 'argv', ['script', 'agent', 'a' * 40])
+    def checkout(name, sha, root, target):
+        assert target == temp / 'astrid-cached-checkouts'
+        assert target.stat().st_mode & 0o777 == 0o700
+        return True
+    monkeypatch.setattr(cached, 'checkout', checkout)
+    cached.main()
+    assert (old / 'preserve').read_text() == 'existing data'
+    assert f'path={temp}/astrid-cached-checkouts/candidate-agent' in output.read_text()
+
+
+def test_workflow_uses_cache_path_only_when_cache_hit():
+    workflow = (Path(__file__).parents[1] / '.github/workflows/journey.yml').read_text()
+    job = workflow.split('  journey:\n', 1)[1].split('\n  release2:', 1)[0]
+    for name in ('agent', 'runtime', 'pinokio'):
+        assert f'steps.cache_{name}.outputs.path || format(' in job
+    assert '--candidate-agent-checkout "$env:AGENT_CHECKOUT"' in job
+    assert '--candidate-runtime-checkout "$env:RUNTIME_CHECKOUT"' in job
+    assert '--pinokio-checkout "$env:PINOKIO_CHECKOUT"' in job
