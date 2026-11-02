@@ -96,6 +96,50 @@ def test_runtime_service_absence_is_not_produced_not_collector_error(tmp_path, m
     }
 
 
+@pytest.mark.parametrize("platform, relative", [
+    ("linux", "home/.local/state/astrid-runtime/logs"),
+    ("darwin", "home/Library/Logs/Astrid Runtime"),
+    ("win32", "localappdata/Astrid Runtime/logs"),
+])
+def test_snapshots_stage_named_lifecycle_evidence_at_both_boundaries(
+        tmp_path, monkeypatch, platform, relative):
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    log_dir = run_root / relative
+    log_dir.mkdir(parents=True)
+    (log_dir / "install.log").write_text("installer output\n")
+    (log_dir / "runtime-service.log").write_text("service output\n")
+    (evidence / "update-bootstrap.log").parent.mkdir(parents=True)
+    (evidence / "update-bootstrap.log").write_text("bootstrap output\n")
+    journey.write_json(evidence / "journey-result.json", {"status": "fail"})
+    monkeypatch.setattr(journey.sys, "platform", platform)
+
+    def manager(ev, _data, phase):
+        journey.write_json(ev / f"manager-state-{phase}.json", {"unit_file": "observed"})
+        (ev / f"unit-file-{phase}.txt").write_text("unit definition\n")
+
+    monkeypatch.setattr(journey, "capture_manager_state", manager)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    (evidence / "final-uninstall.log").write_text("uninstall output\n")
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "after-cleanup")
+
+    for phase in ("before-cleanup", "after-cleanup"):
+        staged = run_root / "evidence-upload" / phase
+        assert {"install.log", "runtime-service.log", "update-bootstrap.log", "journey-result.json",
+                f"manager-state-{phase}.json", f"unit-file-{phase}.txt"} <= {
+                    path.name for path in staged.iterdir()}
+        receipt = journey.read_json(staged / "journey-result.json")["failure_diagnostics"][phase]
+        assert receipt["install_log"]["status"] == "captured"
+        assert receipt["runtime_service"]["status"] == "captured"
+        assert receipt["bootstrap"]["status"] == "captured"
+        assert receipt["receipt"]["status"] == "captured"
+        assert receipt["service_manager"]["status"] == "captured"
+        assert receipt["unit_file"]["status"] == "captured"
+    assert (run_root / "evidence-upload" / "after-cleanup" / "final-uninstall.log").is_file()
+    before = journey.read_json(run_root / "evidence-upload" / "before-cleanup" / "journey-result.json")
+    assert before["failure_diagnostics"]["before-cleanup"]["uninstall"]["final_uninstall"] == "not-yet-run"
+
+
 def test_seed_streams_are_bounded_and_oversized_stdout_fails_explicitly(tmp_path):
     request = tmp_path / "request.json"
     request.write_text("{}")

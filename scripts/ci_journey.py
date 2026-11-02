@@ -715,7 +715,8 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                     "paths": [path.relative_to(run_root).as_posix() for path in paths]}
 
         diagnostic["runtime_service"] = staged_item(
-            path for path in destination.glob("runtime-service-*.log")
+            path for path in [destination / "runtime-service.log",
+                              *destination.glob("runtime-service-*.log")]
             if not path.name.startswith(("runtime-service-service-seed-", "runtime-service-service-bootstrap-")))
         diagnostic["runtime_service"]["source_observations"] = runtime_observations
         diagnostic["seed"] = staged_item(destination.glob("runtime-service-service-seed-*.log"))
