@@ -78,6 +78,11 @@ on:
         description: Frozen candidate JSON; hosted results are evidence, never a publish action
         required: true
         type: string
+      macos_runner:
+        description: Runner for direct-macos; use ["self-hosted","macOS","astrid-mac"] for the repo-scoped runner
+        required: false
+        default: macos-15
+        type: string
       old_launcher_ref:
         description: Full SHA for the approved pre-self-pull Pinokio backend action
         required: true
@@ -252,6 +257,7 @@ jobs:
           M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
           M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
           M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
+          MACOS_RUNNER: ${{ inputs.macos_runner || 'macos-15' }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -327,8 +333,20 @@ jobs:
                   raise SystemExit("invalid m4_6_candidate: " + "; ".join(candidate_errors))
           else:
               m4_6_candidate = {}
+          macos_runner_input = os.environ["MACOS_RUNNER"].strip() or "macos-15"
+          try:
+              macos_runner = json.loads(macos_runner_input)
+          except json.JSONDecodeError:
+              macos_runner = macos_runner_input
+          if not isinstance(macos_runner, (str, list)) or not macos_runner:
+              raise SystemExit("macos_runner must be a non-empty runner label or JSON label array")
+          if isinstance(macos_runner, list) and any(
+              not isinstance(label, str) or not label or "\n" in label or "\r" in label
+              for label in macos_runner
+          ):
+              raise SystemExit("macos_runner JSON label arrays must contain only non-empty strings")
           matrix = [
-              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
+              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":macos_runner, "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"direct-windows", "mode":"direct", "leg":"release0-to-release1", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
               {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
