@@ -104,6 +104,27 @@ try {
 """
 
 
+def classify_scheduled_task_result(evidence):
+    """Apply the same exit and structured-output contract to every task query."""
+    try:
+        observation = json.loads(evidence["stdout"])
+        status = observation.get("status") if isinstance(observation, dict) else None
+        valid_present = (status == "present" and isinstance(observation.get("tasks"), list)
+                         and bool(observation["tasks"])
+                         and all(isinstance(task, dict) and isinstance(task.get("path"), str)
+                                 and isinstance(task.get("executables"), list)
+                                 and all(isinstance(item, str) for item in task["executables"])
+                                 for task in observation["tasks"]))
+        if evidence["exit_code"] == 0 and (status == "absent" or valid_present):
+            evidence.update(status=status, observation=observation)
+        elif evidence["exit_code"] != 0 and status == "error":
+            evidence["observation"] = observation
+        else:
+            evidence["protocol_error"] = "Unexpected query result or exit code"
+    except (ValueError, TypeError):
+        evidence["protocol_error"] = "Invalid query JSON"
+
+
 def scheduled_task_preflight(leg):
     """Record the query, its process result, and fail closed on malformed output."""
     env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
@@ -116,23 +137,7 @@ def scheduled_task_preflight(leg):
         evidence.update(exit_code=result.returncode,
                         stdout=result.stdout.decode("utf-8-sig", errors="replace"),
                         stderr=result.stderr.decode("utf-8-sig", errors="replace"))
-        try:
-            observation = json.loads(evidence["stdout"])
-            status = observation.get("status") if isinstance(observation, dict) else None
-            valid_present = (status == "present" and isinstance(observation.get("tasks"), list)
-                             and bool(observation["tasks"])
-                             and all(isinstance(task, dict) and isinstance(task.get("path"), str)
-                                     and isinstance(task.get("executables"), list)
-                                     and all(isinstance(item, str) for item in task["executables"])
-                                     for task in observation["tasks"]))
-            if result.returncode == 0 and (status == "absent" or valid_present):
-                evidence.update(status=status, observation=observation)
-            elif result.returncode != 0 and status == "error":
-                evidence["observation"] = observation
-            else:
-                evidence["protocol_error"] = "Unexpected query result or exit code"
-        except (ValueError, TypeError):
-            evidence["protocol_error"] = "Invalid query JSON"
+        classify_scheduled_task_result(evidence)
     except subprocess.TimeoutExpired as exc:
         evidence["stdout"] = (exc.stdout or b"").decode("utf-8-sig", errors="replace")
         evidence["stderr"] = (exc.stderr or b"").decode("utf-8-sig", errors="replace")
@@ -149,14 +154,6 @@ def scheduled_task_preflight(leg):
 
 
 
-# Only the cmdlet's specific no-match error denotes absence. Other scheduler,
-# module and transport failures must remain failures rather than an empty result.
-SCHEDULED_TASK_QUERY = (
-    "try { $t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop; "
-    "if ($t) { 'present'; $t.Actions | ForEach-Object { $_.Execute } } } "
-    "catch { if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound_TaskName,*') "
-    "{ } else { throw } }"
-)
 SCHEDULED_TASK_ORIGIN = (
     "$c=Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue; "
     "[pscustomobject]@{PSVersion=$PSVersionTable.PSVersion.ToString(); "
@@ -172,7 +169,7 @@ def scheduled_task_diagnostics(name="preflight-scheduled-task.txt", *, timeout=3
     prefix = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
     records = {label: {"argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", prefix + code],
                        "stdout": "", "stderr": "", "exit_code": None, "error": "not run"}
-               for label, code in (("origin", SCHEDULED_TASK_ORIGIN), ("query", SCHEDULED_TASK_QUERY))}
+               for label, code in (("origin", SCHEDULED_TASK_ORIGIN), ("query", SCHEDULED_TASK_PREFLIGHT))}
 
     def checkpoint():
         destination = EVIDENCE / name
@@ -184,7 +181,7 @@ def scheduled_task_diagnostics(name="preflight-scheduled-task.txt", *, timeout=3
     for label, record in records.items():
         argv = record["argv"]
         try:
-            result = subprocess.run(argv, env=env, capture_output=True, encoding="utf-8",
+            result = subprocess.run(argv, env=env, capture_output=True, encoding="utf-8-sig",
                                     errors="replace", timeout=timeout, check=False)
             record.update(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
             record.pop("error")
@@ -196,11 +193,13 @@ def scheduled_task_diagnostics(name="preflight-scheduled-task.txt", *, timeout=3
             record["error"] = f"{type(exc).__name__}: {exc}"
         finally:
             if label == "query":
-                record["classification"] = ("error" if record["exit_code"] != 0 else
-                                            "present" if record["stdout"].strip() else "not-found")
+                record["status"] = "error"
+                if record["exit_code"] is not None:
+                    classify_scheduled_task_result(record)
+                record["classification"] = record["status"]
             checkpoint()
     for label, record in records.items():
-        if record["exit_code"] != 0:
+        if record["exit_code"] != 0 or (label == "query" and record["status"] == "error"):
             raise RuntimeError(f"{name}: {label} exit {record['exit_code']}" +
                                (f" ({record['error']})" if record.get("error") else ""))
     return records["query"]["stdout"]

@@ -669,13 +669,16 @@ def test_windows_preflight_records_query_streams_origin_and_exit(tmp_path, monke
     with pytest.raises(RuntimeError, match="query exit 1"):
         windows.scheduled_task_diagnostics()
     record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
-    assert record["query"] == {"argv": calls[1][0], "stdout": "partial query output",
-                               "stderr": "query module error", "exit_code": 1, "classification": "error"}
-    assert windows.SCHEDULED_TASK_QUERY in record["query"]["argv"][-1]
+    assert record["query"]["stdout"] == "partial query output"
+    assert record["query"]["stderr"] == "query module error"
+    assert record["query"]["exit_code"] == 1
+    assert record["query"]["classification"] == "error"
+    assert record["query"]["protocol_error"] == "Invalid query JSON"
+    assert windows.SCHEDULED_TASK_PREFLIGHT in record["query"]["argv"][-1]
     assert "PSVersion" in record["origin"]["stdout"] and "ModulePath" in record["origin"]["stdout"]
     assert all(not any(key.casefold() == "psmodulepath" for key in call[1]["env"]) for call in calls)
-    assert "CmdletizationQuery_NotFound_TaskName," in windows.SCHEDULED_TASK_QUERY
-    assert "else { throw }" in windows.SCHEDULED_TASK_QUERY
+    assert "CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask" in windows.SCHEDULED_TASK_PREFLIGHT
+    assert "ErrorCategory]::ObjectNotFound" in windows.SCHEDULED_TASK_PREFLIGHT
     journey.retain_named_evidence(tmp_path, "before-cleanup")
     assert (tmp_path.parent / "evidence-upload" / "before-cleanup" / "preflight-scheduled-task.txt").is_file()
 
@@ -683,11 +686,7 @@ def test_windows_preflight_records_query_streams_origin_and_exit(tmp_path, monke
 def test_windows_preflight_absence_and_foreign_owner_rejection(tmp_path, monkeypatch):
     from scripts import ci_windows_journey as windows
     monkeypatch.setattr(windows, "EVIDENCE", tmp_path / "evidence")
-    monkeypatch.setattr(windows.subprocess, "run", lambda *a, **kw: SimpleNamespace(
-        returncode=0, stdout="", stderr=""))
-    assert windows.scheduled_task_diagnostics() == ""
-    record = json.loads((windows.EVIDENCE / "preflight-scheduled-task.txt").read_text())
-    assert record["query"]["classification"] == "not-found"
+    monkeypatch.setattr(windows, "scheduled_task_diagnostics", lambda: None)
     monkeypatch.setattr(journey.sys, "platform", "win32")
     monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "empty" / "astrid")
     monkeypatch.setattr(journey, "runtime_processes", lambda *a: [])
@@ -742,7 +741,98 @@ def test_windows_preflight_checkpoints_launch_and_unexpected_errors(tmp_path, mo
     with pytest.raises(RuntimeError, match="origin exit None"):
         windows.scheduled_task_diagnostics()
     record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
-    assert calls[0]["query"]["argv"][-1].endswith(windows.SCHEDULED_TASK_QUERY)
+    assert calls[0]["query"]["argv"][-1].endswith(windows.SCHEDULED_TASK_PREFLIGHT)
     assert "powershell unavailable" in calls[1]["origin"]["error"]
     assert record["query"]["classification"] == "error"
     assert "unexpected capture failure" in record["query"]["error"]
+
+
+@pytest.mark.parametrize("observation", [
+    {"status": "absent", "error": {"fully_qualified_error_id": "CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask"}},
+    {"status": "present", "tasks": [{"path": "\\", "executables": [r"C:\Astrid\runtime.exe"]}]},
+])
+def test_windows_diagnostics_accept_structured_absence_and_present(tmp_path, monkeypatch, observation):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    output = json.dumps(observation)
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="origin" if len(calls) == 1 else output, stderr="")
+    monkeypatch.setattr(windows.subprocess, "run", fake_run)
+    assert windows.scheduled_task_diagnostics() == output
+    query = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())["query"]
+    assert query["classification"] == observation["status"]
+    assert query["observation"] == observation
+    assert query["exit_code"] == 0
+    assert windows.SCHEDULED_TASK_PREFLIGHT in calls[1][-1]
+
+
+@pytest.mark.parametrize("exit_code,output", [
+    (1, '{"status":"error","error":{"message":"module unavailable"}}'),
+    (0, '{"status":"error","error":{"message":"query failed"}}'),
+    (0, '{"status":"present","tasks":[]}'),
+    (1, '{"status":"absent"}'),
+    (0, 'invalid json'),
+])
+def test_windows_diagnostics_and_driver_fail_closed_on_query_errors(tmp_path, monkeypatch, exit_code, output):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(returncode=exit_code if windows.SCHEDULED_TASK_PREFLIGHT in argv[-1] else 0,
+                               stdout=output if windows.SCHEDULED_TASK_PREFLIGHT in argv[-1] else "origin", stderr="query stderr")
+    monkeypatch.setattr(windows.subprocess, "run", fake_run)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "empty" / "astrid")
+    monkeypatch.setattr(journey, "runtime_processes", lambda *a: [])
+    with pytest.raises(RuntimeError, match="query exit"):
+        journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
+    query = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())["query"]
+    assert query["classification"] == "error"
+    assert query["stdout"] == output and query["stderr"] == "query stderr"
+    assert query["exit_code"] == exit_code
+
+
+def test_windows_manager_prerequisite_and_workflow_call_diagnostics(tmp_path, monkeypatch):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(windows, "scheduled_task_diagnostics", lambda: (_ for _ in ()).throw(RuntimeError("query failed")))
+    monkeypatch.setattr(windows, "powershell", lambda *a, **kw: pytest.fail("manager probe must not run"))
+    with pytest.raises(RuntimeError, match="query failed"):
+        journey.release1_manager_prerequisite(SimpleNamespace(job_id="direct-windows", mode="direct"), tmp_path)
+    workflow = (journey.ROOT / ".github/workflows/journey.yml").read_text()
+    step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split("      - name:", 1)[0]
+    assert "w.scheduled_task_diagnostics()" in step
+    assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in step
+    upload = workflow.split("      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[1].split("      - name:", 1)[0]
+    assert "if: always()" in upload
+
+
+@pytest.mark.parametrize("exit_code,observation", [
+    (0, {"status": "absent"}),
+    (1, {"status": "error", "error": {"message": "scheduler unavailable"}}),
+])
+def test_windows_driver_preserves_structured_preflight_predicate(tmp_path, monkeypatch, exit_code, observation):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=0, stdout="origin", stderr="")
+        if len(calls) == 2:
+            return SimpleNamespace(returncode=0, stdout='{"status":"absent"}', stderr="")
+        return SimpleNamespace(returncode=exit_code, stdout=json.dumps(observation).encode(), stderr=b"")
+    monkeypatch.setattr(windows.subprocess, "run", fake_run)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "empty" / "astrid")
+    monkeypatch.setattr(journey, "runtime_processes", lambda *a: [])
+    if exit_code:
+        with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+            journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
+    else:
+        journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
+    evidence = json.loads((tmp_path / "preflight-scheduled-task-fresh-install.json").read_text())
+    assert evidence["status"] == observation["status"]
+    assert evidence["exit_code"] == exit_code
+    assert len(calls) == 3
