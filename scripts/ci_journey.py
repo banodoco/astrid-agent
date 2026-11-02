@@ -714,6 +714,13 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
             if not path.name.startswith(("runtime-service-service-seed-", "runtime-service-service-bootstrap-")))
         diagnostic["runtime_service"]["source_observations"] = runtime_observations
         diagnostic["seed"] = staged_item(destination.glob("runtime-service-service-seed-*.log"))
+        seed_summary = destination / "runtime-service-service-seed-summary.log"
+        if seed_summary.is_file():
+            summary = read_json(seed_summary)
+            diagnostic["seed"]["observation_status"] = (
+                "incomplete" if summary.get("omitted_invocations") or
+                any(item.get("truncated") or item.get("error") for item in summary.get("files", []))
+                else "captured")
         diagnostic["bootstrap"] = staged_item(
             list(destination.glob("*-bootstrap.log")) +
             list(destination.glob("runtime-service-service-bootstrap-*.log")))
@@ -732,9 +739,10 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         diagnostic["unit_file"]["observation_status"] = (
             "captured" if manager.get("unit_file") else
             "error" if manager.get("error") else "unavailable")
-        diagnostic["receipt"] = {"status": "captured" if result_path.is_file() else "unavailable",
-                                 "path": (destination / "journey-result.json").relative_to(run_root).as_posix()
-                                 if result_path.is_file() else None}
+        staged_receipt = destination / "journey-result.json"
+        diagnostic["receipt"] = {"status": "captured" if staged_receipt.is_file() else "unavailable",
+                                 "path": staged_receipt.relative_to(run_root).as_posix()
+                                 if staged_receipt.is_file() else None}
         diagnostic["install_log"]["source_observation"] = runtime_observations.get("install.log", "unavailable")
         if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
             # This log is nested under release0, and must remain byte-for-byte

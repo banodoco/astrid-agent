@@ -107,3 +107,25 @@ def test_early_snapshot_reports_absence_without_fabricating_files(tmp_path, monk
         assert diagnostics[name]["status"] == "unavailable"
     assert diagnostics["uninstall"]["final_uninstall"] == "not-yet-run"
     assert not (root / "evidence-upload" / "after-cleanup").exists()
+
+
+def test_receipt_copy_failure_and_seed_truncation_are_reported(tmp_path, monkeypatch):
+    root = tmp_path / "run"
+    evidence = root / "evidence" / "fresh"
+    journey.write_json(evidence / "journey-result.json", {"status": "fail"})
+    seed = evidence / "seed-diagnostics" / "0001" / "stderr.txt"
+    seed.parent.mkdir(parents=True)
+    seed.write_bytes(b"x" * (journey.SEED_FILE_LIMIT + 1))
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *args: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *args: {})
+    original_copy = shutil.copyfile
+    def copy_with_receipt_failure(source, target, *args, **kwargs):
+        if Path(source).name == "journey-result.json":
+            raise OSError("receipt copy failed")
+        return original_copy(source, target, *args, **kwargs)
+    monkeypatch.setattr(journey.shutil, "copyfile", copy_with_receipt_failure)
+    journey.snapshot_failure_evidence(evidence, root, root / "data", "before-cleanup")
+    diagnostic = journey.read_json(evidence / "journey-result.json")["failure_diagnostics"]["before-cleanup"]
+    assert diagnostic["receipt"] == {"status": "unavailable", "path": None}
+    assert diagnostic["seed"]["observation_status"] == "incomplete"
+    assert not (root / "evidence-upload" / "before-cleanup" / "journey-result.json").exists()
