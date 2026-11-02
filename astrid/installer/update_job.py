@@ -540,15 +540,21 @@ def _probe_legacy_identity(data_root: Path, old, root: Path, *, target_release) 
         legacy_admitted = admitted(old, health, discovery, program_root=root)
         diagnostic_check("admission", "legacy_predecessor_matches_pinned_schema", expected=True,
                          observed=legacy_admitted, provenance="legacy_identity.admitted")
+        snapshot_failure = None
         try:
             unchanged = path.read_bytes() == snapshot
         except OSError as exc:
             diagnostic_unknown("discovery", "legacy_discovery_snapshot_is_stable", expected=True,
                                provenance=str(path), reason=type(exc).__name__)
             unchanged = False
+            snapshot_failure = exc
         else:
             diagnostic_check("discovery", "legacy_discovery_snapshot_is_stable", expected=True,
                              observed=unchanged, provenance=str(path))
+        # Preserve the original short-circuit behavior: the second read was
+        # enforcement-relevant only after both prior predicates passed.
+        if snapshot_failure is not None and allowed and legacy_admitted:
+            raise snapshot_failure
         if not allowed or not legacy_admitted or not unchanged:
             raise ValueError("The live Runtime identity cannot be verified.")
     elif (not allowed or not admitted(old, health, discovery, program_root=root) or path.read_bytes() != snapshot):
