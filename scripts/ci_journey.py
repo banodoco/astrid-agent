@@ -865,6 +865,8 @@ def capture_authentic_r0_observation(output: Path, *, phase: str, run_root: Path
         "data_root": data,
         "selection": root / "current",
         "program_service_env": root / "service-env.json",
+        "run_selection_owner": run_root / "astrid-install.json",
+        "home_selection_owner": data.parent / "home" / ".local" / "share" / "astrid-install.json",
     }
     if version_root is not None:
         interesting.update(version_root=version_root, version_service_env=version_root / "service-env.json")
@@ -873,6 +875,11 @@ def capture_authentic_r0_observation(output: Path, *, phase: str, run_root: Path
             interesting["profile"] = Path(profile)
     fields["paths"] = {name: capture_path_chain(path, run_root) for name, path in interesting.items()}
     fields["symlink_inventory"] = _capture_symlink_inventory((root, data), run_root)
+    owner_records = {}
+    for name in ("run_selection_owner", "home_selection_owner"):
+        source = interesting[name]
+        owner_records[name] = _capture_regular_file(source, phase_root / f"{name}.json", run_root)
+    fields["installer_owner_records"] = owner_records
     discovery_path = data / "runtime" / "discovery.json"
     if discovery_path.is_file() and not discovery_path.is_symlink():
         try:

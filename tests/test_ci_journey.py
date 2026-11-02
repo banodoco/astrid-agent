@@ -55,6 +55,9 @@ def test_authentic_r0_capture_path_chain_and_sanitizer_preserve_structure(tmp_pa
     assert journey._sanitize_capture_value({"access_token": "do-not-publish", "path": "Bearer local"}) == {
         "access_token": "<redacted>", "path": "Bearer <redacted>",
     }
+    copied = journey._capture_regular_file(target, run_root / "captured-service-env.txt", run_root)
+    assert copied["status"] == "captured"
+    assert "do-not-publish" not in (run_root / "captured-service-env.txt").read_text(encoding="utf-8")
 
 
 def test_authentic_r0_capture_shared_route_does_not_select_release1_driver(monkeypatch):
