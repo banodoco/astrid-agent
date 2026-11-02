@@ -1,0 +1,180 @@
+name: R-24 hosted Linux live materializer
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_ref:
+        description: Immutable commit on the R-24 materializer lane
+        required: true
+        type: string
+      producer_ref:
+        description: Immutable audited R-24 producer commit
+        required: true
+        default: cd86889f4299c7f7aca720f0f20a11be01dacb34
+        type: string
+      confirmation:
+        description: Required literal R24_LIVE_CURRENT_TUPLE
+        required: true
+        default: R24_LIVE_CURRENT_TUPLE
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r24-live-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  r24-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      R24_RUN_ROOT: ${{ runner.temp }}/r24-live-run
+      R24_CHECKOUTS: ${{ github.workspace }}
+    steps:
+      - name: Checkout immutable candidate runner
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ inputs.runner_ref }}
+          path: runner
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require request ref to be the workflow revision
+        working-directory: runner
+        env:
+          REQUESTED_RUNNER_REF: ${{ inputs.runner_ref }}
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_RUNNER_REF" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$REQUESTED_RUNNER_REF"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Checkout published App
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ce1502e94b935fe6ef1e2f363fc6b55aade4a204
+          path: app
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout published installed Agent
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: 2de0726d1eaea7f7bd141251e088aa9fdf224525
+          path: installed-agent
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout published Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 5453366458f7b4ee874c94d15ae7952e3e82d3c3
+          path: runtime
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout published Pinokio candidate
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: 3a6a98ae251ca126505245286e2d3e760f4348e9
+          path: pinokio
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout audited provider producer
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ inputs.producer_ref }}
+          path: producer
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout pinned native Pinokio daemon
+        uses: actions/checkout@v4
+        with:
+          repository: pinokiocomputer/pinokiod
+          ref: add4a674ad1ba95bb62ec427fce519fe5bf0e9bf
+          path: pinokiod
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout pinned PTerm
+        uses: actions/checkout@v4
+        with:
+          repository: pinokiocomputer/pterm
+          ref: 5be43718701c448b43daf0ce51d8935f170065bb
+          path: pterm
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned native engine dependencies
+        run: |
+          set -euo pipefail
+          npm ci --omit=dev --silent --prefix "$R24_CHECKOUTS/pinokiod"
+          npm ci --omit=dev --silent --prefix "$R24_CHECKOUTS/pterm"
+      - id: execute
+        name: Materialize candidate, admit task, and invoke live provider
+        working-directory: runner
+        env:
+          REQUESTED_RUNNER_REF: ${{ inputs.runner_ref }}
+          REQUESTED_PRODUCER_REF: ${{ inputs.producer_ref }}
+          REQUESTED_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set +e
+          python3 -B scripts/ci_journey_r24_materializer.py \
+            --runner "$R24_CHECKOUTS/runner" \
+            --runner-ref "$REQUESTED_RUNNER_REF" \
+            --producer "$R24_CHECKOUTS/producer" \
+            --producer-ref "$REQUESTED_PRODUCER_REF" \
+            --app "$R24_CHECKOUTS/app" \
+            --agent "$R24_CHECKOUTS/installed-agent" \
+            --runtime "$R24_CHECKOUTS/runtime" \
+            --pinokio "$R24_CHECKOUTS/pinokio" \
+            --pterm "$R24_CHECKOUTS/pterm" \
+            --pinokiod "$R24_CHECKOUTS/pinokiod" \
+            --run-root "$R24_RUN_ROOT" \
+            --confirmation "$REQUESTED_CONFIRMATION"
+          inner_exit=$?
+          echo "inner_exit=$inner_exit" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload six unchanged provider export files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r24-provider-export-${{ inputs.runner_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-export
+      - name: Upload run, job, task, and session bindings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r24-runner-bindings-${{ inputs.runner_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/r24-live-run/candidate.json
+            ${{ runner.temp }}/r24-live-run/config.json
+            ${{ runner.temp }}/r24-live-run/tst-b1-owner.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-materializer.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/project.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-running.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/task-settled.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/request.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/config.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/r24-invocation.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/hosted-binding.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stdout.json
+            ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stderr.log
+      - name: Propagate inner execution result
+        if: always()
+        env:
+          INNER_EXIT: ${{ steps.execute.outputs.inner_exit }}
+        run: test "$INNER_EXIT" = 0

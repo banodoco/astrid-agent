@@ -71,11 +71,32 @@ def export_fixture(root: Path, request, *, session="d" * 32):
 def owner_root(tmp_path, run_id="a" * 32):
     root = tmp_path / "run"
     root.mkdir()
+    (root / "program").mkdir()
+    (root / "data").mkdir()
     (root / "tst-b1-owner.json").write_text(json.dumps({
         "schema_version": 1, "run_id": run_id,
         "root": str(root / "program"), "data_root": str(root / "data"),
     }))
     return root
+
+
+def test_owner_binds_to_genuine_pinokio_install_selection(tmp_path):
+    run = owner_root(tmp_path)
+    owner = hook._owner(run)
+    home = tmp_path / "pinokio-home"
+    backend = home / "api/astrid/app/astrid"
+    data = home / "data"
+    backend.mkdir(parents=True)
+    data.mkdir(parents=True)
+    (backend / "install.json").write_text(json.dumps({
+        "owner": "haus.astrid.runtime", "managed_by": "pinokio",
+        "data_root": str(data.resolve()),
+    }))
+    owner.update(root=str(backend.resolve()), data_root=str(data.resolve()))
+    hook._bind_owner_to_install(owner, {"engine": {"pinokio_home": str(home)}})
+    owner["data_root"] = str(run / "data")
+    with pytest.raises(hook.JourneyProviderError, match="differs"):
+        hook._bind_owner_to_install(owner, {"engine": {"pinokio_home": str(home)}})
 
 
 def test_export_binds_stdout_artifacts_run_request_and_one_session(tmp_path):

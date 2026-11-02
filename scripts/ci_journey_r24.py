@@ -147,11 +147,47 @@ def _owner(run_root: Path) -> dict[str, Any]:
     del raw
     _object(owner, {"schema_version", "run_id", "root", "data_root"}, "run owner")
     if (owner["schema_version"] != 1 or not isinstance(owner["run_id"], str)
-            or not _HEX32.fullmatch(owner["run_id"])
-            or owner["root"] != str(root / "program")
-            or owner["data_root"] != str(root / "data")):
+            or not _HEX32.fullmatch(owner["run_id"])):
         raise JourneyProviderError("run owner identity mismatch")
+    paths = []
+    for name in ("root", "data_root"):
+        value = owner[name]
+        if not isinstance(value, str) or not os.path.isabs(value):
+            raise JourneyProviderError("run owner path mismatch")
+        selected = Path(value)
+        try:
+            resolved = selected.resolve(strict=True)
+        except OSError as exc:
+            raise JourneyProviderError("run owner path is unavailable") from exc
+        if selected.is_symlink() or not resolved.is_dir() or selected != resolved:
+            raise JourneyProviderError("run owner path mismatch")
+        paths.append(resolved)
+    if paths[0] == paths[1]:
+        raise JourneyProviderError("run owner paths must be distinct")
     return owner
+
+
+def _bind_owner_to_install(owner: dict[str, Any], config: dict[str, Any]) -> None:
+    """Join the run owner to the genuine Pinokio-selected install."""
+    home = Path(config["engine"]["pinokio_home"])
+    backend = (home / "api/astrid/app/astrid").resolve(strict=True)
+    raw = _regular(backend / "install.json")
+    install = _decode(raw)
+    if (not isinstance(install, dict)
+            or install.get("owner") != "haus.astrid.runtime"
+            or install.get("managed_by") != "pinokio"
+            or not isinstance(install.get("data_root"), str)
+            or not os.path.isabs(install["data_root"])):
+        raise JourneyProviderError("installed owner record mismatch")
+    selected_data = Path(install["data_root"])
+    try:
+        data = selected_data.resolve(strict=True)
+    except OSError as exc:
+        raise JourneyProviderError("installed data root is unavailable") from exc
+    if (selected_data.is_symlink() or selected_data != data or not data.is_dir()
+            or owner["root"] != str(backend)
+            or owner["data_root"] != str(data)):
+        raise JourneyProviderError("run owner differs from installed selection")
 
 
 def _validate_config(config: Any, checkouts: dict[str, Path]) -> dict[str, Any]:
@@ -223,6 +259,7 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
 
     config_raw, config = _read_json_file(config_file, "CONFIG")
     config = _validate_config(config, roots)
+    _bind_owner_to_install(owner, config)
     canonical_config = _canonical(config)
     if _decode(config_raw) != config:
         raise JourneyProviderError("CONFIG changed while validating")
