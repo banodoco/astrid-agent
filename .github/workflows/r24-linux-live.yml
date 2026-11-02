@@ -15,6 +15,14 @@ on:
       confirmation:
         required: true
         type: string
+      mode:
+        required: false
+        default: r24-only
+        type: string
+      mode_producer_ref:
+        required: false
+        default: 0d28295a6adfdb08fd3adf56f85bae07c68b0c6e
+        type: string
   workflow_dispatch:
     inputs:
       runner_ref:
@@ -30,6 +38,19 @@ on:
         description: Required literal R24_LIVE_CURRENT_TUPLE
         required: true
         default: R24_LIVE_CURRENT_TUPLE
+        type: string
+      mode:
+        description: Bounded action route; r24-only or backend
+        required: true
+        default: r24-only
+        type: choice
+        options:
+          - r24-only
+          - backend
+      mode_producer_ref:
+        description: Immutable audited R-25 mode-action producer commit
+        required: true
+        default: 0d28295a6adfdb08fd3adf56f85bae07c68b0c6e
         type: string
 
 permissions:
@@ -48,6 +69,8 @@ jobs:
       R24_REQUESTED_RUNNER_REF: ${{ github.event_name == 'push' && github.sha || inputs.runner_ref }}
       R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && 'd6aa33bf125ffdabed9e397fb1aea319b8a9badb' || inputs.producer_ref }}
       R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_CURRENT_TUPLE' || inputs.confirmation }}
+      R25_REQUESTED_MODE: ${{ github.event_name == 'push' && 'r24-only' || inputs.mode }}
+      R25_REQUESTED_MODE_PRODUCER_REF: ${{ github.event_name == 'push' && '0d28295a6adfdb08fd3adf56f85bae07c68b0c6e' || inputs.mode_producer_ref }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Checkout immutable candidate runner
@@ -109,6 +132,15 @@ jobs:
           path: producer
           fetch-depth: 1
           persist-credentials: false
+      - name: Checkout audited R-25 mode-action producer
+        if: env.R25_REQUESTED_MODE == 'backend'
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ env.R25_REQUESTED_MODE_PRODUCER_REF }}
+          path: mode-producer
+          fetch-depth: 1
+          persist-credentials: false
       - name: Checkout pinned native Pinokio daemon
         uses: actions/checkout@v4
         with:
@@ -143,21 +175,32 @@ jobs:
           REQUESTED_RUNNER_REF: ${{ env.R24_REQUESTED_RUNNER_REF }}
           REQUESTED_PRODUCER_REF: ${{ env.R24_REQUESTED_PRODUCER_REF }}
           REQUESTED_CONFIRMATION: ${{ env.R24_REQUESTED_CONFIRMATION }}
+          REQUESTED_MODE: ${{ env.R25_REQUESTED_MODE }}
+          REQUESTED_MODE_PRODUCER_REF: ${{ env.R25_REQUESTED_MODE_PRODUCER_REF }}
         run: |
           set +e
-          python3 -B scripts/ci_journey_r24_materializer.py \
-            --runner "$R24_CHECKOUTS/runner" \
-            --runner-ref "$REQUESTED_RUNNER_REF" \
-            --producer "$R24_CHECKOUTS/producer" \
-            --producer-ref "$REQUESTED_PRODUCER_REF" \
-            --app "$R24_CHECKOUTS/app" \
-            --agent "$R24_CHECKOUTS/installed-agent" \
-            --runtime "$R24_CHECKOUTS/runtime" \
-            --pinokio "$R24_CHECKOUTS/pinokio" \
-            --pterm "$R24_CHECKOUTS/pterm" \
-            --pinokiod "$R24_CHECKOUTS/pinokiod" \
-            --run-root "$RUNNER_TEMP/r24-live-run" \
+          materializer_args=(
+            --runner "$R24_CHECKOUTS/runner"
+            --runner-ref "$REQUESTED_RUNNER_REF"
+            --producer "$R24_CHECKOUTS/producer"
+            --producer-ref "$REQUESTED_PRODUCER_REF"
+            --app "$R24_CHECKOUTS/app"
+            --agent "$R24_CHECKOUTS/installed-agent"
+            --runtime "$R24_CHECKOUTS/runtime"
+            --pinokio "$R24_CHECKOUTS/pinokio"
+            --pterm "$R24_CHECKOUTS/pterm"
+            --pinokiod "$R24_CHECKOUTS/pinokiod"
+            --run-root "$RUNNER_TEMP/r24-live-run"
             --confirmation "$REQUESTED_CONFIRMATION"
+            --mode "$REQUESTED_MODE"
+          )
+          if [ "$REQUESTED_MODE" = backend ]; then
+            materializer_args+=(
+              --mode-producer "$R24_CHECKOUTS/mode-producer"
+              --mode-producer-ref "$REQUESTED_MODE_PRODUCER_REF"
+            )
+          fi
+          python3 -B scripts/ci_journey_r24_materializer.py "${materializer_args[@]}"
           inner_exit=$?
           echo "inner_exit=$inner_exit" >> "$GITHUB_OUTPUT"
           exit 0
@@ -193,6 +236,7 @@ jobs:
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/hosted-binding.json
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stdout.json
             ${{ runner.temp }}/r24-live-run/evidence/r24-live/provider-stderr.log
+            ${{ runner.temp }}/r24-live-run/evidence/r25-linux-mode-actions
             ${{ runner.temp }}/r24-push-route-request.json
       - name: Upload bounded first-stop diagnostics
         if: always() && steps.execute.outputs.inner_exit != '0'
@@ -224,6 +268,7 @@ jobs:
             ${{ runner.temp }}/r24-live-run/evidence/materializer/stop.log
             ${{ runner.temp }}/r24-live-run/evidence/materializer/failure-stop.log
             ${{ runner.temp }}/r24-live-run/evidence/r24-live
+            ${{ runner.temp }}/r24-live-run/evidence/r25-linux-mode-actions
             ${{ runner.temp }}/r24-push-route-request.json
       - name: Propagate inner execution result
         if: always()

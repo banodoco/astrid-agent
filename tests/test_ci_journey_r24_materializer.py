@@ -13,6 +13,7 @@ from scripts import ci_journey_provider as provider
 from scripts import ci_journey_r24_materializer as materializer
 from scripts import ci_journey_r24_push_admission as push_admission
 from scripts import ci_journey_r24_task as task_boundary
+from scripts import pinokio_linux_mode_actions as mode_actions
 
 
 def test_materializer_pins_current_tuple_producer_and_native_engine():
@@ -28,6 +29,7 @@ def test_materializer_pins_current_tuple_producer_and_native_engine():
     assert materializer.PINOKIOD_REF == "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
     assert materializer.PTERM_REF == "5be43718701c448b43daf0ce51d8935f170065bb"
     assert materializer.TASK_DURATION_SECONDS == 300
+    assert mode_actions.MODE_PRODUCER_REF == "0d28295a6adfdb08fd3adf56f85bae07c68b0c6e"
 
 
 def test_pterm_and_documented_route_arguments_are_exact(tmp_path):
@@ -49,6 +51,23 @@ def test_pterm_and_documented_route_arguments_are_exact(tmp_path):
         "--runtime-checkout", str(roots["runtime"]),
         "--pinokio-checkout", str(roots["pinokio"]),
     ]
+    mode_argv = materializer.route_argv(
+        tmp_path / "runner", tmp_path / "run", tmp_path / "candidate.json",
+        tmp_path / "config.json", tmp_path / "producer", roots,
+        mode="backend", mode_producer_root=tmp_path / "mode-producer",
+    )
+    assert mode_argv[3:5] == ["--shared-executor", "r25-linux-mode-actions"]
+    assert mode_argv[-6:] == [
+        "--mode", "backend",
+        "--mode-producer-checkout", str(tmp_path / "mode-producer"),
+        "--output", str(tmp_path / "run/evidence/r25-linux-mode-actions"),
+    ]
+    with pytest.raises(materializer.MaterializerError, match="bounded backend"):
+        materializer.route_argv(
+            tmp_path / "runner", tmp_path / "run", tmp_path / "candidate.json",
+            tmp_path / "config.json", tmp_path / "producer", roots,
+            mode="fully-local", mode_producer_root=tmp_path / "mode-producer",
+        )
 
 
 def test_runner_local_home_reaches_child_outside_pinokio_home(tmp_path):
@@ -252,6 +271,9 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "evidence/r24-live/provider-export" in raw
     assert "evidence/r24-live/hosted-binding.json" in raw
     assert "d6aa33bf125ffdabed9e397fb1aea319b8a9badb" in raw
+    assert "r25-linux-mode-actions" in raw
+    assert mode_actions.MODE_PRODUCER_REF in raw
+    assert "REQUESTED_MODE" in raw
     assert "runner_ref:" in registered
     assert "producer_ref:" in registered
     assert "confirmation:" in registered
