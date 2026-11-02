@@ -20,6 +20,11 @@ from tests.packs.runpod.test_prepared_task import _Client, _Runtime, _task
 from tests.packs.runpod.test_warm_session import small_lease as small_lease, lease_selection_case as lease_selection_case
 
 
+def _selected_runtime_commit():
+    repo_root = Path(__file__).resolve().parents[3]
+    return json.loads((repo_root / "runtime.lock.json").read_text())["source_commit"]
+
+
 @pytest.fixture
 def retained(small_lease, sources, tmp_path, monkeypatch, request):
     """Real adapter→A3→lifecycle→HTTPS→canonical runner, fake paid/OS edges."""
@@ -49,7 +54,7 @@ def retained(small_lease, sources, tmp_path, monkeypatch, request):
     plan = engine_runner.plan_install(recipe, root="/workspace/astrid/engines/comfyui", placement="local")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + plan.recipe_sha256, "sha256:" + plan.models_lock_sha256,
-        "1a275bb339ae897e52a5be5e1da99e846e402037", "b2123edfbe7b950848b5c98d575fd9554302fc73",
+        _selected_runtime_commit(), "b2123edfbe7b950848b5c98d575fd9554302fc73",
     )
     module_path = Path(rp.__file__).with_name("adapter.py")
     spec = importlib.util.spec_from_file_location("test_path_loaded_runpod_adapter", module_path)
@@ -307,7 +312,7 @@ def test_retained_installation_accepts_only_the_existing_h3_recipe_and_root():
     vibe = next(source for source in recipe.sources if source.name == "vibecomfy")
     compatibility = RunPodLeaseCompatibility(
         "sha256:" + expected.recipe_sha256, "sha256:" + expected.models_lock_sha256,
-        "1a275bb339ae897e52a5be5e1da99e846e402037", vibe.pin.revision,
+        _selected_runtime_commit(), vibe.pin.revision,
     ).as_mapping()
     installation = RunPodInstallation(compatibility, engine="vibecomfy-h3", root=root)
     assert installation.plan() == expected
