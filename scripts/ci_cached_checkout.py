@@ -14,7 +14,8 @@ DESTINATIONS = {"agent": "candidate-agent", "runtime": "runtime", "pinokio": "pi
 
 def run(args, env, *, allow_failure=False):
     command = ["git", "-c", "credential.helper=", "-c", "http.extraHeader=",
-               "-c", "gc.auto=0", "-c", "maintenance.auto=false", *args]
+               "-c", "core.hooksPath=/dev/null", "-c", "gc.auto=0",
+               "-c", "maintenance.auto=false", *args]
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180, check=False)
     if result.returncode and not allow_failure:
         raise RuntimeError("Local Git cache checkout failed")
@@ -57,6 +58,11 @@ def checkout(name, sha, root, workspace):
     if not (repo.exists() or repo.is_symlink()):
         return False
     safe_cache(repo)
+    # These files can cause Git to read objects or history outside the cache.
+    for unsafe in (repo / "objects/info/alternates", repo / "objects/info/http-alternates",
+                   repo / "info/grafts"):
+        if unsafe.exists() or unsafe.is_symlink():
+            raise RuntimeError("Cache contains external object or history references")
     destination = workspace / DESTINATIONS[name]
     if destination.is_symlink():
         raise RuntimeError("Checkout destination is a symlink")
@@ -69,7 +75,7 @@ def checkout(name, sha, root, workspace):
     env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(root / "git-home"),
            "XDG_CONFIG_HOME": str(root / "git-home"), "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_CONFIG_GLOBAL": "/dev/null",
-           "GIT_TERMINAL_PROMPT": "0"}
+           "GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1"}
     config = run(["-C", str(repo), "config", "--local", "--no-includes", "--null", "--list"], env).stdout
     valid_config(name, config)
     if run(["-C", str(repo), "rev-parse", "--is-bare-repository"], env).stdout.strip() != "true":

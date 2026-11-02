@@ -71,7 +71,7 @@ def test_workflow_cache_is_smoke_only_and_hosted_keeps_checkout():
     workflow = (Path(__file__).parents[1] / ".github/workflows/journey.yml").read_text()
     job = workflow.split("  journey:\n", 1)[1].split("\n  release2:", 1)[0]
     for name in ("agent", "runtime", "pinokio"):
-        assert f"id: cache_{name}\n        if: matrix.runner == 'astrid-mac'" in job
+        assert f"id: cache_{name}\n        if: matrix.runner == 'astrid-mac' && matrix.job_id == 'direct-macos'" in job
         assert f"if: matrix.runner != 'astrid-mac' || steps.cache_{name}.outputs.hit != 'true'" in job
 
 
@@ -82,3 +82,28 @@ def test_existing_checkout_falls_back_without_mutating_it(cache):
     (dest / "preserve").write_text("existing")
     assert cached.checkout("agent", sha, root, workspace) is False
     assert (dest / "preserve").read_text() == "existing"
+
+
+@pytest.mark.parametrize("relative", ["objects/info/alternates", "objects/info/http-alternates", "info/grafts"])
+def test_cache_rejects_external_object_and_history_references(cache, relative):
+    root, workspace, repo, sha = cache
+    unsafe = repo / relative
+    unsafe.parent.mkdir(parents=True, exist_ok=True)
+    unsafe.write_text("/untrusted/object/source\n")
+    with pytest.raises(RuntimeError, match="external object or history"):
+        cached.checkout("agent", sha, root, workspace)
+    assert not (workspace / "candidate-agent").exists()
+
+
+def test_cache_git_disables_hooks_and_replacement_objects(cache, monkeypatch):
+    root, workspace, _, sha = cache
+    original = cached.subprocess.run
+    calls = []
+    def capture(argv, **kwargs):
+        calls.append((argv, kwargs.get("env", {})))
+        return original(argv, **kwargs)
+    monkeypatch.setattr(cached.subprocess, "run", capture)
+    assert cached.checkout("agent", sha, root, workspace)
+    assert calls
+    assert all("core.hooksPath=/dev/null" in args for args, _ in calls)
+    assert all(env.get("GIT_NO_REPLACE_OBJECTS") == "1" for _, env in calls)

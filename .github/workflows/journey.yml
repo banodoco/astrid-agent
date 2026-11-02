@@ -451,7 +451,7 @@ jobs:
           persist-credentials: false
       - name: Try verified local Agent cache for self-hosted smoke
         id: cache_agent
-        if: matrix.runner == 'astrid-mac'
+        if: matrix.runner == 'astrid-mac' && matrix.job_id == 'direct-macos'
         shell: bash
         env:
           CANDIDATE_SHA: ${{ fromJSON(needs.config.outputs.candidate).agent }}
@@ -470,7 +470,7 @@ jobs:
           persist-credentials: false
       - name: Try verified local Runtime cache for self-hosted smoke
         id: cache_runtime
-        if: matrix.runner == 'astrid-mac'
+        if: matrix.runner == 'astrid-mac' && matrix.job_id == 'direct-macos'
         shell: bash
         env:
           CANDIDATE_SHA: ${{ fromJSON(needs.config.outputs.candidate).runtime }}
@@ -485,7 +485,7 @@ jobs:
           persist-credentials: false
       - name: Try verified local Pinokio cache for self-hosted smoke
         id: cache_pinokio
-        if: matrix.runner == 'astrid-mac'
+        if: matrix.runner == 'astrid-mac' && matrix.job_id == 'direct-macos'
         shell: bash
         env:
           CANDIDATE_SHA: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
