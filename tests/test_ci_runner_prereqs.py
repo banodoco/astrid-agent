@@ -233,3 +233,20 @@ def test_cache_marker_is_never_published_empty_on_interruption(tmp_path, monkeyp
         prereqs.publish_cache_marker(tmp_path, marker, "a" * 32)
     assert not marker.exists()
     assert (tmp_path / "cache-marker.next").read_text() == "a" * 32
+
+
+def test_archive_rejects_raw_parent_components_before_normalization(tmp_path):
+    archive = tmp_path / "traversal.tgz"
+    with tarfile.open(archive, "w:gz") as tf:
+        link = tarfile.TarInfo("foo")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "."
+        tf.addfile(link)
+        payload = tarfile.TarInfo("foo/../escaped.txt")
+        payload.size = 1
+        tf.addfile(payload, io.BytesIO(b"x"))
+    dest = tmp_path / "extract"
+    dest.mkdir()
+    with pytest.raises(RuntimeError, match="raw member"):
+        prereqs.extract_safe(archive, dest)
+    assert not (tmp_path / "escaped.txt").exists()

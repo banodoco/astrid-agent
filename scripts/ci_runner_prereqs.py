@@ -50,6 +50,10 @@ def extract_safe(archive, dest):
         links = set()
         normalized = []
         for item in members:
+            if ".." in item.name.split("/"):
+                raise RuntimeError("Archive has an unsafe raw member path")
+            if (item.issym() or item.islnk()) and ".." in item.linkname.split("/"):
+                raise RuntimeError("Archive has an unsafe raw link path")
             name = posixpath.normpath(item.name)
             if name == "." and item.isdir():
                 continue
