@@ -45,6 +45,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -4667,6 +4668,89 @@ def _pack_stat_identity(path: Path) -> tuple[int, ...] | None:
     )
 
 
+def _pack_capture_inventory(root: Path) -> dict[Path, tuple[int, ...]]:
+    """Inventory the digest's entries, including the separately associated PIN."""
+    from astrid.core.pack.identity import _EXCLUDED_DIRS
+
+    entries: dict[Path, tuple[int, ...]] = {}
+
+    def walk(path: Path) -> None:
+        identity = _pack_stat_identity(path)
+        if identity is None:
+            raise HostError("selected pack disappeared during capture")
+        mode = identity[2]
+        if stat.S_ISDIR(mode):
+            if path != root and path.name in _EXCLUDED_DIRS:
+                return
+            entries[path] = identity
+            for child in sorted(path.iterdir()):
+                walk(child)
+        elif stat.S_ISREG(mode):
+            if path.name != ".git" and not path.name.endswith((".pyc", ".pyo")):
+                entries[path] = identity
+        else:
+            raise HostError("selected pack capture requires real directories and regular files")
+
+    walk(root)
+    return entries
+
+
+@contextmanager
+def _selected_pack_capture(generation):
+    """Fence byte acquisition; unsupported or contested sources fail closed.
+
+    A second hash is not a mutation fence: an already-read file can be changed,
+    including through a writable mmap. Linux read leases exclude existing
+    writers/mappings and hold off new writers. Directory identities cover name
+    changes, which leases do not prevent. No lease survives this capture scope.
+    """
+    if generation is None:
+        yield
+        return
+    if not sys.platform.startswith("linux"):
+        raise HostError("stable selected pack capture requires Linux file leases")
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise HostError("stable selected pack capture requires file lease support") from exc
+    # Use a default-ignored signal on these private descriptors, without
+    # installing a process-wide handler (captures also run on host threads).
+    # Breaks are handled synchronously below: F_GETLEASE reports the pending
+    # target F_UNLCK immediately, even before a blocked writer is released.
+    if signal.getsignal(signal.SIGURG) not in (signal.SIG_DFL, signal.SIG_IGN):
+        raise HostError("selected pack capture cannot reserve its lease notification")
+    descriptors: list[int] = []
+    root = generation[2]
+    try:
+        inventory = _pack_capture_inventory(root)
+        for path, identity in inventory.items():
+            if not stat.S_ISREG(identity[2]):
+                continue
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+            descriptors.append(descriptor)
+            info = os.fstat(descriptor)
+            opened_identity = (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                               info.st_mtime_ns, info.st_ctime_ns)
+            if opened_identity != identity:
+                raise HostError("selected pack entry changed before capture")
+            fcntl.fcntl(descriptor, fcntl.F_SETSIG, signal.SIGURG)
+            fcntl.fcntl(descriptor, fcntl.F_SETLEASE, fcntl.F_RDLCK)
+        if _pack_capture_inventory(root) != inventory:
+            raise HostError("selected pack changed before capture")
+        yield
+        if _pack_capture_inventory(root) != inventory:
+            raise HostError("selected pack changed during capture")
+        if any(fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_RDLCK for fd in descriptors):
+            raise HostError("selected pack write attempted during capture")
+    except OSError as exc:
+        raise HostError("cannot establish stable selected pack capture") from exc
+    finally:
+        # Closing the last reference releases even a breaking lease, promptly
+        # unblocking writers on success, admission refusal, and read errors.
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def _selected_pack_generation(
     record: Any,
 ) -> tuple[str, Path, Path, tuple[int, ...], tuple[int, ...] | None] | None:
@@ -4697,11 +4781,12 @@ def _run_pack_provenance(
     selected_generation: tuple[str, Path, Path, tuple[int, ...], tuple[int, ...] | None] | None | object = _UNSET_PACK_GENERATION,
 ) -> list[dict[str, Any]] | None:
     """Capture identity, PIN and observed digest from one stable selected generation."""
-    generation = (
-        _selected_pack_generation(record)
-        if selected_generation is _UNSET_PACK_GENERATION
-        else selected_generation
-    )
+    if selected_generation is _UNSET_PACK_GENERATION:
+        generation = _selected_pack_generation(record)
+        with _selected_pack_capture(generation):
+            provenance = _run_pack_provenance(record, observed_digest, generation)
+        return provenance
+    generation = selected_generation
     if generation is None:
         return None
     pack_id, declared_root, pack_root, root_identity, pin_identity = generation
@@ -4731,8 +4816,8 @@ def _run_pack_provenance(
         origin = "folder"
         installed_digest = None
 
-    # Rehash after PIN acquisition. Matching digests plus stable root/PIN
-    # identities prove the receipt facts still describe the captured tree.
+    # Rehash after PIN acquisition while the caller holds the byte fence.
+    # Root/PIN checks additionally reject a changed selected association.
     verified_digest = pack_digest(pack_root)
     try:
         final_declared_root = declared_root.resolve()
@@ -11068,13 +11153,14 @@ class GenericPackHost:
 
         try:
             selected_generation = _selected_pack_generation(record)
-            run_source_digest = _run_source_digest(record)
+            with _selected_pack_capture(selected_generation):
+                run_source_digest = _run_source_digest(record)
+                # Capture the selected identity, PIN and observed tree together
+                # before execution. Publish only after the fence validates.
+                provenance = _run_pack_provenance(
+                    record, run_source_digest, selected_generation,
+                )
             _terminal["run_source_digest"] = run_source_digest
-            # Capture the selected identity, PIN and observed tree together
-            # before execution. Terminal writers only carry this saved value.
-            provenance = _run_pack_provenance(
-                record, run_source_digest, selected_generation,
-            )
             _terminal["pack_provenance"] = (
                 tuple(MappingProxyType(dict(row)) for row in provenance)
                 if provenance is not None else None
