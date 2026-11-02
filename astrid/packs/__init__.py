@@ -47,7 +47,7 @@ def _child_directory_names(root: Path) -> tuple[str, ...]:
 
 
 def _visible_packs_root() -> Path | None:
-    """Resolve the one configurable visible folder-pack root."""
+    """Resolve and initialize the one configurable visible folder-pack root."""
     configured = os.environ.get(_PACKS_ENV)
     if configured is None:
         candidate = Path.home() / "Astrid" / "packs"
@@ -60,17 +60,44 @@ def _visible_packs_root() -> Path | None:
             return None
 
     try:
+        candidate.mkdir(parents=True, exist_ok=True)
         resolved = candidate.resolve(strict=True)
         if not resolved.is_dir():
             _LOG.warning("ignoring non-directory %s pack root: %s", _PACKS_ENV, resolved)
             return None
     except (OSError, RuntimeError):
-        # A missing default directory is normal on a fresh install. An invalid
-        # explicit override is also fail-closed and leaves core packs usable.
+        # An unusable default or explicit override leaves core packs usable.
         return None
     if resolved == _CORE_ROOT:
         return None
     return resolved
+
+
+def _initialize_personal_pack(root: Path) -> None:
+    """Create the reserved personal pack without changing existing user data."""
+    personal = root / _PERSONAL_ID
+    try:
+        personal.mkdir(exist_ok=True)
+        if personal.is_symlink() or not personal.is_dir():
+            _LOG.warning("ignoring unusable personal pack path: %s", personal)
+            return
+        manifest = personal / "pack.yaml"
+        payload = (
+            "schema_version: 3\n"
+            "id: personal\n"
+            "name: Personal\n"
+            "version: 0.1.0\n"
+            'pack_api: "1.0"\n'
+            "actions: {}\n"
+        ).encode("utf-8")
+        try:
+            descriptor = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+    except (OSError, RuntimeError) as exc:
+        _LOG.warning("could not initialize personal pack at %s: %s", personal, exc)
 
 
 class _CorePackCollisionFinder(MetaPathFinder):
@@ -110,6 +137,7 @@ if not any(isinstance(finder, _CorePackCollisionFinder) for finder in sys.meta_p
 
 _EXTERNAL_ROOT = _visible_packs_root()
 if _EXTERNAL_ROOT is not None:
+    _initialize_personal_pack(_EXTERNAL_ROOT)
     _external_names = _child_directory_names(_EXTERNAL_ROOT)
     for _name in _external_names:
         if _name == _PERSONAL_ID:
