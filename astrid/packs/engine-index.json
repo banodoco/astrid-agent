@@ -24,14 +24,6 @@
         "path": "packs/runpod/recipe.linux-cu130.json",
         "sha256": "5e4a94ef08fb83299ba0b7f7cf67bd443f6ac09e4b97d72eff01ebe485832fef"
       }
-    },
-    {
-      "engine": "wan2gp",
-      "platform": "windows-x86_64-cu128",
-      "recipe": {
-        "path": "packs/wan2gp/recipe.windows-cu128.json",
-        "sha256": "c7b0457a62e35cdc056fee6b1fcb398053321c06fe896cb52ada9c69fbe71a5a"
-      }
     }
   ]
 }

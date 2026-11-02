@@ -19,16 +19,11 @@ def _model_ref(tmp_path, value):
 
 def test_index_roundtrips_windows_and_linux_recipes_with_immutable_values():
     windows = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
-    wan_windows = recipes.load_recipe("wan2gp", "windows-x86_64-cu128")
     linux = recipes.load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
     assert recipes.serialize_recipe(windows) == recipes.serialize_recipe(recipes.load_recipe(windows.engine, windows.platform))
-    assert recipes.serialize_recipe(wan_windows) == recipes.serialize_recipe(recipes.load_recipe(wan_windows.engine, wan_windows.platform))
     assert recipes.serialize_recipe(linux) == recipes.serialize_recipe(recipes.load_recipe(linux.engine, linux.platform))
-    assert windows.start.bind_host == wan_windows.start.bind_host == linux.start.bind_host == "127.0.0.1"
+    assert windows.start.bind_host == linux.start.bind_host == "127.0.0.1"
     assert windows.start.port == linux.start.port == 8188
-    assert wan_windows.platform == "windows-x86_64-cu128"
-    assert [(wheel.name, wheel.version) for wheel in wan_windows.environments[0].final_wheels] == [
-        ("torch", "2.8.0+cu128"), ("torchvision", "0.23.0+cu128"), ("torchaudio", "2.8.0+cu128")]
     assert len(windows.environments[0].final_wheels) == 3
     assert windows.environments[0].requirements.mode == "resolve-once"
     assert {source.name for source in windows.sources} == {"comfyui", "vibecomfy", "h3-motion-context", "videohelpersuite"}
@@ -140,7 +135,7 @@ def test_unknown_engine_and_known_unsupported_platform_are_distinct():
     with pytest.raises(UnknownEngine):
         recipes.load_recipe("not-a-pack", "linux-x86_64-cu130")
     with pytest.raises(UnsupportedPlatform):
-        recipes.load_recipe("wan2gp", "windows-x86_64-cu130")
+        recipes.load_recipe("vibecomfy", "windows-x86_64-cu128")
 
 
 def test_invalid_model_lock_schema_is_rejected(monkeypatch, tmp_path):
@@ -183,7 +178,7 @@ def test_local_recipe_lookup_does_not_clone_or_call_network(monkeypatch):
 
 def test_engine_errors_expose_the_stable_public_fields():
     with pytest.raises(UnsupportedPlatform) as caught:
-        recipes.load_recipe("wan2gp", "linux-x86_64-cu130")
+        recipes.load_recipe("vibecomfy", "linux-x86_64-cu130")
     error = caught.value
     assert (error.code, error.message, error.step_id, error.retryable, error.recovery_handle) == (
         "unsupported_platform", str(error), None, False, None,

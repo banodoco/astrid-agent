@@ -13,7 +13,7 @@ from astrid.core.generation import gpu_environment as gpu
 DEVICE = {"available": True, "devices": ["NVIDIA GeForce RTX 4090"], "reason": ""}
 
 
-@pytest.mark.parametrize("pack", ["wan2gp", "vibecomfy"])
+@pytest.mark.parametrize("pack", ["vibecomfy"])
 @pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
 def test_plan_is_platform_specific_and_does_not_install(tmp_path, monkeypatch, pack, platform):
     monkeypatch.setattr(gpu.subprocess, "run", lambda *_a, **_k: pytest.fail("plan spawned a process"))
@@ -60,10 +60,7 @@ def test_plan_is_platform_specific_and_does_not_install(tmp_path, monkeypatch, p
 
 
 def test_environment_source_pins_match_existing_admission():
-    from astrid.packs.wan2gp.src.driver import WAN2GP_PIN_SHA
-
-    assert gpu._description("wan2gp")[1]["source"]["revision"] == WAN2GP_PIN_SHA
-    for pack in ("wan2gp", "vibecomfy"):
+    for pack in ("vibecomfy",):
         directory, description = gpu._description(pack)
         requirements = (directory / "requirements.windows-nvidia.txt").read_text()
         for name, version in description["torch"].items():
@@ -106,7 +103,7 @@ def test_provisioning_a_windows_plan_on_linux_names_the_current_host(monkeypatch
         gpu.provision_environment({"managed": True, "pack": "vibecomfy", "platform": "win32"})
 
 
-@pytest.mark.parametrize("capability", ["wan2gp.generate_video", "vibecomfy.run", "vibecomfy.generate_image", "vibecomfy.video_enhance", "comfy_wrap.run"])
+@pytest.mark.parametrize("capability", ["vibecomfy.run", "vibecomfy.generate_image", "vibecomfy.video_enhance", "comfy_wrap.run"])
 @pytest.mark.parametrize("opt_in", ["", "true", "0", "1"])
 def test_unqualified_label_is_a_warning_and_the_retired_opt_in_changes_nothing(capability, opt_in):
     status = gpu.windows_gpu_status(capability, platform="win32", environ={gpu.ALLOW_UNQUALIFIED_ENV: opt_in}, detection=DEVICE)
@@ -114,7 +111,7 @@ def test_unqualified_label_is_a_warning_and_the_retired_opt_in_changes_nothing(c
     assert status["qualified"] is False
     assert status["status"] == "not qualified yet"
     assert status["reason"].endswith("is not qualified yet.")
-    label = "Wan2GP" if capability == "wan2gp.generate_video" else "ComfyUI"
+    label = "ComfyUI"
     assert status["warning"] == (
         f"{label} on Windows with this NVIDIA GPU is untested. It will probably work, "
         "but please tell us how it went (GPU model and driver from `nvidia-smi`)."
@@ -125,24 +122,24 @@ def test_unqualified_label_is_a_warning_and_the_retired_opt_in_changes_nothing(c
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
 def test_other_platforms_do_not_probe_or_change_readiness(platform, monkeypatch):
     monkeypatch.setattr(gpu, "detect_nvidia", lambda: pytest.fail("non-Windows probe"))
-    for capability in ("wan2gp.generate_video", "vibecomfy.run", "comfy_wrap.run"):
+    for capability in ("vibecomfy.run", "comfy_wrap.run"):
         assert gpu.windows_gpu_status(capability, platform=platform) is None
 
 
-@pytest.mark.parametrize("capability", ["wan2gp.validate_settings", "vibecomfy.validate", "vibecomfy.import", "vibecomfy.inspect", "vibecomfy.edit", "generation.generate_video", "rendering.render"])
+@pytest.mark.parametrize("capability", ["vibecomfy.validate", "vibecomfy.import", "vibecomfy.inspect", "vibecomfy.edit", "generation.generate_video", "rendering.render"])
 def test_offline_or_other_capabilities_do_not_need_a_gpu(capability, monkeypatch):
     monkeypatch.setattr(gpu, "detect_nvidia", lambda: pytest.fail("offline GPU probe"))
     assert gpu.windows_gpu_status(capability, platform="win32") is None
 
 
 def test_qualification_table_is_specific_to_pack_os_and_gpu(monkeypatch):
-    monkeypatch.setattr(gpu, "QUALIFIED_COMBINATIONS", frozenset({("wan2gp", "win32", DEVICE["devices"][0])}))
-    status = gpu.windows_gpu_status("wan2gp.generate_video", platform="win32", environ={}, detection=DEVICE)
+    monkeypatch.setattr(gpu, "QUALIFIED_COMBINATIONS", frozenset({("vibecomfy", "win32", DEVICE["devices"][0])}))
+    status = gpu.windows_gpu_status("vibecomfy.run", platform="win32", environ={}, detection=DEVICE)
     assert status["qualified"] is True and status["ok"] is True
     assert status["reason"] == ""
     assert gpu.windows_gpu_status("vibecomfy.run", platform="win32", environ={}, detection=DEVICE)["ok"] is True
     other = {**DEVICE, "devices": ["NVIDIA GeForce RTX 3090"]}
-    assert gpu.windows_gpu_status("wan2gp.generate_video", platform="win32", environ={}, detection=other)["ok"] is True
+    assert gpu.windows_gpu_status("vibecomfy.run", platform="win32", environ={}, detection=other)["ok"] is True
 
 
 @pytest.mark.parametrize("capability", ["vibecomfy.run", "vibecomfy.generate_image", "comfy_wrap.run"])
@@ -194,7 +191,7 @@ def test_detection_failures_are_plain_and_cannot_be_overridden(monkeypatch, fail
     assert status["reason"] == detected["reason"]
 
 
-def _provision_fixture(tmp_path, monkeypatch, pack="wan2gp"):
+def _provision_fixture(tmp_path, monkeypatch, pack="vibecomfy"):
     from astrid.core.pack import source_setup
 
     plan = gpu.environment_plan(pack, tmp_path / "checkout", destination=tmp_path / "venv",
@@ -216,7 +213,7 @@ def _provision_fixture(tmp_path, monkeypatch, pack="wan2gp"):
     return plan
 
 
-@pytest.mark.parametrize("pack", ["wan2gp", "vibecomfy"])
+@pytest.mark.parametrize("pack", ["vibecomfy"])
 def test_provision_executes_plan_and_records_lock_without_qualifying(tmp_path, monkeypatch, pack):
     plan = _provision_fixture(tmp_path, monkeypatch, pack)
     calls = []
@@ -293,11 +290,14 @@ def test_existing_environment_is_not_overwritten(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("failure", ["cpu-wheel", "wrong-cuda", "no-cuda", "healthy"])
 def test_post_install_probe_checks_exact_cuda_build_and_usable_device(monkeypatch, capsys, failure):
-    versions = gpu._description("wan2gp")[1]["torch"]
+    versions = gpu._description("vibecomfy")[1]["torch"]
     modules = {name: SimpleNamespace(__version__=version) for name, version in versions.items()}
     if failure == "cpu-wheel":
         modules["torchvision"].__version__ = versions["torchvision"].split("+")[0]
-    modules["torch"].version = SimpleNamespace(cuda="12.1" if failure == "wrong-cuda" else "12.8")
+    # The expected CUDA runtime comes from the pack's own build suffix (cu130 -> 13.0).
+    build = versions["torch"].split("+cu", 1)[1]
+    runtime = f"{build[:-1]}.{build[-1]}"
+    modules["torch"].version = SimpleNamespace(cuda="12.1" if failure == "wrong-cuda" else runtime)
     modules["torch"].cuda = SimpleNamespace(
         is_available=lambda: failure != "no-cuda", device_count=lambda: 1,
         get_device_name=lambda _: DEVICE["devices"][0],

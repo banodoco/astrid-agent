@@ -110,8 +110,6 @@
 | `video_editing.sync_draft_voiceover` | Reconcile temporary narration with pinned timeline scripts. |
 | `video_editing.thumbnail_maker` | Unavailable: video_editing.thumbnail_maker generation is not implemented. Fix: retry after the generation availability declaration marks this route available. Plan source evidence and prepare references for a thumbnail request. |
 | `video_editing.vary_grid` | Select cells from an image grid and generate a new grid of variations. |
-| `wan2gp.generate_video` | Unavailable: wan2gp.generate_video is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Host-mediated native Wan2GP video generation. |
-| `wan2gp.validate_settings` | Compile and validate Wan2GP settings (no engine execution). |
 | `youtube.upload` | Upload a finished video to YouTube via the shared banodoco-social Zapier integration. |
 | `youtube.youtube_audio` | Download a YouTube video's audio (MP3) or video (MP4) — by search query or direct URL. |
 

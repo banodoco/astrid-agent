@@ -35,8 +35,6 @@ class GPUEnvironmentError(RuntimeError):
 
 
 def gpu_pack(capability_id: str) -> str | None:
-    if capability_id == "wan2gp.generate_video":
-        return "wan2gp"
     pack, _, action = capability_id.partition(".")
     if pack == "comfy_wrap" and action == "run":
         return "vibecomfy"
@@ -79,7 +77,7 @@ def windows_gpu_status(
     qualified = bool(device.get("available") and names) and all(
         (pack, platform, name) in QUALIFIED_COMBINATIONS for name in names
     )
-    label = "Wan2GP" if pack == "wan2gp" else "ComfyUI"
+    label = "ComfyUI"
     reason = "" if qualified else f"{label} on Windows with this NVIDIA GPU is not qualified yet."
     if not device.get("available"):
         reason = str(device["reason"])
@@ -102,43 +100,34 @@ def windows_gpu_status(
 
 
 def _description(pack: str) -> tuple[Path, dict[str, Any]]:
-    if pack not in {"wan2gp", "vibecomfy"}:
+    if pack != "vibecomfy":
         raise GPUEnvironmentError(f"unknown GPU pack: {pack}")
     directory = _PACKS / pack
     description = json.loads((directory / "environment.windows-nvidia.json").read_text(encoding="utf-8"))
-    platform = "windows-x86_64-cu130" if pack == "vibecomfy" else "windows-x86_64-cu128"
+    platform = "windows-x86_64-cu130"
     recipe = load_recipe(pack, platform)
     sources = {source.name: source.pin for source in recipe.sources}
-    if pack == "vibecomfy":
-        comfy = sources["comfyui"]
-        vibecomfy = sources["vibecomfy"]
-        description["source"] = {"repository": comfy.repository, "revision": comfy.revision}
-        description["vibecomfy_source"] = {"repository": vibecomfy.repository,
-                                             "revision": vibecomfy.revision}
-        node_sources = {
-            "ComfyUI-H3-Motion-Context-MultiRef": sources["h3-motion-context"],
-            "ComfyUI-VideoHelperSuite": sources["videohelpersuite"],
-        }
-        for node in description["custom_nodes"]:
-            pin = node_sources[node["name"]]
-            node.pop("pin", None)
-            node.update(repository=pin.repository, revision=pin.revision)
-    else:
-        pin = sources["wan2gp"]
-        description["source"] = {"repository": pin.repository, "revision": pin.revision}
+    comfy = sources["comfyui"]
+    vibecomfy = sources["vibecomfy"]
+    description["source"] = {"repository": comfy.repository, "revision": comfy.revision}
+    description["vibecomfy_source"] = {"repository": vibecomfy.repository,
+                                         "revision": vibecomfy.revision}
+    node_sources = {
+        "ComfyUI-H3-Motion-Context-MultiRef": sources["h3-motion-context"],
+        "ComfyUI-VideoHelperSuite": sources["videohelpersuite"],
+    }
+    for node in description["custom_nodes"]:
+        pin = node_sources[node["name"]]
+        node.pop("pin", None)
+        node.update(repository=pin.repository, revision=pin.revision)
     return directory, description
 
 
 def _unmanaged_guidance(pack: str, platform: str) -> str:
     platform_name = {"win32": "Windows", "linux": "Linux", "darwin": "macOS"}.get(platform, platform)
-    if pack == "vibecomfy":
-        return (
-            f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
-            "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
-        )
     return (
-        f"Astrid doesn't provision Wan2GP environments on {platform_name} yet. "
-        "Use an admitted Wan2GP checkout and interpreter."
+        f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
+        "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
     )
 
 
@@ -295,7 +284,7 @@ def provision_environment(plan: Mapping[str, Any]) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pack", choices=("wan2gp", "vibecomfy"))
+    parser.add_argument("pack", choices=("vibecomfy",))
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--vibecomfy-checkout", type=Path)
     parser.add_argument("--destination", type=Path)

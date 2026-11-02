@@ -36,8 +36,6 @@ _FILES = (
     'astrid/packs/runpod/models.lock.json',
     'astrid/packs/vibecomfy/recipe.windows-cu130.json', 'astrid/packs/vibecomfy/pins.json',
     'astrid/packs/vibecomfy/models.lock.json',
-    'astrid/packs/wan2gp/recipe.windows-cu128.json', 'astrid/packs/wan2gp/pins.json',
-    'astrid/packs/wan2gp/models.lock.json',
 )
 
 
