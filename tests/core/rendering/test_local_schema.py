@@ -181,7 +181,7 @@ def test_role_aware_canonical_contract_is_shared_and_does_not_mutate_payload():
 
 
 def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=(500, 18, 544),
-                         flags=(16, 16, 0), ace_type=0, null_dacl=False):
+                         flags=(16, 16, 0), ace_type=0, null_dacl=False, invalid_acl=False):
     """Model the retained SDDL with native ACE buffers and Runtime's API seam."""
     import ctypes
     from types import SimpleNamespace
@@ -231,7 +231,7 @@ def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=
                                     for i in range(8, len(raw), 4))
 
     adv = SimpleNamespace(GetSecurityInfo=get_security, GetAce=get_ace,
-                          IsValidSid=lambda _sid: True, IsValidAcl=lambda _acl: True,
+                          IsValidSid=lambda _sid: True, IsValidAcl=lambda _acl: not invalid_acl,
                           GetLengthSid=lambda value: len(sid_bytes(value)),
                           EqualSid=lambda a, b: sid_bytes(a) == sid_bytes(b),
                           GetSecurityDescriptorControl=lambda _d, control, _r: 1)
@@ -257,9 +257,10 @@ def test_windows_captured_acl_same_owner_is_admitted(monkeypatch):
     {"trustees": (500, 18, 545)},  # BUILTIN Users.
     {"trustees": (500, 18, 11)},  # Authenticated Users.
     {"owner": 501},
-    {"process_owner": 544},
+    {"owner": 501, "process_owner": 544},
     {"ace_type": 1},
     {"null_dacl": True},
+    {"invalid_acl": True},
     {"trustees": (544, 18, 18)},  # No effective user ACE.
 ])
 def test_windows_schema_rejects_unsafe_acl(monkeypatch, changes):
@@ -300,7 +301,8 @@ def test_windows_installed_schema_checks_both_source_and_destination(tmp_path, m
 
 
 @pytest.mark.parametrize("layout", ["source", "installed"])
-@pytest.mark.parametrize("case", ["safe", "foreign", "owner", "process_owner"])
+@pytest.mark.parametrize("case", ["safe", "user_distinct_default", "default_owner",
+                                  "foreign", "owner", "process_owner"])
 def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, layout, case):
     from contextlib import contextmanager
     from types import SimpleNamespace
@@ -334,7 +336,12 @@ def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, layout,
             elif case == "owner":
                 changes["owner"] = 501
             elif case == "process_owner":
+                changes["owner"] = 501
                 changes["process_owner"] = 544
+            elif case == "user_distinct_default":
+                changes["process_owner"] = 544
+            elif case == "default_owner":
+                changes.update(owner=544, process_owner=544)
         _windows_acl_fixture(monkeypatch, **changes)
         yield 1, None
 
@@ -342,7 +349,7 @@ def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, layout,
     monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix)))
     monkeypatch.setattr(_local_schema, "owned_by_current_user",
                         lambda *_args, **_kwargs: pytest.fail("owner-only DACL predicate was called"))
-    if case == "safe":
+    if case in {"safe", "user_distinct_default", "default_owner"}:
         assert _local_schema.verified_schema_path(root, str(schema)) == schema
         assert schema in checked
         if layout == "installed":
@@ -357,14 +364,12 @@ def test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign(tmp_pa
     from runtime_protocol import windows_security as security
 
     user = security._user_sid()
-    adv, _ = security._api()
-    same_owner = bool(adv.EqualSid(user, security._default_owner_sid()))
     user_sid = security._sid_text(user)
     path = tmp_path / "schema.json"
     path.write_text("{}")
     with security._handle(path, write_dac=True) as (handle, _info):
         security._set_dacl(handle, f"O:{user_sid}D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BA)")
-    assert _local_schema._windows_schema_path_is_safe(path) == same_owner
+    assert _local_schema._windows_schema_path_is_safe(path)
     with security._handle(path, write_dac=True) as (handle, _info):
         security._set_dacl(handle, f"O:{user_sid}D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BU)")
     assert not _local_schema._windows_schema_path_is_safe(path)

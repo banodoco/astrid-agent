@@ -36,9 +36,9 @@ def _windows_schema_handle_is_safe(handle) -> bool:
         return False
     try:
         user = security._user_sid()
+        default_owner = security._default_owner_sid()
         if (not owner or not adv.IsValidSid(owner)
-                or not adv.EqualSid(owner, user)
-                or not adv.EqualSid(security._default_owner_sid(), user)
+                or not (adv.EqualSid(owner, user) or adv.EqualSid(owner, default_owner))
                 or not dacl or not adv.IsValidAcl(dacl)):
             return False
         acl = ctypes.cast(dacl, ctypes.POINTER(security._Acl)).contents
