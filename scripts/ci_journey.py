@@ -599,6 +599,12 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    # Keep both phase records while exposing one canonical receipt to the aggregate.
+    if phase == "after-cleanup" and (destination / "journey-result.json").is_file():
+        before = destination.parent / "before-cleanup" / "journey-result.json"
+        if before.is_file() and not before.is_symlink():
+            before.replace(before.with_name("before-cleanup-result.json"))
+
     # The existing hosted boundary accepts this legacy service-log filename
     # pattern. Flatten the seed directories into it without truncating bytes.
     # Numbering follows sorted relative paths so distinct invocations survive.
@@ -666,7 +672,8 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
             diagnostic["release0_bootstrap"] = item
         recorded.setdefault("failure_diagnostics", {})[phase] = diagnostic
         write_json(result_path, recorded)
-        # Refresh the staged receipt after adding paths and observation status.
+        # Bind complete Windows bootstrap bytes before refreshing the staged receipt.
+        stage_windows_release0_evidence(evidence, run_root, phase)
         retain_named_evidence(evidence, phase)
     except Exception as exc:
         print(f"Journey evidence snapshot ({phase}) failed: {type(exc).__name__}: {exc}",
@@ -1083,6 +1090,46 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
     if Path(version["root"]).resolve() != version_path.parent.resolve():
         raise RuntimeError("Selected version path disagrees with version.json")
     return version_path, data, version
+
+
+def stage_windows_release0_evidence(evidence: Path, run_root: Path, phase: str) -> None:
+    """Bind the unmodified bootstrap bytes and observed exit to each cleanup phase."""
+    if sys.platform != "win32":
+        return
+    result_path = evidence / "journey-result.json"
+    if not result_path.is_file() or result_path.is_symlink():
+        return
+    try:
+        recorded = read_json(result_path)
+        if recorded.get("scenario") != "release0-to-release1":
+            return
+        destination = evidence.parent.parent / "evidence-upload" / phase
+        destination.mkdir(parents=True, exist_ok=True)
+        previous = recorded.get("failure_diagnostics", {}).get("before-cleanup", {}).get("release0_bootstrap", {})
+        exit_code = previous.get("exit_code")
+        exit_path = evidence / "release0" / "release0-bootstrap-exit.json"
+        if exit_path.is_file() and not exit_path.is_symlink():
+            exit_code = read_json(exit_path).get("exit_code")
+        source = evidence / "release0" / "release0-bootstrap.log"
+        if not source.is_file() or source.is_symlink():
+            source = destination.parent / "before-cleanup" / "release0-bootstrap.log"
+        target = destination / "release0-bootstrap.log"
+        item = {"status": "unavailable", "path": None, "exit_code": exit_code, "sha256": None}
+        if source.is_file() and not source.is_symlink():
+            if source != target:
+                shutil.copyfile(source, target)
+            digest = hashlib.sha256()
+            with target.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            item.update(status="captured", path=target.relative_to(run_root).as_posix(),
+                        sha256=digest.hexdigest())
+        recorded.setdefault("failure_diagnostics", {}).setdefault(phase, {})["release0_bootstrap"] = item
+        write_json(result_path, recorded)
+        write_json(destination / "receipt.json", recorded)
+    except Exception as exc:
+        print(f"Windows bootstrap evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
 
 
 def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600) -> str:

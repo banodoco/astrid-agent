@@ -252,7 +252,7 @@ def test_tst_b1_failure_writes_small_result_with_unrun_checks(tmp_path, monkeypa
     args = argparse.Namespace(run_root=run_root, root=run_root / "program",
                               data_root=run_root / "data", app_checkout=tmp_path / "missing-app",
                               source_override=False, agent_checkout=None, runtime_checkout=None,
-                              leg="fresh-install", shell="sh")
+                              leg="fresh-install", shell="sh", mode="direct")
     # The unit check exercises only run custody; local login state is irrelevant.
     monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
     with pytest.raises(FileNotFoundError):
@@ -678,6 +678,66 @@ def test_tst_b1_counts_all_runtime_owners_to_reject_duplicates(tmp_path, monkeyp
     assert journey.runtime_processes(data) == [101, 102]
 
 
+def test_windows_release0_bootstrap_evidence_survives_cleanup(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    import hashlib
+    import shutil
+    from scripts import journey_version_jumps
+
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="release0-to-release1", shell="powershell.exe", retain_for_next_leg=False)
+    raw = b"first error\r\n\xff\x00" + b"x" * (1024 * 1024 + 31)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+
+    @contextmanager
+    def sentinel(*unused):
+        yield SimpleNamespace(pid=123), "birth"
+
+    monkeypatch.setattr(journey, "sentinel_process", sentinel)
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *unused: {"alive": True})
+
+    def process(argv, **kwargs):
+        kwargs["stdout"].buffer.write(raw)
+        return SimpleNamespace(returncode=37)
+
+    monkeypatch.setattr(journey.subprocess, "run", process)
+
+    def failed_journey(*unused):
+        journey.write_json(evidence / "journey-result.json", {"status": "fail", "scenario": args.leg})
+        root.mkdir()
+        (root / "current").write_text("v0")
+        journey_version_jumps.bootstrap_release0(tmp_path / "fixture", tmp_path / "manifest",
+                                                 args.shell, evidence / "release0", root, data)
+
+    monkeypatch.setattr(journey, "_execute_owned", failed_journey)
+    monkeypatch.setattr(journey, "installation", lambda *unused: (None, data, {"python": "python"}))
+
+    def cleanup(*unused, **kwargs):
+        shutil.rmtree(evidence / "release0")
+        (root / "current").unlink()
+
+    monkeypatch.setattr(journey, "installed_cli", cleanup)
+    monkeypatch.setattr(journey, "runtime_processes", lambda *unused: [])
+    with pytest.raises(RuntimeError, match=r"release0-bootstrap.log: exit 37"):
+        journey.execute(args)
+
+    staged = evidence.parent.parent / "evidence-upload"
+    for phase in ("before-cleanup", "after-cleanup"):
+        receipt = journey.read_json(staged / phase / "receipt.json")
+        assert "install_log" in receipt["failure_diagnostics"][phase]
+        assert "service_manager" in receipt["failure_diagnostics"][phase]
+        entry = receipt["failure_diagnostics"][phase]["release0_bootstrap"]
+        assert entry == {"status": "captured", "path": (staged / phase / "release0-bootstrap.log").relative_to(run_root).as_posix(),
+                         "exit_code": 37, "sha256": hashlib.sha256(raw).hexdigest()}
+        assert (run_root / entry["path"]).read_bytes() == raw
+    assert journey.read_json(evidence / "journey-result.json")["failure_diagnostics"] == receipt["failure_diagnostics"]
+    assert (staged / "before-cleanup" / "before-cleanup-result.json").is_file()
+    assert list(staged.rglob("journey-result.json")) == [staged / "after-cleanup" / "journey-result.json"]
+
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
         tmp_path, monkeypatch, platform):
@@ -906,7 +966,7 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
                WORKFLOW_REPOSITORY="banodoco/astrid-agent",
                OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
                STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
-               M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
+               DIRECT_OS="all", M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
                M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
                M4_6_ENABLED="false", M4_6_CANDIDATE="", GITHUB_OUTPUT=str(output))
 

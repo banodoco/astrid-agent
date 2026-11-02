@@ -34,6 +34,11 @@ on:
         required: false
         default: false
         type: boolean
+      direct_os:
+        description: Select one direct row for rehearsal (all, linux, macos, windows); full qualification still requires all nine rows
+        required: false
+        default: all
+        type: string
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -96,6 +101,11 @@ on:
         required: false
         default: false
         type: boolean
+      direct_os:
+        description: Select one direct row for rehearsal (all, linux, macos, windows); full qualification still requires all nine rows
+        required: false
+        default: all
+        type: string
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -243,6 +253,7 @@ jobs:
           OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || 'bbba620e3d89eeff8021417f365e6ea584203105' }}
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
+          DIRECT_OS: ${{ inputs.direct_os || 'all' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
@@ -289,9 +300,14 @@ jobs:
           if not m4_5_only and any(not isinstance(value, dict) for value in executor_configs.values()):
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
+          direct_os = os.environ["DIRECT_OS"] or "all"
+          if direct_os not in {"all", "linux", "macos", "windows"}:
+              raise SystemExit("direct_os must be one of all, linux, macos, windows")
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
           if direct_only and (backend_only or m4_5_only):
               raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
+          if direct_os != "all" and (backend_only or m4_5_only):
+              raise SystemExit("direct_os cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
           if m4_5_only and not m4_5_enabled:
               raise SystemExit("m4_5_only requires m4_5_enabled")
@@ -338,8 +354,9 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if direct_only:
-              matrix = [row for row in matrix if row["mode"] == "direct"]
+          if direct_only or direct_os != "all":
+              matrix = [row for row in matrix if row["mode"] == "direct"
+                        and (direct_os == "all" or row["os"] == direct_os)]
           elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
@@ -686,7 +703,8 @@ jobs:
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
-            'preflight-scheduled-task.txt',
+            'preflight-scheduled-task.txt', 'receipt.json', 'release0-bootstrap.log',
+            'before-cleanup-result.json',
             'runtime-owner-processes.json', 'runtime-service-runtime.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
@@ -1027,7 +1045,7 @@ jobs:
         with:
           pattern: journey-receipt-*
           path: receipts
-          merge-multiple: true
+          merge-multiple: false
       - name: Aggregate the exact Release-1 receipt matrix
         if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
         shell: bash
