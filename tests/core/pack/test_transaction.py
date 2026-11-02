@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.core.pack.identity import pack_digest, read_pin
+from astrid.core.pack.identity import pack_digest, read_pin, write_pin
 from astrid.core.pack.install import PackInstallError, install_pack
 from astrid.core.pack.transaction import (
     install_group,
@@ -642,6 +642,46 @@ def test_removal_tombstone_survives_default_upgrades_and_rollbacks(repo: Reposit
     assert read_group(packs_root).removals == ("alpha",)
 
 
+@pytest.mark.parametrize("intent", ["update", "rollback"])
+def test_update_and_rollback_intents_keep_user_removals(
+        repo: Repository, packs_root: Path, intent: str) -> None:
+    old_commit = repo.commit
+    alpha_digest = pack_digest(repo.work / "packs" / "alpha")
+    shared_digest = pack_digest(repo.work / "packs" / "shared")
+    install_group(source=repo.bare, revision=old_commit, packs=GROUP, packs_root=packs_root,
+                  python_packages={}, origin="default", intent="defaults",
+                  expected_digests={"alpha": alpha_digest, "shared": shared_digest},
+                  release_pins={"alpha": {"commit": old_commit, "digest": alpha_digest},
+                                "shared": {"commit": old_commit, "digest": shared_digest}})
+    install_group(source=repo.bare, packs={}, packs_root=packs_root,
+                  python_packages={}, remove=("alpha",))
+    older_snapshot = read_group(packs_root)
+    assert "alpha" not in older_snapshot.paths
+    assert older_snapshot.removals == ("alpha",)
+
+    new_commit = repo.next_revision()
+    new_alpha_digest = pack_digest(repo.work / "packs" / "alpha")
+    new_shared_digest = pack_digest(repo.work / "packs" / "shared")
+    revision = new_commit if intent == "update" else old_commit
+    digests = ({"alpha": new_alpha_digest, "shared": new_shared_digest}
+               if intent == "update" else {"alpha": alpha_digest})
+    pins = ({"alpha": {"commit": new_commit, "digest": new_alpha_digest},
+             "shared": {"commit": new_commit, "digest": new_shared_digest}}
+            if intent == "update" else
+            {"alpha": {"commit": old_commit, "digest": alpha_digest}})
+    install_group(source=repo.bare, revision=revision,
+                  packs={"alpha": "packs/alpha", **({"shared": "packs/shared"} if intent == "update" else {})},
+                  packs_root=packs_root, python_packages={}, origin="default", intent=intent,
+                  expected_digests=digests, release_pins=pins)
+    snapshot = read_group(packs_root)
+    assert "alpha" not in snapshot.paths
+    assert snapshot.removals == ("alpha",)
+    if intent == "update":
+        assert read_pin(snapshot.paths["shared"] / "PIN")["commit"] == new_commit
+    else:
+        assert read_group(packs_root).revision == older_snapshot.revision + 1
+
+
 def test_removing_dependency_needed_by_retained_pack_refuses_whole_group(
         repo: Repository, packs_root: Path) -> None:
     install(repo, packs_root, refresh=accepted_refresh)
@@ -715,6 +755,178 @@ def test_named_update_does_not_implicitly_update_other_user_packs(repo: Reposito
     assert (snapshot.paths["alpha"] / "payload.txt").read_bytes() == b"alpha-v1\n"
     assert read_pin(snapshot.paths["shared"] / "PIN")["commit"] == old_commit
     assert read_pin(snapshot.paths["extra"] / "PIN")["commit"] == new_commit
+
+
+def test_real_packs_update_command_and_rollback_restore_previous_generation(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    install(repo, packs_root)
+    old = read_group(packs_root)
+    old_payload = {pack_id: (path / "payload.txt").read_bytes() for pack_id, path in old.paths.items()}
+    old_commit = read_pin(old.paths["alpha"] / "PIN")["commit"]
+    new_commit = repo.next_revision()
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    result = packs_cli_main(["update", "--source", str(repo.bare), "--revision", new_commit,
+                             "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                             "--pack", "shared=packs/shared"])
+    assert result == 0
+    updated = read_group(packs_root)
+    assert all(read_pin(path / "PIN")["commit"] == new_commit for path in updated.paths.values())
+
+    result = packs_cli_main(["rollback", "--packs-root", str(packs_root), "--pack", "alpha", "--pack", "shared"])
+    assert result == 0
+    rolled_back = read_group(packs_root)
+    assert {pack_id: (path / "payload.txt").read_bytes() for pack_id, path in rolled_back.paths.items()} == old_payload
+    assert all(read_pin(path / "PIN")["commit"] == old_commit for path in rolled_back.paths.values())
+
+
+def test_rollback_restores_build_hook_metadata_with_the_pack_generation(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import astrid.core.pack.transaction as transaction
+    from astrid.core.pack.transaction import rollback_group
+
+    def build_with_generation_records(request):
+        """Model build-hook records committed with each staged pack tree."""
+        stage = Path(request["stage_root"])
+        source_digest = request["source_digest"]
+        build_dir = stage / ".build"
+        build_dir.mkdir(exist_ok=True)
+        admission = {"version": 1, "packId": request["pack_id"],
+                     "sourceDigest": source_digest}
+        artifact_manifest = {"version": 1, "packId": request["pack_id"],
+                             "sourceDigest": source_digest}
+        (build_dir / "admission.json").write_text(
+            json.dumps(admission, sort_keys=True), encoding="utf-8")
+        (build_dir / f"{source_digest}.artifact-manifest.json").write_text(
+            json.dumps(artifact_manifest, sort_keys=True), encoding="utf-8")
+        return {"version": 1, "ok": True, "pack_id": request["pack_id"],
+                "source_digest": source_digest, "artifact_manifest": None}
+
+    monkeypatch.setattr(transaction, "build_pack_assets", build_with_generation_records)
+    install(repo, packs_root, refresh=accepted_refresh)
+    prior = read_group(packs_root).paths["alpha"]
+    prior_digest = pack_digest(prior)
+    prior_commit = read_pin(prior / "PIN")["commit"]
+    prior_admission = (prior / ".build" / "admission.json").read_bytes()
+    prior_manifest_path = prior / ".build" / f"{prior_digest}.artifact-manifest.json"
+    prior_manifest = prior_manifest_path.read_bytes()
+
+    new_commit = repo.next_revision()
+    second = install(repo, packs_root, revision=new_commit, refresh=accepted_refresh)
+    current = read_group(packs_root).paths["alpha"]
+    current_digest = pack_digest(current)
+    assert (current / ".build" / "admission.json").read_bytes() != prior_admission
+    assert current_digest != prior_digest
+    assert (current / ".build" / f"{current_digest}.artifact-manifest.json").is_file()
+    current_admission = json.loads((current / ".build" / "admission.json").read_text(encoding="utf-8"))
+    assert current_admission["sourceDigest"] == current_digest
+    assert read_pin(current / "PIN")["commit"] == new_commit
+
+    retired = read_retired_group(packs_root=packs_root, transaction_id=second.transaction_id)
+    retired_alpha = retired.paths["alpha"]
+    assert (retired_alpha / ".build" / "admission.json").read_bytes() == prior_admission
+    assert (retired_alpha / ".build" / f"{prior_digest}.artifact-manifest.json").read_bytes() == prior_manifest
+
+    rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                   transaction_id=second.transaction_id, refresh=accepted_refresh)
+    restored = read_group(packs_root).paths["alpha"]
+    assert read_pin(restored / "PIN")["commit"] == prior_commit
+    assert (restored / ".build" / "admission.json").read_bytes() == prior_admission
+    assert (restored / ".build" / f"{prior_digest}.artifact-manifest.json").read_bytes() == prior_manifest
+    admission = json.loads((restored / ".build" / "admission.json").read_text(encoding="utf-8"))
+    assert admission["packId"] == "alpha"
+    assert admission["sourceDigest"] == pack_digest(restored) == prior_digest
+
+
+@pytest.mark.parametrize("failure", ["build", "swap"])
+def test_real_update_command_failure_keeps_previous_generation(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    install(repo, packs_root)
+    before = group_bytes(packs_root)
+    before_state = read_group(packs_root)
+    target = repo.next_revision()
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    if failure == "build":
+        def fail_build(_request):
+            raise PackInstallError("compile_failed", "fixture build failure")
+        monkeypatch.setattr("astrid.core.pack.transaction.build_pack_assets", fail_build)
+    else:
+        def fail_swap(_stage, _destination):
+            raise PackInstallError("atomic_swap_unsupported", "fixture swap failure")
+        monkeypatch.setattr("astrid.core.pack.transaction._publish", fail_swap)
+    result = packs_cli_main(["update", "--source", str(repo.bare), "--revision", target,
+                             "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                             "--pack", "shared=packs/shared"])
+    assert result == 2
+    assert group_bytes(packs_root) == before
+    assert read_group(packs_root).transaction_id == before_state.transaction_id
+
+
+def test_real_update_and_rollback_preserve_removals_and_unrelated_packs(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    repo.write_pack("extra", "extra-v1\n")
+    base_commit = repo.publish()
+    install(repo, packs_root, revision=base_commit)
+    install_group(source=repo.bare, revision=base_commit, packs={"extra": "packs/extra"},
+                  packs_root=packs_root, python_packages={})
+    personal = packs_root / "personal"
+    personal.mkdir()
+    (personal / "pack.yaml").write_text(manifest("personal"), encoding="utf-8")
+    write_pin(personal / "PIN", {"version": 1, "source": personal.as_uri(), "commit": None,
+                                  "digest_rule": "pack-tree-v1", "digest": None, "origin": "personal"})
+    (personal / "marker.txt").write_text("personal\n")
+    install_group(source=repo.bare, packs={}, packs_root=packs_root,
+                  python_packages={}, remove=("alpha",))
+    new_commit = repo.next_revision()
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    common = ["--packs-root", str(packs_root)]
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", new_commit,
+                           *common, "--pack", "alpha=packs/alpha", "--pack", "shared=packs/shared"]) == 0
+    snapshot = read_group(packs_root)
+    assert "alpha" not in snapshot.paths and snapshot.removals == ("alpha",)
+    assert read_pin(snapshot.paths["extra"] / "PIN")["commit"] == base_commit
+    assert (snapshot.paths["extra"] / "payload.txt").read_text() == "extra-v1\n"
+    assert (snapshot.paths["personal"] / "marker.txt").read_text() == "personal\n"
+    assert packs_cli_main(["rollback", *common, "--pack", "alpha", "--pack", "shared"]) == 0
+    snapshot = read_group(packs_root)
+    assert "alpha" not in snapshot.paths and snapshot.removals == ("alpha",)
+    assert read_pin(snapshot.paths["extra"] / "PIN")["commit"] == base_commit
+    assert (snapshot.paths["extra"] / "payload.txt").read_text() == "extra-v1\n"
+    assert (snapshot.paths["personal"] / "marker.txt").read_text() == "personal\n"
+
+
+def test_rollback_refuses_conflicting_current_source_pin(repo: Repository, packs_root: Path) -> None:
+    from astrid.core.pack.transaction import rollback_group
+
+    install(repo, packs_root)
+    target = repo.next_revision()
+    install(repo, packs_root, revision=target, intent="update")
+    current = read_group(packs_root)
+    alpha_pin = read_pin(current.paths["alpha"] / "PIN")
+    alpha_pin["source"] = "file:///different/repository#packs/alpha"
+    write_pin(current.paths["alpha"] / "PIN", alpha_pin)
+    before = group_bytes(packs_root)
+    with pytest.raises(PackInstallError, match="conflicting source pins") as failure:
+        rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"))
+    assert failure.value.code == "rollback_conflict"
+    assert group_bytes(packs_root) == before
+
+
+def test_update_refuses_a_different_installed_source_pin(
+        repo: Repository, packs_root: Path, tmp_path: Path) -> None:
+    other_repo = Repository(tmp_path / "other-repository")
+    install(repo, packs_root)
+    before = group_bytes(packs_root)
+    with pytest.raises(PackInstallError, match="conflicting source PIN") as failure:
+        install_group(source=other_repo.bare, revision=other_repo.commit, packs=GROUP,
+                      packs_root=packs_root, python_packages={}, intent="update")
+    assert failure.value.code == "pin_mismatch"
+    assert group_bytes(packs_root) == before
 
 
 @pytest.mark.parametrize("failure", ["source", "build"])
