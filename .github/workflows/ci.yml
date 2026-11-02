@@ -166,6 +166,16 @@ jobs:
           sudo apt-get install -y ffmpeg fonts-dejavu-core
         shell: bash
 
+      - name: Provision the pinned Remotion composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="$(node -e 'const p = require("./remotion/package.json"); const value = p.dependencies["@banodoco/timeline-composition"]; if (typeof value !== "string" || !value.startsWith("file:artifacts/") || !value.endsWith(".tgz")) throw new Error("timeline composition must use a local tarball pin"); process.stdout.write(`remotion/${value.slice("file:".length)}`)')"
+          git ls-files --error-unmatch -- "$artifact" >/dev/null
+          test -s "$artifact"
+          sha256sum "$artifact" | tee "$artifact.sha256"
+          npm ci --prefix remotion
+
       - name: Install package with dev extras
         run: python -m pip install -e '.[dev]'
 
@@ -205,7 +215,9 @@ jobs:
       - name: Unit tests (default lane shard)
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
-        run: python -m pytest -q --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        run: |
+          mkdir -p test-results
+          python -m pytest -q --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations --junitxml=test-results/unit-shard-${{ matrix.group }}.xml
 
       - name: Upload measured test durations
         if: always()
@@ -213,7 +225,9 @@ jobs:
         with:
           retention-days: 3
           name: test-durations-${{ matrix.group }}-${{ matrix.os }}
-          path: tests/.test_durations
+          path: |
+            tests/.test_durations
+            test-results/unit-shard-${{ matrix.group }}.xml
           include-hidden-files: true
           if-no-files-found: error
 
