@@ -59,8 +59,6 @@ def _requirements(manifest: Mapping[str, object]) -> set[str]:
 
 def _classify(module: str, *, level: int, pack_id: str, contract: ImportContract,
               declared_packs: set[str], declared_python: set[str]) -> tuple[str, str] | None:
-    if level or module.startswith("."):
-        return None  # Relative imports remain within the pack tree.
     if not module:
         return "dynamic_import", "Use a literal, policy-approved import."
     root = module.split(".", 1)[0]
@@ -106,6 +104,35 @@ def _classify(module: str, *, level: int, pack_id: str, contract: ImportContract
     return "undeclared_python", "Declare this Python package in dependencies.python_requirements."
 
 
+def _relative_target(path: Path, pack_dir: Path, level: int, module: str,
+                     pack_id: str) -> str | None:
+    """Resolve a relative import in its canonical ``astrid.packs`` context.
+
+    Pack source roots are installed as ``astrid.packs.<id>`` even when the
+    checker is given a temporary or external filesystem path.  Keeping that
+    logical prefix lets policy distinguish private own-pack access from a
+    sibling pack's public API or private implementation.
+    """
+    if level < 1:
+        return None
+    try:
+        relative = path.relative_to(pack_dir)
+    except ValueError:
+        return None
+    package_parts = ["astrid", "packs", pack_id, *relative.parent.parts]
+    climb = level - 1
+    # Keep the top-level ``astrid`` package intact. Relative imports may reach
+    # its public facade or sibling packs, but cannot climb above it.
+    if climb > len(package_parts) - 1:
+        return None
+    if climb:
+        package_parts = package_parts[:len(package_parts) - climb]
+    imported_parts = list(package_parts)
+    if module:
+        imported_parts.extend(module.split("."))
+    return ".".join(imported_parts)
+
+
 def check_pack_imports(pack_dir: Path, *, contract: ImportContract,
                        manifest: Mapping[str, object]) -> list[ImportViolation]:
     """Return deterministic import violations without importing pack code."""
@@ -113,7 +140,7 @@ def check_pack_imports(pack_dir: Path, *, contract: ImportContract,
     pack_id = manifest.get("id", pack_dir.name)
     pack_id = pack_id if isinstance(pack_id, str) else pack_dir.name
     if pack_id == "personal":
-        return []
+        return []  # The canonical personal pack keeps its static-scan exemption.
     deps = manifest.get("dependencies", {})
     raw_packs = deps.get("packs", ()) if isinstance(deps, Mapping) else ()
     declared_packs = set(raw_packs) if isinstance(raw_packs, (list, tuple, set, frozenset)) else set()
@@ -122,6 +149,28 @@ def check_pack_imports(pack_dir: Path, *, contract: ImportContract,
 
     def inspect_module(path: Path, line: int, module: str, level: int = 0,
                        symbols: tuple[str, ...] = ()) -> None:
+        if level:
+            resolved = _relative_target(path, pack_dir, level, module, pack_id)
+            if resolved is None:
+                violations.append(ImportViolation(
+                    path.relative_to(pack_dir).as_posix(), line,
+                    "." * level + module, "relative_escape",
+                    "Keep relative imports within the pack or use a declared pack's public API."))
+                return
+            own_prefix = f"astrid.packs.{pack_id}"
+            if resolved == own_prefix or resolved.startswith(own_prefix + "."):
+                # Private helpers are available within the owning pack.
+                return
+            # For ``from ... import sibling`` (and ``from ...sibling import
+            # api``), classify each imported name as the resolved module path.
+            # This enforces the same declared-pack/public-api rule as absolute
+            # imports while retaining normal from-imports from sibling.api.
+            if symbols and (resolved in {"astrid", "astrid.packs"} or
+                            (resolved.startswith("astrid.packs.") and len(resolved.split(".")) == 3)):
+                for symbol in symbols:
+                    inspect_module(path, line, f"{resolved}.{symbol}")
+                return
+            module = resolved
         classification = _classify(module, level=level, pack_id=pack_id,
                                     contract=contract, declared_packs=declared_packs,
                                     declared_python=declared_python)
