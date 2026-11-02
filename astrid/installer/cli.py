@@ -11,6 +11,14 @@ from pathlib import Path
 
 from . import update_job
 from .backend import Backend
+from .choices import (
+    CHOICES_KEY,
+    explicit_choices_from_args,
+    is_existing_install,
+    print_plan,
+    resolve_choices,
+    save_choices,
+)
 from .core import (
     TERMINAL_STEPS,
     BackupSpaceError,
@@ -24,7 +32,14 @@ from .core import (
     separate_roots,
     write_json,
 )
-from .service import LABEL, default_program_root, default_uv, installer_lock_path, pinokio_owned
+from .service import (
+    LABEL,
+    default_program_root,
+    default_uv,
+    install_selection,
+    installer_lock_path,
+    pinokio_owned,
+)
 from .support import FAILURE_MESSAGE, default_doctor_bundle
 from .tools import download, validate_manifest
 
@@ -59,6 +74,16 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--managed-by", choices=["pinokio"], help="install without a login service; Pinokio owns the process")
     result.add_argument("--data-root", type=Path, help="absolute workspace support directory")
     result.add_argument("--manifest", type=Path, help="local copy of the pinned hosted install manifest")
+    result.add_argument("--yes", action="store_true",
+                        help="accept the recommended setup choices without prompting")
+    result.add_argument("--autostart", action=argparse.BooleanOptionalAction, default=None,
+                        help="start Astrid at sign-in (default: on)")
+    result.add_argument("--terminal-command", action=argparse.BooleanOptionalAction, default=None,
+                        help="install the astrid terminal command (default: on)")
+    result.add_argument("--skills", action=argparse.BooleanOptionalAction, default=None,
+                        help="install skills for supported coding agents (default: on)")
+    result.add_argument("--skills-mechanism", choices=("symlink", "copy"), default=None,
+                        help="how Astrid skills are installed (default: symlink)")
     result.add_argument("--update-job", help=argparse.SUPPRESS)
     result.add_argument("--apply", metavar="PLAN_SHA256",
                         help="apply the reviewed --update-recovery plan hash")
@@ -113,11 +138,32 @@ def main(argv: list[str] | None = None) -> int:
     log = platform.log_dir() / "install.log"
     try:
         platform.private_directory(log.parent)
-        root = absolute(args.root or default_program_root(Path.home(), sys.platform))
+        selection_path = install_selection(Path.home(), sys.platform)
+        selection_record = read_json(selection_path)
+        selected_root = selection_record.get("program_root")
+        root = absolute(args.root or (
+            Path(selected_root) if selection_record.get("owner") == LABEL
+            and isinstance(selected_root, str) else default_program_root(Path.home(), sys.platform)
+        ))
+        marker = read_json(root / "install.json")
+        existing_install = is_existing_install(marker, selection_record, root)
+        explicit_choices = explicit_choices_from_args(args)
+        saved_choices = selection_record.get(CHOICES_KEY, {})
+        accepted_choices = resolve_choices(
+            explicit=explicit_choices,
+            saved=saved_choices,
+            selected=({"autostart": True, "terminal_command": True, "skills": True,
+                       "skills_mechanism": "symlink"} if args.yes else None),
+            existing_install=existing_install,
+        )
+        if (mode in {"install", "update"} and not existing_install and not args.yes
+                and not sys.stdin.isatty()):
+            print_plan(accepted_choices)
+            print("This is a fresh unattended install. Review the plan and rerun with --yes to continue.")
+            return 2
         uv = args.uv or default_uv()
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log, uv, process_control=process_control)
-        marker = read_json(root / "install.json")
         if args.update_job and marker.get("managed_by") is not None:
             raise ValueError("Click-created update jobs require a login-managed Astrid installation.")
         if (args.update_app or (mode in {"install", "update"} and args.root
@@ -199,6 +245,20 @@ def main(argv: list[str] | None = None) -> int:
                     root = absolute(recorded["program_root"])
                     backend = Backend(root, log, uv, process_control=process_control)
                 prior = read_json(root / "install.json")
+                existing_install = is_existing_install(prior, recorded, root)
+                saved_choices = recorded.get(CHOICES_KEY, {})
+                accepted_choices = resolve_choices(
+                    explicit=explicit_choices,
+                    saved=saved_choices,
+                    selected=({"autostart": True, "terminal_command": True, "skills": True,
+                               "skills_mechanism": "symlink"} if args.yes else None),
+                    existing_install=existing_install,
+                )
+                if (mode in {"install", "update"} and not existing_install and not args.yes
+                        and not sys.stdin.isatty()):
+                    print_plan(accepted_choices)
+                    print("This is a fresh unattended install. Review the plan and rerun with --yes to continue.")
+                    return 2
                 managed_by = args.managed_by or (prior.get("managed_by") if args.root or mode == "doctor" else None)
                 if (managed_by is None and (args.root or mode == "doctor")
                         and recorded.get("managed_by") == "pinokio"
@@ -298,6 +358,8 @@ def main(argv: list[str] | None = None) -> int:
                     backend.preflight_stop(data)
                 if release_stale_selection:
                     write_json(backend.service.selection, recorded)
+                if mode in {"install", "update"}:
+                    save_choices(backend.service.selection, accepted_choices)
                 if mode not in {"uninstall", "doctor"}:
                     platform.private_directory(root)
                     marker = {**marker, "owner": LABEL, "data_root": str(data)}
