@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import sys
 import time
 
@@ -88,6 +89,34 @@ def _diagnostic_state_path(args, root: Path) -> Path:
     return path
 
 
+def _preseed_file_sha256(path: Path) -> str:
+    """Hash all observed bytes without reading beyond EOF into a Windows lock."""
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
+    digest = hashlib.sha256()
+    with path.open("rb", buffering=0) as stream:
+        opened = os.fstat(stream.fileno())
+        if identity(before) != identity(opened):
+            raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+        remaining = opened.st_size
+        while remaining:
+            block = stream.read(min(remaining, 1024 * 1024))
+            if not block:
+                raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+            digest.update(block)
+            remaining -= len(block)
+        if identity(opened) != identity(os.fstat(stream.fileno())):
+            raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+    if identity(before) != identity(path.lstat()):
+        raise RuntimeError("Diagnostic pre-seed workspace changed while checkpointing")
+    return digest.hexdigest()
+
+
 def _preseed_workspace_state(data: Path) -> dict:
     """Return a fail-closed fingerprint of the selected release-0 realm.
 
@@ -110,7 +139,7 @@ def _preseed_workspace_state(data: Path) -> dict:
                 found.append({"path": relative, "kind": "directory"})
             elif path.is_file():
                 found.append({"path": relative, "kind": "file",
-                              "sha256": _bytes_sha256(path, "pre-seed workspace file")})
+                              "sha256": _preseed_file_sha256(path)})
             else:
                 raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
         return found
@@ -228,7 +257,7 @@ def _diagnostic_release0_context(args, root: Path, data: Path, evidence: Path) -
         raise RuntimeError("Diagnostic start preconditions are stale or do not match the live version/tuple")
     service = journey.assert_direct_service_ownership(root, data)
     health = journey.healthy(data)
-    journey.assert_one_runtime(data)
+    journey.assert_one_runtime(data, evidence)
     return version, {"state_path": state_path, "identity": identity,
                      "service": service, "health": health}
 
@@ -340,8 +369,13 @@ def seed_old_declaration(old: dict, root: Path, kind: str) -> dict:
     return {"kind": kind, "path": str(declaration), "command": command}
 
 
-def selected_candidate(manifest: dict, version: dict, before: dict) -> dict:
-    selected = journey.selected_tuple(manifest, version)
+def selected_candidate(manifest: dict, version: dict, before: dict, *,
+                       candidate_agent_checkout: Path | None = None) -> dict:
+    if candidate_agent_checkout is None:
+        selected = journey.selected_tuple(manifest, version)
+    else:
+        selected = journey.selected_tuple(
+            manifest, version, candidate_agent_checkout=candidate_agent_checkout)
     if all(selected[name] == before[name] for name in ("agent", "runtime")):
         raise RuntimeError("Version-jump requires a candidate distinct from the resolved release")
     expected_identity = {"release": manifest.get("release", 0), "managed_by": None}
@@ -407,7 +441,8 @@ def bootstrap_release0(fixture: Path, manifest: Path, shell: str, evidence: Path
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
         journey.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-                     fixture / "served" / "install.ps1", *flags], evidence / "release0-bootstrap.log", env=env)
+                     fixture / "served" / "install.ps1", *flags], evidence / "release0-bootstrap.log", env=env,
+                    legacy_bootstrap=True)
     else:
         journey.run([shell, fixture / "served" / "install", *flags],
                     evidence / "release0-bootstrap.log", env=env)
@@ -424,7 +459,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
                      action: str, request: dict) -> dict:
     """Temporarily release the installed owner for the local workspace helper."""
     service = journey.assert_direct_service_ownership(root, data)
-    journey.assert_one_runtime(data)
+    journey.assert_one_runtime(data, evidence)
     # Shutdown can remove discovery.json, so resolve and validate its realm while live.
     realm = journey.workspace_root(data)
     evidence.mkdir(parents=True, exist_ok=True)
@@ -462,7 +497,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
         journey.wait_ready(data)
         journey.assert_direct_service_ownership(root, data)
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, evidence)
 
 
 def installed_release(version: dict) -> int:
@@ -543,7 +578,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, evidence / "release0")
         # A retained run may be used to isolate this one block for diagnostics,
         # but only after this authentic bootstrap has established the complete
         # release-0 and release-1 tuple binding.
@@ -566,13 +601,15 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
-        journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
+        journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data,
+                         legacy_bootstrap=True)
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
         version_path, selected_data, version = journey.installation(root, data)
         if selected_data != old_data or version_path == old_path:
             raise RuntimeError("Release-1 update did not retain data and activate a new version")
-        selected = selected_candidate(manifest, version, old_tuple)
+        selected = selected_candidate(
+            manifest, version, old_tuple, candidate_agent_checkout=args.candidate_agent_checkout)
         if installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not select release 1")
         new_service = journey.assert_direct_service_ownership(root, data)
@@ -602,7 +639,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["checks"]["semantic_data"] = "pass"
         task_after_update(version, evidence / "release1-working-task", project)
         result["checks"]["task_settled"] = "pass"
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, evidence)
         result["checks"]["one_runtime"] = "pass"
         settled_sentinel = journey.sentinel_observation(sentinel, birth)
         result["sentinel"]["at_settlement"] = settled_sentinel
@@ -659,7 +696,7 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         journey.wait_ready(data)
         old_path, _, old = journey.installation(root, data)
         before_tuple = journey.selected_tuple(journey.read_json(old_manifest_path), old)
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, evidence)
         old_owner = journey.healthy(data)
         old_pid = old_owner["pid"]
         old_birth = journey.process_birth(old_pid)
@@ -711,7 +748,7 @@ def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth:
         result["checks"]["task_settled"] = "pass"
         rerun(args, root, data, evidence / "rerun", app, candidate_path, manifest, version, keys)
         result["checks"]["same_release_rerun"] = "pass"
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, evidence)
         result["checks"]["one_runtime"] = "pass"
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Unrelated sentinel did not survive version update and rerun")
@@ -768,7 +805,7 @@ def busy_refusal(args, root, data, evidence, manifest_path, old,
             raise RuntimeError("Busy refusal mutated selection/version/discovery")
         if not journey.sentinel_alive(sentinel, birth):
             raise RuntimeError("Busy refusal disturbed the unrelated sentinel")
-        journey.assert_one_runtime(data)
+        journey.assert_one_runtime(data, evidence)
         result["checks"].update(busy_refusal="pass", one_runtime="pass", unrelated_sentinel="pass")
     finally:
         workspace(old, data, evidence / "busy-release", "release", keys)

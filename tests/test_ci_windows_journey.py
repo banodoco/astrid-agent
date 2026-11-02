@@ -44,6 +44,123 @@ def test_m4_4a_backend_uses_windows_powershell_51_admission_route():
     assert "pwsh" not in command[0].lower()
 
 
+@pytest.mark.parametrize("action", sorted(journey.OFFLINE_WORKSPACE_ACTIONS))
+def test_offline_workspace_stop_disables_repeating_task_before_stop(monkeypatch, action):
+    calls = []
+    monkeypatch.setattr(journey, "run", lambda argv, name, **kwargs: calls.append(
+        (argv, name, kwargs)) or "")
+
+    journey.powershell(journey.OFFLINE_WORKSPACE_STOP, f"{action}-stop-service.log",
+                       show=False, timeout=30)
+
+    argv, name, kwargs = calls.pop()
+    script = argv[-1]
+    assert name == f"{action}-stop-service.log"
+    assert kwargs == {"show": False, "timeout": 30}
+    assert script.count("Disable-ScheduledTask") == 1
+    assert script.count("Stop-ScheduledTask") == 1
+    assert script.index("Disable-ScheduledTask") < script.index("Stop-ScheduledTask")
+    assert script.count("-TaskName 'Astrid Runtime' -TaskPath '\\'") == 2
+
+
+@pytest.mark.parametrize("action", sorted(journey.OFFLINE_WORKSPACE_ACTIONS))
+def test_offline_workspace_start_enables_task_before_restart(monkeypatch, action):
+    calls = []
+    monkeypatch.setattr(journey, "run", lambda argv, name, **kwargs: calls.append(
+        (argv, name, kwargs)) or "")
+
+    journey.powershell(journey.OFFLINE_WORKSPACE_START, f"{action}-start-service.log",
+                       show=False, timeout=30)
+
+    argv, name, kwargs = calls.pop()
+    script = argv[-1]
+    assert name == f"{action}-start-service.log"
+    assert kwargs == {"show": False, "timeout": 30}
+    assert script.count("Enable-ScheduledTask") == 1
+    assert script.count("Start-ScheduledTask") == 1
+    assert script.index("Enable-ScheduledTask") < script.index("Start-ScheduledTask")
+    assert script.count("-TaskName 'Astrid Runtime' -TaskPath '\\'") == 2
+
+
+def test_offline_workspace_task_command_rejects_custody_drift(monkeypatch):
+    monkeypatch.setattr(journey, "run", lambda *args, **kwargs: pytest.fail(
+        "a changed protected task command must not execute"))
+    with pytest.raises(RuntimeError, match="differs from the protected task action"):
+        journey.powershell("Stop-ScheduledTask -TaskName 'Other'", "seed-stop-service.log")
+
+
+def test_non_workspace_task_command_is_unchanged(monkeypatch):
+    calls = []
+    monkeypatch.setattr(journey, "run", lambda argv, name, **kwargs: calls.append(argv) or "")
+    code = "Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'"
+    journey.powershell(code, "start.log")
+    assert calls[0][-1].endswith(code)
+    assert "Enable-ScheduledTask" not in calls[0][-1]
+
+
+@pytest.mark.parametrize("helper_fails", [False, True], ids=["success", "helper-failure"])
+def test_release0_offline_workspace_blocks_repetition_reacquisition(
+        tmp_path, monkeypatch, helper_fails):
+    from scripts import journey_version_jumps as jumps
+
+    state = {"enabled": True, "running": True, "workspace_opened": False}
+    calls = []
+    monkeypatch.setattr(shared_journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+
+    def ownership(*unused):
+        assert state["running"]
+        return {"manager": "task-scheduler"}
+
+    monkeypatch.setattr(shared_journey, "assert_direct_service_ownership", ownership)
+    monkeypatch.setattr(shared_journey, "assert_one_runtime",
+                        lambda *unused: state["running"] or pytest.fail("owner is absent"))
+    monkeypatch.setattr(shared_journey, "workspace_root", lambda unused: tmp_path / "realm")
+    monkeypatch.setattr(shared_journey, "runtime_processes",
+                        lambda unused: [41] if state["running"] else [])
+    monkeypatch.setattr(shared_journey, "wait_ready",
+                        lambda unused: state["running"] or pytest.fail("owner was not restored"))
+
+    def run(argv, name, **unused):
+        script = argv[-1]
+        calls.append(name)
+        if name == "seed-stop-service.log":
+            assert script.index("Disable-ScheduledTask") < script.index("Stop-ScheduledTask")
+            state.update(enabled=False, running=False)
+            # Model the one-minute trigger that landed inside the failing run's
+            # stop-to-seed window. A still-enabled task would reacquire here.
+            if state["enabled"]:
+                state["running"] = True
+        elif name == "seed-start-service.log":
+            assert script.index("Enable-ScheduledTask") < script.index("Start-ScheduledTask")
+            state.update(enabled=True, running=True)
+        else:
+            pytest.fail(f"unexpected manager command {name}")
+        return ""
+
+    monkeypatch.setattr(journey, "run", run)
+
+    def workspace(*unused, **kwargs):
+        assert not state["running"]
+        assert kwargs["realm"] == tmp_path / "realm"
+        state["workspace_opened"] = True
+        if helper_fails:
+            raise ValueError("simulated helper failure")
+        return {"seeded": True}
+
+    monkeypatch.setattr(jumps, "workspace", workspace)
+    def call():
+        return jumps.direct_workspace(
+            tmp_path / "program", {}, tmp_path / "data", tmp_path / "evidence", "seed", {})
+    if helper_fails:
+        with pytest.raises(ValueError, match="simulated helper failure"):
+            call()
+    else:
+        assert call() == {"seeded": True}
+    assert calls == ["seed-stop-service.log", "seed-start-service.log"]
+    assert state == {"enabled": True, "running": True, "workspace_opened": True}
+
+
 @pytest.fixture
 def stub_installed_profile_binding(monkeypatch):
     monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)

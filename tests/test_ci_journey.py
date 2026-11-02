@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 import shutil
@@ -80,6 +81,65 @@ def test_tst_b1_installed_tuple_rejects_wrong_source(tmp_path):
     with pytest.raises(RuntimeError, match="Installed agent source differs"):
         journey.selected_tuple({"agent": {"sha": "expected"}, "runtime": {"sha": "right"}},
                                {"root": str(installed)})
+
+
+def _direct_candidate_vibecomfy(tmp_path, installed_vibecomfy):
+    """Build the candidate checkout and installed record consumed by a direct row."""
+    agent = tmp_path / "candidate-agent"
+    pin_path = agent / "astrid" / "packs" / "vibecomfy" / "pins.json"
+    pin_path.parent.mkdir(parents=True)
+    pin_path.write_text(json.dumps({"sources": {"vibecomfy": {"revision": "a" * 40}}}),
+                        encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(agent)], check=True)
+    subprocess.run(["git", "-C", str(agent), "add", "astrid/packs/vibecomfy/pins.json"], check=True)
+    subprocess.run(["git", "-C", str(agent), "-c", "user.name=journey-test",
+                    "-c", "user.email=journey-test@example.invalid", "commit", "-qm", "pin"], check=True)
+    candidate_agent_sha = subprocess.check_output(
+        ["git", "-C", str(agent), "rev-parse", "HEAD"], text=True).strip()
+    # The derivation must read the candidate SHA's committed pin, never a mutable checkout file.
+    pin_path.write_text(json.dumps({"sources": {"vibecomfy": {"revision": "b" * 40}}}),
+                        encoding="utf-8")
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    manifest = {
+        "release": 1,
+        "agent": {"sha": candidate_agent_sha},
+        "runtime": {"sha": "r" * 40},
+    }
+    installed_manifest = dict(manifest)
+    if installed_vibecomfy is not None:
+        installed_manifest["vibecomfy"] = installed_vibecomfy
+    (installed / "manifest.json").write_text(json.dumps(installed_manifest), encoding="utf-8")
+    version = {"root": str(installed), "identity": {"release": 1, "managed_by": None}}
+    return manifest, version, {"agent": "old-agent", "runtime": "old-runtime"}, agent
+
+
+def test_direct_candidate_vibecomfy_identity_matches_committed_candidate_pin(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "a" * 40})
+    selected = jumps.selected_candidate(
+        manifest, version, before, candidate_agent_checkout=agent)
+    assert selected["vibecomfy"] == "a" * 40
+
+
+def test_direct_candidate_vibecomfy_identity_mismatch_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "b" * 40})
+    with pytest.raises(RuntimeError, match="differs from the candidate Agent pin"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
+
+
+def test_direct_candidate_vibecomfy_identity_absence_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(tmp_path, None)
+    with pytest.raises(RuntimeError, match="absent or unknown"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
+
+
+def test_direct_candidate_vibecomfy_identity_unknown_value_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "unknown"})
+    with pytest.raises(RuntimeError, match="absent or unknown"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
 
 
 def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
@@ -655,6 +715,101 @@ def test_tst_b1_counts_all_runtime_owners_to_reject_duplicates(tmp_path, monkeyp
     assert journey.runtime_processes(data) == [101, 102]
 
 
+def _windows_census_owner(pid, parent_pid, command):
+    """Build the bounded record emitted by the Windows census for a matcher hit."""
+    return {
+        "ProcessId": pid,
+        "ParentProcessId": parent_pid,
+        "CreationDate": "2026-11-02T18:51:58.6815710Z",
+        "NativeIdentity": f"windows-creation:{pid}",
+        "ExecutablePath": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        if "powershell.exe" in command else r"C:\Astrid\python.exe",
+        "Matcher": "runtime_protocol-start",
+        "CommandLength": len(command),
+        "CommandSha256": hashlib.sha256(command.encode()).hexdigest(),
+        "SanitizedCommandLine": "-m runtime_protocol start",
+    }
+
+
+def test_tst_b1_windows_runtime_owner_census_is_empty_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+
+    def powershell(code, name, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        assert name == "runtime-owner-processes.json"
+        return "[]"
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == []
+
+
+def test_tst_b1_windows_runtime_owner_census_keeps_genuine_runtime_protocol_start(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    command = r"C:\Astrid\python.exe -X utf8 -m runtime_protocol start --support-root C:\data\runtime"
+    row = _windows_census_owner(8661, 7200, command)
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        return json.dumps([row])
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == [8661]
+
+
+def test_tst_b1_windows_runtime_owner_census_excludes_its_own_powershell_probe(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    probe_command = (
+        "powershell.exe -NoProfile -NonInteractive -Command "
+        "$ErrorActionPreference='Stop'; "
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+        + journey.WINDOWS_RUNTIME_OWNER_CENSUS
+    )
+    runtime_child_command = (
+        r"C:\Astrid\python.exe -X utf8 -m runtime_protocol start "
+        r"--support-root C:\data\runtime"
+    )
+    # The pre-fix census matched both: its own literal-bearing PowerShell
+    # command and a genuine Runtime child.  The source guard must remove only
+    # the former from the records it serializes.
+    candidates = [
+        (8660, 7200, probe_command),
+        (8661, 8660, runtime_child_command),
+    ]
+    assert all(journey._runtime_owner_command(command) for _pid, _parent, command in candidates)
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        assert "Where-Object { $_.ProcessId -ne $PID }" in code
+        return json.dumps([
+            _windows_census_owner(pid, parent_pid, command)
+            for pid, parent_pid, command in candidates
+            if pid != 8660
+        ])
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == [8661]
+
+
+def test_tst_b1_windows_runtime_owner_census_errors_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "healthy", lambda _data: {"pid": 8661})
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        raise RuntimeError("CIM enumeration unavailable")
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    evidence = tmp_path / "evidence"
+    with pytest.raises(RuntimeError, match="CIM enumeration unavailable"):
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    snapshot = journey.read_json(evidence / "runtime-owner-assertion.json")
+    assert snapshot["assertion"]["asserted_owner_pids"] == {
+        "status": "unavailable", "reason": "owner census failed: RuntimeError",
+    }
+
+
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
         tmp_path, monkeypatch, platform):
@@ -680,6 +835,338 @@ def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
     monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
     with pytest.raises(RuntimeError, match=r"found \[4123, 4124\]"):
         journey.assert_one_runtime(tmp_path)
+
+
+def test_tst_b1_windows_duplicate_owner_error_retains_bounded_identity_evidence(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owner = (r"C:\Astrid\pythonw.exe -X utf8 -I -c "
+             "os.environ.update({'API_TOKEN':'must-not-be-retained'}); "
+             "from astrid_runtime.cli import main; main(['run', '--profile', 'astrid'])")
+    selected = {
+        "ProcessId": 3032, "ParentProcessId": 1920,
+        "CreationDate": "2026-11-02T17:18:21.973746+00:00",
+        "NativeIdentity": "windows-creation:134381135019737465",
+        "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner,
+    }
+    duplicate = {
+        "ProcessId": 2972, "ParentProcessId": 1920,
+        "CreationDate": "2026-11-02T17:18:18.000000+00:00",
+        "NativeIdentity": "windows-creation:134381135010000000",
+        "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner,
+    }
+    rows = [selected]
+
+    def powershell(code, *unused, **kwargs):
+        assert "GetProcessTimes" in code
+        assert "SanitizedCommandLine" in code
+        assert "CommandSha256" in code
+        return json.dumps(rows)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(journey, "healthy", lambda data: {
+        "pid": 3032,
+        "process_birth_id": "windows-creation:134381135019737465",
+        "runtime_instance_id": "instance-3032",
+        "active_realm": "realm-3032",
+        "coordinator_epoch": "epoch-3032",
+    })
+    evidence = tmp_path / "evidence" / "release0"
+    # The unchanged strict assertion passes and creates no diagnostic until it
+    # actually observes the duplicate failure.
+    journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert not (evidence / "runtime-owner-assertion.json").exists()
+    rows.insert(0, duplicate)
+    with pytest.raises(RuntimeError) as failure:
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    message = str(failure.value)
+    assert "selected Runtime owner 3032, found [2972, 3032]" in message
+    assert '"matcher":"astrid_runtime-cli-run"' in message
+    assert '"parent_pid":1920' in message
+    assert '"creation_date":"2026-11-02T17:18:21.973746+00:00"' in message
+    assert hashlib.sha256(owner.encode()).hexdigest() in message
+    assert owner not in message
+    assert "must-not-be-retained" not in message
+
+    snapshot_path = evidence / "runtime-owner-assertion.json"
+    snapshot_bytes = snapshot_path.read_bytes()
+    snapshot = journey.read_json(snapshot_path)
+    assert snapshot["capture"]["timing"] == "captured before the assertion raises"
+    assert snapshot["capture"]["atomicity"]["status"] == "not-established"
+    assert snapshot["assertion"]["asserted_owner_pids"] == [2972, 3032]
+    assert snapshot["assertion"]["selected_pid_bound_to_asserted_owner"] == {
+        "status": "observed", "record_index": 1,
+    }
+    assert snapshot["selected_discovery_identity"]["process_birth_id"] == {
+        "status": "observed", "value": "windows-creation:134381135019737465",
+    }
+    owners = {row["pid"]["value"]: row for row in snapshot["asserted_owners"]}
+    assert set(owners) == {2972, 3032}
+    selected_snapshot = owners[3032]
+    assert selected_snapshot["command_line"] == {
+        "status": "observed", "value": "-c <astrid_runtime.cli main(['run', ...])>",
+    }
+    assert selected_snapshot["command_sha256"]["value"] == hashlib.sha256(owner.encode()).hexdigest()
+    assert selected_snapshot["executable_path"] == {
+        "status": "observed", "value": r"C:\Astrid\pythonw.exe",
+    }
+    assert selected_snapshot["creation_time"]["value"] == "2026-11-02T17:18:21.973746+00:00"
+    assert selected_snapshot["native_identity"]["value"] == "windows-creation:134381135019737465"
+    assert selected_snapshot["parent_child_relation"] == {
+        "status": "observed", "parent_is_asserted_owner": False,
+        "asserted_children": [], "shared_parent_with": [2972],
+    }
+    assert "must-not-be-retained" not in snapshot_path.read_text()
+
+    # A later census may observe different rows, but cannot replace the first
+    # failure-time record or its staged copies.
+    rows[:] = [selected, {**duplicate, "ExecutablePath": r"C:\Other\pythonw.exe"}]
+    with pytest.raises(RuntimeError):
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    journey.retain_named_evidence(evidence, "after-cleanup")
+    assert snapshot_path.read_bytes() == snapshot_bytes
+    assert (tmp_path / "evidence-upload" / "before-cleanup" / "runtime-owner-assertion.json").read_bytes() == snapshot_bytes
+    assert (tmp_path / "evidence-upload" / "after-cleanup" / "runtime-owner-assertion.json").read_bytes() == snapshot_bytes
+
+
+def test_tst_b1_windows_owner_failure_snapshot_marks_missing_fields_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    rows = [
+        {"ProcessId": 2972, "ParentProcessId": 1920,
+         "CreationDate": None, "NativeIdentity": None, "ExecutablePath": None,
+         "Matcher": "astrid_runtime-cli-run", "CommandLength": None,
+         "CommandSha256": None, "SanitizedCommandLine": None},
+        {"ProcessId": 3032, "ParentProcessId": None,
+         "CreationDate": None, "NativeIdentity": None, "ExecutablePath": None,
+         "Matcher": "astrid_runtime-cli-run", "CommandLength": None,
+         "CommandSha256": None, "SanitizedCommandLine": None},
+    ]
+
+    def powershell(code, *unused, **kwargs):
+        assert "NativeIdentity" in code
+        return json.dumps(rows)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 3032})
+    evidence = tmp_path / "evidence" / "release0"
+    with pytest.raises(RuntimeError) as failure:
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    assert "selected Runtime owner 3032, found [2972, 3032]" in str(failure.value)
+    snapshot = journey.read_json(evidence / "runtime-owner-assertion.json")
+    selected = next(row for row in snapshot["asserted_owners"] if row["pid"]["value"] == 3032)
+    assert snapshot["selected_discovery_identity"]["process_birth_id"] == {
+        "status": "unavailable", "reason": "discovery process_birth_id was unavailable",
+    }
+    assert selected["command_sha256"] == {
+        "status": "unavailable", "reason": "command-line digest was unavailable",
+    }
+    assert selected["executable_path"] == {
+        "status": "unavailable", "reason": "Win32_Process.ExecutablePath was unavailable",
+    }
+    assert selected["creation_time"] == {
+        "status": "unavailable", "reason": "Win32_Process.CreationDate was unavailable",
+    }
+    assert selected["native_identity"] == {
+        "status": "unavailable", "reason": "GetProcessTimes creation identity was unavailable",
+    }
+    assert selected["parent_child_relation"] == {
+        "status": "unavailable", "parent_is_asserted_owner": None,
+        "asserted_children": [], "shared_parent_with": [],
+        "reason": "parent PID was unavailable",
+    }
+
+
+_ARTIFACT_VENV = (r"D:\a\_temp\astrid-r1-direct-windows\program\versions\3204bb00-"
+                  r"6d53a190-f042d729\py\Scripts\pythonw.exe")
+_ARTIFACT_BASE = (r"D:\a\_temp\astrid-r1-direct-windows\localappdata\Astrid Installer" "\\"
+                  r"bootstrap\python\cpython-3.11.13-windows-x86_64-none\pythonw.exe")
+_ARTIFACT_TAIL_SHA256 = "00d7b317229dfb6c2e46d4f0a0a903af124a578f2997ccfd1c84596b36f7389e"
+
+
+def _artifact_shaped_windows_owners(*, child_identity="windows-creation:134381205278019339",
+                                    child_parent=6976, child_image=_ARTIFACT_BASE,
+                                    action_image=_ARTIFACT_VENV,
+                                    parent_tail=_ARTIFACT_TAIL_SHA256,
+                                    child_tail=_ARTIFACT_TAIL_SHA256,
+                                    child_arguments_match=True,
+                                    action_tail=_ARTIFACT_TAIL_SHA256,
+                                    parent_created="2026-11-02T19:15:27.791539+00:00",
+                                    child_created="2026-11-02T19:15:27.801933+00:00",
+                                    extra=()):
+    """The retained 41507782325 process topology, without secret command text."""
+    parent = {
+        "pid": 6976,
+        "parent_pid": 1880,
+        "creation_date": parent_created,
+        "native_identity": "windows-creation:134381205277915396",
+        "executable_path": _ARTIFACT_VENV,
+        "command_tail_sha256": parent_tail,
+        "command_tail_argument_count": 4,
+        "registered_arguments_match": True,
+    }
+    child = {
+        "pid": 5224,
+        "parent_pid": child_parent,
+        "creation_date": child_created,
+        "native_identity": child_identity,
+        "executable_path": child_image,
+        "command_tail_sha256": child_tail,
+        "command_tail_argument_count": 4,
+        "registered_arguments_match": child_arguments_match,
+    }
+    task_action = {
+        "status": "observed",
+        "task_path": "\\",
+        "executable_path": action_image,
+        "arguments_sha256": action_tail,
+        "argument_count": 4,
+    }
+    details = [parent, child, *extra]
+    return journey._RuntimeOwnerPids([row["pid"] for row in details], details, task_action)
+
+
+def _artifact_shaped_discovery():
+    return {
+        "pid": 5224,
+        "process_birth_id": "windows-creation:134381205278019339",
+        "runtime_instance_id": "eac11355544e43cb87aa37c391715b25",
+        "active_realm": "d924bbae-6693-4db1-9b57-cfc8651ed7b9",
+        "coordinator_epoch": "eac11355544e43cb87aa37c391715b25",
+    }
+
+
+def test_tst_b1_windows_artifact_shaped_venv_redirector_is_one_logical_owner(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owners = _artifact_shaped_windows_owners()
+    monkeypatch.setattr(journey, "healthy", lambda _data: _artifact_shaped_discovery())
+    monkeypatch.setattr(journey, "runtime_processes", lambda _data: owners)
+    monkeypatch.setattr(journey, "_windows_venv_base_executable", lambda _path: _ARTIFACT_BASE)
+
+    journey.assert_one_runtime(tmp_path, evidence=tmp_path / "evidence" / "release0")
+
+    snapshot = journey.read_json(tmp_path / "evidence" / "release0" / "runtime-owner-assertion.json")
+    assert snapshot["receipt_kind"] == "windows-runtime-owner-logical-owner-assertion"
+    assert snapshot["assertion"]["asserted_owner_pids"] == [6976, 5224]
+    assert snapshot["assertion"]["logical_owner_pids"] == [5224]
+    assert snapshot["assertion"]["logical_owner_normalization"]["status"] == "collapsed"
+    assert snapshot["assertion"]["logical_owner_normalization"]["selected_native_identity"] == (
+        "windows-creation:134381205278019339")
+    assert snapshot["assertion"]["logical_owner_normalization"]["task_action"] == {
+        "executable_path": _ARTIFACT_VENV,
+        "arguments_sha256": _ARTIFACT_TAIL_SHA256,
+        "argument_count": 4,
+    }
+
+
+def test_tst_b1_windows_census_retains_raw_pair_and_redacted_task_action(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owners = _artifact_shaped_windows_owners()
+    observation = {
+        "owners": [{
+            "ProcessId": row["pid"], "ParentProcessId": row["parent_pid"],
+            "CreationDate": row["creation_date"], "NativeIdentity": row["native_identity"],
+            "ExecutablePath": row["executable_path"], "Matcher": "astrid_runtime-cli-run",
+            "CommandLength": 3710, "CommandSha256": "a" * 64,
+            "CommandTailSha256": row["command_tail_sha256"],
+            "CommandTailArgumentCount": row["command_tail_argument_count"],
+            "RegisteredArgumentsMatch": row["registered_arguments_match"],
+            "SanitizedCommandLine": "-c <astrid_runtime.cli main(['run', ...])>",
+        } for row in owners.details],
+        "task_action": owners.task_action,
+    }
+
+    def powershell(code, *unused, **_kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        return json.dumps(observation)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    retained = journey.runtime_processes(tmp_path)
+    assert list(retained) == [6976, 5224]
+    assert retained.task_action == owners.task_action
+    assert [row["parent_pid"] for row in retained.details] == [1880, 6976]
+    assert all(row["registered_arguments_match"] for row in retained.details)
+
+
+@pytest.mark.parametrize("case", [
+    "wrong-base-image", "changed-argv", "unreadable-pyvenv-cfg", "missing-selected-identity",
+    "missing-discovery-identity", "unrelated-parent", "creation-order", "third-owner",
+    "genuine-second-interpreter",
+])
+def test_tst_b1_windows_logical_owner_normalization_rejects_every_unproven_owner(
+        tmp_path, monkeypatch, case):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    kwargs = {}
+    if case == "wrong-base-image":
+        kwargs["child_image"] = r"D:\foreign\pythonw.exe"
+    elif case == "changed-argv":
+        kwargs["child_tail"] = "f" * 64
+        kwargs["child_arguments_match"] = False
+    elif case == "missing-selected-identity":
+        kwargs["child_identity"] = None
+    elif case == "creation-order":
+        kwargs["parent_created"] = "2026-11-02T19:15:27.901933+00:00"
+    elif case == "unrelated-parent":
+        kwargs["child_parent"] = 1880
+    elif case == "third-owner":
+        kwargs["extra"] = ({
+            "pid": 7111, "parent_pid": 6976,
+            "creation_date": "2026-11-02T19:15:27.802000+00:00",
+            "native_identity": "windows-creation:134381205278019400",
+            "executable_path": _ARTIFACT_VENV,
+            "command_tail_sha256": _ARTIFACT_TAIL_SHA256,
+            "command_tail_argument_count": 4,
+            "registered_arguments_match": True,
+        },)
+    elif case == "genuine-second-interpreter":
+        kwargs["extra"] = ({
+            "pid": 8111, "parent_pid": 1880,
+            "creation_date": "2026-11-02T19:15:27.802000+00:00",
+            "native_identity": "windows-creation:134381205278019401",
+            "executable_path": _ARTIFACT_BASE,
+            "command_tail_sha256": _ARTIFACT_TAIL_SHA256,
+            "command_tail_argument_count": 4,
+            "registered_arguments_match": True,
+        },)
+    owners = _artifact_shaped_windows_owners(**kwargs)
+    discovery = _artifact_shaped_discovery()
+    if case == "missing-discovery-identity":
+        discovery.pop("process_birth_id")
+    monkeypatch.setattr(journey, "healthy", lambda _data: discovery)
+    monkeypatch.setattr(journey, "runtime_processes", lambda _data: owners)
+    monkeypatch.setattr(journey, "_windows_venv_base_executable",
+                        lambda _path: None if case == "unreadable-pyvenv-cfg" else _ARTIFACT_BASE)
+
+    with pytest.raises(RuntimeError, match=r"Expected exactly the selected Runtime owner 5224"):
+        journey.assert_one_runtime(tmp_path, evidence=tmp_path / "evidence" / "release0")
+
+    snapshot = journey.read_json(tmp_path / "evidence" / "release0" / "runtime-owner-assertion.json")
+    assert snapshot["receipt_kind"] == "windows-runtime-owner-cardinality-failure"
+    assert snapshot["assertion"]["asserted_owner_pids"] == list(owners)
+    assert "logical_owner_pids" not in snapshot["assertion"]
+
+
+def test_tst_b1_windows_venv_cfg_requires_one_readable_absolute_home(monkeypatch):
+    class Config:
+        def __init__(self, text):
+            self.text = text
+        def is_symlink(self):
+            return False
+        def is_file(self):
+            return True
+        def read_text(self, **_kwargs):
+            return self.text
+
+    config = Config("home = D:\\base\\cpython-3.11.13\n"
+                    "include-system-site-packages = false\n")
+    monkeypatch.setattr(journey, "Path", lambda _path: config)
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) == r"D:\base\cpython-3.11.13\pythonw.exe"
+    config.text = "home = D:\\one\nhome = D:\\two\n"
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) is None
+    config.text = "home = relative\\python\n"
+    assert journey._windows_venv_base_executable(_ARTIFACT_VENV) is None
 
 
 @pytest.mark.parametrize("owners", [[], [4124], [4123, 4124], [4123, 4123]])
@@ -768,6 +1255,10 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
                               leg="release0-to-release1", shell="powershell.exe", retain_for_next_leg=False)
     raw = b"first product error\r\n\xff\x00" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 31)
     monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("JOURNEY_LAUNCHER_PSEDITION", "Core")
     monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
@@ -816,6 +1307,110 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
         assert entry == {"status": "captured", "path": (staged / phase / "release0-bootstrap.log").relative_to(run_root).as_posix(),
                          "exit_code": 37, "sha256": hashlib.sha256(raw).hexdigest()}
         assert (run_root / entry["path"]).read_bytes() == raw
+        diagnostic = json.loads((staged / phase / "windows-bootstrap-environment.log").read_text())
+        assert diagnostic == {"bootstrap": "release0-bootstrap.log", "PSEdition": "Core",
+                              "PSModulePath": r"C:\Program Files\PowerShell\7\Modules"}
+
+
+def test_linux_update_bootstrap_failure_stages_nested_log_through_cleanup(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    raw = b"first real update-bootstrap error\n"
+    source = evidence / "release1" / "update-bootstrap.log"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(raw)
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
+        "error": "RuntimeError: update-bootstrap.log: exit 1",
+    })
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    shutil.rmtree(source.parent)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "after-cleanup")
+
+    identity = hashlib.sha256(b"release1/update-bootstrap.log").hexdigest()
+    name = f"runtime-service-service-bootstrap-{identity}.log"
+    staged = run_root / "evidence-upload"
+    for phase in ("before-cleanup", "after-cleanup"):
+        receipt = journey.read_json(staged / phase / "journey-result.json")
+        bootstrap = receipt["failure_diagnostics"][phase]["bootstrap"]
+        path = staged / phase / name
+        assert path.read_bytes() == raw
+        assert bootstrap["status"] == "captured"
+        assert bootstrap["paths"] == [path.relative_to(run_root).as_posix()]
+    assert receipt["failure_diagnostics"]["before-cleanup"]["bootstrap"]["source_paths"] == [
+        "release1/update-bootstrap.log"]
+    assert receipt["failure_diagnostics"]["after-cleanup"]["bootstrap"]["source_paths"] == []
+
+
+@pytest.mark.parametrize("platform,legacy", [("win32", True), ("win32", False), ("linux", True)])
+def test_bootstrap_module_path_is_scoped_to_windows_legacy_launch(tmp_path, monkeypatch, platform, legacy):
+    monkeypatch.setattr(journey.sys, "platform", platform)
+    inherited = {"pSmOdUlEpAtH": r"C:\Users\test\Documents\PowerShell\Modules;C:\PowerShell\7\Modules",
+                 "PROGRAMFILES": r"C:\Program Files", "SYSTEMROOT": r"C:\Windows",
+                 "JOURNEY_LAUNCHER_PSEDITION": "Core", "KEEP": "value"}
+    calls = []
+    def process(argv, **kwargs):
+        calls.append((argv, kwargs["env"]))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    log = tmp_path / "release1" / "update-bootstrap.log"
+    journey.run(["powershell.exe", "-File", "install.ps1"], log, env=inherited, legacy_bootstrap=legacy)
+    child = calls[0][1]
+    diagnostic = tmp_path / "windows-bootstrap-environment.log"
+    if platform == "win32" and legacy:
+        assert child["PSModulePath"] == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                                         r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+        assert "pSmOdUlEpAtH" not in child and child["KEEP"] == "value"
+        assert json.loads(diagnostic.read_text()) == {"bootstrap": "update-bootstrap.log",
+                                                     "PSModulePath": inherited["pSmOdUlEpAtH"],
+                                                     "PSEdition": "Core"}
+    else:
+        assert child == inherited
+        assert not diagnostic.exists()
+    assert inherited["pSmOdUlEpAtH"].endswith(r"C:\PowerShell\7\Modules")
+
+
+def test_release0_and_release1_bootstraps_use_normalized_windows_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", "inherited-pwsh-path")
+    monkeypatch.setenv("JOURNEY_LAUNCHER_PSEDITION", "Core")
+    calls = []
+    def process(argv, **kwargs):
+        calls.append((argv, kwargs["env"]["PSModulePath"]))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    evidence = tmp_path / "evidence"
+    jumps.bootstrap_release0(tmp_path / "fixture", tmp_path / "manifest", "powershell.exe",
+                             evidence / "release0", tmp_path / "program", tmp_path / "data")
+    journey.bootstrap(tmp_path / "app", tmp_path / "manifest", "powershell.exe", "update",
+                      evidence / "release1", tmp_path / "program", tmp_path / "data", True)
+    assert [Path(argv[6]).as_posix() for argv, _ in calls] == [
+        (tmp_path / "fixture" / "served" / "install.ps1").as_posix(),
+        (tmp_path / "app" / "public" / "install.ps1").as_posix()]
+    assert all(path == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                        r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules") for _, path in calls)
+    records = [json.loads(line) for line in (evidence / "windows-bootstrap-environment.log").read_text().splitlines()]
+    assert [record["bootstrap"] for record in records] == ["release0-bootstrap.log", "update-bootstrap.log"]
+    assert all(record["PSModulePath"] == "inherited-pwsh-path" and record["PSEdition"] == "Core"
+               for record in records)
+
+
+def test_windows_bootstrap_edition_and_diagnostic_are_wired_to_workflow():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    lifecycle = workflow.split("      - name: Run the matrix-owned lifecycle driver\n", 1)[1].split(
+        "      - name:", 1)[0]
+    assert "$env:JOURNEY_LAUNCHER_PSEDITION = $PSVersionTable.PSEdition" in lifecycle
+    assert lifecycle.index("$env:JOURNEY_LAUNCHER_PSEDITION") < lifecycle.index("python -u agent/scripts/ci_journey.py")
+    boundary = workflow.split("      - name: Validate the named lifecycle evidence artifact boundary\n", 1)[1].split(
+        "      - name:", 1)[0]
+    assert "'windows-bootstrap-environment.log'" in boundary
+    assert "windows-bootstrap-environment.log" in journey.JOURNEY_EVIDENCE_NAMES
 
 
 def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
@@ -1196,6 +1791,25 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
         assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
 
 
+def test_retain_named_evidence_stages_nested_release0_owner_assertion_only(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    release0 = evidence / "release0"
+    release0.mkdir(parents=True)
+    snapshot = b'{"capture":"release0-write-once"}\n'
+    (release0 / journey.OWNER_ASSERTION_SNAPSHOT).write_bytes(snapshot)
+    (release0 / "unapproved-nested.json").write_text("must not stage", encoding="utf-8")
+    # A top-level file could be produced by later diagnostics. The nested R0
+    # snapshot remains the artifact-boundary source for this release leg.
+    (evidence / journey.OWNER_ASSERTION_SNAPSHOT).write_text("later diagnostic", encoding="utf-8")
+    (evidence / "unapproved-top-level.json").write_text("must not stage", encoding="utf-8")
+
+    journey.retain_named_evidence(evidence, "before-cleanup")
+
+    staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
+    assert (staged / journey.OWNER_ASSERTION_SNAPSHOT).read_bytes() == snapshot
+    assert {path.name for path in staged.iterdir()} == {journey.OWNER_ASSERTION_SNAPSHOT}
+
+
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
 def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
     from scripts import journey_version_jumps as jumps
@@ -1210,7 +1824,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     journey.write_json(candidate_path, candidate)
     manifest = {"release": 1, "agent": {}, "runtime": {}}
     args = SimpleNamespace(job_id="direct", mode="direct", leg="release0-to-release1", shell="sh",
-                           app_checkout=app, candidate=candidate_path)
+                           app_checkout=app, candidate=candidate_path,
+                           candidate_agent_checkout=tmp_path / "candidate-agent")
     state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
     calls = []
 
@@ -1218,7 +1833,7 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
         assert state["running"] and not state["local"]
         return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
 
-    def one_runtime(_data):
+    def one_runtime(_data, _evidence=None):
         assert state["running"] and not state["local"]
 
     def manager_action(operation):
@@ -1267,8 +1882,11 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
         calls.append("task")
         return "settled"
 
-    def bootstrap(*_args):
+    bootstrap_calls = []
+
+    def bootstrap(*bootstrap_args, **bootstrap_kwargs):
         assert state["running"] and state["content"] is not None
+        bootstrap_calls.append((bootstrap_args, bootstrap_kwargs))
         state.update(release=1, pid=state["pid"] + 1)
 
     monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest_path, {}))
@@ -1283,7 +1901,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
                                                              {"release": state["release"]}))
     monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
     monkeypatch.setattr(journey, "selected_tuple", lambda *_: {"agent": "old", "runtime": "old"})
-    monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "new", "runtime": "new"})
+    monkeypatch.setattr(jumps, "selected_candidate",
+                        lambda *_args, **_kwargs: {"agent": "new", "runtime": "new"})
     monkeypatch.setattr(journey, "assert_direct_service_ownership", ownership)
     monkeypatch.setattr(journey, "assert_one_runtime", one_runtime)
     monkeypatch.setattr(journey, "runtime_processes", lambda _: [state["pid"]] if state["running"] else [])
@@ -1307,6 +1926,10 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     result = jumps.execute_release0_to_release1(args, root, data, evidence,
                                                 SimpleNamespace(pid=1), "birth")
     assert result["status"] == "pass" and result["semantic_data"]["identical"]
+    assert bootstrap_calls == [(
+        (app, candidate_path, "sh", "update", evidence / "release1", root, data),
+        {"legacy_bootstrap": True},
+    )]
     assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
                      "stop", "snapshot", "start", "task"]
     assert state["running"] and not state["local"]
