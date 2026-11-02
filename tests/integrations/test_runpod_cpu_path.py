@@ -307,6 +307,14 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert image_path.read_bytes() == provider.image
         task = client.tasks.show(result.task_id)
         assert task.ok and task.data["state"] == "succeeded" and task.data["run_id"] == result.run_id
+        generations, cursor = owner.list_generations(project_id)
+        assert cursor is None and len(generations) == 1
+        generation = generations[0]
+        assert generation.metadata["source_task_id"] == result.task_id and generation.status == "completed"
+        variants, cursor = owner.list_variants(generation.generation_id)
+        assert cursor is None and len(variants) == 1
+        assert variants[0].object_id == "sha256:" + _sha(image_path.read_bytes())
+        assert client.runs.show(result.run_id).ok
         record = json.loads(claim_path.read_text())
         assert record["lease"]["state"] == "idle" and record["paid_limits"]["idle_seconds"] == 1800
         snapshot = claim_path.read_bytes()
@@ -317,7 +325,8 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         record = json.loads(claim_path.read_text())
         assert record["state"] == "cleanup_complete" and record["cleanup"]["absence"]["exact_get_status"] == 404
         assert not provider.pods and len(provider.prompts) == 1
-        evidence = {"task_id": result.task_id, "run_id": result.run_id, "delivered_file": str(image_path),
+        evidence = {"task_id": result.task_id, "run_id": result.run_id, "generation_id": generation.generation_id,
+                    "output_object": variants[0].object_id, "delivered_file": str(image_path),
                     "sha256": _sha(image_path.read_bytes()), "synthetic_inference": True,
                     "release": record["cleanup"], "receipt": result.to_dict()}
         (tmp_path / "cpu-receipt.json").write_text(json.dumps(evidence, default=str, indent=2))
