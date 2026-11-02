@@ -91,6 +91,21 @@ def test_exact_boundary_is_retained_without_false_truncation(tmp_path):
     assert not (root / "before-cleanup" / "release0-bootstrap.log.metadata.json").exists()
 
 
+def test_exact_cap_truncates_bootstrap_and_stays_strictly_below_it(tmp_path):
+    root = tmp_path / "evidence-upload"
+    _stage(root, "before-cleanup", 4096, install_bytes=31)
+    exact_cap = sum(size + boundary.ENTRY_OVERHEAD for size in _inventory(root).values())
+
+    estimate = boundary.prepare(root, max_bytes=exact_cap)
+
+    entry = _receipt(root, "before-cleanup")["failure_diagnostics"]["before-cleanup"]["release0_bootstrap"]
+    assert estimate == sum(size + boundary.ENTRY_OVERHEAD for size in _inventory(root).values())
+    assert estimate < exact_cap
+    assert entry["status"] == "truncated"
+    assert entry["truncated"] is True
+    assert (root / "before-cleanup" / "release0-bootstrap.log").stat().st_size < 4096
+
+
 def test_minimum_named_evidence_refuses_without_mutating_when_bootstrap_cannot_fit(tmp_path, capsys, monkeypatch):
     root = tmp_path / "evidence-upload"
     _stage(root, "before-cleanup", 100)
