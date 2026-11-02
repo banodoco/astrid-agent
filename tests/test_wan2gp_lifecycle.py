@@ -191,7 +191,13 @@ def test_fake_output_containment_rejects_escape_without_writing_outside(
 
 
 def test_generate_core_refuses_direct_execution_for_valid_inputs() -> None:
-    """Direct execution is disabled: valid inputs fail closed to the host-owned session."""
+    """Direct execution is disabled: valid inputs fail closed to the host-owned session.
+
+    Legacy command-kind contract on the run.py module, which exists until the
+    integrator deletes it after parity. The session-path equivalent (invalid
+    inputs never submit or cancel) lives in
+    tests/packs/wan2gp/test_session_action_skeleton.py.
+    """
     from astrid.packs.wan2gp.actions.generate_video.run import build_parser, generate_core
 
     args = build_parser().parse_args(
