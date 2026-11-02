@@ -1,7 +1,0 @@
-# Native Windows x64, CPython 3.12.10; CUDA wheels come from the PyTorch index.
-# Combined with requirements.txt from the immutable upstream source pin.
-# Exact CPython/architecture wheels from the official CUDA index. Direct URLs
-# also avoid applying PyPI's upload-date cutoff to PyTorch's undated index.
-torch @ https://download.pytorch.org/whl/cu128/torch-2.8.0%2Bcu128-cp312-cp312-win_amd64.whl
-torchvision @ https://download.pytorch.org/whl/cu128/torchvision-0.23.0%2Bcu128-cp312-cp312-win_amd64.whl
-torchaudio @ https://download.pytorch.org/whl/cu128/torchaudio-2.8.0%2Bcu128-cp312-cp312-win_amd64.whl
