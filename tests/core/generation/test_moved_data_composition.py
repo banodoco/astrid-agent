@@ -531,6 +531,43 @@ def test_real_selected_executor_has_positive_ledger_admission(monkeypatch, tmp_p
     assert not capability_execution_admission(ledger, 'ambient_fixture.generate_image')['executable']
 
 
+def test_real_selected_host_shares_one_ledger_snapshot(monkeypatch, tmp_path):
+    from astrid.core.execution.generic_host import GenericPackHost
+
+    pack = _write_pack(tmp_path / 'selected', PACK_ID)
+    data = _manifest(PACK_ID)
+    data['actions']['generate_image']['metadata']['output_result_manifest'] = True
+    (pack / 'pack.yaml').write_text(yaml.safe_dump(data), encoding='utf-8')
+    project = tmp_path / 'project'
+    matrix = project / 'config/astrid-beta-capabilities.json'
+    matrix.parent.mkdir(parents=True)
+    row = {'id': ACTION_ID, 'disposition': 'optional', 'evidence_reason': 'selected fixture'}
+    matrix.write_text(json.dumps({'schema_version': 1, 'capabilities': [row]}))
+    models = project / 'astrid/core/model_catalog/models.yaml'
+    models.parent.mkdir(parents=True)
+    models.write_text('models: []\n')
+    _write_fixture_census(matrix.parent, [ACTION_ID])
+    monkeypatch.delenv('ASTRID_PACKS_PATH', raising=False)
+    monkeypatch.setenv('ASTRID_HOME', str(tmp_path / 'empty-home'))
+    original = Path.open
+    matrix_reads = []
+
+    def observed_open(path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get('mode', 'r')
+        if 'r' in mode and path.resolve() == matrix.resolve():
+            matrix_reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', observed_open)
+    host = GenericPackHost(pack_roots=[pack], capability_matrix=matrix, credential_source={})
+    selected = {item['id'] for item in host.ledger['sources']['executor_inventory']
+                if item['discovery_status'] == 'discovered'}
+    assert selected == {ACTION_ID}
+    assert host.ledger['sources']['selection_explicit'] is True
+    assert host.matrix == {ACTION_ID: row}
+    assert len(matrix_reads) == 1
+
+
 def test_public_unsupported_selection_refuses_before_runtime(monkeypatch, tmp_path, capsys):
     from astrid import console
     from astrid.core.generation import cli
