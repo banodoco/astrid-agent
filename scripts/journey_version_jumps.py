@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import re
 import sys
+import time
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
@@ -176,6 +177,49 @@ def start_direct_runtime(evidence: Path) -> None:
                                    "start-scheduled-task.log", show=False, timeout=30)
 
 
+def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
+                     action: str, request: dict) -> dict:
+    """Temporarily release the installed owner for the local workspace helper."""
+    service = journey.assert_direct_service_ownership(root, data)
+    journey.assert_one_runtime(data)
+    evidence.mkdir(parents=True, exist_ok=True)
+    manager = service["manager"]
+    if manager == "systemd-user":
+        stop = ["systemctl", "--user", "stop", "astrid.service"]
+        start = ["systemctl", "--user", "start", "astrid.service"]
+    elif manager == "launchd":
+        domain = f"gui/{os.getuid()}"
+        stop = ["launchctl", "bootout", f"{domain}/haus.astrid.runtime"]
+        start = ["launchctl", "bootstrap", domain, service["service_path"]]
+    elif manager != "task-scheduler":
+        raise RuntimeError(f"Unsupported direct service manager: {manager}")
+    try:
+        if manager == "task-scheduler":
+            journey.windows.EVIDENCE = evidence
+            journey.windows.powershell("$ErrorActionPreference='Stop'; Stop-ScheduledTask "
+                                       "-TaskName 'Astrid Runtime' -TaskPath '\\'",
+                                       f"{action}-stop-service.log", show=False, timeout=30)
+        else:
+            journey.run(stop, evidence / f"{action}-stop-service.log", timeout=120)
+        deadline = time.monotonic() + 120
+        while journey.runtime_processes(data):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Installed Runtime did not stop for workspace access")
+            time.sleep(1)
+        return workspace(version, data, evidence, action, request)
+    finally:
+        if manager == "task-scheduler":
+            journey.windows.EVIDENCE = evidence
+            journey.windows.powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask "
+                                       "-TaskName 'Astrid Runtime' -TaskPath '\\'",
+                                       f"{action}-start-service.log", show=False, timeout=30)
+        else:
+            journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
+        journey.wait_ready(data)
+        journey.assert_direct_service_ownership(root, data)
+        journey.assert_one_runtime(data)
+
+
 def installed_release(version: dict) -> int:
     release = journey.read_json(Path(version["root"]) / "manifest.json").get("release", 0)
     if type(release) is not int:
@@ -253,19 +297,21 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
+        journey.assert_one_runtime(data)
+        baseline = evidence / "release0-api-seed"
+        journey.verify("observe", old_path, data, baseline)
+        project = "tst-m4-3b-release0"
+        keys = direct_workspace(root, old, data, baseline, "seed", {
+            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+        keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
+        before = direct_workspace(root, old, data, baseline, "snapshot", keys)
+        # The helper temporarily stops the service, so identify the actual R0
+        # owner that the update must replace after the last offline observation.
         old_health = journey.healthy(data)
         old_pid = int(old_health["pid"])
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
-        journey.assert_one_runtime(data)
-        baseline = evidence / "release0-api-seed"
-        journey.verify("observe", old_path, data, baseline)
-        project = "tst-m4-3b-release0"
-        keys = workspace(old, data, baseline, "seed", {
-            "project": project, "generation": "release0", "task_id": None, "create_project": True})
-        keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
-        before = workspace(old, data, baseline, "snapshot", keys)
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
@@ -293,7 +339,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         journey.verify("update", version_path, data, evidence, before=baseline / "verify-observe.json")
         journey.verify("install", version_path, data, evidence)
         result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
-        after = workspace(version, data, evidence / "release1-api-observe", "snapshot", keys)
+        after = direct_workspace(root, version, data, evidence / "release1-api-observe", "snapshot", keys)
         assert_preserved(before, after)
         before_sha, after_sha = semantic_digest(before), semantic_digest(after)
         if before_sha != after_sha:

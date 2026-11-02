@@ -960,3 +960,133 @@ def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch
         assert json.loads((staged / (prefix + "input.log")).read_bytes()) == {"generation": generation}
         assert json.loads((staged / (prefix + "stdout.log")).read_bytes()) == {"generation": generation}
         assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}
+
+
+@pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
+def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
+    from scripts import journey_version_jumps as jumps
+
+    root, data, evidence = tmp_path / "program", tmp_path / "data", tmp_path / "evidence"
+    app = tmp_path / "app"
+    app.mkdir()
+    manifest_path = tmp_path / "manifest.json"
+    journey.write_json(manifest_path, {"release": 0})
+    candidate_path = tmp_path / "candidate.json"
+    candidate = {"manifest_sha256": "digest", "artifacts": {}}
+    journey.write_json(candidate_path, candidate)
+    manifest = {"release": 1, "agent": {}, "runtime": {}}
+    args = SimpleNamespace(job_id="direct", mode="direct", leg="release0-to-release1", shell="sh",
+                           app_checkout=app, candidate=candidate_path)
+    state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
+    calls = []
+
+    def ownership(_root, _data):
+        assert state["running"] and not state["local"]
+        return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
+
+    def one_runtime(_data):
+        assert state["running"] and not state["local"]
+
+    def manager_action(operation):
+        calls.append(operation)
+        if operation == "stop":
+            assert state["running"] and not state["local"]
+            state["running"] = False
+        else:
+            assert not state["running"] and not state["local"]
+            state["running"] = True
+            state["pid"] += 1
+
+    def run(argv, log, **kwargs):
+        if manager == "systemd-user":
+            assert argv[:2] == ["systemctl", "--user"] and argv[-1] == "astrid.service"
+            manager_action(argv[2])
+        else:
+            assert argv[0] == "launchctl" and argv[1] in ("bootout", "bootstrap")
+            manager_action("stop" if argv[1] == "bootout" else "start")
+        return ""
+
+    def powershell(code, name, **kwargs):
+        assert "-TaskName 'Astrid Runtime'" in code
+        manager_action("stop" if "Stop-ScheduledTask" in code else "start")
+        return ""
+
+    def workspace(version, _data, _evidence, action, request):
+        # A second RuntimeService would fail this simulated exclusive lock.
+        assert not state["running"] and not state["local"]
+        state["local"] = True
+        try:
+            calls.append(action)
+            if action == "seed":
+                state["content"] = {"project": request["project"], "timeline": "user edit",
+                                    "preferences": "keep", "cas_sha256": "content"}
+                return {"project": request["project"]}
+            assert request["task_id"] == "settled"
+            return {**state["content"], "task": "settled", "schema_version": 1,
+                    "target_schema_version": 1}
+        finally:
+            state["local"] = False
+
+    def task(_version, _evidence, project):
+        assert state["running"] and state["content"]["project"] == project
+        calls.append("task")
+        return "settled"
+
+    def bootstrap(*_args):
+        assert state["running"] and state["content"] is not None
+        state.update(release=1, pid=state["pid"] + 1)
+
+    monkeypatch.setattr(jumps, "release0_admission", lambda _: (tmp_path, manifest_path, {}))
+    monkeypatch.setattr(jumps.evidence_gate, "validate_tuple", lambda *_: manifest)
+    monkeypatch.setattr(journey, "selected_manifest", lambda *_args, **_kw: (candidate_path, manifest))
+    monkeypatch.setattr(journey, "git_source", lambda _: {"sha": "app"})
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *_: {"alive": True})
+    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *_: None)
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *_: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda _: one_runtime(data))
+    monkeypatch.setattr(journey, "installation", lambda *_: (tmp_path / f"v{state['release']}", data,
+                                                             {"release": state["release"]}))
+    monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
+    monkeypatch.setattr(journey, "selected_tuple", lambda *_: {"agent": "old", "runtime": "old"})
+    monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "new", "runtime": "new"})
+    monkeypatch.setattr(journey, "assert_direct_service_ownership", ownership)
+    monkeypatch.setattr(journey, "assert_one_runtime", one_runtime)
+    monkeypatch.setattr(journey, "runtime_processes", lambda _: [state["pid"]] if state["running"] else [])
+    monkeypatch.setattr(journey, "healthy", lambda _: {"pid": state["pid"],
+                                                       "runtime_instance_id": str(state["pid"])})
+    monkeypatch.setattr(journey, "process_birth", lambda pid: str(pid) if pid == state["pid"] else None)
+    monkeypatch.setattr(journey, "run", run)
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(jumps, "workspace", workspace)
+    monkeypatch.setattr(jumps, "task_after_update", task)
+    monkeypatch.setattr(journey, "bootstrap", bootstrap)
+
+    def verify(mode, _version, _data, directory, **_kwargs):
+        if mode == "install":
+            journey.write_json(directory / "verify-install.json", {"details": {}})
+    monkeypatch.setattr(journey, "verify", verify)
+    result = jumps.execute_release0_to_release1(args, root, data, evidence,
+                                                SimpleNamespace(pid=1), "birth")
+    assert result["status"] == "pass" and result["semantic_data"]["identical"]
+    assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
+                     "stop", "snapshot", "start", "task"]
+    assert state["running"] and not state["local"]
+
+
+def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps as jumps
+
+    state = {"running": True}
+    monkeypatch.setattr(journey, "assert_direct_service_ownership",
+                        lambda *_: {"manager": "systemd-user"} if state["running"] else pytest.fail("stopped"))
+    monkeypatch.setattr(journey, "assert_one_runtime", lambda *_: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda *_: None)
+    monkeypatch.setattr(journey, "runtime_processes", lambda *_: [1] if state["running"] else [])
+    monkeypatch.setattr(journey, "run", lambda argv, *_args, **_kw: state.update(running=argv[2] == "start"))
+    def fail(*_args):
+        assert not state["running"]
+        raise ValueError("workspace failed")
+    monkeypatch.setattr(jumps, "workspace", fail)
+    with pytest.raises(ValueError, match="workspace failed"):
+        jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
+    assert state["running"]
