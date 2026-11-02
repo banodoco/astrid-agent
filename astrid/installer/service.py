@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import ast
+import base64
+import binascii
+import hashlib
 import inspect
 import json
 import os
@@ -348,6 +351,25 @@ def _atomic_write_text(path: Path, value: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _atomic_write_bytes(path: Path, value: bytes, *, mode: int) -> None:
+    """Publish an already-validated service definition without changing its bytes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", mode="wb", delete=False,
+        ) as pending:
+            temporary = Path(pending.name)
+            pending.write(value)
+            pending.flush()
+            os.fchmod(pending.fileno(), mode)
+            os.fsync(pending.fileno())
+        platform.durable_replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def render(system: str, version: Version, data: Path, log: Path, *, user: str = "",
            env_file: Path | None = None) -> str:
     log = log.with_name("runtime-service.log")
@@ -438,6 +460,158 @@ class Service:
         except (OSError, subprocess.SubprocessError):
             return False
 
+    def _launchd_plist_identity(self, data: Path) -> tuple[bytes, os.stat_result]:
+        """Read the configured LaunchAgent only after its install binding is proved."""
+        record = self.recorded()
+        if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                or record.get("data_root") != str(data)):
+            raise ValueError("The launchd service has no matching install selection.")
+        try:
+            observed_stat = self.path.lstat()
+            if not stat.S_ISREG(observed_stat.st_mode) or not owned_by_current_user(self.path, observed_stat):
+                raise ValueError("The launchd service file is not installer-owned.")
+            raw = self.path.read_bytes()
+            document = plistlib.loads(raw)
+            action = document.get("ProgramArguments")
+            if (document.get("Label") != LABEL or not isinstance(action, list)
+                    or any(not isinstance(part, str) for part in action)):
+                raise ValueError("The launchd service configuration is malformed.")
+            script = action[-1] if len(action) >= 5 and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
+            if not self._known_launch_action(action, data, windows=False, script=script):
+                raise ValueError("The launchd service action is not owned by this installation.")
+            return raw, observed_stat
+        except (OSError, TypeError, KeyError, plistlib.InvalidFileException) as exc:
+            raise ValueError("The launchd service configuration is malformed.") from exc
+
+    def launchd_recovery_snapshot(self, data: Path) -> dict | None:
+        """Retain the exact pre-update R0 definition before any R1 publication."""
+        if self.system != "darwin" or not self.path.exists():
+            return None
+        raw, observed_stat = self._launchd_plist_identity(data)
+        return {
+            "format": "astrid-launchd-r0-plist/v1",
+            "domain": f"gui/{platform.current_user()}",
+            "label": LABEL,
+            "path": str(self.path),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "plist_b64": base64.b64encode(raw).decode("ascii"),
+            "mode": stat.S_IMODE(observed_stat.st_mode),
+        }
+
+    def _launchd_recovery_bytes(self, snapshot: dict, data: Path) -> tuple[bytes, int]:
+        """Validate the durable R0 definition before using it as stop authority."""
+        if (not isinstance(snapshot, dict)
+                or snapshot.get("format") != "astrid-launchd-r0-plist/v1"
+                or snapshot.get("domain") != f"gui/{platform.current_user()}"
+                or snapshot.get("label") != LABEL
+                or snapshot.get("path") != str(self.path)
+                or not isinstance(snapshot.get("sha256"), str)
+                or not isinstance(snapshot.get("plist_b64"), str)
+                or type(snapshot.get("mode")) is not int
+                or snapshot["mode"] < 0 or snapshot["mode"] > 0o777):
+            raise ValueError("The retained R0 LaunchAgent definition is invalid.")
+        try:
+            raw = base64.b64decode(snapshot["plist_b64"], validate=True)
+            document = plistlib.loads(raw)
+            action = document.get("ProgramArguments")
+            if (hashlib.sha256(raw).hexdigest() != snapshot["sha256"]
+                    or document.get("Label") != LABEL
+                    or not isinstance(action, list)
+                    or any(not isinstance(part, str) for part in action)):
+                raise ValueError("invalid retained definition")
+            script = action[-1] if len(action) >= 5 and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
+            if not self._known_launch_action(action, data, windows=False, script=script):
+                raise ValueError("invalid retained action")
+        except (ValueError, TypeError, binascii.Error, plistlib.InvalidFileException) as exc:
+            raise ValueError("The retained R0 LaunchAgent definition is invalid.") from exc
+        return raw, snapshot["mode"]
+
+    def _launchd_live_pid_is_bound(self, identity: dict, observation: dict, *, owner_pid: int | None,
+                                    owner_birth_id: str | None) -> None:
+        """Require the live launchd PID to still be the discovery-bound R0 Runtime."""
+        state, pid = observation["state"], observation["pid"]
+        if state == "not running" and pid is None:
+            return
+        if state != "running" or owner_pid is None or pid != owner_pid or not isinstance(owner_birth_id, str):
+            raise ValueError("The launchd service does not match the selected Runtime owner.")
+        try:
+            observed = platform.process_identity(pid)
+            executable = Path(platform.process_executable(pid))
+            expected = Path(identity["program"])
+            root = self.root.resolve(strict=True)
+            resolved_executable = executable.resolve(strict=True)
+            resolved_expected = expected.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError("The launchd Runtime executable could not be validated.") from exc
+        if (not isinstance(observed, dict) or observed.get("pid") != pid
+                or observed.get("uid") != platform.current_user()
+                or not birth_ids_match(owner_birth_id, observed.get("birth_id"), owner_pid, observed.get("pid"))
+                or resolved_executable != resolved_expected
+                or not resolved_executable.is_relative_to(root)):
+            raise ValueError("The launchd service does not match the selected Runtime owner.")
+
+    def admit_launchd_bootout(self, data: Path, *, owner_pid: int | None,
+                              owner_birth_id: str | None, expected_identity: dict | None = None,
+                              recovery_snapshot: dict | None = None) -> dict | None:
+        """Revalidate every narrow R0 condition that authorizes a pre-C1 bootout."""
+        target = f"gui/{platform.current_user()}/{LABEL}"
+        try:
+            value = self.run(["launchctl", "print", target])
+        except subprocess.CalledProcessError as exc:
+            if "Could not find service" in str(exc.output) or "Could not find specified service" in str(exc.output):
+                return None
+            raise
+        identity, observation = self._launchd_stop_identity(value, data)
+        if expected_identity is not None and identity != expected_identity:
+            raise ValueError("The loaded launchd service changed before bootout.")
+        if recovery_snapshot is not None:
+            original, _mode = self._launchd_recovery_bytes(recovery_snapshot, data)
+            if identity["plist"] != original:
+                raise ValueError("The LaunchAgent plist no longer matches the retained R0 definition.")
+        self._launchd_live_pid_is_bound(
+            identity, observation, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
+        )
+        return identity
+
+    def bootout_admitted_launchd(self, data: Path, *, owner_pid: int | None,
+                                 owner_birth_id: str | None, expected_identity: dict,
+                                 recovery_snapshot: dict | None = None) -> None:
+        """Run bootout only after an immediate, complete repeat of R0 admission."""
+        latest = self.admit_launchd_bootout(
+            data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
+            expected_identity=expected_identity, recovery_snapshot=recovery_snapshot,
+        )
+        if latest is None:
+            raise ValueError("The validated launchd service disappeared before bootout.")
+        self.run(["launchctl", "bootout", f"gui/{platform.current_user()}/{LABEL}"])
+
+    def verify_launchd_absent_after_bootout(self) -> None:
+        """A job that reappears after bootout is never an installer stop target."""
+        target = f"gui/{platform.current_user()}/{LABEL}"
+        try:
+            self.run(["launchctl", "print", target])
+        except subprocess.CalledProcessError as exc:
+            if "Could not find service" in str(exc.output) or "Could not find specified service" in str(exc.output):
+                return
+            raise
+        raise ValueError("A launchd service appeared after the R0 bootout; refusing to stop it.")
+
+    def restore_launchd_recovery_snapshot(self, snapshot: dict, data: Path) -> None:
+        """Bootstrap the exact retained R0 plist, refusing any loaded replacement."""
+        raw, mode = self._launchd_recovery_bytes(snapshot, data)
+        self.verify_launchd_absent_after_bootout()
+        if os.path.lexists(self.path):
+            current, _stat = self._launchd_plist_identity(data)
+            if current != raw:
+                raise ValueError("The R0 LaunchAgent plist changed after bootout; refusing to restore it.")
+        else:
+            parent_stat = self.path.parent.stat()
+            if (not stat.S_ISDIR(parent_stat.st_mode)
+                    or not owned_by_current_user(self.path.parent, parent_stat)):
+                raise ValueError("The R0 LaunchAgent directory is not installer-owned.")
+            _atomic_write_bytes(self.path, raw, mode=mode)
+        self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
+
     def _launchd_stop_identity(self, value: str, data: Path) -> tuple[dict, dict]:
         """Validate and snapshot the loaded, installer-owned LaunchAgent."""
         target = f"gui/{platform.current_user()}/{LABEL}"
@@ -486,25 +660,7 @@ class Service:
         loaded_argv = None
         raw_arguments = argument_text.strip("\r\n")
 
-        record = self.recorded()
-        if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
-                or record.get("data_root") != str(data)):
-            raise ValueError("The launchd service has no matching install selection.")
-        try:
-            observed_stat = self.path.lstat()
-            if not stat.S_ISREG(observed_stat.st_mode) or not owned_by_current_user(self.path, observed_stat):
-                raise ValueError("The launchd service file is not installer-owned.")
-            raw = self.path.read_bytes()
-            document = plistlib.loads(raw)
-            action = document.get("ProgramArguments")
-            if (document.get("Label") != LABEL or not isinstance(action, list)
-                    or any(not isinstance(part, str) for part in action)):
-                raise ValueError("The launchd service configuration is malformed.")
-            script = action[-1] if len(action) >= 5 and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
-            if not self._known_launch_action(action, data, windows=False, script=script):
-                raise ValueError("The launchd service action is not owned by this installation.")
-        except (OSError, TypeError, KeyError, plistlib.InvalidFileException) as exc:
-            raise ValueError("The launchd service configuration is malformed.") from exc
+        raw, observed_stat = self._launchd_plist_identity(data)
         if loaded_argv is None:
             first_line = next((line for line in raw_arguments.splitlines() if line.strip()), "")
             indent_match = re.match(r"^[ \t]*", first_line)

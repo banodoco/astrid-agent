@@ -616,9 +616,107 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         custody.check()
         return True
 
+    def _active_update_transaction(self) -> tuple[dict, bool] | None:
+        active = getattr(self, "_update_transaction", None)
+        if (isinstance(active, tuple) and len(active) == 2
+                and isinstance(active[0], dict) and isinstance(active[1], bool)):
+            return active
+        return None
+
+    def _launchd_recovery_snapshot(self, data: Path, *, active_only: bool = False) -> dict | None:
+        """Return a durable R0 plist only for this non-terminal update transaction."""
+        active = self._active_update_transaction()
+        if active is not None:
+            transaction, _recovering = active
+        elif active_only:
+            return None
+        else:
+            journal = self.root / "update-transaction.json"
+            if not journal.is_file() or linked(journal):
+                return None
+            transaction = read_json(journal)
+        if (transaction.get("format") != "astrid-install-update/v1"
+                or transaction.get("step") in {"complete", "rolled_back"}
+                or absolute(transaction.get("data_root", "")) != absolute(data)):
+            return None
+        snapshot = transaction.get("launchd_r0_plist")
+        if snapshot is None:
+            return None
+        # Validate the retained bytes before either suppressing publication or
+        # treating them as the recovery definition.
+        self.service._launchd_recovery_bytes(snapshot, data)
+        return snapshot
+
+    def _preserve_launchd_r0_definition(self, version: Version, data: Path) -> bool:
+        """Keep R0's plist byte-for-byte through an update and its rollback."""
+        if self.service.system != "darwin":
+            return False
+        active = self._active_update_transaction()
+        if active is None:
+            return self._launchd_recovery_snapshot(data) is not None
+        transaction, recovering = active
+        snapshot = self._launchd_recovery_snapshot(data, active_only=True)
+        if snapshot is not None:
+            return True
+        if recovering:
+            raise ValueError("The interrupted update has no retained R0 LaunchAgent definition.")
+        snapshot = self.service.launchd_recovery_snapshot(data)
+        # No LaunchAgent is an intentional autostart-off state. There is no
+        # original definition to publish or restore.
+        if snapshot is None:
+            return True
+        journal = self.root / "update-transaction.json"
+        if not journal.is_file() or linked(journal) or read_json(journal) != transaction:
+            raise ValueError("The update journal changed before R0 LaunchAgent preservation.")
+        transaction["launchd_r0_plist"] = snapshot
+        write_json(journal, transaction)
+        return True
+
+    def _mark_launchd_bootout_intent(self, data: Path, snapshot: dict) -> None:
+        """Make post-bootout recovery fail closed even if the controller dies."""
+        active = self._active_update_transaction()
+        if active is None:
+            return
+        transaction, recovering = active
+        if recovering:
+            return
+        if transaction.get("launchd_r0_plist") != snapshot:
+            raise ValueError("The retained R0 LaunchAgent definition changed before bootout.")
+        journal = self.root / "update-transaction.json"
+        if not journal.is_file() or linked(journal) or read_json(journal) != transaction:
+            raise ValueError("The update journal changed before R0 LaunchAgent bootout.")
+        snapshot["bootout_intent"] = True
+        write_json(journal, transaction)
+
+    def _restore_launchd_r0_definition(self, version: Version, data: Path) -> bool:
+        """Bootstrap only the retained R0 definition while rolling an update back."""
+        active = self._active_update_transaction()
+        if active is None:
+            return False
+        transaction, recovering = active
+        if not recovering or self.service.system != "darwin":
+            return False
+        snapshot = self._launchd_recovery_snapshot(data, active_only=True)
+        if snapshot is None:
+            return False
+        old = Version.load(transaction["old"])
+        if old.document() != version.document():
+            return False
+        self.service.restore_launchd_recovery_snapshot(snapshot, data)
+        persist_install_identity(version, self.root, selection=self.service.selection, fields={
+            "owner": LABEL, "program_root": str(self.root),
+            "data_root": str(data), "service_settings": self.service.settings(),
+        })
+        return True
+
     def publish_launch_admission(self, version: Version, data: Path) -> None:
         """Refresh the selected install's launch action before its first C1 stop."""
         if self.managed_by == "pinokio":
+            return
+        # An R0 macOS agent may KeepAlive itself in the C1-to-bootout gap.
+        # Preserve its exact definition instead: the update path unloads this
+        # validated job before C1, and recovery bootstraps these exact bytes.
+        if self._preserve_launchd_r0_definition(version, data):
             return
         self.service.publish_launch_admission(version, data)
 
@@ -671,13 +769,43 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             owner_pid = discovery.get("pid") if isinstance(discovery, dict) else None
             if type(owner_pid) is not int or owner_pid <= 0:
                 owner_pid = None
+            owner_birth_id = discovery.get("process_birth_id") if isinstance(discovery, dict) else None
             # Read-only OS-manager probe. It stays ahead of C1 on every platform:
-            # the in-callback recheck runs after Runtime's owner stop and its
-            # refusals are downstream-classified. C1 busy admission runs later in
-            # down(), so a probe refusal can be reported before the busy message.
+            # C1 busy admission runs later in down(), so an ownership refusal can
+            # be reported before the busy message. On macOS the validated R0 job
+            # is unloaded here, before C1 can let its frozen KeepAlive policy
+            # create a replacement PID.
             launchd_identity = None
+            launchd_snapshot = None
+            launchd_booted_out = False
             if self.managed_by != "pinokio":
-                launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
+                if self.service.system == "darwin":
+                    launchd_snapshot = self._launchd_recovery_snapshot(data, active_only=True)
+                    if launchd_snapshot is not None and type(launchd_snapshot.get("bootout_intent", False)) is not bool:
+                        raise ValueError("The retained R0 LaunchAgent bootout state is invalid.")
+                    launchd_booted_out = bool((launchd_snapshot or {}).get("bootout_intent", False))
+                    launchd_identity = self.service.admit_launchd_bootout(
+                        data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
+                        recovery_snapshot=launchd_snapshot,
+                    )
+                    if launchd_booted_out:
+                        if launchd_identity is not None:
+                            raise ValueError("A launchd service appeared after the R0 bootout; refusing to stop it.")
+                    elif launchd_identity is not None:
+                        # An update needs an exact durable R0 definition before
+                        # changing launchd. Direct stop/uninstall has no rollback
+                        # phase and may use the reviewed action admission alone.
+                        if self._active_update_transaction() is not None and launchd_snapshot is None:
+                            raise ValueError("The update has no retained R0 LaunchAgent definition; refusing bootout.")
+                        if launchd_snapshot is not None:
+                            self._mark_launchd_bootout_intent(data, launchd_snapshot)
+                        self.service.bootout_admitted_launchd(
+                            data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
+                            expected_identity=launchd_identity, recovery_snapshot=launchd_snapshot,
+                        )
+                        launchd_booted_out = True
+                else:
+                    launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
             def stop_selected_manager():
                 current_record = self.service.recorded()
                 if current_record and (current_record.get("owner") != LABEL
@@ -694,17 +822,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     else:
                         if (current_record or {}).get("foreground") is None:
                             if self.service.system == "darwin":
-                                checked_identity = self.service.validate_stop_target(
-                                    version, data, owner_pid=owner_pid,
-                                    expected_identity=launchd_identity, require_stopped=True)
-                                if launchd_identity is None and checked_identity is not None:
-                                    self.service._validated_launchd_stop = None
-                                    self.service._validated_launchd_stop_checked = False
-                                    raise ValueError("A launchd service appeared after the C1 stop admission.")
+                                # The R0 job was either booted out before C1 or
+                                # was absent when C1 began. Never authorize a
+                                # post-C1 bootout: a new job is a replacement.
+                                self.service.stop()
                             else:
                                 self.service.validate_stop_target(version, data, owner_pid=owner_pid)
-                            self.service.disable()
-                            self.service.stop()
+                                self.service.disable()
+                                self.service.stop()
                 if stop_manager is not None:
                     stop_manager()
 
@@ -721,6 +846,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                           stop_foreground=(stop_selected_foreground
                                            if restore_selection is None and isinstance(foreground, dict) else None),
                           restore_selection=restore_selection)
+            if (self.managed_by != "pinokio" and self.service.system == "darwin"
+                    and (launchd_booted_out or launchd_identity is None)):
+                # This runs after C1's owner stop, so a job present now cannot
+                # be the selected R0 process and is never signaled or booted out.
+                self.service.verify_launchd_absent_after_bootout()
         except Exception as exc:
             raise self._stop_failure(exc) from exc
 
@@ -1127,7 +1257,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 "data_root": str(data), "managed_by": "pinokio",
             })
         else:
-            self.service.register(version, data)
+            if not self._restore_launchd_r0_definition(version, data):
+                self.service.register(version, data)
         realm = self.workspace(version, data)
         record = self.service.recorded()
         settings = {"ASTRID_ACP_CWD": str(chat_cwd), **chat_options} if chat_cwd else {}
