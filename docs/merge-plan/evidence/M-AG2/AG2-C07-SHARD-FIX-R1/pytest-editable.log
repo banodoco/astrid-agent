@@ -1,0 +1,1598 @@
+...........................FFFFFFF.FF..................FFFF........F.... [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+....................................................                     [100%]
+=================================== FAILURES ===================================
+___ test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph ____
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_reaches_r0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff84469390>
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_path, monkeypatch):
+        import ast
+        import hashlib
+        import inspect
+        from astrid.core.execution import generic_host as module
+        from astrid.sdk import host_bootstrap
+        from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+        from vibecomfy.workflow_bundle import emit_bundle
+        from vibecomfy.security.provenance import Provenance
+    
+        # Derive the actual SDK argv; this route deliberately has no activation graph.
+        tree = ast.parse(inspect.getsource(host_bootstrap.ensure_pack_host))
+        argv = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "argv" for target in node.targets))
+        flags = {node.value for node in ast.walk(argv) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        assert "--register" in flags and not flags.intersection({"--host-control-fd", "--activation-fd", "--activation-socket"})
+        f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
+        profile_path = tmp_path / "readiness.json"
+        profile_path.write_text(json.dumps(f.profile))
+        monkeypatch.setenv("ASTRID_HOST_READINESS_PROFILE_PATH", str(profile_path))
+        monkeypatch.setenv("ASTRID_HOST_READINESS_PROFILE_HASH", "sha256:" + hashlib.sha256(profile_path.read_bytes()).hexdigest())
+        bundle_root = tmp_path / "bundle"
+        bundle_root.mkdir()
+        workflow = VibeWorkflow("sdk-cpu-handoff", WorkflowSource("sdk-cpu-handoff"),
+                                metadata={"model_id": "fixture-model", "ready_template": "fixture-template"})
+        workflow.add_node("Integer", uid="value", value=7)
+        emit_bundle(workflow, bundle_root / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
+        (bundle_root / "source.json").write_text('{"nodes":[],"links":[]}\n')
+        objects, digests = {}, []
+        for name, basename in (("python", "workflow.py"), ("companion", "workflow.vibe.json"), ("source", "source.json")):
+            data = (bundle_root / basename).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            objects[digest] = data
+            digests.append({"name": name, "digest": digest})
+        packs = tmp_path / "packs"
+        for capability, family in (("vibecomfy.run", "local_generation"), ("h3_av.compose", "cpu")):
+            path = packs / capability
+            path.mkdir(parents=True)
+            definition = {"schema_version": 1, "id": capability, "name": capability, "kind": "external", "version": "1.0",
+                "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; p=Path('{out}'); p.mkdir(parents=True,exist_ok=True); (p/'result.txt').write_text('settled')"]},
+                "inputs": [{"name": name, "type": "file"} for name in ("python", "companion", "source")] if family == "local_generation" else [],
+                "outputs": [{"name": "result", "type": "file", "path_template": "{out}/result.txt", "artifact_type": "text/plain"}],
+                "metadata": {"adapter_family": family, "resource_keys": ["gpu"] if family == "local_generation" else ["cpu"]}}
+            (path / "executor.yaml").write_text(json.dumps(definition))
+        runtime = FakeRuntime()
+        runtime.get_object = objects.__getitem__
+        host = GenericPackHost(pack_roots=[packs], client=runtime, attempt_base=tmp_path / "attempts")
+        host._native_engine_graph = None
+        host.discover()
+        host.preflight()
+        assert all(record.ready for record in host.capabilities.values())
+        before = {p.name: p.read_bytes() for p in f.session.iterdir()}
+        native = {"task": {"id": "vibe", "capability": "vibecomfy.run", "project_id": "unit-project",
+            "attempt_id": "vibe-attempt", "fence": 1, "input_object_ids": list(objects),
+            "spec": {"spec": {"inputs": {}, "input_digests": digests}}}}
+        runtime.tasks["vibe"] = native
+>       assert host.run_task(native, lease_token="unit-lease")["task"]["status"] == "completed"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/core/execution/test_generic_host_actions_v3.py:374: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+astrid/core/execution/generic_host.py:11058: in run_task
+    return self._run_task_impl(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.generic_host.GenericPackHost object at 0x7eff84e74050>
+task = {'task': {'attempt_id': 'vibe-attempt', 'capability': 'vibecomfy.run', 'fence': 1, 'id': 'vibe', ...}}
+
+    def _run_task_impl(
+        self,
+        task: Mapping[str, Any],
+        *,
+        lease_token: str,
+        attempt_id: str | None = None,
+        fence: int | None = None,
+        keep_attempt: bool = False,
+        provider_route_grant: str | None = None,
+        _terminal: dict[str, Any],
+    ) -> Mapping[str, Any]:
+        completion_call = _terminal["completion_call"]
+        if self.client is None:
+            raise HostError("runtime client is required to execute a task")
+        for operation in ("heartbeat", "task", "settle", "fail", "upload_object"):
+            if not callable(getattr(self.client, operation, None)):
+                raise HostError(
+                    f"runtime client lacks canonical {operation} operation"
+                )
+        task_data = task.get("task", task)
+        task_id = str(task_data["id"])
+        capability_id = str(task_data["capability"])
+        attempt_id = attempt_id or (str(task_data["attempt_id"]) if task_data.get("attempt_id") else None)
+        fence = fence if fence is not None else (int(task_data["fence"]) if task_data.get("fence") is not None else None)
+        if not attempt_id or fence is None:
+            raise HostError("runtime task execution requires attempt_id and fence")
+        root = _terminal["root"]
+        _terminal.update(task=task_data, attempt_id=attempt_id)
+        if self._shutdown.is_set():
+            raise HostCancelled("generic host is shutting down")
+        record = self.capabilities.get(capability_id)
+        if record is None:
+            self.discover()
+            record = self.capabilities.get(capability_id)
+        if record is None:
+            raise HostError(f"capability not discovered: {capability_id}")
+    
+        _terminal["record"] = record
+    
+        def evidence_failure_diagnostic(error: BaseException) -> dict[str, Any] | None:
+            if not isinstance(error, EvidenceCapError):
+                return None
+            raw = getattr(error, "diagnostic", {})
+            diagnostic = dict(raw) if isinstance(raw, Mapping) else {}
+            diagnostic.update(
+                {
+                    "guard": "generated_evidence",
+                    "attempt_id": attempt_id,
+                    "capability_id": capability_id,
+                    "capability_digest": record.capability_digest,
+                    "source_digest": record.source_digest,
+                    "dependency_digest": record.dependency_digest,
+                    "configured_cap_bytes": self.execution_policy.evidence_cap_bytes,
+                }
+            )
+            return diagnostic
+    
+        def fail_admission(error: Exception) -> None:
+            """Fence deterministic admission failures as terminal attempts."""
+            _terminal["error"] = error
+            message = str(error) + recovery_suffix(error)
+            if (record.adapter.family == "render" or record.adapter.remotion != "never") and "\nDetail: " not in message:
+                from astrid.core.rendering.failure_message import render_failure_message
+    
+                check = record.preflight.get("remotion", {})
+                remotion_reason = (str(check["reason"]) if isinstance(check, Mapping)
+                                   and check.get("ok") is False and not check.get("gates")
+                                   and check.get("reason") and str(check["reason"]) in message else None)
+                message = render_failure_message(message, remotion_reason=remotion_reason,
+                                                 unavailable=True, recovery=getattr(error, "recovery_command", ""))
+            try:
+                completion_call(self.client.fail,
+                    task_id,
+                    lease_token,
+                    message,
+                    retryable=False,
+                    attempt_id=attempt_id,
+                    fence=fence,
+                    **_structured_failure_kwargs(error),
+                )
+            except Exception as runtime_exc:
+                raise HostError(
+                    "deterministic admission failure was not recorded by Runtime"
+                ) from runtime_exc
+            raise HostError(str(error)) from error
+    
+        registration_error = self._registration_admission_reason()
+        if registration_error:
+            fail_admission(HostError(registration_error))
+        if _is_withdrawn(record):
+            fail_admission(
+                HostError(
+                    f"capability {capability_id!r} is {_withdrawn_reason(record)}"
+                )
+            )
+        # Idle advertisement reuses only the native observation. Every leased
+        # task must prove the complete selected runtime again before any work;
+        # exceptions as well as unavailable results settle the exact lease.
+        renderer_selection: dict[str, Any] | None = None
+        try:
+            if capability_id == "wan2gp.generate_video":
+                from astrid.core.generation.availability import require_action_available
+                require_action_available(capability_id)
+            self.preflight(capability_id)
+            record = self.capabilities[capability_id]
+            _terminal["record"] = record
+            if not record.ready:
+                raise HostError(
+                    f"capability {capability_id!r} is unavailable: "
+                    f"{_preflight_unavailable_reason(record)}"
+                )
+            registration_error = self._registration_admission_reason()
+            if registration_error:
+                raise HostError(registration_error)
+            renderer_selection = _renderer_selection(record, task_data)
+        except Exception as exc:
+            fail_admission(exc)
+    
+        try:
+            _assert_fixed_request_scope(record, task_data)
+            execution_contract = _terminal["execution_contract"]
+            workflow_endpoint = None
+            workflow_policy = None
+            if capability_id == "vibecomfy.run":
+                from astrid.packs.vibecomfy.endpoint_checkout import load_workflow_endpoint, workflow_endpoint_network_policy
+                selected_profile = _read_readiness_profile_document()
+                runpod = (execution_contract or {}).get("target", {}).get("kind") == "runpod"
+                if runpod:
+                    workflow_endpoint = load_workflow_endpoint(
+                        selected_profile, profile_path=Path(os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH", "")),
+                        execution_request=execution_contract,
+                    )
+                    workflow_policy = workflow_endpoint_network_policy(workflow_endpoint)
+                elif isinstance(selected_profile, Mapping) and ("workflow_endpoint" in selected_profile or "endpoint_evidence" in selected_profile):
+                    raise HostError("workflow endpoint requires its current admitted execution request")
+            contract_limits = execution_contract.get("limits", {}) if execution_contract else {}
+            queue_limit = contract_limits.get("max_queue_seconds")
+            if queue_limit is not None and _contract_queue_age(task_data) > queue_limit:
+                raise HostError("execution_request max_queue_seconds exceeded before execution")
+            claim_epoch = task_data.get("runtime_epoch", self.runtime_state.get("runtime_epoch"))
+            if execution_contract is not None:
+                if isinstance(claim_epoch, bool) or not isinstance(claim_epoch, int) or claim_epoch < 1:
+                    raise HostError("execution_request requires a claimed runtime_epoch")
+                observed_epoch = self.runtime_state.get("runtime_epoch")
+                if observed_epoch is not None and observed_epoch != claim_epoch:
+                    raise HostError("claimed runtime_epoch disagrees with observed runtime")
+            storage_estimate = _task_storage_limits(task_data)
+            if record.definition.metadata.get("storage_estimate_required"):
+                if storage_estimate is None:
+                    raise HostError(
+                        f"capability {capability_id!r} requires a whole-task storage_estimate"
+                    )
+                expected = {
+                    "scratch_bytes": record.estimated_scratch_bytes,
+                    "output_bytes": record.estimated_output_bytes,
+                }
+                if storage_estimate != expected:
+                    raise HostError(
+                        f"capability {capability_id!r} requires storage_estimate={expected}, "
+                        f"got {storage_estimate}"
+                    )
+            input_size_limits = _storage_input_limits(record.definition.metadata)
+        except Exception as exc:
+            fail_admission(exc)
+        try:
+            self.execution_policy.assert_budget_available()
+        except ExecutionGuardError as exc:
+            _terminal["error"] = exc
+            completion_call(self.client.fail,
+                task_id,
+                lease_token,
+                str(exc) + recovery_suffix(exc),
+                retryable=False,
+                attempt_id=attempt_id,
+                fence=fence,
+                failure_diagnostic=evidence_failure_diagnostic(exc),
+                **_structured_failure_kwargs(exc),
+            )
+            raise HostError(str(exc)) from exc
+        spec = task_data.get("spec", {})
+        if capability_id == "rendering.assemble_timeline":
+            from astrid.core.contracts.runtime_orchestration import is_native_assembler_spec
+    
+            if not is_native_assembler_spec(_admitted_spec_envelope(spec)):
+                fail_admission(HostError(
+                    "legacy assembler admission lacks an immutable original target; "
+                    "native assembly admission is required"
+                ))
+        private_runtime_context = isinstance(spec, Mapping) and (
+            "child_delegation" in spec or "delegated_parent" in spec or "delegated_recoverable_outputs" in spec)
+        authorized_input_object_ids = task_data.get("input_object_ids")
+        ephemeral_attempt_root = self.attempt_root is None and self.attempt_base is None
+        # ``attempt_root`` is intentionally an exact caller-owned spool for
+        # debug/single-attempt callers. Long-lived hosts use ``attempt_base``
+        # so sequential tasks get isolated namespaces.
+        # The fenced run root was allocated before admission so even a
+        # deterministic refusal has a host receipt.
+        # Render media capacity is guarded by disk_usage, not the evidence cap.
+        # Other packs retain their finite, explicitly admitted storage caps.
+        attempt_evidence_cap = self.execution_policy.evidence_cap_bytes
+        if storage_estimate is not None:
+            attempt_evidence_cap = max(attempt_evidence_cap, sum(storage_estimate.values()))
+        runtime_limit = contract_limits.get("max_runtime_seconds")
+        lifetime = _terminal["lifetime"]
+        lifetime.runtime_limit = runtime_limit
+        # Noninteractive native sessions still need their finite submission bound.
+        execution_deadline = lifetime.deadline()
+        collection_limit = contract_limits.get("collection_seconds")
+        warm_receipt = self.execution_policy.warm_expectation()
+        evidence_receipt: dict[str, Any] | None = None
+        deadline_exceeded = False
+        settled = False
+        cancelled_attempt = False
+        network_broker: _NetworkBrokerContext | None = None
+        pump_stop = _terminal["pump_stop"]
+        pump_thread = _terminal["pump_thread"]
+        evidence_root: Path | None = None
+        output_capture_paths = tuple(root / name for name in _TASK_OUTPUT_DIAGNOSTIC_NAMES)
+        immutable_input_baseline: dict[str, tuple[int, str]] = {}
+        evidence_cap_exceeded = False
+        evidence_failure_message: str | None = None
+        evidence_failure_receipt: dict[str, Any] | None = None
+        storage_failure_receipt: dict[str, Any] | None = None
+        command_cleanup_error: CommandCleanupUnresolved | None = None
+        deadline_failed = False
+        render_child_pending = False
+        storage_receipt: dict[str, int] | None = None
+        # Every network attempt gets a fresh host-issued nonce.  It is part of
+        # the immutable admission presented to an observable broker, so a
+        # handshake captured from another task cannot be replayed.
+        network_admission = {
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+            "fence": fence,
+            "capability_digest": record.capability_digest,
+            "source_digest": record.source_digest,
+            "dependency_digest": record.dependency_digest,
+            "version": record.definition.version,
+            "source_root": str(record.source_root),
+            "source_roots": [str(root) for root in _admitted_source_roots(record.source_root, record.definition)],
+            "network_nonce": secrets_module.token_urlsafe(24),
+            "allowed_routes": list((_network_policy(record) or {}).get("allowed_routes", (_network_policy(record) or {}).get("allowed_destinations", ()))),
+        }
+        if workflow_policy is not None:
+            network_admission["allowed_routes"] = list(workflow_policy["allowed_destinations"])
+        endpoint_transport = None
+        cancel_signal = _terminal["cancel_signal"]
+        managed_adapter = _ManagedTaskAdapter(
+            cancel_signal,
+            process_census=lambda: bool(self._active_processes),
+        )
+        runtime_instance_id = str(
+            self.runtime_state.get("runtime_instance_id")
+            or self.runtime_state.get("instance_id")
+            or "runtime-local"
+        )
+        runtime_endpoint = str(
+            getattr(self.client, "endpoint", None)
+            or getattr(getattr(self.client, "generated", None), "endpoint", None)
+            or "runtime://local"
+        )
+        host_birth_id = process_birth_identity()
+        managed_binding = SessionBinding(
+            session_id=f"{capability_id}:{task_id}",
+            runtime_instance_id=runtime_instance_id,
+            process_birth_id=host_birth_id,
+            endpoint=runtime_endpoint,
+            source_digest=record.source_digest,
+            config_digest=_canonical_digest(
+                {
+                    "capability_digest": record.capability_digest,
+                    "dependency_digest": record.dependency_digest,
+                    "interpreter": str(Path(sys.executable).resolve()),
+                }
+            ),
+            runtime_epoch=claim_epoch if isinstance(claim_epoch, int) and not isinstance(claim_epoch, bool) else None,
+            launch_generation=str(self.runtime_state.get("launch_generation") or host_birth_id),
+            engine_birth_id=host_birth_id,
+        )
+        managed_capability = CapabilityDescriptor(
+            capability_id=capability_id,
+            residency_support="unsupported",
+            resources_claimed=tuple(record.resource_keys),
+            warm_reuse_expected=self.execution_policy.warm_reuse_expected,
+        )
+        readiness_profile = _read_readiness_profile_document()
+        vibe_session = (
+            readiness_profile.get("vibecomfy_session")
+            if isinstance(readiness_profile, Mapping)
+            else None
+        )
+        if capability_id == "vibecomfy.run" and isinstance(vibe_session, Mapping):
+            managed_capability = CapabilityDescriptor(
+                capability_id=capability_id,
+                residency_support="observable_releasable",
+                resources_claimed=tuple(record.resource_keys),
+                warm_reuse_expected=self.execution_policy.warm_reuse_expected,
+            )
+            managed_adapter = None
+        managed_token = None
+        managed_settled = False
+        managed_opened = False
+        self._requested_idle_seconds = ((execution_contract or {}).get("lifecycle") or {}).get("idle_timeout_seconds")
+        execution_identity = ""
+        model_id = "vibecomfy.run"
+        template_id = "vibecomfy.run"
+        self._vibecomfy_current_warmth_hint = None
+        self._vibecomfy_requested_warmth_hint = None
+    
+        def current_task_state():
+            return _terminal["task_snapshot"]()["status"]
+    
+        def cancelled():
+            nonlocal deadline_exceeded, evidence_cap_exceeded
+            nonlocal evidence_failure_receipt, evidence_failure_message
+            try:
+                lifetime.assert_authority()
+            except Exception:
+                cancel_signal.set()
+                return True
+            if lifetime.expired():
+                deadline_exceeded = True
+                cancel_signal.set()
+                return True
+            if self._shutdown.is_set() or cancel_signal.is_set():
+                return True
+            if evidence_root is not None:
+                try:
+                    self.execution_policy.assert_evidence_cap(
+                        evidence_root,
+                        immutable_inputs=immutable_input_baseline,
+                        cap_bytes=attempt_evidence_cap,
+                        excluded_roots=output_capture_paths + (
+                            _render_media_roots(root) if capability_id == "rendering.render" else ()
+                        ),
+                    )
+                except EvidenceCapError as exc:
+                    evidence_cap_exceeded = True
+                    evidence_failure_receipt = evidence_failure_diagnostic(exc)
+                    evidence_failure_message = str(exc)
+                    cancel_signal.set()
+                    return True
+                finally:
+                    self._publish_evidence_status()
+            try:
+                state = current_task_state()
+            except Exception as exc:
+                if _terminal["lease_transport_fault"]("task_read_exception", exc):
+                    return False
+                _terminal["force_abort"]("lease_lost")
+                return True
+            # A request contains this owned invocation; it is not a Runtime
+            # terminal acknowledgement or proof of provider/session cleanup.
+            return state in {"cancel_requested", "cancelled"}
+    
+        def terminalize_deadline() -> None:
+            """Fence a deadline expiry at Runtime before returning to the worker."""
+            nonlocal deadline_failed
+            try:
+                deadline_outputs, deadline_result = collect_terminal_evidence(
+                    "failed", AstridError("execution deadline exceeded", code="timeout")
+                )
+                completion_call(self.client.fail,
+                    task_id,
+                    lease_token,
+                    "execution deadline exceeded",
+                    structured_error={"code": "timeout"},
+                    retryable=False,
+                    attempt_id=attempt_id,
+                    fence=fence,
+                    outputs=deadline_outputs, result=deadline_result,
+                )
+                deadline_failed = True
+            except Exception as exc:
+                try:
+                    state = current_task_state()
+                except Exception as status_exc:
+                    raise HostError("deadline cancellation could not be verified") from status_exc
+                if state not in {"cancelled", "failed"}:
+                    raise HostError("deadline terminalization was not accepted by Runtime") from exc
+                deadline_failed = state == "failed"
+    
+        def collect_terminal_evidence(status: str, error: BaseException) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            """Harvest and upload verified partial outputs before terminal mutation."""
+            upload_started = False
+            try:
+                normalized = coerce_astrid_error(error)
+                error_value = {
+                    "code": normalized.code or "executor_failed",
+                    "message": normalized.message or type(error).__name__,
+                }
+            except BaseException:
+                # Error normalization is executor controlled and may itself
+                # fail. Terminal evidence must still be attachable with a
+                # bounded fallback description.
+                error_value = {"code": "executor_failed", "message": type(error).__name__}
+            if ("pending_outputs" in _terminal and "pending_result" in _terminal
+                    and _terminal.get("pending_status") == status):
+                return _terminal["pending_outputs"], _terminal["pending_result"]
+            output_root = _terminal.get("output_root")
+            if output_root is None:
+                result_value = {"status": status, "error": error_value}
+                _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
+                return [], result_value
+            try:
+                values = dict(_terminal.get("inputs") or {})
+                values.update({"out": str(output_root), "run_root": str(root), "python_exec": sys.executable})
+                if record.definition.command is not None:
+                    _, values = _bind_host_owned_command_outputs(
+                        record, values, output_root=Path(output_root)
+                    )
+                manifest_path = Path(output_root) / "manifest.json"
+                self._prepare_producer_evidence(Path(output_root), task_data)
+                # A result manifest is mandatory for a successful run, but a
+                # failure before the producer writes one is still publishable
+                # as a terminal result with no outputs. Do not guess output
+                # identities from loose files in that spool.
+                receipt_required = bool(
+                    isinstance(record.definition.metadata, Mapping)
+                    and record.definition.metadata.get("output_result_manifest")
+                )
+                if receipt_required and not manifest_path.exists():
+                    harvested = []
+                else:
+                    harvested = harvest_staged_outputs(
+                        output_root, definition=record.definition,
+                        declared_outputs=record.definition.outputs, values=values, require=False,
+                    )
+                if manifest_path.is_file() and not manifest_path.is_symlink():
+                    manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if manifest_value.get("kind") == "managed-generation-result.v1":
+                        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+    
+                        validate_managed_generation_result(
+                            manifest_value, staging_root=output_root,
+                            expected_task_id=task_id, expected_attempt_id=attempt_id,
+                        )
+                self._validate_producer_evidence(
+                    harvested, output_root=Path(output_root), task_id=task_id, attempt_id=attempt_id,
+                )
+                typed = self._typed_outputs(record, harvested, root)
+                task_epoch = task_data.get("runtime_epoch")
+                upload_started = bool(typed)
+                uploaded = self._upload_outputs(
+                    typed,
+                    project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
+                    task_id=task_id, attempt_id=attempt_id, lease_id=lease_token,
+                    fence=fence, runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
+                ) if typed else []
+                result_value: dict[str, Any] = {
+                    "status": status,
+                    "error": error_value,
+                    "outcomes": {"execution": {"status": status}},
+                }
+                manifest = next((row for row in uploaded
+                                 if row.get("output_port", row.get("name")) == "result_manifest"), None)
+                if manifest is not None:
+                    result_value["manifest_ref"] = {
+                        "object_id": manifest.get("digest"), "size": manifest.get("size"),
+                    }
+            except Exception as evidence_error:
+                # A local manifest/harvest/identity failure means these
+                # outputs cannot be described safely. Preserve the producer's
+                # original failure and publish an empty result; only an upload
+                # failure leaves evidence awaiting Runtime recovery.
+                _terminal["evidence_error"] = type(evidence_error).__name__
+                if not upload_started:
+                    warnings = _terminal.setdefault("evidence_warnings", [])
+                    warnings.append(f"terminal evidence unavailable: {type(evidence_error).__name__}")
+                    result_value = {
+                        "status": status,
+                        "error": error_value,
+                        "outcomes": {"execution": {"status": status}},
+                    }
+                    _terminal.update(
+                        pending_outputs=[], pending_result=result_value, pending_status=status
+                    )
+                    return [], result_value
+                # Keep the attempt spool and expose why evidence could not be attached.
+                _terminal["evidence_pending"] = True
+                raise HostError("terminal evidence publication is pending Runtime recovery") from evidence_error
+            _terminal.update(pending_outputs=uploaded, pending_result=result_value, pending_status=status)
+            return uploaded, result_value
+    
+        def handle_guard_abort() -> None:
+            if _terminal.get("forced") == "lease_lost":
+                raise HostError("execution lease lost")
+            if _terminal.get("forced") == "timeout":
+                nonlocal deadline_exceeded
+                deadline_exceeded = True
+            if evidence_cap_exceeded:
+                evidence_outputs, evidence_result = collect_terminal_evidence(
+                    "failed", AstridError(_evidence_cap_message(evidence_failure_message), code="evidence_cap")
+                )
+                completion_call(self.client.fail,
+                    task_id,
+                    lease_token,
+                    _evidence_cap_message(evidence_failure_message),
+                    structured_error={"code": "evidence_cap"},
+                    retryable=False,
+                    attempt_id=attempt_id,
+                    fence=fence,
+                    failure_diagnostic=evidence_failure_receipt,
+                    outputs=evidence_outputs, result=evidence_result,
+                )
+                raise HostError(_evidence_cap_message(evidence_failure_message))
+            if deadline_exceeded:
+                terminalize_deadline()
+            elif callable(getattr(self.client, "cancel", None)):
+                evidence_outputs, evidence_result = collect_terminal_evidence(
+                    "cancelled", AstridError("execution cancelled", code="cancelled")
+                )
+                cancel_kwargs = {
+                    "attempt_id": attempt_id, "fence": fence, "lease_id": lease_token,
+                    "runtime_epoch": task_data.get("runtime_epoch"),
+                    "outputs": evidence_outputs, "result": evidence_result,
+                    "stop_observed": True,
+                }
+                try:
+                    completion_call(self.client.cancel, task_id, **cancel_kwargs)
+                except BaseException:
+                    _terminal["evidence_pending"] = True
+                    raise
+    
+        read_progress = _terminal["read_progress"]
+        try:
+            _terminal["renew_progress"]()
+        except Exception as exc:
+            if not _terminal["lease_transport_fault"]("heartbeat_exception", exc):
+                raise
+        child_bridge = None
+        session_hold = None
+        try:
+            session_hold = self._hold_session_slot()
+            # Admission readback is bounded transport work under the lease pump.
+            # Decide exactly once, retaining the original start and setup bound.
+            lifetime.authority = _interactive_review_authority(
+                self, task_data, record, attempt_id=attempt_id, lease_id=lease_token,
+                fence=fence, runtime_epoch=claim_epoch)
+            if isinstance(spec, Mapping) and ("child_delegation" in spec or "delegated_recoverable_outputs" in spec):
+                from ._child_bridge import HostChildBridge
+    
+                child_bridge = HostChildBridge(
+                    self, task_data, attempt_id=attempt_id, lease_id=lease_token, fence=fence,
+                    runtime_epoch=claim_epoch, output_root=root / "outputs", cancelled=cancelled)
+                with self._process_lock:
+                    self._child_bridges.add(child_bridge)
+                lifetime.review = _training_review_authority(
+                    self, task_data, record, child_bridge, attempt_id=attempt_id, lease_id=lease_token,
+                    fence=fence, runtime_epoch=claim_epoch)
+            raw_task_param_ports = record.definition.metadata.get("hc04_param_ports")
+            task_param_ports = (
+                tuple(str(value) for value in raw_task_param_ports)
+                if isinstance(raw_task_param_ports, (list, tuple))
+                else None
+            )
+            raw_cas_param_ports = record.definition.metadata.get("hc04_cas_param_ports")
+            cas_param_ports = (
+                tuple(str(value) for value in raw_cas_param_ports)
+                if isinstance(raw_cas_param_ports, (list, tuple))
+                else None
+            )
+            raw_optional_cas_param_ports = record.definition.metadata.get(
+                "hc04_optional_cas_param_ports"
+            )
+            optional_cas_param_ports = (
+                tuple(str(value) for value in raw_optional_cas_param_ports)
+                if isinstance(raw_optional_cas_param_ports, (list, tuple))
+                else None
+            )
+            _terminal["stage"] = "materialize_inputs"
+            inputs = self._materialize_inputs(
+                spec,
+                root,
+                authorized_input_object_ids=authorized_input_object_ids,
+                task_param_ports=task_param_ports,
+                cas_param_ports=cas_param_ports,
+                optional_cas_param_ports=optional_cas_param_ports,
+                storage_estimate=storage_estimate,
+                input_size_limits=input_size_limits,
+                storage_policy_version=(
+                    str(record.definition.metadata.get("storage_policy_version"))
+                    if record.definition.metadata.get("storage_policy_version") is not None
+                    else None
+                ),
+                continuation_id=task_id,
+                producer_identity={"task_id": task_id, "attempt_id": attempt_id,
+                                   "executor_id": self.executor_id, "fence": fence,
+                                   "runtime_epoch": claim_epoch},
+                file_input_names=frozenset(
+                    port.name
+                    for port in record.definition.inputs
+                    if port.type == "file"
+                ),
+            )
+            if capability_id == "h3_av.transform":
+                if "host_output_root" in inputs or child_bridge is None:
+                    raise HostError("H3 parent requires host-owned output custody and delegated admission")
+                inputs["host_output_root"] = str(root / "outputs")
+            _terminal["inputs"] = inputs
+            if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
+                from astrid.core.generation.backends.vibecomfy_local_server import (
+                    validate_comfy_url,
+                    validate_output_directory,
+                )
+    
+                if readiness_profile is not None or inputs.get("source_video"):
+                    raise HostError("local_server cannot use a readiness profile or source_video")
+                inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
+                if inputs.get("comfy_output_dir"):
+                    inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
+                local_network_policy = _network_policy(record, inputs)
+                if local_network_policy is None:
+                    raise HostError("vibecomfy.run local_server requires a network policy")
+                network_admission["allowed_routes"] = local_network_policy["allowed_destinations"]
+                managed_adapter = _ManagedLocalServerTaskAdapter(
+                    cancel_signal, url=inputs["comfy_url"], destination=root / "outputs",
+                    process_census=lambda: bool(self._active_processes),
+                )
+            if renderer_selection is not None and not inputs.get("selector"):
+                # The child never relies on its own default renderer.
+                inputs["selector"] = renderer_selection["selector"]
+            _iteration_video_discovery(
+                self, task_data, record, child_bridge, inputs, attempt_id=attempt_id,
+                lease_id=lease_token, fence=fence, runtime_epoch=claim_epoch, cancelled=cancelled)
+            if record.definition.metadata.get("storage_policy_version") in {
+                "astrid.cloud-i2i.z-image.v1",
+                "astrid.cloud-edit.qwen-source.v1",
+                "astrid.cloud-edit.unified.v1",
+            }:
+                from astrid.core.generation.storage_policy import (
+                    CLOUD_EDIT_STORAGE_POLICY,
+                    CLOUD_I2I_STORAGE_POLICY,
+                    CLOUD_UNIFIED_EDIT_STORAGE_POLICY,
+                    ImageStoragePolicyError,
+                )
+    
+                admitted_spec = spec.get("spec") if isinstance(spec, Mapping) else None
+                admitted_params = admitted_spec.get("params") if isinstance(admitted_spec, Mapping) else None
+                descriptor = admitted_params.get("image_ref") if isinstance(admitted_params, Mapping) else None
+                materialized = inputs.get("image_ref")
+                media_type = descriptor.get("media_type") if isinstance(descriptor, Mapping) else None
+                if not isinstance(materialized, str) or not isinstance(media_type, str):
+                    raise HostError("bounded cloud i2i source materialization is incomplete")
+                storage_policy = (
+                    CLOUD_I2I_STORAGE_POLICY
+                    if record.definition.metadata.get("storage_policy_version")
+                    == CLOUD_I2I_STORAGE_POLICY.version
+                    else (
+                        CLOUD_UNIFIED_EDIT_STORAGE_POLICY
+                        if record.definition.metadata.get("storage_policy_version")
+                        == CLOUD_UNIFIED_EDIT_STORAGE_POLICY.version
+                        else CLOUD_EDIT_STORAGE_POLICY
+                    )
+                )
+                try:
+                    if storage_policy is CLOUD_UNIFIED_EDIT_STORAGE_POLICY:
+                        mask_descriptor = admitted_params.get("mask_ref") if isinstance(admitted_params, Mapping) else None
+                        materialized_mask = inputs.get("mask_ref")
+                        mask_media_type = mask_descriptor.get("media_type") if isinstance(mask_descriptor, Mapping) else None
+                        storage_policy.validate_materialized_inputs(
+                            model=str(admitted_params.get("model")),
+                            mode=str(admitted_params.get("mode")),
+                            execution=str(admitted_params.get("execution")),
+                            params={
+                                **dict(admitted_params),
+                                "image_ref": materialized,
+                                "mask_ref": materialized_mask,
+                            },
+                            image_media_type=media_type,
+                            mask_media_type=mask_media_type,
+                        )
+                    else:
+                        storage_policy.validate_materialized_source(
+                            materialized,
+                            media_type=media_type,
+                        )
+                except ImageStoragePolicyError as exc:
+                    raise HostError(str(exc)) from exc
+            _assert_live_storage_envelope(storage_estimate, root, root / "outputs")
+            immutable_input_baseline = {}
+            for input_root in (root / "inputs", root / "managed-objects"):
+                immutable_input_baseline.update(
+                    self.execution_policy.immutable_input_baseline(input_root)
+                )
+            evidence_root = root
+            lifetime.assert_deadline()
+            if capability_id == "vibecomfy.run":
+                execution_identity, model_id, template_id, workflow_session_requirements = (
+                    _prepare_vibecomfy_execution_identity(
+                        inputs,
+                        root / "workflow-identity",
+                        readiness_profile,
+                    )
+                )
+                network_admission["execution_identity"] = execution_identity
+                from astrid.packs.vibecomfy.production_engine import session_identity_digest
+    
+                exact_facts = (
+                    readiness_profile.get("verified_facts", {}).get("exact", {})
+                    if isinstance(readiness_profile, Mapping)
+                    and isinstance(readiness_profile.get("verified_facts"), Mapping)
+                    else {}
+                )
+                model_digest = (
+                    exact_facts.get("model_digest")
+                    if isinstance(exact_facts, Mapping)
+                    else None
+                )
+                facts_digest = (
+                    readiness_profile.get("verified_facts_digest")
+                    if isinstance(readiness_profile, Mapping)
+                    else None
+                )
+                if not isinstance(vibe_session, Mapping):
+                    # pip_embedded is a valid local, non-persistent route. It
+                    # has no VibeComfy session binding, so bind reuse to the
+                    # admitted workflow's resident requirements plus the
+                    # pinned dependency/source identity instead.
+                    session_identity_fields = {
+                        "profile": "pip_embedded",
+                        "source_digest": record.source_digest,
+                        "dependency_digest": record.dependency_digest,
+                        "workflow_resident_requirements": workflow_session_requirements,
+                    }
+                else:
+                    session_identity_fields = {
+                        "verified_facts_digest": facts_digest,
+                        "runtime_instance_id": (
+                            readiness_profile.get("runtime", {}).get("runtime_instance_id")
+                            if isinstance(readiness_profile.get("runtime"), Mapping)
+                            else None
+                        ),
+                        "source_revision": vibe_session.get("source_revision"),
+                        "source_content_digest": vibe_session.get("source_content_digest"),
+                        "config_digest": vibe_session.get("config_digest"),
+                        "server_url": vibe_session.get("server_url"),
+                        "workflow_resident_requirements": workflow_session_requirements,
+                    }
+                stable_session_identity = session_identity_digest(
+                    model_id,
+                    model_digest=model_digest,
+                    required_identity=session_identity_fields,
+                )
+                managed_binding = replace(
+                    managed_binding,
+                    # Workflow/template/attempt identity remains in the
+                    # admitted child request.  ManagedToolSession compares
+                    # only this stable model/session identity so a compatible
+                    # workflow switch stays in the same owned session.
+                    execution_identity=stable_session_identity,
+                )
+                # A changed resident identity must release the current owned
+                # server before we construct a replacement adapter.  The
+                # owner restart mutates the in-memory VibeComfy session binding
+                # after verifying the fresh registry; re-read that binding
+                # before any new adapter/session object is admitted.
+                current_binding = self.managed_tool_session.current_binding
+                if (
+                    current_binding is not None
+                    and current_binding.execution_identity != stable_session_identity
+                ):
+                    if workflow_endpoint is not None:
+                        raise HostError("installed endpoint replacement requires original owner reconciliation")
+                    self.managed_tool_session.release(reason="capacity_replacement")
+                    readiness_profile = _read_readiness_profile_document()
+                    refreshed_session = (
+                        readiness_profile.get("vibecomfy_session")
+                        if isinstance(readiness_profile, Mapping)
+                        else None
+                    )
+                    if not isinstance(refreshed_session, Mapping):
+                        raise HostError("vibecomfy owner restart did not provide a fresh VibeComfy session")
+                    vibe_session = refreshed_session
+                    fresh_facts = (
+                        readiness_profile.get("verified_facts", {}).get("exact", {})
+                        if isinstance(readiness_profile, Mapping)
+                        and isinstance(readiness_profile.get("verified_facts"), Mapping)
+                        else {}
+                    )
+                    fresh_model_digest = (
+                        fresh_facts.get("model_digest")
+                        if isinstance(fresh_facts, Mapping)
+                        else None
+                    )
+                    fresh_facts_digest = (
+                        readiness_profile.get("verified_facts_digest")
+                        if isinstance(readiness_profile, Mapping)
+                        else None
+                    )
+                    fresh_identity_fields = {
+                        "verified_facts_digest": fresh_facts_digest,
+                        "runtime_instance_id": (
+                            readiness_profile.get("runtime", {}).get("runtime_instance_id")
+                            if isinstance(readiness_profile.get("runtime"), Mapping)
+                            else None
+                        ),
+                        "source_revision": vibe_session.get("source_revision"),
+                        "source_content_digest": vibe_session.get("source_content_digest"),
+                        "config_digest": vibe_session.get("config_digest"),
+                        "server_url": vibe_session.get("server_url"),
+                        "workflow_resident_requirements": workflow_session_requirements,
+                    }
+                    stable_session_identity = session_identity_digest(
+                        model_id,
+                        model_digest=fresh_model_digest,
+                        required_identity=fresh_identity_fields,
+                    )
+                    managed_binding = replace(
+                        managed_binding, execution_identity=stable_session_identity
+                    )
+            if capability_id == "vibecomfy.run" and isinstance(vibe_session, Mapping):
+                endpoint_kwargs = {}
+                if workflow_endpoint is not None:
+                    if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
+                        raise HostError("RunPod workflow cannot use local_server overrides")
+                    from astrid.core.generation.engine_transport import EngineEndpointTransport
+                    from runpod_lifecycle.https import PORT
+                    endpoint_transport = EngineEndpointTransport(
+                        workflow_endpoint, pod_id=workflow_endpoint.attestation.pod_id, agent_port=PORT,
+                    )
+                    endpoint_kwargs["endpoint_transport"] = endpoint_transport
+                session_id = str(vibe_session.get("session_dir") or "")
+                session_birth = str(vibe_session.get("process_birth_id") or "")
+                session_endpoint = str(vibe_session.get("server_url") or "")
+                session_source = str(vibe_session.get("source_revision") or "")
+                session_config = str(vibe_session.get("config_digest") or "")
+                runtime_profile = readiness_profile.get("runtime")
+                if (not isinstance(runtime_profile, Mapping)
+                        or not runtime_profile.get("runtime_instance_id")
+                        or type(claim_epoch) is not int or claim_epoch < 1
+                        or not vibe_session.get("launch_generation")
+                        or not vibe_session.get("comfy_process_birth_id")
+                        or not vibe_session.get("source_content_digest")):
+>                   raise HostError("Comfy owner binding requires complete Runtime and engine birth evidence")
+E                   astrid.core.execution.generic_host.HostError: Comfy owner binding requires complete Runtime and engine birth evidence
+
+astrid/core/execution/generic_host.py:11961: HostError
+__________ test_sdk_cpu_handoff_binding_drift_never_restarts[session] __________
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff844f7d90>
+field = 'session'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+>       if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+                               ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'ComfyHostHooks' object has no attribute '_host_session'
+
+tests/core/execution/test_generic_host_actions_v3.py:399: AttributeError
+__________ test_sdk_cpu_handoff_binding_drift_never_restarts[profile] __________
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff84469b70>
+field = 'profile'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+>       elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+                                 ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'ComfyHostHooks' object has no attribute '_host_profile'
+
+tests/core/execution/test_generic_host_actions_v3.py:400: AttributeError
+___________ test_sdk_cpu_handoff_binding_drift_never_restarts[model] ___________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff835c6740>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff869bc0c0>
+field = 'model'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff835c6740>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+_________ test_sdk_cpu_handoff_binding_drift_never_restarts[template] __________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff84d77b60>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff835c6580>
+field = 'template'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff84d77b60>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+__________ test_sdk_cpu_handoff_binding_drift_never_restarts[runtime] __________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff835c6c10>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d4')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff84d77d20>
+field = 'runtime'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff835c6c10>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+________ test_sdk_cpu_handoff_binding_drift_never_restarts[fingerprint] ________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff869bd240>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d5')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff835c66d0>
+field = 'fingerprint'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff869bd240>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+_______ test_sdk_cpu_handoff_binding_drift_never_restarts[lost_binding] ________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff86a1c4b0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d6')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff835c6040>
+field = 'lost_binding'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff86a1c4b0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+________ test_sdk_cpu_handoff_binding_drift_never_restarts[invocation] _________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff833f34d0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d7')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff835c7620>
+field = 'invocation'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff833f34d0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+___________ test_sdk_cpu_handoff_late_finally_preserves_fresh_token ____________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff86a1f150>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_late_fina0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff86a1f7e0>
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    def test_sdk_cpu_handoff_late_finally_preserves_fresh_token(tmp_path, monkeypatch):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        newer = f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="newer")
+        _settle_cpu_handoff_token(f.host.managed_tool_session, newer)
+        f.host._record_native_cpu_handoff(f.bridge, newer, managed_settled=True, runtime_settled=True)
+        f.host._record_native_cpu_handoff(f.bridge, f.token, managed_settled=False, runtime_settled=False)
+        assert f.bridge.cpu_handoff_token is newer
+>       _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:478: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7eff86a1f150>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+____ test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources0] ____
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_never_aut0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff833f37e0>
+resources = ('gpu',)
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("resources", [("gpu",), ("cpu", "gpu"), ("model",)])
+    def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeypatch, resources):
+        from astrid.core.execution.managed_tool_session import SessionCapacityError
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        with pytest.raises(SessionCapacityError, match="release was not verified"):
+            _open_cpu_handoff(f, resources=resources)
+        assert f.host.managed_tool_session.occupied
+>       assert f.controls == ["/interrupt", "/queue", "/api/free"]
+E       AssertionError: assert [] == ['/interrupt'..., '/api/free']
+E         
+E         Right contains 3 more items, first extra item: '/interrupt'
+E         Use -v to get more diff
+
+tests/core/execution/test_generic_host_actions_v3.py:489: AssertionError
+____ test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources1] ____
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_never_aut1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff833f0d70>
+resources = ('cpu', 'gpu')
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("resources", [("gpu",), ("cpu", "gpu"), ("model",)])
+    def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeypatch, resources):
+        from astrid.core.execution.managed_tool_session import SessionCapacityError
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        with pytest.raises(SessionCapacityError, match="release was not verified"):
+            _open_cpu_handoff(f, resources=resources)
+        assert f.host.managed_tool_session.occupied
+>       assert f.controls == ["/interrupt", "/queue", "/api/free"]
+E       AssertionError: assert [] == ['/interrupt'..., '/api/free']
+E         
+E         Right contains 3 more items, first extra item: '/interrupt'
+E         Use -v to get more diff
+
+tests/core/execution/test_generic_host_actions_v3.py:489: AssertionError
+____ test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources2] ____
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_never_aut2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff833f2a50>
+resources = ('model',)
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("resources", [("gpu",), ("cpu", "gpu"), ("model",)])
+    def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeypatch, resources):
+        from astrid.core.execution.managed_tool_session import SessionCapacityError
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        with pytest.raises(SessionCapacityError, match="release was not verified"):
+            _open_cpu_handoff(f, resources=resources)
+        assert f.host.managed_tool_session.occupied
+>       assert f.controls == ["/interrupt", "/queue", "/api/free"]
+E       AssertionError: assert [] == ['/interrupt'..., '/api/free']
+E         
+E         Right contains 3 more items, first extra item: '/interrupt'
+E         Use -v to get more diff
+
+tests/core/execution/test_generic_host_actions_v3.py:489: AssertionError
+_____ test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown ______
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-SHARD-FIX-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_serialize0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff833f1ef0>
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    def test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown(tmp_path, monkeypatch):
+        from astrid.core.execution.managed_tool_session import ManagedToolSessionError
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        entered, proceed, admission_entered, shutdown_entered = [f.threading.Event() for _ in range(4)]
+        outcomes = []
+        def on_control(count):
+            if count == 5:
+                entered.set()
+                assert proceed.wait(3)
+        f.http["on_control"] = on_control
+        def transition():
+            try: _open_cpu_handoff(f); outcomes.append("transition")
+            except BaseException as exc: outcomes.append(exc)
+        def admit():
+            admission_entered.set()
+            try: f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="race")
+            except ManagedToolSessionError: outcomes.append("admission-rejected")
+        def shutdown_gate():
+            shutdown_entered.set()
+            with f.host.managed_tool_session._lock: f.host._shutdown.set()
+            with f.host._handoff_condition: outcomes.append("shutdown-gate")
+        threads = [f.threading.Thread(target=fn) for fn in (transition, admit, shutdown_gate)]
+        try:
+>           threads[0].start(); assert entered.wait(3)
+                                ^^^^^^^^^^^^^^^^^^^^^^
+E           assert False
+E            +  where False = wait(3)
+E            +    where wait = <threading.Event at 0x7eff85688d10: unset>.wait
+
+tests/core/execution/test_generic_host_actions_v3.py:555: AssertionError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+=========================== short test summary info ============================
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[session]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[profile]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[model]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[template]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[runtime]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[fingerprint]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[lost_binding]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[invocation]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_late_finally_preserves_fresh_token
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources0]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources1]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources2]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown
+14 failed, 254 passed in 273.55s (0:04:33)
