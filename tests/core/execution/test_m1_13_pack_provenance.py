@@ -3,7 +3,6 @@ import json
 import mmap
 import os
 import shutil
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -596,7 +595,6 @@ def test_real_host_refuses_capture_while_writable_mmap_is_open(tmp_path, monkeyp
     assert runtime.failures
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux file leases are required")
 @pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
 def test_real_host_refuses_when_selected_pack_lease_is_unavailable(
     tmp_path, monkeypatch, route,
@@ -654,7 +652,6 @@ def test_real_host_refuses_when_selected_pack_lease_is_unavailable(
     assert runtime.failures
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux file leases are required")
 @pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
 def test_real_host_releases_partial_selected_pack_leases_on_failure(
     tmp_path, monkeypatch, route,
