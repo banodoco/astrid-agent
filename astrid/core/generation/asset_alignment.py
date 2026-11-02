@@ -47,7 +47,12 @@ class ManagedAssetTarget:
         return ComfyTargetClient(ComfyTarget(self.url, 'managed')).object_info()
 
     def cached_object_info(self) -> dict[str, Any] | None:
-        from vibecomfy.schema.cache import CACHE_METADATA_KEY, load_object_info_cache, object_info_payload, validate_object_info_cache
+        from vibecomfy.schema.cache import (
+            CACHE_METADATA_KEY,
+            load_object_info_cache,
+            object_info_payload,
+            validate_object_info_cache,
+        )
         _safe_path(self.root, self.schema_cache)
         data = load_object_info_cache(self.schema_cache)
         if data is None:
