@@ -1443,3 +1443,28 @@ def test_macos_capture_preserves_launchagent_output_log(tmp_path, monkeypatch):
     evidence.mkdir(parents=True)
     journey.capture_runtime_service_logs(evidence, tmp_path, "before-cleanup")
     assert (evidence / "runtime-service-service-launchd.log").read_text() == "actual service failure"
+
+
+def test_update_bootstrap_failure_preserves_exact_log_and_exit_across_cleanup(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    log = evidence / "release1" / "update-bootstrap.log"
+    raw = b"candidate update failed\r\n\xff\x00"
+    journey.write_json(evidence / "journey-result.json", {"status": "fail", "scenario": "release0-to-release1"})
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *args: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *args: None)
+    def process(argv, **kwargs):
+        kwargs["stdout"].buffer.write(raw)
+        return SimpleNamespace(returncode=19)
+    monkeypatch.setattr(journey.subprocess, "run", process)
+    with pytest.raises(RuntimeError, match="update-bootstrap.log: exit 19"):
+        journey.run(["sh"], log)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    shutil.rmtree(evidence / "release1")
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "after-cleanup")
+    for phase in ("before-cleanup", "after-cleanup"):
+        staged = run_root / "evidence-upload" / phase
+        row = journey.read_json(staged / "journey-result.json")
+        entry = row["failure_diagnostics"][phase]["update_bootstrap"]
+        assert entry["exit_code"] == 19 and entry["sha256"] == hashlib.sha256(raw).hexdigest()
+        assert (staged / "update-bootstrap.log").read_bytes() == raw

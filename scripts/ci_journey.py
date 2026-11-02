@@ -677,6 +677,30 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 item.update(status="captured", path=target.relative_to(run_root).as_posix(),
                             sha256=digest.hexdigest())
             diagnostic["release0_bootstrap"] = item
+        if recorded.get("scenario") == "release0-to-release1":
+            # The update bootstrap is nested too; preserve it before uninstall
+            # can remove run-owned files, and carry it through the final snapshot.
+            source = evidence / "release1" / "update-bootstrap.log"
+            exit_path = evidence / "release1" / "update-bootstrap-exit.json"
+            previous = recorded.get("failure_diagnostics", {}).get("before-cleanup", {}).get(
+                "update_bootstrap", {})
+            exit_code = previous.get("exit_code")
+            if exit_path.is_file() and not exit_path.is_symlink():
+                exit_code = read_json(exit_path).get("exit_code")
+            if not source.is_file() or source.is_symlink():
+                source = destination.parent / "before-cleanup" / "update-bootstrap.log"
+            target = destination / "update-bootstrap.log"
+            item = {"status": "unavailable", "path": None, "exit_code": exit_code, "sha256": None}
+            if source.is_file() and not source.is_symlink():
+                if source != target:
+                    shutil.copyfile(source, target)
+                digest = hashlib.sha256()
+                with target.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                item.update(status="captured", path=target.relative_to(run_root).as_posix(),
+                            sha256=digest.hexdigest())
+            diagnostic["update_bootstrap"] = item
         recorded.setdefault("failure_diagnostics", {})[phase] = diagnostic
         write_json(result_path, recorded)
         # Refresh the staged receipt after adding paths and observation status.
@@ -1107,9 +1131,10 @@ def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: 
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
-    if log.name == "release0-bootstrap.log" and log.parent.name == "release0":
+    if ((log.name == "release0-bootstrap.log" and log.parent.name == "release0") or
+            (log.name == "update-bootstrap.log" and log.parent.name == "release1")):
         try:
-            write_json(log.parent / "release0-bootstrap-exit.json", {"exit_code": result.returncode})
+            write_json(log.with_name(log.stem + "-exit.json"), {"exit_code": result.returncode})
         except OSError as exc:
             print(f"Journey bootstrap exit capture failed: {type(exc).__name__}: {exc}",
                   file=sys.stderr, flush=True)
