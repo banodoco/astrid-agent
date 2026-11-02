@@ -2379,7 +2379,7 @@ def test_live_storage_overrun_preserves_bounded_scratch_diagnostic_before_cleanu
     host.discover()
     task = {
         "task": {
-            "id": "task-storage-scratch-diagnostic",
+            "id": "task-scratch-diagnostic",
             "capability": "test.echo",
             "project_id": "demo",
             "attempt_id": "attempt-storage-scratch-diagnostic",
@@ -2388,7 +2388,7 @@ def test_live_storage_overrun_preserves_bounded_scratch_diagnostic_before_cleanu
             "spec": {"spec": {"inputs": {}}},
         }
     }
-    runtime.tasks["task-storage-scratch-diagnostic"] = task
+    runtime.tasks["task-scratch-diagnostic"] = task
 
     with pytest.raises(HostError, match="scratch bytes"):
         host.run_task(task, lease_token="lease-storage-scratch-diagnostic")
