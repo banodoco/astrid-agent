@@ -1,7 +1,10 @@
 """The evidence gate rejects incomplete or dishonest qualification results."""
 import copy
+import hashlib
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('journey_evidence', Path(__file__).parents[1] / 'scripts/check_journey_evidence.py')
@@ -97,6 +100,27 @@ def self_hosted_macos_identity(candidate, receipt_sha256="f" * 64):
     return receipt, context
 
 
+def self_hosted_macos_files(tmp_path, candidate, *, receipt=None, context=None):
+    receipt = copy.deepcopy(receipt) if receipt is not None else {}
+    context = copy.deepcopy(context) if context is not None else {}
+    receipt_path = tmp_path / "self-hosted-macos" / "journey-result.json"
+    context_path = tmp_path / "trusted-actions-context.json"
+    receipt_path.parent.mkdir(exist_ok=True)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    context["receipt_sha256"] = gate.digest(receipt_path)
+    context_path.write_text(json.dumps(context), encoding="utf-8")
+    return receipt_path, context_path
+
+
+def self_hosted_macos_release1_receipt(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    receipt_path = tmp_path / "direct-macos" / "journey-result.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    identity, context = self_hosted_macos_identity(candidate)
+    receipt.update(identity)
+    return candidate, receipt, context
+
+
 def test_self_hosted_macos_identity_requires_matching_external_context(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     receipt, context = self_hosted_macos_identity(candidate)
@@ -114,6 +138,166 @@ def test_self_hosted_macos_identity_requires_matching_external_context(tmp_path)
     assert any("repository differs" in error for error in gate.self_hosted_macos_identity_errors(
         candidate, bad, context, "f" * 64
     ))
+
+
+def test_self_hosted_macos_positive_exact_authenticated_record(tmp_path):
+    candidate, receipt, context = self_hosted_macos_release1_receipt(tmp_path)
+    receipt_path, context_path = self_hosted_macos_files(tmp_path, candidate, receipt=receipt, context=context)
+    assert not gate.evaluate_self_hosted_macos_receipt(candidate, receipt_path, context_path)
+
+
+def test_self_hosted_macos_rejects_missing_wrong_runner_name_label_run_attempt_ref_head_tuple_and_cross_run(tmp_path):
+    candidate, original_receipt, original_context = self_hosted_macos_release1_receipt(tmp_path)
+
+    cases = []
+    cases.append((original_receipt, {}, "trusted context is missing"))
+    missing_name = copy.deepcopy(original_receipt)
+    del missing_name["execution_identity"]["runner_name"]
+    cases.append((missing_name, original_context, "identity is missing runner_name"))
+
+    hosted_relabel = copy.deepcopy(original_receipt)
+    hosted_relabel["runner_image"] = "macos-15"
+    cases.append((hosted_relabel, original_context, "relabelled hosted evidence"))
+
+    wrong_name = copy.deepcopy(original_receipt)
+    wrong_name["execution_identity"]["runner_name"] = "other-mac"
+    cases.append((wrong_name, original_context, "runner_name differs"))
+
+    wrong_label = copy.deepcopy(original_receipt)
+    wrong_label["execution_identity"]["runner_labels"] = ["self-hosted", "macOS", "other-mac"]
+    cases.append((wrong_label, original_context, "runner labels are missing astrid-mac"))
+
+    wrong_attempt = copy.deepcopy(original_receipt)
+    wrong_attempt["execution_identity"]["run_attempt"] = 3
+    cases.append((wrong_attempt, original_context, "run_attempt differs"))
+
+    wrong_ref = copy.deepcopy(original_receipt)
+    wrong_ref["execution_identity"]["ref"] = "refs/heads/other"
+    cases.append((wrong_ref, original_context, "ref differs"))
+
+    wrong_head = copy.deepcopy(original_receipt)
+    wrong_head["execution_identity"]["head_sha"] = "9" * 40
+    cases.append((wrong_head, original_context, "head_sha differs"))
+
+    wrong_tuple = copy.deepcopy(original_context)
+    wrong_tuple["candidate"]["runtime"] = "9" * 40
+    cases.append((original_receipt, wrong_tuple, "trusted tuple differs"))
+
+    cross_run = copy.deepcopy(original_context)
+    cross_run["run_id"] = 999
+    cases.append((original_receipt, cross_run, "run_id differs"))
+
+    forged_source = copy.deepcopy(original_context)
+    forged_source["source"] = "runner-environment"
+    cases.append((original_receipt, forged_source, "must be GitHub Actions API-originated"))
+
+    for receipt, context, expected in cases:
+        receipt_path, context_path = self_hosted_macos_files(
+            tmp_path, candidate, receipt=receipt, context=context
+        )
+        assert any(expected in error for error in gate.evaluate_self_hosted_macos_receipt(
+            candidate, receipt_path, context_path
+        )), expected
+
+    receipt_path, _ = self_hosted_macos_files(
+        tmp_path, candidate, receipt=original_receipt, context=original_context
+    )
+    assert any("trusted context cannot be supplied by the receipt artifact" in error
+               for error in gate.evaluate_self_hosted_macos_receipt(candidate, receipt_path, receipt_path))
+
+
+def test_self_hosted_macos_rejects_a_receipt_forged_after_trusted_api_binding(tmp_path):
+    candidate, receipt, context = self_hosted_macos_release1_receipt(tmp_path)
+    receipt_path, context_path = self_hosted_macos_files(tmp_path, candidate, receipt=receipt, context=context)
+    receipt["execution_identity"]["runner_name"] = "forged-mac"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert any("trusted receipt digest differs" in error
+               for error in gate.evaluate_self_hosted_macos_receipt(candidate, receipt_path, context_path))
+
+
+def test_self_hosted_macos_cli_accepts_only_the_exact_authenticated_record(tmp_path):
+    app = tmp_path / "app"
+    public = app / "public"
+    public.mkdir(parents=True)
+    fixture_agent = "b" * 40
+    fixture_runtime = "c" * 40
+    manifest = {
+        "agent": {"sha": fixture_agent},
+        "runtime": {"sha": fixture_runtime, "schema_digest": "fixture-schema"},
+        "tools": {},
+    }
+    (public / "install-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    for relative in ("install", "install.sh", "install.ps1"):
+        (public / relative).write_text(relative + "\n", encoding="utf-8")
+    for command in (
+        ("git", "init", "-q", str(app)),
+        ("git", "-C", str(app), "add", "public"),
+        ("git", "-C", str(app), "-c", "user.name=checker-test", "-c", "user.email=checker@example.invalid",
+         "commit", "-qm", "fixture"),
+    ):
+        subprocess.run(command, check=True)
+    app_sha = subprocess.check_output(("git", "-C", str(app), "rev-parse", "HEAD"), text=True).strip()
+    candidate = {
+        "app": app_sha,
+        "agent": fixture_agent,
+        "runtime": fixture_runtime,
+        "pinokio": "d" * 40,
+        "manifest_sha256": hashlib.sha256((public / "install-manifest.json").read_bytes()).hexdigest(),
+        "artifacts": {
+            "public/" + relative: hashlib.sha256((public / relative).read_bytes()).hexdigest()
+            for relative in ("install", "install.sh", "install.ps1")
+        },
+    }
+    fixture_root = tmp_path / "release1-fixture"
+    fixture_root.mkdir()
+    fixture_candidate = release1_receipts(fixture_root)
+    receipt = json.loads((fixture_root / "direct-macos" / "journey-result.json").read_text(encoding="utf-8"))
+    replacements = {fixture_candidate[key]: candidate[key] for key in fixture_candidate}
+
+    def replace_fixture_tuple(value):
+        if isinstance(value, dict):
+            return {key: replace_fixture_tuple(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace_fixture_tuple(item) for item in value]
+        return replacements.get(value, value)
+
+    receipt = replace_fixture_tuple(receipt)
+    identity, context = self_hosted_macos_identity(candidate)
+    receipt.update(identity)
+    receipt_path, context_path = self_hosted_macos_files(
+        tmp_path, candidate, receipt=receipt, context=context
+    )
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    completed = subprocess.run(
+        (
+            sys.executable, str(Path(__file__).parents[1] / "scripts" / "check_journey_evidence.py"),
+            "--aggregate-self-hosted-macos", "--candidate", str(candidate_path),
+            "--app-checkout", str(app), "--self-hosted-macos-receipt", str(receipt_path),
+            "--trusted-context", str(context_path),
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "## Journey evidence: PASS" in completed.stdout
+
+
+def test_self_hosted_macos_route_leaves_hosted_release1_acceptance_and_rejection_unchanged(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+
+    receipt_path = tmp_path / "direct-macos" / "journey-result.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    identity, context = self_hosted_macos_identity(candidate)
+    receipt.update(identity)
+    trusted_receipt, trusted_context = self_hosted_macos_files(
+        tmp_path, candidate, receipt=receipt, context=context
+    )
+    assert not gate.evaluate_self_hosted_macos_receipt(candidate, trusted_receipt, trusted_context)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert any("direct-macos: runner does not match" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
 def test_four_required_negative_controls(tmp_path):
