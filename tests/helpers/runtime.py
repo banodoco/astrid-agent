@@ -8,7 +8,8 @@
 * ``commit=`` runs the Runtime as of one commit (``git archive`` of the located tree, extracted once per
   process) instead of the working tree. ``vendored_runtime_commit()`` is the commit the vendored workspace
   client was produced from, so the schema digests agree.
-* ``use_runtime()`` puts that tree on ``sys.path`` so ``runtime_protocol`` can be imported.
+* ``use_runtime()`` installs the lock-selected Runtime and client into the test interpreter, then
+  puts the source tree on ``sys.path`` so parent-process fixtures can import ``runtime_protocol``.
 * The ``real_runtime`` fixture (``tests/conftest.py``) starts a daemon on a temp realm through
   ``new_runtime_daemon`` and stops it at teardown. Do not construct ``RuntimeDaemon`` in a test.
 
@@ -18,6 +19,7 @@ One process imports one Runtime tree: the first ``use_runtime`` wins, so every t
 from __future__ import annotations
 
 import atexit
+import importlib.metadata
 import io
 import json
 import os
@@ -35,6 +37,7 @@ ENV = "ASTRID_RUNTIME_CHECKOUT"
 ASTRID = Path(__file__).resolve().parents[2]
 _ARCHIVES: dict[str, Path] = {}
 _exposed: Path | None = None
+_child_runtime_provisioned = False
 
 
 def vendored_runtime_commit() -> str:
@@ -90,12 +93,48 @@ def runtime_checkout(commit: str | None = None) -> Path:
     return _ARCHIVES[commit]
 
 
+def _ensure_runtime_installed_for_child() -> None:
+    """Install the lock-selected Runtime into ``sys.executable`` for sanitized workers.
+
+    A source path added to this test process cannot reach a child that deliberately drops ambient
+    PYTHONPATH. Use the canonical CI installer so the test interpreter's site-packages contain
+    Runtime and its client before a real worker starts.
+    """
+    global _child_runtime_provisioned
+    if _child_runtime_provisioned:
+        return
+
+    commit = vendored_runtime_commit()
+    pinned_archive = f"https://github.com/banodoco/astrid-runtime/archive/{commit}.tar.gz"
+    installed_from_pin = True
+    for distribution in ("astrid-runtime", "astrid-runtime-client"):
+        try:
+            direct_url = importlib.metadata.distribution(distribution).read_text("direct_url.json")
+        except importlib.metadata.PackageNotFoundError:
+            installed_from_pin = False
+            break
+        try:
+            origin = json.loads(direct_url).get("url") if direct_url else None
+        except (TypeError, json.JSONDecodeError):
+            origin = None
+        if origin != pinned_archive:
+            installed_from_pin = False
+            break
+    if not installed_from_pin:
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "--yes",
+                        "astrid-runtime", "astrid-runtime-client"], check=True)
+        installer = ASTRID / "scripts" / "ci_install_runtime.py"
+        subprocess.run([sys.executable, str(installer)], cwd=ASTRID, check=True)
+    _child_runtime_provisioned = True
+
+
 def use_runtime(commit: str | None = None) -> Path:
     """Locate the Runtime and make ``runtime_protocol`` importable from it.
 
     Without ``commit`` an already exposed tree is reused, so a pinned module and the fixtures it uses agree.
     """
     global _exposed
+    _ensure_runtime_installed_for_child()
     if commit is None and _exposed is not None:
         return _exposed
     root = runtime_checkout(commit)

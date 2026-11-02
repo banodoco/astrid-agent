@@ -18,6 +18,11 @@ from astrid.core.execution.generic_host import GenericPackHost, HostCancelled, H
 from astrid.core.execution.executor.runner import ExecutorRunRequest, run_executor
 from astrid.core.execution.executor.registry import ExecutorRegistry
 from tests.test_generic_host import FakeRuntime as _CurrentFakeRuntime, _write_manifest
+from tests.helpers.runtime import use_runtime, vendored_runtime_commit
+
+# Provision Runtime during collection so every real child in this module, including a
+# selectively invoked node, sees the lock-selected package in sys.executable's site-packages.
+use_runtime()
 
 
 def _native_cpu_handoff_fixture(tmp_path, monkeypatch, *, graph_owned=True):
@@ -828,6 +833,15 @@ def test_owned_child_imports_runtime_without_ambient_pythonpath(tmp_path, monkey
     assert returned["pid"] != os.getpid()
     assert Path(returned["runtime"]).name == "__init__.py"
     assert Path(returned["runtime"]).parent.name == "runtime_protocol"
+    from importlib.metadata import distribution
+
+    runtime_distribution = distribution("astrid-runtime")
+    installed_runtime = Path(runtime_distribution.locate_file("runtime_protocol/__init__.py"))
+    assert Path(returned["runtime"]).resolve() == installed_runtime.resolve()
+    runtime_origin = json.loads(runtime_distribution.read_text("direct_url.json"))
+    assert runtime_origin["url"] == (
+        f"https://github.com/banodoco/astrid-runtime/archive/{vendored_runtime_commit()}.tar.gz"
+    )
     assert not Path(returned["runtime"]).is_relative_to(ambient)
     assert str(ambient) not in returned["pythonpath"].split(os.pathsep)
 
