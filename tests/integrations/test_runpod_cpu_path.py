@@ -9,9 +9,12 @@ import base64
 import hashlib
 import io
 import json
+import os
 import re
 import shlex
 import socket
+import subprocess
+import sys
 import threading
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -38,6 +41,64 @@ pytestmark = pytest.mark.integration
 
 def _sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def _same_root_lifecycle(root, realm_root, realm_id):
+    """Attach this journey's existing stopped realm; never create a workspace."""
+    from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+
+    data = root / "launcher"
+    data.mkdir()
+    source = Path(__file__).resolve().parents[2]
+    import astrid_runtime
+    runtime = Path(astrid_runtime.__file__).resolve().parents[1]
+    manifest = data / "source-manifest.json"
+    manifest.write_text(json.dumps({"profile": "astrid", "source_checkout": str(source),
+        "runtime_checkout": str(runtime), "runtime_environment": sys.prefix}))
+    digest = _sha(manifest.read_bytes())
+    environment = {key: os.environ[key] for key in ("HOME", "PATH", "TMPDIR", "LANG") if key in os.environ}
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    receipts = []
+    def cli(*args):
+        argv = [sys.executable, "-I", "-B", "-m", "astrid_runtime", *args,
+                "--profile", "astrid", "--data-root", str(data), "--source-manifest", str(manifest), "--json"]
+        result = subprocess.run(argv, env=environment, capture_output=True, text=True, timeout=90)
+        payload = json.loads(result.stdout)
+        receipts.append({"argv": argv, "exit": result.returncode, "result": payload})
+        (root / "runtime-lifecycle.json").write_text(json.dumps(receipts, indent=2))
+        assert result.returncode == 0, {"result": payload, "stderr": result.stderr}
+        assert _sha(manifest.read_bytes()) == digest
+        return payload
+    def snapshot():
+        support = data / "runtime"
+        discovery = json.loads((support / "discovery.json").read_text())
+        marker = json.loads((support / "instance.lock").read_text())
+        assert marker["realm_id"] == discovery["active_realm"] == realm_id
+        assert marker["realm_root"] == discovery["realm_root"] == str(realm_root)
+        assert marker["data_root"] == str(data)
+        for name in ("pid", "process_birth_id", "runtime_instance_id"):
+            assert marker[name] == discovery[name]
+        assert LocalRuntimeBoundary.process_birth_identity(marker["pid"]) == marker["process_birth_id"]
+        return marker
+    cli("workspace", "attach", "--realm-root", str(realm_root), "--realm-id", realm_id,
+        "--process-control", "sandbox")
+    running = False
+    try:
+        cli("up", "--hosted-origin", "off")
+        running = True
+        prior = snapshot()
+        assert cli("down")["status"] == "stopped"
+        running = False
+        assert LocalRuntimeBoundary.process_birth_identity(prior["pid"]) != prior["process_birth_id"]
+        assert not (data / "runtime" / "discovery.json").exists()
+        cli("up", "--hosted-origin", "off")
+        running = True
+        current = snapshot()
+        assert current["runtime_instance_id"] != prior["runtime_instance_id"]
+        assert (current["pid"], current["process_birth_id"]) != (prior["pid"], prior["process_birth_id"])
+    finally:
+        if running:
+            cli("down")
 
 
 def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
@@ -365,3 +426,4 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert not worker.is_alive()
         host.shutdown()
         daemon.stop()
+    _same_root_lifecycle(tmp_path, tmp_path / "realm", daemon.service.realm["id"])
