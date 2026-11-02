@@ -75,14 +75,17 @@ def _open_client():
 
 def _read_document(client: Any, realm: str, project: str, collection: str='default'):
     identity=client.documents._identity()
-    if identity.get('realm_id')!=realm:raise ValueError('Project pack realm differs from authenticated Runtime')
+    if identity.get('realm_id')!=realm:
+        raise ValueError('Project pack realm differs from authenticated Runtime')
     document_id=stable_document_id(project,DOCUMENT_KIND,collection)
     result=client.documents.show(document_id,project=project)
     if not result.ok:
-        if result.error and result.error.code in {'not_found','document_not_found'}:return document_id,None
+        if result.error and result.error.code in {'not_found','document_not_found'}:
+            return document_id,None
         raise ValueError(f'Project pack document read failed: {result.error}')
     row=result.data
-    if not isinstance(row,dict) or row.get('kind')!=DOCUMENT_KIND or not isinstance(row.get('version'),int):raise ValueError('Malformed project pack document')
+    if not isinstance(row,dict) or row.get('kind')!=DOCUMENT_KIND or not isinstance(row.get('version'),int):
+        raise ValueError('Malformed project pack document')
     _project_pack_content(row)
 
     return document_id,row
@@ -90,11 +93,15 @@ def _read_document(client: Any, realm: str, project: str, collection: str='defau
 
 def _project_pack_content(row):
     content=row.get('content')
-    if not isinstance(content,dict) or content.get('schema')!=DOCUMENT_SCHEMA or content.get('source_binding_key')!=SOURCE_BINDING:raise ValueError('Unsupported project pack payload schema/source binding')
-    if not re.fullmatch(r'[a-z][a-z0-9_]*',str(content.get('pack_id',''))):raise ValueError('Invalid project pack owner')
-    if set(content)!={'schema','pack_id','source_binding_key','relative_manifest','admissions'} or not isinstance(content['admissions'],list):raise ValueError('Invalid project pack payload fields')
+    if not isinstance(content,dict) or content.get('schema')!=DOCUMENT_SCHEMA or content.get('source_binding_key')!=SOURCE_BINDING:
+        raise ValueError('Unsupported project pack payload schema/source binding')
+    if not re.fullmatch(r'[a-z][a-z0-9_]*',str(content.get('pack_id',''))):
+        raise ValueError('Invalid project pack owner')
+    if set(content)!={'schema','pack_id','source_binding_key','relative_manifest','admissions'} or not isinstance(content['admissions'],list):
+        raise ValueError('Invalid project pack payload fields')
     for admission in content['admissions']:
-        if not isinstance(admission,dict) or set(admission)-{'snapshot_object'}!={'id','kind','revision','snapshot_digest'} or admission['kind'] not in {'effect','animation','transition'} or not re.fullmatch(r'sha256:[0-9a-f]{64}',str(admission['revision'])) or not re.fullmatch(r'[0-9a-f]{64}',str(admission['snapshot_digest'])):raise ValueError('Invalid selected pack admission')
+        if not isinstance(admission,dict) or set(admission)-{'snapshot_object'}!={'id','kind','revision','snapshot_digest'} or admission['kind'] not in {'effect','animation','transition'} or not re.fullmatch(r'sha256:[0-9a-f]{64}',str(admission['revision'])) or not re.fullmatch(r'[0-9a-f]{64}',str(admission['snapshot_digest'])):
+            raise ValueError('Invalid selected pack admission')
         if 'snapshot_object' in admission:
             _snapshot_descriptor(admission['snapshot_object'])
 
@@ -218,7 +225,8 @@ def _ingest_snapshot(client, project, data):
 
 def _content(realm: str, project: str, collection: str='default') -> dict[str,Any]:
     pack_id='project_'+hashlib.sha256(f'{realm}:{project}:{collection}'.encode()).hexdigest()[:20] if collection=='default' else collection
-    if not re.fullmatch(r'[a-z][a-z0-9_]*',pack_id):raise ValueError('Invalid pack collection owner')
+    if not re.fullmatch(r'[a-z][a-z0-9_]*',pack_id):
+        raise ValueError('Invalid pack collection owner')
     return {'schema':DOCUMENT_SCHEMA,'pack_id':pack_id,'source_binding_key':SOURCE_BINDING,
             'relative_manifest':f'{realm}/{project}/packs/{pack_id}/pack.yaml','admissions':[]}
 
@@ -226,12 +234,15 @@ def _content(realm: str, project: str, collection: str='default') -> dict[str,An
 def _location(realm: str, project: str, content: dict[str,Any], document_id: str, version: int) -> dict[str,Any]:
     _identity(realm);_identity(project)
     relative=Path(content['relative_manifest'])
-    if relative.is_absolute() or '..' in relative.parts or relative.name!='pack.yaml':raise ValueError('Invalid portable pack manifest path')
+    if relative.is_absolute() or '..' in relative.parts or relative.name!='pack.yaml':
+        raise ValueError('Invalid portable pack manifest path')
     root=authoring_root();manifest=root/relative
-    if not manifest.resolve().is_relative_to(root.resolve()):raise ValueError('Pack binding escapes configured native root')
+    if not manifest.resolve().is_relative_to(root.resolve()):
+        raise ValueError('Pack binding escapes configured native root')
     pack_id=content['pack_id'];index=artifact_root()/realm/project/pack_id/'selection.json'
     prefix='python3 -m astrid.core.element.cli project-pack';scope=f' --realm {shlex.quote(realm)} --project {shlex.quote(project)}'
-    if document_id!=stable_document_id(project,DOCUMENT_KIND,'default'):scope+=f' --collection {shlex.quote(pack_id)}'
+    if document_id!=stable_document_id(project,DOCUMENT_KIND,'default'):
+        scope+=f' --collection {shlex.quote(pack_id)}'
     return {'projectId':project,'packId':pack_id,'packRoot':str(manifest.parent),'documentId':document_id,'documentVersion':version,
             'manifestPath':str(index),'status':'source-present' if manifest.is_file() else 'not-created',
             'initCommand':prefix+' init'+scope,'admitCommand':prefix+' admit'+scope,'inspectCommand':prefix+' inspect'+scope}
@@ -239,7 +250,8 @@ def _location(realm: str, project: str, content: dict[str,Any], document_id: str
 
 def project_location(realm: str, project: str, *, client=None, collection='default') -> dict[str,Any]:
     if client is None:
-        with _open_client() as connected:return project_location(realm,project,client=connected,collection=collection)
+        with _open_client() as connected:
+            return project_location(realm,project,client=connected,collection=collection)
     document_id,row=_read_document(client,realm,project,collection)
     return _location(realm,project,row['content'] if row else _content(realm,project,collection),document_id,row['version'] if row else 0)
 
@@ -269,36 +281,49 @@ def _atomic_bytes(path: Path, data: bytes) -> None:
             stream.write(data);stream.flush();os.fsync(stream.fileno())
         os.replace(temporary,path)
     finally:
-        if os.path.exists(temporary):os.unlink(temporary)
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _verify_build(selection: dict[str,Any], path: Path) -> dict[str,Any]:
     configured=os.environ.get(BUILD_ENV)
     if not configured:raise ValueError(f'Native element build verifier is not configured; set {BUILD_ENV} through the explicit native host setup')
-    try:command=json.loads(configured)
-    except json.JSONDecodeError as exc:raise ValueError('Element build command must be a JSON argv array') from exc
-    if not isinstance(command,list) or not command or any(not isinstance(arg,str) or not arg for arg in command):raise ValueError('Element build command must be a nonempty JSON argv array')
+    try:
+        command=json.loads(configured)
+    except json.JSONDecodeError as exc:
+        raise ValueError('Element build command must be a JSON argv array') from exc
+    if not isinstance(command,list) or not command or any(not isinstance(arg,str) or not arg for arg in command):
+        raise ValueError('Element build command must be a nonempty JSON argv array')
     fd,name=tempfile.mkstemp(prefix='build-candidate-',suffix='.json',dir=path.parent)
     candidate=Path(name)
     try:
         with os.fdopen(fd,'w') as stream:json.dump(selection,stream,indent=2,sort_keys=True);stream.write('\n')
-        try:result=subprocess.run([*command,str(candidate)],stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=60,check=False)
-        except (OSError,subprocess.TimeoutExpired) as exc:raise ValueError(f'Element build verifier could not finish: {exc}') from exc
-        if result.returncode!=0:raise ValueError('Element build verification failed: '+(result.stderr or result.stdout)[-4096:])
-        try:receipt=json.loads(result.stdout)
-        except json.JSONDecodeError as exc:raise ValueError('Element build verifier omitted its structured receipt') from exc
+        try:
+            result=subprocess.run([*command,str(candidate)],stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=60,check=False)
+        except (OSError,subprocess.TimeoutExpired) as exc:
+            raise ValueError(f'Element build verifier could not finish: {exc}') from exc
+        if result.returncode!=0:
+            raise ValueError('Element build verification failed: '+(result.stderr or result.stdout)[-4096:])
+        try:
+            receipt=json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise ValueError('Element build verifier omitted its structured receipt') from exc
         digest='sha256:'+hashlib.sha256(candidate.read_bytes()).hexdigest()
-        if receipt.get('schema')!='astrid.element-build/v1' or receipt.get('selectionDigest')!=digest:raise ValueError('Element build receipt does not match captured selection')
+        if receipt.get('schema')!='astrid.element-build/v1' or receipt.get('selectionDigest')!=digest:
+            raise ValueError('Element build receipt does not match captured selection')
         expected={(e['projectId'],*(e['descriptor'][k] for k in ('packId','id','kind','revision'))) for e in selection['elements']}
         actual={(e.get('projectId'),*(e.get(k) for k in ('packId','id','kind','revision'))) for e in receipt.get('elements',[]) if isinstance(e,dict)}
-        if expected!=actual:raise ValueError('Element build receipt has missing or unexpected exact revisions')
+        if expected!=actual:
+            raise ValueError('Element build receipt has missing or unexpected exact revisions')
         return receipt
-    finally:candidate.unlink(missing_ok=True)
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 def init_project_pack(realm: str, project: str, *, client=None, collection='default') -> dict[str, Any]:
     if client is None:
-        with _open_client() as connected:return init_project_pack(realm,project,client=connected,collection=collection)
+        with _open_client() as connected:
+            return init_project_pack(realm,project,client=connected,collection=collection)
     document_id,row=_read_document(client,realm,project,collection)
     content=row['content'] if row else _content(realm,project,collection)
     location=_location(realm,project,content,document_id,row['version'] if row else 0);root=Path(location['packRoot'])
@@ -312,7 +337,8 @@ def init_project_pack(realm: str, project: str, *, client=None, collection='defa
             (temporary/'pack.yaml').write_text(yaml.safe_dump(pack,sort_keys=False))
             validate_canonical_pack(temporary,expected_pack_id=content['pack_id']);temporary.rename(root)
         finally:
-            if temporary.exists():shutil.rmtree(temporary)
+            if temporary.exists():
+                shutil.rmtree(temporary)
     validate_canonical_pack(root,expected_pack_id=content['pack_id'])
     if row is None:
         path=Path(location['manifestPath']);path.parent.mkdir(parents=True,exist_ok=True)
@@ -335,15 +361,18 @@ def _resources(root: Path, *, expected_pack_id=None):
 def _check_imports(root: Path, resources: dict[str, Any]) -> None:
     for relative,handle in resources.items():
         path=root/relative
-        if path.suffix not in _SOURCE_EXTENSIONS:continue
+        if path.suffix not in _SOURCE_EXTENSIONS:
+            continue
         text=path.read_text()
         if re.search(r"\b(?:import\s*\(|require\s*\(|eval\s*\(|new\s+Function\s*\()",text):
             raise ValueError(f"Unsupported dynamic import/code loading in {relative}")
         # Pack code is trusted build source, but its dependency closure is explicit.
         imports=re.findall(r"\b(?:from\s*|import\s*)(?:[\w*{},\s]+\s+from\s*)?['\"]([^'\"]+)['\"]",text)
-        if path.suffix==".css":imports+=re.findall(r"@import\s+['\"]([^'\"]+)['\"]",text)
+        if path.suffix==".css":
+            imports+=re.findall(r"@import\s+['\"]([^'\"]+)['\"]",text)
         for specifier in imports:
-            if specifier in _ALLOWED_IMPORTS:continue
+            if specifier in _ALLOWED_IMPORTS:
+                continue
             if not specifier.startswith("."):
                 raise ValueError(f"Unsupported dependency {specifier!r} in {relative}; supported imports: React, Remotion and declared relative resources")
             specifier=specifier.split("?",1)[0]
@@ -368,7 +397,8 @@ def _definitions(root: Path, entry):
 
 def _selected_index(realm,project,document_id,row):
     content=row['content'];path=Path(_location(realm,project,content,document_id,row['version'])['manifestPath'])
-    if not path.exists():return _index(realm,project,document_id,row['version'],content,[])
+    if not path.exists():
+        return _index(realm,project,document_id,row['version'],content,[])
     value=json.loads(path.read_text());expected=_index(realm,project,document_id,row['version'],content,[])['binding']
     if value.get('schema')!=SCHEMA or value.get('binding')!=expected:raise ValueError('Derived pack artifact index does not match its Runtime document; rebuild admission index')
     return value
@@ -376,14 +406,17 @@ def _selected_index(realm,project,document_id,row):
 
 def inspect_project_pack(realm: str, project: str, *, client=None, collection='default') -> dict[str, Any]:
     if client is None:
-        with _open_client() as connected:return inspect_project_pack(realm,project,client=connected,collection=collection)
+        with _open_client() as connected:
+            return inspect_project_pack(realm,project,client=connected,collection=collection)
     document_id,row=_read_document(client,realm,project,collection)
     content=row['content'] if row else _content(realm,project,collection)
     location=_location(realm,project,content,document_id,row['version'] if row else 0);root=Path(location['packRoot'])
     admitted=content['admissions'];result={**location,'realmId':realm,'elements':[],'admittedRevisions':admitted}
-    if row is None:result['status']='not-created' if not root.exists() else 'unbound-source-present'
+    if row is None:
+        result['status']='not-created' if not root.exists() else 'unbound-source-present'
     if not (root/'pack.yaml').is_file():
-        if admitted:result['status']='source-missing'
+        if admitted:
+            result['status']='source-missing'
         return result
     try:
         entry,resources=_resources(root);_check_imports(root,resources)
@@ -398,24 +431,32 @@ def inspect_project_pack(realm: str, project: str, *, client=None, collection='d
 
 def admit_project_pack(realm: str, project: str, *, client=None, collection='default') -> dict[str, Any]:
     if client is None:
-        with _open_client() as connected:return admit_project_pack(realm,project,client=connected,collection=collection)
+        with _open_client() as connected:
+            return admit_project_pack(realm,project,client=connected,collection=collection)
     document_id,row=_read_document(client,realm,project,collection)
     if row is None:raise ValueError('Project pack binding is not initialized; run project-pack init')
     content=row['content'];location=_location(realm,project,content,document_id,row['version']);root=Path(location['packRoot'])
-    if root.is_symlink():raise ValueError("Project pack root is a symlink")
+    if root.is_symlink():
+        raise ValueError("Project pack root is a symlink")
     root=root.resolve()
-    if not (root/"pack.yaml").is_file():raise ValueError(f"Project pack is not created. Run: {location['initCommand']}")
+    if not (root/"pack.yaml").is_file():
+        raise ValueError(f"Project pack is not created. Run: {location['initCommand']}")
     entry,resources=_resources(root);_check_imports(root,resources)
-    if entry.definition.id!=location["packId"]:raise ValueError("Project pack owner does not match configured project binding")
+    if entry.definition.id!=location["packId"]:
+        raise ValueError("Project pack owner does not match configured project binding")
     definitions=_definitions(root,entry)
-    if not definitions:raise ValueError("Project pack has no declared elements to admit")
+    if not definitions:
+        raise ValueError("Project pack has no declared elements to admit")
     for definition,_ in definitions:
-        if definition.component.relative_to(root).as_posix() not in resources:raise ValueError("Element implementation must be declared in pack resources")
+        if definition.component.relative_to(root).as_posix() not in resources:
+            raise ValueError("Element implementation must be declared in pack resources")
         required=[*definition.support_files,*[(definition.root/asset.path).resolve() for asset in definition.assets]]
-        if any(not resource.is_relative_to(root) or resource.relative_to(root).as_posix() not in resources for resource in required):raise ValueError('Element asset/support closure must be declared in pack resources')
+        if any(not resource.is_relative_to(root) or resource.relative_to(root).as_posix() not in resources for resource in required):
+            raise ValueError('Element asset/support closure must be declared in pack resources')
 
         for helper in definition.root.rglob("*"):
-            if helper.is_file() and helper.suffix in _SOURCE_EXTENSIONS and helper.relative_to(root).as_posix() not in resources:raise ValueError(f"Element helper is undeclared: {helper}")
+            if helper.is_file() and helper.suffix in _SOURCE_EXTENSIONS and helper.relative_to(root).as_posix() not in resources:
+                raise ValueError(f"Element helper is undeclared: {helper}")
     files=[{"path":p,"sha256":r.sha256} for p,r in sorted(resources.items())]
     closure_hash=_closure_digest(files)
     snapshot_root=artifact_root()/realm/project/entry.definition.id/"snapshots"/closure_hash
@@ -429,7 +470,8 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
             target.write_bytes(payload)
         # Revalidate after capture; the canonical source cannot silently move mid-copy.
         _,confirmed=_resources(root)
-        if {p:r.sha256 for p,r in confirmed.items()}!={p:r.sha256 for p,r in resources.items()}:raise ValueError("Source changed during admission")
+        if {p:r.sha256 for p,r in confirmed.items()}!={p:r.sha256 for p,r in resources.items()}:
+            raise ValueError("Source changed during admission")
         validate_canonical_pack(staging,expected_pack_id=entry.definition.id)
         if snapshot_root.exists():
             for item in files:
@@ -511,18 +553,22 @@ def admit_project_pack(realm: str, project: str, *, client=None, collection='def
         _atomic_json(path,selected)
         return {'ok':True,'manifestPath':str(path),'documentId':document_id,'documentVersion':committed['version'],'project':{**location,'status':'admitted'},'elements':records,'instruction':'Pack files compiled and selected by Runtime document CAS. Publish the exact same timeline placement at its captured head, then refresh the editor. Admission alone did not edit a timeline.'}
     finally:
-        if staging.exists():shutil.rmtree(staging)
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def _record_from_admission(realm,project,content,admission):
     root=artifact_root()/realm/project/content['pack_id']/'snapshots'/admission['snapshot_digest']
     entry,resources=_resources(root,expected_pack_id=content['pack_id'])
     files=[{'path':p,'sha256':r.sha256} for p,r in sorted(resources.items())]
-    if _closure_digest(files)!=admission['snapshot_digest']:raise ValueError('Selected snapshot resource closure is corrupt')
+    if _closure_digest(files)!=admission['snapshot_digest']:
+        raise ValueError('Selected snapshot resource closure is corrupt')
     matches=[(d,p) for d,p in _definitions(root,entry) if d.id==admission['id'] and _element_descriptor(d)['kind']==admission['kind']]
-    if len(matches)!=1:raise ValueError('Selected pack element is unavailable')
+    if len(matches)!=1:
+        raise ValueError('Selected pack element is unavailable')
     definition,path=matches[0];descriptor=_element_descriptor(definition)
-    if descriptor['revision']!=admission['revision']:raise ValueError('Selected pack source revision mismatch')
+    if descriptor['revision']!=admission['revision']:
+        raise ValueError('Selected pack source revision mismatch')
     source_root=Path(_location(realm,project,content,'derived',0)['packRoot'])
     relative_component=definition.component.relative_to(root).as_posix()
     descriptor['componentPath']=f"external/{content['pack_id']}/{admission['snapshot_digest']}/{relative_component}"
@@ -531,7 +577,8 @@ def _record_from_admission(realm,project,content,admission):
 
 def materialize_project_pack(realm,project,*,client=None,collection='default'):
     if client is None:
-        with _open_client() as connected:return materialize_project_pack(realm,project,client=connected,collection=collection)
+        with _open_client() as connected:
+            return materialize_project_pack(realm,project,client=connected,collection=collection)
     document_id,row=_read_document(client,realm,project,collection)
     if row is None:raise ValueError('Project pack document is not initialized')
     records=[_record_from_admission(realm,project,row['content'],a) for a in row['content']['admissions']]

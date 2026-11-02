@@ -8,7 +8,6 @@ local application. Runtime discovery and credentials are resolved by
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
@@ -700,12 +699,13 @@ class AstridClient:
                 fixes=[{"argv": ["astrid", "generate", "targets", "--target", "managed"],
                         "scope": "read_only", "details": {}}],
             )
+        import time
         from urllib.parse import urlsplit
+
         from astrid.core.generation.engine_contracts import EngineError
         from astrid.core.generation.engine_custody import LinuxEngineServiceClient
         from astrid.core.generation.engine_local_endpoint import DEFAULT_PLATFORM
         from astrid.core.generation.engine_recipe import load_recipe
-        import time
 
         endpoint = registered["endpoint"]
         try:

@@ -585,7 +585,8 @@ class ComfyModelMissing(ValueError):
         self.alternatives = alternatives
         self.expected_names = expected_names or {}
         import shlex
-        from astrid.core.generation.asset_gaps import asset_readiness, align_argv
+
+        from astrid.core.generation.asset_gaps import align_argv, asset_readiness
         names = [f"{', '.join(values)} (role {role})" for role, values in self.expected_names.items()]
         self.readiness = asset_readiness(model, models=names or [f'{model}/{mode}: unresolved roles {failures}'])
         super().__init__(
@@ -673,6 +674,7 @@ def resolve_comfy_models(client: ComfyTargetClient, registry: Any,
 def _main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
+
     from astrid.core.model_catalog.registry import ModelRegistry
 
     parser = argparse.ArgumentParser(description="Resolve catalog roles on an attached Comfy target")

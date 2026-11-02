@@ -12,9 +12,17 @@ from datetime import datetime, timedelta
 from typing import get_args
 
 from .engine_contracts import (
-    AttestationError, EndpointAuth, EndpointProfileEvidence, EndpointState,
-    EngineEndpoint, HealthEvidence, LifecycleOwner, LocalAttestation, PlatformKey,
-    RunPodAttestation, SecretRef,
+    AttestationError,
+    EndpointAuth,
+    EndpointProfileEvidence,
+    EndpointState,
+    EngineEndpoint,
+    HealthEvidence,
+    LifecycleOwner,
+    LocalAttestation,
+    PlatformKey,
+    RunPodAttestation,
+    SecretRef,
 )
 
 
@@ -256,6 +264,7 @@ def read_private_endpoint_file(path: str, *, deadline: float, private: bool = Tr
     import os
     import stat
     import time
+
     from .engine_contracts import DeadlineExceeded
 
     _path(path)
@@ -309,6 +318,7 @@ def read_private_endpoint_file(path: str, *, deadline: float, private: bool = Tr
 def _prepared_session_evidence(reference, session_selection, session_receipt, profile,
                                *, engine, platform, read_file, deadline):
     import hashlib
+
     from .engine_recipe import load_recipe
     from .engine_runner import _parse_receipt, plan_install
 
@@ -397,6 +407,7 @@ def _endpoint_for_prepared_claim(preparer, reference, session, evidence, snapsho
 
 def _probe_prepared_endpoint(endpoint, recipe, *, agent_port, deadline):
     import time
+
     from .engine_contracts import DeadlineExceeded, EndpointHealthError
     from .engine_runner import _object_info_sha256
     from .engine_transport import EngineEndpointTransport
@@ -424,8 +435,11 @@ def ensure_prepared_endpoint(inspector, handle, *, engine, platform, endpoint_id
     """
     import hashlib
     import time
+
     from .engine_contracts import (
-        DeadlineExceeded, EndpointOwnershipError, UnsupportedPlatform,
+        DeadlineExceeded,
+        EndpointOwnershipError,
+        UnsupportedPlatform,
     )
     from .engine_recipe import load_recipe
 
@@ -492,6 +506,7 @@ def ensure_prepared_session_endpoint(
     exists; no second persistent endpoint registry or claim lock is created.
     """
     import time
+
     from .engine_contracts import DeadlineExceeded, EndpointOwnershipError
     from .engine_recipe import load_recipe
 
