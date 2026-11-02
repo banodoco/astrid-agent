@@ -340,8 +340,13 @@ def seed_old_declaration(old: dict, root: Path, kind: str) -> dict:
     return {"kind": kind, "path": str(declaration), "command": command}
 
 
-def selected_candidate(manifest: dict, version: dict, before: dict) -> dict:
-    selected = journey.selected_tuple(manifest, version)
+def selected_candidate(manifest: dict, version: dict, before: dict, *,
+                       candidate_agent_checkout: Path | None = None) -> dict:
+    if candidate_agent_checkout is None:
+        selected = journey.selected_tuple(manifest, version)
+    else:
+        selected = journey.selected_tuple(
+            manifest, version, candidate_agent_checkout=candidate_agent_checkout)
     if all(selected[name] == before[name] for name in ("agent", "runtime")):
         raise RuntimeError("Version-jump requires a candidate distinct from the resolved release")
     expected_identity = {"release": manifest.get("release", 0), "managed_by": None}
@@ -572,7 +577,12 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         version_path, selected_data, version = journey.installation(root, data)
         if selected_data != old_data or version_path == old_path:
             raise RuntimeError("Release-1 update did not retain data and activate a new version")
-        selected = selected_candidate(manifest, version, old_tuple)
+        candidate_agent_checkout = getattr(args, "candidate_agent_checkout", None)
+        if candidate_agent_checkout is None:
+            selected = selected_candidate(manifest, version, old_tuple)
+        else:
+            selected = selected_candidate(
+                manifest, version, old_tuple, candidate_agent_checkout=candidate_agent_checkout)
         if installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not select release 1")
         new_service = journey.assert_direct_service_ownership(root, data)

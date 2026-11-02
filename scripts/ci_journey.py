@@ -71,6 +71,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
+VIBECOMFY_PIN_PATH = "astrid/packs/vibecomfy/pins.json"
 
 
 def journey_os_label() -> str:
@@ -1310,15 +1311,49 @@ def assert_content(version: dict, evidence: Path, project: str, marker: Path,
         raise RuntimeError("Installed project content did not survive")
 
 
-def selected_tuple(manifest: dict, version: dict) -> dict:
+def candidate_vibecomfy_pin(candidate_agent_checkout: Path, candidate_agent_sha: str) -> str:
+    """Read the VibeComfy revision committed by the immutable candidate Agent."""
+    if (not isinstance(candidate_agent_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", candidate_agent_sha)):
+        raise RuntimeError("Candidate Agent identity is absent or unknown")
+    if candidate_agent_checkout.is_symlink() or not candidate_agent_checkout.is_dir():
+        raise RuntimeError("Candidate Agent checkout is absent or unknown")
+    checkout = candidate_agent_checkout.resolve(strict=True)
+    if git_source(checkout)["sha"] != candidate_agent_sha:
+        raise RuntimeError("Candidate Agent checkout differs from the selected manifest")
+    try:
+        pins = json.loads(subprocess.check_output(
+            ["git", "-C", str(checkout), "show", f"{candidate_agent_sha}:{VIBECOMFY_PIN_PATH}"],
+            text=True,
+        ))
+        revision = pins["sources"]["vibecomfy"]["revision"]
+    except (KeyError, TypeError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("Candidate Agent VibeComfy pin is absent or unknown") from exc
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise RuntimeError("Candidate Agent VibeComfy pin is absent or unknown")
+    return revision
+
+
+def selected_tuple(manifest: dict, version: dict, *, candidate_agent_checkout: Path | None = None) -> dict:
     actual = read_json(Path(version["root"]) / "manifest.json")
     for name in ("agent", "runtime"):
         if actual.get(name) != manifest.get(name):
             raise RuntimeError(f"Installed {name} source differs from selected manifest")
-    return {"agent": actual["agent"]["sha"], "runtime": actual["runtime"]["sha"],
-            "schema_digest": actual["runtime"].get("schema_digest"),
-            "tools": {name: row.get("version") for name, row in actual.get("tools", {}).items()
-                      if isinstance(row, dict) and row.get("version")}}
+    selected = {"agent": actual["agent"]["sha"], "runtime": actual["runtime"]["sha"],
+                "schema_digest": actual["runtime"].get("schema_digest"),
+                "tools": {name: row.get("version") for name, row in actual.get("tools", {}).items()
+                          if isinstance(row, dict) and row.get("version")}}
+    if candidate_agent_checkout is not None:
+        expected_vibecomfy = candidate_vibecomfy_pin(candidate_agent_checkout, selected["agent"])
+        installed_vibecomfy = actual.get("vibecomfy")
+        observed_vibecomfy = (installed_vibecomfy.get("sha")
+                              if isinstance(installed_vibecomfy, dict) else None)
+        if not isinstance(observed_vibecomfy, str) or not re.fullmatch(r"[0-9a-f]{40}", observed_vibecomfy):
+            raise RuntimeError("Installed VibeComfy identity is absent or unknown")
+        if observed_vibecomfy != expected_vibecomfy:
+            raise RuntimeError("Installed VibeComfy identity differs from the candidate Agent pin")
+        selected["vibecomfy"] = observed_vibecomfy
+    return selected
 
 
 def _execute_owned(args: argparse.Namespace, root: Path, data: Path,

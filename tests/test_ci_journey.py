@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 import shutil
@@ -80,6 +81,65 @@ def test_tst_b1_installed_tuple_rejects_wrong_source(tmp_path):
     with pytest.raises(RuntimeError, match="Installed agent source differs"):
         journey.selected_tuple({"agent": {"sha": "expected"}, "runtime": {"sha": "right"}},
                                {"root": str(installed)})
+
+
+def _direct_candidate_vibecomfy(tmp_path, installed_vibecomfy):
+    """Build the candidate checkout and installed record consumed by a direct row."""
+    agent = tmp_path / "candidate-agent"
+    pin_path = agent / "astrid" / "packs" / "vibecomfy" / "pins.json"
+    pin_path.parent.mkdir(parents=True)
+    pin_path.write_text(json.dumps({"sources": {"vibecomfy": {"revision": "a" * 40}}}),
+                        encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(agent)], check=True)
+    subprocess.run(["git", "-C", str(agent), "add", "astrid/packs/vibecomfy/pins.json"], check=True)
+    subprocess.run(["git", "-C", str(agent), "-c", "user.name=journey-test",
+                    "-c", "user.email=journey-test@example.invalid", "commit", "-qm", "pin"], check=True)
+    candidate_agent_sha = subprocess.check_output(
+        ["git", "-C", str(agent), "rev-parse", "HEAD"], text=True).strip()
+    # The derivation must read the candidate SHA's committed pin, never a mutable checkout file.
+    pin_path.write_text(json.dumps({"sources": {"vibecomfy": {"revision": "b" * 40}}}),
+                        encoding="utf-8")
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    manifest = {
+        "release": 1,
+        "agent": {"sha": candidate_agent_sha},
+        "runtime": {"sha": "r" * 40},
+    }
+    installed_manifest = dict(manifest)
+    if installed_vibecomfy is not None:
+        installed_manifest["vibecomfy"] = installed_vibecomfy
+    (installed / "manifest.json").write_text(json.dumps(installed_manifest), encoding="utf-8")
+    version = {"root": str(installed), "identity": {"release": 1, "managed_by": None}}
+    return manifest, version, {"agent": "old-agent", "runtime": "old-runtime"}, agent
+
+
+def test_direct_candidate_vibecomfy_identity_matches_committed_candidate_pin(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "a" * 40})
+    selected = jumps.selected_candidate(
+        manifest, version, before, candidate_agent_checkout=agent)
+    assert selected["vibecomfy"] == "a" * 40
+
+
+def test_direct_candidate_vibecomfy_identity_mismatch_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "b" * 40})
+    with pytest.raises(RuntimeError, match="differs from the candidate Agent pin"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
+
+
+def test_direct_candidate_vibecomfy_identity_absence_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(tmp_path, None)
+    with pytest.raises(RuntimeError, match="absent or unknown"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
+
+
+def test_direct_candidate_vibecomfy_identity_unknown_value_fails_closed(tmp_path):
+    manifest, version, before, agent = _direct_candidate_vibecomfy(
+        tmp_path, {"sha": "unknown"})
+    with pytest.raises(RuntimeError, match="absent or unknown"):
+        jumps.selected_candidate(manifest, version, before, candidate_agent_checkout=agent)
 
 
 def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
