@@ -206,6 +206,26 @@ def test_scan_reuse_preserves_strict_manifest_and_path_guards(
     assert str(actual.value) == str(expected.value)
 
 
+def test_cached_scan_does_not_hide_new_alternate_source_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    packs = tmp_path / "astrid/packs"
+    _write_pack(packs, "local")
+    manifestless = packs / "legacy"
+    manifestless.mkdir()
+    monkeypatch.setattr(loader, "packs_root", lambda: packs)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+        identity="empty-inventory", sources=(),
+    ))
+    with pack_discovery_scope():
+        assert [row.id for row in discover_pack_metadata(project_root=tmp_path)] == ["local"]
+        (manifestless / "pack.yml").write_text("{}\n", encoding="utf-8")
+        with pytest.raises(PackValidationError, match="alternate manifest"):
+            discover_pack_metadata(project_root=tmp_path)
+    with pytest.raises(PackValidationError, match="alternate manifest"):
+        discover_pack_metadata(project_root=tmp_path)
+
+
 def test_managed_identity_guard_is_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     packs = tmp_path / "astrid/packs"
     _write_pack(packs, "local")
@@ -267,17 +287,48 @@ def test_discovery_cache_hashes_only_selected_roots_and_invalidates_them(
     selected_asset = selected / "assets/payload.bin"
     selected_asset.parent.mkdir()
     selected_asset.write_bytes(b"selected asset v1")
+    quarantined = source / "legacy_v2"
+    quarantined.mkdir()
+    (quarantined / "pack.yaml").write_text(json.dumps({
+        "schema_version": 2, "id": "legacy_v2", "name": "Legacy", "version": "1.0.0",
+        "capabilities": [],
+    }), encoding="utf-8")
+    quarantined_asset = quarantined / "payload.bin"
+    quarantined_asset.write_bytes(b"v2 payload")
+    unsupported = _write_pack(source, "unsupported")
+    unsupported_manifest = json.loads((unsupported / "pack.yaml").read_text())
+    unsupported_manifest["schema_version"] = 999
+    (unsupported / "pack.yaml").write_text(json.dumps(unsupported_manifest), encoding="utf-8")
+    unsupported_asset = unsupported / "payload.bin"
+    unsupported_asset.write_bytes(b"unsupported payload")
+    for candidate_name, fields in (
+        ("external_hidden", {"visibility": "hidden"}),
+        ("external_mismatched_id", {"id": "selected"}),
+    ):
+        candidate = _write_pack(extra_root, candidate_name, **fields)
+        (candidate / "payload.bin").write_bytes(candidate_name.encode())
+    malformed_external = _write_pack(extra_root, "malformed_external")
+    (malformed_external / "pack.yaml").write_text("schema_version: [\n", encoding="utf-8")
+    (malformed_external / "payload.bin").write_bytes(b"malformed")
+    incompatible_external = _write_pack(extra_root, "incompatible_external", pack_api=[])
+    (incompatible_external / "payload.bin").write_bytes(b"incompatible")
     monkeypatch.setattr(loader, "packs_root", lambda: source)
     monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     fingerprint = pack_discovery._tree_fingerprint
     real_file_digest = pack_discovery.hashlib.file_digest
+    real_path_open = Path.open
     hashed_files = []
+    opened_files = []
 
     def record_file_digest(stream, algorithm, *args, **kwargs):
         hashed_files.append(Path(stream.name).resolve())
         return real_file_digest(stream, algorithm, *args, **kwargs)
+
+    def record_path_open(path, *args, **kwargs):
+        opened_files.append(path.resolve())
+        return real_path_open(path, *args, **kwargs)
 
     with mock.patch(
         "astrid.core.pack.discovery._tree_fingerprint", wraps=fingerprint,
@@ -285,20 +336,38 @@ def test_discovery_cache_hashes_only_selected_roots_and_invalidates_them(
         loader, "scan_packs", wraps=loader.scan_packs,
     ) as scans, mock.patch.object(
         pack_discovery.hashlib, "file_digest", side_effect=record_file_digest,
+    ), mock.patch.object(
+        Path, "open", record_path_open,
     ), pack_discovery_scope():
-        first = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+        # The repeated external root is one scanner input, not two candidates.
+        extra_roots = (str(extra_root), str(extra_root))
+        first = discover_pack_metadata(project_root=project, extra_pack_roots=extra_roots)
         assert "local" not in [row.id for row in first]
+        assert sum(row.id == "selected" for row in first) == 1
         assert selected_asset.resolve() in hashed_files
+        assert hashed_files.count(selected_asset.resolve()) == 2
         assert hidden_asset.resolve() not in hashed_files
+        assert quarantined_asset.resolve() not in opened_files
+        assert unsupported_asset.resolve() not in opened_files
+        assert quarantined_asset.resolve() not in hashed_files
+        assert unsupported_asset.resolve() not in hashed_files
+        unselected_external_payloads = {
+            quarantined_asset, unsupported_asset,
+            extra_root / "external_hidden/payload.bin",
+            extra_root / "external_mismatched_id/payload.bin",
+            malformed_external / "payload.bin", incompatible_external / "payload.bin",
+        }
+        assert all(path.resolve() not in opened_files for path in unselected_external_payloads)
+        assert all(path.resolve() not in hashed_files for path in unselected_external_payloads)
         assert all(path.resolve() not in hashed_files for path in ignored_assets)
         project_bytes.write_text("changed but still unselected", encoding="utf-8")
         hidden_asset.write_text("hidden asset changed", encoding="utf-8")
-        unchanged = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+        unchanged = discover_pack_metadata(project_root=project, extra_pack_roots=extra_roots)
         assert unchanged == first
         assert scans.call_count == 1
 
         selected_asset.write_bytes(b"selected asset v2")
-        invalidated = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+        invalidated = discover_pack_metadata(project_root=project, extra_pack_roots=extra_roots)
         assert scans.call_count == 2
         assert any(row.id == "selected" for row in invalidated)
 
@@ -306,10 +375,18 @@ def test_discovery_cache_hashes_only_selected_roots_and_invalidates_them(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["visibility"] = "visible"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        visible = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+        visible = discover_pack_metadata(project_root=project, extra_pack_roots=extra_roots)
         assert scans.call_count == 3
         assert [row.id for row in visible if row.id == "local"] == ["local"]
         assert hidden_asset.resolve() in hashed_files
+
+        unsupported_manifest["schema_version"] = 3
+        (unsupported / "pack.yaml").write_text(json.dumps(unsupported_manifest), encoding="utf-8")
+        admitted = discover_pack_metadata(project_root=project, extra_pack_roots=extra_roots)
+        assert scans.call_count == 4
+        assert any(row.id == "unsupported" for row in admitted)
+        assert unsupported_asset.resolve() in opened_files
+        assert unsupported_asset.resolve() in hashed_files
 
         hashed_roots = {Path(call.args[0]).resolve() for call in fingerprint_calls.call_args_list}
         assert unselected_project_packs.resolve() not in hashed_roots

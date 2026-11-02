@@ -188,6 +188,33 @@ def test_discover_pack_metadata_refuses_malformed_supported_v3_source(
         discover_pack_metadata(project_root=tmp_path)
 
 
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("broken_bytes", [b"\xff", b"schema_version: [\n"])
+def test_external_bad_manifest_isolated_in_cached_and_uncached_scans(
+    tmp_path: Path, monkeypatch, cached: bool, broken_bytes: bytes,
+) -> None:
+    extras = tmp_path / "extra"
+    good = write_pack(extras, "good")
+    broken = write_pack(extras, "broken")
+    (broken / "pack.yaml").write_bytes(broken_bytes)
+    inventory(monkeypatch)
+
+    def discover():
+        return discover_pack_metadata(
+            project_root=tmp_path / "project", extra_pack_roots=(str(extras),),
+        )
+
+    if cached:
+        from astrid.core.pack.discovery import pack_discovery_scope
+        with pack_discovery_scope():
+            rows = discover()
+            assert discover() == rows
+    else:
+        rows = discover()
+    external = [(row.id, row.pack_dir) for row in rows if row.source_kind == "extra"]
+    assert external == [("good", good)]
+
+
 def test_unsupported_source_versions_are_quarantined_and_core_shell_is_not_a_pack(
     tmp_path: Path, monkeypatch,
 ) -> None:

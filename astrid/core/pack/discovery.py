@@ -25,8 +25,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
-
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
@@ -67,16 +65,19 @@ def pack_discovery_scope():
 
 
 def _tree_fingerprint(
-    root: Path, *, pack_root: bool = False, pack_collection: bool = True
+    root: Path, *, pack_root: bool = False, pack_collection: bool = True,
+    source_root: bool = False, expected_pack_id: str | None = None,
 ) -> str:
     """Fingerprint selected discovery content, including untracked resources.
 
-    Pack collections select direct, non-hidden pack directories. Their
-    manifests stay in the key so changing visibility or adding a manifest
-    invalidates discovery, while hidden packs and scanner-ignored directories
-    contribute no descendant bytes. An explicitly selected pack root is
-    fingerprinted only when its manifest is visible.
+    Candidate manifests stay in the key so changes to admission, visibility,
+    or alternate-manifest presence invalidate discovery. Descendants are
+    included only for packs the real loader can admit; hidden, quarantined,
+    duplicate, and scanner-ignored candidates contribute no payload bytes.
     """
+    from astrid.core.pack import loader
+    from astrid.core.pack.canonical import LEGACY_MANIFEST_NAMES
+
     digest = hashlib.sha256()
 
     def add(value: bytes) -> None:
@@ -104,42 +105,63 @@ def _tree_fingerprint(
         else:
             raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
 
-    def selected_pack(path: Path, *, include_descendants: bool) -> None:
+    def selected_pack(path: Path, *, include_descendants: bool) -> tuple[str, bool]:
+        # Keep every scanner-recognized manifest name in the cache identity.
+        # In particular, pack.yml appearing after a successful scan must
+        # invalidate the cache so pack_manifest_path can enforce refusal.
         manifest = path / "pack.yaml"
         visit(manifest)
+        for legacy_name in LEGACY_MANIFEST_NAMES:
+            visit(path / legacy_name)
         try:
-            with manifest.open("r", encoding="utf-8") as stream:
-                payload = yaml.safe_load(stream)
-        except (OSError, yaml.YAMLError):
-            return
-        if not isinstance(payload, dict) or payload.get("visibility", "public") == "hidden":
-            return
+            manifest_path = loader.pack_manifest_path(path)
+            if manifest_path is None:
+                return "", False
+            pack = loader.load_pack_manifest(
+                manifest_path, expected_pack_id=expected_pack_id
+            )
+        except Exception:  # Match scanner admission; its caller owns refusal/isolation.
+            return "", False
+        if pack.visibility == "hidden" or (source_root and pack.schema_version != "3"):
+            return pack.id, False
         if include_descendants:
             for child in sorted(path.iterdir()):
-                if child.name == "pack.yaml":
+                if child.name == "pack.yaml" or child.name in LEGACY_MANIFEST_NAMES:
                     continue
                 if child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
                     continue
                 visit(child)
+        return pack.id, True
+
+    def selected_collection(path: Path, *, source: bool) -> None:
+        candidates = []
+        for child in sorted(path.iterdir()):
+            if child.is_symlink() or not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
+                continue
+            candidates.append((child, *selected_pack(child, include_descendants=False)))
+        # The source scanner refuses duplicate IDs. In that case normal
+        # discovery must run and refuse; no candidate payload needs hashing.
+        ids = [pack_id for _, pack_id, admitted in candidates if admitted]
+        duplicates = source and len(ids) != len(set(ids))
+        if duplicates:
+            return
+        seen: set[str] = set()
+        for child, pack_id, admitted in candidates:
+            if not admitted or pack_id in seen:
+                continue
+            seen.add(pack_id)
+            for content in sorted(child.iterdir()):
+                if content.name == "pack.yaml" or content.name in LEGACY_MANIFEST_NAMES:
+                    continue
+                if content.is_dir() and (content.name.startswith(".") or content.name == "__pycache__"):
+                    continue
+                visit(content)
 
     if pack_root:
         selected_pack(root, include_descendants=True)
     elif pack_collection:
         add(os.fsencode(root.relative_to(root)))
-        try:
-            children = sorted(root.iterdir())
-        except OSError:
-            raise
-        for child in children:
-            if child.is_symlink() or not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
-                continue
-            manifest = child / "pack.yaml"
-            if manifest.is_file():
-                selected_pack(child, include_descendants=True)
-            else:
-                # A newly admitted canonical manifest must change the key.
-                add(os.fsencode(child.name))
-                add(b"missing pack.yaml")
+        selected_collection(root, source=source_root)
     else:
         visit(root)
     return digest.hexdigest()
@@ -157,19 +179,22 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
     # The project's former ``astrid/packs`` tree is not a discovery input.
     # Only the bundled source root and explicitly selected external roots
     # participate in admission and therefore in cache identity.
-    roots = [(loader.packs_root(), True, False), (Path(__file__).with_name("schemas"), False, False)]
-    roots.extend((source.pack_root, False, True) for source in managed_inventory.sources)
+    roots = [(loader.packs_root(), True, False, True, None), (Path(__file__).with_name("schemas"), False, False, False, None)]
+    roots.extend((source.pack_root, False, True, False, source.pack_id) for source in managed_inventory.sources)
     for raw_root in (*extra_pack_roots, *filter(None, raw_env.split(os.pathsep))):
         root = Path(raw_root).expanduser()
         resolved = root if root.is_absolute() else project_root / root
-        roots.append((resolved, not (resolved / "pack.yaml").is_file(), (resolved / "pack.yaml").is_file()))
+        roots.append((resolved, not (resolved / "pack.yaml").is_file(), (resolved / "pack.yaml").is_file(), False, None))
     try:
         trees = tuple(
             (
                 str(root), str(root.resolve()),
-                _tree_fingerprint(root.resolve(), pack_root=is_pack, pack_collection=is_collection),
+                _tree_fingerprint(
+                    root.resolve(), pack_root=is_pack, pack_collection=is_collection,
+                    source_root=is_source, expected_pack_id=expected_pack_id,
+                ),
             )
-            for root, is_collection, is_pack in dict.fromkeys(roots)
+            for root, is_collection, is_pack, is_source, expected_pack_id in dict.fromkeys(roots)
         )
     except OSError:
         return None  # Unreadable/racing inputs use ordinary admission and its errors.
