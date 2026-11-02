@@ -83,38 +83,6 @@ def _json(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
-
-def _write_admission_record(pack_root: Path, *, artifact: Mapping[str, Any], committed_revision: int,
-                            transaction_id: str) -> dict[str, Any]:
-    """Persist the frozen browser manifest and admission before group publication."""
-    manifest_bytes = _json(dict(artifact))
-    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
-    source_digest = artifact["sourceDigest"]
-    build_root = pack_root / ".build"
-    _directory(build_root)
-    entries = (
-        (build_root / f"{source_digest}.artifact-manifest.json", manifest_bytes),
-        (build_root / "admission.json", _json({
-            "version": 1, "packId": artifact["packId"], "sourceDigest": source_digest,
-            "digest": artifact["digest"], "artifactManifestDigest": manifest_digest,
-            "committedRevision": committed_revision, "transactionId": transaction_id,
-        })),
-    )
-    for path, payload in entries:
-        if path.is_symlink():
-            raise PackInstallError("unsafe_path", "Build admission records cannot be symbolic links.")
-        temporary = build_root / f".{path.name}.{uuid4().hex}.tmp"
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    _sync_directory(build_root)
-    return {"packId": artifact["packId"], "sourceDigest": source_digest, "digest": artifact["digest"],
-            "artifactManifestDigest": manifest_digest, "artifact_manifest": dict(artifact)}
-
-
 def _sync_directory(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -285,16 +253,29 @@ def _facts(path: Path, *, destination: Path | None = None) -> tuple[dict[str, An
     }
 
 
-def _verify_artifacts(request: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any] | None:
+def _artifact_metadata(request: Mapping[str, Any], artifact: Mapping[str, Any],
+                       committed_revision: int) -> dict[str, bytes]:
+    """Encode the frozen browser records owned by this group publication."""
+    manifest = _json(artifact)
+    record = {"version": 1, "packId": request["pack_id"], "sourceDigest": request["source_digest"],
+              "digest": artifact["digest"], "artifactManifestDigest": hashlib.sha256(manifest).hexdigest(),
+              "committedRevision": committed_revision, "transactionId": request["transaction_id"]}
+    return {f'{request["source_digest"]}.artifact-manifest.json': manifest,
+            "admission.json": _json(record)}
+
+
+def _verify_artifacts(request: Mapping[str, Any], result: Mapping[str, Any], *,
+                      committed_revision: int | None = None) -> dict[str, Any] | None:
     try:
-        return _verify_artifact_bytes(request, result)
+        return _verify_artifact_bytes(request, result, committed_revision=committed_revision)
     except PackInstallError:
         raise
     except (OSError, ValueError, TypeError, KeyError) as exc:
         raise PackInstallError("incomplete_artifacts", "Artifact file or manifest is missing/invalid; rebuild the private stage.") from exc
 
 
-def _verify_artifact_bytes(request: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any] | None:
+def _verify_artifact_bytes(request: Mapping[str, Any], result: Mapping[str, Any], *,
+                           committed_revision: int | None = None) -> dict[str, Any] | None:
     """Independently verify the frozen builder output before admission."""
     def refuse(code: str = "incomplete_artifacts") -> None:
         raise PackInstallError(code, "Build output failed admission; rebuild with the release-pinned toolchain.")
@@ -314,6 +295,9 @@ def _verify_artifact_bytes(request: Mapping[str, Any], result: Mapping[str, Any]
     artifact = result.get("artifact_manifest")
     if request["entry"] is None and request["extension_manifest"] is None:
         if artifact is not None:
+            refuse()
+        build_root = Path(request["stage_root"]) / ".build"
+        if (build_root.exists() or build_root.is_symlink()) and _tree(build_root):
             refuse()
         return None
     if not isinstance(artifact, dict) or set(artifact) != {
@@ -374,29 +358,58 @@ def _verify_artifact_bytes(request: Mapping[str, Any], result: Mapping[str, Any]
     if (graph_digest != artifact["graphIndexDigest"]
             or not entry_bytes.startswith(f"/* astrid-graph-index-sha256:{graph_digest} */\n".encode())):
         refuse("hash_mismatch")
-    # Generated output is only admitted from the enumerated source-addressed set.
+    # Builder output must be exactly the enumerated source-addressed set. Only
+    # the transaction may add metadata, checked byte-for-byte once staged.
     physical = {relative for relative, _ in _tree(root / ".build")}
     expected = {item["disk"][len(".build/"):] for item in files}
-    metadata = {"admission.json", f"{source_digest}.artifact-manifest.json"}
-    extras = physical - expected
-    if extras and extras != metadata:
+    if committed_revision is not None:
+        for name, encoded in _artifact_metadata(request, artifact, committed_revision).items():
+            if (root / ".build" / name).read_bytes() != encoded:
+                raise PackInstallError("hash_mismatch", f"Staged browser metadata .build/{name} changed; retry the group build.")
+            expected.add(name)
+    if physical != expected:
         refuse("incomplete_artifacts")
-    if extras:
-        manifest_bytes = (root / ".build" / f"{source_digest}.artifact-manifest.json").read_bytes()
-        admission = json.loads((root / ".build" / "admission.json").read_text(encoding="utf-8"))
-        if not isinstance(admission, dict):
-            refuse("hash_mismatch")
-        if (manifest_bytes != _json(artifact)
-                or admission != {"version": 1, "packId": request["pack_id"], "sourceDigest": source_digest,
-                                 "digest": artifact["digest"],
-                                 "artifactManifestDigest": hashlib.sha256(manifest_bytes).hexdigest(),
-                                 "committedRevision": admission.get("committedRevision"),
-                                 "transactionId": request["transaction_id"]}):
-            refuse("hash_mismatch")
-        if type(admission.get("committedRevision")) is not int or admission["committedRevision"] < 1:
-            refuse("hash_mismatch")
     return {"packId": request["pack_id"], "sourceDigest": source_digest, "digest": artifact["digest"],
             "artifactManifestDigest": hashlib.sha256(_json(artifact)).hexdigest(), "artifact_manifest": artifact}
+
+
+def _retained_build_records(root: Path, admissions: Mapping[str, Any], group_revision: int):
+    """Recheck retained bytes against their original committed admission facts.
+
+    This is a verification projection, never a new builder call or tool policy.
+    Retained source edits remain allowed by inventory validation; their browser
+    artifacts must still match the previously admitted source/build identity.
+    """
+    records = []
+    for pack_id, admission in sorted(admissions.items()):
+        try:
+            if not _ID.fullmatch(pack_id) or not (root / pack_id / "pack.yaml").is_file():
+                raise ValueError("invalid retained pack identity")
+            _tree(root / pack_id / ".build")
+            artifact = admission["artifact_manifest"]
+            # The existing durable group summary binds the original admission
+            # epoch; the per-pack record cannot choose a different history.
+            revision, tx = admission["committedRevision"], admission["transactionId"]
+            source_digest = admission["sourceDigest"]
+            if (type(revision) is not int or not 1 <= revision <= group_revision
+                    or not isinstance(tx, str) or len(tx) != 32 or any(c not in "0123456789abcdef" for c in tx)
+                    or not isinstance(source_digest, str) or len(source_digest) != 64
+                    or any(c not in "0123456789abcdef" for c in source_digest)):
+                raise ValueError("invalid retained admission identity")
+            request = {"version": 1, "pack_id": pack_id, "transaction_id": tx,
+                       "stage_root": str(root / pack_id), "source_digest": source_digest,
+                       "entry": artifact["entry"], "extension_manifest": artifact["extensionManifest"],
+                       "toolchain": {"lock_sha256": artifact["toolchainDigest"],
+                                     "shared_modules": artifact["sharedModules"]}}
+            result = {"version": 1, "ok": True, "pack_id": pack_id,
+                      "source_digest": source_digest, "artifact_manifest": artifact}
+            verified = _verify_artifacts(request, result, committed_revision=revision)
+            if {**verified, "committedRevision": revision, "transactionId": tx} != admission:
+                raise ValueError("retained admission summary differs from verified files")
+            records.append((request, result, revision))
+        except (OSError, ValueError, TypeError, KeyError, PackInstallError) as exc:
+            raise PackInstallError("incomplete_artifacts", f"Retained browser admission for {pack_id} is invalid; explicitly rebuild that pack before updating the group.") from exc
+    return records
 
 
 def _refresh(root: Path, state: dict[str, Any], refresh: Refresh | None) -> bool:
@@ -489,6 +502,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
     with group_read_lock(root, exclusive=True):
         root.mkdir(exist_ok=True)
         old = _state(root)
+        committed_revision = old["revision"] + 1
         tombstones = set(old["removals"]) | set(remove)
         if intent in {"defaults", "update", "rollback"}:
             packs = {i: p for i, p in packs.items() if i not in tombstones}
@@ -520,6 +534,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                         raise PackInstallError("reserved_id", "Personal packs cannot be removed.")
                     shutil.rmtree(target)
             admissions = {i: a for i, a in old["admissions"].items() if i not in remove and i not in packs}
+            build_records = _retained_build_records(candidate, admissions, old["revision"])
             facts = dict(host_selected)
             for pack_id, path in _paths(candidate).items():
                 if pack_id not in packs:
@@ -576,8 +591,14 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     raise PackInstallError(checked["code"], checked["reason"], compatibility=checked)
             mark("validated")
             identities = {i: (pack_digest(candidate / i), read_pin(candidate / i / "PIN")) for i in packs}
-            build_records = []
             for pack_id in sorted(packs):
+                # install_pack may retain an identical source/PIN. Every named
+                # build still needs fresh outputs and this transaction's epoch;
+                # never feed old metadata or another toolchain's files to it.
+                generated = candidate / pack_id / ".build"
+                if generated.exists() or generated.is_symlink():
+                    _tree(generated)
+                    shutil.rmtree(generated)
                 spec = builds.get(pack_id, {})
                 if not isinstance(spec, dict) or set(spec) - {"entry", "extension_manifest"}:
                     raise PackInstallError("invalid_request", "Use the frozen entry/extension_manifest build inputs.")
@@ -588,14 +609,15 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 # Even an ordinary Python pack traverses the real M4 seam.
                 result = build_pack_assets(request)
                 admission = _verify_artifacts(request, result)
+                build_records.append((request, result, committed_revision))
                 if admission is not None:
-                    admission = _write_admission_record(candidate / pack_id,
-                        artifact=admission["artifact_manifest"], committed_revision=old["revision"] + 1,
-                        transaction_id=tx)
-                    _verify_artifacts(request, result)
-                build_records.append((request, result))
-                if admission is not None:
-                    admissions[pack_id] = admission
+                    # Both records remain private and are synced/published with
+                    # their verified output files in the one directory exchange.
+                    for name, encoded in _artifact_metadata(request, admission["artifact_manifest"],
+                                                            committed_revision).items():
+                        with (candidate / pack_id / ".build" / name).open("xb") as stream:
+                            stream.write(encoded)
+                    admissions[pack_id] = {**admission, "committedRevision": committed_revision, "transactionId": tx}
                 mark("built:" + pack_id)
             mark("built")
             _tree(candidate)
@@ -604,8 +626,6 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     raise PackInstallError("pin_mismatch", "Build changed staged source/PIN; the installed group is unchanged.")
             # Recheck every output after the whole build phase: a later build
             # cannot alter an earlier pack's admitted bytes unnoticed.
-            for request, result in build_records:
-                _verify_artifacts(request, result)
             if consent is not None:
                 changes = {
                     "intent": intent,
@@ -624,13 +644,15 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 }
                 if consent(changes) is not True:
                     raise PackInstallError("user_cancelled", "The pack update was not committed because consent was not given.")
+            for request, result, admitted_revision in build_records:
+                _verify_artifacts(request, result, committed_revision=admitted_revision)
             # A newer inventory revision subsumes an unacknowledged one. Carry
             # its changed ids forward so a delta consumer cannot miss a commit.
             pending_ids = old["refresh"]["changed_ids"] if old["refresh"] else ()
             changed_ids = tuple(sorted(set(packs) | set(remove) | set(pending_ids)))
-            state = {"version": 1, "revision": old["revision"] + 1, "transaction_id": tx,
+            state = {"version": 1, "revision": committed_revision, "transaction_id": tx,
                      "removals": sorted(tombstones), "admissions": admissions,
-                     "refresh": {"transaction_id": tx, "revision": old["revision"] + 1,
+                     "refresh": {"transaction_id": tx, "revision": committed_revision,
                                  "changed_ids": list(changed_ids)}}
             _write_state(candidate, state)
             _sync_tree(candidate)
@@ -642,8 +664,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             for pack_id, (digest, pin) in identities.items():
                 if pack_digest(candidate / pack_id) != digest or read_pin(candidate / pack_id / "PIN") != pin:
                     raise PackInstallError("pin_mismatch", "Staged source/PIN changed after preparation; retry the group build.")
-            for request, result in build_records:
-                _verify_artifacts(request, result)
+            for request, result, admitted_revision in build_records:
+                _verify_artifacts(request, result, committed_revision=admitted_revision)
             if _state(candidate) != state:
                 raise PackInstallError("invalid_state", "Prepared group record changed before publication; retry the transaction.")
             _publish(candidate, root)
@@ -762,9 +784,16 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                         prior_admission = prior_state["admissions"][pack_id]
                         artifact = prior_admission.get("artifact_manifest")
                         if isinstance(artifact, dict):
-                            admissions[pack_id] = _write_admission_record(
-                                target, artifact=artifact, committed_revision=state["revision"] + 1,
-                                transaction_id=tx)
+                            rollback_request = {"pack_id": pack_id, "source_digest": prior_admission["sourceDigest"],
+                                                "transaction_id": tx}
+                            committed_revision = state["revision"] + 1
+                            metadata = _artifact_metadata(rollback_request, artifact, committed_revision)
+                            for name, encoded in metadata.items():
+                                (target / ".build" / name).write_bytes(encoded)
+                            admissions[pack_id] = {"packId": pack_id, "sourceDigest": rollback_request["source_digest"],
+                                "digest": artifact["digest"],
+                                "artifactManifestDigest": hashlib.sha256(metadata[f'{rollback_request["source_digest"]}.artifact-manifest.json']).hexdigest(),
+                                "artifact_manifest": artifact, "committedRevision": committed_revision, "transactionId": tx}
                         else:
                             admissions[pack_id] = prior_admission
             facts = dict(host_selected)
