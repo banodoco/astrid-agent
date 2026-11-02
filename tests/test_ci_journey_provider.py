@@ -171,3 +171,74 @@ def test_diagnostic_invocation_rejects_altered_source(tmp_path, monkeypatch):
     (root / next(iter(provider._PRODUCER_FILES))).write_text("changed")
     with pytest.raises(ProviderContractError):
         provider.invoke_linux_diagnostic(ProviderRequest.parse(encode(request)), encode(config), str(root))
+
+
+def success_fixture(tmp_path, monkeypatch):
+    """Use synthetic sources and mocked process output, never live evidence."""
+    provider, root, config, request, _ = diagnostic_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(provider, "_SUCCESS_PRODUCER_FILES", provider._PRODUCER_FILES)
+    monkeypatch.setattr(provider, "_PRODUCER_REF", provider._SUCCESS_PRODUCER_REF)
+    request["provider"]["ref"] = provider._SUCCESS_PRODUCER_REF
+    parsed = ProviderRequest.parse(encode(request))
+    source = next(iter(provider._SUCCESS_PRODUCER_FILES))
+    output = {"schema": RESULT_SCHEMA, "request_sha256": parsed.sha256,
+              "observations": [{"kind": kind, "source": source,
+                                "evidence_sha256": str(i) * 64, "safe": True}
+                               for i, kind in enumerate(("busy", "unknown", "restoration"), 1)]}
+    return provider, root, config, request, output
+
+
+def test_success_invocation_passes_canonical_files_and_separate_stderr(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    provider, root, config, request, output = success_fixture(tmp_path, monkeypatch)
+    parsed = ProviderRequest.parse(encode(request))
+    def run(argv, **kwargs):
+        assert argv[:4] == [sys.executable, "-I", "-B", str(root / "pinokio/providers/r24-linux.py")]
+        assert len(argv) == 6
+        assert Path(argv[4]).read_bytes() == parsed.canonical
+        assert Path(argv[5]).read_bytes() == provider._canonical(config)
+        assert kwargs["stdout"] == subprocess.PIPE and kwargs["stderr"] == subprocess.PIPE
+        return SimpleNamespace(returncode=0, stdout=encode(output).encode() + b"\n", stderr=b"diagnostic")
+    monkeypatch.setattr(subprocess, "run", run)
+    result = provider.invoke_linux_provider(parsed, encode(config), str(root))
+    assert result.result == ProviderResult.parse(encode(output), parsed)
+    assert result.stderr == b"diagnostic"
+
+
+@pytest.mark.parametrize("failure", ["nonzero", "empty", "extra", "duplicate", "malformed", "mismatch", "diagnostic"])
+def test_success_invocation_rejects_failure_and_retains_stderr(tmp_path, monkeypatch, failure):
+    import subprocess
+    from types import SimpleNamespace
+    provider, root, config, request, output = success_fixture(tmp_path, monkeypatch)
+    stdout = encode(output).encode()
+    code = 0
+    if failure == "nonzero": code = 1
+    elif failure == "empty": stdout = b""
+    elif failure == "extra": stdout += b" extra"
+    elif failure == "duplicate": stdout += b"\n" + stdout
+    elif failure == "malformed": stdout = b"{"
+    elif failure == "mismatch":
+        output["request_sha256"] = "f" * 64
+        stdout = encode(output).encode()
+    elif failure == "diagnostic": stdout = b'{"schema":"astrid.r24.producer-diagnostic.v1"}'
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=code, stdout=stdout, stderr=b"separate"))
+    with pytest.raises(provider.ProviderInvocationError) as exc:
+        provider.invoke_linux_provider(ProviderRequest.parse(encode(request)), encode(config), str(root))
+    assert exc.value.stderr == b"separate"
+
+
+@pytest.mark.parametrize("mutation", ["ref", "source", "config", "forged_request", "changed_file"])
+def test_success_invocation_rejects_unbound_inputs(tmp_path, monkeypatch, mutation):
+    provider, root, config, request, _ = success_fixture(tmp_path, monkeypatch)
+    if mutation == "ref": request["provider"]["ref"] = "f" * 40
+    elif mutation == "source": request["provider"]["sources"][next(iter(provider._SUCCESS_PRODUCER_FILES))] = "f" * 64
+    elif mutation == "config": config["node"] = "/other"
+    elif mutation == "changed_file": (root / next(iter(provider._SUCCESS_PRODUCER_FILES))).write_text("changed")
+    parsed = ProviderRequest.parse(encode(request))
+    if mutation == "forged_request": parsed = ProviderRequest(parsed.canonical, "f" * 64)
+    with pytest.raises(ProviderContractError):
+        provider.invoke_linux_provider(parsed, encode(config), str(root))

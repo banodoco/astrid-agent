@@ -23,6 +23,14 @@ class ProviderContractError(ValueError):
     """Malformed, mismatched, incomplete, or unsafe provider message."""
 
 
+class ProviderInvocationError(ProviderContractError):
+    """A failed invocation, retaining its separate untrusted diagnostics."""
+
+    def __init__(self, message: str, stderr: bytes):
+        super().__init__(message)
+        self.stderr = stderr
+
+
 def _object(value: Any, fields: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != fields:
         raise ProviderContractError(f"{label} requires exactly {sorted(fields)}")
@@ -152,6 +160,10 @@ _PRODUCER_FILES = {
     "pinokio/providers/r24-linux-binding.json": "aa081980bb143ea67eac9e36ca567af8f54a3cdcf7c6593ee130ed81a4d86d87",
     "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
 }
+_SUCCESS_PRODUCER_REF = "008c2eeee9bcb123daad3071494360920848577d"
+_SUCCESS_PRODUCER_FILES = {**_PRODUCER_FILES,
+    "pinokio/providers/r24-linux.py": "8348e30a924afc39c7b4e8fc825f0d44b2771a34f439913514add005e1576234",
+}
 _CANDIDATE = {
     "app": "5c95abb00525e1a77d00c32042b6453d9f14f4e7",
     "agent": "e425903f7a9fa5b82973281d15054c0716b46e2d",
@@ -171,15 +183,9 @@ class DiagnosticResult:
     status: str = "not-qualified"
 
 
-def invoke_linux_diagnostic(request: ProviderRequest, config_json: str | bytes,
-                            producer_root: str) -> DiagnosticResult:
-    """Invoke the pinned producer's REQUEST CONFIG API; never qualify its output.
-
-    The producer additionally validates clean candidate checkouts, manifest, Stop,
-    config dependencies and its own sources before it invokes its action. This
-    entry point does not authenticate the daemon or evidence and must only be
-    called by the controlled runner with its real materialized config.
-    """
+def _invoke_linux(request: ProviderRequest, config_json: str | bytes,
+                  producer_root: str, producer_ref: str, producer_files: dict[str, str]):
+    """Validate immutable inputs and run one producer with separate streams."""
     import os
     from pathlib import Path
     import subprocess
@@ -193,7 +199,7 @@ def invoke_linux_diagnostic(request: ProviderRequest, config_json: str | bytes,
         raise ProviderContractError("request integrity mismatch")
     data = _decode(request.canonical)
     if (data["candidate"] != _CANDIDATE or data["stop"] != _STOP or
-            data["provider"] != {"ref": _PRODUCER_REF, "sources": _PRODUCER_FILES}):
+            data["provider"] != {"ref": producer_ref, "sources": producer_files}):
         raise ProviderContractError("producer or candidate binding mismatch")
     config = _decode(config_json)
     _object(config, {"checkouts", "pterm", "node", "node_sha256",
@@ -212,14 +218,14 @@ def invoke_linux_diagnostic(request: ProviderRequest, config_json: str | bytes,
             return subprocess.check_output(["git", "-C", str(root), *args],
                                            stderr=subprocess.DEVNULL, timeout=30).strip()
         if (Path(os.fsdecode(git("rev-parse", "--show-toplevel"))).resolve() != root or
-                git("rev-parse", "HEAD").decode() != _PRODUCER_REF or
+                git("rev-parse", "HEAD").decode() != producer_ref or
                 git("status", "--porcelain=v1", "--untracked-files=all")):
             raise ProviderContractError("producer checkout identity or cleanliness mismatch")
-        for rel, digest in _PRODUCER_FILES.items():
+        for rel, digest in producer_files.items():
             path = root / rel
             if path.is_symlink() or not path.is_file():
                 raise ProviderContractError("producer source missing")
-            blob = subprocess.check_output(["git", "-C", str(root), "show", f"{_PRODUCER_REF}:{rel}"],
+            blob = subprocess.check_output(["git", "-C", str(root), "show", f"{producer_ref}:{rel}"],
                                            stderr=subprocess.DEVNULL, timeout=30)
             if (hashlib.sha256(path.read_bytes()).hexdigest() != digest or
                     hashlib.sha256(blob).hexdigest() != digest):
@@ -230,18 +236,54 @@ def invoke_linux_diagnostic(request: ProviderRequest, config_json: str | bytes,
             config_path.write_bytes(_canonical(config))
             proc = subprocess.run([sys.executable, "-I", "-B", str(root / "pinokio/providers/r24-linux.py"),
                                    str(request_path), str(config_path)], stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL, timeout=150, check=False)
-        if proc.returncode != 0:
-            raise ProviderContractError("producer failed or did not run")
-        output = _object(_decode(proc.stdout), {"schema", "request_sha256", "action", "busy", "unknown",
-                                                "restoration", "runtime_identity", "custody", "protected_state"},
-                         "diagnostic")
-        if (output["schema"] != "astrid.r24.producer-diagnostic.v1" or
-                output["request_sha256"] != request.sha256 or
-                output["busy"] != "not-run" or output["unknown"] != "not-run" or
-                any(output[k] != "unknown" for k in ("restoration", "runtime_identity", "custody", "protected_state")) or
-                not isinstance(output["action"], dict)):
-            raise ProviderContractError("unexpected or contradictory diagnostic")
-        return DiagnosticResult(request.sha256)
+                                  stderr=subprocess.PIPE, timeout=150, check=False)
+        return proc
+    except subprocess.TimeoutExpired as exc:
+        raise ProviderInvocationError("producer invocation timed out", exc.stderr or b"") from exc
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ProviderContractError("producer invocation unavailable") from exc
+
+
+def invoke_linux_diagnostic(request: ProviderRequest, config_json: str | bytes,
+                            producer_root: str) -> DiagnosticResult:
+    """Invoke the R1 diagnostic API; never qualify its output."""
+    proc = _invoke_linux(request, config_json, producer_root, _PRODUCER_REF, _PRODUCER_FILES)
+    if proc.returncode != 0:
+        raise ProviderContractError("producer failed or did not run")
+    output = _object(_decode(proc.stdout), {"schema", "request_sha256", "action", "busy", "unknown",
+                                            "restoration", "runtime_identity", "custody", "protected_state"},
+                     "diagnostic")
+    if (output["schema"] != "astrid.r24.producer-diagnostic.v1" or
+            output["request_sha256"] != request.sha256 or
+            output["busy"] != "not-run" or output["unknown"] != "not-run" or
+            any(output[k] != "unknown" for k in ("restoration", "runtime_identity", "custody", "protected_state")) or
+            not isinstance(output["action"], dict)):
+        raise ProviderContractError("unexpected or contradictory diagnostic")
+    return DiagnosticResult(request.sha256)
+
+
+@dataclass(frozen=True)
+class LinuxProviderOutput:
+    """Untrusted structural claims and separate diagnostics, never admission."""
+
+    result: ProviderResult
+    stderr: bytes
+
+
+def invoke_linux_provider(request: ProviderRequest, config_json: str | bytes,
+                          producer_root: str) -> LinuxProviderOutput:
+    """Invoke immutable R2 and parse one success result; do not authenticate it.
+
+    The controlled caller supplies a materialized configuration. On a nonzero
+    exit or invalid stdout, ProviderInvocationError retains stderr separately.
+    No supported driver route or evidence admission is enabled by this function.
+    """
+    proc = _invoke_linux(request, config_json, producer_root,
+                         _SUCCESS_PRODUCER_REF, _SUCCESS_PRODUCER_FILES)
+    if proc.returncode != 0:
+        raise ProviderInvocationError("producer failed or did not run", proc.stderr)
+    try:
+        result = ProviderResult.parse(proc.stdout, request)
+    except ProviderContractError as exc:
+        raise ProviderInvocationError("invalid producer result", proc.stderr) from exc
+    return LinuxProviderOutput(result, proc.stderr)
