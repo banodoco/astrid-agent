@@ -20,6 +20,9 @@ import sys
 import threading
 from pathlib import Path
 
+from .birth_identity import birth_ids_match
+
+
 def _receive(stream):
     line = stream.readline(65537)
     if not line or len(line) > 65536:
@@ -35,8 +38,10 @@ def _send(stream, value):
 def _same_process_identity(expected, observed):
     """Compare the immutable process incarnation rather than mutable topology."""
     return (isinstance(expected, dict) and isinstance(observed, dict)
-            and all(expected.get(field) == observed.get(field)
-                    for field in ("pid", "uid", "birth_id")))
+            and expected.get("pid") == observed.get("pid")
+            and expected.get("uid") == observed.get("uid")
+            and birth_ids_match(expected.get("birth_id"), observed.get("birth_id"),
+                                expected.get("pid"), observed.get("pid")))
 
 
 def _binding(root, version, data):

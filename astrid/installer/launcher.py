@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.util import process as _process
+from .birth_identity import _current_linux_scope, birth_ids_match
 
 SHIM_MARKER = "Astrid managed command shim"
 PATH_HINT = 'Add ~/.local/bin to your PATH to run astrid from anywhere: export PATH="$HOME/.local/bin:$PATH"'
@@ -127,6 +128,15 @@ def remove_shim(service) -> None:
         _update_user_path(service, add=False)
 
 
+def _custody_identity_matches(expected, observed):
+    """Compare the custody owner while retaining its PID and user gates."""
+    return (isinstance(expected, dict) and isinstance(observed, dict)
+            and expected.get("pid") == observed.get("pid")
+            and expected.get("uid") == observed.get("uid")
+            and birth_ids_match(expected.get("birth_id"), observed.get("birth_id"),
+                                expected.get("pid"), observed.get("pid")))
+
+
 _RUNNER = '''import json, os, re, sys
 from pathlib import Path
 
@@ -180,7 +190,12 @@ def publish_runtime_runner(root: Path) -> Path:
     # Keep the generated foreground self-contained: retained release-0 Agents
     # do not provide the current installer modules.  The ticket client uses the
     # already-embedded admission helpers, so it never imports the retained Agent.
-    custody_attach_source = '''import hashlib,hmac,secrets,socket
+    custody_attach_source = (
+        "import hashlib,hmac,secrets,socket\n"
+        + "\n".join(inspect.getsource(function) for function in (
+            _current_linux_scope, birth_ids_match, _custody_identity_matches,
+        ))
+        + '''
 def _custody_send(stream, value):
     stream.write(json.dumps(value).encode() + b"\\n")
     stream.flush()
@@ -190,11 +205,6 @@ def _custody_receive(stream):
     if not line or len(line) > 65536:
         raise ValueError("The stopped-update lock owner disconnected.")
     return json.loads(line)
-
-def _custody_identity_matches(expected, observed):
-    return (isinstance(expected, dict) and isinstance(observed, dict)
-            and all(expected.get(field) == observed.get(field)
-                    for field in ("pid", "uid", "birth_id")))
 
 def _CUSTODY_ATTACH(ticket, root, version, data):
     try:
@@ -244,6 +254,7 @@ def _CUSTODY_ATTACH(ticket, root, version, data):
     except (OSError, KeyError, TypeError) as exc:
         raise ValueError("The stopped-update activation ticket was refused.") from exc
 '''
+    )
     foreground_source = "\n".join(inspect.getsource(function) for function in (
         foreground._probe_operation_lock, foreground.launch, foreground._run,
     ))

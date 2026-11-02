@@ -20,6 +20,7 @@ from xml.sax.saxutils import escape
 from runtime_protocol import platform
 
 from ..core.execution.platform_helpers import owned_by_current_user
+from .birth_identity import birth_ids_match
 from .core import (
     Version,
     absolute,
@@ -932,7 +933,8 @@ class Service:
         identity = platform.process_identity(pid)
         if identity is None:
             return
-        if identity.get("pid") != pid or identity.get("birth_id") != birth:
+        if (identity.get("pid") != pid
+                or not birth_ids_match(birth, identity.get("birth_id"), pid, identity.get("pid"))):
             raise ValueError("The foreground process identity changed; refusing to signal it.")
         if identity.get("uid") != platform.current_user():
             raise ValueError("The foreground process user changed; refusing to signal it.")
@@ -940,7 +942,8 @@ class Service:
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             observed = platform.process_identity(pid)
-            if observed is None or observed.get("birth_id") != birth:
+            if (observed is None
+                    or not birth_ids_match(birth, observed.get("birth_id"), pid, observed.get("pid"))):
                 return
             time.sleep(0.1)
         raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
@@ -967,7 +970,9 @@ class Service:
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 identity = platform.process_identity(int(foreground["pid"]))
-                if identity is None or identity.get("birth_id") != foreground["birth_id"]:
+                pid = int(foreground["pid"])
+                if (identity is None or not birth_ids_match(
+                        foreground["birth_id"], identity.get("birth_id"), pid, identity.get("pid"))):
                     return
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
