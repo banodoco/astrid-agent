@@ -22,6 +22,7 @@ from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core._shared.result_manifest import write_json_atomic
 from astrid.core.contracts.errors import AstridError, coerce_astrid_error
+from astrid.core.cli_choices import StaticChoices
 from astrid.core.execution.terminal_result import serialize_terminal_result
 from astrid.core.foundation.hash import sha256_file
 from astrid.core.env_vars import ASTRID_TASK_RUN_ID
@@ -121,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--placement",
-        choices=("local", "runpod"),
+        choices=StaticChoices(("local", "runpod")),
         default=None,
         help=(
             "where the H3 engine runs (default: local, or runpod when a legacy "
