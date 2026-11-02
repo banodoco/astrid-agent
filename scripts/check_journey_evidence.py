@@ -88,6 +88,16 @@ RUNNER_PROVENANCE = {
     "macos-15": ("macOS", "macos15"),
 }
 
+# Pinokio's installed ``app/install-mode.json`` is the only reviewed
+# observation that distinguishes the physical backend and fully-local routes.
+# The release matrix names the declared slot mode; a receipt must retain this
+# parsed installed-mode record separately so the declared label cannot promote
+# a backend installation as a fully-local result.
+PINOKIO_INSTALLED_MODE_BY_SLOT_MODE = {
+    "pinokio-backend": "backend",
+    "pinokio-fully-local": "local",
+}
+
 
 def _migrate_macos_receipt_key(contract):
     """Compatibility for existing receipt fixtures; the matrix now owns this key."""
@@ -229,6 +239,21 @@ def _release1_row_errors(candidate, contract, row):
         errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
     if row.get("mode") != contract["mode"]:
         errors.append(f"{job_id}: mode does not match the required matrix")
+    if contract["mode"] in PINOKIO_INSTALLED_MODE_BY_SLOT_MODE:
+        expected_installed_mode = PINOKIO_INSTALLED_MODE_BY_SLOT_MODE[contract["mode"]]
+        installed_mode = row.get("pinokio_install_mode_receipt")
+        if not isinstance(installed_mode, dict):
+            errors.append(f"{job_id}: Pinokio installed-mode receipt is absent or malformed")
+        elif (type(installed_mode.get("schema_version")) is not int
+              or installed_mode.get("schema_version") != 1):
+            errors.append(f"{job_id}: Pinokio installed-mode receipt has an unknown schema")
+        elif installed_mode.get("mode") not in {"backend", "local"}:
+            errors.append(f"{job_id}: Pinokio installed-mode receipt has an unknown mode")
+        elif installed_mode["mode"] != expected_installed_mode:
+            errors.append(
+                f"{job_id}: declared {contract['mode']} slot conflicts with "
+                f"installed receipt mode {installed_mode['mode']!r}"
+            )
     if row.get("scenario") != contract.get("leg", "fresh-install"):
         errors.append(f"{job_id}: scenario does not match the required matrix leg")
     if row.get("runner_image") != contract["runner"]:

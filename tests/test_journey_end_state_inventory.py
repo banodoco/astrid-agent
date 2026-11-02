@@ -51,6 +51,10 @@ def release1_row(contract, pinned):
     else:
         row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                  "managed_by": "pinokio", "foreground_fallback": False}
+        row["pinokio_install_mode_receipt"] = {
+            "schema_version": 1,
+            "mode": gate.PINOKIO_INSTALLED_MODE_BY_SLOT_MODE[contract["mode"]],
+        }
     return row
 
 
