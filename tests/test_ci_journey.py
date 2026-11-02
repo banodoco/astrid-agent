@@ -552,3 +552,67 @@ def test_sentinel_setup_failure_records_failure_diagnostics(tmp_path, monkeypatc
     assert receipt["status"] == "fail"
     assert "sentinel process birth" in receipt["error"]
     assert "before-cleanup" in receipt["failure_diagnostics"]
+
+
+def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp_path):
+    """Run the checked-in config program and require direct-only to retain the full gate."""
+    import subprocess
+    import sys
+    import textwrap
+
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text(encoding="utf-8")
+    config_step = workflow.split("      - id: config\n", 1)[1]
+    program = textwrap.dedent(config_step.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+    (tmp_path / "driver").symlink_to(journey.ROOT, target_is_directory=True)
+    output = tmp_path / "output"
+    candidate = {key: char * 40 for key, char in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    env = dict(os.environ, CANDIDATE=json.dumps(candidate), DRIVER_AGENT_REF="e" * 40,
+               WORKFLOW_REPOSITORY="banodoco/astrid-agent",
+               OLD_LAUNCHER_REF="bbba620e3d89eeff8021417f365e6ea584203105",
+               STOPPED_PATH_AGENT_REF=candidate["agent"], M4_4A_EXECUTOR_CONFIGS='{"linux":{},"macos":{},"windows":{}}',
+               M4_4A_BACKEND_ONLY="false", M4_5_ENABLED="false", M4_5_ONLY="false",
+               M4_5_BOUNDARY="", M4_5_BOUNDARY_ARGS="[]", M4_4B_ENABLED="false",
+               M4_6_ENABLED="false", M4_6_CANDIDATE="", GITHUB_OUTPUT=str(output))
+
+    def config(direct_only, **overrides):
+        output.write_text("", encoding="utf-8")
+        return subprocess.run([sys.executable, "-c", program], cwd=tmp_path,
+                              env=dict(env, DIRECT_ONLY=direct_only, **overrides), text=True, capture_output=True)
+
+    def matrix(direct_only, **overrides):
+        proc = config(direct_only, **overrides)
+        assert proc.returncode == 0, proc.stderr
+        values = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+        return json.loads(values["matrix"])["include"]
+
+    unrestricted = matrix("false")
+    assert len(unrestricted) == 9
+    assert {row["job_id"] for row in unrestricted} == {
+        f"{mode}-{os_name}" for mode in ("direct", "pinokio-backend", "pinokio-fully-local")
+        for os_name in ("macos", "linux", "windows")
+    }
+    expected_direct = {
+        ("direct-linux", "direct", "ubuntu-24.04", "release0-to-release1"),
+        ("direct-macos", "direct", "macos-15", "release0-to-release1"),
+        ("direct-windows", "direct", "windows-2022", "release0-to-release1"),
+    }
+    assert {(row["job_id"], row["mode"], row["runner"], row["leg"])
+            for row in unrestricted if row["mode"] == "direct"} == expected_direct
+    gate = workflow.split("      - name: Aggregate the exact Release-1 receipt matrix\n", 1)[1].split("      - name:", 1)[0]
+    assert "if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'" in gate
+    assert "--aggregate-release1" in gate
+
+    rows = matrix("true")
+    assert len(rows) == 3
+    assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
+    assert workflow.count("      direct_only:\n") == 2
+    assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
+
+    backend_rows = matrix("false", M4_4A_BACKEND_ONLY="true")
+    assert {row["job_id"] for row in backend_rows} == {
+        "pinokio-backend-linux", "pinokio-backend-macos", "pinokio-backend-windows"
+    }
+    for override in ({"M4_4A_BACKEND_ONLY": "true"}, {"M4_5_ONLY": "true"}):
+        proc = config("true", **override)
+        assert proc.returncode != 0
+        assert "direct_only cannot be combined" in proc.stderr
