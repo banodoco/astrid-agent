@@ -218,3 +218,50 @@ def test_tampered_release0_windows_task_refuses_before_mutation(tmp_path):
                for value in calls)
     manager.stop.assert_not_called()
     manager.unregister.assert_not_called()
+
+
+@pytest.mark.parametrize("system", ["darwin", "linux"])
+def test_release0_program_root_sidecar_is_adopted_exactly(tmp_path, monkeypatch, system):
+    manager, version, data, legacy, _ = _posix_service(tmp_path, monkeypatch, system)
+    original = str(version.root / "service-env.json").encode()
+    root_sidecar = str(manager.env_file).encode()
+    assert original in legacy
+    observed = legacy.replace(original, root_sidecar)
+    manager.path.write_bytes(observed)
+    manager.publish_launch_admission(version, data)
+    assert manager.path.read_bytes() != observed
+
+
+@pytest.mark.parametrize("system", ["darwin", "linux"])
+def test_release0_unrecognized_sidecar_is_not_adopted(tmp_path, monkeypatch, system):
+    manager, version, data, legacy, _ = _posix_service(tmp_path, monkeypatch, system)
+    observed = legacy.replace(str(version.root / "service-env.json").encode(),
+                              str(tmp_path / "foreign-service-env.json").encode())
+    manager.path.write_bytes(observed)
+    with pytest.raises(ValueError, match="unknown or changed"):
+        manager.publish_launch_admission(version, data)
+    assert manager.path.read_bytes() == observed
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_release0_windows_root_sidecar_admission_is_exact(tmp_path, allowed):
+    manager, version, data, _legacy, _, stored = _windows_service(tmp_path)
+    sidecar = manager.env_file if allowed else tmp_path / "foreign-service-env.json"
+    argv = service._release0_service_command(version, data, windows=True, log=manager.log, env_file=sidecar)
+    stored[:] = [{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}]
+    writes = []
+
+    def powershell(script):
+        if "Set-ScheduledTask" in script:
+            writes.append(script)
+            return ""
+        return json.dumps(stored, separators=(",", ":"))
+
+    manager.powershell = powershell
+    if allowed:
+        manager.publish_launch_admission(version, data)
+        assert len(writes) == 1
+    else:
+        with pytest.raises(ValueError, match="scheduled task has an unknown action"):
+            manager.publish_launch_admission(version, data)
+        assert writes == []

@@ -642,16 +642,16 @@ class Service:
             retained = Version.load(read_json(folder / "version.json"))
             if retained.root != absolute(folder):
                 raise ValueError("The retained service version is outside this installation.")
-            # The release-0 installer kept this sidecar beside the selected
-            # version, rather than at the program root.  Admit only its exact
-            # generated command so later register() replaces it with the
-            # current service definition and current admission gate.
-            release0 = _release0_service_command(
-                retained, data, windows=windows, log=self.log,
-                env_file=retained.root / "service-env.json",
-            )
-            if action == encode(release0):
-                return True
+            # Frozen definitions exist with the settings sidecar either beside
+            # the selected version or at the program root. Admit only these
+            # exact generated commands before replacing the old service.
+            for env_file in (retained.root / "service-env.json", self.env_file):
+                release0 = _release0_service_command(
+                    retained, data, windows=windows, log=self.log,
+                    env_file=env_file,
+                )
+                if action == encode(release0):
+                    return True
             for env_file in (None, self.env_file):
                 prior = command(retained, data, windows=windows, log=self.log, env_file=env_file)
                 # This is the exact historical wrapper suffix, obtained from
