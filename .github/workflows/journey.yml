@@ -389,6 +389,17 @@ jobs:
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Reject a mistyped candidate before attempting to fetch that object.
+      - name: Freeze and validate candidate inputs
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
       - name: Check out frozen Agent candidate
         uses: actions/checkout@v4
         with:
@@ -414,9 +425,6 @@ jobs:
           ref: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
           path: pinokio
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
       - name: Record effective immutable checkouts
         shell: bash
         run: |
@@ -506,13 +514,6 @@ jobs:
           name: journey-manager-${{ matrix.job_id }}
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
-      - name: Freeze and validate candidate inputs
-        shell: bash
-        env:
-          CANDIDATE: ${{ needs.config.outputs.candidate }}
-        run: |
-          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
-          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
