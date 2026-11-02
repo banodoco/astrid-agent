@@ -54,7 +54,7 @@ def test_build_config_binds_real_process_and_dependency_hashes(tmp_path, monkeyp
     node = tmp_path / "node"
     pterm = tmp_path / "pterm"
     daemon = tmp_path / "daemon"
-    home = tmp_path / "home"
+    home = tmp_path / "pinokio-home"
     scratch = tmp_path / "scratch"
     (pterm / "node_modules/unws/src").mkdir(parents=True)
     for path, raw in ((node, b"node"), (pterm / "index.js", b"pterm"),
