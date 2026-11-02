@@ -24,6 +24,7 @@ from astrid.core.pack import (
     discover_packs,
     packs_root,
 )
+from astrid.core.pack.loader import scan_packs
 from astrid.core.pack.validate import (
     is_first_party_packs_root_candidate,
     validate_first_party_packs_root,
@@ -436,10 +437,13 @@ def cmd_validate(argv: list[str]) -> int:
     pack_root = _validate_pack_path(Path(args.path))
 
     report = _validation_report(pack_root)
-    errors, warnings = report.errors, report.warnings
+    errors, warnings = _validation_errors(pack_root, report.errors), report.warnings
 
     if args.json:
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        payload = report.to_dict()
+        if errors != report.errors:
+            payload["errors"] = errors
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if not errors else 1
 
     if errors:
@@ -460,6 +464,21 @@ def cmd_validate(argv: list[str]) -> int:
     else:
         print(f"valid: {resolved} (context={report.context})")
     return 0
+
+
+def _validation_errors(pack_root: Path, schema_errors: list[str]) -> list[str]:
+    """Combine structural validation with the shared pack compatibility result."""
+    errors = list(schema_errors)
+    if is_first_party_packs_root_candidate(pack_root.resolve()):
+        return errors
+    compatibility_scan = scan_packs(pack_root.parent, strict=False, include_hidden=True)
+    incompatible = next(
+        (record for record in compatibility_scan.quarantined if record.pack_dir.resolve() == pack_root.resolve()),
+        None,
+    )
+    if incompatible is not None and incompatible.error not in errors:
+        errors.append(incompatible.error)
+    return errors
 
 
 def _pack_category(pack: PackDefinition) -> str:
@@ -772,10 +791,13 @@ def _handle_validate(args: argparse.Namespace) -> int:
     """Handler for ``packs validate``."""
     pack_root = _validate_pack_path(Path(args.path))
     report = _validation_report(pack_root)
-    errors, warnings = report.errors, report.warnings
+    errors, warnings = _validation_errors(pack_root, report.errors), report.warnings
 
     if getattr(args, "json", False):
-        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        payload = report.to_dict()
+        if errors != report.errors:
+            payload["errors"] = errors
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0 if not errors else 1
 
     if errors:
