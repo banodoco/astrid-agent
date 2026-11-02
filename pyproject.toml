@@ -55,7 +55,6 @@ astrid-upgrade = "astrid.sdk.upgrade:main"
 [project.optional-dependencies]
 dev = [
     "fonttools[woff]>=4.0",
-    # tests/test_wan2gp_lifecycle.py canonicalizes generated MP4 metadata with mutagen.
     "mutagen>=1.47",
     # The RunPod claim script is exercised by unit and Darwin CI tests. Pin
     # the lifecycle implementation because it is not published on PyPI.

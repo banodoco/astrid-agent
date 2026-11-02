@@ -40,7 +40,6 @@
 | understanding | Understanding pack: modality-specific LLM inspection for audio, images, synchronized video, and scene descriptions, w... | `astrid/packs/understanding/docs/SKILL.md` |
 | vibecomfy | Run the user's own ComfyUI and saved workflows on their machine (local generation), and import, inspect, edit, valida... | `astrid/packs/vibecomfy/docs/SKILL.md` |
 | video_editing | Video editing pack: orchestrators for the full hype pipeline, event talk videos, thumbnail generation, iteration vide... | `astrid/packs/video_editing/docs/SKILL.md` |
-| wan2gp | Native Wan2GP pack — generate video through the GenericPackHost-owned upstream Python session (shared.api.init / WanG... | `astrid/packs/wan2gp/docs/SKILL.md` |
 | youtube | YouTube pack — acquire YouTube media (audio MP3 / video MP4 via yt-dlp) and publish finished videos to YouTube via th... | `astrid/packs/youtube/docs/SKILL.md` |
 
 <!-- PACKS:END -->

@@ -308,7 +308,7 @@ def compile_wan_2_2_t2i(request: WanT2IRequest, *, profile: str = "pip_embedded"
     """Compile direct Vibe Wan 2.2 text-to-image semantics.
 
     This is intentionally a VibeComfy capability, not an invocation of the
-    native ``wan2gp.generate_video`` capability.  The one-frame contract is
+    native video-generation capability.  The one-frame contract is
     carried by the direct template and never inferred by the native compiler.
     """
 

@@ -1286,3 +1286,99 @@
 - test: tests/editing_conformance/test_platform_safety_net.py::test_preview_matches_render_frame
   reason: "A skipped stub (preview = None, render = None) that could only assert preview == render once the F2 journey wired both. It has no method to reuse: the App preview exists only in a browser and the render only through the Runtime. Its home is F2 step 4 of the journey in the App repo (tests/e2e/local/three-products.spec.ts), which renders a pinned revision with rendering.ffmpeg on Linux (no Remotion) and compares the App preview frame with the rendered frame in Chrome at 1 s, 3 s and 5 s (16x9 cells of mean RGB, at most 12 levels per channel on average and 40 in the worst cell), with the preview of R+1 as the negative control; the differences are also written to the run summary."
   removed_by: "F2 step 4 journey case (astrid-app tests/e2e/local/three-products.spec.ts) and tests/integrations/test_media_only_render_without_remotion.py"
+- test: tests/core/execution/test_generic_host_actions_v3.py::test_wan_release_darwin_uses_complete_native_census_without_ps
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/core/execution/test_pipe_io.py::test_wan_census_failure_retains_custody_but_joins_pipe_workers
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/core/execution/test_pipe_io.py::test_wan_fence_interrupts_a_silent_read
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/core/execution/test_pipe_io.py::test_wan_partial_frames_survive_observation_timeout_and_coalesced_frames
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/core/execution/test_warm_hold.py::test_failed_idle_release_is_recorded_and_keeps_the_slot_occupied
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/core/execution/test_warm_hold.py::test_host_status_names_each_warm_hold_and_when_it_expires
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/core/execution/test_warm_hold.py::test_idle_expiry_ends_the_warm_wan_child_through_its_session_release
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/core/execution/test_warm_hold.py::test_windows_wan_idle_release_uses_retained_job_evidence
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/core/generation/test_listing.py::test_wan_catalog_rows_and_animate_actions_are_unavailable
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/packs/test_capability_bind_contract.py::test_wan_compiler_materializes_smoke_defaults
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/packs/test_capability_bind_contract.py::test_wan_compiler_preserves_generation_controls
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/packs/test_capability_bind_contract.py::test_wan_generation_controls_are_transported_by_shared_expander
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/packs/test_windows_filesystem_seams.py::test_wan_spool_observation_and_materialization_use_adapter
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/packs/test_windows_filesystem_seams.py::test_wan_spool_refuses_linked_parent_and_output
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_generic_host.py::test_wan_qualification_refuses_before_host_preflight
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_abifix.py::test_canonical_wan22_gets_native_abi_defaults_deterministically
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_abifix.py::test_explicit_native_abi_values_are_preserved
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_abifix.py::test_missing_prompt_still_raises
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_lifecycle.py::test_fake_output_containment_rejects_escape_without_writing_outside
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_lifecycle.py::test_generated_mp4_wall_clock_comments_canonicalize_to_equal_digest
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_lifecycle.py::test_persistent_state_reopens_and_reuses_warm_identity
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_lifecycle.py::test_resident_key_excludes_task_identity_but_tracks_artifacts_and_policy
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_lifecycle.py::test_runner_and_warmth_identity_are_portable_and_deterministic
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_persistent_session.py::test_ambiguous_rebind_acknowledgement_blocks_submission
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_persistent_session.py::test_cancellation_retires_incarnation_before_next_task
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_persistent_session.py::test_missing_explicit_rebind_protocol_is_rejected
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_persistent_session.py::test_output_escape_fences_and_releases_session
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_persistent_session.py::test_residency_without_content_attestation_is_rejected
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_persistent_session.py::test_resident_change_fences_old_incarnation_before_replacement
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_persistent_session.py::test_two_tasks_reuse_one_owner_and_rebind_distinct_spools
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_wan2gp_persistent_session.py::test_unverified_release_blocks_future_admission
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"
+- test: tests/test_windows_gpu_availability.py::test_missing_gpu_warns_for_vibecomfy_but_still_blocks_wan2gp
+  reason: "Tested the Wan2GP native session, adapter or warm child that M2-11W removed from core (pack, adapter, engine index, availability rows). The design has no remaining surface, so the test is removed with it; the VibeComfy and generic host behaviour it shared a fixture with is covered by the surviving tests."
+  removed_by: "M2-11W"

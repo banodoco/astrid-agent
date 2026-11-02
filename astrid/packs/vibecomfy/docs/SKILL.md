@@ -177,7 +177,7 @@ Build the `managed_assets` ZIP, import it, and pass its digest as
 subfolder `astrid/<task id>`) and binds the first `LoadImage`:
 
 ```sh
-python3 -m astrid.packs.vibecomfy.local pack-images "$WORK/images.zip" /abs/ref.png
+python3 -m astrid.packs.vibecomfy.local pack-images "$WORK/images.zip" <reference-image-path>
 ```
 
 It prints `{"zip", "names"}`; `names` are the `LoadImage` values. A second
@@ -236,9 +236,9 @@ us how it went, with the GPU and driver from `nvidia-smi`"), and record that
 you said it in preferences so it isn't repeated. A missing or unrecognized GPU never
 blocks: VibeComfy uses their ComfyUI's GPU, not Astrid's detection.
 
-Wan2GP is manual for now: the user runs it themselves, then you import the
-results from its output folder (usually `outputs/` in their Wan2GP folder)
-with `python3 -m astrid media import /abs/Wan2GP/outputs/clip.mp4 --project PROJECT --json`.
+Output made outside Astrid is manual: the user runs the other tool themselves,
+then you import the result from its output folder with
+`python3 -m astrid media import /abs/path/<input-video-path> --project PROJECT --json`.
 
 ### Remember the setup
 

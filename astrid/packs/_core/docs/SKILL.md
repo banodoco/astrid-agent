@@ -59,7 +59,7 @@ the user to choose Allow if Chrome or Edge asks to reach their computer, then
 confirm astrid.haus shows Connected. That is the end of setup. To generate
 with a ComfyUI the user already runs, follow [Run on your own
 ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui); it covers
-Wan2GP results too. Do not install or clone `astrid-app`; it is for app
+its results too. Do not install or clone `astrid-app`; it is for app
 developers.
 
 Synced skills use the absolute path of Astrid's own Python, so their

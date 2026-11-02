@@ -32,7 +32,7 @@ task cannot find them.
 The installer checks that Astrid is healthy and opens astrid.haus itself. Tell
 the user to choose Allow if Chrome or Edge asks to reach their computer, then
 confirm astrid.haus shows Connected. That is the end of setup. (Connecting
-local engines such as ComfyUI or Wan2GP is not covered here yet.) Carry
+local engines such as ComfyUI is not covered here yet.) Carry
 out requested checks, report their actual results, and do not claim a check
 passed when it could not be run.
 
