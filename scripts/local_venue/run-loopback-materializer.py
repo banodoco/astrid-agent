@@ -137,31 +137,35 @@ def _run_bounded(
     deadline = started + timeout
     reason: str | None = None
     try:
-        while True:
-            stream.flush()
-            with log.open("rb") as reader:
-                reader.seek(offset)
-                chunk = reader.read()
-            offset += len(chunk)
-            if failure_marker is not None and failure_marker in marker_tail + chunk:
-                marker_observed = True
-                reason = "known-failure-marker"
-            if failure_marker is not None:
-                marker_tail = (marker_tail + chunk)[-(len(failure_marker) - 1):]
+        try:
+            while True:
+                stream.flush()
+                with log.open("rb") as reader:
+                    reader.seek(offset)
+                    chunk = reader.read()
+                offset += len(chunk)
+                if failure_marker is not None and failure_marker in marker_tail + chunk:
+                    marker_observed = True
+                    reason = "known-failure-marker"
+                if failure_marker is not None:
+                    marker_tail = (marker_tail + chunk)[-(len(failure_marker) - 1):]
 
-            if reason is not None or process.poll() is not None:
-                break
-            if shutil.disk_usage(disk_root).free < MIN_FREE_BYTES:
-                reason = "disk-floor"
-                break
-            if time.monotonic() >= deadline:
-                reason = "timeout"
-                break
-            time.sleep(0.1)
-        if process.poll() is None:
+                if reason is not None or process.poll() is not None:
+                    break
+                if shutil.disk_usage(disk_root).free < MIN_FREE_BYTES:
+                    reason = "disk-floor"
+                    break
+                if time.monotonic() >= deadline:
+                    reason = "timeout"
+                    break
+                time.sleep(0.1)
+            if process.poll() is None:
+                _stop_process_group(process)
+            else:
+                process.wait()
+        except BaseException:
             _stop_process_group(process)
-        else:
-            process.wait()
+            raise
     finally:
         stream.close()
 
