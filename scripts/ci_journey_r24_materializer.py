@@ -216,17 +216,65 @@ def materialize(resource: Path, pinokio: Path, producer_root: Path,
     environment.write_text(changed, encoding="utf-8")
 
 
-def _engine_environment(home: Path) -> dict[str, str]:
+def _runner_local_home(run_root: Path, pinokio_home: Path) -> Path:
+    """Create the login home that must survive Pinokio's child-env filter.
+
+    Pinokio deliberately removes values rooted under ``PINOKIO_HOME`` before it
+    starts an app shell.  Its daemon may therefore have a HOME value which the
+    installer child cannot see.  Keep the disposable login home in the same
+    runner-local run root, but as a sibling (not a descendant) of the daemon's
+    managed home.
+    """
+    runner_home = run_root / "installer-home"
+    if runner_home.exists() or runner_home.is_symlink():
+        raise MaterializerError("fresh runner-local installer home required")
+    runner_home.mkdir(mode=0o700)
+    selected_home = pinokio_home.resolve(strict=True)
+    selected_runner_home = runner_home.resolve(strict=True)
+    if selected_runner_home == selected_home or selected_home in selected_runner_home.parents:
+        raise MaterializerError("installer HOME must be outside PINOKIO_HOME")
+    return selected_runner_home
+
+
+def _engine_environment(home: Path, runner_home: Path) -> dict[str, str]:
+    selected_home = home.resolve(strict=True)
+    selected_runner_home = runner_home.resolve(strict=True)
+    if selected_runner_home == selected_home or selected_home in selected_runner_home.parents:
+        raise MaterializerError("installer HOME must be outside PINOKIO_HOME")
     env = dict(os.environ)
     env.update({
-        "HOME": str(home / "user-home"),
-        "XDG_DATA_HOME": str(home / "xdg-data"),
+        # pterm is a control-plane client.  pinokiod owns the actual shell
+        # child environment, which filters values under PINOKIO_HOME.  This
+        # sibling directory therefore has to be present in the daemon env.
+        "HOME": str(selected_runner_home),
+        "XDG_DATA_HOME": str(selected_runner_home / "xdg-data"),
         "PINOKIO_HOME": str(home),
         "PINOKIO_HTTPS_ACTIVE": "0",
         "PINOKIO_NETWORK_ACTIVE": "0",
         "ASTRID_APP_REF": PUBLISHED_CANDIDATE["app"],
     })
     return env
+
+
+def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Path,
+                       home: Path, env: dict[str, str], evidence: Path,
+                       receipt: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+    """Run the real PTerm route and require its genuine installer result.
+
+    PTerm's terminal disconnect is a transport completion and can return zero
+    even when the nested shell command failed.  A zero PTerm exit is therefore
+    never installation success: the marker and installed identity must verify
+    before this function returns.
+    """
+    _run(pterm_argv(node, pterm, "pinokio/install.js"),
+         log=evidence / "install.log", receipt=receipt, label="pinokio-install",
+         env=env, cwd=home, timeout=3600)
+    try:
+        return _installed(resource / "app/astrid", manifest)
+    except MaterializerError as exc:
+        raise MaterializerError(
+            "pinokio-install transport completed without a valid installed candidate"
+        ) from exc
 
 
 def _require_port_free(port: int = PORT) -> None:
@@ -561,8 +609,15 @@ def execute(args: argparse.Namespace) -> int:
         scratch = run_root / "scratch"
         scratch.mkdir()
         home = run_root / "pinokio-home"
-        for path in (home, home / "api", home / "user-home", home / "xdg-data"):
+        for path in (home, home / "api"):
             path.mkdir(mode=0o700)
+        runner_home = _runner_local_home(run_root, home)
+        (runner_home / "xdg-data").mkdir(mode=0o700)
+        receipt["environment_boundary"] = {
+            "pinokio_home": str(home.resolve(strict=True)),
+            "installer_home": str(runner_home),
+            "installer_home_inside_pinokio_home": False,
+        }
         resource = home / "api/astrid"
         receipt["stage"] = "materialize-candidate"
         _write(receipt_path, receipt)
@@ -570,7 +625,7 @@ def execute(args: argparse.Namespace) -> int:
 
         receipt["stage"] = "start-pinokiod"
         _write(receipt_path, receipt)
-        engine_env = _engine_environment(home)
+        engine_env = _engine_environment(home, runner_home)
         _require_port_free()
         daemon, daemon_log, daemon_record, daemon_started = _launch(
             [str(node), str(pinokiod / "script/index.js")],
@@ -582,11 +637,11 @@ def execute(args: argparse.Namespace) -> int:
 
         receipt["stage"] = "install-candidate"
         _write(receipt_path, receipt)
-        _run(pterm_argv(node, pterm, "pinokio/install.js"),
-             log=evidence / "install.log", receipt=receipt, label="pinokio-install",
-             env=engine_env, cwd=home, timeout=3600)
+        version, data = _install_candidate(
+            node=node, pterm=pterm, resource=resource, manifest=manifest,
+            home=home, env=engine_env, evidence=evidence, receipt=receipt,
+        )
         backend = resource / "app/astrid"
-        version, data = _installed(backend, manifest)
         owner = {"schema_version": 1, "run_id": uuid.uuid4().hex,
                  "root": str(backend.resolve()), "data_root": str(data)}
         _write(run_root / "tst-b1-owner.json", owner)

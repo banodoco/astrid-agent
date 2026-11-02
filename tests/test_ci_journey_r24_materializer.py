@@ -50,6 +50,54 @@ def test_pterm_and_documented_route_arguments_are_exact(tmp_path):
     ]
 
 
+def test_runner_local_home_reaches_child_outside_pinokio_home(tmp_path):
+    run_root = tmp_path / "run"
+    pinokio_home = run_root / "pinokio-home"
+    pinokio_home.mkdir(parents=True)
+    runner_home = materializer._runner_local_home(run_root, pinokio_home)
+    env = materializer._engine_environment(pinokio_home, runner_home)
+    observed = tmp_path / "child-home.txt"
+    receipt = {"commands": []}
+    materializer._run(
+        [sys.executable, "-c",
+         "import os, pathlib; pathlib.Path(os.environ['R24_HOME_PROBE']).write_text(os.environ['HOME'])"],
+        log=tmp_path / "child-home.log", receipt=receipt, label="installer-home-child-probe",
+        env={**env, "R24_HOME_PROBE": str(observed)}, timeout=30,
+    )
+    assert observed.read_text() == str(runner_home)
+    assert pinokio_home.resolve() not in runner_home.parents
+    assert receipt["commands"][-1]["exit"] == 0
+    with pytest.raises(materializer.MaterializerError, match="installer-child-failure exited 23"):
+        materializer._run(
+            [sys.executable, "-c", "raise SystemExit(23)"],
+            log=tmp_path / "child-failure.log", receipt=receipt,
+            label="installer-child-failure", env=env, timeout=30,
+        )
+    assert receipt["commands"][-1]["exit"] == 23
+
+
+def test_pterm_transport_success_is_not_install_success(monkeypatch, tmp_path):
+    calls = []
+
+    def completed(argv, **kwargs):
+        calls.append((argv, kwargs))
+
+    monkeypatch.setattr(materializer, "_run", completed)
+    resource = tmp_path / "pinokio-home/api/astrid"
+    manifest = tmp_path / "install-manifest.json"
+    manifest.write_text("{}")
+    with pytest.raises(materializer.MaterializerError, match="transport completed"):
+        materializer._install_candidate(
+            node=tmp_path / "node", pterm=tmp_path / "pterm", resource=resource,
+            manifest=manifest, home=tmp_path / "pinokio-home",
+            env={"HOME": str(tmp_path / "installer-home")},
+            evidence=tmp_path / "evidence", receipt={"commands": []},
+        )
+    assert calls[0][0] == materializer.pterm_argv(tmp_path / "node", tmp_path / "pterm",
+                                                   "pinokio/install.js")
+    assert calls[0][1]["label"] == "pinokio-install"
+
+
 def test_build_config_binds_real_process_and_dependency_hashes(tmp_path, monkeypatch):
     node = tmp_path / "node"
     pterm = tmp_path / "pterm"
