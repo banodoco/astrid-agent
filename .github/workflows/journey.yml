@@ -142,9 +142,20 @@ jobs:
                           resolved = posixpath.normpath(posixpath.join(base, link))
                           if resolved == ".." or resolved.startswith("../"):
                               raise RuntimeError("Archive link escapes staging")
-                          parts = resolved.split("/")
-                          if any("/".join(parts[:i]) in links for i in range(1, len(parts))):
-                              raise RuntimeError("Archive link target traverses another link")
+                          # Inspect every raw traversal component before collapsing '..'.
+                          # A symlink in a later-cancelled component still changes its meaning.
+                          stack = [part for part in base.split("/") if part and part != "."]
+                          for part in link.split("/"):
+                              if not part or part == ".":
+                                  continue
+                              if "/".join(stack) in links:
+                                  raise RuntimeError("Archive link target traverses another link")
+                              if part == "..":
+                                  if not stack:
+                                      raise RuntimeError("Archive link escapes staging")
+                                  stack.pop()
+                              else:
+                                  stack.append(part)
                   tf.extractall(str(dest))
           
           

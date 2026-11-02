@@ -266,3 +266,20 @@ def test_archive_allows_safe_parent_relative_link(tmp_path):
     dest.mkdir()
     prereqs.extract_safe(archive, dest)
     assert (dest / "python/bin/data").read_text() == "x"
+
+
+def test_link_target_does_not_hide_intermediate_link_with_parent_component(tmp_path):
+    archive = tmp_path / "hidden.tgz"
+    with tarfile.open(archive, "w:gz") as tf:
+        first = tarfile.TarInfo("python/link")
+        first.type = tarfile.SYMTYPE
+        first.linkname = "deep/nested"
+        tf.addfile(first)
+        second = tarfile.TarInfo("python/other")
+        second.type = tarfile.SYMTYPE
+        second.linkname = "link/../data"
+        tf.addfile(second)
+    dest = tmp_path / "extract"
+    dest.mkdir()
+    with pytest.raises(RuntimeError, match="traverses"):
+        prereqs.extract_safe(archive, dest)
