@@ -27,7 +27,9 @@ from astrid.core.pack.permissions import (
     _normalize_pack_permissions,
     _optional_pack_extensions,
 )
+from astrid import pack_api
 from astrid.pack_api import VERSION as PACK_API_VERSION
+from astrid.pack_imports import ImportContract, check_pack_imports
 from astrid.pack_validation import validate_pack as validate_pack_compatibility
 
 _LOGGER = logging.getLogger(__name__)
@@ -106,6 +108,7 @@ def scan_packs(
     include_hidden: bool = False,
     strict: bool = True,
     required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
+    _validate: bool = True,
 ) -> PackScan:
     """Scan a pack root without importing pack code.
 
@@ -115,13 +118,23 @@ def scan_packs(
     neighbours.  Required and runtime-owned folders remain fail-closed in both
     modes.
     """
-    source_root = Path(root) if root is not None else packs_root()
+    if root is None:
+        from astrid.core.pack.source_setup import active_source_inventory
+        inventory = active_source_inventory()
+        sources = inventory.sources if inventory is not None else ()
+        roots = (*_default_pack_roots(), *(source.pack_root for source in sources))
+        return scan_pack_roots(roots, include_hidden=include_hidden, strict=strict,
+                               required_pack_ids=required_pack_ids, _validate=_validate,
+                               source_records={source.pack_id: source for source in sources})
+    source_root = Path(root)
     if not source_root.is_dir():
         return PackScan((), ())
     packs: list[PackDefinition] = []
     quarantined: list[QuarantinedPack] = []
     seen: dict[str, Path] = {}
-    for child in sorted(source_root.iterdir(), key=lambda path: path.name):
+    children = ((source_root,) if (source_root / "pack.yaml").is_file()
+                else sorted(source_root.iterdir(), key=lambda path: path.name))
+    for child in children:
         if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
             continue
         manifest_path: Path | None = None
@@ -154,7 +167,7 @@ def scan_packs(
                 pack_id=child.name,
                 pack_dir=child,
                 manifest_path=(child / "pack.yaml") if (child / "pack.yaml").is_file() else None,
-                error=str(exc),
+                error=" ".join(str(exc).split()),
             )
             quarantined.append(record)
             _quarantine_warning(record)
@@ -165,10 +178,33 @@ def scan_packs(
             raise PackValidationError(f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {manifest_path}")
         seen[pack.id] = manifest_path
         packs.append(pack)
-    packs, compatibility_quarantine = _isolate_incompatible_packs(packs)
-    quarantined.extend(compatibility_quarantine)
+    if _validate:
+        packs, compatibility_quarantine = _isolate_incompatible_packs(packs, required_pack_ids=required_pack_ids)
+        quarantined.extend(compatibility_quarantine)
     return PackScan(tuple(packs), tuple(quarantined))
 
+
+
+def scan_pack_roots(
+    roots: tuple[str | Path, ...], *, include_hidden: bool = False,
+    strict: bool = False, required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
+    _validate: bool = True, source_records: dict[str, Any] | None = None,
+) -> PackScan:
+    """Collect and collision-check all roots before resolving dependencies."""
+    if source_records is None:
+        from astrid.core.pack.source_setup import active_source_inventory
+        inventory = active_source_inventory()
+        source_records = {source.pack_id: source for source in inventory.sources} if inventory else {}
+    scans = [scan_packs(path, include_hidden=include_hidden, strict=strict,
+                        required_pack_ids=required_pack_ids, _validate=False)
+             for path in dict.fromkeys(Path(root).expanduser().resolve() for root in roots)]
+    packs = list({pack.root.resolve(): pack for scan in scans for pack in scan.packs}.values())
+    quarantined = [record for scan in scans for record in scan.quarantined]
+    if _validate:
+        packs, rejected = _isolate_incompatible_packs(
+            packs, required_pack_ids=required_pack_ids, source_records=source_records)
+        quarantined.extend(rejected)
+    return PackScan(tuple(packs), tuple(quarantined))
 
 def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
     if manifest_path is None:
@@ -187,8 +223,17 @@ def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
 
 def _isolate_incompatible_packs(
     packs: list[PackDefinition],
+    *,
+    required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
+    source_records: dict[str, Any] | None = None,
 ) -> tuple[list[PackDefinition], list[QuarantinedPack]]:
     """Apply the shared pure compatibility validator to external pack inventory."""
+    seen: dict[str, Path] = {}
+    for pack in packs:
+        root = pack.root.resolve()
+        if pack.id in seen and seen[pack.id] != root:
+            raise PackValidationError(f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {root}")
+        seen[pack.id] = root
     executable: list[PackDefinition] = []
     quarantined: list[QuarantinedPack] = []
     for pack in packs:
@@ -197,6 +242,8 @@ def _isolate_incompatible_packs(
                 pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
                 error="Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.",
             )
+            if _fail_closed(pack.id, required_pack_ids):
+                raise PackValidationError(record.error)
             quarantined.append(record)
             _quarantine_warning(record)
         else:
@@ -212,6 +259,20 @@ def _isolate_incompatible_packs(
         for dist in importlib_metadata.distributions()
         if dist.metadata.get("Name")
     }
+    # The existing managed-source policy is the only default pin authority on
+    # this base; the release-manifest packs mechanism is a later integration.
+    from astrid.core.pack.source_setup import declarations_from_json
+    release_pins = {item.pack_id: {"commit": item.revision, "digest": item.tree_sha256 or ""}
+                    for item in declarations_from_json()}
+    from astrid import sdk
+    contract = ImportContract(
+        facade_exports=frozenset(pack_api.__all__), facade_version=PACK_API_VERSION,
+        sdk_names=frozenset(sdk.__all__),
+        core_pack_apis={pack.id: f"astrid.packs.{pack.id}.api" for pack in packs
+                        if pack.root.resolve().is_relative_to(bundled_root)
+                        and (pack.root / "api.py").is_file()},
+    )
+    source_records = source_records or {}
     active = packs
     while True:
         selected = {
@@ -221,8 +282,8 @@ def _isolate_incompatible_packs(
                 "schema_version": int(pack.schema_version),
                 "pack_api": pack.pack_api or "",
                 "dependencies": pack.dependencies,
-                "commit": "",
-                "installed_digest": "",
+                "commit": source_records[pack.id].revision if pack.id in source_records and source_records[pack.id].pack_root.resolve() == pack.root.resolve() else "",
+                "installed_digest": source_records[pack.id].tree_sha256 if pack.id in source_records and source_records[pack.id].pack_root.resolve() == pack.root.resolve() else "",
             }
             for pack in active
         }
@@ -234,8 +295,9 @@ def _isolate_incompatible_packs(
             manifest["schema_version"] = int(pack.schema_version)
             result = validate_pack_compatibility(
                 mode="inventory", manifest=manifest, candidate=selected[pack.id],
-                selected=selected, core_api=PACK_API_VERSION, release_pins={},
-                python_packages=python_packages, import_violations=(),
+                selected=selected, core_api=PACK_API_VERSION, release_pins=release_pins,
+                python_packages=python_packages,
+                import_violations=check_pack_imports(pack.root, contract=contract, manifest=manifest),
             )
             if not result["ok"]:
                 reason = f"{result['reason']} {result['fix']}"
@@ -246,6 +308,8 @@ def _isolate_incompatible_packs(
         if not rejected:
             return active, quarantined
         for record in rejected.values():
+            if _fail_closed(record.pack_id, required_pack_ids):
+                raise PackValidationError(record.error)
             quarantined.append(record)
             _quarantine_warning(record)
         active = [pack for pack in active if pack.id not in rejected]
@@ -256,12 +320,12 @@ def discover_packs(
     *,
     include_hidden: bool = False,
 ) -> tuple[PackDefinition, ...]:
-    """Return packs admitted by the strict canonical v3 source parser.
+    """Return packs admitted by the canonical v3 source parser.
 
     Optional schema/compatibility failures are quarantined individually by
     :func:`scan_packs`; malformed required manifests remain fail-closed.
     """
-    return scan_packs(root, include_hidden=include_hidden, strict=True).packs
+    return scan_packs(root, include_hidden=include_hidden, strict=False).packs
 
 
 def _raw_declared_capabilities(manifest_path: Path | None) -> tuple[str, ...]:
@@ -288,15 +352,14 @@ def quarantined_pack_for_capability(
     and never changes the strict registry result.
     """
     scan_roots = roots if roots is not None else _default_pack_roots()
-    for root in scan_roots:
-        for record in scan_packs(root, strict=False).quarantined:
-            if capability_id.startswith(f"{record.pack_id}."):
-                return record
-            labels = _raw_declared_capabilities(record.manifest_path)
-            if capability_id in labels or any(
-                capability_id == f"{record.pack_id}.{label}" for label in labels
-            ):
-                return record
+    for record in scan_pack_roots(scan_roots).quarantined:
+        if capability_id.startswith(f"{record.pack_id}."):
+            return record
+        labels = _raw_declared_capabilities(record.manifest_path)
+        if capability_id in labels or any(
+            capability_id == f"{record.pack_id}.{label}" for label in labels
+        ):
+            return record
     return None
 
 
@@ -306,7 +369,7 @@ def _default_pack_roots() -> tuple[Path, ...]:
         for item in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep)
         if item
     )
-    return tuple(dict.fromkeys((packs_root(), *env_roots)))
+    return tuple(dict.fromkeys(path.resolve() for path in (packs_root(), Path.home() / "Astrid" / "packs", *env_roots)))
 
 
 def pack_quarantine_report(
@@ -314,12 +377,7 @@ def pack_quarantine_report(
 ) -> list[dict[str, Any]]:
     """Return read-only JSON-shaped optional-pack quarantine records."""
     scan_roots = roots if roots is not None else _default_pack_roots()
-    records: list[dict[str, Any]] = []
-    for root in scan_roots:
-        records.extend(
-            record.to_dict() for record in scan_packs(root, strict=False).quarantined
-        )
-    return records
+    return [record.to_dict() for record in scan_pack_roots(scan_roots).quarantined]
 
 
 def pack_quarantine_section() -> dict[str, Any]:
