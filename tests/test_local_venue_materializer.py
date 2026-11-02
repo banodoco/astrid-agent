@@ -110,7 +110,7 @@ def test_local_setup_driver_only_corrects_pinned_initialization_order():
     assert 'mode !== "managed-conda"' in raw
 
 
-def test_local_venue_propagates_uv_system_certificates_only():
+def test_local_venue_propagates_uv_system_certificates():
     ambient = {
         "HOME": "/task/home",
         "SSL_CERT_FILE": "/ambient/ca.pem",
@@ -120,6 +120,19 @@ def test_local_venue_propagates_uv_system_certificates_only():
     assert selected["UV_SYSTEM_CERTS"] == "true"
     assert selected["SSL_CERT_FILE"] == "/ambient/ca.pem"
     assert ambient["UV_SYSTEM_CERTS"] == "false"
+
+
+def test_local_venue_routes_github_archives_outside_blocking_proxy():
+    ambient = {
+        "NO_PROXY": "localhost",
+        "no_proxy": "127.0.0.1",
+        "HTTPS_PROXY": "[redacted]",
+    }
+    selected = local_venue._local_venue_environment(ambient)
+    assert selected["NO_PROXY"] == "localhost,github.com,codeload.github.com"
+    assert selected["no_proxy"] == "127.0.0.1,github.com,codeload.github.com"
+    assert selected["HTTPS_PROXY"] == "[redacted]"
+    assert ambient["NO_PROXY"] == "localhost"
 
 
 def test_materialized_install_action_gets_explicit_trust_overlay(tmp_path):

@@ -22,6 +22,7 @@ SETUP_TIMEOUT_SECONDS = 2400
 MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
 FAILURE_MARKER = b"ASTRID_PINOKIO_FAILURE"
 UV_SYSTEM_CERTS_VALUE = "true"
+GITHUB_NO_PROXY_HOSTS = ("github.com", "codeload.github.com")
 INSTALL_ACTION_CALL = "app.shellStep(app.bootstrapScript('install'))"
 INSTALL_ACTION_CALL_WITH_TRUST = (
     "app.shellStep(app.bootstrapScript('install'), "
@@ -64,9 +65,19 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _local_venue_environment(env: dict[str, str]) -> dict[str, str]:
-    """Propagate system trust to UV without changing TLS verification."""
+    """Use direct GitHub archive routing while retaining TLS verification."""
     selected = dict(env)
     selected["UV_SYSTEM_CERTS"] = UV_SYSTEM_CERTS_VALUE
+    for key in ("NO_PROXY", "no_proxy"):
+        existing = [
+            part.strip()
+            for part in selected.get(key, "").split(",")
+            if part.strip()
+        ]
+        present = {part.lstrip(".").lower() for part in existing}
+        selected[key] = ",".join(
+            existing + [host for host in GITHUB_NO_PROXY_HOSTS if host not in present]
+        )
     return selected
 
 
