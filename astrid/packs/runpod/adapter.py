@@ -602,6 +602,12 @@ class TargetProviderBindings:
             raise ValueError("unsupported retained target operation")
         if not isinstance(policy, dict) or set(policy) != {"kind", "engine", "preferences"}:
             raise ValueError("target operation requires one explicit provider policy")
+        if policy["kind"] == "runpod":
+            from astrid.packs.runpod.target_selection import RunPodPreferences
+            # The setup owner signs the representation it persists. Callers
+            # may supply equivalent optional-volume forms without owning this
+            # serialization policy or mutating their request in place.
+            policy = {**policy, "preferences": RunPodPreferences.from_mapping(policy["preferences"]).as_mapping()}
         with self.lock:
             provider = self.provider if self.provider is not None and json.loads(self.signature)[0] == policy["kind"] else None
             if (operation != "setup" and provider is not None

@@ -29,6 +29,7 @@ from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolC
 from astrid.core.generation import engine_recipe, engine_runner
 from astrid.core.generation.delivery import deliver_generation
 from astrid.packs.runpod import remote_placement, target_selection
+from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 from astrid.sdk import AstridClient
 from astrid.sdk.generation import GenerationFacade
 from astrid.sdk.remote import RemoteAstridClient
@@ -188,7 +189,7 @@ class ProviderHTTP:
         if "GpuCatalogue" in query:
             return {"gpuTypes": [{"id": "gpu-exact", "displayName": "CPU fixture GPU"}]}
         if "DataCenterStock" in query:
-            assert variables["availability"]["allowedCudaVersions"] == ["13.0"]
+            assert variables["availability"]["allowedCudaVersions"] == list(DEFAULT_ALLOWED_CUDA_VERSIONS)
             return {"dataCenters": [{"id": "DC-unpinned", "storageSupport": False,
                     "gpuAvailability": [{"gpuTypeId": "gpu-exact", "available": True, "stockStatus": "High"}]}]}
         if "DataCenterPrices" in query:
@@ -202,7 +203,8 @@ class ProviderHTTP:
             record = json.loads(self.claim_path.read_text())
             assert record["state"] == "allocation_pending"
             assert record["lease"]["state"] == "preparing"
-            assert 'allowedCudaVersions: ["13.0"]' in query or 'allowedCudaVersions: ["13.0",]' in query
+            allowed = re.search(r"allowedCudaVersions: (\[[^\]]+\])", query)[1]
+            assert json.loads(allowed) == list(DEFAULT_ALLOWED_CUDA_VERSIONS)
             assert "DC-unpinned" in query and "networkVolumeId" not in query
             assert record["worker_image"] in query and record["request_name"] in query
             assert 'gpuTypeId: "gpu-exact"' in query
@@ -340,6 +342,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     preferences = {"provider_account_ref": "cpu-fixture", "gpu_types": ["CPU fixture GPU"],
         "image": "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
                  "@sha256:24795acee5856a3e6d383e879ccdd53edd25d24ea38d0edab5a1d3718ea385e6",
+        "volume": {"id": None, "name": None, "size_gb": 0, "mount_path": "/workspace"},
         "idle_timeout_seconds": 1800,
         "credential_ref": "env:FAKE_RUNPOD_CREDENTIAL", "budget_cap_usd": 2.0}
     target_selection.save_runpod_preferences(preferences)
