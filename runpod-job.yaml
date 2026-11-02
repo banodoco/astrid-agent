@@ -1,5 +1,5 @@
 repos:
-  astrid-agent: dd1307d58cb7ee50ee1f50f390d6cecec2f11b9a
+  astrid-agent: 69c7920ae8897c878b9c20f2caa1cabb88d47376
   astrid-runtime: 5453366458f7b4ee874c94d15ae7952e3e82d3c3
 cpu:
   vcpu: 8
@@ -26,7 +26,7 @@ run:
 
   P="$TMPDIR/venv/bin/python"
 
-  test "$(git rev-parse HEAD)" = dd1307d58cb7ee50ee1f50f390d6cecec2f11b9a
+  test "$(git rev-parse HEAD)" = 69c7920ae8897c878b9c20f2caa1cabb88d47376
 
   test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 5453366458f7b4ee874c94d15ae7952e3e82d3c3
 
