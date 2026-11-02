@@ -1,0 +1,18 @@
+{
+  "repos": {
+    "banodoco/astrid-agent": "ea00808f0556e7c4cfd832b7eadcdadc55bae591",
+    "banodoco/astrid-runtime": "1e6d899efa77a2d6ec247c38250f9748330bb587",
+    "banodoco/astrid-app": "ae95eb455408b8c0e185bfded67798e2b307a6f6"
+  },
+  "gpu": false,
+  "max_minutes": 60,
+  "setup": [
+    "set -eu\nmkdir -p /workspace/out/tests\nfor repo in astrid-agent astrid-runtime astrid-app; do git -C /workspace/$repo rev-parse HEAD > /workspace/out/tests/$repo-head.txt; done\ntest \"$(cat /workspace/out/tests/astrid-agent-head.txt)\" = ea00808f0556e7c4cfd832b7eadcdadc55bae591\ntest \"$(cat /workspace/out/tests/astrid-runtime-head.txt)\" = 1e6d899efa77a2d6ec247c38250f9748330bb587\ntest \"$(cat /workspace/out/tests/astrid-app-head.txt)\" = ae95eb455408b8c0e185bfded67798e2b307a6f6\npython -m pip install 'pytest==9.0.2' 'pytest-timeout>=2.4' 'setuptools==80.9.0' 'wheel==0.46.3' build pyyaml jsonschema filelock python-dotenv uv\npython -m pip install --no-deps /workspace/astrid-runtime\n"
+  ],
+  "run": [
+    "set +e\ncd /workspace/astrid-agent || exit 2\nexport PYTHONPATH=/workspace/astrid-agent:/workspace/astrid-runtime:/workspace/astrid-runtime/packages/python\nexport ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime PYTHONDONTWRITEBYTECODE=1\npython -m pytest --collect-only -q tests/test_update_job_platform.py tests/test_installer_* tests/test_verify_installed.py tests/test_installer_pre_stop_recovery.py tests/test_installer_cli_recovery.py tests/test_installer_update_continuation.py tests/test_installer_update_reconcile.py tests/test_installer_update_job.py > /workspace/out/tests/collection.log 2>&1\nprintf 'collection=%s\\n' \"$?\" > /workspace/out/tests/inner-exit-codes.txt\npython -m pytest -q --timeout=60 tests/test_update_job_platform.py tests/test_installer_* tests/test_verify_installed.py tests/test_installer_pre_stop_recovery.py tests/test_installer_cli_recovery.py tests/test_installer_update_continuation.py tests/test_installer_update_reconcile.py tests/test_installer_update_job.py > /workspace/out/tests/focused.log 2>&1\nprintf 'focused=%s\\n' \"$?\" >> /workspace/out/tests/inner-exit-codes.txt\ncat /workspace/out/tests/inner-exit-codes.txt\nmkdir -p /workspace/out/artifacts\ncp -R /workspace/out/tests/. /workspace/out/artifacts/\nexit 0\n"
+  ],
+  "artifacts": [
+    "/workspace/out/artifacts/"
+  ]
+}
