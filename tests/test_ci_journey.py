@@ -1252,6 +1252,40 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
                               "PSModulePath": r"C:\Program Files\PowerShell\7\Modules"}
 
 
+def test_linux_update_bootstrap_failure_stages_nested_log_through_cleanup(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    raw = b"first real update-bootstrap error\n"
+    source = evidence / "release1" / "update-bootstrap.log"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(raw)
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
+        "error": "RuntimeError: update-bootstrap.log: exit 1",
+    })
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    shutil.rmtree(source.parent)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "after-cleanup")
+
+    identity = hashlib.sha256(b"release1/update-bootstrap.log").hexdigest()
+    name = f"runtime-service-service-bootstrap-{identity}.log"
+    staged = run_root / "evidence-upload"
+    for phase in ("before-cleanup", "after-cleanup"):
+        receipt = journey.read_json(staged / phase / "journey-result.json")
+        bootstrap = receipt["failure_diagnostics"][phase]["bootstrap"]
+        path = staged / phase / name
+        assert path.read_bytes() == raw
+        assert bootstrap["status"] == "captured"
+        assert bootstrap["paths"] == [path.relative_to(run_root).as_posix()]
+    assert receipt["failure_diagnostics"]["before-cleanup"]["bootstrap"]["source_paths"] == [
+        "release1/update-bootstrap.log"]
+    assert receipt["failure_diagnostics"]["after-cleanup"]["bootstrap"]["source_paths"] == []
+
+
 @pytest.mark.parametrize("platform,legacy", [("win32", True), ("win32", False), ("linux", True)])
 def test_bootstrap_module_path_is_scoped_to_windows_legacy_launch(tmp_path, monkeypatch, platform, legacy):
     monkeypatch.setattr(journey.sys, "platform", platform)

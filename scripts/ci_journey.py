@@ -612,6 +612,36 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    # Release legs put their bootstrap logs below the evidence root. Preserve
+    # every nested bootstrap source under a collision-safe staged name: both
+    # release0 and release1 can otherwise produce identically named files.
+    for source in sorted(evidence.rglob("*-bootstrap.log")):
+        relative = source.relative_to(evidence)
+        if len(relative.parts) < 2 or source.is_symlink() or not source.is_file():
+            continue
+        if any((evidence.joinpath(*relative.parts[:index])).is_symlink()
+               for index in range(1, len(relative.parts))):
+            continue
+        # Windows Release-0 has a separately receipted, byte-for-byte copy.
+        if sys.platform == "win32" and relative.as_posix() == "release0/release0-bootstrap.log":
+            continue
+        identity = hashlib.sha256(relative.as_posix().encode("utf-8")).hexdigest()
+        target = destination / f"runtime-service-service-bootstrap-{identity}.log"
+        try:
+            with source.open("rb") as stream:
+                stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+        except Exception as exc:
+            print(f"Journey bootstrap evidence copy ({phase}) failed for {relative}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    # Cleanup may remove the release directory after the first snapshot.
+    if phase == "after-cleanup":
+        before = destination.parent / "before-cleanup"
+        for source in sorted(before.glob("runtime-service-service-bootstrap-*.log")):
+            target = destination / source.name
+            if not target.exists() and source.is_file() and not source.is_symlink():
+                shutil.copyfile(source, target)
+
     # The existing hosted boundary accepts this legacy service-log filename
     # pattern. Flatten the seed directories into it without truncating bytes.
     # Numbering follows sorted relative paths so distinct invocations survive.
@@ -677,6 +707,16 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                 item.update(status="captured", path=target.relative_to(run_root).as_posix(),
                             sha256=digest.hexdigest())
             diagnostic["release0_bootstrap"] = item
+        bootstrap_paths = sorted(
+            list(destination.glob("*-bootstrap.log")) +
+            list(destination.glob("runtime-service-service-bootstrap-*.log")))
+        diagnostic["bootstrap"] = {
+            "status": "captured" if bootstrap_paths else "unavailable",
+            "paths": [path.relative_to(run_root).as_posix() for path in bootstrap_paths],
+            "source_paths": [source.relative_to(evidence).as_posix()
+                             for source in sorted(evidence.rglob("*-bootstrap.log"))
+                             if source.is_file() and not source.is_symlink()],
+        }
         recorded.setdefault("failure_diagnostics", {})[phase] = diagnostic
         write_json(result_path, recorded)
         # Refresh the staged receipt after adding paths and observation status.
