@@ -444,6 +444,21 @@ def test_push_admission_accepts_only_the_exact_dedicated_venue_head():
     }
 
 
+def test_push_admission_accepts_the_local_bind_venue_ref():
+    ref = push_admission.LOCAL_BIND_VENUE_REF
+    environment = _push_admission_environment(
+        GITHUB_REF=ref,
+        GITHUB_WORKFLOW_REF=f"{push_admission.REPOSITORY}/{push_admission.WORKFLOW_PATH}@{ref}",
+    )
+    admitted = push_admission.validate_admission(
+        environment, runner_ref="a" * 40,
+        producer_ref=push_admission.PRODUCER_REF,
+        confirmation=push_admission.CONFIRMATION,
+    )
+    assert admitted["ref"] == ref
+    assert admitted["workflow_ref"].endswith(f"@{ref}")
+
+
 @pytest.mark.parametrize(
     ("environment", "runner_ref", "producer_ref", "confirmation", "message"),
     [

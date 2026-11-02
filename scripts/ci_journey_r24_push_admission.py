@@ -12,6 +12,8 @@ from typing import Mapping
 REPOSITORY = "banodoco/astrid-agent"
 WORKFLOW_PATH = ".github/workflows/r24-linux-live.yml"
 VENUE_REF = "refs/heads/venue/M-PIN-R-24-PUSH-ROUTE-R1-E53B11D1"
+LOCAL_BIND_VENUE_REF = "refs/heads/venue/M-PIN-R-PIN-LOCAL-BIND"
+VENUE_REFS = frozenset({VENUE_REF, LOCAL_BIND_VENUE_REF})
 PRODUCER_REF = "13cb31104c8aae655d0ee04efdb9537aa111e340"
 CONFIRMATION = "R24_LIVE_CURRENT_TUPLE"
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -52,8 +54,9 @@ def validate_admission(environment: Mapping[str, str], *, runner_ref: str,
     ref = _required(environment, "GITHUB_REF")
     workflow_ref = _required(environment, "GITHUB_WORKFLOW_REF")
     if event == "push":
-        _equal(ref, VENUE_REF, "GITHUB_REF")
-        _equal(workflow_ref, f"{REPOSITORY}/{WORKFLOW_PATH}@{VENUE_REF}",
+        if ref not in VENUE_REFS:
+            raise AdmissionError("GITHUB_REF must be a dedicated venue ref")
+        _equal(workflow_ref, f"{REPOSITORY}/{WORKFLOW_PATH}@{ref}",
                "GITHUB_WORKFLOW_REF")
     elif event != "workflow_dispatch":
         raise AdmissionError("GitHub event must be workflow_dispatch or the dedicated venue push")
