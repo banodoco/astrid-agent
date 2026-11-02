@@ -338,8 +338,19 @@ def _executor_inventory(repo_root: Path, *, executor_registry: Any = None, orche
     parsed_packs = {pack.id: pack for pack in selected_packs or ()}
     registry = executor_registry if executor_registry is not None else load_default_registry(project_root=repo_root)
     if executor_registry is None and orchestrator_registry is None:
-        from astrid.core.execution.orchestrator.registry import load_default_registry as load_parents
-        orchestrator_registry = load_parents(project_root=repo_root, executor_registry=registry)
+        from astrid.core.execution.executor.actions import action_is_local_orchestrator, action_orchestrator_definition
+        from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
+        from astrid.core.pack.discovery import discover_packs_ordered
+
+        orchestrator_registry = OrchestratorRegistry(executor_registry=registry)
+        packs = selected_packs if selected_packs is not None else discover_packs_ordered(project_root=repo_root)
+        # This policy belongs to pack actions. Legacy folder orchestrators do
+        # not carry that owning action and must not inherit its result policy.
+        for pack in packs:
+            for local_id, action in pack.actions.items():
+                if action_is_local_orchestrator(action):
+                    orchestrator_registry.register(action_orchestrator_definition(pack, local_id, action))
+        orchestrator_registry.validate_all(executor_registry=registry)
     definitions = [(definition, "executor") for definition in registry.list()]
     if orchestrator_registry is not None:
         definitions.extend((definition, "orchestrator") for definition in orchestrator_registry.list())

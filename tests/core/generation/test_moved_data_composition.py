@@ -698,3 +698,48 @@ def test_selected_ledger_uses_only_the_actual_matrix_snapshot(monkeypatch, tmp_p
     assert capability_execution_admission(ledger, 'legacy_fixture.absent')['executable'] is False
     unselected.write_text('changed unselected bytes')
     assert load_capability_ledger(matrix, pack_roots=(pack,)) == ledger
+
+def test_default_parent_inventory_skips_legacy_folder_orchestrator_policy(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from astrid.core.execution.capability_ledger import _executor_inventory
+    from astrid.core.execution.executor.registry import load_default_registry as load_executor_registry
+    from astrid.core.execution.orchestrator.registry import load_default_registry as load_orchestrator_registry
+
+    project = tmp_path / 'project'
+    pack = _write_pack(project / 'astrid/packs', 'inventory_fixture')
+    data = _manifest('inventory_fixture')
+    child = data['actions']['generate_image']
+    child_id = 'inventory_fixture.generate_image'
+    child['metadata']['output_result_manifest'] = True
+    parent = deepcopy(child)
+    parent['metadata'] = {'local_orchestrator': True, 'output_result_manifest': True}
+    parent['graph'] = {'child_actions': [child_id]}
+    data['actions']['parent'] = parent
+    (pack / 'pack.yaml').write_text(yaml.safe_dump(data, sort_keys=False), encoding='utf-8')
+    monkeypatch.setenv('ASTRID_HOME', str(tmp_path / 'astrid-home'))
+    legacy = pack / 'legacy-compose'
+    legacy.mkdir()
+    (legacy / 'orchestrator.yaml').write_text(
+        "schema_version: 1\nid: inventory_fixture.legacy_compose\nname: Legacy Compose\n"
+        "kind: external\nversion: '1.0.0'\n"
+        "runtime:\n  kind: command\n  command:\n    argv: ['{python_exec}', '-c', 'pass']\n"
+        "inputs: []\noutputs: []\n",
+        encoding='utf-8',
+    )
+    monkeypatch.delenv('ASTRID_PACKS_PATH', raising=False)
+
+    executors = load_executor_registry(project_root=project)
+    orchestrators = load_orchestrator_registry(executor_registry=executors, project_root=project)
+    parent_id = 'inventory_fixture.parent'
+    legacy_id = 'inventory_fixture.legacy_compose'
+    assert parent_id not in {item.id for item in executors.list()}
+    assert {item.id for item in orchestrators.list()} >= {parent_id, legacy_id}
+    assert orchestrators.get(legacy_id).metadata.get('pack_root') is None
+    assert orchestrators.get(legacy_id).metadata.get('content_root') == str(legacy.resolve())
+
+    projected = _executor_inventory(project)
+    relevant = {row['id']: row for row in projected if row['id'] in {child_id, parent_id, legacy_id}}
+    assert set(relevant) == {child_id, parent_id}
+    assert relevant[child_id]['kind'] == 'executor'
+    assert relevant[parent_id]['kind'] == 'orchestrator'
+    assert relevant[parent_id]['source'] == str(pack / 'pack.yaml')
