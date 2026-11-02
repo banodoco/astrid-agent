@@ -581,6 +581,8 @@ def _linux_binding():
 
 
 def audit_token_details(words: Sequence[int]) -> dict[str, object]:
+    if sys.platform == "win32":
+        return _windows_platform().handoff_token_details(list(words))
     if sys.platform.startswith("linux"):
         binding = _linux_binding()
         try:
@@ -604,7 +606,15 @@ def audit_token_details(words: Sequence[int]) -> dict[str, object]:
     }
 
 
+def _windows_platform():
+    """Runtime's Windows handoff primitives (runtime_protocol.platform); no local Windows implementation."""
+    from runtime_protocol import platform as _runtime_platform
+    return _runtime_platform
+
+
 def _peer_token(connection: socket.socket) -> dict[str, object]:
+    if sys.platform == "win32":
+        return _windows_platform().handoff_peer_token(connection)
     if sys.platform.startswith("linux"):
         # Same Linux mechanism as Runtime (SO_PEERCRED + /proc observation, pidns and boot scoped).
         from runtime_protocol import linux_process_binding
@@ -624,6 +634,8 @@ def _peer_token(connection: socket.socket) -> dict[str, object]:
 
 def current_process_audit_token(pid: int) -> dict[str, object]:
     """Read one live process token through a retained Mach task-name port."""
+    if sys.platform == "win32":
+        return _windows_platform().handoff_token(pid)
     if sys.platform.startswith("linux"):
         binding = _linux_binding()
         try:
@@ -701,6 +713,8 @@ def current_process_audit_token(pid: int) -> dict[str, object]:
 
 
 def signal_audit_token(words: Sequence[int], signum: int) -> None:
+    if sys.platform == "win32":
+        return _windows_platform().handoff_signal_token(words, signum)
     if sys.platform.startswith("linux"):
         binding = _linux_binding()
         try:
