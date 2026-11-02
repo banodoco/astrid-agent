@@ -1,0 +1,919 @@
+F...........FF......FF......FF......FF......FF.......................... [ 62%]
+...........................................                              [100%]
+=================================== FAILURES ===================================
+__ test_stage_binds_installed_reader_validator_and_service_to_verified_schema __
+
+staged_installer = namespace(backend=<astrid.installer.backend.Backend object at 0x7fb0b8e43810>, root=PosixPath('/home/user/merge/ws/M-A...pytest-2/test_stage_binds_installed_rea0/program/versions/aaaaaaaa-1e6d899e-3426436c/py/lib/python3.11/site-packages'))
+
+    def test_stage_binds_installed_reader_validator_and_service_to_verified_schema(staged_installer):
+        state = staged_installer
+        version = state.backend.stage(state.manifest, state.root, state.data)
+        installed_schema = state.product_root / SCHEMA
+        assert version.env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] == str(installed_schema)
+        assert hashlib.sha256(installed_schema.read_bytes()).hexdigest() == SCHEMA_SHA256
+        assert (state.product_root / "runtime.lock.json").read_bytes() == (ROOT / "runtime.lock.json").read_bytes()
+        assert state.backend._verify_local_timeline_schema(state.product_root) == installed_schema
+    
+        # The acquired checkout is deliberately different after installation. A
+        # checkout or external package fallback cannot satisfy the assertions below.
+        (version.root / "a" / SCHEMA).write_text("{}", encoding="utf-8")
+        value = _installed_script(state, version, r'''
+    import hashlib, importlib, json, os, sys
+    from pathlib import Path
+    import jsonschema
+    from astrid.core.rendering import _local_schema
+    from astrid.core.timeline import banodoco_schema as reader
+    from astrid.core.execution.generic_host import source_checkout_digest
+    root, checkout, acquired = map(Path, sys.argv[1:4])
+    path = root / 'astrid/core/timeline/schema/timeline-config.schema.json'
+    assert sys.flags.isolated and Path(sys.prefix) == root.parents[2]
+    assert Path.cwd() != checkout and not Path.cwd().is_relative_to(checkout)
+    assert all(not Path(p).is_relative_to(checkout) and not Path(p).is_relative_to(acquired)
+               for p in sys.path if p)
+    origins = {}
+    for name in ('astrid.services', 'astrid.core.rendering._local_schema',
+                 'astrid.core.timeline.banodoco_schema', 'astrid.core.execution.generic_host',
+                 'astrid_runtime_client'):
+        origins[name] = importlib.import_module(name).__file__
+        assert Path(origins[name]).is_relative_to(root)
+    assert reader._VENDORED_SCHEMA == path
+    assert os.environ['ASTRID_TIMELINE_SCHEMA_PYTHONPATH'] == str(path)
+    reads = []
+    sys.addaudithook(lambda event, args: reads.append(str(args[0]))
+                    if event == 'open' and str(args[0]) == str(path) else None)
+    schema = _local_schema.load_verified_schema(root, str(path))
+    assert reads
+    reads.clear()
+    assert reader.load_vendored_timeline_schema() == schema
+    assert reads  # The installed reader actually opened the admitted file.
+    reads.clear()
+    reader._shared_timeline_validator.cache_clear()
+    validator = reader._shared_timeline_validator()
+    assert validator.schema == schema and reads  # Compilation read that same file.
+    good = {'tracks': [{'id': 'v', 'kind': 'visual', 'label': 'Video', 'role': 'source'}], 'clips': []}
+    assert reader.validate_timeline_config_for_container(good) == good
+    for bad in ({'tracks': [], 'clips': 'invalid'},
+                {'tracks': [{'id': 'v', 'kind': 'visual', 'label': 'Video', 'role': 'invalid'}], 'clips': []}):
+        try:
+            reader.validate_timeline_config_for_container(bad)
+        except (ValueError, jsonschema.ValidationError):
+            pass
+        else:
+            raise AssertionError('installed validator admitted an invalid Timeline')
+    lock = json.loads((root / 'runtime.lock.json').read_text())
+    print(json.dumps({'origins': origins, 'schema': str(path),
+                      'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                      'producer': lock['source_commit'], 'digest': source_checkout_digest(root)}))
+    ''')
+        assert value["schema"] == str(installed_schema)
+        assert value["sha256"] == SCHEMA_SHA256
+>       assert value["producer"] == PRODUCER
+E       AssertionError: assert '5453366458f7...7952e3e82d3c3' == '1e6d899efa77...f9748330bb587'
+E         
+E         - 1e6d899efa77a2d6ec247c38250f9748330bb587
+E         + 5453366458f7b4ee874c94d15ae7952e3e82d3c3
+
+tests/test_installer_installed_schema.py:238: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[pid-between_reads-migration] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0b8d7add0>
+kind = 'migration', moment = 'between_reads', changed = 'pid'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=6>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[pid-between_reads-app] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0b8ce1c90>
+kind = 'app', moment = 'between_reads', changed = 'pid'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=8>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[birth-between_reads-migration] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0b9ca1350>
+kind = 'migration', moment = 'between_reads', changed = 'birth'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=6>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[birth-between_reads-app] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0ba010810>
+kind = 'app', moment = 'between_reads', changed = 'birth'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=8>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[instance-between_reads-migration] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa4')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0b8cc50d0>
+kind = 'migration', moment = 'between_reads', changed = 'instance'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=6>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[instance-between_reads-app] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa5')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0b911c050>
+kind = 'app', moment = 'between_reads', changed = 'instance'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=8>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[realm-between_reads-migration] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa6')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0b8dc9ad0>
+kind = 'migration', moment = 'between_reads', changed = 'realm'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=6>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[realm-between_reads-app] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa7')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0b8ce1cd0>
+kind = 'app', moment = 'between_reads', changed = 'realm'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=8>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[root-between_reads-migration] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa8')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0ba091610>
+kind = 'migration', moment = 'between_reads', changed = 'root'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=6>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+_ test_recovery_preserves_transaction_and_replacement_at_every_admission[root-between_reads-app] _
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp/pytest-of-root/pytest-2/test_recovery_preserves_transa9')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fb0b9c62850>
+kind = 'app', moment = 'between_reads', changed = 'root'
+
+    @pytest.mark.parametrize("kind", ["migration", "app"])
+    @pytest.mark.parametrize("moment", ["entry", "between_reads", "serialized", "final"])
+    @pytest.mark.parametrize("changed", ["pid", "birth", "instance", "realm", "root"])
+    def test_recovery_preserves_transaction_and_replacement_at_every_admission(
+            tmp_path, monkeypatch, kind, moment, changed):
+        """C1 rejects foreign realms and safely stops a current owner replacement."""
+        import importlib
+        from contextlib import contextmanager
+    
+        from astrid.installer.core import RuntimeOperationError
+    
+        backend, paths, realm, boundary, _transaction, recover = _stopped_transaction(
+            tmp_path, monkeypatch, kind)
+        tracked = [backend.root / "update-transaction.json", backend.root / "current",
+                   backend.service.selection, realm / "realm.sqlite3"]
+        before = {path: path.read_bytes() for path in tracked}
+        published = {}
+    
+        def replacement():
+            identity = _publish_owner(paths)
+            key, value = {
+                "pid": ("pid", 888), "birth": ("process_birth_id", "replacement-birth"),
+                "instance": ("runtime_instance_id", "replacement-instance"),
+                "realm": ("active_realm", "replacement-realm"),
+                "root": ("realm_root", str(tmp_path / "different-realm")),
+            }[changed]
+            identity[key] = value
+            write_json(paths.discovery_path, identity)
+            write_json(paths.instance_lock_path, {**identity, "realm_id": identity["active_realm"]})
+            published.update({path: path.read_bytes()
+                              for path in (paths.discovery_path, paths.instance_lock_path)})
+            boundary.live = True
+            boundary.process_birth_identity = lambda pid: (
+                identity["process_birth_id"] if pid == identity["pid"] else None)
+            boundary.endpoint_metadata = lambda **_: {
+                "runtime_instance_id": identity["runtime_instance_id"],
+                "realm_id": identity["active_realm"],
+            }
+    
+        bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+        if moment == "entry":
+            replacement()
+        elif moment == "between_reads":
+            read_support_json = bootstrap._read_support_json
+            replaced = False
+    
+            def replace_between_reads(path):
+                nonlocal replaced
+                result = read_support_json(path)
+                if path == paths.discovery_path and not replaced:
+                    replaced = True
+                    replacement()
+                return result
+    
+            monkeypatch.setattr(bootstrap, "_read_support_json", replace_between_reads)
+        else:
+            attribute = "_bootstrap_mutex" if moment == "serialized" else "interruption_fence"
+            original = getattr(bootstrap, attribute)
+    
+            @contextmanager
+            def replace_at_fence(*args, **kwargs):
+                with original(*args, **kwargs) as result:
+                    replacement()
+                    yield result
+    
+            monkeypatch.setattr(bootstrap, attribute, replace_at_fence)
+    
+        if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
+            with pytest.raises(RuntimeOperationError) as raised:
+                recover()
+>           assert not core.is_lifecycle_refusal(raised.value)
+E           AssertionError: assert not True
+E            +  where True = <function is_lifecycle_refusal at 0x7fb0ba1bf880>(RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.'))
+E            +    where <function is_lifecycle_refusal at 0x7fb0ba1bf880> = core.is_lifecycle_refusal
+E            +    and   RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') = <ExceptionInfo RuntimeOperationError('Runtime interruption refused: owner lock has no matching discovery. Run astrid-runtime up --profile astrid to recover discovery.') tblen=8>.value
+
+tests/test_installer_transaction_authority.py:198: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_installer_installed_schema.py::test_stage_binds_installed_reader_validator_and_service_to_verified_schema
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[pid-between_reads-migration]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[pid-between_reads-app]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[birth-between_reads-migration]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[birth-between_reads-app]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[instance-between_reads-migration]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[instance-between_reads-app]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[realm-between_reads-migration]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[realm-between_reads-app]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[root-between_reads-migration]
+FAILED tests/test_installer_transaction_authority.py::test_recovery_preserves_transaction_and_replacement_at_every_admission[root-between_reads-app]
+11 failed, 104 passed in 82.59s (0:01:22)

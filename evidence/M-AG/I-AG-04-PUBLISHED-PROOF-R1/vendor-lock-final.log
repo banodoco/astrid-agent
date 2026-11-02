@@ -1,0 +1,3 @@
+producer commit: expected 5453366458f7b4ee874c94d15ae7952e3e82d3c3, got 8d3e3af4ede6e3579ac673ae77794464f693bf1b
+re-vendor with: python scripts/vendor_lock.py update runtime.lock.json --producer <astrid-runtime checkout>
+inner_exit=1
