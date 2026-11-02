@@ -198,4 +198,3 @@ def test_known_install_failure_stops_and_records_child_exit(tmp_path):
     assert command["termination_reason"] == "known-failure-marker"
     assert isinstance(command["exit"], int)
     assert command["status"] == "exited"
-
