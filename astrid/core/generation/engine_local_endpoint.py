@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .engine_contracts import (
-    EngineEndpoint, EngineError, EndpointAuth, EndpointOwnershipError, HealthEvidence, LifecycleOwner,
+    EngineEndpoint, EngineError, EngineReinstallRequired, EndpointAuth, EndpointOwnershipError, HealthEvidence, LifecycleOwner,
     LocalAttestation, UnsafePathError,
 )
 
@@ -174,6 +174,14 @@ def _installed_receipt(
         raise EngineNotInstalled(engine, "no install receipt")
     if receipt.status == "failed" and getattr(receipt, "error_code", None) == EndpointOwnershipError.code:
         raise EndpointOwnershipError("engine port or supervisor is not owned by this installation")
+    if receipt.status == "failed" and getattr(receipt, "error_code", None) == EngineReinstallRequired.code:
+        from .engine_recipe import load_recipe
+        recipe = load_recipe(engine, platform)
+        step = getattr(receipt, "failed_step_id", None)
+        environment = next((e.name for e in recipe.environments if step == "environment:" + e.name),
+                           recipe.primary_environment)
+        raise EngineReinstallRequired.for_install(engine=engine, platform=platform, root=root,
+            environment=environment, step_id=step)
     health = receipt.health
     if (receipt.status != "installed" or health is None or health.status != "healthy"
             or health.required_nodes_present is not True or not health.object_info_sha256):

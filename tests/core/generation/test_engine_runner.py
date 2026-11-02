@@ -596,6 +596,490 @@ def test_wrong_helper_identity_has_no_install_side_effect(setup):
     assert not [e for e in setup[1].events if e[0] in {"write", "mkdir", "download"}]
 
 
+@pytest.mark.parametrize("command", ["install", "status"])
+def test_reinstall_cli_exposes_safe_clean_root_command(tmp_path, capsys, command, monkeypatch):
+    import shlex
+
+    from astrid.core import engine_cli
+    from astrid.core.generation.engine_contracts import EngineReinstallRequired
+
+    monkeypatch.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 10**12))
+    root = str(tmp_path / "old engine")
+    environment = "comfy"
+
+    def refuse(**kwargs):
+        raise EngineReinstallRequired.for_install(
+            engine="vibecomfy-h3", platform=PLATFORM, root=root, environment=environment,
+            step_id="environment:comfy")
+
+    rc = engine_cli.main([command, "vibecomfy-h3", "--platform", PLATFORM,
+                          "--placement", "local", "--root", root], backend_factory=refuse)
+    assert rc == 1
+    error = json.loads(capsys.readouterr().err)["error"]
+    clean_root = root + "-clean"
+    expected = shlex.join(("astrid", "engines", "install", "vibecomfy-h3", "--platform",
+                           PLATFORM, "--placement", "local", "--root", clean_root))
+    assert error["code"] == "engine_reinstall_required"
+    assert error["environment"] == environment
+    assert error["clean_root"] == clean_root
+    assert error["install_command"] == expected
+    assert clean_root in error["message"] and expected in error["message"]
+
+
+def test_old_environment_identity_refuses_then_clean_root_installs_after_owned_stop(
+        tmp_path, monkeypatch, capsys):
+    """One local journey exercises byte refusal, original stop, and a real CPU reinstall."""
+    import io
+    import base64
+    import zipfile
+    import os
+    import select
+    import shlex
+    import socket
+    import threading
+    from contextlib import redirect_stdout
+    from dataclasses import replace
+
+    from astrid.core import engine_cli
+    from astrid.core.generation import engine_custody as custody, engine_recipe
+    from astrid.core.generation.engine_contracts import (
+        CommandResult, DataRef, EngineRecipe, EngineReinstallRequired, HealthSpec, RequirementsSpec,
+        SourcePin, SourceSpec, StartSpec,
+    )
+    from astrid.core.generation import engine_execution
+    from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
+    from astrid.core.generation.engine_platforms import platform_adapter
+
+    uv = shutil.which("uv")
+    assert uv, "the real uv executable is required for the CPU install fixture"
+    uv_version = subprocess.check_output([uv, "--version"], text=True, timeout=5).split()[1]
+    python_version = sys.version.split()[0]
+    model_bytes = b"small locked CPU model fixture\n"
+    fixture = tmp_path / "cpu-fixture"
+    fixture.mkdir()
+    wheel_path = fixture / "tinyfixture-1.0-py3-none-any.whl"
+    wheel_members = {
+        "tinyfixture/__init__.py": b"VALUE = 'cpu-fixture'\n",
+        "tinyfixture-1.0.dist-info/METADATA": b"Metadata-Version: 2.1\nName: tinyfixture\nVersion: 1.0\n\n",
+        "tinyfixture-1.0.dist-info/WHEEL": b"Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    rows = []
+    for name, payload in wheel_members.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode().rstrip("=")
+        rows.append((name, "sha256=" + digest, str(len(payload))))
+    record_path = "tinyfixture-1.0.dist-info/RECORD"
+    rows.append((record_path, "", ""))
+    record_data = "".join(",".join(row) + "\n" for row in rows).encode()
+    with zipfile.ZipFile(wheel_path, "w") as archive:
+        for name, payload in wheel_members.items():
+            archive.writestr(name, payload)
+        archive.writestr(record_path, record_data)
+    wheel_digest = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+    packaging_dist = metadata.distribution("packaging")
+    packaging_version = packaging_dist.version
+    packaging_wheel = fixture / f"packaging-{packaging_version}-py3-none-any.whl"
+    packaging_members = {}
+    for relative in packaging_dist.files or ():
+        first = relative.parts[0]
+        if first == "packaging" or (first.startswith("packaging-") and first.endswith(".dist-info")):
+            if relative.name != "RECORD":
+                packaging_members[str(relative)] = packaging_dist.locate_file(relative).read_bytes()
+    packaging_record_rows = []
+    for name, payload in packaging_members.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode().rstrip("=")
+        packaging_record_rows.append((name, "sha256=" + digest, str(len(payload))))
+    packaging_record = f"packaging-{packaging_version}.dist-info/RECORD"
+    packaging_record_rows.append((packaging_record, "", ""))
+    packaging_record_data = "".join(",".join(row) + "\n" for row in packaging_record_rows).encode()
+    with zipfile.ZipFile(packaging_wheel, "w") as archive:
+        for name, payload in packaging_members.items():
+            archive.writestr(name, payload)
+        archive.writestr(packaging_record, packaging_record_data)
+    packaging_digest = hashlib.sha256(packaging_wheel.read_bytes()).hexdigest()
+    lock_bytes = (f"tinyfixture @ {wheel_path.as_uri()} --hash=sha256:{wheel_digest}\n"
+                  f"packaging @ {packaging_wheel.as_uri()} --hash=sha256:{packaging_digest}\n").encode()
+    (fixture / "requirements.lock").write_bytes(lock_bytes)
+    (fixture / "model.bin").write_bytes(model_bytes)
+    with socket.socket() as port_probe:
+        port_probe.bind(("127.0.0.1", 0))
+        port = port_probe.getsockname()[1]
+    server_text = (
+        "from http.server import BaseHTTPRequestHandler,HTTPServer\n"
+        "import json,sys\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        " def do_GET(self):\n"
+        "  value={'system':{'os':'linux'}} if self.path=='/system_stats' else {'FixtureNode':{}}\n"
+        "  body=json.dumps(value).encode(); self.send_response(200); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)\n"
+        " def log_message(self,*args): pass\n"
+        "HTTPServer(('127.0.0.1',int(sys.argv[1])),H).serve_forever()\n")
+    model_digest = hashlib.sha256(model_bytes).hexdigest()
+    model_lock_bytes = runner._json({"schema": "astrid.models-lock.v1", "models": [{
+        "name": "cpu-model", "repository": None, "revision": None, "path": None,
+        "url": "https://fixture.invalid/model.bin", "destination": "diffusion_models/cpu.bin",
+        "bytes": len(model_bytes), "sha256": model_digest,
+    }]}).encode()
+    model_lock_sha = hashlib.sha256(model_lock_bytes).hexdigest()
+    (fixture / "models.json").write_bytes(model_lock_bytes)
+
+    # Each source is a real tiny pinned Git repository. The runner performs its
+    # normal init/fetch/checkout and verifies each resulting commit.
+    source_specs = []
+    source_repositories = {}
+    for name, relative in (("comfyui", "runtime/ComfyUI"), ("vibecomfy", "runtime/vibecomfy")):
+        work = fixture / (name + "-work")
+        work.mkdir()
+        (work / "tiny.py").write_text("# immutable CPU source fixture\n", encoding="utf-8")
+        if name == "comfyui":
+            (work / "server.py").write_text(server_text, encoding="utf-8")
+        for command in (["git", "init", "-q"], ["git", "add", "."],
+                        ["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                         "commit", "-qm", "fixture"]):
+            subprocess.run(command, cwd=work, check=True, capture_output=True, timeout=5)
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=work,
+                                           text=True, timeout=5).strip()
+        bare = fixture / (name + ".git")
+        subprocess.run(["git", "clone", "--bare", str(work), str(bare)], check=True,
+                       capture_output=True, timeout=5)
+        source_repositories[name] = bare
+        source_specs.append(SourceSpec(name, SourcePin(f"https://fixture.invalid/{name}.git", revision), relative))
+
+    pins_bytes = runner._json({"schema": "astrid.engine-pins.v1", "sources": {
+        source.name: {"repository": source.pin.repository, "revision": source.pin.revision}
+        for source in source_specs
+    }}).encode()
+    (fixture / "pins.json").write_bytes(pins_bytes)
+
+    original = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    base_environment = original.environments[0]
+    environment = replace(
+        base_environment, name="comfy", relative_path="runtime/cpu-venv",
+        python_version=python_version, uv_version=uv_version,
+        requirements=RequirementsSpec("packaged", DataRef("cpu-fixture/requirements.lock",
+                                      hashlib.sha256(lock_bytes).hexdigest()), (), (), None),
+        final_wheels=(), node_lock=None, source_installs=())
+    model_ref = DataRef("cpu-fixture/models.json", model_lock_sha)
+    recipe_draft = EngineRecipe(
+        original.schema, original.engine, original.platform,
+        DataRef("cpu-fixture/pins.json", hashlib.sha256(pins_bytes).hexdigest()), tuple(source_specs),
+        (environment,), "comfy", model_ref,
+        StartSpec(("{python}", "server.py", str(port)), "{comfy_root}", {}, "127.0.0.1", port),
+        HealthSpec("/system_stats", "/object_info", ("FixtureNode",), 5.0, 0.05))
+
+    source_code_root = engine_recipe._ROOT
+    current_code_root = tmp_path / "current-python/astrid"
+    shutil.copytree(source_code_root, current_code_root,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
+    for name in ("requirements.lock", "models.json", "pins.json"):
+        destination = current_code_root / "cpu-fixture" / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fixture / name, destination)
+    recipe_rel = "packs/runpod/cpu-recipe.json"
+    def ref_json(ref):
+        return {"path": ref.path, "sha256": ref.sha256}
+    recipe_document = {
+        "schema": recipe_draft.schema, "engine": recipe_draft.engine, "platform": recipe_draft.platform,
+        "pins": ref_json(recipe_draft.pins),
+        "source_bindings": [{"name": source.name, "pin": source.name,
+                             "relative_path": source.relative_path} for source in recipe_draft.sources],
+        "environments": [{
+            "name": environment.name, "relative_path": environment.relative_path,
+            "python_version": environment.python_version, "uv_version": environment.uv_version,
+            "requirements": {"mode": environment.requirements.mode,
+                "packaged_lock": ref_json(environment.requirements.packaged_lock),
+                "input_paths": [], "constraints": [], "exclude_newer": None},
+            "final_wheels": [], "node_lock": None, "source_installs": [],
+        } for environment in recipe_draft.environments],
+        "primary_environment": recipe_draft.primary_environment,
+        "models_lock": ref_json(recipe_draft.models_lock),
+        "start": {"argv": list(recipe_draft.start.argv), "cwd": recipe_draft.start.cwd,
+            "env": dict(recipe_draft.start.env), "bind_host": recipe_draft.start.bind_host,
+            "port": recipe_draft.start.port},
+        "health": {"path": recipe_draft.health.path,
+            "object_info_path": recipe_draft.health.object_info_path,
+            "required_nodes": list(recipe_draft.health.required_nodes),
+            "timeout_seconds": recipe_draft.health.timeout_seconds,
+            "poll_interval_seconds": recipe_draft.health.poll_interval_seconds},
+    }
+    recipe_bytes = json.dumps(recipe_document, sort_keys=True).encode()
+    recipe_path = current_code_root / recipe_rel
+    recipe_path.parent.mkdir(parents=True, exist_ok=True)
+    recipe_path.write_bytes(recipe_bytes)
+    cpu_index = {"schema": "astrid.engine-index.v1", "entries": [{
+        "engine": recipe_draft.engine, "platform": recipe_draft.platform,
+        "recipe": {"path": recipe_rel, "sha256": hashlib.sha256(recipe_bytes).hexdigest()},
+    }]}
+    (current_code_root / "packs/engine-index.json").write_text(json.dumps(cpu_index, sort_keys=True))
+    monkeypatch.setattr(engine_recipe, "_ROOT", current_code_root)
+    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", current_code_root / "packs/engine-index.json")
+    recipe = engine_recipe.load_recipe("vibecomfy-h3", PLATFORM)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ASTRID_INSTALL_UV", uv)
+
+    # Keep the full model downloader and its range/hash checks. Only the
+    # unavailable HTTPS response is supplied at the urllib network boundary.
+    from astrid.core.generation import model_downloader
+    class RangeResponse:
+        status = 206
+        def __init__(self, data, content_range):
+            self._stream = io.BytesIO(data)
+            self.headers = {"Content-Range": content_range}
+        def read(self, size=-1):
+            return self._stream.read(size)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self._stream.close()
+    def model_response(request, *, timeout):
+        start, end = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
+        return RangeResponse(model_bytes[start:end + 1], f"bytes {start}-{end}/{len(model_bytes)}")
+    monkeypatch.setattr(model_downloader.urllib.request, "urlopen", model_response)
+
+    # Retain the production target dispatcher and target-file checks in a real
+    # supervised child process, selecting the exact owner's package snapshot.
+    original_context_run = LocalLinuxExecutionContext.run
+    target_events, command_failures = [], []
+    def local_run(self, request):
+        argv = request.argv
+        if tuple(argv[:4]) == ("python3", "-I", "-m", "astrid.core.generation.engine_runner_target"):
+            selected_code_root = str(engine_recipe._ROOT)
+            child_program = ("import sys; sys.dont_write_bytecode=True; "
+                             f"sys.path.insert(0, {str(Path(selected_code_root).parent)!r}); "
+                             "from astrid.core.generation import engine_runner_target as target; "
+                             "raise SystemExit(target.main(sys.argv[1:]))")
+            translated = (sys.executable, "-I", "-c", child_program, *argv[4:])
+            result = original_context_run(self, replace(request, argv=translated))
+            target_events.append({"operation": argv[4], "exit_code": result.exit_code,
+                                  "stdout": result.stdout, "stderr": result.stderr})
+            return result
+        if (len(argv) >= 7 and tuple(argv[:5]) == ("git", "-C", argv[2], "fetch", "--depth=1")
+                and argv[5] == "origin"):
+            source = next(source for source in recipe.sources
+                          if Path(argv[2]).as_posix().endswith(source.relative_path))
+            translated = (*argv[:5], str(source_repositories[source.name]), *argv[6:])
+            return original_context_run(self, replace(request, argv=translated))
+        # Keep the ordinary bootstrap and uv venv creation on the local
+        # supervisor's process channel. Copying the already available pinned
+        # uv binary avoids an index download; the actual uv version is checked
+        # by the runner before it uses the executable.
+        if argv and argv[0] == uv and "--prefix" in argv and any(arg.startswith("uv==") for arg in argv):
+            uv_target = Path(argv[argv.index("--prefix") + 1]) / "bin/uv"
+            uv_target.parent.mkdir(parents=True, exist_ok=True)
+            return original_context_run(self, replace(request, argv=("cp", uv, str(uv_target))))
+        if argv and Path(argv[0]).name == "uv" and "venv" in argv and "--managed-python" in argv:
+            destination = argv[-1]
+            command = (argv[0], "--no-config", "venv", "--allow-existing",
+                       "--python", sys.executable, destination)
+            return original_context_run(self, replace(request, argv=command))
+        try:
+            result = original_context_run(self, request)
+        except BaseException as exc:
+            command_failures.append((argv, type(exc).__name__, str(exc)))
+            raise
+        if result.exit_code != 0:
+            command_failures.append((argv, result.exit_code, result.stdout, result.stderr))
+        return result
+    monkeypatch.setattr(LocalLinuxExecutionContext, "run", local_run)
+
+    # Reconstruct an older selected package from the real candidate package
+    # snapshot, changing only one selected helper byte after copying it.
+    current_code_root, current_index = engine_recipe._ROOT, engine_recipe._INDEX_PATH
+    source_code_root = current_code_root
+    baseline_manifest = runner.helper_manifest(recipe)
+    old_code_root = tmp_path / "old-python/astrid"
+    shutil.copytree(current_code_root, old_code_root,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
+    changed_helper = old_code_root / "core/generation/engine_contracts.py"
+    changed_helper.write_bytes(changed_helper.read_bytes() + b"\n# prior helper fixture\n")
+    monkeypatch.setattr(engine_recipe, "_ROOT", old_code_root)
+    monkeypatch.setattr(engine_recipe, "_INDEX_PATH", old_code_root / "packs/engine-index.json")
+
+    old_root = str(tmp_path / "old-engine")
+    clean_root = old_root + "-clean"
+
+    def supervisor_argv(identity, lock_fd, token):
+        # Import the real supervisor modules from exactly the package snapshot
+        # selected by this owner's installer. Its normal parser loads the CPU
+        # recipe and hashes the actual package closure.
+        selected_code_root = str(engine_recipe._ROOT)
+        child_program = ("import sys; sys.dont_write_bytecode=True; "
+                         f"sys.path.insert(0, {str(Path(selected_code_root).parent)!r}); "
+                         "from astrid.core.generation.engine_custody import main; main()")
+        return [sys.executable, "-I", "-c", child_program, "_serve", runner._json(identity),
+                "--lock-fd", str(lock_fd), "--launch-token", token]
+    monkeypatch.setattr(custody, "_supervisor_argv", supervisor_argv)
+
+    contexts = {}
+    original_backend_factory = engine_execution.create_local_backend
+    def observe_backend(*, engine, platform, placement, root, deadline):
+        context, adapter = original_backend_factory(engine=engine, platform=platform,
+            placement=placement, root=root, deadline=deadline)
+        contexts[root] = context
+        return context, adapter
+    monkeypatch.setattr(engine_execution, "create_local_backend", observe_backend)
+
+    old_context = None
+    try:
+        with redirect_stdout(io.StringIO()):
+            install_code = engine_cli.main(["install", recipe.engine, "--platform", PLATFORM,
+                                            "--placement", "local", "--root", old_root])
+        (tmp_path / "journey-debug.json").write_text(json.dumps({
+            "target_events": target_events, "command_failures": command_failures,
+        }, sort_keys=True, indent=2))
+        assert install_code == 0, {"target_events": target_events, "command_failures": command_failures}
+        old_context = contexts[old_root]
+        old_client = old_context.service_client
+        old_helper = old_client.identity["helper_sha256"]
+        old_lock_path = Path(old_root, ".astrid-engine/environments/comfy/requirements.lock")
+        target_lock = old_lock_path.with_name("lock.json")
+        receipt_path = old_lock_path.with_name("receipt.json")
+        install_receipt_path = Path(old_root, ".astrid-engine/install.json")
+        original_requirements_bytes = old_lock_path.read_bytes()
+        original_target_lock_bytes = target_lock.read_bytes()
+        original_receipt_bytes = receipt_path.read_bytes()
+        original_install_bytes = install_receipt_path.read_bytes()
+        assert json.loads(target_lock.read_text())["helper_sha256"] == old_helper
+        assert json.loads(receipt_path.read_text())["helper_sha256"] == old_helper
+        assert runner._sha(baseline_manifest) != old_helper
+
+        monkeypatch.setattr(engine_recipe, "_ROOT", current_code_root)
+        monkeypatch.setattr(engine_recipe, "_INDEX_PATH", current_index)
+        current_helper = runner._sha(runner.helper_manifest(recipe))
+        deadline = time.monotonic() + 60
+        stale = runner.engine_status(recipe.engine, platform=PLATFORM, placement="local",
+            root=old_root, context=observe_backend(engine=recipe.engine, platform=PLATFORM,
+                placement="local", root=old_root, deadline=deadline)[0], deadline=deadline)
+        assert (stale.status, stale.error_code, stale.failed_step_id) == (
+            "failed", "engine_reinstall_required", "environment:comfy")
+        status_code = engine_cli.main(["status", recipe.engine, "--platform", PLATFORM,
+            "--placement", "local", "--root", old_root])
+        captured = capsys.readouterr()
+        diagnostic = json.loads(captured.err)["error"]
+        command = (f"astrid engines install {recipe.engine} --platform {PLATFORM} "
+                   f"--placement local --root {shlex.quote(clean_root)}")
+        assert status_code == 1 and diagnostic["code"] == "engine_reinstall_required"
+        assert diagnostic["environment"] == "comfy" and diagnostic["clean_root"] == clean_root
+        assert diagnostic["install_command"] == command and command in diagnostic["message"]
+        marker_path = Path(old_root, "runtime/out/sessions", recipe.engine, "launch.json")
+        marker_before_stop = marker_path.read_bytes()
+        install_code = engine_cli.main(["install", recipe.engine, "--platform", PLATFORM,
+            "--placement", "local", "--root", old_root])
+        install_diagnostic = json.loads(capsys.readouterr().err)["error"]
+        assert install_code == 1 and install_diagnostic["code"] == "engine_reinstall_required"
+        assert install_diagnostic["environment"] == "comfy"
+        # Resource availability is the counterfactual input in this negative
+        # CLI check; the old tuple and every identity read remain real.
+        with monkeypatch.context() as space:
+            space.setattr(engine_cli, "_disk_anchor", lambda root: ("/", 1, 1, 0))
+            blocked_code = engine_cli.main(["install", recipe.engine, "--platform", PLATFORM,
+                "--placement", "local", "--root", old_root])
+        blocked_diagnostic = json.loads(capsys.readouterr().err)["error"]
+        assert blocked_code == 1 and blocked_diagnostic["code"] == "engine_reinstall_required"
+        assert blocked_diagnostic["environment"] == "comfy"
+        assert blocked_diagnostic["install_command"] == command
+        assert marker_path.read_bytes() == marker_before_stop
+        current_client = contexts[old_root].service_client
+        with monkeypatch.context() as patch:
+            patch.setattr(custody, "_send", lambda *args, **kwargs: pytest.fail(
+                "current identity attempted a request against the old owner"))
+            with pytest.raises(EngineReinstallRequired):
+                current_client.stop_owned(deadline=time.monotonic() + 10)
+        assert old_context.service_client._spawned.poll() is None
+        assert marker_path.read_bytes() == marker_before_stop
+        assert old_lock_path.read_bytes() == original_requirements_bytes
+        assert target_lock.read_bytes() == original_target_lock_bytes
+        assert receipt_path.read_bytes() == original_receipt_bytes
+        assert install_receipt_path.read_bytes() == original_install_bytes
+
+        registry = Path(old_root, "runtime/out/sessions", recipe.engine)
+        marker = json.loads((registry / "launch.json").read_text())
+        old_supervisor_pid, old_engine_pid = marker["pid"], marker["comfy_pid"]
+
+        # Relay the original client's stop_owned exchange through a real
+        # socketpair into its real filesystem listener and _Supervisor.connection.
+        real_connect = old_client._connect
+        forwarders = []
+        def socketpair_proxy(fd, operation_deadline, *, start):
+            unix_channel = real_connect(fd, operation_deadline, start=start)
+            local, peer = socket.socketpair()
+            def relay():
+                try:
+                    while True:
+                        readable, _, _ = select.select([peer, unix_channel], [], [], 10)
+                        if not readable:
+                            return
+                        for source in readable:
+                            data = source.recv(65536)
+                            if not data:
+                                return
+                            (unix_channel if source is peer else peer).sendall(data)
+                finally:
+                    peer.close()
+                    unix_channel.close()
+            thread = threading.Thread(target=relay, daemon=True)
+            forwarders.append(thread)
+            thread.start()
+            return local
+        old_client._connect = socketpair_proxy
+        old_client.stop_owned(deadline=time.monotonic() + 30)
+        for thread in forwarders:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+        assert old_client._spawned is not None and old_client._spawned.poll() == 0
+        assert not Path(old_client.control, "session.json").exists()
+        assert not Path(f"/proc/{old_supervisor_pid}").exists()
+        assert not Path(f"/proc/{old_engine_pid}").exists()
+        assert old_lock_path.read_bytes() == original_requirements_bytes
+        assert target_lock.read_bytes() == original_target_lock_bytes
+        assert receipt_path.read_bytes() == original_receipt_bytes
+        assert install_receipt_path.read_bytes() == original_install_bytes
+
+        installed_code = engine_cli.main(["install", recipe.engine, "--platform", PLATFORM,
+            "--placement", "local", "--root", clean_root])
+        captured = capsys.readouterr()
+        assert installed_code == 0, captured.err
+        assert json.loads(captured.out)["status"] == "installed"
+        current_env = Path(clean_root, ".astrid-engine/environments/comfy")
+        current_lock = current_env / "lock.json"
+        current_receipt = current_env / "receipt.json"
+        current_requirements = current_env / "requirements.lock"
+        current_install_receipt = Path(clean_root, ".astrid-engine/install.json")
+        assert json.loads(current_lock.read_text())["helper_sha256"] == current_helper
+        assert json.loads(current_receipt.read_text())["helper_sha256"] == current_helper
+        assert runner.engine_status(recipe.engine, platform=PLATFORM, placement="local",
+            root=clean_root, context=contexts[clean_root], deadline=time.monotonic()+30).status == "installed"
+        assert old_lock_path.read_bytes() == original_requirements_bytes
+        assert target_lock.read_bytes() == original_target_lock_bytes
+        assert receipt_path.read_bytes() == original_receipt_bytes
+        assert install_receipt_path.read_bytes() == original_install_bytes
+
+        evidence = tmp_path / "journey-evidence"
+        evidence.mkdir()
+        artifacts = {
+            "old-requirements.lock": old_lock_path, "old-lock.json": target_lock,
+            "old-environment-receipt.json": receipt_path, "old-install.json": install_receipt_path,
+            "current-requirements.lock": current_requirements, "current-lock.json": current_lock,
+            "current-environment-receipt.json": current_receipt, "current-install.json": current_install_receipt,
+        }
+        for label, path in artifacts.items():
+            shutil.copy2(path, evidence / label)
+        (evidence / "summary.json").write_text(json.dumps({
+            "old_helper_sha256": old_helper, "current_helper_sha256": current_helper,
+            "old_install_sha256": hashlib.sha256(original_install_bytes).hexdigest(),
+            "current_install_sha256": hashlib.sha256(current_install_receipt.read_bytes()).hexdigest(),
+            "status_refusal": {"code": diagnostic["code"], "environment": diagnostic["environment"],
+                               "install_command": diagnostic["install_command"]},
+            "old_supervisor_exited": not Path(f"/proc/{old_supervisor_pid}").exists(),
+            "old_engine_exited": not Path(f"/proc/{old_engine_pid}").exists(),
+            "socketpair_forwarding_completed": all(not thread.is_alive() for thread in forwarders),
+            "current_status": "installed",
+        }, sort_keys=True, indent=2))
+    finally:
+        for owned_context in (old_context or contexts.get(old_root), contexts.get(clean_root)):
+            if (owned_context is not None and owned_context.service_client._spawned is not None
+                    and owned_context.service_client._spawned.poll() is None):
+                owned_context.service_client.stop_owned(deadline=time.monotonic() + 20)
+
+
 @pytest.mark.parametrize("step", [None, "existing-boundary"])
 def test_initial_helper_error_retains_code_identity_and_step_without_receipt(setup, step):
     error = UnsafePathError("private path detail", step_id=step)
@@ -1299,6 +1783,49 @@ def test_target_lock_commit_interruption_reuses_exact_candidate(resolve_once, tm
     result = target.dispatch("lock-inputs", payload)
     assert result["facts"] == {"lock_exists": True}
     assert (directory / "requirements.lock").read_text() == HASH_LOCK
+
+
+@pytest.mark.parametrize("operation", ["lock-inputs", "commit-lock"])
+def test_target_stale_identity_refuses_interrupted_lock_without_mutation(
+        resolve_once, tmp_path, operation):
+    from astrid.core.generation.engine_contracts import EngineReinstallRequired
+
+    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    _helper_sources(tmp_path, recipe)
+    payload = _helper_payload(tmp_path, environment="comfy")
+    target.dispatch("lock-inputs", payload)
+    directory = tmp_path / ".astrid-engine/environments/comfy"
+    (directory / "requirements.lock.tmp").write_text(HASH_LOCK)
+    target.dispatch("commit-lock", payload)
+
+    metadata_path = directory / "lock.json"
+    stale_metadata = json.loads(metadata_path.read_text())
+    stale_metadata["helper_sha256"] = "0" * 64
+    metadata_path.write_text(runner._json(stale_metadata))
+    (directory / "requirements.lock").rename(directory / "requirements.lock.tmp")
+    before = {path.relative_to(directory).as_posix(): path.read_bytes()
+              for path in directory.rglob("*") if path.is_file()}
+
+    with pytest.raises(EngineReinstallRequired) as refused:
+        target.dispatch(operation, payload)
+
+    assert refused.value.code == "engine_reinstall_required"
+    assert refused.value.environment == "comfy"
+    from astrid.core.generation.engine_execution import create_local_backend
+    (tmp_path / ".astrid-engine").chmod(0o700)
+    deadline = time.monotonic() + 5
+    context, adapter = create_local_backend(engine=recipe.engine, platform=PLATFORM, placement="local",
+        root=str(tmp_path), deadline=deadline)
+    with pytest.raises(EngineReinstallRequired):
+        runner.install_engine(runner.plan_install(recipe, root=str(tmp_path), placement="local"),
+            context=context, adapter=adapter, deadline=deadline)
+    assert not (tmp_path / ".astrid-engine/session").exists()
+    assert not (tmp_path / ".astrid-engine/install.json").exists()
+    after = {path.relative_to(directory).as_posix(): path.read_bytes()
+             for path in directory.rglob("*") if path.is_file()}
+    assert after == before
+    assert not (directory / "requirements.lock").exists()
+    assert (directory / "requirements.lock.tmp").read_bytes() == HASH_LOCK.encode()
 
 
 @pytest.mark.parametrize("bad", ["demo==1.0\n", "demo>=1.0 --hash=sha256:" + "a" * 64,

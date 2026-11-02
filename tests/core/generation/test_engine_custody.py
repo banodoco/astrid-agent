@@ -19,7 +19,7 @@ import pytest
 from astrid.core.generation import engine_custody as custody
 from astrid.core.generation.engine_contracts import (
     CommandRequest, CustodyUnresolved, DeadlineExceeded, EndpointOwnershipError,
-    IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
+    EngineReinstallRequired, IntegrityError, RecipeValidationError, StartSpec, UnsafePathError,
 )
 from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.engine_runner import _json, _sha, helper_manifest
@@ -581,6 +581,52 @@ def test_real_context_service_bridge_with_tiny_recipe_fixture(session, monkeypat
     assert not Path(client.control, "session.json").exists()
 
 
+def test_supervisor_publishes_socket_only_after_listen(session, monkeypatch):
+    client, _, _, root, _, _ = session
+    entered, resume = root / "listen-entered", root / "listen-resume"
+    original_argv = custody._supervisor_argv
+    gate = f'''
+import time
+import socket
+from pathlib import Path
+original_listen = socket.socket.listen
+def gated_listen(self, *args):
+ Path({str(entered)!r}).write_text('entered')
+ until = time.monotonic() + 6
+ while not Path({str(resume)!r}).exists():
+  if time.monotonic() >= until: raise RuntimeError('listen gate timed out')
+  time.sleep(0.01)
+ return original_listen(self, *args)
+socket.socket.listen = gated_listen
+'''
+
+    def argv(identity, lock_fd, token):
+        command = original_argv(identity, lock_fd, token)
+        command[2] = command[2].replace("\n_serve(", gate + "\n_serve(")
+        return command
+
+    monkeypatch.setattr(custody, "_supervisor_argv", argv)
+    results, errors = [], []
+
+    def run():
+        try:
+            results.append(client.run(_request(root, "print('ready')")))
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        _wait(entered.exists)
+        assert Path(client.control, "session.json").is_file()
+        assert not Path(client.control, "control.sock").exists()
+    finally:
+        resume.write_text("resume")
+        thread.join(timeout=10)
+    assert not thread.is_alive() and not errors
+    assert len(results) == 1 and results[0].exit_code == 0 and results[0].stdout == "ready\n"
+
+
 def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry(session):
     client, payload, recipe, root, mode, started = session
     # The first finite CLI establishes BOTH supervisor and engine, then exits.
@@ -668,7 +714,13 @@ def cpu_h3_install(session, monkeypatch, request):
         # The outer profile replaces this one-model resolver inventory with
         # H3's complete inventory; attested model roots reject unlisted files.
         model_path.unlink()
+        pinned_models = {m.destination: m for m in engine_recipe.load_model_lock(original.models_lock).models}
         original, model_lock, model_results = prepare_outer_service(original, root, started)
+        # Keep the selected source declaration with each synthetic model. H3
+        # validates those pins before resolving the local, hash-checked bytes.
+        for model in model_lock["models"]:
+            pinned = pinned_models[model["destination"]]
+            model.update(repository=pinned.repository, revision=pinned.revision, path=pinned.path, url=pinned.url)
     model_bytes = _json(model_lock).encode()
     (fixture / "models.json").write_bytes(model_bytes)
     source = root / "runtime/vibecomfy"
@@ -838,7 +890,7 @@ def test_two_full_h3_runtime_runs_reuse_owned_native_service(cpu_h3_install, tmp
     from contextlib import contextmanager
     from astrid.core import action_cli
     from tests.core.test_action_cli_clip_rehearsal import _last_json_document, _probe
-    from tests.helpers.h3_native_engine import install_hook, observe_requests
+    from tests.helpers.h3_native_engine import observe_requests
 
     client, payload, recipe, root, started, bootstrap = cpu_h3_install
     monkeypatch.setenv("ASTRID_ENGINE_ROOT", str(root))
@@ -882,7 +934,20 @@ def test_two_full_h3_runtime_runs_reuse_owned_native_service(cpu_h3_install, tmp
     baseline = healthy_identity()
     assert recipe.start.bind_host == "127.0.0.1"
     assert (registry / "url").read_text().strip() == f"http://127.0.0.1:{recipe.start.port}"
-    hook = install_hook(bootstrap, operations)
+    # Carry the synthetic recipe through a task-local sitecustomize hook. A
+    # .pth file under sysconfig's purelib would modify the shared acceptance
+    # interpreter; PYTHONPATH loads this isolated hook in only these children.
+    hook_root = tmp_path / "native-h3-python-hook"
+    hook_root.mkdir()
+    hook = hook_root / "sitecustomize.py"
+    helper_root = Path(__file__).resolve().parents[3]
+    hook.write_text(
+        f"import sys; sys.path.insert(0, {str(helper_root)!r}); "
+        "import tests.helpers.h3_native_engine as _native_h3; "
+        f"_native_h3.activate({str(bootstrap)!r}, {str(operations)!r})\n",
+        encoding="utf-8")
+    prior_pythonpath = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", str(hook_root) + (os.pathsep + prior_pythonpath if prior_pythonpath else ""))
     runs = []
     real_runtime = action_cli.ephemeral_runtime
 
@@ -1208,6 +1273,21 @@ def test_stale_session_marker_cannot_signal_a_live_unrelated_pid(tmp_path):
     finally:
         outside.terminate()
         outside.wait(timeout=5)
+
+
+def test_different_helper_is_refused_before_contacting_owned_supervisor(session, monkeypatch):
+    owner, payload, _, _, _, _ = session
+    _call(owner, payload, "probe")
+    other = _client({**owner.identity, "helper_sha256": "0" * 64})
+    marker = Path(owner.control, "session.json").read_bytes()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(custody, "_send", lambda *args: pytest.fail("cross-identity request sent"))
+        with pytest.raises(EngineReinstallRequired):
+            other.call("probe", payload, deadline=time.monotonic() + 5)
+        with pytest.raises(EngineReinstallRequired):
+            other.stop_owned(deadline=time.monotonic() + 5)
+    assert Path(owner.control, "session.json").read_bytes() == marker
+    assert _call(owner, payload, "probe")["state"] == "absent"
 
 
 def test_original_native_owner_loss_refuses_replacement(tmp_path):

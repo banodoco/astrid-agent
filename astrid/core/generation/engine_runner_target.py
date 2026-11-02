@@ -16,7 +16,7 @@ import tomllib
 from pathlib import Path
 
 from . import engine_recipe as recipes
-from .engine_contracts import EngineError, IntegrityError, RecipeValidationError, UnsafePathError
+from .engine_contracts import EngineError, EngineReinstallRequired, IntegrityError, RecipeValidationError, UnsafePathError
 from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
@@ -118,14 +118,29 @@ def _lock_identity(recipe, helper_digest, environment, lock, *, digest=None):
             "requirements_lock_sha256": _hash(lock) if digest is None else digest}
 
 
-def _validate_lock(recipe, helper_digest, environment, root):
-    directory, lock = _paths(root, environment)
+def _validate_lock_identity(recipe, helper_digest, environment, lock, meta, root):
     _entries(lock.read_text(encoding="utf-8"))
-    meta = _safe(root, ".astrid-engine", "environments", environment.name, "lock.json")
-    if not meta.is_file() or json.loads(meta.read_text()) != _lock_identity(recipe, helper_digest, environment, lock):
+    expected = _lock_identity(recipe, helper_digest, environment, lock)
+    actual = json.loads(meta.read_text()) if meta.is_file() else None
+    if (isinstance(actual, dict) and set(actual) == set(expected)
+            and all(actual[key] == expected[key] for key in expected if key != "helper_sha256")
+            and isinstance(actual["helper_sha256"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", actual["helper_sha256"])
+            and actual["helper_sha256"] != helper_digest
+            and (environment.requirements.mode != "packaged"
+                 or _hash(lock) == environment.requirements.packaged_lock.sha256)):
+        raise EngineReinstallRequired.for_install(engine=recipe.engine, platform=recipe.platform,
+            root=str(root), environment=environment.name, step_id="environment:" + environment.name)
+    if actual != expected:
         raise IntegrityError("persisted requirements lock has no matching input identity")
     if environment.requirements.mode == "packaged" and _hash(lock) != environment.requirements.packaged_lock.sha256:
         raise IntegrityError("target requirements lock differs from packaged lock")
+
+
+def _validate_lock(recipe, helper_digest, environment, root):
+    directory, lock = _paths(root, environment)
+    meta = _safe(root, ".astrid-engine", "environments", environment.name, "lock.json")
+    _validate_lock_identity(recipe, helper_digest, environment, lock, meta, root)
     return directory, lock
 
 
@@ -293,10 +308,9 @@ def dispatch(operation, payload):
             if meta.exists():
                 # A prior commit persisted identity before promotion. Reuse
                 # those exact bytes; do not invoke the resolver on retry.
-                if (not temporary.is_file() or json.loads(meta.read_text())
-                        != _lock_identity(recipe, digest, environment, temporary)):
+                if not temporary.is_file():
                     raise IntegrityError("interrupted requirements lock identity differs")
-                _entries(temporary.read_text())
+                _validate_lock_identity(recipe, digest, environment, temporary, meta, root)
                 _atomic(lock, temporary.read_bytes())
                 _validate_lock(recipe, digest, environment, root)
                 return {"schema": _HELPER_SCHEMA, "operation": operation,
@@ -328,9 +342,12 @@ def dispatch(operation, payload):
             _entries(payload_bytes.decode())
             if environment.requirements.mode == "packaged" and hashlib.sha256(payload_bytes).hexdigest() != environment.requirements.packaged_lock.sha256:
                 raise IntegrityError("packaged requirements lock mismatch")
+            meta = _safe(root, str(directory.relative_to(root)), "lock.json")
+            if meta.exists():
+                _validate_lock_identity(recipe, digest, environment, temporary, meta, root)
             # Bind the candidate before promoting it. A crash after this write
             # leaves the unchanged candidate reusable, never an unbound lock.
-            _atomic(_safe(root, str(directory.relative_to(root)), "lock.json"),
+            _atomic(meta,
                     _json(_lock_identity(recipe, digest, environment, lock,
                                         digest=hashlib.sha256(payload_bytes).hexdigest())).encode())
             _atomic(lock, payload_bytes)
