@@ -113,10 +113,34 @@ def test_export_rejects_identity_and_inventory_tamper(tmp_path, tamper):
         hook.validate_export(export, request, output)
 
 
-def test_published_tuple_is_not_replaced_by_stale_producer_binding():
-    assert hook.PUBLISHED_CANDIDATE["agent"] == "2de0726d1eaea7f7bd141251e088aa9fdf224525"
-    assert provider._CANDIDATE["agent"] == "e425903f7a9fa5b82973281d15054c0716b46e2d"
-    assert hook.PUBLISHED_CANDIDATE != provider._CANDIDATE
+def test_live_producer_binding_matches_published_tuple_and_diagnostic_does_not():
+    assert hook.PUBLISHED_CANDIDATE == provider.LIVE_CANDIDATE
+    assert provider.LIVE_STOP["ref"] == hook.PUBLISHED_CANDIDATE["pinokio"]
+    assert provider._CANDIDATE != hook.PUBLISHED_CANDIDATE
+
+
+def test_runner_identity_is_committed_and_distinct_from_installed_agent():
+    runner = hook._runner_identity()
+    assert runner["head"] != hook.PUBLISHED_CANDIDATE["agent"]
+    assert runner["candidate_agent_distinct"] is True
+    assert set(runner["sources"]) == {
+        "scripts/ci_journey.py", "scripts/ci_journey_provider.py",
+        "scripts/ci_journey_r24.py",
+    }
+
+
+def test_runner_identity_rejects_installed_agent_as_runner(monkeypatch):
+    root = Path(hook.__file__).resolve().parent.parent
+    actual_git = hook._git
+
+    def installed_identity(path, *args):
+        if args == ("rev-parse", "HEAD"):
+            return hook.PUBLISHED_CANDIDATE["agent"].encode()
+        return actual_git(path, *args)
+
+    monkeypatch.setattr(hook, "_git", installed_identity)
+    with pytest.raises(hook.JourneyProviderError, match="must differ"):
+        hook._runner_identity()
 
 
 def test_hook_never_invokes_when_exact_candidate_validation_fails(tmp_path, monkeypatch):
@@ -136,6 +160,7 @@ def test_hook_never_invokes_when_exact_candidate_validation_fails(tmp_path, monk
     assert called is False
     receipt = json.loads((root / "evidence/r24-live/r24-invocation.json").read_bytes())
     assert receipt["invocation"]["status"] == "not-run"
+    assert receipt["runner"]["head"] != hook.PUBLISHED_CANDIDATE["agent"]
     assert receipt["admission"]["authenticated_custody"] is False
 
 

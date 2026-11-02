@@ -179,6 +179,8 @@ def success_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(provider, "LIVE_PRODUCER_FILES", provider._PRODUCER_FILES)
     monkeypatch.setattr(provider, "_PRODUCER_REF", provider._SUCCESS_PRODUCER_REF)
     monkeypatch.setattr(provider, "LIVE_PRODUCER_REF", provider._SUCCESS_PRODUCER_REF)
+    request["candidate"] = provider.LIVE_CANDIDATE.copy()
+    request["stop"] = provider.LIVE_STOP.copy()
     request["provider"]["ref"] = provider.LIVE_PRODUCER_REF
     config.update({"pinokiod": "/fixture/pinokiod", "scratch_root": "/fixture/scratch",
                    "engine": {"pid": 123, "boot_id": "0" * 36, "start_ticks": "1",
@@ -236,10 +238,11 @@ def test_success_invocation_rejects_failure_and_retains_stderr(tmp_path, monkeyp
     assert exc.value.stderr == b"separate"
 
 
-@pytest.mark.parametrize("mutation", ["ref", "source", "config", "forged_request", "changed_file"])
+@pytest.mark.parametrize("mutation", ["candidate", "ref", "source", "config", "forged_request", "changed_file"])
 def test_success_invocation_rejects_unbound_inputs(tmp_path, monkeypatch, mutation):
     provider, root, config, request, _ = success_fixture(tmp_path, monkeypatch)
-    if mutation == "ref": request["provider"]["ref"] = "f" * 40
+    if mutation == "candidate": request["candidate"]["agent"] = "f" * 40
+    elif mutation == "ref": request["provider"]["ref"] = "f" * 40
     elif mutation == "source": request["provider"]["sources"][next(iter(provider.LIVE_PRODUCER_FILES))] = "f" * 64
     elif mutation == "config": config["node"] = "/other"
     elif mutation == "changed_file": (root / next(iter(provider.LIVE_PRODUCER_FILES))).write_text("changed")
@@ -251,13 +254,25 @@ def test_success_invocation_rejects_unbound_inputs(tmp_path, monkeypatch, mutati
 
 def test_final_live_provider_pins_are_exact():
     from scripts import ci_journey_provider as provider
-    assert provider.LIVE_PRODUCER_REF == "6bf95fd631864a5dbfa86df5ffc165493fffc41e"
+    assert provider.LIVE_PRODUCER_REF == "cd86889f4299c7f7aca720f0f20a11be01dacb34"
     assert provider.LIVE_PRODUCER_FILES == {
-        "pinokio/providers/r24-linux.py": "9428f7b1224fdad6c29b037904920d4c49b80f676454c859a180f1a98f832392",
+        "pinokio/providers/r24-linux.py": "9fe1698833a0e6eb7a4c1337ad5fa0493db4444e6320d2d46b4ff2ccbfce1b2e",
         "pinokio/providers/r24-action.cjs": "042f533200723898aba2f15f78edfe98bc3197f9b161f4391b706a38469ca0f3",
         "pinokio/providers/r24-live-action.js": "0df87acefad6a365e97f7a846a7d6136e06d026840a10796f640396a7187ae78",
-        "pinokio/providers/r24-linux-binding.json": "11ec4932731b93bc0622f934a8974bcdcfb2350d932037e7a087a878f8c9834c",
-        "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
+        "pinokio/providers/r24-linux-binding.json": "89582d987efb569bfc7f41a4ecb3ec800c9f3e10e7e849b0100a42a78b292f52",
+        "pinokio/providers/r24-schema.json": "233f989b29f54d082e1287c200b70b14b0315a9d763d05bcff824e556c648ffc",
+    }
+    assert provider.LIVE_CANDIDATE == {
+        "app": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
+        "agent": "2de0726d1eaea7f7bd141251e088aa9fdf224525",
+        "runtime": "5453366458f7b4ee874c94d15ae7952e3e82d3c3",
+        "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+        "manifest_sha256": "920477210d01615a6698cda30f248552f13c712734e86ea56f283300cb1a9c87",
+    }
+    assert provider.LIVE_STOP == {
+        "ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+        "path": "pinokio/stop.js",
+        "sha256": "f9d62e4e6a826fccd9791ee211dae933f46c8f99019e145abb3db3bf9595fd48",
     }
 
 

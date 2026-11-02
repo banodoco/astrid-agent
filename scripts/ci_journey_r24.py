@@ -31,6 +31,7 @@ EXPORT_NAMES = frozenset({
     "observation-busy.json", "observation-unknown.json",
     "observation-restoration.json",
 })
+_HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -101,6 +102,34 @@ def _checkout(path: Path, ref: str) -> Path:
     if top != root or head != ref or dirty:
         raise JourneyProviderError("checkout ref or cleanliness mismatch")
     return root
+
+
+def _runner_identity() -> dict[str, Any]:
+    """Bind the candidate-runner source separately from installed Agent bytes."""
+    source = Path(__file__)
+    if source.is_symlink() or not source.is_file():
+        raise JourneyProviderError("runner hook source is unavailable")
+    root = source.resolve().parent.parent
+    try:
+        top = Path(os.fsdecode(_git(root, "rev-parse", "--show-toplevel").strip())).resolve()
+        head = _git(root, "rev-parse", "HEAD").strip().decode()
+        dirty = _git(root, "status", "--porcelain=v1", "--untracked-files=all")
+    except (UnicodeError, OSError) as exc:
+        raise JourneyProviderError("runner identity is unreadable") from exc
+    if top != root or not _HEX40.fullmatch(head) or dirty:
+        raise JourneyProviderError("runner checkout identity or cleanliness mismatch")
+    if head == PUBLISHED_CANDIDATE["agent"]:
+        raise JourneyProviderError("candidate runner must differ from installed Agent")
+    sources: dict[str, str] = {}
+    for relative in ("scripts/ci_journey.py", "scripts/ci_journey_provider.py",
+                     "scripts/ci_journey_r24.py"):
+        working = _regular(root / relative)
+        committed = _git(root, "show", f"{head}:{relative}")
+        if _sha(working) != _sha(committed):
+            raise JourneyProviderError("runner source differs from its committed identity")
+        sources[relative] = _sha(working)
+    return {"head": head, "sources": sources,
+            "candidate_agent_distinct": True}
 
 
 def _read_json_file(path: Path, label: str) -> tuple[bytes, Any]:
@@ -276,6 +305,7 @@ def execute_live_hook(*, run_root: Path, candidate_file: Path, config_file: Path
                       producer_root: Path, checkouts: dict[str, Path]) -> dict[str, Any]:
     """Invoke once after preflight, retaining a fail-closed run-owned receipt."""
     owner = _owner(run_root)
+    runner = _runner_identity()
     evidence = run_root.resolve() / "evidence" / "r24-live"
     evidence.mkdir(parents=True, exist_ok=False)
     receipt_path = evidence / "r24-invocation.json"
@@ -283,6 +313,7 @@ def execute_live_hook(*, run_root: Path, candidate_file: Path, config_file: Path
         "schema": "astrid.r24.journey-provider-invocation.v1",
         "run_id": owner["run_id"],
         "status": "not-run",
+        "runner": runner,
         "candidate": PUBLISHED_CANDIDATE,
         "provider": {"ref": provider.LIVE_PRODUCER_REF,
                      "sources": provider.LIVE_PRODUCER_FILES,
