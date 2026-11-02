@@ -55,6 +55,7 @@ RELEASE0_BOOTSTRAP_SHA256: Final = {
 }
 RUNNER_PROVENANCE: Final = {
     "macos-14": ("macos", "macOS", "macos14"),
+    "macos-15": ("macos", "macOS", "macos15"),
     "ubuntu-24.04": ("linux", "Linux", "ubuntu24"),
     "windows-2022": ("windows", "Windows", "win22"),
 }
