@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers.runtime import runtime_checkout
+from tests.helpers.runtime import runtime_checkout, vendored_runtime_commit
 
 RUNTIME_CHECKOUT = str(runtime_checkout())
-RUNTIME_COMMIT = "9ef808711a5207f5be74dc5f267af6fdd7bc9550"
+RUNTIME_COMMIT = vendored_runtime_commit()
 
 
 @pytest.fixture
