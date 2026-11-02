@@ -1,0 +1,496 @@
+{
+  "_meta": {
+    "captured_with": "tests/packs/wan2gp/test_session_run_task_parity.py run_task_arm",
+    "engine_edge": "fake native invoke (one_frame_engine_result.json)",
+    "produced_by": "run_task_arm on the pre-swap tree",
+    "schema": "astrid.wan2gp.parity-golden/v1",
+    "source_commit": "6fe378a61"
+  },
+  "explicit_inputs": {
+    "failures": [],
+    "raised": null,
+    "settlements": [
+      {
+        "attempt_id": "wan-attempt",
+        "effect": null,
+        "fence": 1,
+        "outputs": [
+          {
+            "digest": "09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+            "filename": "frame_000.mp4",
+            "is_primary": true,
+            "kind": "object",
+            "media_type": "video/mp4",
+            "name": "generated_videos",
+            "ordinal": 0,
+            "role": "result",
+            "size": 18
+          }
+        ],
+        "result": {
+          "adapter_family": "local_generation",
+          "capability_digest": "sha256:f9f95f6415aa3f218d12afc30a8aff44b173b4ebd89bb558d5690e83c280fba6",
+          "dependency_digest": "84f7d1e6b94ac7124f7f324e43d4ca96f148d6d00d4ac8dbf7939b6c3eb8ad18",
+          "execution_guards": {
+            "cleanup_path": "<attempt>",
+            "collection_seconds": null,
+            "deadline_seconds": 3600.0,
+            "evidence": {
+              "attempt_delta_bytes": 0,
+              "cap_bytes": 2147483648,
+              "generated_file_count": 2,
+              "immutable_file_count": 0,
+              "immutable_input_bytes": 0,
+              "immutable_input_manifest_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "largest_paths": [
+                {
+                  "bytes": 775,
+                  "classification": "generated",
+                  "path": "outputs/manifest.json"
+                },
+                {
+                  "bytes": 18,
+                  "classification": "generated",
+                  "path": "outputs/frame_000.mp4"
+                }
+              ],
+              "largest_paths_truncated": false,
+              "observed_bytes": 793,
+              "path_classes": {
+                "outputs": {
+                  "bytes": 793,
+                  "files": 2
+                }
+              },
+              "root": "<attempt>",
+              "run_observed_bytes": 793,
+              "vanished_file_count": 0
+            },
+            "evidence_budget": {
+              "cap_bytes": 2147483648,
+              "run_observed_bytes": 793
+            },
+            "lifetime": "bounded",
+            "retained_bytes": 0,
+            "retained_owner": "generic-pack-host",
+            "scratch_disposition": "cleanup_pending",
+            "setup_seconds": 3600.0,
+            "storage_envelope": null,
+            "warm_expectation": {
+              "listener_port": null,
+              "port_independent": true,
+              "warm_reuse_expected": false
+            }
+          },
+          "managed_tool_session": {
+            "binding": {
+              "config_digest": "parity-config",
+              "endpoint": "pipe:parity-birth",
+              "engine_birth_id": "parity-birth",
+              "execution_identity": "parity-identity",
+              "launch_generation": "parity-birth",
+              "process_birth_id": "parity-birth",
+              "runtime_instance_id": "parity-runtime-instance",
+              "session_id": "<tmp>/owner",
+              "source_digest": "parity-source"
+            },
+            "capability": {
+              "admission_capacity": "serial",
+              "cancellation_strength": "fenced",
+              "capability_id": "wan2gp.generate_video",
+              "ownership_mode": "manager_owned",
+              "residency_support": "observable_releasable",
+              "resources_claimed": [
+                "gpu",
+                "ports",
+                "files"
+              ],
+              "terminate_authority": "generic_pack_host",
+              "uncertain_cancellation": "reconcile_before_settlement",
+              "warm_reuse_expected": true
+            },
+            "generation": 1,
+            "manager": "astrid-pack-host",
+            "schema_version": "astrid.managed-tool-session.v1",
+            "state": "settled",
+            "terminal": {
+              "invocation_id": "wan-task:wan-attempt:1",
+              "kind": "settled"
+            }
+          },
+          "process_evidence": {
+            "attempt_id": "wan-attempt",
+            "capability_id": "wan2gp.generate_video",
+            "child_boundary": "subprocess",
+            "fence": 1,
+            "process_id": 4242,
+            "returncode": 0
+          },
+          "source_digest": "830ba2553b53a4a68861c25418277df4bd98c5a5c655d69147e685cc23077eef",
+          "wan_mapping": {
+            "disclosed_engine": {
+              "engine": "wan2gp",
+              "native_job_id": "wan-native-job-parity-1",
+              "pin_ref": "deepbeepmeep/Wan2GP",
+              "pin_sha": "f3f204e50f6eeb73ce40d1dafc93bc97bfaa61e4",
+              "seam": "host-owned shared.api.init / WanGPSession.submit_task"
+            },
+            "events": [],
+            "generated_files": [
+              "frame_000.mp4"
+            ],
+            "manifest": {
+              "disclosed_engine": {
+                "engine": "wan2gp",
+                "native_job_id": "wan-native-job-parity-1",
+                "pin_ref": "deepbeepmeep/Wan2GP",
+                "pin_sha": "f3f204e50f6eeb73ce40d1dafc93bc97bfaa61e4",
+                "seam": "host-owned shared.api.init / WanGPSession.submit_task"
+              },
+              "inputs": {
+                "model": "wan-2.2",
+                "prompt": "parity fixture frame"
+              },
+              "kind": "video",
+              "model": "wan-2.2",
+              "outputs": [
+                {
+                  "bytes": 18,
+                  "content_hash": "sha256:09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+                  "is_primary": true,
+                  "name": "generated_videos",
+                  "ordinal": 0,
+                  "path": "frame_000.mp4",
+                  "role": "result"
+                }
+              ],
+              "portable_digest": "3c8fee40a7dc48569c5161b197f788a1b39a707cfce8baf273ee96ebffaddba8",
+              "schema_version": 2,
+              "spool": "<attempt>/outputs",
+              "warnings": []
+            },
+            "native_job_id": "wan-native-job-parity-1",
+            "output_root": "<attempt>/outputs",
+            "staged_outputs": [
+              {
+                "path": "<attempt>/outputs/frame_000.mp4",
+                "sha256": "09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+                "stat": [
+                  18
+                ]
+              }
+            ]
+          },
+          "wan_native": {
+            "binding_identity": [
+              "<tmp>/owner",
+              "parity-runtime-instance",
+              "parity-birth",
+              "pipe:parity-birth",
+              "parity-source",
+              "parity-config",
+              "parity-identity",
+              null,
+              "parity-birth",
+              "parity-birth"
+            ],
+            "birth": "birth-parity-fixture",
+            "events": [],
+            "generation": 1,
+            "invocation_id": "wan-task:wan-attempt:1",
+            "native_error": null,
+            "native_job_id": "wan-native-job-parity-1",
+            "output_snapshots": [
+              {
+                "path": "<tmp>/native/frame_000.mp4",
+                "sha256": "09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+                "stat": [
+                  18
+                ]
+              }
+            ],
+            "process_id": 4242,
+            "result": {
+              "errors": [],
+              "generated_files": [
+                "frame_000.mp4"
+              ],
+              "success": true
+            },
+            "returncode": 0,
+            "session_id": "<tmp>/owner",
+            "source_root": "<tmp>/native",
+            "terminal": true
+          }
+        }
+      }
+    ],
+    "submitted_settings": [
+      {
+        "force_fps": "8",
+        "guidance_scale": 5.0,
+        "image_refs_strengths": [],
+        "loras": "",
+        "model": "wan-2.2",
+        "model_type": "vace_fun_14B_2_2",
+        "negative_prompt": "low quality",
+        "num_inference_steps": 4,
+        "prompt": "parity fixture frame",
+        "resolution": "512x512",
+        "seed": 0,
+        "video_length": 9
+      }
+    ],
+    "uploads": [
+      {
+        "digest": "09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+        "filename": "frame_000.mp4",
+        "media_type": "video/mp4",
+        "project_id": "demo",
+        "size": 18
+      }
+    ]
+  },
+  "fixture_inputs": {
+    "failures": [],
+    "raised": null,
+    "settlements": [
+      {
+        "attempt_id": "wan-attempt",
+        "effect": null,
+        "fence": 1,
+        "outputs": [
+          {
+            "digest": "09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+            "filename": "frame_000.mp4",
+            "is_primary": true,
+            "kind": "object",
+            "media_type": "video/mp4",
+            "name": "generated_videos",
+            "ordinal": 0,
+            "role": "result",
+            "size": 18
+          }
+        ],
+        "result": {
+          "adapter_family": "local_generation",
+          "capability_digest": "sha256:f9f95f6415aa3f218d12afc30a8aff44b173b4ebd89bb558d5690e83c280fba6",
+          "dependency_digest": "84f7d1e6b94ac7124f7f324e43d4ca96f148d6d00d4ac8dbf7939b6c3eb8ad18",
+          "execution_guards": {
+            "cleanup_path": "<attempt>",
+            "collection_seconds": null,
+            "deadline_seconds": 3600.0,
+            "evidence": {
+              "attempt_delta_bytes": 0,
+              "cap_bytes": 2147483648,
+              "generated_file_count": 2,
+              "immutable_file_count": 0,
+              "immutable_input_bytes": 0,
+              "immutable_input_manifest_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "largest_paths": [
+                {
+                  "bytes": 775,
+                  "classification": "generated",
+                  "path": "outputs/manifest.json"
+                },
+                {
+                  "bytes": 18,
+                  "classification": "generated",
+                  "path": "outputs/frame_000.mp4"
+                }
+              ],
+              "largest_paths_truncated": false,
+              "observed_bytes": 793,
+              "path_classes": {
+                "outputs": {
+                  "bytes": 793,
+                  "files": 2
+                }
+              },
+              "root": "<attempt>",
+              "run_observed_bytes": 793,
+              "vanished_file_count": 0
+            },
+            "evidence_budget": {
+              "cap_bytes": 2147483648,
+              "run_observed_bytes": 793
+            },
+            "lifetime": "bounded",
+            "retained_bytes": 0,
+            "retained_owner": "generic-pack-host",
+            "scratch_disposition": "cleanup_pending",
+            "setup_seconds": 3600.0,
+            "storage_envelope": null,
+            "warm_expectation": {
+              "listener_port": null,
+              "port_independent": true,
+              "warm_reuse_expected": false
+            }
+          },
+          "managed_tool_session": {
+            "binding": {
+              "config_digest": "parity-config",
+              "endpoint": "pipe:parity-birth",
+              "engine_birth_id": "parity-birth",
+              "execution_identity": "parity-identity",
+              "launch_generation": "parity-birth",
+              "process_birth_id": "parity-birth",
+              "runtime_instance_id": "parity-runtime-instance",
+              "session_id": "<tmp>/owner",
+              "source_digest": "parity-source"
+            },
+            "capability": {
+              "admission_capacity": "serial",
+              "cancellation_strength": "fenced",
+              "capability_id": "wan2gp.generate_video",
+              "ownership_mode": "manager_owned",
+              "residency_support": "observable_releasable",
+              "resources_claimed": [
+                "gpu",
+                "ports",
+                "files"
+              ],
+              "terminate_authority": "generic_pack_host",
+              "uncertain_cancellation": "reconcile_before_settlement",
+              "warm_reuse_expected": true
+            },
+            "generation": 1,
+            "manager": "astrid-pack-host",
+            "schema_version": "astrid.managed-tool-session.v1",
+            "state": "settled",
+            "terminal": {
+              "invocation_id": "wan-task:wan-attempt:1",
+              "kind": "settled"
+            }
+          },
+          "process_evidence": {
+            "attempt_id": "wan-attempt",
+            "capability_id": "wan2gp.generate_video",
+            "child_boundary": "subprocess",
+            "fence": 1,
+            "process_id": 4242,
+            "returncode": 0
+          },
+          "source_digest": "830ba2553b53a4a68861c25418277df4bd98c5a5c655d69147e685cc23077eef",
+          "wan_mapping": {
+            "disclosed_engine": {
+              "engine": "wan2gp",
+              "native_job_id": "wan-native-job-parity-1",
+              "pin_ref": "deepbeepmeep/Wan2GP",
+              "pin_sha": "f3f204e50f6eeb73ce40d1dafc93bc97bfaa61e4",
+              "seam": "host-owned shared.api.init / WanGPSession.submit_task"
+            },
+            "events": [],
+            "generated_files": [
+              "frame_000.mp4"
+            ],
+            "manifest": {
+              "disclosed_engine": {
+                "engine": "wan2gp",
+                "native_job_id": "wan-native-job-parity-1",
+                "pin_ref": "deepbeepmeep/Wan2GP",
+                "pin_sha": "f3f204e50f6eeb73ce40d1dafc93bc97bfaa61e4",
+                "seam": "host-owned shared.api.init / WanGPSession.submit_task"
+              },
+              "inputs": {
+                "model": "wan-2.2",
+                "prompt": "parity fixture frame"
+              },
+              "kind": "video",
+              "model": "wan-2.2",
+              "outputs": [
+                {
+                  "bytes": 18,
+                  "content_hash": "sha256:09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+                  "is_primary": true,
+                  "name": "generated_videos",
+                  "ordinal": 0,
+                  "path": "frame_000.mp4",
+                  "role": "result"
+                }
+              ],
+              "portable_digest": "0cf66a8bb84dbfcbcc81e356f1e5cd0196f6eae80f67ce77e296f47b3339c999",
+              "schema_version": 2,
+              "spool": "<attempt>/outputs",
+              "warnings": []
+            },
+            "native_job_id": "wan-native-job-parity-1",
+            "output_root": "<attempt>/outputs",
+            "staged_outputs": [
+              {
+                "path": "<attempt>/outputs/frame_000.mp4",
+                "sha256": "09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+                "stat": [
+                  18
+                ]
+              }
+            ]
+          },
+          "wan_native": {
+            "binding_identity": [
+              "<tmp>/owner",
+              "parity-runtime-instance",
+              "parity-birth",
+              "pipe:parity-birth",
+              "parity-source",
+              "parity-config",
+              "parity-identity",
+              null,
+              "parity-birth",
+              "parity-birth"
+            ],
+            "birth": "birth-parity-fixture",
+            "events": [],
+            "generation": 1,
+            "invocation_id": "wan-task:wan-attempt:1",
+            "native_error": null,
+            "native_job_id": "wan-native-job-parity-1",
+            "output_snapshots": [
+              {
+                "path": "<tmp>/native/frame_000.mp4",
+                "sha256": "09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+                "stat": [
+                  18
+                ]
+              }
+            ],
+            "process_id": 4242,
+            "result": {
+              "errors": [],
+              "generated_files": [
+                "frame_000.mp4"
+              ],
+              "success": true
+            },
+            "returncode": 0,
+            "session_id": "<tmp>/owner",
+            "source_root": "<tmp>/native",
+            "terminal": true
+          }
+        }
+      }
+    ],
+    "submitted_settings": [
+      {
+        "force_fps": "8",
+        "image_refs_strengths": [],
+        "model": "wan-2.2",
+        "model_type": "vace_fun_14B_2_2",
+        "num_inference_steps": 4,
+        "prompt": "parity fixture frame",
+        "resolution": "512x512",
+        "seed": 0,
+        "video_length": 9
+      }
+    ],
+    "uploads": [
+      {
+        "digest": "09fe72c79ce1a1c45cf00f311cf0f3fa156585063c7994d1ea0eb946778d8f77",
+        "filename": "frame_000.mp4",
+        "media_type": "video/mp4",
+        "project_id": "demo",
+        "size": 18
+      }
+    ]
+  }
+}
