@@ -24,6 +24,11 @@ def first_pack_owner(items: Iterable[Any]) -> list[Any]:
         previous = seen.get(pack_id)
         if previous is not None:
             _, previous_kind = previous
+            if ((previous_kind in {"source", "core"} or source_kind in {"source", "core"})
+                    and previous_kind != source_kind):
+                raise PackValidationError(
+                    f"external pack id {pack_id!r} conflicts with a core pack"
+                )
             if pack_id == "personal" and {previous_kind, source_kind} != {"personal"}:
                 raise PackValidationError("the personal pack id is reserved for the canonical personal root")
             if previous_kind in {"source", "core", "personal", "local"}:

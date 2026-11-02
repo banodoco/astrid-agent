@@ -374,6 +374,13 @@ def discover_pack_metadata(
     working. Defaults to :func:`astrid.core.pack.discover_packs`.
     """
     scan = discover_packs_fn if discover_packs_fn is not None else discover_packs
+    # Bind the personal collection once at the runtime discovery boundary.
+    # Every layer classification, compatibility pass, loader scan, and cache
+    # identity below must use this exact root.
+    if personal_packs_root is None:
+        from astrid.core.pack.personal import resolve_personal_packs_root
+
+        personal_packs_root = resolve_personal_packs_root()
     selected_personal_root = (
         Path(personal_packs_root).expanduser().resolve(strict=False)
         if personal_packs_root is not None else None

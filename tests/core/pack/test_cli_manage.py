@@ -18,7 +18,7 @@ def git(root: Path, *args: str) -> str:
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
 
 
-def make_pack(root: Path, pack_id: str) -> None:
+def make_pack(root: Path, pack_id: str, *, dependencies: tuple[str, ...] = ()) -> None:
     pack = root / "packs" / pack_id
     pack.mkdir(parents=True)
     (pack / "pack.yaml").write_text(
@@ -27,7 +27,8 @@ def make_pack(root: Path, pack_id: str) -> None:
         f"name: {pack_id.title()}\n"
         "version: 1.0.0\n"
         'pack_api: "1.0"\n'
-        "documentation: {kind: none, reason: CLI transaction fixture.}\n"
+        + ("dependencies:\n  packs: [" + ", ".join(dependencies) + "]\n" if dependencies else "")
+        + "documentation: {kind: none, reason: CLI transaction fixture.}\n"
         "secrets:\n"
         "  - {name: API_TOKEN, reason: Authenticate to the service.}\n"
         "actions:\n"
@@ -49,16 +50,93 @@ def make_pack(root: Path, pack_id: str) -> None:
     action.write_text("def run():\n    return {}\n", encoding="utf-8")
 
 
-def make_source(root: Path) -> tuple[Path, str]:
+def make_source(root: Path, *, dependencies: tuple[str, ...] = ()) -> tuple[Path, str]:
     source = root / "source"
-    source.mkdir()
+    source.mkdir(parents=True)
     git(source, "init", "-b", "main")
     git(source, "config", "user.name", "Pack CLI Test")
     git(source, "config", "user.email", "pack-cli@example.invalid")
-    make_pack(source, "alpha")
+    make_pack(source, "alpha", dependencies=dependencies)
     git(source, "add", "-A")
     git(source, "commit", "-m", "fixture")
     return source, git(source, "rev-parse", "HEAD")
+
+
+def test_add_accepts_selected_core_and_external_dependencies(tmp_path: Path, monkeypatch) -> None:
+    from astrid.core.pack import loader
+
+    core = tmp_path / "core"
+    external = tmp_path / "external"
+    make_pack(core, "coredep")
+    make_pack(external, "extdep")
+    (core / "packs" / "coredep" / "api.py").write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "packs_root", lambda: core / "packs")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(external / "packs"))
+    source, commit = make_source(tmp_path, dependencies=("coredep", "extdep"))
+    collection = tmp_path / "collection"
+
+    assert main(["add", str(source), "--pack-id", "alpha", "--subpath", "packs/alpha",
+                 "--revision", commit, "--packs-root", str(collection), "--yes"]) == 0
+    assert set(read_group(collection).paths) == {"alpha"}
+
+
+def test_add_missing_dependency_refusal_keeps_live_generation(tmp_path: Path, capsys) -> None:
+    source_ok, commit_ok = make_source(tmp_path / "initial")
+    collection = tmp_path / "collection"
+    assert main(["add", str(source_ok), "--pack-id", "alpha", "--subpath", "packs/alpha",
+                 "--revision", commit_ok, "--packs-root", str(collection), "--yes"]) == 0
+    before = read_group(collection)
+    before_payload = (before.paths["alpha"] / "payload.txt").read_bytes()
+
+    source_missing, commit_missing = make_source(tmp_path / "missing", dependencies=("absent",))
+    assert main(["add", str(source_missing), "--pack-id", "alpha", "--subpath", "packs/alpha",
+                 "--revision", commit_missing, "--packs-root", str(collection), "--yes"]) == 1
+    after = read_group(collection)
+    assert (after.revision, after.transaction_id) == (before.revision, before.transaction_id)
+    assert (after.paths["alpha"] / "payload.txt").read_bytes() == before_payload
+    assert "declared pack dependency is unavailable" in capsys.readouterr().err
+
+
+def test_add_default_pin_conflict_refusal_keeps_live_generation(tmp_path: Path, monkeypatch, capsys) -> None:
+    provider = tmp_path / "provider"
+    provider.mkdir()
+    make_pack(provider, "provider")
+    collection = tmp_path / "collection"
+    assert main(["add", str(provider), "--pack-id", "provider", "--subpath", "packs/provider",
+                 "--packs-root", str(collection), "--yes"]) == 0
+    before = read_group(collection)
+    pin_file = tmp_path / "release-pins.json"
+    pin_file.write_text(json.dumps({"provider": {"commit": "a" * 40, "digest": "b" * 64}}), encoding="utf-8")
+    monkeypatch.setenv("ASTRID_RELEASE_PACK_PINS", str(pin_file))
+    source, commit = make_source(tmp_path / "consumer", dependencies=("provider",))
+
+    assert main(["add", str(source), "--pack-id", "alpha", "--subpath", "packs/alpha",
+                 "--revision", commit, "--packs-root", str(collection), "--yes"]) == 1
+    after = read_group(collection)
+    assert (after.revision, after.transaction_id) == (before.revision, before.transaction_id)
+    assert set(after.paths) == {"provider"}
+    assert "release default pin" in capsys.readouterr().err
+
+
+def test_remove_retained_dependent_refusal_keeps_live_generation(tmp_path: Path, capsys) -> None:
+    provider = tmp_path / "provider"
+    provider.mkdir()
+    make_pack(provider, "provider")
+    collection = tmp_path / "collection"
+    assert main(["add", str(provider), "--pack-id", "provider", "--subpath", "packs/provider",
+                 "--packs-root", str(collection), "--yes"]) == 0
+    consumer, commit = make_source(tmp_path / "consumer", dependencies=("provider",))
+    assert main(["add", str(consumer), "--pack-id", "alpha", "--subpath", "packs/alpha",
+                 "--revision", commit, "--packs-root", str(collection), "--yes"]) == 0
+    before = read_group(collection)
+    payloads = {pack_id: (path / "payload.txt").read_bytes() for pack_id, path in before.paths.items()}
+
+    assert main(["remove", "provider", "--packs-root", str(collection), "--yes"]) == 1
+    after = read_group(collection)
+    assert (after.revision, after.transaction_id) == (before.revision, before.transaction_id)
+    assert set(after.paths) == set(before.paths)
+    assert {pack_id: (path / "payload.txt").read_bytes() for pack_id, path in after.paths.items()} == payloads
+    assert "declared pack dependency is unavailable" in capsys.readouterr().err
 
 
 def test_add_and_remove_use_group_transaction_and_show_consent(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -165,8 +243,12 @@ def test_changed_folder_after_consent_is_rejected(tmp_path: Path, monkeypatch, c
     assert "changed after consent" in capsys.readouterr().err
 
 
-def test_core_pack_owns_conflicting_user_id_even_with_pin(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_core_id_collision_is_rejected_even_with_user_pin(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+
     from astrid.core.pack import loader
+    from astrid.core.pack._common import PackValidationError
+    from astrid.core.pack.discovery import discover_pack_metadata
 
     core_root = tmp_path / "core"
     user_root = tmp_path / "user"
@@ -179,10 +261,8 @@ def test_core_pack_owns_conflicting_user_id_even_with_pin(tmp_path: Path, monkey
     (user_root / "packs" / "shared" / "PIN").write_text("present\n", encoding="utf-8")
     monkeypatch.setattr(loader, "packs_root", lambda: core_root / "packs")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    assert main(["list", "--pack-root", str(user_root / "packs")]) == 0
-    output = capsys.readouterr().out
-    assert "Shared" in output
-    assert "User Copy" not in output
+    with pytest.raises(PackValidationError, match="conflicts with a core pack"):
+        discover_pack_metadata(extra_pack_roots=(str(user_root / "packs"),))
 
 
 def test_initialized_personal_pack_is_discovered_and_listed_from_selected_root(

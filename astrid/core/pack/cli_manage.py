@@ -38,15 +38,6 @@ def _freeze(value):
     return value
 
 
-def _python_packages() -> dict[str, str]:
-    packages: dict[str, str] = {}
-    for distribution in importlib.metadata.distributions():
-        name = distribution.metadata.get("Name")
-        if name:
-            packages[name.lower().replace("_", "-").replace(".", "-")] = distribution.version
-    return packages
-
-
 def _consent_details(pack_root: Path, *, source: str, commit: str | None) -> dict[str, Any]:
     manifest = validate_canonical_pack(pack_root).definition.to_dict()
     secrets = manifest.get("secrets", [])
@@ -114,8 +105,9 @@ def _handle_add(args: argparse.Namespace) -> int:
 
     root_was_present = root.exists()
     try:
+        packages, pins = _validation_snapshot()
         result = install_group(source=source, revision=args.revision, packs={pack_id: subpath},
-                              packs_root=root, python_packages=_python_packages(),
+                              packs_root=root, python_packages=packages, release_pins=pins,
                               origin="folder" if args.revision is None else "user", consent=consent)
     except PackInstallError as exc:
         if exc.code in {"user_cancelled", "source_changed"} and not root_was_present:
@@ -141,8 +133,9 @@ def _handle_remove(args: argparse.Namespace) -> int:
     if not _confirm("Continue? [y/N] ", yes=args.yes):
         print("Pack removal cancelled.")
         return 1
+    packages, pins = _validation_snapshot()
     result = install_group(source=".", packs={}, packs_root=root,
-                          python_packages=_python_packages(), remove=ids)
+                          python_packages=packages, release_pins=pins, remove=ids)
     print(f"Removed {', '.join(ids)} (transaction {result.transaction_id}).")
     if result.refresh_pending:
         print("Refresh acknowledgment is pending; retry the committed transaction refresh.", file=sys.stderr)
