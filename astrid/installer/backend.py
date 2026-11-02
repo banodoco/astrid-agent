@@ -726,6 +726,102 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         })
         return True
 
+    def _systemd_r0_snapshot(self, data: Path, *, active_only: bool = False) -> dict | None:
+        """Return a durable R0 systemd unit only for this unfinished update."""
+        active = self._active_update_transaction()
+        if active is not None:
+            transaction, _recovering = active
+        elif active_only:
+            return None
+        else:
+            journal = self.root / "update-transaction.json"
+            if not journal.is_file() or linked(journal):
+                return None
+            transaction = read_json(journal)
+        if (transaction.get("format") != "astrid-install-update/v1"
+                or transaction.get("step") in {"complete", "rolled_back"}
+                or absolute(transaction.get("data_root", "")) != absolute(data)):
+            return None
+        snapshot = transaction.get("systemd_r0_unit")
+        if snapshot is None:
+            return None
+        self.service._systemd_recovery_bytes(snapshot, data)
+        return snapshot
+
+    def _preserve_systemd_r0_definition(self, version: Version, data: Path) -> bool:
+        """Keep an R0 Restart=always unit unchanged until it is safely stopped."""
+        if self.service.system != "linux":
+            return False
+        active = self._active_update_transaction()
+        if active is None:
+            return self._systemd_r0_snapshot(data) is not None
+        transaction, recovering = active
+        snapshot = self._systemd_r0_snapshot(data, active_only=True)
+        if snapshot is not None:
+            return True
+        if recovering:
+            raise ValueError("The interrupted update has no retained R0 systemd definition.")
+        # A new snapshot is only valid while publishing the original R0
+        # owner. Once retained, it also suppresses a recovery-time candidate
+        # publication until rollback restores those exact bytes.
+        if version.release != 0:
+            return False
+        if not self.service.systemd():
+            return False
+        snapshot = self.service.systemd_recovery_snapshot(data)
+        # No unit file is an intentional autostart-off state. There is no
+        # supervised R0 owner to stop or definition to restore.
+        if snapshot is None:
+            return True
+        journal = self.root / "update-transaction.json"
+        if not journal.is_file() or linked(journal) or read_json(journal) != transaction:
+            raise ValueError("The update journal changed before R0 systemd preservation.")
+        transaction["systemd_r0_unit"] = snapshot
+        write_json(journal, transaction)
+        return True
+
+    def _mark_systemd_stop_intent(self, data: Path, snapshot: dict) -> None:
+        """Durably record the boundary before disabling an R0 systemd unit."""
+        active = self._active_update_transaction()
+        if active is None:
+            return
+        transaction, recovering = active
+        if recovering:
+            return
+        if transaction.get("systemd_r0_unit") != snapshot:
+            raise ValueError("The retained R0 systemd definition changed before stop.")
+        intent = snapshot.get("stop_intent", False)
+        if type(intent) is not bool:
+            raise ValueError("The retained R0 systemd stop state is invalid.")
+        if intent:
+            return
+        journal = self.root / "update-transaction.json"
+        if not journal.is_file() or linked(journal) or read_json(journal) != transaction:
+            raise ValueError("The update journal changed before R0 systemd stop.")
+        snapshot["stop_intent"] = True
+        write_json(journal, transaction)
+
+    def _restore_systemd_r0_definition(self, version: Version, data: Path) -> bool:
+        """Restore an exact R0 unit and its prior enablement while rolling back."""
+        active = self._active_update_transaction()
+        if active is None:
+            return False
+        transaction, recovering = active
+        if not recovering or self.service.system != "linux":
+            return False
+        snapshot = self._systemd_r0_snapshot(data, active_only=True)
+        if snapshot is None:
+            return False
+        old = Version.load(transaction["old"])
+        if old.document() != version.document():
+            return False
+        self.service.restore_systemd_recovery_snapshot(snapshot, data)
+        persist_install_identity(version, self.root, selection=self.service.selection, fields={
+            "owner": LABEL, "program_root": str(self.root),
+            "data_root": str(data), "service_settings": self.service.settings(),
+        })
+        return True
+
     def publish_launch_admission(self, version: Version, data: Path) -> None:
         """Refresh the selected install's launch action before its first C1 stop."""
         if self.managed_by == "pinokio":
@@ -733,7 +829,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # An R0 macOS agent may KeepAlive itself in the C1-to-bootout gap.
         # Preserve its exact definition instead: the update path unloads this
         # validated job before C1, and recovery bootstraps these exact bytes.
-        if self._preserve_launchd_r0_definition(version, data):
+        # R0 Linux has the same gap with Restart=always. Its authenticated
+        # unit is disabled and stopped before the Runtime's owner exit, then
+        # restored byte-for-byte (including enablement) on rollback.
+        if (self._preserve_launchd_r0_definition(version, data)
+                or self._preserve_systemd_r0_definition(version, data)):
             return
         self.service.publish_launch_admission(version, data)
 
@@ -795,6 +895,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             launchd_identity = None
             launchd_snapshot = None
             launchd_booted_out = False
+            systemd_r0_pre_stopped = False
             if self.managed_by != "pinokio":
                 if self.service.system == "darwin":
                     # C1's busy/owner admission is read-only. It must precede
@@ -870,6 +971,30 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                             expected_identity=launchd_identity, recovery_snapshot=launchd_snapshot,
                         )
                         launchd_booted_out = True
+                elif self.service.system == "linux":
+                    systemd_snapshot = self._systemd_r0_snapshot(data, active_only=True)
+                    active = self._active_update_transaction()
+                    retained_r0 = False
+                    if systemd_snapshot is not None and active is not None and version is not None:
+                        try:
+                            retained_old = Version.load(active[0]["old"])
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise ValueError("The update has an invalid retained R0 version.") from exc
+                        retained_r0 = retained_old.document() == version.document()
+                    if retained_r0:
+                        # C1 preflight remains read-only and refuses known busy
+                        # work before the R0 service is changed.  The immediate
+                        # systemd re-admission binds the retained unit and PID
+                        # just before disable/stop closes Restart=always.
+                        self.preflight_stop(data)
+                        self.service.admit_systemd_stop(
+                            data, owner_pid=owner_pid, recovery_snapshot=systemd_snapshot)
+                        self._mark_systemd_stop_intent(data, systemd_snapshot)
+                        self.service.stop_admitted_systemd(
+                            data, owner_pid=owner_pid, recovery_snapshot=systemd_snapshot)
+                        systemd_r0_pre_stopped = True
+                    else:
+                        self.service.validate_stop_target(version, data, owner_pid=owner_pid)
                 else:
                     launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
             def stop_selected_manager():
@@ -892,6 +1017,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                                 # was absent when C1 began. Never authorize a
                                 # post-C1 bootout: a new job is a replacement.
                                 self.service.stop()
+                            elif systemd_r0_pre_stopped:
+                                # The R0 systemd service was synchronously
+                                # disabled and stopped before C1 observed its
+                                # owner exit. This post-C1 callback remains
+                                # part of the frozen Runtime handoff, but it
+                                # must not target a later replacement unit.
+                                pass
                             else:
                                 self.service.validate_stop_target(version, data, owner_pid=owner_pid)
                                 self.service.disable()
@@ -1323,7 +1455,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 "data_root": str(data), "managed_by": "pinokio",
             })
         else:
-            if not self._restore_launchd_r0_definition(version, data):
+            if not (self._restore_launchd_r0_definition(version, data)
+                    or self._restore_systemd_r0_definition(version, data)):
                 self.service.register(version, data)
         realm = self.workspace(version, data)
         record = self.service.recorded()

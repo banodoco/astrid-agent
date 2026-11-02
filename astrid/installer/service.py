@@ -498,6 +498,174 @@ class Service:
             "mode": stat.S_IMODE(observed_stat.st_mode),
         }
 
+    def _systemd_unit_identity(self, data: Path) -> tuple[bytes, os.stat_result]:
+        """Read an owned, known systemd unit without changing its definition."""
+        message = (f"The Astrid service {self.path} has an unknown or changed action/owner. "
+                   "Re-run the install line to repair it.")
+        selection = self.recorded()
+        try:
+            observed_stat = self.path.lstat()
+            if (not stat.S_ISREG(observed_stat.st_mode) or not owned_by_current_user(self.path, observed_stat)
+                    or selection.get("owner") != LABEL or selection.get("program_root") != str(self.root)
+                    or selection.get("data_root") != str(data)):
+                raise ValueError(message)
+            raw = self.path.read_bytes()
+            lines = raw.decode("utf-8").splitlines(keepends=True)
+            actions = [line for line in lines if line.lstrip().startswith("ExecStart=")]
+            if len(actions) != 1 or not actions[0].startswith("ExecStart="):
+                raise ValueError(message)
+            section = None
+            for line in lines:
+                if line.strip().startswith("["):
+                    section = line.strip()
+                if line == actions[0] and section != "[Service]":
+                    raise ValueError(message)
+            encoded = actions[0].removeprefix("ExecStart=").removesuffix("\n")
+            tokens = re.findall(r'"(?:\\.|[^"\\])*"', encoded)
+
+            def decode(token):
+                return re.sub(r'\\([\\"n])', lambda m: "\n" if m[1] == "n" else m[1],
+                              token[1:-1]).replace("%%", "%").replace("$$", "$")
+
+            action = [decode(token) for token in tokens]
+
+            def encode(argv):
+                return " ".join(systemd_quote(arg).replace("$", "$$") for arg in argv)
+
+            script = action[-1] if action[1:5] == ["-X", "utf8", "-I", "-c"] else None
+            if encode(action) != encoded or not self._known_launch_action(
+                    action, data, windows=False, script=script):
+                raise ValueError(message)
+            return raw, observed_stat
+        except (OSError, TypeError, IndexError, AttributeError, UnicodeError) as exc:
+            raise ValueError(message) from exc
+
+    def _systemd_recovery_bytes(self, snapshot: dict, data: Path) -> tuple[bytes, int, str]:
+        """Validate a durable R0 systemd unit before using it for recovery."""
+        states = {"enabled", "disabled", "enabled-runtime", "disabled-runtime"}
+        if (not isinstance(snapshot, dict)
+                or snapshot.get("format") != "astrid-systemd-r0-unit/v1"
+                or snapshot.get("unit") != "astrid.service"
+                or snapshot.get("path") != str(self.path)
+                or not isinstance(snapshot.get("sha256"), str)
+                or not isinstance(snapshot.get("unit_b64"), str)
+                or type(snapshot.get("mode")) is not int
+                or snapshot["mode"] < 0 or snapshot["mode"] > 0o777
+                or snapshot.get("unit_file_state") not in states
+                or ("stop_intent" in snapshot and type(snapshot["stop_intent"]) is not bool)):
+            raise ValueError("The retained R0 systemd definition is invalid.")
+        try:
+            raw = base64.b64decode(snapshot["unit_b64"], validate=True)
+            if hashlib.sha256(raw).hexdigest() != snapshot["sha256"]:
+                raise ValueError("invalid retained definition")
+            # Reuse the live-unit validator's parser against immutable bytes.
+            text = raw.decode("utf-8")
+            lines = text.splitlines(keepends=True)
+            actions = [line for line in lines if line.lstrip().startswith("ExecStart=")]
+            if len(actions) != 1 or not actions[0].startswith("ExecStart="):
+                raise ValueError("invalid retained definition")
+            section = None
+            for line in lines:
+                if line.strip().startswith("["):
+                    section = line.strip()
+                if line == actions[0] and section != "[Service]":
+                    raise ValueError("invalid retained definition")
+            encoded = actions[0].removeprefix("ExecStart=").removesuffix("\n")
+            tokens = re.findall(r'"(?:\\.|[^"\\])*"', encoded)
+
+            def decode(token):
+                return re.sub(r'\\([\\"n])', lambda m: "\n" if m[1] == "n" else m[1],
+                              token[1:-1]).replace("%%", "%").replace("$$", "$")
+
+            action = [decode(token) for token in tokens]
+            canonical = " ".join(systemd_quote(arg).replace("$", "$$") for arg in action)
+            script = action[-1] if action[1:5] == ["-X", "utf8", "-I", "-c"] else None
+            if canonical != encoded or not self._known_launch_action(
+                    action, data, windows=False, script=script):
+                raise ValueError("invalid retained definition")
+        except (ValueError, TypeError, IndexError, UnicodeError, binascii.Error) as exc:
+            raise ValueError("The retained R0 systemd definition is invalid.") from exc
+        return raw, snapshot["mode"], snapshot["unit_file_state"]
+
+    def systemd_recovery_snapshot(self, data: Path) -> dict | None:
+        """Retain an exact R0 unit and its enablement before the first stop."""
+        if self.system != "linux" or (not self.path.exists() and not self.path.is_symlink()):
+            return None
+        raw, observed_stat = self._systemd_unit_identity(data)
+        value = self.run(["systemctl", "--user", "show", "astrid.service",
+                          "--property=UnitFileState"])
+        fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+        state = fields.get("UnitFileState")
+        if state not in {"enabled", "disabled", "enabled-runtime", "disabled-runtime"}:
+            raise ValueError("The systemd service enablement state is unknown; refusing to stop it.")
+        return {
+            "format": "astrid-systemd-r0-unit/v1", "unit": "astrid.service",
+            "path": str(self.path), "sha256": hashlib.sha256(raw).hexdigest(),
+            "unit_b64": base64.b64encode(raw).decode("ascii"),
+            "mode": stat.S_IMODE(observed_stat.st_mode), "unit_file_state": state,
+        }
+
+    def admit_systemd_stop(self, data: Path, *, owner_pid: int | None,
+                           recovery_snapshot: dict) -> None:
+        """Revalidate the retained R0 unit immediately before a systemd stop."""
+        raw, _observed_stat = self._systemd_unit_identity(data)
+        retained, _mode, _state = self._systemd_recovery_bytes(recovery_snapshot, data)
+        if raw != retained:
+            raise ValueError("The systemd service no longer matches the retained R0 definition.")
+        value = self.run(["systemctl", "--user", "show", "astrid.service",
+                          "--property=MainPID,FragmentPath,LoadState"])
+        fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+        try:
+            pid = int(fields["MainPID"])
+        except (KeyError, ValueError) as exc:
+            raise ValueError("The systemd service state is malformed.") from exc
+        if (fields.get("LoadState") != "loaded" or fields.get("FragmentPath") != str(self.path)
+                or pid < 0 or pid not in {0, owner_pid}):
+            raise ValueError("The systemd service does not match the selected Runtime owner.")
+
+    @staticmethod
+    def _systemd_enablement_args(action: str, unit_file_state: str) -> list[str]:
+        return ["systemctl", "--user", action,
+                *( ["--runtime"] if unit_file_state.endswith("-runtime") else [] ),
+                "astrid.service"]
+
+    def stop_admitted_systemd(self, data: Path, *, owner_pid: int | None,
+                              recovery_snapshot: dict) -> None:
+        """Disable then stop the exact R0 unit before its Restart=always owner exits."""
+        self.admit_systemd_stop(data, owner_pid=owner_pid, recovery_snapshot=recovery_snapshot)
+        _raw, _mode, state = self._systemd_recovery_bytes(recovery_snapshot, data)
+        if state.startswith("enabled"):
+            self.run(self._systemd_enablement_args("disable", state))
+            self.admit_systemd_stop(data, owner_pid=owner_pid, recovery_snapshot=recovery_snapshot)
+        self.run(["systemctl", "--user", "stop", "astrid.service"])
+
+    def restore_systemd_recovery_snapshot(self, snapshot: dict, data: Path) -> None:
+        """Restore the retained R0 unit and precisely its prior enablement state."""
+        raw, mode, state = self._systemd_recovery_bytes(snapshot, data)
+        if os.path.lexists(self.path):
+            current, _stat = self._systemd_unit_identity(data)
+            status = self.run(["systemctl", "--user", "show", "astrid.service",
+                               "--property=MainPID,FragmentPath,LoadState"])
+            fields = dict(line.split("=", 1) for line in status.splitlines() if "=" in line)
+            try:
+                pid = int(fields["MainPID"])
+            except (KeyError, ValueError) as exc:
+                raise ValueError("The systemd service state is malformed.") from exc
+            if (fields.get("LoadState") != "loaded" or fields.get("FragmentPath") != str(self.path)
+                    or pid != 0):
+                raise ValueError("The systemd service changed before R0 recovery.")
+            if current != raw:
+                _atomic_write_bytes(self.path, raw, mode=mode)
+        else:
+            parent_stat = self.path.parent.stat()
+            if (not stat.S_ISDIR(parent_stat.st_mode)
+                    or not owned_by_current_user(self.path.parent, parent_stat)):
+                raise ValueError("The R0 systemd directory is not installer-owned.")
+            _atomic_write_bytes(self.path, raw, mode=mode)
+        self.run(["systemctl", "--user", "daemon-reload"])
+        action = "enable" if state.startswith("enabled") else "disable"
+        self.run(self._systemd_enablement_args(action, state))
+
     def _launchd_recovery_bytes(self, snapshot: dict, data: Path) -> tuple[bytes, int]:
         """Validate the durable R0 definition before using it as stop authority."""
         if (not isinstance(snapshot, dict)
