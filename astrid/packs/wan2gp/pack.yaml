@@ -52,23 +52,10 @@ actions:
       - generate
       - gpu
     invocation:
-      kind: command
-      command:
-        argv:
-          - "{python_exec}"
-          - "-m"
-          - astrid.packs.wan2gp.actions.generate_video.run
-        input_args:
-          - {input: prompt, flag: --prompt}
-          - {input: model, flag: --model, optional: true}
-          - {input: negative_prompt, flag: --negative-prompt, optional: true}
-          - {input: resolution, flag: --resolution, optional: true}
-          - {input: frames, flag: --frames, optional: true}
-          - {input: fps, flag: --fps, optional: true}
-          - {input: seed, flag: --seed, optional: true}
-          - {input: guidance_scale, flag: --guidance-scale, optional: true}
-          - {input: steps, flag: --steps, optional: true}
-          - {input: loras, flag: --loras, optional: true}
+      kind: python
+      path: actions/generate_video_session/run.py
+      function: generate_video_session
+    session: managed_tool
     inputs:
       - name: prompt
         type: string
@@ -134,7 +121,7 @@ actions:
         description: Universal result manifest for this generation.
     resources:
       - kind: implementation
-        path: actions/generate_video/run.py
+        path: actions/generate_video_session/run.py
       - kind: documentation
         path: actions/generate_video/STAGE.md
     cache:
@@ -161,8 +148,8 @@ actions:
       host_session: wan2gp
       output_result_manifest: true
       pack_id: wan2gp
-      runtime_file: actions/generate_video/run.py
-      runtime_module: astrid.packs.wan2gp.actions.generate_video.run
+      runtime_file: actions/generate_video_session/run.py
+      runtime_module: astrid.packs.wan2gp.actions.generate_video_session.run
   validate_settings:
     name: Wan2GP Validate Settings
     version: 0.1.0
