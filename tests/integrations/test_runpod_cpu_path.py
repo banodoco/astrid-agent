@@ -451,10 +451,10 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         generations, cursor = owner.list_generations(project_id)
         assert cursor is None and len(generations) == 1
         generation = generations[0]
-        assert generation.metadata["source_task_id"] == result.task_id and generation.status == "completed"
-        variants, cursor = owner.list_variants(generation.generation_id)
+        assert generation["source_task_id"] == result.task_id and generation["status"] == "completed"
+        variants, cursor = owner.list_variants(generation["generation_id"])
         assert cursor is None and len(variants) == 1
-        assert variants[0].object_id == "sha256:" + _sha(image_path.read_bytes())
+        assert variants[0]["object_id"] == _sha(image_path.read_bytes())
         assert client.runs.show(run_id).ok
         record = json.loads(claim_path.read_text())
         assert record["lease"]["state"] == "idle" and record["paid_limits"]["idle_seconds"] == 1800
@@ -471,8 +471,8 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert setup({**changed, "budget_cap_usd": 1.25}).ok
         assert host._target_bindings.provider is not released_owner and released_owner.lease_owner.closed
         assert len(provider.events) == observations, "setup after verified release observed the provider"
-        evidence = {"task_id": result.task_id, "run_id": run_id, "generation_id": generation.generation_id,
-                    "output_object": variants[0].object_id, "delivered_file": str(image_path),
+        evidence = {"task_id": result.task_id, "run_id": run_id, "generation_id": generation["generation_id"],
+                    "output_object": variants[0]["object_id"], "delivered_file": str(image_path),
                     "sha256": _sha(image_path.read_bytes()), "synthetic_inference": True,
                     "release": record["cleanup"], "receipt": result.to_dict()}
         (tmp_path / "cpu-receipt.json").write_text(json.dumps(evidence, default=str, indent=2))
