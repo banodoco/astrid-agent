@@ -147,7 +147,10 @@ def test_pack_geometry_change_invalidates_pack_root_identity(tmp_path, monkeypat
     from astrid.core.pack import loader
 
     checkout = tmp_path / "checkout"
-    pack, element = write_pack(checkout / "astrid/packs", "astrid_motion")
+    pack, element = write_pack(
+        checkout / "astrid/packs", "astrid_motion",
+        element_base="rendering/elements/effects",
+    )
     monkeypatch.setattr(loader, "packs_root", lambda: checkout / "astrid/packs")
     geometry = element / "geometry.json"
     geometry.write_text('{"safeArea":0.9}\n', encoding="utf-8")
@@ -178,7 +181,9 @@ def test_cache_identity_changes_when_personal_pack_digest_changes(tmp_path, monk
     from astrid.core.element.registry import clear_default_registry_cache
 
     packs_root = tmp_path / "packs"
-    personal, effects = write_pack(packs_root, "personal")
+    personal, effects = write_pack(
+        packs_root, "personal", element_base="rendering/elements/effects",
+    )
     component = effects / "component.tsx"
     component.write_text("export const value = 1;\n")
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(packs_root))

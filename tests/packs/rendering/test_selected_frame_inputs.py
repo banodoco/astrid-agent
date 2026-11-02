@@ -11,9 +11,11 @@ from astrid.core.pack import loader
 from astrid.packs.rendering.actions.timeline_visualize import composed_frame as capture
 
 
-def write_pack(collection, owner, *, element_id="sample", enabled=True):
+def write_pack(collection, owner, *, element_id="sample", enabled=True,
+               element_base="elements/effects"):
     pack = collection / owner
-    element = pack / "elements/effects" / element_id
+    prefix = f"{element_base}/{element_id}"
+    element = pack / prefix
     element.mkdir(parents=True)
     (element / "component.tsx").write_text("export const value = 1;\n")
     (element / "geometry.json").write_text('{"safeArea":0.9}\n')
@@ -22,7 +24,6 @@ def write_pack(collection, owner, *, element_id="sample", enabled=True):
         "id": element_id, "kind": "effect", "runtime": {"adapter": "remotion"},
         "assets": {"geometry": "geometry.json"},
     }))
-    prefix = f"elements/effects/{element_id}"
     (pack / "pack.yaml").write_text(json.dumps({
         "schema_version": 3, "id": owner, "name": owner, "version": "1.0.0",
         "status": "active", "documentation": {"kind": "none", "reason": "Test fixture."},
