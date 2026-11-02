@@ -1867,40 +1867,62 @@ def test_retain_named_evidence_stages_nested_release0_owner_assertion_only(tmp_p
     assert {path.name for path in staged.iterdir()} == {journey.OWNER_ASSERTION_SNAPSHOT}
 
 
-def test_windows_pack_host_readiness_capture_is_retained_and_receipted(tmp_path, monkeypatch):
+def test_windows_release1_task_failure_retains_nested_pack_host_readiness_diagnostics(tmp_path, monkeypatch):
+    """Exercise the nested Release-1 task failure path used by the hosted row."""
+    from scripts import journey_version_jumps as jumps
+
     run_root = tmp_path / "run"
-    evidence = run_root / "evidence" / "fresh-install"
+    evidence = run_root / "evidence" / "release0-to-release1"
     evidence.mkdir(parents=True)
-    journey.write_json(evidence / "journey-result.json", {"status": "fail", "scenario": "fresh-install"})
-    journey.write_json(evidence / "pack-host-readiness-first-failed-poll.json", {
-        "schema_version": 1, "observation": "first-failed-poll", "health": {"status": "ok"},
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
     })
-    (evidence / "pack-host-readiness-first-failed-poll-service-pack-host.log").write_text(
-        "first service error\n", encoding="utf-8",
+    data = run_root / "data"
+    (data / "logs").mkdir(parents=True)
+    (data / "logs" / "service-pack-host.log").write_text(
+        "api_key=not-for-receipt\nlaunch failed\n", encoding="utf-8",
     )
-    (evidence / "unrelated-secret.txt").write_text("must not stage", encoding="utf-8")
     monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey.windows, "data_root", lambda: data)
+    monkeypatch.setattr(journey.windows, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current", "services": [{
+            "name": "pack-host", "state": "failed", "last_exit": 23,
+            "restart_count": 4, "reason": "launch_failed",
+        }],
+    })
+    monkeypatch.setattr(journey.windows, "wait_for", lambda _label, probe, **_kwargs: probe())
     monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
     monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+
+    nested = evidence / "release1-working-task"
+    with pytest.raises(RuntimeError, match="pack-host reached terminal failed state"):
+        jumps.task_after_update({}, nested, "tst-m4-3b-release0")
+    assert (nested / "pack-host-readiness-first-failed-poll.json").is_file()
+    (nested / "unrelated-secret.txt").write_text("must not stage", encoding="utf-8")
 
     journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
 
     staged = run_root / "evidence-upload" / "before-cleanup"
-    assert (staged / "pack-host-readiness-first-failed-poll.json").is_file()
-    assert (staged / "pack-host-readiness-first-failed-poll-service-pack-host.log").read_text() == (
-        "first service error\n"
-    )
+    assert (staged / "runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log").is_file()
+    assert (staged / "runtime-service-service-pack-host-readiness-first-failed-poll-service-pack-host.log").read_text() == (
+        "api_key=<redacted>\nlaunch failed\n")
     assert not (staged / "unrelated-secret.txt").exists()
     receipt = journey.read_json(staged / "journey-result.json")
-    assert receipt["failure_diagnostics"]["before-cleanup"]["pack_host_readiness"] == [
-        {
-            "observation": "first-failed-poll", "status": "captured",
-            "path": "evidence-upload/before-cleanup/pack-host-readiness-first-failed-poll.json",
-            "capture_status": "observed",
-        },
-        {"observation": "first-service-exit", "status": "unavailable", "path": None},
-        {"observation": "definitive-failure", "status": "unavailable", "path": None},
+    captured = receipt["failure_diagnostics"]["before-cleanup"]["pack_host_readiness"]
+    assert [(row["observation"], row["status"], row["capture_status"]) for row in captured] == [
+        ("first-failed-poll", "captured", "observed"),
+        ("first-service-exit", "captured", "observed"),
+        ("definitive-failure", "captured", "observed"),
     ]
+    first = captured[0]
+    assert first["path"] == (
+        "evidence-upload/before-cleanup/"
+        "runtime-service-service-pack-host-readiness-first-failed-poll-manifest.log")
+    assert first["source_path"] == "release1-working-task/pack-host-readiness-first-failed-poll.json"
+    assert first["capture"]["health"]["pack_host"]["last_exit"] == 23
+    assert first["capture"]["logs"][0]["retained_evidence_path"] == (
+        "evidence-upload/before-cleanup/"
+        "runtime-service-service-pack-host-readiness-first-failed-poll-service-pack-host.log")
 
 
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
