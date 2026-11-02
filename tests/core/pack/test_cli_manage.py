@@ -246,7 +246,7 @@ def test_changed_folder_after_consent_is_rejected(tmp_path: Path, monkeypatch, c
     assert "changed after consent" in capsys.readouterr().err
 
 
-def test_core_id_collision_is_rejected_even_with_user_pin(tmp_path: Path, monkeypatch) -> None:
+def test_core_id_collision_is_rejected_even_with_user_pin(tmp_path: Path, monkeypatch, capsys) -> None:
     from astrid.core.pack import loader
     from astrid.core.pack._common import PackValidationError
     from astrid.core.pack.discovery import discover_pack_metadata
@@ -268,6 +268,7 @@ def test_core_id_collision_is_rejected_even_with_user_pin(tmp_path: Path, monkey
     from astrid.core.pack.cli import main as packs_cli_main
 
     assert packs_cli_main(["list"]) != 0
+    assert "conflicts with a core pack" in capsys.readouterr().err
 
 
 def test_default_personal_pack_keeps_identity_with_single_and_multiple_extra_roots(
