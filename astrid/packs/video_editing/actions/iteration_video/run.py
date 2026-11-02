@@ -29,7 +29,7 @@ from astrid.packs.video_editing.shared.iteration_inputs import (
 
 # Reuse the migrated offline action, never the historical orchestrator.
 with canonical_runtime_entrypoint("iteration.assemble"):
-    from astrid.packs.iteration.actions.assemble.run import assemble_iteration
+    from astrid.packs.iteration.api import assemble_iteration
 
 
 class IterationVideoError(RuntimeError):

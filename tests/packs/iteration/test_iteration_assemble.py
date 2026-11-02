@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.iteration.actions.assemble import run as assemble
+from astrid.packs.iteration.api import AssembleError, assemble_iteration
 
 
 RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FG0"
@@ -15,7 +15,7 @@ def test_assemble_emits_iteration_and_render_equivalent_hype_files(tmp_path: Pat
     prepare_dir = _write_prepare_outputs(tmp_path, data_quality=0.95)
     out_dir = tmp_path / "assembled"
 
-    result = assemble.assemble_iteration(
+    result = assemble_iteration(
         prepare_dir=prepare_dir,
         out_path=out_dir,
         repo_root=tmp_path,
@@ -41,7 +41,7 @@ def test_style_audio_and_mode_behavior(tmp_path: Path) -> None:
     prepare_dir = _write_prepare_outputs(tmp_path, data_quality=0.95)
     out_dir = tmp_path / "assembled"
 
-    assemble.assemble_iteration(
+    assemble_iteration(
         prepare_dir=prepare_dir,
         out_path=out_dir,
         repo_root=tmp_path,
@@ -53,17 +53,17 @@ def test_style_audio_and_mode_behavior(tmp_path: Path) -> None:
     assert manifest["assembly"]["style_source"] == "theme"
     assert manifest["assembly"]["direction_label"] == "kept as label"
     assert manifest["assembly"]["audio_bed"] == "iterations-as-bed"
-    with pytest.raises(assemble.AssembleError, match="only --mode chaptered"):
-        assemble.assemble_iteration(prepare_dir=prepare_dir, out_path=tmp_path / "bad", repo_root=tmp_path, mode="parallel")
-    with pytest.raises(assemble.AssembleError, match="never generates music"):
-        assemble.assemble_iteration(prepare_dir=prepare_dir, out_path=tmp_path / "bad2", repo_root=tmp_path, audio_bed="generated_music")
+    with pytest.raises(AssembleError, match="only --mode chaptered"):
+        assemble_iteration(prepare_dir=prepare_dir, out_path=tmp_path / "bad", repo_root=tmp_path, mode="parallel")
+    with pytest.raises(AssembleError, match="never generates music"):
+        assemble_iteration(prepare_dir=prepare_dir, out_path=tmp_path / "bad2", repo_root=tmp_path, audio_bed="generated_music")
 
 
 def test_assemble_outputs_do_not_depend_on_deferred_preview_modes(tmp_path: Path) -> None:
     prepare_dir = _write_prepare_outputs(tmp_path, data_quality=0.95)
     out_dir = tmp_path / "assembled"
 
-    assemble.assemble_iteration(prepare_dir=prepare_dir, out_path=out_dir, repo_root=tmp_path)
+    assemble_iteration(prepare_dir=prepare_dir, out_path=out_dir, repo_root=tmp_path)
 
     combined = "\n".join(path.read_text(encoding="utf-8") for path in out_dir.glob("*.json"))
     assert "preview_modes" not in combined
@@ -99,7 +99,7 @@ def test_assemble_materializes_runtime_object_output_before_rendering(tmp_path: 
     }
     quality = {"schema_version": 1, "target_run_id": RUN_ID, "data_quality": 1.0}
 
-    result = assemble.assemble_iteration(
+    result = assemble_iteration(
         out_path=tmp_path / "assembled",
         repo_root=tmp_path,
         input_manifest=manifest,
@@ -136,7 +136,7 @@ def test_assemble_degrades_explicitly_when_runtime_object_cannot_be_materialized
     }
     quality = {"schema_version": 1, "target_run_id": RUN_ID, "data_quality": 1.0}
 
-    result = assemble.assemble_iteration(
+    result = assemble_iteration(
         out_path=tmp_path / "assembled",
         repo_root=tmp_path,
         input_manifest=manifest,
@@ -190,7 +190,7 @@ def test_assemble_writes_universal_result_manifest(tmp_path: Path) -> None:
     prepare_dir = _write_prepare_outputs(tmp_path, data_quality=0.95)
     out_dir = tmp_path / "assembled"
 
-    result = assemble.assemble_iteration(
+    result = assemble_iteration(
         prepare_dir=prepare_dir,
         out_path=out_dir,
         repo_root=tmp_path,

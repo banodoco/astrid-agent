@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.packs.iteration.actions.assemble import run as assemble
+from astrid.packs.iteration.api import AssembleError, assemble_iteration
 
 
 UNRESOLVED_RUN_ID = "01ARZ3NDEKTSV4RRFFQ69G5FH0"
@@ -14,8 +14,8 @@ def test_quality_floor_refuses_before_adapter_files_and_names_only_unresolved(tm
     prepare_dir = _write_low_quality_prepare(tmp_path)
     out_dir = tmp_path / "assembled"
 
-    with pytest.raises(assemble.AssembleError) as raised:
-        assemble.assemble_iteration(prepare_dir=prepare_dir, out_path=out_dir, repo_root=tmp_path)
+    with pytest.raises(AssembleError) as raised:
+        assemble_iteration(prepare_dir=prepare_dir, out_path=out_dir, repo_root=tmp_path)
 
     message = str(raised.value)
     assert "data_quality 0.500" in message
@@ -31,7 +31,7 @@ def test_quality_floor_force_writes_outputs_and_logs_forced(tmp_path: Path) -> N
     prepare_dir = _write_low_quality_prepare(tmp_path)
     out_dir = tmp_path / "assembled"
 
-    assemble.assemble_iteration(prepare_dir=prepare_dir, out_path=out_dir, repo_root=tmp_path, force=True)
+    assemble_iteration(prepare_dir=prepare_dir, out_path=out_dir, repo_root=tmp_path, force=True)
 
     manifest = json.loads((out_dir / "iteration.manifest.json").read_text(encoding="utf-8"))
     quality = json.loads((out_dir / "iteration.quality.json").read_text(encoding="utf-8"))
