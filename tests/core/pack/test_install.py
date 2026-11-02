@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from astrid.core.pack.identity import pack_digest, read_pin, write_pin
-from astrid.core.pack.install import PackInstallError, install_pack
+from astrid.core.pack.install import PackInstallError, PublicationPolicy, install_pack
 from astrid.core.pack.personal import ensure_personal_pack
 
 
@@ -583,3 +583,115 @@ def test_host_build_outputs_publish_even_when_source_and_pin_are_unchanged(repo,
     assert install(repo, root, before_swap=build).changed
     assert (root / "hello_ext/.build/entry.js").read_text() == "// verified host-generated fixture\n"
     assert read_pin(root / "hello_ext/PIN")["digest"] == pack_digest(root / "hello_ext")
+
+
+@pytest.mark.parametrize("source_kind", ["git", "folder", "reserved"])
+def test_selected_install_never_reads_or_enumerates_bundled_siblings(repo, root, source_kind):
+    # Observe real filesystem edges in a fresh process. The audit is installed
+    # after imports, so it measures installation rather than Python loading.
+    script = """
+import json, os, sys
+from pathlib import Path
+import astrid.core.pack.install as installer
+bundled = Path(installer.__file__).resolve().parents[2] / 'packs'
+kind = sys.argv[4]
+pack_id = 'generation' if kind == 'reserved' else 'hello_ext'
+selected = bundled / pack_id
+accesses = []
+def observe_path(event, raw):
+    if not isinstance(raw, (str, bytes, os.PathLike)):
+        return
+    path = Path(os.fsdecode(raw)).absolute()
+    if path == bundled or (path.is_relative_to(bundled) and not path.is_relative_to(selected)):
+        accesses.append((event, str(path)))
+def observe(event, args):
+    if event in {'open', 'os.listdir', 'os.scandir'} and args:
+        observe_path(event, args[0])
+sys.addaudithook(observe)
+# Python has no stat audit event: these observers delegate every call to the
+# real OS operation, adding visibility without supplying filesystem answers.
+def observe_stat(operation):
+    def observed(path, *args, **kwargs):
+        observe_path(operation.__name__, path)
+        return operation(path, *args, **kwargs)
+    return observed
+os.stat = observe_stat(os.stat)
+os.lstat = observe_stat(os.lstat)
+try:
+    result = installer.install_pack(source=sys.argv[1], revision=sys.argv[2] if kind == 'git' else None,
+                                    pack_id=pack_id, packs_root=sys.argv[3], python_packages={})
+except installer.PackInstallError as error:
+    assert kind == 'reserved' and error.code == 'reserved_id', error
+else:
+    assert kind != 'reserved'
+    assert (result.path / 'payload.txt').read_text() == 'old\\n'
+assert not accesses, accesses
+print(json.dumps({'kind': kind, 'unselected_accesses': accesses}))
+"""
+    source = repo.bare if source_kind == "git" else repo.pack
+    child = subprocess.run([sys.executable, "-c", script, str(source), repo.commit, str(root), source_kind],
+                           text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    assert child.returncode == 0, child.stderr
+    assert json.loads(child.stdout) == {"kind": source_kind, "unselected_accesses": []}
+    if source_kind == "reserved":
+        assert not root.exists()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_native_publication_policy_is_bound_before_installation(repo, root, explicit):
+    script = """
+import sys
+from astrid.core.pack.install import PublicationPolicy, install_pack
+from pathlib import Path
+kwargs = {'publication': PublicationPolicy.for_platform(sys.platform)} if sys.argv[3] == 'True' else {}
+lookups = []
+def observe(event, args):
+    if event in {'ctypes.dlopen', 'ctypes.dlsym'}:
+        lookups.append(event)
+sys.addaudithook(observe)
+source, root = Path(sys.argv[1]), Path(sys.argv[2])
+first = install_pack(source=source, pack_id='hello_ext', packs_root=root, python_packages={}, **kwargs)
+old_inode = first.path.stat().st_ino
+(source / 'payload.txt').write_text('new\\n')
+updated = install_pack(source=source, pack_id='hello_ext', packs_root=root, python_packages={}, **kwargs)
+assert updated.changed and updated.path.stat().st_ino != old_inode
+assert (updated.path / 'payload.txt').read_text() == 'new\\n'
+assert not lookups, lookups
+"""
+    child = subprocess.run([sys.executable, "-c", script, str(repo.pack), str(root), str(explicit)],
+                           text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    assert child.returncode == 0, child.stderr
+    assert_clean(root)
+
+
+def test_supplied_unsupported_publication_policy_refuses_update_and_preserves_install(repo, root):
+    policy = PublicationPolicy.for_platform("unsupported")
+    first = install(repo, root, publication=policy)
+    before = snapshot(first.path)
+    inode = first.path.stat().st_ino
+    # A first rename and an unchanged install do not require directory exchange.
+    assert not install(repo, root, publication=policy).changed
+    (repo.pack / "payload.txt").write_text("new\n")
+    repo.publish()
+    with pytest.raises(PackInstallError) as failure:
+        install(repo, root, publication=policy)
+    assert failure.value.code == "atomic_swap_unsupported"
+    assert snapshot(first.path) == before
+    assert first.path.stat().st_ino == inode
+    assert_clean(root)
+    # A caller's supplied policy does not change the policy of existing callers.
+    assert install(repo, root).changed
+    assert (first.path / "payload.txt").read_text() == "new\n"
+
+
+def test_shared_publication_operations_do_not_select_platform_policy():
+    import ast
+    import inspect
+    import astrid.core.pack.install as installer
+
+    # Structural regression: the shared operations consume the chosen policy.
+    # Platform inspection and native-symbol lookup belong to construction only.
+    for operation in (installer.install_pack, installer._publish):
+        tree = ast.parse(inspect.getsource(operation))
+        attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        assert not attributes & {"platform", "CDLL", "for_platform", "renameat2", "renamex_np"}

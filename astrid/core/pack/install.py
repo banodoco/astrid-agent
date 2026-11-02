@@ -266,27 +266,64 @@ def _install_lock(root: Path):
         os.close(descriptor)
 
 
-def _publish(stage: Path, destination: Path) -> None:
-    if not destination.exists():
-        os.rename(stage, destination)
-        return
-    libc = ctypes.CDLL(None, use_errno=True)
-    if sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
-        rename = libc.renameat2
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        result = rename(-100, os.fsencode(stage), -100, os.fsencode(destination), 2)
-    elif sys.platform == "darwin" and hasattr(libc, "renamex_np"):
-        rename = libc.renamex_np
-        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        result = rename(os.fsencode(stage), os.fsencode(destination), 2)
-    else:
-        raise PackInstallError("atomic_swap_unsupported", "This platform cannot atomically exchange pack directories.")
+def _unsupported_exchange(stage: Path, destination: Path) -> None:
+    raise PackInstallError("atomic_swap_unsupported", "This platform cannot atomically exchange pack directories.")
+
+
+def _check_exchange(result: int) -> None:
     if result:
         error = ctypes.get_errno()
         code = "atomic_swap_unsupported" if error in {errno.ENOSYS, errno.EINVAL, errno.ENOTSUP} else "swap_failed"
         raise PackInstallError(code, "Atomic pack publication failed; the previous install is unchanged.")
+
+
+@dataclass(frozen=True)
+class PublicationPolicy:
+    """Trusted host directory exchange, selected once before installation.
+
+    An exchange must atomically swap both paths or raise without changing them.
+    It must leave the old destination at the stage path for installer cleanup.
+    """
+
+    exchange: Callable[[Path, Path], None]
+
+    @classmethod
+    def for_platform(cls, platform: str) -> PublicationPolicy:
+        """Bind the native operation at the composition boundary, failing closed."""
+        if platform != "darwin" and not platform.startswith("linux"):
+            return cls(_unsupported_exchange)
+        libc = ctypes.CDLL(None, use_errno=True)
+        if platform.startswith("linux") and hasattr(libc, "renameat2"):
+            rename = libc.renameat2
+            rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+
+            def exchange(stage: Path, destination: Path) -> None:
+                _check_exchange(rename(-100, os.fsencode(stage), -100, os.fsencode(destination), 2))
+
+            return cls(exchange)
+        if platform == "darwin" and hasattr(libc, "renamex_np"):
+            rename = libc.renamex_np
+            rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+
+            def exchange(stage: Path, destination: Path) -> None:
+                _check_exchange(rename(os.fsencode(stage), os.fsencode(destination), 2))
+
+            return cls(exchange)
+        return cls(_unsupported_exchange)
+
+
+# Existing callers share the policy constructed for this host. Callers with
+# another publication contract can supply their own immutable policy explicitly.
+_PUBLICATION = PublicationPolicy.for_platform(sys.platform)
+
+
+def _publish(stage: Path, destination: Path, *, publication: PublicationPolicy) -> None:
+    if not destination.exists():
+        os.rename(stage, destination)
+        return
+    publication.exchange(stage, destination)
 
 
 def _sync_tree(root: Path) -> None:
@@ -309,7 +346,8 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                  release_pins: Mapping[str, PinFacts] | None = None,
                  import_contract: ImportContract | None = None,
                  python_packages: Mapping[str, str] | None = None,
-                 before_swap: Callable[[Path], None] | None = None) -> InstallResult:
+                 before_swap: Callable[[Path], None] | None = None,
+                 publication: PublicationPolicy = _PUBLICATION) -> InstallResult:
     """Stage, verify and atomically install a pack without executing its code.
 
     ``revision=None`` copies a local folder as UNPINNED; otherwise source is a
@@ -324,12 +362,13 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
     journaling, browser-output verification and inventory refresh are M1-16.
     Crash residues are hidden under .install-* and are never auto-published.
     Atomic replacement is supported on Linux/macOS; others fail closed.
+    ``publication`` supplies a trusted host exchange policy; the default is
+    constructed once for the host when this module is loaded.
     """
     if not isinstance(pack_id, str) or not _ID.fullmatch(pack_id):
         raise PackInstallError("invalid_id", "Pack id must be a safe Python identifier.")
     bundled_root = Path(__file__).resolve().parents[2] / "packs"
-    bundled_ids = {p.name for p in bundled_root.iterdir() if p.is_dir()}
-    if pack_id in {"personal", "core", "astrid"} | bundled_ids:
+    if pack_id in {"personal", "core", "astrid"} or (bundled_root / pack_id).is_dir():
         raise PackInstallError("reserved_id", "The personal and core pack identities cannot be installed over.")
     _relative(subpath, root_ok=True)
     if expected_digest is not None and not _DIGEST.fullmatch(expected_digest):
@@ -421,7 +460,7 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
                     if read_pin(destination / "PIN") == pin and pack_digest(destination) == digest:
                         return InstallResult(pack_id, destination, commit, digest, origin, False)
                 _sync_tree(stage)
-                _publish(stage, destination)
+                _publish(stage, destination, publication=publication)
                 # Publication succeeded. Housekeeping cannot turn a committed
                 # install into a reported failure (or roll it back piecemeal).
                 return result
@@ -433,4 +472,4 @@ def install_pack(*, source: str | Path, pack_id: str, revision: str | None = Non
         raise PackInstallError("install_failed", "Pack staging or validation failed; the previous install is unchanged.") from exc
 
 
-__all__ = ["install_pack", "InstallResult", "PackInstallError"]
+__all__ = ["install_pack", "InstallResult", "PackInstallError", "PublicationPolicy"]
