@@ -4653,6 +4653,39 @@ def _run_source_digest(record: "CapabilityRecord") -> str:
     return _source_digest_for_roots(_admitted_source_roots(record.source_root, record.definition))
 
 
+def _run_pack_provenance(record: Any, observed_digest: str | None) -> list[dict[str, Any]] | None:
+    """Build receipt provenance from the selected pack and its start digest."""
+    metadata = record.definition.metadata
+    if not isinstance(metadata.get("action_invocation"), Mapping):
+        return None
+    pack_id = metadata.get("source_pack")
+    raw_root = metadata.get("pack_root")
+    if not isinstance(pack_id, str) or not pack_id or not isinstance(raw_root, str) or not raw_root:
+        return None
+    if not isinstance(observed_digest, str):
+        return None
+    pack_root = Path(raw_root).expanduser().resolve()
+    pin_path = pack_root / "PIN"
+    if pin_path.exists():
+        from astrid.core.pack.identity import read_pin
+
+        pin = read_pin(pin_path)
+        origin = pin["origin"]
+        installed_digest = pin["digest"]
+    else:
+        # Folder-selected packs may predate PIN creation; they remain visibly
+        # unpinned while still recording the observed run tree.
+        origin = "folder"
+        installed_digest = None
+    return [{
+        "pack_id": pack_id,
+        "origin": origin,
+        "installed_digest": installed_digest,
+        "observed_digest": observed_digest,
+        "modified": installed_digest != observed_digest if installed_digest is not None else None,
+    }]
+
+
 def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[str, Any]) -> None:
     """Tie Python source authority to the exact admitted whole-pack root."""
     metadata = definition.get("metadata", {})
@@ -10385,6 +10418,9 @@ class GenericPackHost:
             resolved_options=options, cost=cost, warnings=warnings,
             settled=terminal.get("settled"), settlement=terminal.get("settlement"),
             effect=terminal.get("effect"),
+            pack_provenance=_run_pack_provenance(
+                record, terminal.get("run_source_digest"),
+            ) if record is not None else None,
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
@@ -10914,6 +10950,7 @@ class GenericPackHost:
 
         _terminal["record"] = record
         run_source_digest = _run_source_digest(record)
+        _terminal["run_source_digest"] = run_source_digest
 
         def evidence_failure_diagnostic(error: BaseException) -> dict[str, Any] | None:
             if not isinstance(error, EvidenceCapError):
