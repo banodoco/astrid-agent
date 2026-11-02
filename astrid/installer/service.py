@@ -614,6 +614,11 @@ class Service:
                 return None
             raise
         identity, observation = self._launchd_stop_identity(value, data)
+        if expected_identity is not None:
+            expected_static = dict(expected_identity)
+            expected_static.pop("live_owner", None)
+            if identity != expected_static:
+                raise ValueError("The loaded launchd service changed before bootout.")
         if recovery_snapshot is not None:
             original, _mode = self._launchd_recovery_bytes(recovery_snapshot, data)
             if identity["plist"] != original:
@@ -624,8 +629,6 @@ class Service:
         identity["live_owner"] = self._launchd_live_pid_is_bound(
             identity, observation, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
         )
-        if expected_identity is not None and identity != expected_identity:
-            raise ValueError("The loaded launchd service changed before bootout.")
         return identity
 
     def bootout_admitted_launchd(self, data: Path, *, owner_pid: int | None,
