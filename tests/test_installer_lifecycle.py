@@ -2169,7 +2169,8 @@ def test_stop_does_not_treat_malformed_or_empty_discovery_as_removed(tmp_path, m
 
 def test_stop_treats_discovery_removed_during_read_as_stopped(tmp_path, monkeypatch):
     backend, data, discovery = _runtime_with_discovery(tmp_path, monkeypatch, 7, "birth-1")
-    original_read_bytes = Path.read_bytes
+    bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+    original_read = bootstrap._read_json_regular
     service_stopped = []
 
     def remove_before_read(path, *args, **kwargs):
@@ -2177,9 +2178,10 @@ def test_stop_treats_discovery_removed_during_read_as_stopped(tmp_path, monkeypa
             path.unlink()
             path.with_name("instance.lock").unlink()
             raise FileNotFoundError(path)
-        return original_read_bytes(path, *args, **kwargs)
+        return original_read(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", remove_before_read)
+    # Runtime reads support files with its no-follow reader, not Path.read_bytes.
+    monkeypatch.setattr(bootstrap, "_read_json_regular", remove_before_read)
     backend.runtime = lambda *_args, **_kwargs: pytest.fail("removed discovery needs no Runtime down")
     backend.service.stop = lambda: service_stopped.append(True)
 
