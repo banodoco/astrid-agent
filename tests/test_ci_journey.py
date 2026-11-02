@@ -746,3 +746,88 @@ def test_windows_preflight_checkpoints_launch_and_unexpected_errors(tmp_path, mo
     assert "powershell unavailable" in calls[1]["origin"]["error"]
     assert record["query"]["classification"] == "error"
     assert "unexpected capture failure" in record["query"]["error"]
+
+
+def test_windows_preflight_missing_leg_regression(tmp_path, monkeypatch):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout=b'{"status":"absent"}', stderr=b"")
+    monkeypatch.setattr(windows.subprocess, "run", run)
+    assert windows.scheduled_task_preflight()["status"] == "absent"
+    record = json.loads((tmp_path / "preflight-scheduled-task-manager-prerequisite.json").read_text())
+    assert record["argv"] == calls[0]
+    assert record["exit_code"] == 0
+    assert windows.SCHEDULED_TASK_PREFLIGHT == calls[0][-1]
+
+
+def test_windows_preflight_capture_failure_preserves_traceback_and_partial_streams(tmp_path, monkeypatch):
+    import subprocess
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    def fail(argv, **kwargs):
+        checkpoint = json.loads((tmp_path / "preflight-scheduled-task-manager-prerequisite.json").read_text())
+        assert checkpoint["argv"] == argv and checkpoint["exit_code"] is None
+        raise subprocess.TimeoutExpired(argv, 30, output=b"partial out", stderr=b"partial err")
+    monkeypatch.setattr(windows.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+        windows.scheduled_task_preflight()
+    record = json.loads((tmp_path / "preflight-scheduled-task-manager-prerequisite.json").read_text())
+    assert record["stdout"] == "partial out" and record["stderr"] == "partial err"
+    assert record["exit_code"] is None and "Traceback" in record["process_error"]
+    assert "TimeoutExpired" in record["process_error"]
+
+
+def test_windows_diagnostics_timeout_retains_partial_streams_and_traceback(tmp_path, monkeypatch):
+    import subprocess
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    def fail(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 30, output=b"partial out", stderr=b"partial err")
+    monkeypatch.setattr(windows.subprocess, "run", fail)
+    with pytest.raises(RuntimeError):
+        windows.scheduled_task_diagnostics()
+    record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    for item in record.values():
+        assert item["stdout"] == "partial out" and item["stderr"] == "partial err"
+        assert item["exit_code"] is None and "Traceback" in item["error"]
+
+
+def test_windows_diagnostics_workflow_retains_launch_and_original_command():
+    workflow = (journey.ROOT / ".github/workflows/journey.yml").read_text()
+    step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split(
+        "      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[0]
+    assert "original_command = $original" in step and "w.scheduled_task_preflight()" in step
+    assert "w.scheduled_task_diagnostics()" in step
+    assert "w.scheduled_task_preflight(os.environ[" in step
+    assert "Get-Content -LiteralPath $stdout" in step and "Get-Content -LiteralPath $stderr" in step
+    assert step.index("Save-PreflightLaunch\n          try") < step.index("$process = Start-Process")
+    for part in ("$PSVersionTable.PSVersion", "$command.Module.Path", "-RedirectStandardOutput $stdout",
+                 "-RedirectStandardError $stderr", "$process.ExitCode", "$_.Exception.ToString()", "finally {"):
+        assert part in step
+    upload = workflow.split("      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[1].split("      - name:", 1)[0]
+    assert "if: always()" in upload and "journey-manager-${{ matrix.job_id }}" in upload
+
+
+@pytest.mark.parametrize("module_source, expected", [
+    ("raise ImportError('import sentinel')\n", "ImportError: import sentinel"),
+    ("def scheduled_task_diagnostics():\n    print('partial stdout', flush=True)\n    raise RuntimeError('preflight sentinel')\ndef scheduled_task_preflight(leg):\n    print('preflight leg:', leg, flush=True)\n", "RuntimeError: preflight sentinel"),
+])
+def test_windows_diagnostics_expression_preserves_python_traceback(tmp_path, module_source, expected):
+    import subprocess
+    import sys
+    workflow = (journey.ROOT / ".github/workflows/journey.yml").read_text()
+    code = workflow.split('          $code = "', 1)[1].split('"\n', 1)[0]
+    package = tmp_path / "scripts"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "ci_windows_journey.py").write_text(module_source)
+    env = dict(os.environ, PYTHONPATH=str(tmp_path), RUNNER_TEMP=str(tmp_path), JOURNEY_LEG="release0-to-release1")
+    result = subprocess.run([sys.executable, "-u", "-c", code], cwd=tmp_path,
+                            env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and "Traceback" in result.stderr and expected in result.stderr
+    if "preflight sentinel" in expected:
+        assert "partial stdout" in result.stdout
+        assert "preflight leg: release0-to-release1" in result.stdout

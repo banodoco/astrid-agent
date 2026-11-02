@@ -670,9 +670,9 @@ def test_direct_windows_workflow_preflight_invocation(tmp_path, monkeypatch, cap
     step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split(
         "      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[0]
     assert "JOURNEY_LEG: ${{ matrix.leg }}" in step
-    assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in step
-    command = next(line.strip() for line in step.splitlines() if line.strip().startswith('python -c '))
-    code = command.removeprefix('python -c "').removesuffix('"')
+    assert "if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }" in step
+    code = step.split('          $code = "', 1)[1].split('"\n', 1)[0]
+    monkeypatch.setattr(journey, "scheduled_task_diagnostics", lambda: None)
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("JOURNEY_LEG", "release0-to-release1")
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
@@ -718,7 +718,7 @@ def test_windows_scheduled_task_preflight_records_timeout_output(tmp_path, monke
     evidence = json.loads((tmp_path / "preflight-scheduled-task-fresh-install.json").read_text())
     assert evidence["status"] == "error" and evidence["exit_code"] is None
     assert evidence["stdout"] == "partial output" and evidence["stderr"] == "partial error"
-    assert evidence["process_error"].startswith("TimeoutExpired:")
+    assert "Traceback" in evidence["process_error"] and "TimeoutExpired:" in evidence["process_error"]
 
 
 def test_combined_windows_preflight_fails_closed_at_either_checkpoint(tmp_path, monkeypatch):

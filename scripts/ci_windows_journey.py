@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.request
 
 
@@ -104,15 +105,15 @@ try {
 """
 
 
-def scheduled_task_preflight(leg):
+def scheduled_task_preflight(leg="manager-prerequisite"):
     """Record the query, its process result, and fail closed on malformed output."""
     env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
-    evidence = {"status": "error", "exit_code": None, "stdout": "", "stderr": ""}
+    argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", SCHEDULED_TASK_PREFLIGHT]
+    evidence = {"status": "error", "argv": argv, "exit_code": None, "stdout": "", "stderr": ""}
+    save(f"preflight-scheduled-task-{leg}.json", evidence)
+    result = None
     try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", SCHEDULED_TASK_PREFLIGHT],
-            env=env, capture_output=True, timeout=30, check=False,
-        )
+        result = subprocess.run(argv, env=env, capture_output=True, timeout=30, check=False)
         evidence.update(exit_code=result.returncode,
                         stdout=result.stdout.decode("utf-8-sig", errors="replace"),
                         stderr=result.stderr.decode("utf-8-sig", errors="replace"))
@@ -133,12 +134,13 @@ def scheduled_task_preflight(leg):
                 evidence["protocol_error"] = "Unexpected query result or exit code"
         except (ValueError, TypeError):
             evidence["protocol_error"] = "Invalid query JSON"
-    except subprocess.TimeoutExpired as exc:
-        evidence["stdout"] = (exc.stdout or b"").decode("utf-8-sig", errors="replace")
-        evidence["stderr"] = (exc.stderr or b"").decode("utf-8-sig", errors="replace")
-        evidence["process_error"] = f"{type(exc).__name__}: {exc}"
-    except OSError as exc:
-        evidence["process_error"] = f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        def decoded(value):
+            return value.decode("utf-8-sig", errors="replace") if isinstance(value, bytes) else value or ""
+        evidence.update(stdout=decoded(getattr(exc, "stdout", None) or getattr(result, "stdout", None)),
+                        stderr=decoded(getattr(exc, "stderr", None) or getattr(result, "stderr", None)),
+                        exit_code=getattr(exc, "returncode", getattr(result, "returncode", None)),
+                        process_error=traceback.format_exc())
     save(f"preflight-scheduled-task-{leg}.json", evidence)
     # The named artifact boundary does not upload this file; retain the same
     # structured observation in the hosted job log as well.
@@ -183,24 +185,27 @@ def scheduled_task_diagnostics(name="preflight-scheduled-task.txt", *, timeout=3
     checkpoint()
     for label, record in records.items():
         argv = record["argv"]
+        def decoded(value):
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
         try:
             result = subprocess.run(argv, env=env, capture_output=True, encoding="utf-8",
                                     errors="replace", timeout=timeout, check=False)
             record.update(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
             record.pop("error")
         except subprocess.TimeoutExpired as exc:
-            def decoded(value):
-                return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
-            record.update(stdout=decoded(exc.stdout), stderr=decoded(exc.stderr), error="timeout")
+            record.update(stdout=decoded(exc.stdout), stderr=decoded(exc.stderr),
+                          error=traceback.format_exc())
         except Exception as exc:
-            record["error"] = f"{type(exc).__name__}: {exc}"
+            record.update(stdout=decoded(getattr(exc, "stdout", None)),
+                          stderr=decoded(getattr(exc, "stderr", None)),
+                          exit_code=getattr(exc, "returncode", None), error=traceback.format_exc())
         finally:
             if label == "query":
-                record["classification"] = ("error" if record["exit_code"] != 0 else
+                record["classification"] = ("error" if record.get("error") or record["exit_code"] != 0 else
                                             "present" if record["stdout"].strip() else "not-found")
             checkpoint()
     for label, record in records.items():
-        if record["exit_code"] != 0:
+        if record.get("error") or record["exit_code"] != 0:
             raise RuntimeError(f"{name}: {label} exit {record['exit_code']}" +
                                (f" ({record['error']})" if record.get("error") else ""))
     return records["query"]["stdout"]
