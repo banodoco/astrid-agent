@@ -53,12 +53,15 @@ def generate_video_session(
         "steps": steps,
         "loras": loras,
     }
-    clean: dict[str, Any] = {k: v for k, v in inputs.items() if v is not None}
+    # Pack defaults of "" mean "not provided" (the command path omitted them too).
+    clean: dict[str, Any] = {k: v for k, v in inputs.items() if v is not None and v != ""}
 
     # Invalid inputs raise ValueError here, before anything is submitted.
-    settings = compile_host_settings(clean)
+    compile_host_settings(clean)
 
-    evidence = session.submit(settings, timeout_seconds=timeout_seconds)
+    # The worker submits RAW inputs; the host compiles its own admitted copy and
+    # refuses any difference (review X-6, S-1).
+    evidence = session.submit(clean, timeout_seconds=timeout_seconds)
 
     try:
         result = evidence.get("result") if isinstance(evidence, Mapping) else None
@@ -84,5 +87,5 @@ def generate_video_session(
         "payload": {"wan_native": dict(evidence), "wan_mapping": mapped},
         "process_id": evidence.get("process_id"),
         "returncode": evidence.get("returncode"),
-        "output_root": output_root,
+        "output_root": str(output_root),
     }

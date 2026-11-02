@@ -1809,6 +1809,11 @@ _HOST_IDENTITY_EVIDENCE_KEYS = frozenset({
 })
 
 
+def _present_inputs(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Inputs with absent values removed: None and "" both mean not provided."""
+    return {key: value for key, value in dict(inputs).items() if value is not None and value != ""}
+
+
 class _HostManagedSessionAdapter:
     """Host side of the per-run session channel. Authority never leaves the host.
 
@@ -1823,21 +1828,22 @@ class _HostManagedSessionAdapter:
         self._profile = profile
         self._token = managed_token
         self._cancel_session = cancel_session
-        self._inputs = dict(inputs)
+        # None and "" both mean "not provided" on both sides of the comparison below.
+        self._inputs = _present_inputs(inputs)
         self._progress_path = progress_path
         self._timeout_cap = timeout_cap
         self._cancelled = cancelled
         self._submitted = False
 
     def _canonical_inputs(self, inputs: Any) -> Any:
-        return json.loads(json.dumps(inputs, sort_keys=True, default=str))
+        return json.loads(json.dumps(_present_inputs(inputs), sort_keys=True, default=str))
 
     def validate_settings(self, inputs: Mapping[str, Any]) -> None:
         """Refuse before any compile or invoke unless the worker's inputs are exactly the
         host-admitted inputs. The worker never chooses native inputs (review S-1)."""
         if not isinstance(inputs, Mapping):
             raise ValueError("inputs must be an object")
-        if self._canonical_inputs(dict(inputs)) != self._canonical_inputs(self._inputs):
+        if self._canonical_inputs(inputs) != self._canonical_inputs(self._inputs):
             raise ValueError("inputs differ from the host-admitted inputs")
         self._profile.compile_settings(dict(self._inputs))
 
@@ -10600,7 +10606,12 @@ class GenericPackHost:
 
         if stage == "evidence":
             self.managed_tool_session.adapter_for(managed_token)
-        verify_host_result(result.payload["wan_mapping"], attempt_root=output_root)
+        # A python action's return is wrapped as payload["action_result"] (runner).
+        action_result = result.payload.get("action_result") if isinstance(result.payload, Mapping) else None
+        inner = action_result.get("payload") if isinstance(action_result, Mapping) else None
+        if not isinstance(inner, Mapping) or "wan_mapping" not in inner:
+            raise HostError("wan2gp result carries no wan_mapping")
+        verify_host_result(inner["wan_mapping"], attempt_root=output_root)
 
     def run_task(
         self,
