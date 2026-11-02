@@ -168,26 +168,62 @@ def scan_packs(
         packs.append(pack)
     packs, compatibility_quarantine = _isolate_incompatible_packs(packs)
     quarantined.extend(compatibility_quarantine)
-    # Metadata decides visibility, duplicates and compatibility before full
-    # canonical admission can acquire any declared resource bytes.
-    admitted: list[PackDefinition] = []
+
+    def reject(pack: PackDefinition, exc: Exception) -> None:
+        if strict or _fail_closed(pack.root.name, required_pack_ids):
+            if isinstance(exc, PackValidationError):
+                raise exc
+            raise PackValidationError(f"{pack.root}: {exc}") from exc
+        record = QuarantinedPack(pack.id, pack.root, pack.manifest_path, str(exc))
+        quarantined.append(record)
+        _quarantine_warning(record)
+
+    # Descriptor identity is canonical admission, but it must be settled for
+    # every survivor before acquiring unrelated resource payloads. A failed
+    # dependency can then remove its dependents through the shared validator.
+    ready: list[PackDefinition] = []
     for pack in packs:
         try:
-            full_pack = load_pack_manifest(pack.manifest_path)
-            if full_pack.visibility == "hidden" and not include_hidden:
-                continue
-            admitted.append(full_pack)
+            ready.append(load_pack_metadata(pack.manifest_path, validate_descriptors=True))
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
-            if strict or _fail_closed(pack.root.name, required_pack_ids):
-                if isinstance(exc, PackValidationError):
-                    raise
-                raise PackValidationError(f"{pack.root}: {exc}") from exc
-            record = QuarantinedPack(pack.id, pack.root, pack.manifest_path, str(exc))
-            quarantined.append(record)
-            _quarantine_warning(record)
-    admitted, final_quarantine = _isolate_incompatible_packs(admitted)
+            reject(pack, exc)
+    packs, descriptor_quarantine = _isolate_incompatible_packs(ready)
+    quarantined.extend(descriptor_quarantine)
+
+    # Dependencies acquire resources first, so a subsequent I/O failure also
+    # quarantines pending dependents before their payloads are touched. The
+    # validator above owns cycle checks and bundled-pack exemptions; fallback
+    # ordering preserves those exemptions rather than adding a new validator.
+    pending = list(packs)
+    admitted: dict[str, PackDefinition] = {}
+    while pending:
+        pending_ids = {pack.id for pack in pending}
+        pack = next((
+            candidate for candidate in pending
+            if not pending_ids.intersection(candidate.dependencies.get("packs", ()))
+        ), pending[0])
+        pending.remove(pack)
+        try:
+            full_pack = load_pack_manifest(pack.manifest_path)
+        except Exception as exc:  # noqa: BLE001 - optional scan boundary
+            reject(pack, exc)
+        else:
+            if full_pack.visibility != "hidden" or include_hidden:
+                admitted[pack.id] = full_pack
+                continue
+        active, failed_dependency_quarantine = _isolate_incompatible_packs([
+            *admitted.values(), *pending,
+        ])
+        quarantined.extend(failed_dependency_quarantine)
+        active_ids = {candidate.id for candidate in active}
+        pending = [candidate for candidate in pending if candidate.id in active_ids]
+        admitted = {key: value for key, value in admitted.items() if key in active_ids}
+    # Preserve scanner order (and discovery priority), not acquisition order.
+    ordered, final_quarantine = _isolate_incompatible_packs([
+        admitted[pack.id] for pack in packs if pack.id in admitted
+    ])
     quarantined.extend(final_quarantine)
-    return PackScan(tuple(admitted), tuple(quarantined))
+    return PackScan(tuple(ordered), tuple(quarantined))
 
 
 def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
@@ -369,17 +405,22 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
     return _pack_definition(entry, manifest_path)
 
 
-def load_pack_metadata(path: str | Path, *, expected_pack_id: str | None = None) -> PackDefinition:
-    """Preflight canonical metadata without reading declared resource bytes.
+def load_pack_metadata(
+    path: str | Path, *, expected_pack_id: str | None = None,
+    validate_descriptors: bool = False,
+) -> PackDefinition:
+    """Preflight canonical metadata and paths without unrelated payload reads.
 
     This projection is only for selection. Call ``load_pack_manifest`` before
     publishing an executable pack; it owns full canonical resource validation.
+    ``validate_descriptors=True`` reads descriptor bytes for identity checks.
     """
     manifest_path = Path(path).expanduser()
     try:
         entry = read_normalize_validate(
             manifest_path, source="local", resolve_resources=False,
             expected_pack_id=expected_pack_id,
+            validate_descriptors=validate_descriptors,
         )
     except CanonicalPackValidationError as exc:
         raise PackValidationError(str(exc)) from exc

@@ -40,6 +40,7 @@ from astrid.core.pack.canonical import (
     CanonicalPackValidationError,
     ExternalPackSource,
     read_normalize_validate,
+    unsafe_pack_paths,
 )
 
 DiscoverPacksFn = Callable[..., "tuple[PackDefinition, ...]"]
@@ -69,14 +70,13 @@ def _tree_fingerprint(
     source_root: bool = False, expected_pack_id: str | None = None,
     selected_roots: frozenset[Path] = frozenset(),
 ) -> str:
-    """Fingerprint selected discovery content, including untracked resources.
+    """Fingerprint admitted declarations and narrowly defined admission inputs.
 
     Candidate manifests stay in the key so changes to admission, visibility,
-    or alternate-manifest presence invalidate discovery. Descendants are
-    included only for roots returned by full admission; hidden, quarantined,
-    duplicate, and scanner-ignored candidates contribute no payload bytes.
-    Path names/types remain inputs even for rejected candidates, so repairing
-    a missing resource or removing a forbidden symlink invalidates selection.
+    or alternate-manifest presence invalidate discovery. Only canonical
+    resource handles of returned packs grant access to payload bytes. Declared
+    path metadata observes repair/rejection transitions. The canonical whole-
+    tree symlink rule contributes unsafe paths, never undeclared file bytes.
     """
     from astrid.core.pack import loader
     from astrid.core.pack.canonical import LEGACY_MANIFEST_NAMES
@@ -117,7 +117,7 @@ def _tree_fingerprint(
         elif not stat.S_ISREG(mode):
             raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
 
-    def selected_pack(path: Path) -> PackDefinition | None:
+    def selected_pack(path: Path) -> CanonicalPackEntry | None:
         # Keep every scanner-recognized manifest name in the cache identity.
         # In particular, pack.yml appearing after a successful scan must
         # invalidate the cache so pack_manifest_path can enforce refusal.
@@ -125,31 +125,36 @@ def _tree_fingerprint(
         manifest = path / "pack.yaml"
         visit(manifest, recurse=False)
         for legacy_name in LEGACY_MANIFEST_NAMES:
-            visit(path / legacy_name, recurse=False)
+            # Canonical refusal depends on alternate presence, not its bytes.
+            visit(path / legacy_name, content=False, recurse=False)
         try:
             manifest_path = loader.pack_manifest_path(path)
             if manifest_path is None:
                 return None
-            visit(path, content=False)
-            pack = loader.load_pack_metadata(
-                manifest_path, expected_pack_id=expected_pack_id
+            # Admission's whole-tree symlink rule is a safety input, not
+            # authority to hash ordinary undeclared descendants.
+            for unsafe in unsafe_pack_paths(path):
+                visit(unsafe, content=False, recurse=False)
+            entry = read_normalize_validate(
+                manifest_path, source="local", resolve_resources=False,
+                validate_resource_paths=False, expected_pack_id=expected_pack_id,
             )
+            excluded = entry.definition.visibility == "hidden" or (
+                source_root and entry.definition.schema_version != 3
+            )
+            for declared in entry.admission_input_paths():
+                visit(declared, content=False, track_changes=not excluded, recurse=False)
         except Exception:  # Match scanner admission; its caller owns refusal/isolation.
             return None
-        if pack.visibility == "hidden" or (source_root and pack.schema_version != "3"):
+        if excluded:
             return None
-        return pack
+        return entry
 
-    def payload(path: Path) -> None:
-        for child in sorted(path.iterdir()):
-            if child.name == "pack.yaml" or child.name in LEGACY_MANIFEST_NAMES:
-                continue
-            if child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
-                continue
-            visit(child)
+    def payload(entry: CanonicalPackEntry) -> None:
+        for handle in entry.resource_metadata():
+            visit(handle.resolved, content=handle.file_kind == "file", recurse=False)
 
     def selected_collection(path: Path, *, source: bool) -> None:
-        candidates = []
         for child in sorted(path.iterdir()):
             if child.name.startswith(".") or child.name == "__pycache__":
                 continue
@@ -168,34 +173,14 @@ def _tree_fingerprint(
                 continue
             if not child.is_dir():
                 continue
-            pack = selected_pack(child)
-            if pack is not None:
-                candidates.append(pack)
-        # The source scanner refuses duplicate IDs. In that case normal
-        # discovery must run and refuse; no candidate payload needs hashing.
-        ids = [pack.id for pack in candidates]
-        duplicates = source and len(ids) != len(set(ids))
-        if duplicates:
-            return
-        if source:
-            candidates, _ = loader._isolate_incompatible_packs(candidates)
-        seen: set[str] = set()
-        for pack in candidates:
-            if pack.id in seen:
-                continue
-            seen.add(pack.id)
-            if pack.root in selected_roots:
-                payload(pack.root)
-            else:
-                visit(pack.root, content=False, track_changes=True)
+            entry = selected_pack(child)
+            if entry is not None and entry.root in selected_roots:
+                payload(entry)
 
     if pack_root:
-        pack = selected_pack(root)
-        if pack is not None:
-            if root in selected_roots:
-                payload(root)
-            else:
-                visit(root, content=False, track_changes=True)
+        entry = selected_pack(root)
+        if entry is not None and entry.root in selected_roots:
+            payload(entry)
     elif pack_collection:
         add(os.fsencode(root.relative_to(root)))
         selected_collection(root, source=source_root)
@@ -257,7 +242,7 @@ def _discovery_fingerprint(
             )
             for root, is_collection, is_pack, is_source, expected_pack_id in dict.fromkeys(roots)
         )
-    except OSError:
+    except (OSError, CanonicalPackValidationError):
         return None  # Unreadable/racing inputs use ordinary admission and its errors.
     return (str(project_root), tuple(extra_pack_roots), raw_env, managed_inventory.identity, trees)
 

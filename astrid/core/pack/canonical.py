@@ -385,6 +385,29 @@ class CanonicalPackEntry:
     def resource_projection(self) -> ResourceProjection:
         return ResourceProjection(self.id, self.resources)
 
+    def resource_metadata(self) -> tuple[ResourceHandle, ...]:
+        """Resolve the canonical resource closure without acquiring file bytes."""
+        return _resolve_resources(self.root, self.definition, read_payload=False)
+
+    def admission_input_paths(self) -> tuple[Path, ...]:
+        """Declared path/type inputs, including missing paths needed for repair.
+
+        Only legacy content directories select descendants. Other directory
+        declarations are opaque handles, exactly as in resource admission.
+        """
+        excluded = {item.path for item in self.definition.authoring_only}
+        paths: set[Path] = set()
+        for path, role in _declared_paths(self.definition):
+            if role.startswith("authoring_only:") or _authoring_path(path, excluded):
+                continue
+            paths.add(self.root / path)
+            if role.startswith("content:"):
+                paths.update(
+                    child for child in _content_descendants(self.root / path)
+                    if not _authoring_path(child.relative_to(self.root).as_posix(), excluded)
+                )
+        return tuple(sorted(paths))
+
     def documentation_projection(self) -> DocumentationProjection:
         required = set(self.definition.agent.get("required_context", ()))
         return DocumentationProjection(
@@ -758,6 +781,14 @@ def _resource_handle(
     )
 
 
+def _authoring_path(path: str, excluded: set[str]) -> bool:
+    return any(path == item or path.startswith(item + "/") for item in excluded)
+
+
+def _content_descendants(path: Path) -> tuple[Path, ...]:
+    return tuple(sorted(path.rglob("*"), key=lambda child: child.as_posix()))
+
+
 def _resolve_resources(
     root: Path, definition: CanonicalPackDefinition, *, read_payload: bool = True,
 ) -> tuple[ResourceHandle, ...]:
@@ -766,7 +797,7 @@ def _resolve_resources(
     for path, role in _declared_paths(definition):
         if role.startswith("authoring_only:"):
             continue
-        if any(path == x or path.startswith(x + "/") for x in excluded):
+        if _authoring_path(path, excluded):
             raise CanonicalPackValidationError(
                 f"runtime resource {path!r} overlaps authoring-only path"
             )
@@ -778,16 +809,14 @@ def _resolve_resources(
         if definition.schema_version == 3 and file_role and handle.file_kind != "file":
             raise CanonicalPackValidationError(f"{role} must name a regular file: {path!r}")
         if role.startswith("content:"):
-            for child in sorted(handle.resolved.rglob("*"), key=lambda p: p.as_posix()):
+            for child in _content_descendants(handle.resolved):
                 rel = child.relative_to(root).as_posix()
-                if child.is_symlink() or any(rel == x or rel.startswith(x + "/") for x in excluded):
-                    raise (
-                        CanonicalPackValidationError(
-                            f"resource {rel!r} contains a symlink or authoring overlap"
-                        )
-                        if child.is_symlink()
-                        else None
+                if child.is_symlink():
+                    raise CanonicalPackValidationError(
+                        f"resource {rel!r} contains a symlink or authoring overlap"
                     )
+                if _authoring_path(rel, excluded):
+                    continue
                 if child.is_file():
                     handles[rel] = _resource_handle(root, rel, role, read_payload=False)
         else:
@@ -821,20 +850,33 @@ def _validate_path(manifest_path: str | Path) -> Path:
     return path
 
 
+def unsafe_pack_paths(root: Path) -> tuple[Path, ...]:
+    """Whole-tree safety inputs; ordinary descendant content is not selected.
+
+    Canonical admission forbids links anywhere in the pack, including outside
+    declared resources. Cache invalidation must observe this same safety rule.
+    """
+    return tuple(sorted(
+        child for child in root.rglob("*")
+        if child.is_symlink() or not child.resolve(strict=False).is_relative_to(root)
+    ))
+
+
 def _admit(
     manifest_path: str | Path,
     *,
     source: str,
     resolve_resources: bool,
     expected_pack_id: str | None = None,
+    validate_resource_paths: bool = True,
+    validate_descriptors: bool = False,
 ) -> CanonicalPackEntry:
     path = _validate_path(manifest_path)
     root = path.parent.resolve()
-    for child in root.rglob("*"):
-        if child.is_symlink() or not child.resolve(strict=False).is_relative_to(root):
-            raise CanonicalPackValidationError(
-                f"pack tree contains symlink or escaping path: {child}"
-            )
+    for child in unsafe_pack_paths(root):
+        raise CanonicalPackValidationError(
+            f"pack tree contains symlink or escaping path: {child}"
+        )
     legacy = sorted(
         name
         for name in LEGACY_MANIFEST_NAMES
@@ -867,8 +909,9 @@ def _admit(
             default=list,
         ).encode()
     ).hexdigest()
-    _resolve_resources(root, definition, read_payload=False)
-    if resolve_resources and definition.schema_version == 3:
+    if resolve_resources or validate_resource_paths or validate_descriptors:
+        _resolve_resources(root, definition, read_payload=False)
+    if (resolve_resources or validate_descriptors) and definition.schema_version == 3:
         _validate_rendering_identities(root, definition)
     resources = _resolve_resources(root, definition) if resolve_resources else ()
     manifest = ResourceHandle(
@@ -895,11 +938,17 @@ def read_normalize_validate(
     source: ExternalPackSource | str,
     resolve_resources: bool = True,
     expected_pack_id: str | None = None,
+    validate_resource_paths: bool = True,
+    validate_descriptors: bool = False,
 ) -> CanonicalPackEntry:
     """Validate metadata and paths; optionally read and validate resource bytes.
 
-    With ``resolve_resources=False`` this is a selection preflight, not full
-    admission: descriptor identities and resource digests remain unvalidated.
+    With ``resolve_resources=False`` this is a selection preflight; resource
+    digests remain unvalidated and absent from the returned entry.
+    ``validate_descriptors`` checks descriptor identities without hashing other
+    resources. Disabling ``validate_resource_paths`` in metadata-only mode is
+    solely for observing declared admission/repair inputs, never publication.
+    Full resource admission always validates paths and descriptor identities.
     """
     value = source.value if isinstance(source, ExternalPackSource) else source
     if value not in {item.value for item in ExternalPackSource}:
@@ -911,6 +960,8 @@ def read_normalize_validate(
         source=value,
         resolve_resources=resolve_resources,
         expected_pack_id=expected_pack_id,
+        validate_resource_paths=validate_resource_paths,
+        validate_descriptors=validate_descriptors,
     )
 
 

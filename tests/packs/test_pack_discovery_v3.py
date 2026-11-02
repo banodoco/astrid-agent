@@ -8,7 +8,11 @@ import pytest
 import yaml
 
 from astrid.core.pack import PackValidationError, discover_packs, load_pack_manifest, loader
-from astrid.core.pack.canonical import read_normalize_validate, validate_canonical_pack
+from astrid.core.pack.canonical import (
+    CanonicalPackValidationError,
+    read_normalize_validate,
+    validate_canonical_pack,
+)
 from astrid.core.pack.discovery import (
     DiscoveredPack,
     discover_canonical_pack_metadata,
@@ -52,8 +56,25 @@ def test_metadata_preflight_does_not_replace_canonical_descriptor_validation(tmp
     metadata = read_normalize_validate(root / "pack.yaml", source="extra", resolve_resources=False)
     assert metadata.resources == ()
     assert metadata.id == "demo"
+    with pytest.raises(CanonicalPackValidationError, match="identity"):
+        read_normalize_validate(root / "pack.yaml", source="extra", resolve_resources=False,
+                                validate_descriptors=True)
     with pytest.raises(PackValidationError, match="identity"):
         load_pack_manifest(root / "pack.yaml")
+
+
+@pytest.mark.parametrize("admission", ["paths", "descriptors", "resources"])
+def test_definition_only_repair_inputs_cannot_bypass_admission(tmp_path: Path, admission: str) -> None:
+    root = write_pack(tmp_path, resources=[{"path": "missing.bin", "kind": "example"}])
+    metadata = read_normalize_validate(root / "pack.yaml", source="extra", resolve_resources=False,
+                                       validate_resource_paths=False)
+    assert metadata.resources == ()
+    assert metadata.admission_input_paths() == (root / "missing.bin",)
+    with pytest.raises(CanonicalPackValidationError, match="missing"):
+        read_normalize_validate(
+            root / "pack.yaml", source="extra", resolve_resources=admission == "resources",
+            validate_resource_paths=admission == "paths", validate_descriptors=admission == "descriptors",
+        )
 
 
 @pytest.mark.parametrize("cached", [False, True])
