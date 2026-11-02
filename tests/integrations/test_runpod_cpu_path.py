@@ -137,15 +137,19 @@ def _same_root_lifecycle(root, realm_root, realm_id):
         assert (current["pid"], current["process_birth_id"]) != (prior["pid"], prior["process_birth_id"])
     finally:
         if running:
+            final_owner = json.loads((data / "runtime" / "instance.lock").read_text())
             cli("down")
             from astrid.sdk import host_bootstrap
             assert host_bootstrap._host_birth_identity(hosts[-1]["pid"]) != hosts[-1]["process_birth_id"]
-            assert LocalRuntimeBoundary.process_birth_identity(current["pid"]) != current["process_birth_id"]
+            assert LocalRuntimeBoundary.process_birth_identity(final_owner["pid"]) != final_owner["process_birth_id"]
             assert not (data / "runtime" / "generic-host.json").exists()
             receipts.append({"final_down": {"host": hosts[-1], "host_after_birth":
                 host_bootstrap._host_birth_identity(hosts[-1]["pid"]), "runtime_after_birth":
-                LocalRuntimeBoundary.process_birth_identity(current["pid"])}})
+                LocalRuntimeBoundary.process_birth_identity(final_owner["pid"])}})
             (root / "runtime-lifecycle.json").write_text(json.dumps(receipts, indent=2))
+    return {"source_checkout": str(source), "runtime_checkout": str(runtime),
+            "runtime_sha": runtime_sha, "lock_runtime_sha": lock["source_commit"],
+            "manifest_sha256": digest}
 
 
 def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
@@ -521,4 +525,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert not worker.is_alive()
         host.shutdown()
         daemon.stop()
-    _same_root_lifecycle(tmp_path, tmp_path / "realm", realm_id)
+    evidence["selected_source"] = _same_root_lifecycle(tmp_path, tmp_path / "realm", realm_id)
+    evidence["selected_source"]["agent_sha"] = subprocess.check_output(
+        ["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"], text=True).strip()
+    (tmp_path / "cpu-receipt.json").write_text(json.dumps(evidence, default=str, indent=2))
