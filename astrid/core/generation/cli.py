@@ -424,7 +424,7 @@ def _main(argv: list[str]) -> int:
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
     try:
         generate = getattr(_generate_facade(), parsed.modality)
-        if parsed.dry_run:
+        if parsed.dry_run or (description is not None and description["source"] == "action" and parsed.target != 'runpod'):
             result = generate(**kwargs)
         else:
             with _open_client() as client:
