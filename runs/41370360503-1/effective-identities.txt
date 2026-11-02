@@ -1,0 +1,10 @@
+Agent requested/effective: a07e0a393497592076843e84e2fc653cd29ddddd / a07e0a393497592076843e84e2fc653cd29ddddd
+Runtime requested/effective: 1e6d899efa77a2d6ec247c38250f9748330bb587 / 1e6d899efa77a2d6ec247c38250f9748330bb587
+Agent runtime.lock.json SHA-256: 2565cf9d49b22b5d3a53878f4209b36da561fa3700fe93895ca1ae503f66da4d
+Composition artifact SHA-256: cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f
+Composition package.json SHA-256: da78e50a03d1ec57bd41d599f68c2321bf6e833a8178e4c46c655366c021be1c
+Composition package-lock.json SHA-256: fe99ca67065e5ac21a1c1b1240dc48aaebac874aa99fd40b4e66eac429757ce2
+Composition artifacts.json SHA-256: edfb56af12842c539aebc1d782b5d59a37bf04408d9957fdb6d4a6db5249bfe2
+Node version: v20.19.4
+npm version: 10.8.2
+Python version: Python 3.11.17
