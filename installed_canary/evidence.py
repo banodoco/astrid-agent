@@ -74,7 +74,14 @@ def restart_snapshot(ctx, worker_path, list_capabilities):
         except Exception as exc:
             result['errors'].append({'snapshot': name, 'path': str(source), 'error': repr(exc)})
     try:
-        rows = pages(list_capabilities)
+        def capture_page(**kwargs):
+            rows, cursor = list_capabilities(**kwargs)
+            with (out / 'canary-capability-pages.jsonl').open('a') as stream:
+                import json
+                stream.write(json.dumps({'requested_cursor': kwargs['cursor'], 'next_cursor': cursor,
+                    'rows': [dataclasses.asdict(r) if dataclasses.is_dataclass(r) else r for r in rows]}) + '\n')
+            return rows, cursor
+        rows = pages(capture_page)
         save(out / 'canary-capabilities.json',
              [dataclasses.asdict(row) if dataclasses.is_dataclass(row) else row for row in rows])
     except Exception as exc:
@@ -83,6 +90,7 @@ def restart_snapshot(ctx, worker_path, list_capabilities):
         result['service_logs'] = retain_tree(ctx.install / 'xdg-state/astrid-runtime/logs',
                                              out / 'pre-assert-service-logs')
         if (ctx.install / 'canary.log').is_file():
+            exact_path(str(ctx.install / 'canary.log'), kind='file')
             shutil.copy2(ctx.install / 'canary.log', out / 'pre-assert-canary.log')
     except Exception as exc:
         result['errors'].append({'snapshot': 'service-logs', 'error': repr(exc)})
@@ -104,3 +112,14 @@ def assert_ready(ctx, snapshot):
                 'readiness', ctx.evidence, f'{name} absent, unavailable or unpinned')
     save(ctx.evidence / 'parent-ready-receipt.json', {'result': 'PASS', 'ready': ready,
          'capabilities': capabilities, 'snapshot_manifest': 'restart-snapshots.json'})
+
+
+def final_snapshot(ctx):
+    result = {'errors': [], 'service_logs': []}
+    try:
+        result['service_logs'] = retain_tree(ctx.install / 'xdg-state/astrid-runtime/logs',
+                                             ctx.evidence / 'final-service-logs')
+    except Exception as exc:
+        result['errors'].append({'snapshot': 'final-service-logs', 'error': repr(exc)})
+    save(ctx.evidence / 'final-snapshots.json', result)
+    return result

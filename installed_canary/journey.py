@@ -3,11 +3,12 @@ import dataclasses
 import hashlib
 from pathlib import Path
 import shutil
+import sys
 import time
 
 from .common import exact_path, inventory, pages, read, require, save, sha
 from .contract import ASSETS
-from .evidence import assert_ready, restart_snapshot
+from .evidence import assert_ready, final_snapshot, restart_snapshot
 
 
 def restart_and_validate(ctx, worker_path, *, start, verify, stop, list_capabilities):
@@ -23,7 +24,10 @@ def restart_and_validate(ctx, worker_path, *, start, verify, stop, list_capabili
         verify()
         assert_ready(ctx, snapshot)
     except BaseException:
-        stop()
+        try:
+            stop()
+        except BaseException as cleanup:
+            save(ctx.evidence / 'cleanup-error.json', {'stage': 'restart-stop', 'error': repr(cleanup)})
         raise
 
 
@@ -95,8 +99,16 @@ def run(ctx):
         h3(ctx, owner)
     finally:
         # Only this selected test installation is stopped, including preparation failures.
-        if not stopped_on_failure:
-            backend.stop(version, ctx.install / 'data')
+        primary = sys.exc_info()[1]
+        try:
+            if not stopped_on_failure:
+                backend.stop(version, ctx.install / 'data')
+        except BaseException as cleanup:
+            save(ctx.evidence / 'cleanup-error.json', {'stage': 'journey-stop', 'error': repr(cleanup)})
+            if primary is None:
+                raise
+        finally:
+            final_snapshot(ctx)
 
 
 def validate_child(child, *, parent_id, project_id, caps, binding, objects):

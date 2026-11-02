@@ -63,6 +63,26 @@ class Fixture:
         save(self.task / 'logs/installer-exit.json', {'exit': 0, 'marker': 'selected-only'})
         self.worker = self.version / 'worker-profile.json'
         save(self.worker, {'source_checkout': str(self.purelib), 'execution_mode': 'host_only_cpu'})
+        installed_matrix = self.version / 'a/config/astrid-beta-capabilities.json'
+        installed_matrix.parent.mkdir(parents=True)
+        shutil.copy2(Path(self.sources['agent']['root']) / 'config/astrid-beta-capabilities.json', installed_matrix)
+        pack_root = self.purelib / 'astrid/packs'; pack_root.mkdir()
+        boot = self.work / 'install/data/runtime/astrid-host/boot-manifest.json'
+        save(boot, {'fixture': 'product owns boot validation'})
+        save(self.worker, {'source_checkout': str(self.purelib), 'execution_mode': 'host_only_cpu',
+             'max_concurrency': 2, 'pack_root': str(pack_root), 'boot_manifest_path': str(boot),
+             'boot_manifest_hash': 'sha256:' + sha(boot), 'environment': {}, 'capability_matrix': str(installed_matrix)})
+        services = self.version / 'services.json'
+        save(services, {'services': [{'name': 'pack-host', 'argv': ['python', '--verified-local-worker'],
+                                    'ready': {'file': 'worker-astrid-ready.json'}}]})
+        save(self.version / 'profile.json', {'worker_profile': str(self.worker), 'service_declaration': str(services),
+             'source_checkout': str(self.purelib), 'runtime_environment': str(self.version / 'py')})
+        save(self.work / 'install/program/install.json', {'data_root': str(self.work / 'install/data')})
+        credential = self.work / 'install/data/runtime/credentials/owner.token'
+        credential.parent.mkdir(parents=True); credential.write_text('fake; never read by test controller')
+        save(self.work / 'install/data/runtime/discovery.json', {'active_realm': 'fake-realm',
+             'endpoint': 'http://127.0.0.1:1', 'credential_file': str(credential)})
+        uv = self.work / 'install/bin/uv'; uv.parent.mkdir(); uv.write_text('fake; must never execute')
         self.ready = self.work / 'install/data/runtime/worker-astrid-ready.json'
         save(self.ready, {'source_checkout': str(self.purelib),
                          'python_executable': str(self.version / 'py/bin/python'),
@@ -93,6 +113,18 @@ class Fixture:
 
     def context(self):
         return validate(self.tuple, self.task, self.work)
+
+    def commit_source(self, name):
+        source = Path(self.sources[name]['root'])
+        self.git(source, 'add', '.')
+        self.git(source, '-c', 'user.name=CPU fixture', '-c', 'user.email=cpu@example.invalid',
+                 'commit', '-qm', 'selected fixture [skip ci]')
+        self.sources[name].update(sha=self.git(source, 'rev-parse', 'HEAD'),
+                                  tree=self.git(source, 'rev-parse', 'HEAD^{tree}'))
+        manifest = self.version / 'manifest.json'; value = read(manifest)
+        value[name]['sha'] = self.sources[name]['sha']; save(manifest, value)
+        self.value['manifest_sha256'] = sha(manifest)
+        self.freeze()
 
     def caps(self, *, cursor=None, limit=100):
         if cursor is None:
@@ -251,6 +283,12 @@ class CanaryTests(unittest.TestCase):
                 shapes = read(TOOL_ROOT / 'installed_canary/api_shapes.json')
                 save(ctx.evidence / 'api.json', {'result': 'PASS', 'api_invocations': 0,
                      'checked': len(shapes), 'fingerprint': fingerprint(ctx)})
+            if stage == 'identity':
+                save(ctx.evidence / 'identity.json', {'result': 'PASS', 'fingerprint': fingerprint(ctx)})
+            if stage == 'contracts':
+                from installed_canary.contracts import CONTRACT_NAMES
+                save(ctx.evidence / 'contracts.json', {**{n: {'result': 'PASS'} for n in CONTRACT_NAMES},
+                                                       'fingerprint': fingerprint(ctx)})
             if stage == 'journey':
                 save(ctx.evidence / 'parent-ready-receipt.json', {'result': 'PASS'})
                 save(ctx.evidence / 'h3-terminal-pass.json', {'result': 'PASS'})
@@ -393,3 +431,160 @@ class CanaryTests(unittest.TestCase):
                               ('input_object_ids', ['other']), ('attempt_id', None)]:
             with self.subTest(field=field), self.assertRaises(GateError):
                 validate_child({**child, field: wrong}, **kwargs)
+
+
+    def test_profile_escape_refused_before_children_or_writes(self):
+        profile = read(self.f.version / 'profile.json')
+        profile['worker_profile'] = str(self.f.work / 'outside-worker.json')
+        save(Path(profile['worker_profile']), read(self.f.worker))
+        save(self.f.version / 'profile.json', profile)
+        self.reject('selected profile paths/identity')
+
+    def test_foreign_installer_data_root_refused(self):
+        save(self.f.work / 'install/program/install.json', {'data_root': '/foreign/state'})
+        self.reject('data root is not selected')
+
+    def test_nonlocal_discovery_refused(self):
+        path = self.f.work / 'install/data/runtime/discovery.json'; value = read(path)
+        value['endpoint'] = 'https://external.invalid:443'; save(path, value)
+        self.reject('local endpoint')
+
+    def test_missing_active_realm_refused(self):
+        path = self.f.work / 'install/data/runtime/discovery.json'; value = read(path)
+        del value['active_realm']; save(path, value); self.reject('active realm required')
+
+    def test_foreign_credential_path_refused_without_reading_token(self):
+        path = self.f.work / 'install/data/runtime/discovery.json'; value = read(path)
+        foreign = self.f.root / 'foreign.token'; foreign.write_text('unread private fixture')
+        value['credential_file'] = str(foreign); save(path, value)
+        self.reject('selected credentials')
+
+    def test_unsafe_worker_environment_refused(self):
+        worker = read(self.f.worker); worker['environment'] = {'PYTHONPATH': '/foreign'}
+        save(self.f.worker, worker); self.reject('undeclared authority')
+
+    def test_stale_pack_refused_before_stop(self):
+        (self.f.work / 'install/canary-pack').mkdir(); self.f.freeze()
+        with self.assertRaisesRegex(GateError, 'stale test pack'):
+            self.f.context()
+        self.assertFalse((self.f.task / 'logs/installed-canary').exists())
+
+    def test_stale_contracts_refused_before_children(self):
+        (self.f.work / 'contracts').mkdir(); self.reject('stale contracts')
+
+    def test_installed_shipped_matrix_mismatch_refused(self):
+        matrix = Path(read(self.f.worker)['capability_matrix']); matrix.write_text('{}')
+        self.reject('installed shipped matrix differs')
+
+    def test_incomplete_contract_receipt_refuses_qualification(self):
+        ctx = self.f.context(); stages = []
+        def process(argv, **kwargs):
+            stage = 'cli' if '-m' in argv else argv[argv.index('--stage') + 1]; stages.append(stage)
+            if stage == 'api':
+                save(ctx.evidence / 'api.json', {'result': 'PASS', 'api_invocations': 0,
+                     'checked': 31, 'fingerprint': fingerprint(ctx)})
+            elif stage == 'identity':
+                save(ctx.evidence / 'identity.json', {'result': 'PASS', 'fingerprint': fingerprint(ctx)})
+            elif stage == 'contracts':
+                save(ctx.evidence / 'contracts.json', {'fingerprint': fingerprint(ctx)})
+            return types.SimpleNamespace(returncode=0)
+        with patch('installed_canary.tool.subprocess.run', side_effect=process):
+            with self.assertRaisesRegex(GateError, 'four composition contract receipts'):
+                execute(ctx, 'qualify')
+        self.assertEqual(stages, ['api', 'identity', 'cli', 'contracts'])
+        self.assertFalse((ctx.evidence / 'qualification.json').exists())
+
+    def test_cleanup_error_retains_primary_start_failure(self):
+        ctx = self.f.context(); ctx.evidence.mkdir(parents=True)
+        def fail_start():
+            raise RuntimeError('primary start error')
+        def fail_stop():
+            raise OSError('cleanup stop error')
+        with self.assertRaisesRegex(RuntimeError, 'primary start error'):
+            restart_and_validate(ctx, self.f.worker, start=fail_start, verify=lambda: None,
+                                 stop=fail_stop, list_capabilities=self.f.caps)
+        self.assertIn('cleanup stop error', read(ctx.evidence / 'cleanup-error.json')['error'])
+        self.assertTrue((ctx.evidence / 'restart-snapshots.json').exists())
+
+    def test_partial_capability_pages_survive_transport_failure(self):
+        ctx = self.f.context(); ctx.evidence.mkdir(parents=True)
+        def fetch(*, cursor, limit):
+            if cursor is None:
+                return [{'capability_id': 'first-page-evidence'}], 'next'
+            raise OSError('later page unavailable')
+        result = restart_snapshot(ctx, self.f.worker, fetch)
+        self.assertEqual(len(result['errors']), 1)
+        retained = (ctx.evidence / 'canary-capability-pages.jsonl').read_text().splitlines()
+        self.assertEqual(json.loads(retained[0])['rows'][0]['capability_id'], 'first-page-evidence')
+        self.assertTrue(result['service_logs'])
+
+    def test_final_service_capture_keeps_complete_logs(self):
+        from installed_canary.evidence import final_snapshot
+        ctx = self.f.context(); ctx.evidence.mkdir(parents=True)
+        result = final_snapshot(ctx)
+        self.assertFalse(result['errors']); self.assertTrue(result['service_logs'])
+        self.assertEqual((ctx.evidence / 'final-service-logs/service-pack-host.log').read_text(),
+                         'selected complete log\n' * 3)
+
+
+    def test_valid_single_child_lock_alignment(self):
+        agent = Path(self.f.sources['agent']['root'])
+        path = agent / 'runtime.lock.json'; lock = read(path)
+        lock['source_commit'] = '0' * 40; save(path, lock)
+        self.f.commit_source('agent')
+        self.f.sources['agent_base'] = copy.deepcopy(self.f.sources['agent'])
+        lock['source_commit'] = self.f.sources['runtime']['sha']; save(path, lock)
+        self.f.commit_source('agent')
+        ctx = self.f.context()
+        self.assertEqual(ctx.payload['sources']['agent_base']['sha'], self.f.git(agent, 'rev-parse', 'HEAD^'))
+
+    def test_lock_alignment_cannot_change_product_file(self):
+        agent = Path(self.f.sources['agent']['root'])
+        (agent / 'product-change.py').write_text('# disallowed alignment')
+        self.f.commit_source('agent'); self.reject('more than runtime.lock.json')
+
+    def test_vendored_lock_bytes_and_hash_are_checked(self):
+        runtime = Path(self.f.sources['runtime']['root']); agent = Path(self.f.sources['agent']['root'])
+        (runtime / 'member.txt').write_text('shared contract bytes')
+        self.f.commit_source('runtime')
+        (agent / 'vendored.txt').write_text('shared contract bytes')
+        path = agent / 'runtime.lock.json'
+        save(path, {'source_commit': self.f.sources['runtime']['sha'], 'files': {
+            'vendored.txt': {'from': 'member.txt', 'sha256': 'sha256:' + sha(runtime / 'member.txt')}}})
+        self.f.commit_source('agent')
+        self.f.sources['agent_base'] = copy.deepcopy(self.f.sources['agent']); self.f.freeze()
+        self.assertTrue(self.f.context())
+        lock = read(path); lock['files']['vendored.txt']['sha256'] = 'sha256:' + '0' * 64
+        save(path, lock); self.f.commit_source('agent')
+        self.f.sources['agent_base'] = copy.deepcopy(self.f.sources['agent']); self.reject('vendored Runtime bytes or pin')
+
+    def test_tuple_change_after_api_blocks_subsequent_processes(self):
+        ctx = self.f.context(); stages = []
+        def process(argv, **kwargs):
+            stages.append(argv[argv.index('--stage') + 1])
+            save(ctx.evidence / 'api.json', {'result': 'PASS', 'api_invocations': 0,
+                 'checked': 31, 'fingerprint': fingerprint(ctx)})
+            self.f.value['matrix']['added_row']['evidence_reason'] += ' changed'
+            self.f.freeze()
+            return types.SimpleNamespace(returncode=0)
+        with patch('installed_canary.tool.subprocess.run', side_effect=process):
+            with self.assertRaisesRegex(GateError, 'driver/tuple changed'):
+                execute(ctx, 'qualify')
+        self.assertEqual(stages, ['api'])
+        self.assertFalse((ctx.evidence / 'qualification.json').exists())
+
+
+    def test_canary_log_alias_refused_before_child_writes(self):
+        (self.f.work / 'install/canary.log').symlink_to(self.f.root / 'foreign.log')
+        self.reject('alias refused')
+
+    def test_malformed_declaration_reports_stage_path_and_underlying_error(self):
+        path = self.f.version / 'services.json'; value = read(path)
+        value['services'][0]['argv'] = []; save(path, value)
+        self.reject('stage=inputs path=.*IndexError')
+
+    def test_incomplete_cli_rejects_before_any_action(self):
+        with self.assertRaises(SystemExit) as result:
+            main(['inventory', '--tuple', str(self.f.tuple), '--task-dir', str(self.f.task)])
+        self.assertEqual(result.exception.code, 2)
+        self.assertFalse((self.f.task / 'logs/installed-canary').exists())

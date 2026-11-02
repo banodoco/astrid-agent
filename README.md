@@ -5,7 +5,7 @@ from prior task evidence. The tool operates on one existing, canonical,
 test-owned installation. It never runs an installer, acquires a pod/GPU, changes
 product source, edits the shipped capability matrix, or grants canary authority.
 
-Use an explicitly selected CPU Python, from any working directory:
+Use an explicitly selected CPU Python 3.11 or later, from any working directory:
 
 ```sh
 python /absolute/harness/canary.py inventory \
@@ -72,7 +72,10 @@ that version has `manifest.json`, `profile.json`, `py/bin/python`, and one
 `task/logs/installer-exit.json` with an integer `exit`. `install/data/runtime`,
 `install/home`, `install/tmp`, `install/xdg-{data,state,config,cache}`, and
 `install/bin/uv` belong to this test install. Paths must be absolute and free of
-aliases and parent segments. The managed interpreter's bootstrap base must be
+aliases and parent segments. The installer data-root record, version-owned worker/declaration references,
+local discovery endpoint, selected credential path, boot/pack selection and
+worker environment are checked before side effects. Stale test pack or contract
+state is refused. The managed interpreter's bootstrap base must be
 under `install/xdg-data/astrid/bootstrap/python`.
 
 `inventory` validates the inputs and installed boundary bytes, then retains the
@@ -89,13 +92,15 @@ with `-I -B` and a declared child environment. Its fixed stages are:
 1. Bind all 31 reviewed API shapes without invoking them; check installed origins
    and the real active realm. Pin the tuple and committed driver/asset bytes.
 2. Check interpreter, package origins, frozen source bytes and distribution RECORDs;
-   run installed CLI help and the four installed composition contracts.
+   run installed CLI help and the four installed composition contracts. Require
+   durable identity and all four contract receipts bound to the same fingerprint.
 3. Declare the exact two-file test parent inventory and the reviewed selected
    matrix. Preserve boot/source pins, recomputing session before profile digest.
 4. Restart the test install. Attempt ready/profile/matrix snapshots, all capability
    pages and complete Runtime/host logs in `finally`, before verification or any
    readiness assertion. Failure still retains available captures and stops the
-   selected test install.
+   selected test install. Each capability page is retained as it arrives; cleanup
+   errors preserve the primary failure and final service logs are retained.
 5. Require parent and H3 prepare readiness, then run the single real H3 parent/child
    journey with discovered capability digests, production scopes, exact custody,
    project/input/lineage/placement checks, admission/claim receipts and expected

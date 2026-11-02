@@ -73,6 +73,16 @@ def execute(ctx, action):
                         and receipt['checked'] == len(read(Path(__file__).parent / 'api_shapes.json'))
                         and receipt['fingerprint'] == frozen,
                         stage, ctx.evidence / 'api.json', 'incomplete or stale installed API audit')
+            elif stage == 'identity':
+                receipt = read(ctx.evidence / 'identity.json')
+                require(receipt['result'] == 'PASS' and receipt['fingerprint'] == frozen,
+                        stage, ctx.evidence, 'identity receipt incomplete or stale')
+            elif stage == 'contracts':
+                from .contracts import CONTRACT_NAMES
+                receipt = read(ctx.evidence / 'contracts.json')
+                require(receipt.get('fingerprint') == frozen
+                        and all(receipt.get(n, {}).get('result') == 'PASS' for n in CONTRACT_NAMES),
+                        stage, ctx.evidence, 'four composition contract receipts required')
         require(read(ctx.evidence / 'parent-ready-receipt.json')['result'] == 'PASS'
                 and read(ctx.evidence / 'h3-terminal-pass.json')['result'] == 'PASS',
                 'journey', ctx.evidence, 'journey receipts absent')

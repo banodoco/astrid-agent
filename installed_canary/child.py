@@ -74,7 +74,8 @@ def identity(ctx):
         record = dist.read_text('RECORD')
         require(bool(record), 'identity', name, 'distribution RECORD missing')
         distributions[name] = {'version': dist.version, 'RECORD_sha256': hashlib.sha256(record.encode()).hexdigest()}
-    save(ctx.evidence / 'identity.json', {'origins': origins, 'distributions': distributions,
+    save(ctx.evidence / 'identity.json', {'result': 'PASS', 'fingerprint': fingerprint(ctx),
+         'origins': origins, 'distributions': distributions,
          'python': sys.executable, 'prefix': sys.prefix, 'base_prefix': sys.base_prefix})
 
 

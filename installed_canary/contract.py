@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 import re
 import subprocess
+from urllib.parse import urlsplit
 
-from .common import exact_path, inventory, read, require, sha
+from .common import GateError, exact_path, inventory, read, require, sha
 
 SOURCES = ('agent', 'runtime', 'vibecomfy', 'lifecycle', 'runpod')
 # Boundary inventory from reviewed task 54. Paths are stable; pins come from Git.
@@ -60,7 +61,7 @@ class Context:
         return self.version / 'py/bin/python'
 
 
-def validate(tuple_path, task_dir, work_dir, *, fresh=True):
+def _validate(tuple_path, task_dir, work_dir, *, fresh=True):
     tuple_path = exact_path(str(tuple_path), kind='file')
     task = exact_path(str(task_dir), kind='directory')
     work = exact_path(str(work_dir), kind='directory')
@@ -154,11 +155,59 @@ def validate(tuple_path, task_dir, work_dir, *, fresh=True):
     require(selected_matrix == expected_matrix
             and all(r['id'] != row['id'] for r in original['capabilities']),
             'matrix', selected_path, 'shipped rows/fields must be preserved exactly')
+    install_record = read(exact_path(str(program / 'install.json'), kind='file'))
+    require(install_record.get('data_root') == str(install / 'data'),
+            'installed', program / 'install.json', 'installer data root is not selected test state')
+    profile_path = exact_path(str(version / 'profile.json'), kind='file')
+    profile = read(profile_path)
+    worker_path = exact_path(profile['worker_profile'], kind='file')
+    declaration_path = exact_path(profile['service_declaration'], kind='file')
+    require(worker_path.is_relative_to(version) and declaration_path.is_relative_to(version)
+            and profile['source_checkout'] == str(purelib)
+            and profile['runtime_environment'] == str(version / 'py'),
+            'installed-profile', profile_path, 'selected profile paths/identity differ')
+    worker = read(worker_path)
+    require(worker['execution_mode'] == 'host_only_cpu' and type(worker['max_concurrency']) is int
+            and 2 <= worker['max_concurrency'] <= 16 and worker['source_checkout'] == str(purelib),
+            'installed-profile', worker_path, 'installed CPU source/concurrency mismatch')
+    pack_root = exact_path(worker['pack_root'], kind='directory')
+    boot = exact_path(worker['boot_manifest_path'], kind='file')
+    require(pack_root.is_relative_to(purelib) and boot.is_relative_to(install / 'data/runtime')
+            and isinstance(worker['boot_manifest_hash'], str)
+            and re.fullmatch('sha256:[0-9a-f]{64}', worker['boot_manifest_hash']),
+            'installed-profile', worker_path, 'test-owned pack/boot path and boot pin required')
+    environment = worker['environment']
+    require(isinstance(environment, dict) and not set(environment) - {
+            'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'TEMP', 'TMP', 'XDG_RUNTIME_DIR'}
+            and all(isinstance(v, str) for v in environment.values()),
+            'installed-profile', worker_path, 'worker environment grants undeclared authority')
+    installed_matrix = exact_path(worker['capability_matrix'], kind='file')
+    require(installed_matrix.is_relative_to(version) and sha(installed_matrix) == matrix['shipped_sha256'],
+            'matrix', installed_matrix, 'installed shipped matrix differs')
+    declaration = read(declaration_path)
+    hosts = [r for r in declaration['services'] if r.get('name') == 'pack-host']
+    require(len(hosts) == 1 and hosts[0]['argv'][-1] == '--verified-local-worker'
+            and hosts[0]['ready']['file'] == 'worker-astrid-ready.json',
+            'installed-profile', declaration_path, 'verified local host declaration required')
+    discovery_path = exact_path(str(install / 'data/runtime/discovery.json'), kind='file')
+    discovery = read(discovery_path)
+    credential = exact_path(discovery['credential_file'], kind='file')
+    endpoint = urlsplit(discovery['endpoint'])
+    require(credential.is_relative_to(install / 'data/runtime')
+            and endpoint.scheme in {'http', 'https'} and endpoint.hostname in {'127.0.0.1', '::1', 'localhost'}
+            and endpoint.username is None and endpoint.password is None
+            and isinstance(discovery.get('active_realm'), str) and discovery['active_realm'].strip(),
+            'discovery', discovery_path, 'local endpoint, selected credentials and active realm required')
+    exact_path(str(install / 'bin/uv'), kind='file')
+    require(not (install / 'canary-pack').exists(), 'inputs', install / 'canary-pack',
+            'stale test pack; fresh installation state required')
+    require(not fresh or not (work / 'contracts').exists(), 'inputs', work / 'contracts',
+            'stale contracts state; use fresh test-owned work state')
     require(value['parent_inventory'] == inventory(ASSETS),
             'pack-inventory', ASSETS, 'reviewed exact parent bytes/membership mismatch')
     # These aliases could otherwise redirect capture or writes after input validation.
     for relative in ('data', 'data/runtime', 'home', 'tmp', 'xdg-data', 'xdg-state',
-                     'xdg-config', 'xdg-cache', 'canary-pack'):
+                     'xdg-config', 'xdg-cache', 'canary-pack', 'canary.log'):
         exact_path(str(install / relative))
     exact_path(str(work / 'contracts'))
     exact_path(str(task / 'logs'))
@@ -168,3 +217,12 @@ def validate(tuple_path, task_dir, work_dir, *, fresh=True):
     receipt = read(exact_path(str(task / 'logs/installer-exit.json'), kind='file'))
     require(type(receipt.get('exit')) is int, 'inputs', task, 'installer receipt requires integer exit')
     return Context(tuple_path, task, work, value, version, purelib, boundary)
+
+
+def validate(tuple_path, task_dir, work_dir, *, fresh=True):
+    try:
+        return _validate(tuple_path, task_dir, work_dir, fresh=fresh)
+    except GateError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        raise GateError(f'stage=inputs path={tuple_path}: {type(exc).__name__}: {exc}') from exc

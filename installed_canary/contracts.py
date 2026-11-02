@@ -7,15 +7,21 @@ import os
 import sys
 import traceback
 
-from .common import read, require, save
+from .common import exact_path, read, require, save
+from .tool import fingerprint
+
+CONTRACT_NAMES = (
+    'worker_profile_emission', 'strict_owner_projection',
+    'streamed_locked_inventory_hashing', 'linux_role_bound_custody_broker',
+)
 
 
 def run(ctx):
     results = {}
-    stage = 'worker_profile_emission'
+    stage = CONTRACT_NAMES[0]
     try:
         from astrid.installer.worker_profile import write_worker_profile
-        folder = ctx.work / 'contracts/profile'
+        folder = exact_path(str(ctx.work / 'contracts/profile'))
         folder.mkdir(parents=True, mode=0o700)
         emitted = write_worker_profile(folder, ctx.purelib, ctx.work / 'contracts/data')
         worker = read(emitted)
@@ -26,7 +32,7 @@ def run(ctx):
         results[stage] = {'result': 'PASS', 'emitted_profile': str(emitted), 'RECORD_sha256': records,
                           'profile_digest': worker['profile_digest']}
         save(ctx.evidence / 'contracts.json', results)
-        stage = 'strict_owner_projection'
+        stage = CONTRACT_NAMES[1]
         from astrid_runtime.custody_broker import default_process_identity
         from runtime_protocol.local_execution_supervisor import runtime_owner_record, RUNTIME_OWNER_FIELDS
         observed = default_process_identity(os.getpid())
@@ -38,7 +44,7 @@ def run(ctx):
         results[stage] = {'result': 'PASS', 'native_observation_keys': sorted(observed),
                           'projected_fields': sorted(projected)}
         save(ctx.evidence / 'contracts.json', results)
-        stage = 'streamed_locked_inventory_hashing'
+        stage = CONTRACT_NAMES[2]
         from runtime_protocol import verified_host_launch as gate
         member = ctx.purelib / 'cv2/cv2.abi3.so'
         dist = importlib.metadata.distribution('opencv-python-headless')
@@ -57,10 +63,10 @@ def run(ctx):
                           'expected_sha256': expected, 'read_source_refusal': refusal,
                           'import_limit': gate.LIMIT, 'inventory_limit': gate.INVENTORY_MEMBER_LIMIT}
         save(ctx.evidence / 'contracts.json', results)
-        stage = 'linux_role_bound_custody_broker'
+        stage = CONTRACT_NAMES[3]
         from astrid_runtime.custody_broker import RoleBoundCustodyBroker
         require(sys.platform == 'linux', stage, sys.platform, 'this contract requires Linux')
-        ledger = ctx.work / 'contracts/custody/ledger'
+        ledger = exact_path(str(ctx.work / 'contracts/custody/ledger'))
         ledger.parent.mkdir(parents=True, mode=0o700)
         broker = RoleBoundCustodyBroker(role='host', identity_provider=default_process_identity, ledger_root=ledger)
         try:
@@ -69,6 +75,7 @@ def run(ctx):
                               'ledger_path': str(broker.ledger_path), 'signals': 'none; constructor only'}
         finally:
             broker.abort_before_spawn()
+        results['fingerprint'] = fingerprint(ctx)
         save(ctx.evidence / 'contracts.json', results)
     except BaseException as exc:
         results['failure'] = {'stage': stage, 'error_type': type(exc).__name__, 'error': str(exc),
