@@ -37,8 +37,6 @@ class UnsupportedPlacement(EngineError):
 class PlacementDescriptor:
     """Inert placement metadata; validation never looks up recipes or providers."""
 
-    __module__ = "astrid.core.generation.engine_contracts"
-
     schema: Literal["astrid.generation-placement.v1"]
     supported: tuple[Placement, ...]
     default: Placement
@@ -102,3 +100,7 @@ class PlacementDescriptor:
         if not isinstance(placement, str) or placement not in self.supported:
             raise UnsupportedPlacement("placement is not supported by this backend")
         return placement
+
+
+# Preserve the public class path for repr, imports, and existing pickle data.
+PlacementDescriptor.__module__ = "astrid.core.generation.engine_contracts"
