@@ -1307,7 +1307,10 @@ namespace AstridOwnerCensus {
 } catch {}
 $sha256 = [Security.Cryptography.SHA256]::Create()
 try {
-    $owners = @(Get-CimInstance Win32_Process | ForEach-Object {
+    # This PowerShell process carries the census source in its own command
+    # line, including the owner matcher literals below.  Do not count it as a
+    # Runtime owner; all other live processes remain in the census.
+    $owners = @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object {
         $command = [string]$_.CommandLine
         $matcher = $null
         if ($command.Contains('-m runtime_protocol start')) {

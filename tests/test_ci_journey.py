@@ -655,6 +655,101 @@ def test_tst_b1_counts_all_runtime_owners_to_reject_duplicates(tmp_path, monkeyp
     assert journey.runtime_processes(data) == [101, 102]
 
 
+def _windows_census_owner(pid, parent_pid, command):
+    """Build the bounded record emitted by the Windows census for a matcher hit."""
+    return {
+        "ProcessId": pid,
+        "ParentProcessId": parent_pid,
+        "CreationDate": "2026-11-02T18:51:58.6815710Z",
+        "NativeIdentity": f"windows-creation:{pid}",
+        "ExecutablePath": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        if "powershell.exe" in command else r"C:\Astrid\python.exe",
+        "Matcher": "runtime_protocol-start",
+        "CommandLength": len(command),
+        "CommandSha256": hashlib.sha256(command.encode()).hexdigest(),
+        "SanitizedCommandLine": "-m runtime_protocol start",
+    }
+
+
+def test_tst_b1_windows_runtime_owner_census_is_empty_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+
+    def powershell(code, name, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        assert name == "runtime-owner-processes.json"
+        return "[]"
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == []
+
+
+def test_tst_b1_windows_runtime_owner_census_keeps_genuine_runtime_protocol_start(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    command = r"C:\Astrid\python.exe -X utf8 -m runtime_protocol start --support-root C:\data\runtime"
+    row = _windows_census_owner(8661, 7200, command)
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        return json.dumps([row])
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == [8661]
+
+
+def test_tst_b1_windows_runtime_owner_census_excludes_its_own_powershell_probe(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    probe_command = (
+        "powershell.exe -NoProfile -NonInteractive -Command "
+        "$ErrorActionPreference='Stop'; "
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+        + journey.WINDOWS_RUNTIME_OWNER_CENSUS
+    )
+    runtime_child_command = (
+        r"C:\Astrid\python.exe -X utf8 -m runtime_protocol start "
+        r"--support-root C:\data\runtime"
+    )
+    # The pre-fix census matched both: its own literal-bearing PowerShell
+    # command and a genuine Runtime child.  The source guard must remove only
+    # the former from the records it serializes.
+    candidates = [
+        (8660, 7200, probe_command),
+        (8661, 8660, runtime_child_command),
+    ]
+    assert all(journey._runtime_owner_command(command) for _pid, _parent, command in candidates)
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        assert "Where-Object { $_.ProcessId -ne $PID }" in code
+        return json.dumps([
+            _windows_census_owner(pid, parent_pid, command)
+            for pid, parent_pid, command in candidates
+            if pid != 8660
+        ])
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    assert journey.runtime_processes(tmp_path) == [8661]
+
+
+def test_tst_b1_windows_runtime_owner_census_errors_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "healthy", lambda _data: {"pid": 8661})
+
+    def powershell(code, *unused, **kwargs):
+        assert code == journey.WINDOWS_RUNTIME_OWNER_CENSUS
+        raise RuntimeError("CIM enumeration unavailable")
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    evidence = tmp_path / "evidence"
+    with pytest.raises(RuntimeError, match="CIM enumeration unavailable"):
+        journey.assert_one_runtime(tmp_path, evidence=evidence)
+    snapshot = journey.read_json(evidence / "runtime-owner-assertion.json")
+    assert snapshot["assertion"]["asserted_owner_pids"] == {
+        "status": "unavailable", "reason": "owner census failed: RuntimeError",
+    }
+
+
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
         tmp_path, monkeypatch, platform):
