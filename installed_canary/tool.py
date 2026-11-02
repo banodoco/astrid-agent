@@ -28,6 +28,50 @@ def child_env(ctx):
             'PYTHONDONTWRITEBYTECODE': '1'}
 
 
+REDACTED = '[REDACTED-CREDENTIAL]'
+
+
+def credential_secrets(folder):
+    """Every secret-looking value in the test-owned credential files: the raw text, and string values >= 8 chars."""
+    secrets = set()
+    for path in sorted(Path(folder).glob('*')) if Path(folder).is_dir() else ():
+        if not path.is_file():
+            continue
+        raw = path.read_text(errors='replace').strip()
+        if raw:
+            secrets.add(raw)
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        stack = [value]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                stack.extend(item.values())
+            elif isinstance(item, list):
+                stack.extend(item)
+            elif isinstance(item, str) and len(item) >= 8:
+                secrets.add(item)
+    return secrets
+
+
+def redact_credentials(folder, *logs):
+    """Retained evidence must never carry credential content (e.g. in a child traceback)."""
+    secrets = sorted(credential_secrets(folder), key=len, reverse=True)
+    for log in logs:
+        log = Path(log)
+        if not secrets or not log.is_file():
+            continue
+        text = log.read_text(errors='replace')
+        clean = text
+        for secret in secrets:
+            for form in {secret, json.dumps(secret)[1:-1], repr(secret)[1:-1]}:
+                clean = clean.replace(form, REDACTED)
+        if clean != text:
+            log.write_text(clean)
+
+
 def run_child(ctx, stage, frozen):
     require(fingerprint(ctx) == frozen, stage, ctx.tuple_path, 'driver/tuple changed after validation')
     if stage == 'cli':
@@ -39,6 +83,7 @@ def run_child(ctx, stage, frozen):
     with (ctx.evidence / f'{stage}.log').open('w') as output:
         process = subprocess.run(argv, cwd=ctx.version, env=child_env(ctx),
                                  stdout=output, stderr=subprocess.STDOUT)
+    redact_credentials(ctx.install / 'data/credentials', ctx.evidence / f'{stage}.log')
     record = {'stage': stage, 'argv': argv, 'cwd': str(ctx.version),
               'environment': child_env(ctx), 'exit': process.returncode}
     with (ctx.evidence / 'commands.jsonl').open('a') as output:

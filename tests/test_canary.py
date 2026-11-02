@@ -663,3 +663,47 @@ class DistributionRecordTests(unittest.TestCase):
         present = {name: self.dist() for name in REQUIRED_DISTRIBUTIONS if name != 'vibecomfy'}
         with self.assertRaises(GateError):
             self.run_records(present)
+
+
+class CredentialBoundaryTests(unittest.TestCase):
+    """The owner client gets the decoded bearer token; evidence never keeps credential content."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.creds = self.root / 'install/data/credentials'
+        self.creds.mkdir(parents=True)
+        self.token = 'tok-' + 'a1b2c3d4' * 4
+        (self.creds / 'astrid.json').write_text(json.dumps({'token': self.token, 'actor': 'owner'}) + '\n')
+
+    def test_owner_client_receives_decoded_token_not_file_text(self):
+        from installed_canary.journey import owner_client
+        seen = {}
+        def resolve(endpoint, path):
+            seen['path'] = path
+            return endpoint, json.loads(Path(path).read_text())['token']
+        client = owner_client('http://127.0.0.1:1', self.creds / 'astrid.json',
+                              lambda endpoint, token: (endpoint, token), resolve=resolve)
+        self.assertEqual(client, ('http://127.0.0.1:1', self.token))
+        self.assertIsInstance(seen['path'], Path)
+        self.assertNotIn('{', client[1])
+
+    def test_child_log_credential_content_redacted(self):
+        from installed_canary.tool import REDACTED, redact_credentials
+        log = self.root / 'journey.log'
+        raw = (self.creds / 'astrid.json').read_text().strip()
+        log.write_text(f"Traceback\n  header Bearer {raw}\n  token={self.token!r}\n  escaped={json.dumps(raw)}\n")
+        redact_credentials(self.creds, log)
+        text = log.read_text()
+        self.assertNotIn(self.token, text)
+        self.assertIn(REDACTED, text)
+        self.assertIn('Traceback', text)
+
+    def test_redaction_leaves_clean_log_untouched(self):
+        from installed_canary.tool import redact_credentials
+        log = self.root / 'api.log'
+        log.write_text('PASS 31 binds\n')
+        before = log.stat().st_mtime_ns
+        redact_credentials(self.creds, log)
+        self.assertEqual(log.read_text(), 'PASS 31 binds\n')
+        self.assertEqual(log.stat().st_mtime_ns, before)

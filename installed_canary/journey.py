@@ -31,6 +31,15 @@ def restart_and_validate(ctx, worker_path, *, start, verify, stop, list_capabili
         raise
 
 
+def owner_client(endpoint, credential_path, client_cls, resolve=None):
+    """Build the owner client exactly as the product does: the installed SDK decodes the canonical
+    credential file (JSON {"token": ...} or a bare token) into the bearer token. Never pass file text."""
+    if resolve is None:
+        from astrid.sdk.workspace_client import resolve_runtime_connection as resolve
+    endpoint, token = resolve(endpoint, Path(credential_path))
+    return client_cls(endpoint, token)
+
+
 def run(ctx):
     from astrid.installer.backend import Backend
     from astrid.installer.core import current, write_json
@@ -87,7 +96,7 @@ def run(ctx):
         credential_path = exact_path(discovery['credential_file'], kind='file')
         require(credential_path.is_relative_to(ctx.install / 'data/credentials'),
                 'credentials', credential_path, 'test-owned credential required')
-        owner = WorkspaceClient(discovery['endpoint'], credential_path.read_text().strip())
+        owner = owner_client(discovery['endpoint'], credential_path, WorkspaceClient)
         def stop_on_failure():
             nonlocal stopped_on_failure
             stopped_on_failure = True
