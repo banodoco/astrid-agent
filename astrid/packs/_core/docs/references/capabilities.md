@@ -104,7 +104,6 @@
 | `video_editing.animate_image` | Unavailable: video_editing.animate_image is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Restyle a video opening frame and animate it using the reference video's motion. |
 | `video_editing.cut` | Assemble an editorial arrangement into a timeline, asset registry, and metadata files. |
 | `video_editing.event_talks` | Plan event-talk work and run local template, transcript, and holding-screen steps. |
-| `video_editing.hype` | Run the cache-aware hype pipeline from source video and creative brief to a rendered edit. |
 | `video_editing.iteration_video` | Assemble one admitted historical iteration selection and render it through the public Rendering action. |
 | `video_editing.logo_ideas` | Draft distinct logo concepts and render them as a contact sheet or individual images. |
 | `video_editing.sync_draft_voiceover` | Reconcile temporary narration with pinned timeline scripts. |
@@ -119,7 +118,7 @@
 
 | id | short_description |
 | --- | --- |
-| _(none)_ | |
+| `video_editing.hype` | Run the cache-aware hype pipeline from source video and creative brief to a rendered edit. |
 
 ### Elements
 
