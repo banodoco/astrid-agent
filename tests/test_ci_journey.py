@@ -1270,7 +1270,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     journey.write_json(candidate_path, candidate)
     manifest = {"release": 1, "agent": {}, "runtime": {}}
     args = SimpleNamespace(job_id="direct", mode="direct", leg="release0-to-release1", shell="sh",
-                           app_checkout=app, candidate=candidate_path)
+                           app_checkout=app, candidate=candidate_path,
+                           candidate_agent_checkout=tmp_path / "candidate-agent")
     state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
     calls = []
 
@@ -1343,7 +1344,8 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
                                                              {"release": state["release"]}))
     monkeypatch.setattr(jumps, "installed_release", lambda version: version["release"])
     monkeypatch.setattr(journey, "selected_tuple", lambda *_: {"agent": "old", "runtime": "old"})
-    monkeypatch.setattr(jumps, "selected_candidate", lambda *_: {"agent": "new", "runtime": "new"})
+    monkeypatch.setattr(jumps, "selected_candidate",
+                        lambda *_args, **_kwargs: {"agent": "new", "runtime": "new"})
     monkeypatch.setattr(journey, "assert_direct_service_ownership", ownership)
     monkeypatch.setattr(journey, "assert_one_runtime", one_runtime)
     monkeypatch.setattr(journey, "runtime_processes", lambda _: [state["pid"]] if state["running"] else [])
