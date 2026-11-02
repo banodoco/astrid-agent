@@ -30,6 +30,7 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     task_modes = {'text_to_image': 't2i', 'text_to_image_single_frame': 't2i', 'image_to_image': 'i2i', 'image_edit': 'edit',
                   'text_to_video': 't2v', 'image_to_video': 'i2v', 'first_last_frame': 'flf',
                   'first_last_frame_video': 'flf', 'text_to_audio_song': 'music',
+                  'video_to_audio_foley': 'sfx',
                   'text_to_speech_custom_voice': 'tts', 'text_to_speech_voice_clone': 'tts',
                   'text_to_speech_voice_design': 'tts'}
     from vibecomfy.entries import LOADER_ROLES
@@ -79,7 +80,8 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
                      'defaults': {}, 'inputs': item.get('public_inputs', []), 'source': 'ready-template',
                      'requirements': {'custom_nodes': item.get('custom_nodes', []), 'models': needs},
                      'registry_id': next(iter(registry_ids)) if len(registry_ids) == 1 else None,
-                     'ambiguity': ambiguity})
+                     'ambiguity': ambiguity,
+                     **({'license_notice': item['license_notice']} if item.get('license_notice') else {})})
     return rows
 
 
@@ -253,6 +255,7 @@ def _entry_bindings(workflow: Any, binds: dict[str, Any] | None, mode: str,
 
 
 def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list[dict[str, Any]]:
+    from vibecomfy.entries import media_loader_kind
     # Registered names are authoritative. Entry/common spellings are accepted
     # internally, but never add alias metadata to the public inventory.
     mapping = _entry_bindings(workflow, {**{name: name for name in workflow.inputs},
@@ -273,10 +276,9 @@ def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list
         aliases = sorted(set((public, *getattr(spec, 'aliases', ()))) - {name})
         kind = _input_type(spec.type)
         node = workflow.nodes.get(str(spec.node_id))
-        # IMAGE describes the media, while LoadImage.image's wire value is a
-        # filename. Do not infer a scalar type for arbitrary IMAGE sockets.
-        if (kind == 'image' and getattr(node, 'class_type', None) == 'LoadImage'
-                and spec.field == 'image'):
+        # Native media pickers carry local filenames at the public boundary.
+        # Link sockets on arbitrary nodes retain their declared media type.
+        if media_loader_kind(getattr(node, 'class_type', ''), spec.field):
             kind = 'file'
         if kind == 'unknown':
             # InputSpec defaults and the bound widget are declared workflow
@@ -430,7 +432,8 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         modes = entry['modes']
         if not modes or entry.get('kind') not in {'image', 'video', 'audio'}:
             raise ValueError(f'entry {entry_id!r} kind or mode requires review')
-        base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui'}
+        base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui',
+                **({'license_notice': entry['license_notice']} if entry.get('license_notice') else {})}
         workflow = _load_entry_workflow(entry)
         schemas = {name: _workflow_inputs(entry, name, workflow=workflow) for name in modes}
     else:
@@ -788,5 +791,14 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
             target=getattr(client, 'generation_target', None), issues=issues,
             fixes=[{'argv': align_argv(entry.get('registry_id') or entry.get('id')),
                     'scope': 'user_env', 'details': {'action': 'Install missing locked assets; unlocked assets require a manifest.'}}]))
+    custody = {}
+    if client.target.kind == "managed" and client.target.facts.get("model_root") is not None:
+        from .model_root import validate_model_root_binding
+        # This selected local managed target was provisioned through its lock.
+        # Re-verify local bytes before projecting its inventory; no host registry
+        # or graph picker can supply a missing target asset.
+        binding = validate_model_root_binding(client.target.facts["model_root"], verify_files=True)
+        workflow.metadata["models_root"] = str(binding.path)
+        custody = {"auxiliary_model_custody": "target", "target_model_assets": binding.inventory}
     return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
-        model_availability="target", refresh_object_info=client.object_info)
+        model_availability="target", refresh_object_info=client.object_info, **custody)

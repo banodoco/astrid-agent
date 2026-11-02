@@ -50,6 +50,106 @@
       "destination": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
       "bytes": 1956193000,
       "sha256": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e"
+    },
+    {
+      "name": "hunyuan_foley/hunyuanvideo_foley_xl.pth",
+      "repository": "tencent/HunyuanVideo-Foley",
+      "revision": "3abd4e833b95b8db0fc9c687afc52483a48e9a97",
+      "path": "hunyuanvideo_foley_xl.pth",
+      "url": null,
+      "destination": "hunyuan_foley/hunyuanvideo_foley_xl.pth",
+      "bytes": 5854140970,
+      "sha256": "cf7e93dca93063942bc22b53d4fe888e9d9d5a1ad7977873b7b2c6b126cf00ca"
+    },
+    {
+      "name": "hunyuan_foley/synchformer_state_dict.pth",
+      "repository": "tencent/HunyuanVideo-Foley",
+      "revision": "3abd4e833b95b8db0fc9c687afc52483a48e9a97",
+      "path": "synchformer_state_dict.pth",
+      "url": null,
+      "destination": "hunyuan_foley/synchformer_state_dict.pth",
+      "bytes": 950058171,
+      "sha256": "8aff082f2df5c3bc52759db0c865c7ee772ae6400b860d1b7e90413f2defb67c"
+    },
+    {
+      "name": "hunyuan_foley/vae_128d_48k.pth",
+      "repository": "tencent/HunyuanVideo-Foley",
+      "revision": "3abd4e833b95b8db0fc9c687afc52483a48e9a97",
+      "path": "vae_128d_48k.pth",
+      "url": null,
+      "destination": "hunyuan_foley/vae_128d_48k.pth",
+      "bytes": 1486465965,
+      "sha256": "07e6139ff33bd21ba8a7a7f40ed24aab13ac0d100cd686f8a9f3e03dc5251cb1"
+    },
+    {
+      "name": "hunyuan_foley/siglip2/model.safetensors",
+      "repository": "google/siglip2-base-patch16-512",
+      "revision": "a89f5c5093f902bf39d3cd4d81d2c09867f0724b",
+      "path": "model.safetensors",
+      "url": null,
+      "destination": "hunyuan_foley/siglip2/model.safetensors",
+      "bytes": 1503344520,
+      "sha256": "fe0e601c625e69eed8e73500d39e9b6164403fe03db8048e87913c3cefbbb3fe"
+    },
+    {
+      "name": "hunyuan_foley/siglip2/config.json",
+      "repository": "google/siglip2-base-patch16-512",
+      "revision": "a89f5c5093f902bf39d3cd4d81d2c09867f0724b",
+      "path": "config.json",
+      "url": null,
+      "destination": "hunyuan_foley/siglip2/config.json",
+      "bytes": 276,
+      "sha256": "a15bc39fbcd92498dea6d5d3cb2b0d8b9ba389d6a3f2b565ea66128a2d141934"
+    },
+    {
+      "name": "hunyuan_foley/siglip2/preprocessor_config.json",
+      "repository": "google/siglip2-base-patch16-512",
+      "revision": "a89f5c5093f902bf39d3cd4d81d2c09867f0724b",
+      "path": "preprocessor_config.json",
+      "url": null,
+      "destination": "hunyuan_foley/siglip2/preprocessor_config.json",
+      "bytes": 394,
+      "sha256": "63ff380d3e424f93e6fbca5cc8e74eeed882e96fd6be2b7728aed308f3ad1513"
+    },
+    {
+      "name": "hunyuan_foley/clap/model.safetensors",
+      "repository": "laion/larger_clap_general",
+      "revision": "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db",
+      "path": "model.safetensors",
+      "url": null,
+      "destination": "hunyuan_foley/clap/model.safetensors",
+      "bytes": 776327440,
+      "sha256": "c3d0e564a97cb5eccea412f11d5c51c8a1ccceb80c51e3c6957bb5a796b423b6"
+    },
+    {
+      "name": "hunyuan_foley/clap/config.json",
+      "repository": "laion/larger_clap_general",
+      "revision": "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db",
+      "path": "config.json",
+      "url": null,
+      "destination": "hunyuan_foley/clap/config.json",
+      "bytes": 643,
+      "sha256": "6268f76a067e3104bf9001e97d7dcc0fcfb16f3086cfb478ee72d95900d7fc1d"
+    },
+    {
+      "name": "hunyuan_foley/clap/merges.txt",
+      "repository": "laion/larger_clap_general",
+      "revision": "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db",
+      "path": "merges.txt",
+      "url": null,
+      "destination": "hunyuan_foley/clap/merges.txt",
+      "bytes": 456318,
+      "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+    },
+    {
+      "name": "hunyuan_foley/clap/vocab.json",
+      "repository": "laion/larger_clap_general",
+      "revision": "16c8cc3159a3c8a31e8ff5ef1f66b0d9ab3667db",
+      "path": "vocab.json",
+      "url": null,
+      "destination": "hunyuan_foley/clap/vocab.json",
+      "bytes": 798293,
+      "sha256": "ed19656ea1707df69134c4af35c8ceda2cc9860bf2c3495026153a133670ab5e"
     }
   ]
 }

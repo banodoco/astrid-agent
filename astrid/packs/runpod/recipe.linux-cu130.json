@@ -4,7 +4,7 @@
   "platform": "linux-x86_64-cu130",
   "pins": {
     "path": "packs/runpod/pins.json",
-    "sha256": "a34bd015480e4c255fba889cd281bb6951f277cfc0e6f5426c18646c76f4c3e7"
+    "sha256": "27e2ef3c4cef2a4d68324027ad5820589110b90c08297be312f4674c9bd90b8b"
   },
   "source_bindings": [
     {
@@ -67,7 +67,7 @@
       "node_lock": {
         "source": "vibecomfy",
         "path": "custom_nodes.lock",
-        "sha256": "7741945b99176bedf97fd14009539156ccccde41c3cbe4f03b9f26df0ccead42"
+        "sha256": "ec18e9952426cdf32fc38c628ef95357b813ac005bba59fd18eab347ed6cef8c"
       },
       "source_installs": [
         {
@@ -93,7 +93,7 @@
   "primary_environment": "comfy",
   "models_lock": {
     "path": "packs/runpod/models.lock.json",
-    "sha256": "d86ca8584229010f39c326f2c2d5b6dd3c0aa7b3c06ec6deb0ab5dc5f89c61a5"
+    "sha256": "075942d6d50fbe10bf9a1ab077429e63db718998039edf225e1bc9221fb2f9ad"
   },
   "start": {
     "argv": [

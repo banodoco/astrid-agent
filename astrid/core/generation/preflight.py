@@ -624,6 +624,9 @@ def _installed_managed_target():
         ) from exc
     endpoint = installed.endpoint
     facts = {'object_info_sha256': endpoint.health.object_info_sha256}
+    binding = getattr(installed, 'model_root_binding', None)
+    if binding is not None:
+        facts['model_root'] = binding.as_dict()
     client = ComfyTargetClient(ComfyTarget(endpoint.url, 'managed', facts))
     client.generation_target = TargetRecord(
         owner='astrid', endpoint=endpoint.url, root=root, layout='git',

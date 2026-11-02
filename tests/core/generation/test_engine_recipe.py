@@ -32,11 +32,11 @@ def test_index_roundtrips_windows_and_linux_recipes_with_immutable_values():
     assert len(windows.environments[0].final_wheels) == 3
     assert windows.environments[0].requirements.mode == "resolve-once"
     assert {source.name for source in windows.sources} == {"comfyui", "vibecomfy", "h3-motion-context", "videohelpersuite"}
-    assert len(recipes.load_recipe_model_lock(linux.engine, linux.platform).models) == 5
-    assert [model.bytes for model in recipes.load_recipe_model_lock(linux.engine, linux.platform).models] == [
+    assert len(recipes.load_recipe_model_lock(linux.engine, linux.platform).models) == 15
+    assert [model.bytes for model in recipes.load_recipe_model_lock(linux.engine, linux.platform).models[:5]] == [
         20970379616, 27141342152, 2811065184, 605254808, 1956193000,
     ]
-    models = recipes.load_recipe_model_lock(linux.engine, linux.platform).models
+    models = recipes.load_recipe_model_lock(linux.engine, linux.platform).models[:5]
     assert [model.revision for model in models] == ["e5eb578a89295337b8ff433a035929ce0279e0b6"] * 5
     assert [model.sha256 for model in models] == [
         "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779",
@@ -70,7 +70,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "ab83572f93892fa8ac252fd592da31d88b32a2739967baf953e805a66511f1b9"
+    assert h3_entry.recipe.sha256 == "e77c77ded7d63ba73fe12f064ac4a9ccbb4bc5745bd6f2a903a9d4521e0d1ee2"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
@@ -95,7 +95,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
     ).hexdigest()
     assert recipe.sources[0].name == "comfyui"
     assert recipe.start.argv[-1] == "{models_config}"
-    assert [model.destination for model in lock.models] == [
+    assert [model.destination for model in lock.models[:3]] == [
         "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
         "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
         "vae/qwen_image_2.1_vae_bf16.safetensors",
@@ -113,7 +113,7 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert bindings[0].relative_path == "runtime/vibecomfy"
         assert bindings[0].pin == pins["vibecomfy"]
         assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
-        assert bindings[0].pin.revision == "b2123edfbe7b950848b5c98d575fd9554302fc73"
+        assert bindings[0].pin.revision == "4441f00c28528fed714ce89300bcb93a86bf7610"
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
             "423cbd20511becb1f16122ab518e92e58bfa03d9")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
@@ -130,7 +130,7 @@ def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
     assert bindings[0].pin == pins["vibecomfy-h3"]
     assert {s.name: (s.pin.repository, s.pin.revision) for s in recipe.sources} == {
         "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
-        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "b2123edfbe7b950848b5c98d575fd9554302fc73"),
+        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "4441f00c28528fed714ce89300bcb93a86bf7610"),
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
     }

@@ -460,7 +460,7 @@ def test_clean_rerun_skips_every_step_but_reads_sha_and_current_health(setup):
     assert all(s.action == "skipped" and s.validation == "passed" for s in second.steps)
     assert context.bootstrap_count == 1
     assert len([e for e in context.events if e[0] == "download"]) == 5
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 5
+    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 15
     assert len([e for e in context.events if e[0] == "service:health"]) >= 1
     assert not [e for e in context.events if e[0] == "service:start"]
     assert not [e for e in context.events if e[0] == "argv" and ("fetch" in e[1] or "install" in e[1] or "sync" in e[1])]
@@ -1185,7 +1185,7 @@ def test_status_revalidates_models_and_health_readonly(setup):
     current = status(setup)
     assert current.status == "installed" and current.receipt_id == receipt.receipt_id
     assert current.failed_step_id is None
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 5
+    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 15
     assert [e for e in context.events if e[0] == "service:health"]
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
     context.health_objects["new-node"] = {}
@@ -1324,7 +1324,7 @@ def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
     assert [{k: v for k, v in m.items() if k != "action"} for m in old["models"]] == [
         {k: v for k, v in m.items() if k != "action"} for m in new["models"]]
     assert context.server == owner and context.bootstrap_count == 1
-    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 5
+    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 15
     assert any(e[0] == "service:health" for e in context.events)
     assert not [e for e in context.events if e[0] in {"service:start", "service:stop"}]
     assert not [e for e in context.events if e[0] == "argv" and
@@ -2421,3 +2421,21 @@ def test_cache_capacity_lost_before_writeback_cannot_commit_installed_receipt(se
     assert not list(tmp_path.rglob('*.cache-*'))
     assert not [event for event in context.events if event[0] == 'service:start']
     assert context.events[-1][0] == 'release' and not context.held
+
+
+@pytest.mark.parametrize('change', ['sha256', 'size'])
+def test_foley_target_provisioning_refuses_changed_locked_auxiliary_bytes(setup, change):
+    install(setup)  # Existing synthetic target context; no real install/download.
+    context = setup[1]
+    model = next(row for row in recipes.load_model_lock(context.recipe.models_lock).models
+                 if row.destination == 'hunyuan_foley/synchformer_state_dict.pth')
+    assert model.bytes == 950058171
+    assert model.sha256 == '8aff082f2df5c3bc52759db0c865c7ee772ae6400b860d1b7e90413f2defb67c'
+    context.files[ROOT + '/models/' + model.destination] = FileFact(
+        True, True, False, model.bytes + (change == 'size'),
+        '0' * 64 if change == 'sha256' else model.sha256)
+    context.events.clear()
+    report = status(setup)
+    assert report.status == 'failed' and report.error_code == 'integrity_failed'
+    assert report.failed_step_id == 'model:' + model.name
+    assert not [event for event in context.events if event[0] in {'write', 'mkdir', 'download', 'service:start'}]

@@ -597,3 +597,193 @@ def test_audio_runpod_admission_persists_real_runtime_receipt(mode, tmp_path, mo
         if host is not None:
             host.shutdown()
         daemon.stop()
+
+
+@pytest.mark.parametrize('wait', [False, True])
+def test_public_local_foley_stages_video_submits_and_delivers_through_runtime(wait, tmp_path, monkeypatch, capsys, real_runtime):
+    """Only the Comfy HTTP/GPU edge is synthetic; use real facade/host/Runtime."""
+    import copy
+    import io
+    import json
+    import threading
+    import wave
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import nullcontext
+    from email.parser import BytesParser
+    from email.policy import default
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from astrid import console
+    from astrid.core.execution import generic_host as host_module
+    from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
+    from astrid.core.generation import cli
+    from astrid.sdk.client import AstridClient
+    from vibecomfy.porting.object_info import get_class
+    from vibecomfy.registry.ready import workflow_from_ready
+    import vibecomfy
+
+    video = tmp_path / 'synthetic.mp4'
+    video.write_bytes(b'synthetic-video-at-the-Comfy-HTTP-boundary')
+    audio = io.BytesIO()
+    with wave.open(audio, 'wb') as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(48000)
+        stream.writeframes(b'\0\0' * 4800)
+    output_bytes = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "wav", "-i", "pipe:0", "-f", "flac", "pipe:1"],
+        input=audio.getvalue(), check=True, capture_output=True, timeout=15).stdout
+    workflow = workflow_from_ready('audio/hunyuan_video_foley')
+    schema = {}
+    for node in workflow.runtime_nodes().values():
+        definition = get_class(node.class_type)
+        assert definition is not None
+        schema[node.class_type] = {
+            'input': copy.deepcopy(definition['inputs']),
+            'input_order': copy.deepcopy(definition['input_order']),
+            'output': [out['type'] for out in definition['outputs']],
+            'output_name': [out['name'] for out in definition['outputs']],
+            'output_is_list': [out['is_list'] for out in definition['outputs']],
+            'output_node': node.class_type == 'SaveAudio',
+        }
+    state = SimpleNamespace(schema=schema, prompts=[], uploaded=None, uploaded_ref=None, views=0)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def send(self, value, media_type='application/json'):
+            body = json.dumps(value).encode() if media_type == 'application/json' else value
+            self.send_response(200)
+            self.send_header('Content-Type', media_type)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == '/object_info':
+                self.send(state.schema)
+            elif self.path == '/system_stats':
+                self.send({'system': {'comfyui_version': '0.36.0'}, 'devices': []})
+            elif self.path == '/queue':
+                self.send({'queue_running': [], 'queue_pending': []})
+            elif self.path.startswith('/history/'):
+                save = next(key for key, node in state.prompts[0].items() if node['class_type'] == 'SaveAudio')
+                self.send({'foley-1': {'outputs': {save: {'audio': [
+                    {'filename': 'synthetic.flac', 'subfolder': '', 'type': 'output'}]}},
+                    'status': {'completed': True, 'status_str': 'success', 'messages': []}}})
+            elif self.path.startswith('/view?'):
+                state.views += 1
+                self.send(output_bytes, 'audio/flac')
+            else:
+                self.send_error(404)
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+            if self.path == '/upload/image':
+                message = BytesParser(policy=default).parsebytes(
+                    ('Content-Type: ' + self.headers['Content-Type'] + '\r\nMIME-Version: 1.0\r\n\r\n').encode() + body)
+                parts = {part.get_param('name', header='content-disposition'): part for part in message.iter_parts()}
+                state.uploaded = parts['image'].get_payload(decode=True)
+                folder = parts['subfolder'].get_content().strip()
+                name = parts['image'].get_filename()
+                state.uploaded_ref = folder + '/' + name
+                self.send({'name': name, 'subfolder': folder, 'type': 'input'})
+            elif self.path == '/prompt':
+                state.prompts.append(json.loads(body)['prompt'])
+                self.send({'prompt_id': 'foley-1', 'number': 1, 'node_errors': {}})
+            elif self.path == '/queue' and json.loads(body) == {'delete': ['foley-1']}:
+                self.send({})
+            else:
+                self.send_error(400)
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    daemon = real_runtime()
+    client = AstridClient.open(endpoint=daemon.endpoint, credential=daemon.credential_path,
+        realm_id=daemon.service.realm['id'], actor_id='owner', client_name='foley-cpu-contract',
+        client_version='test', protocol_version='workspace.v1')
+    project = client.projects.create(slug='foley', name='Foley CPU fixture', idempotency_key='foley-project')
+    assert project.ok
+    monkeypatch.setattr(host_module, '_dependency_pythonpath',
+                        lambda: (str(Path(vibecomfy.__file__).resolve().parents[1]),))
+    host = GenericPackHost(pack_roots=[Path(__file__).resolve().parents[2] / 'astrid/packs/vibecomfy'],
+        attempt_root=tmp_path / 'attempt', client=RuntimeProtocolClient(daemon.endpoint, daemon.worker_token))
+    monkeypatch.setattr(cli, '_open_client', lambda: nullcontext(client))
+    original_invoke = client.invoke_result
+    invocations = []
+
+    def bounded_invoke(*args, **kwargs):
+        invocations.append(kwargs)
+        return original_invoke(*args, **{**kwargs, 'timeout_seconds': 45.0, 'poll_seconds': 0.02})
+
+    monkeypatch.setattr(client, 'invoke_result', bounded_invoke)
+    try:
+        host.discover()
+        host.register()
+        if not wait:
+            import zipfile
+            from vibecomfy.workflow_bundle import load_bundle
+            from vibecomfy.security.provenance import Provenance
+            receipt_path = tmp_path / 'admission.json'
+            code = console.main(['generate', 'foley', '--entry', 'audio/hunyuan_video_foley',
+                '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
+                '--target', f'http://127.0.0.1:{server.server_port}',
+                '--project', project.data['project_id'], '--recovery-path', str(receipt_path), '--no-wait', '--json'])
+            captured = capsys.readouterr()
+            assert code == 0, captured.out + captured.err
+            task_id = json.loads(receipt_path.read_text())['locator']['task_id']
+            task = client.tasks.show(task_id)
+            assert task.ok and task.data['state'] == 'queued'
+            assert len(invocations) == 1
+            inputs = invocations[0]['inputs']
+            assert inputs['generation_intent']['metadata'] == {'model': 'audio/hunyuan_video_foley', 'mode': 'sfx'}
+            folder = tmp_path / 'admitted'
+            folder.mkdir()
+            for field, filename in [('python', 'workflow.py'), ('companion', 'workflow.vibe.json')]:
+                (folder / filename).write_bytes(client.media.read_bytes(inputs[field]['digest']))
+            bundle = load_bundle(folder / 'workflow.py', trust=Provenance.USER_CONFIRMED)
+            bundle.require_canonical_authority('admitted Foley fixture')
+            api = bundle.workflow.compile('api')
+            assert next(node for node in api.values() if node['class_type'] == 'HunyuanFoleySampler')['inputs']['prompt'] == 'Copper bell at the exact frame.'
+            assert str(video) not in json.dumps(api)
+            with zipfile.ZipFile(io.BytesIO(client.media.read_bytes(inputs['managed_assets']['digest']))) as archive:
+                manifest = json.loads(archive.read('manifest.json'))
+                assert len(manifest['assets']) == 1 and manifest['assets'][0]['binding'] == 'video_ref'
+                record = manifest['assets'][0]
+                assert archive.read(record['member']) == video.read_bytes()
+                assert record['sha256'] == hashlib.sha256(video.read_bytes()).hexdigest()
+            assert not state.prompts and state.uploaded is None
+            return
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            settled = worker.submit(host.run, poll_seconds=0.02, max_tasks=1)
+            try:
+                code = console.main(['generate', 'foley', '--entry', 'audio/hunyuan_video_foley',
+                    '--prompt', 'Copper bell at the exact frame.', '--video-ref', str(video),
+                    '--target', f'http://127.0.0.1:{server.server_port}',
+                    '--project', project.data['project_id'], '--out', str(tmp_path / 'delivered'), '--json'])
+            finally:
+                host.shutdown()
+            results = settled.result(timeout=15)
+        captured = capsys.readouterr()
+        assert code == 0, captured.out + captured.err
+        assert len(results) == 1 and results[0].state == 'succeeded'
+        assert state.uploaded == video.read_bytes() and len(state.prompts) == 1
+        by_class = {node['class_type']: node['inputs'] for node in state.prompts[0].values()}
+        assert by_class['LoadVideo']['file'] == state.uploaded_ref
+        assert by_class['HunyuanFoleySampler']['prompt'] == 'Copper bell at the exact frame.'
+        assert str(video) not in json.dumps(state.prompts)
+        receipt = json.loads((tmp_path / 'attempt/result.json').read_text())
+        task = client.tasks.show(receipt['task_id'])
+        assert task.ok and task.data['state'] == 'succeeded'
+        digest = 'sha256:' + hashlib.sha256(output_bytes).hexdigest()
+        assert client.media.read_bytes(digest) == output_bytes and state.views > 0
+        assert any(path.read_bytes() == output_bytes for path in (tmp_path / 'delivered').rglob('*.flac'))
+    finally:
+        host.shutdown()
+        daemon.stop()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()

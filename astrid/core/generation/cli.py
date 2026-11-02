@@ -62,6 +62,8 @@ def _common_options(command):
 def _entry_help(description: dict[str, Any]) -> str:
     lines = [f"Entry: {description['id']} ({description['source']}, {description['kind']})",
              "Modes: " + ", ".join(description["modes"])]
+    if description.get("license_notice"):
+        lines.append(description["license_notice"])
     selected = description.get("mode")
     schemas = {selected: description} if selected else description.get("mode_descriptions", {})
     for mode, schema in schemas.items():
@@ -82,7 +84,7 @@ def _entry_help(description: dict[str, Any]) -> str:
 
 
 def _context_description(argv: list[str]) -> dict[str, Any] | None:
-    if not argv or argv[0] not in {"image", "video", "audio"} or not any(
+    if not argv or argv[0] not in {"image", "video", "audio", "foley"} or not any(
             item in {"-h", "--help"} for item in argv):
         return None
     selector = argparse.ArgumentParser(add_help=False)
@@ -97,10 +99,10 @@ def _context_description(argv: list[str]) -> dict[str, Any] | None:
         selector.error("--model and --entry select different generation entries")
     from astrid.core.generation.entries import describe_entry
     try:
-        description = describe_entry(entry_id, mode=parsed.mode)
+        description = describe_entry(entry_id, mode=parsed.mode or ("sfx" if argv[0] == "foley" else None))
     except (ValueError, KeyError) as exc:
         selector.error(str(exc))
-    if description["kind"] != argv[0]:
+    if description["kind"] != ("audio" if argv[0] == "foley" else argv[0]):
         selector.error(f"entry {entry_id!r} does not support {argv[0]}")
     return description
 
@@ -133,17 +135,20 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command = sub.add_parser('list', help='List generation entries and readiness.')
     command.add_argument('--kind', choices=('image', 'video', 'audio', 'generation', 'fixture'))
     command.add_argument('--json', action='store_true')
-    for modality in ("image", "video", "audio"):
-        command = sub.add_parser(modality, help=f"Generate {'an image' if modality == 'image' else 'a video' if modality == 'video' else 'audio'}.",
+    for name in ("image", "video", "audio", "foley"):
+        modality = "audio" if name == "foley" else name
+        alias_mode = "sfx" if name == "foley" else None
+        command = sub.add_parser(name, help=("Alias for audio --mode sfx." if alias_mode else f"Generate {'an image' if modality == 'image' else 'a video' if modality == 'video' else 'audio'}."),
             epilog=_entry_help(contextual) if contextual and contextual["kind"] == modality else None,
             formatter_class=argparse.RawDescriptionHelpFormatter)
+        command.set_defaults(modality=modality, mode=alias_mode)
         command.add_argument("prompt", nargs="?", help="Describe the media to generate.")
         command.add_argument('--prompt', dest='named_prompt', action=_Once)
         command.add_argument("--model", action=_Once, help="Generation catalog entry ID (legacy selector).")
         command.add_argument("--entry", action=_Once, help="Generation entry ID; use --help to inspect its declared inputs.")
         command.add_argument("--inputs-json", action=_Once, metavar="FILE", help="Read declared entry inputs from a JSON object.")
-        command.add_argument("--mode", action=_Once, choices=('music', 'tts', 'sfx') if modality == 'audio' else None,
-                             required=modality == 'audio', help=("Audio mode: music, tts, or sfx." if modality == 'audio'
+        command.add_argument("--mode", action=_Once, choices=(alias_mode,) if alias_mode else ('music', 'tts', 'sfx') if modality == 'audio' else None,
+                             required=modality == 'audio' and alias_mode is None, help=("Audio mode: music, tts, or sfx." if modality == 'audio'
                              else "Generation mode; inferred from the supplied inputs by default."))
         command.add_argument("--execution", action=_Once, help="Catalog execution backend, when explicitly selected.")
         command.add_argument(
@@ -166,6 +171,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
         command.add_argument("--json", action="store_true", help="Print the SDK result as JSON.")
         _common_options(command)
         if modality == 'audio':
+            command.add_argument('--video-ref', action=_Once, metavar='FILE', help='Local video for Foley sound effects.')
             command.add_argument('--resume', action='store_true', help='Resume from the admission receipt.')
     command = sub.add_parser("describe", help="Describe one entry without checking execution readiness.")
     command.add_argument('workflow', nargs='?')
@@ -227,7 +233,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
 def _values(parsed):
     from astrid.core.generation.entries import merge_input_values
     common = {name: getattr(parsed, name, None) for name in (
-        'prompt', 'negative_prompt', 'image_ref', 'width', 'height', 'seed',
+        'prompt', 'negative_prompt', 'image_ref', 'video_ref', 'width', 'height', 'seed',
         'frames', 'fps', 'steps', 'guidance_scale')}
     common = {name: value for name, value in common.items() if value is not None}
     named = getattr(parsed, 'named_prompt', None)

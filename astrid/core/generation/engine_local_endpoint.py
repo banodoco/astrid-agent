@@ -63,6 +63,7 @@ class EngineNotInstalled(EngineError):
 class LocalEngine:
     endpoint: EngineEndpoint
     comfy_output_dir: str
+    model_root_binding: Any = None
 
 
 def _engines_dir() -> Path:
@@ -236,7 +237,8 @@ def local_engine_endpoint(
     from .engine_endpoint import endpoint_to_dict
     endpoint_to_dict(endpoint)  # closed-shape validation (parse_endpoint round trip)
     comfy = next(s.relative_path for s in recipe.sources if s.name == "comfyui")
-    return LocalEngine(endpoint, posixpath.join(root, comfy, "output"))
+    binding = model_root_binding_from_receipt(receipt, root, engine=engine) if getattr(receipt, "models", ()) else None
+    return LocalEngine(endpoint, posixpath.join(root, comfy, "output"), binding)
 
 
 MODELS_RELATIVE_PATH = "models"
