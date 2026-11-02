@@ -232,7 +232,7 @@ def _sdk_cpu_session_fixture(tmp_path, monkeypatch):
                           "inventory": inventory, "inventory_digest": canonical_model_inventory_digest(inventory)}},
                "vibecomfy_session": {"session_dir": str(session), "server_url": url, "pid": daemon,
                    "comfy_pid": child, "launch_token": token, "process_birth_id": birth,
-                   "comfy_process_birth_id": child_birth, "source_revision": revision,
+                   "comfy_process_birth_id": child_birth, "launch_generation": child_birth, "source_revision": revision,
                    "source_content_digest": content, "config_digest": "sha256:" + hashlib.sha256(config).hexdigest()}}
     observations = {"listener": child, "parent": daemon, "birth": birth, "child_birth": child_birth}
     ownership_reads, controls, signals = [], [], []
@@ -368,7 +368,7 @@ def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_
     assert all(record.ready for record in host.capabilities.values())
     before = {p.name: p.read_bytes() for p in f.session.iterdir()}
     native = {"task": {"id": "vibe", "capability": "vibecomfy.run", "project_id": "unit-project",
-        "attempt_id": "vibe-attempt", "fence": 1, "input_object_ids": list(objects),
+        "attempt_id": "vibe-attempt", "fence": 1, "runtime_epoch": 1, "input_object_ids": list(objects),
         "spec": {"spec": {"inputs": {}, "input_digests": digests}}}}
     runtime.tasks["vibe"] = native
     assert host.run_task(native, lease_token="unit-lease")["task"]["status"] == "completed"
@@ -392,22 +392,25 @@ def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_
 
 
 @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
-@pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+@pytest.mark.parametrize("field", ["session_id", "runtime_instance_id", "process_birth_id", "endpoint",
+                                  "source_digest", "config_digest", "execution_identity", "engine_birth_id",
+                                  "backend"])
 def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+    from dataclasses import replace
+    from astrid.core.generation.backends.vibecomfy import ComfyHostHooks
     f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
-    backend = f.bridge.backend
-    if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
-    elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
-    elif field == "model": backend._bound_model_id = "different-model"
-    elif field == "template": backend._bound_template_id = "different-template"
-    elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
-    elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
-    elif field == "backend": f.bridge.backend = object()
-    elif field == "lost_binding": backend._host_session = None
-    elif field == "invocation": backend._invocation_identity = "changed-task"
+    hook = f.bridge.backend
+    assert isinstance(hook, ComfyHostHooks)
+    if field == "backend":
+        f.bridge.backend = object()
+    else:
+        changed = replace(f.bridge._hook_binding, **{field: "changed"})
+        assert hook.observe(binding=changed) == {"ok": False, "reason": "binding does not match the bound owner"}
+        f.bridge._hook_binding = changed
     with pytest.raises(HostError, match="exact settled ownership"):
         _open_cpu_handoff(f)
     assert f.controls == [] and f.host.managed_tool_session.current_adapter is f.bridge
+    assert f.host.managed_tool_session.occupied and not f.host.managed_tool_session._active.fenced
 
 
 @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
@@ -475,7 +478,20 @@ def test_sdk_cpu_handoff_late_finally_preserves_fresh_token(tmp_path, monkeypatc
     f.host._record_native_cpu_handoff(f.bridge, newer, managed_settled=True, runtime_settled=True)
     f.host._record_native_cpu_handoff(f.bridge, f.token, managed_settled=False, runtime_settled=False)
     assert f.bridge.cpu_handoff_token is newer
-    _open_cpu_handoff(f)
+    from astrid.core.generation.backends.vibecomfy import ComfyHostHooks
+    assert isinstance(f.bridge.backend, ComfyHostHooks)
+    assert f.bridge.backend.cancel(reason="test") == {
+        "ok": False, "cancelled": False,
+        "reason": "cancel is fail-closed until owner-lane reconciliation of attached cancellation"}
+    assert f.bridge.backend.release(reason="test") == {
+        "ok": False, "released": False, "release_requested": False,
+        "memory_observed_returned": False, "reason": "no managed host handle"}
+    from astrid.core.execution.managed_tool_session import SessionCapacityError
+    with pytest.raises(SessionCapacityError, match="release was not verified"):
+        _open_cpu_handoff(f)
+    assert f.host.managed_tool_session.current_adapter is f.bridge
+    assert f.host.managed_tool_session.occupied and f.host.managed_tool_session._active.fenced
+    assert f.controls == []
 
 
 @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
@@ -485,8 +501,9 @@ def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeyp
     f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
     with pytest.raises(SessionCapacityError, match="release was not verified"):
         _open_cpu_handoff(f, resources=resources)
-    assert f.host.managed_tool_session.occupied
-    assert f.controls == ["/interrupt", "/queue", "/api/free"]
+    assert f.host.managed_tool_session.occupied and f.host.managed_tool_session._active.fenced
+    assert f.host.managed_tool_session.current_adapter is f.bridge
+    assert f.controls == []
 
 
 @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
@@ -530,41 +547,52 @@ def test_sdk_cpu_handoff_factory_never_qualifies_unvalidated_profile(tmp_path, m
 
 @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
 def test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown(tmp_path, monkeypatch):
-    from astrid.core.execution.managed_tool_session import ManagedToolSessionError
+    from astrid.core.execution.generic_host import CleanupUncertainError
+    from astrid.core.execution.managed_tool_session import ManagedToolSessionError, SessionCapacityError
+    from astrid.core.generation.backends.vibecomfy import ComfyHostHooks
     f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+    hook = f.bridge.backend
+    assert isinstance(hook, ComfyHostHooks)
     entered, proceed, admission_entered, shutdown_entered = [f.threading.Event() for _ in range(4)]
-    outcomes = []
-    def on_control(count):
-        if count == 5:
-            entered.set()
-            assert proceed.wait(3)
-    f.http["on_control"] = on_control
+    outcomes, releases = [], []
+    release = hook.release
+    def blocked_release(*, reason):
+        entered.set()
+        assert proceed.wait(3)
+        result = release(reason=reason)
+        releases.append(result)
+        return result
+    monkeypatch.setattr(hook, "release", blocked_release)
     def transition():
-        try: _open_cpu_handoff(f); outcomes.append("transition")
-        except BaseException as exc: outcomes.append(exc)
+        try: _open_cpu_handoff(f); outcomes.append("transition-succeeded")
+        except SessionCapacityError: outcomes.append("transition-refused")
     def admit():
         admission_entered.set()
         try: f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="race")
         except ManagedToolSessionError: outcomes.append("admission-rejected")
-    def shutdown_gate():
+    def shutdown():
         shutdown_entered.set()
-        with f.host.managed_tool_session._lock: f.host._shutdown.set()
-        with f.host._handoff_condition: outcomes.append("shutdown-gate")
-    threads = [f.threading.Thread(target=fn) for fn in (transition, admit, shutdown_gate)]
+        try: f.host.shutdown(); outcomes.append("shutdown-succeeded")
+        except CleanupUncertainError: outcomes.append("shutdown-uncertain")
+    threads = [f.threading.Thread(target=fn) for fn in (transition, admit, shutdown)]
     try:
         threads[0].start(); assert entered.wait(3)
         threads[1].start(); threads[2].start()
         assert admission_entered.wait(3) and shutdown_entered.wait(3)
-        assert "admission-rejected" not in outcomes and "shutdown-gate" not in outcomes
+        assert not outcomes
     finally:
         proceed.set()
         for thread in threads:
             if thread.ident is not None: thread.join(4)
     assert not any(thread.is_alive() for thread in threads)
-    assert sorted(outcomes) == ["admission-rejected", "shutdown-gate", "transition"]
-    assert f.controls == ["/interrupt", "/queue", "/api/free", "/queue", "/api/free"]
-    assert f.identity_reads and all(pid in (f.daemon, f.child) for pid in f.identity_reads)
+    assert sorted(outcomes) == ["admission-rejected", "shutdown-uncertain", "transition-refused"]
+    assert releases == [{"ok": False, "released": False, "release_requested": False,
+                         "memory_observed_returned": False, "reason": "no managed host handle"}] * 2
+    assert f.host._shutdown.is_set() and f.host.managed_tool_session.occupied
+    assert f.host.managed_tool_session._active.fenced and f.host.managed_tool_session.current_adapter is f.bridge
+    assert f.controls == []
     assert all(sig == 0 for _, sig in f.signals)
+
 
 
 def test_native_cpu_handoff_serializes_admission_and_shutdown_lock_order(tmp_path, monkeypatch):
