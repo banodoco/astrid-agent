@@ -10,8 +10,9 @@ import textwrap
 import unittest
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/lanes.yml"
-STEPS = ("checkout", "receipt_init", "runtime_pin", "runtime_checkout", "refs", "python", "node",
+STEPS = ("checkout", "receipt_init", "c07_identity", "runtime_pin", "runtime_checkout", "refs", "python", "node",
          "media", "wheel", "install", "npm", "registry", "selector")
+C07_STEPS = ("installed_agent_checkout", "c07_sidecar", "c07_app_checkout", "c07_pinokio_checkout", "c07_effective")
 GOOD_XML = '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0"><testcase name="ok" /></testsuite></testsuites>'
 
 
@@ -22,7 +23,7 @@ def generator():
 
 
 class InstalledWheelReceiptTests(unittest.TestCase):
-    def make_receipt(self, junit=GOOD_XML, sidecar="matching", selector_exit="0", selector_outcome="success"):
+    def make_receipt(self, junit=GOOD_XML, sidecar="matching", selector_exit="0", selector_outcome="success", c07=False, c07_outcome="success"):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             receipt = root / "receipt"
@@ -33,6 +34,7 @@ class InstalledWheelReceiptTests(unittest.TestCase):
                 (receipt / "selector.exit").write_text(selector_exit, encoding="utf-8")
             remotion = root / "remotion"
             remotion.mkdir()
+            (remotion / ".astrid-registry-state.json").write_text('{}', encoding="utf-8")
             (remotion / "package.json").write_text(json.dumps({"dependencies": {"@banodoco/timeline-composition": "file:artifact.tgz"}}))
             tarball = remotion / "artifact.tgz"
             tarball.write_bytes(b"composition fixture")
@@ -42,9 +44,18 @@ class InstalledWheelReceiptTests(unittest.TestCase):
             env = os.environ.copy()
             env.update({"ASTRID_INSTALLED_RECEIPT_DIR": str(receipt), "GITHUB_SHA": "harness-sha"})
             env.update({"OUTCOME_" + name.upper(): "success" for name in STEPS})
+            env.update({"OUTCOME_" + name.upper(): c07_outcome if c07 else "skipped" for name in C07_STEPS})
+            env["C07_MODE"] = "c07" if c07 else "normal"
             env["OUTCOME_SELECTOR"] = selector_outcome
             subprocess.run([sys.executable, "-c", generator()], cwd=root, env=env, check=True, capture_output=True, text=True)
-            return json.loads((receipt / "RECEIPT.json").read_text())
+            result = json.loads((receipt / "RECEIPT.json").read_text())
+            sums = (receipt / "SHA256SUMS").read_bytes()
+            self.assertEqual(hashlib.sha256(sums).hexdigest(), result["artifact_manifest"]["sha256"])
+            entries = dict(line.split("  ", 1)[::-1] for line in sums.decode().splitlines())
+            self.assertIn("artifacts/.astrid-registry-state.json", entries)
+            for path, digest in entries.items():
+                self.assertEqual(hashlib.sha256((receipt / path).read_bytes()).hexdigest(), digest)
+            return result
 
     def test_matching_sidecar_and_valid_junit_are_green(self):
         receipt = self.make_receipt()
@@ -76,6 +87,16 @@ class InstalledWheelReceiptTests(unittest.TestCase):
                 receipt = self.make_receipt(sidecar=value)
                 self.assertEqual(receipt["status"], "failed")
                 self.assertFalse(receipt["tuple"]["composition"]["sidecar_matches"])
+
+    def test_c07_skipped_or_failed_steps_fail_closed(self):
+        for outcome in ("failure", "skipped", "cancelled"):
+            with self.subTest(outcome=outcome):
+                self.assertEqual(self.make_receipt(c07=True, c07_outcome=outcome)["status"], "failed")
+
+    def test_upload_includes_hidden_manifest_entries(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        upload = workflow.split("      - name: Upload installed-wheel receipt\n", 1)[1]
+        self.assertIn("include-hidden-files: true", upload)
 
 
 if __name__ == "__main__":

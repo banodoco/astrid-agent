@@ -2,6 +2,7 @@
 # and opt_in. Nightly, on request, and on pushes to main/release-1, so regressions are seen promptly.
 # Lanes with no job (workstation, omp, gpu, app_checkout: a GPU, the owner's workstation files or another repo's checkout) are listed by name in every run (tests/lanes.py).
 name: Lanes
+run-name: ${{ inputs.c07_agent_sha && format('C-07 installed {0} via harness {1}', inputs.c07_agent_sha, inputs.c07_harness_sha) || github.workflow }}
 
 on:
   schedule:
@@ -10,6 +11,26 @@ on:
     inputs:
       launcher_ref:
         description: Optional full 40-character astrid-pinokio commit SHA; defaults to main
+        required: false
+        type: string
+      c07_harness_sha:
+        description: Full 40-hex Agent SHA used only to check out the C-07 harness
+        required: false
+        type: string
+      c07_agent_sha:
+        description: Full 40-hex Agent SHA installed by a C-07 tuple dispatch
+        required: false
+        type: string
+      c07_runtime_sha:
+        description: Full 40-hex Runtime SHA required by a C-07 tuple dispatch
+        required: false
+        type: string
+      c07_app_sha:
+        description: Full 40-hex App SHA required by a C-07 tuple dispatch
+        required: false
+        type: string
+      c07_pinokio_sha:
+        description: Full 40-hex Pinokio SHA required by a C-07 tuple dispatch
         required: false
         type: string
   push:
@@ -81,6 +102,7 @@ jobs:
           11443b0b5b34bd5b36725504fb083146192a759d
           959ce04fcf91351903c361d03e6b19eb0bbe8587
           efcb3264e854fc312faa0bc6e702a9034edc2e06
+          d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b
 
       - name: Verify Runtime sources before tests
         shell: bash
@@ -322,9 +344,14 @@ jobs:
       ASTRID_REMOTION_PROJECT_DIR: ${{ github.workspace }}/remotion
       ASTRID_INSTALLED_RECEIPT_DIR: ${{ github.workspace }}/installed-wheel-receipt
     steps:
-      - name: Check out repository
+      # The workflow definition is selected by GitHub's dispatch ref, while this
+      # checkout is the separately recorded C-07 harness.  The installed tuple
+      # replaces it only after the input binding below has validated every SHA.
+      - name: Check out C-07 harness
         id: checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.c07_harness_sha || github.sha }}
 
       - name: Prepare installed-wheel receipt
         id: receipt_init
@@ -335,14 +362,100 @@ jobs:
           mkdir -p "$ASTRID_INSTALLED_RECEIPT_DIR"
           : > "$ASTRID_INSTALLED_RECEIPT_DIR/inner-exits.txt"
 
+      - name: Resolve C-07 tuple inputs
+        id: c07_identity
+        shell: bash
+        env:
+          INPUT_C07_HARNESS_SHA: ${{ inputs.c07_harness_sha }}
+          INPUT_C07_AGENT_SHA: ${{ inputs.c07_agent_sha }}
+          INPUT_C07_RUNTIME_SHA: ${{ inputs.c07_runtime_sha }}
+          INPUT_C07_APP_SHA: ${{ inputs.c07_app_sha }}
+          INPUT_C07_PINOKIO_SHA: ${{ inputs.c07_pinokio_sha }}
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/c07-identity.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/c07_identity.exit"; exit "$rc"' EXIT
+          actual_harness="$(git rev-parse HEAD)"
+          supplied=0
+          for value in "$INPUT_C07_HARNESS_SHA" "$INPUT_C07_AGENT_SHA" "$INPUT_C07_RUNTIME_SHA" "$INPUT_C07_APP_SHA" "$INPUT_C07_PINOKIO_SHA"; do
+            if [[ -n "$value" ]]; then
+              supplied=$((supplied + 1))
+            fi
+          done
+          if [[ "$supplied" -eq 0 ]]; then
+            echo "mode=normal" >> "$GITHUB_OUTPUT"
+            echo "harness_sha=$actual_harness" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "$actual_harness" > "$ASTRID_INSTALLED_RECEIPT_DIR/harness.sha"
+            exit 0
+          fi
+          if [[ "$supplied" -ne 5 ]]; then
+            echo "C-07 dispatch requires c07_harness_sha and every installed Agent/Runtime/App/Pinokio tuple SHA" >&2
+            exit 1
+          fi
+          for name in harness agent runtime app pinokio; do
+            input_name="INPUT_C07_${name^^}_SHA"
+            value="${!input_name}"
+            if [[ ! "$value" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "c07_${name}_sha must be a full 40-character hexadecimal commit SHA" >&2
+              exit 1
+            fi
+            printf -v "$name" '%s' "$(tr '[:upper:]' '[:lower:]' <<< "$value")"
+          done
+          if [[ "$actual_harness" != "$harness" ]]; then
+            echo "C-07 harness checkout $actual_harness does not match requested $harness" >&2
+            exit 1
+          fi
+          {
+            echo "mode=c07"
+            echo "harness_sha=$harness"
+            echo "agent_sha=$agent"
+            echo "runtime_sha=$runtime"
+            echo "app_sha=$app"
+            echo "pinokio_sha=$pinokio"
+          } >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$actual_harness" > "$ASTRID_INSTALLED_RECEIPT_DIR/harness.sha"
+          git show "$actual_harness:remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz.sha256" > "$RUNNER_TEMP/c07-composition.sha256"
+
+      # A C-07 dispatch builds the installed wheel from this exact tuple member,
+      # never from the harness checkout above. clean:false preserves the receipt
+      # initialized before the checkout so bad identities remain observable.
+      - name: Check out installed Agent tuple member
+        id: installed_agent_checkout
+        if: ${{ steps.c07_identity.outputs.mode == 'c07' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.c07_identity.outputs.agent_sha }}
+          clean: false
+
+      - name: Restore C-07 Composition sidecar from harness
+        id: c07_sidecar
+        if: ${{ steps.c07_identity.outputs.mode == 'c07' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sidecar=remotion/artifacts/banodoco-timeline-composition-0.0.17.tgz.sha256
+          artifact=${sidecar%.sha256}
+          test "$(cat "$RUNNER_TEMP/c07-composition.sha256")" = "$(sha256sum "$artifact" | cut -d' ' -f1)"
+          cp "$RUNNER_TEMP/c07-composition.sha256" "$sidecar"
+
       - name: Read the pinned Runtime commit
         id: runtime_pin
         shell: bash
+        env:
+          C07_MODE: ${{ steps.c07_identity.outputs.mode }}
+          C07_RUNTIME_SHA: ${{ steps.c07_identity.outputs.runtime_sha }}
         run: |
           set -euo pipefail
           exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/runtime-pin.log") 2>&1
           trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/runtime_pin.exit"; exit "$rc"' EXIT
-          echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
+          commit="$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')"
+          if [[ "$C07_MODE" == "c07" ]]; then
+            if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]] || [[ "$commit" != "$C07_RUNTIME_SHA" ]]; then
+              echo "installed Agent runtime.lock.json source_commit must equal C-07 Runtime $C07_RUNTIME_SHA" >&2
+              exit 1
+            fi
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Check out the Runtime (astrid-runtime)
         id: runtime_checkout
@@ -351,6 +464,58 @@ jobs:
           repository: banodoco/astrid-runtime
           ref: ${{ steps.runtime_pin.outputs.commit }}
           path: astrid-runtime
+
+      - name: Check out C-07 App tuple member
+        id: c07_app_checkout
+        if: ${{ always() && steps.c07_identity.outputs.mode == 'c07' }}
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ${{ steps.c07_identity.outputs.app_sha }}
+          path: c07-app
+
+      - name: Check out C-07 Pinokio tuple member
+        id: c07_pinokio_checkout
+        if: ${{ always() && steps.c07_identity.outputs.mode == 'c07' }}
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ steps.c07_identity.outputs.pinokio_sha }}
+          path: c07-pinokio
+
+      - name: Verify effective C-07 tuple identities
+        id: c07_effective
+        if: ${{ always() && steps.c07_identity.outputs.mode == 'c07' }}
+        shell: bash
+        env:
+          C07_AGENT_SHA: ${{ steps.c07_identity.outputs.agent_sha }}
+          C07_RUNTIME_SHA: ${{ steps.c07_identity.outputs.runtime_sha }}
+          C07_APP_SHA: ${{ steps.c07_identity.outputs.app_sha }}
+          C07_PINOKIO_SHA: ${{ steps.c07_identity.outputs.pinokio_sha }}
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$ASTRID_INSTALLED_RECEIPT_DIR/c07-effective.log") 2>&1
+          trap 'rc=$?; printf "%s\n" "$rc" > "$ASTRID_INSTALLED_RECEIPT_DIR/c07_effective.exit"; exit "$rc"' EXIT
+          agent="$(git rev-parse HEAD)"
+          runtime="$(git -C astrid-runtime rev-parse HEAD)"
+          app="$(git -C c07-app rev-parse HEAD)"
+          pinokio="$(git -C c07-pinokio rev-parse HEAD)"
+          test "$agent" = "$C07_AGENT_SHA"
+          test "$runtime" = "$C07_RUNTIME_SHA"
+          test "$app" = "$C07_APP_SHA"
+          test "$pinokio" = "$C07_PINOKIO_SHA"
+          manifest=c07-app/public/install-manifest.json
+          test "$(sha256sum "$manifest" | cut -d' ' -f1)" = b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f
+          python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["agent"]["sha"] == sys.argv[2] and m["runtime"]["sha"] == sys.argv[3]' "$manifest" "$agent" "$runtime"
+          cp "$manifest" "$ASTRID_INSTALLED_RECEIPT_DIR/app-install-manifest.json"
+          echo "ASTRID_APP_IDENTITY=$app" >> "$GITHUB_ENV"
+          {
+            echo "harness=$(cat "$ASTRID_INSTALLED_RECEIPT_DIR/harness.sha")"
+            echo "agent=$agent"
+            echo "runtime=$runtime"
+            echo "app=$app"
+            echo "pinokio=$pinokio"
+          } | tee "$ASTRID_INSTALLED_RECEIPT_DIR/c07-effective-refs.txt"
 
       - name: Record checked-out refs
         id: refs
@@ -363,6 +528,11 @@ jobs:
             echo "## Effective checked-out refs"
             echo "- Agent: $(git rev-parse HEAD)"
             echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
+            if [[ "${{ steps.c07_identity.outputs.mode }}" == "c07" ]]; then
+              echo "- Harness: $(cat "$ASTRID_INSTALLED_RECEIPT_DIR/harness.sha")"
+              echo "- App: $(git -C c07-app rev-parse HEAD)"
+              echo "- Pinokio: $(git -C c07-pinokio rev-parse HEAD)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Python
@@ -457,8 +627,14 @@ jobs:
         env:
           OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
           OUTCOME_RECEIPT_INIT: ${{ steps.receipt_init.outcome }}
+          OUTCOME_C07_IDENTITY: ${{ steps.c07_identity.outcome }}
+          OUTCOME_INSTALLED_AGENT_CHECKOUT: ${{ steps.installed_agent_checkout.outcome }}
+          OUTCOME_C07_SIDECAR: ${{ steps.c07_sidecar.outcome }}
           OUTCOME_RUNTIME_PIN: ${{ steps.runtime_pin.outcome }}
           OUTCOME_RUNTIME_CHECKOUT: ${{ steps.runtime_checkout.outcome }}
+          OUTCOME_C07_APP_CHECKOUT: ${{ steps.c07_app_checkout.outcome }}
+          OUTCOME_C07_PINOKIO_CHECKOUT: ${{ steps.c07_pinokio_checkout.outcome }}
+          OUTCOME_C07_EFFECTIVE: ${{ steps.c07_effective.outcome }}
           OUTCOME_REFS: ${{ steps.refs.outcome }}
           OUTCOME_PYTHON: ${{ steps.python.outcome }}
           OUTCOME_NODE: ${{ steps.node.outcome }}
@@ -468,6 +644,12 @@ jobs:
           OUTCOME_NPM: ${{ steps.npm.outcome }}
           OUTCOME_REGISTRY: ${{ steps.registry.outcome }}
           OUTCOME_SELECTOR: ${{ steps.selector.outcome }}
+          C07_MODE: ${{ steps.c07_identity.outputs.mode }}
+          C07_HARNESS_SHA: ${{ steps.c07_identity.outputs.harness_sha }}
+          C07_AGENT_SHA: ${{ steps.c07_identity.outputs.agent_sha }}
+          C07_RUNTIME_SHA: ${{ steps.c07_identity.outputs.runtime_sha }}
+          C07_APP_SHA: ${{ steps.c07_identity.outputs.app_sha }}
+          C07_PINOKIO_SHA: ${{ steps.c07_identity.outputs.pinokio_sha }}
         run: |
           set -euo pipefail
           mkdir -p "$ASTRID_INSTALLED_RECEIPT_DIR"
@@ -503,22 +685,25 @@ jobs:
               except (OSError, ValueError):
                   return fallback
 
-          def outcome_exit(outcome):
-              return 0 if outcome == "success" else 1
-
+          c07_mode = os.environ.get("C07_MODE", "normal") or "normal"
           outcomes = {
               name.removeprefix("OUTCOME_").lower(): value
               for name, value in os.environ.items()
               if name.startswith("OUTCOME_")
           }
           step_names = (
-              "checkout", "receipt_init", "runtime_pin", "runtime_checkout", "refs", "python", "node",
-              "media", "wheel", "install", "npm", "registry", "selector",
+              "checkout", "receipt_init", "c07_identity", "installed_agent_checkout", "c07_sidecar", "runtime_pin",
+              "runtime_checkout", "c07_app_checkout", "c07_pinokio_checkout", "c07_effective", "refs",
+              "python", "node", "media", "wheel", "install", "npm", "registry", "selector",
           )
-          inner_exits = {
-              name: read_int(receipt_dir / f"{name}.exit", outcome_exit(outcomes.get(name, "unknown")))
-              for name in step_names
-          }
+          c07_steps = {"installed_agent_checkout", "c07_sidecar", "c07_app_checkout", "c07_pinokio_checkout", "c07_effective"}
+          inner_exits = {}
+          for name in step_names:
+              outcome = outcomes.get(name, "unknown")
+              allowed_skip = c07_mode != "c07" and name in c07_steps and outcome == "skipped"
+              fallback = 0 if outcome == "success" or allowed_skip else 1
+              recorded = read_int(receipt_dir / f"{name}.exit", fallback)
+              inner_exits[name] = recorded if outcome == "success" else fallback
           (receipt_dir / "inner-exits.txt").write_text(
               "".join(f"{name}={value}\n" for name, value in inner_exits.items()), encoding="utf-8"
           )
@@ -530,6 +715,21 @@ jobs:
                   runtime_input = json.loads(runtime_lock.read_text(encoding="utf-8"))["source_commit"]
               except (KeyError, json.JSONDecodeError):
                   pass
+
+          def receipt_text(path):
+              try:
+                  return path.read_text(encoding="utf-8").strip() or "unavailable"
+              except OSError:
+                  return "unavailable"
+
+          harness_effective = receipt_text(receipt_dir / "harness.sha")
+          c07_harness = os.environ.get("C07_HARNESS_SHA") or os.environ.get("GITHUB_SHA", "unavailable")
+          c07_agent = os.environ.get("C07_AGENT_SHA") or os.environ.get("GITHUB_SHA", "unavailable")
+          c07_runtime = os.environ.get("C07_RUNTIME_SHA") or runtime_input
+          c07_app = os.environ.get("C07_APP_SHA") or os.environ.get("ASTRID_APP_IDENTITY", "unavailable")
+          c07_pinokio = os.environ.get("C07_PINOKIO_SHA") or "not-requested"
+          app_effective = command_output("git", "-C", "c07-app", "rev-parse", "HEAD") if c07_mode == "c07" else "not-requested"
+          pinokio_effective = command_output("git", "-C", "c07-pinokio", "rev-parse", "HEAD") if c07_mode == "c07" else "not-requested"
 
           composition_package = root / "remotion" / "package.json"
           composition_lock = root / "remotion" / "package-lock.json"
@@ -664,13 +864,22 @@ jobs:
                   "job": os.environ.get("GITHUB_JOB", "unavailable"),
                   "run_ref": os.environ.get("GITHUB_REF", "unavailable"),
                   "requested_agent": os.environ.get("GITHUB_SHA", "unavailable"),
+                  "requested_harness": c07_harness,
+                  "harness_effective": harness_effective,
               },
               "tuple": {
-                  "agent_requested": os.environ.get("GITHUB_SHA", "unavailable"),
+                  "mode": c07_mode,
+                  "harness_requested": c07_harness,
+                  "harness_effective": harness_effective,
+                  "agent_requested": c07_agent,
                   "agent_effective": command_output("git", "rev-parse", "HEAD"),
-                  "runtime_requested": runtime_input,
+                  "runtime_requested": c07_runtime,
                   "runtime_effective": command_output("git", "-C", "astrid-runtime", "rev-parse", "HEAD"),
-                  "app_identity": os.environ.get("ASTRID_APP_IDENTITY", "unavailable"),
+                  "app_identity": c07_app,
+                  "app_effective": app_effective,
+                  "pinokio_requested": c07_pinokio,
+                  "pinokio_effective": pinokio_effective,
+                  "app_manifest_sha256": sha256(receipt_dir / "app-install-manifest.json") if (receipt_dir / "app-install-manifest.json").is_file() else None,
                   "composition": {
                       "name": "@banodoco/timeline-composition",
                       "version": composition_version,
@@ -725,3 +934,4 @@ jobs:
           name: installed-wheel-receipt-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ github.workspace }}/installed-wheel-receipt
           if-no-files-found: warn
+          include-hidden-files: true
