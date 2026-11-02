@@ -781,6 +781,64 @@ def test_real_packs_update_command_and_rollback_restore_previous_generation(
     assert all(read_pin(path / "PIN")["commit"] == old_commit for path in rolled_back.paths.values())
 
 
+def test_rollback_restores_build_hook_metadata_with_the_pack_generation(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import astrid.core.pack.transaction as transaction
+    from astrid.core.pack.transaction import rollback_group
+
+    def build_with_generation_records(request):
+        """Model build-hook records committed with each staged pack tree."""
+        stage = Path(request["stage_root"])
+        source_digest = request["source_digest"]
+        build_dir = stage / ".build"
+        build_dir.mkdir(exist_ok=True)
+        admission = {"version": 1, "packId": request["pack_id"],
+                     "sourceDigest": source_digest}
+        artifact_manifest = {"version": 1, "packId": request["pack_id"],
+                             "sourceDigest": source_digest}
+        (build_dir / "admission.json").write_text(
+            json.dumps(admission, sort_keys=True), encoding="utf-8")
+        (build_dir / f"{source_digest}.artifact-manifest.json").write_text(
+            json.dumps(artifact_manifest, sort_keys=True), encoding="utf-8")
+        return {"version": 1, "ok": True, "pack_id": request["pack_id"],
+                "source_digest": source_digest, "artifact_manifest": None}
+
+    monkeypatch.setattr(transaction, "build_pack_assets", build_with_generation_records)
+    install(repo, packs_root, refresh=accepted_refresh)
+    prior = read_group(packs_root).paths["alpha"]
+    prior_digest = pack_digest(prior)
+    prior_commit = read_pin(prior / "PIN")["commit"]
+    prior_admission = (prior / ".build" / "admission.json").read_bytes()
+    prior_manifest_path = prior / ".build" / f"{prior_digest}.artifact-manifest.json"
+    prior_manifest = prior_manifest_path.read_bytes()
+
+    new_commit = repo.next_revision()
+    second = install(repo, packs_root, revision=new_commit, refresh=accepted_refresh)
+    current = read_group(packs_root).paths["alpha"]
+    current_digest = pack_digest(current)
+    assert (current / ".build" / "admission.json").read_bytes() != prior_admission
+    assert current_digest != prior_digest
+    assert (current / ".build" / f"{current_digest}.artifact-manifest.json").is_file()
+    current_admission = json.loads((current / ".build" / "admission.json").read_text(encoding="utf-8"))
+    assert current_admission["sourceDigest"] == current_digest
+    assert read_pin(current / "PIN")["commit"] == new_commit
+
+    retired = read_retired_group(packs_root=packs_root, transaction_id=second.transaction_id)
+    retired_alpha = retired.paths["alpha"]
+    assert (retired_alpha / ".build" / "admission.json").read_bytes() == prior_admission
+    assert (retired_alpha / ".build" / f"{prior_digest}.artifact-manifest.json").read_bytes() == prior_manifest
+
+    rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                   transaction_id=second.transaction_id, refresh=accepted_refresh)
+    restored = read_group(packs_root).paths["alpha"]
+    assert read_pin(restored / "PIN")["commit"] == prior_commit
+    assert (restored / ".build" / "admission.json").read_bytes() == prior_admission
+    assert (restored / ".build" / f"{prior_digest}.artifact-manifest.json").read_bytes() == prior_manifest
+    admission = json.loads((restored / ".build" / "admission.json").read_text(encoding="utf-8"))
+    assert admission["packId"] == "alpha"
+    assert admission["sourceDigest"] == pack_digest(restored) == prior_digest
+
+
 @pytest.mark.parametrize("failure", ["build", "swap"])
 def test_real_update_command_failure_keeps_previous_generation(
         repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:

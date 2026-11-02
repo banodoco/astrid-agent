@@ -638,7 +638,9 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
 
     The rollback itself is a complete atomic collection publication. Current
     tombstones win over the retired generation, and packs outside ``pack_ids``
-    are copied from the live collection unchanged.
+    are copied from the live collection unchanged. Restored pack directories
+    are copied as complete installed state, including build-hook admission and
+    artifact-manifest files under ``.build``.
     """
     root = _root(packs_root)
     ids = tuple(sorted(set(pack_ids)))
@@ -694,6 +696,9 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     shutil.rmtree(target)
                 admissions.pop(pack_id, None)
                 if pack_id not in tombstones and pack_id in prior_paths:
+                    # Preserve the complete installed tree. In particular,
+                    # M1-16 build-hook admission/artifact records belong to the
+                    # generation and must follow it through rollback.
                     shutil.copytree(prior_paths[pack_id], target)
                     if pack_id in prior_state["admissions"]:
                         admissions[pack_id] = prior_state["admissions"][pack_id]
