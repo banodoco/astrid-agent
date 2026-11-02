@@ -91,7 +91,7 @@ SELF_HOSTED_MACOS_CONTEXT_FIELDS = frozenset((
     "run_id", "run_attempt", "job_id", "matrix_job_id", "runner_name",
     "runner_labels", "runner_os", "runner_arch", "conclusion", "candidate",
     "receipt_sha256", "collector_profile", "collector_version", "collector_sha256",
-    "job_started_at", "job_completed_at",
+    "job_started_at", "job_completed_at", "receipt_ended_at", "freshness_seconds",
 ))
 SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS = frozenset((
     "repository", "workflow_path", "workflow_id", "workflow_sha", "ref", "head_sha", "run_id", "run_attempt",
@@ -100,10 +100,12 @@ SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS = frozenset((
 ))
 SELF_HOSTED_MACOS_COLLECTION_FIELDS = frozenset((
     "schema_version", "prepared_only", "started_at", "ended_at", "initial_census",
-    "final_census", "event_sequence", "loss_counters", "inner_exit", "freshness_seconds",
+    "final_census", "event_sequence", "loss_counters", "inner_exit",
 ))
 SELF_HOSTED_MACOS_COLLECTOR_PROFILE = "release1-installed-lifecycle"
 SELF_HOSTED_MACOS_COLLECTOR_VERSION = 2
+SELF_HOSTED_MACOS_COLLECTION_SCHEMA_VERSION = 2
+SELF_HOSTED_MACOS_TRUSTED_CONTEXT_SCHEMA_VERSION = 3
 SELF_HOSTED_MACOS_MAX_FRESHNESS_SECONDS = 900
 
 
@@ -162,8 +164,11 @@ def _self_hosted_collection_errors(receipt, trusted_context):
         errors.append("self-hosted macOS: collector evidence is missing " + ", ".join(missing))
     if unknown:
         errors.append("self-hosted macOS: collector evidence has unknown fields " + ", ".join(unknown))
-    if collection.get("schema_version") != 1:
-        errors.append("self-hosted macOS: collector evidence schema version is not 1")
+    if collection.get("schema_version") != SELF_HOSTED_MACOS_COLLECTION_SCHEMA_VERSION:
+        errors.append(
+            "self-hosted macOS: collector evidence schema version is not "
+            f"{SELF_HOSTED_MACOS_COLLECTION_SCHEMA_VERSION}"
+        )
     if collection.get("prepared_only") is not False or receipt.get("evidence_class") == "prepared-only":
         errors.append("self-hosted macOS: prepared-only evidence is not admissible")
 
@@ -171,19 +176,29 @@ def _self_hosted_collection_errors(receipt, trusted_context):
     ended = _rfc3339(collection.get("ended_at"))
     job_started = _rfc3339(trusted_context.get("job_started_at"))
     job_completed = _rfc3339(trusted_context.get("job_completed_at"))
+    context_ended = _rfc3339(trusted_context.get("receipt_ended_at"))
     if started is None or ended is None or ended < started:
         errors.append("self-hosted macOS: collector start/end times are absent or malformed")
     if job_started is None or job_completed is None or job_completed < job_started:
         errors.append("self-hosted macOS: trusted job time bounds are absent or malformed")
-    if None not in (started, ended, job_started, job_completed):
+    if context_ended is None:
+        errors.append("self-hosted macOS: trusted receipt end time is absent or malformed")
+    elif collection.get("ended_at") != trusted_context.get("receipt_ended_at"):
+        # This exact string comparison makes the trusted finalizer attest to
+        # the timestamp it read from the same digest-bound raw receipt bytes.
+        errors.append("self-hosted macOS: trusted receipt end time differs from raw receipt")
+    if None not in (started, ended, job_started, job_completed, context_ended):
         if started < job_started or ended > job_completed:
             errors.append("self-hosted macOS: collector times fall outside API job bounds")
-        freshness = collection.get("freshness_seconds")
+        # ``job_completed_at`` does not exist while the runner is producing
+        # the raw receipt.  Freshness is therefore a post-job trusted-context
+        # assertion, re-derived here from the immutable receipt end timestamp.
+        freshness = trusted_context.get("freshness_seconds")
         observed_freshness = int((job_completed - ended).total_seconds())
         if (type(freshness) is not int or freshness < 0
                 or freshness != observed_freshness
                 or freshness > SELF_HOSTED_MACOS_MAX_FRESHNESS_SECONDS):
-            errors.append("self-hosted macOS: collector freshness is absent, stale, or inconsistent")
+            errors.append("self-hosted macOS: trusted freshness is absent, stale, or inconsistent")
 
     for name in ("initial_census", "final_census"):
         census = collection.get(name)
@@ -236,8 +251,11 @@ def self_hosted_macos_identity_errors(candidate, receipt, trusted_context, recei
         errors.append("self-hosted macOS: trusted context is missing " + ", ".join(missing))
     if unknown:
         errors.append("self-hosted macOS: trusted context has unknown fields " + ", ".join(unknown))
-    if trusted_context.get("schema_version") != 2:
-        errors.append("self-hosted macOS: trusted context schema version is not 2")
+    if trusted_context.get("schema_version") != SELF_HOSTED_MACOS_TRUSTED_CONTEXT_SCHEMA_VERSION:
+        errors.append(
+            "self-hosted macOS: trusted context schema version is not "
+            f"{SELF_HOSTED_MACOS_TRUSTED_CONTEXT_SCHEMA_VERSION}"
+        )
     if trusted_context.get("source") != "github-actions-api":
         errors.append("self-hosted macOS: trusted context must be GitHub Actions API-originated")
     if trusted_context.get("repository") != "banodoco/astrid-agent":

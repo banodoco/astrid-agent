@@ -81,7 +81,7 @@ def authenticated_row(frozen):
     direct = next(row for row in gate.RELEASE1_MATRIX if row["job_id"] == "direct-macos")
     row = release1_row(direct, frozen)
     context = {
-        "schema_version": 2,
+        "schema_version": gate.SELF_HOSTED_MACOS_TRUSTED_CONTEXT_SCHEMA_VERSION,
         "source": "github-actions-api",
         "repository": "banodoco/astrid-agent",
         "workflow_path": ".github/workflows/journey.yml",
@@ -105,6 +105,8 @@ def authenticated_row(frozen):
         "collector_sha256": "c" * 64,
         "job_started_at": "2026-11-02T20:00:00Z",
         "job_completed_at": "2026-11-02T20:10:00Z",
+        "receipt_ended_at": "2026-11-02T20:01:00Z",
+        "freshness_seconds": 540,
     }
     row.update(
         venue="self-hosted",
@@ -114,7 +116,7 @@ def authenticated_row(frozen):
             for key in gate.SELF_HOSTED_MACOS_RECEIPT_IDENTITY_FIELDS
         },
         self_hosted_collection={
-            "schema_version": 1,
+            "schema_version": gate.SELF_HOSTED_MACOS_COLLECTION_SCHEMA_VERSION,
             "prepared_only": False,
             "started_at": "2026-11-02T20:00:05Z",
             "ended_at": "2026-11-02T20:01:00Z",
@@ -123,7 +125,6 @@ def authenticated_row(frozen):
             "event_sequence": {"first": 1, "last": 3, "count": 3, "sha256": "3" * 64},
             "loss_counters": {"emitted": 3, "persisted": 3, "dropped": 0},
             "inner_exit": 0,
-            "freshness_seconds": 540,
         },
     )
     return row, context
@@ -163,7 +164,8 @@ def test_self_hosted_macos_accepts_only_the_complete_api_bound_record(tmp_path):
         ("missing-loss", "event loss counters"),
         ("nonzero-loss", "event loss counters"),
         ("missing-census", "initial census"),
-        ("stale", "collector freshness"),
+        ("stale", "trusted freshness"),
+        ("runner-freshness", "collector evidence has unknown fields freshness_seconds"),
         ("prepared", "prepared-only"),
         ("inner-exit", "inner exit"),
         ("hosted-relabel", "relabelled hosted evidence"),
@@ -187,7 +189,9 @@ def test_self_hosted_macos_required_negative_controls_fail_closed(tmp_path, muta
     elif mutation == "missing-census":
         del receipt["self_hosted_collection"]["initial_census"]
     elif mutation == "stale":
-        receipt["self_hosted_collection"]["freshness_seconds"] = 901
+        context["freshness_seconds"] = 901
+    elif mutation == "runner-freshness":
+        receipt["self_hosted_collection"]["freshness_seconds"] = 540
     elif mutation == "prepared":
         receipt["self_hosted_collection"]["prepared_only"] = True
     elif mutation == "inner-exit":
@@ -205,6 +209,71 @@ def test_self_hosted_macos_rejects_a_wrong_artifact_after_api_binding(tmp_path):
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["execution_identity"]["runner_name"] = "forged-after-hash"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert any("trusted receipt digest differs" in error for error in gate.evaluate_self_hosted_macos_receipt(
+        frozen, receipt_path, context_path
+    ))
+
+
+def test_self_hosted_macos_derives_freshness_only_after_job_completion(tmp_path):
+    frozen, receipt_path, context_path = evaluate(tmp_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert "freshness_seconds" not in receipt["self_hosted_collection"]
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    assert context["receipt_ended_at"] == receipt["self_hosted_collection"]["ended_at"]
+    assert context["freshness_seconds"] == 540
+    assert not gate.evaluate_self_hosted_macos_receipt(frozen, receipt_path, context_path)
+
+
+def test_self_hosted_macos_rejects_missing_or_negative_trusted_freshness(tmp_path):
+    frozen = candidate()
+    receipt, context = authenticated_row(frozen)
+    del context["freshness_seconds"]
+    receipt_path, context_path = write_bound(tmp_path, receipt, context)
+    assert any("missing freshness_seconds" in error for error in gate.evaluate_self_hosted_macos_receipt(
+        frozen, receipt_path, context_path
+    ))
+
+    receipt, context = authenticated_row(frozen)
+    context["freshness_seconds"] = -1
+    receipt_path, context_path = write_bound(tmp_path / "negative", receipt, context)
+    assert any("trusted freshness" in error for error in gate.evaluate_self_hosted_macos_receipt(
+        frozen, receipt_path, context_path
+    ))
+
+
+def test_self_hosted_macos_rejects_stale_post_job_freshness(tmp_path):
+    frozen = candidate()
+    receipt, context = authenticated_row(frozen)
+    context["job_completed_at"] = "2026-11-02T20:16:02Z"
+    context["freshness_seconds"] = 902
+    receipt_path, context_path = write_bound(tmp_path, receipt, context)
+    assert any("trusted freshness" in error for error in gate.evaluate_self_hosted_macos_receipt(
+        frozen, receipt_path, context_path
+    ))
+
+
+def test_self_hosted_macos_rejects_wrong_job_or_forged_context_timestamp(tmp_path):
+    frozen = candidate()
+    receipt, context = authenticated_row(frozen)
+    context["job_id"] = 987654321
+    receipt_path, context_path = write_bound(tmp_path, receipt, context)
+    assert any("receipt job_id differs" in error for error in gate.evaluate_self_hosted_macos_receipt(
+        frozen, receipt_path, context_path
+    ))
+
+    receipt, context = authenticated_row(frozen)
+    context["receipt_ended_at"] = "2026-11-02T20:01:01Z"
+    receipt_path, context_path = write_bound(tmp_path / "timestamp", receipt, context)
+    assert any("trusted receipt end time differs" in error for error in gate.evaluate_self_hosted_macos_receipt(
+        frozen, receipt_path, context_path
+    ))
+
+
+def test_self_hosted_macos_rejects_tampered_raw_receipt_timestamp(tmp_path):
+    frozen, receipt_path, context_path = evaluate(tmp_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["self_hosted_collection"]["ended_at"] = "2026-11-02T20:01:01Z"
+    receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
     assert any("trusted receipt digest differs" in error for error in gate.evaluate_self_hosted_macos_receipt(
         frozen, receipt_path, context_path
     ))
