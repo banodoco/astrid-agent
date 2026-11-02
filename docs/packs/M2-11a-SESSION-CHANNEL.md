@@ -50,3 +50,7 @@ Refusal or error:
 - Stat: only `st_size` is compared (index 2). `st_dev`, `st_ino`, `st_mtime_ns` and `st_ctime_ns` are scratch metadata. `size` and `sha256` stay exact through `manifest.outputs[].bytes`.
 - Cleanup links: no such key exists in the evidence, so nothing is compared for them. Recorded here as absent.
 - Any other difference is a parity failure. Types are compared, so `1` and `True` differ.
+
+## Deadline (lane note)
+- The host sends `run_channel_timeout_seconds` = the remaining run deadline (`max(0.1, execution_deadline - now)`). It bounds each request on the channel: `submit` waits its `timeout_seconds` plus the channel timeout; `progress` and `cancel` wait the channel timeout. It is not a cap on the whole action.
+- The worker accepts any finite value in (0, 86400] and refuses anything else (`session_channel_timeout`). 86400 is a sanity bound for malformed payloads, not a render limit. A 5090 Wan render longer than 15 minutes is covered by the host run deadline.

@@ -173,6 +173,22 @@ def _json_value(value: Any) -> Any:
     return str(value)
 
 
+# The host's remaining run deadline is authoritative. This bound is a sanity cap for
+# a malformed payload only (a 5090 Wan render can exceed 15 minutes; 24 h is the cap).
+SESSION_CHANNEL_MAX_TIMEOUT_SECONDS = 86400.0
+
+
+def session_channel_timeout(payload: Mapping[str, Any]) -> float:
+    """Return the host-supplied session deadline, or the fixed fallback when absent."""
+    from astrid.core.execution.executor.runner import SESSION_ACTION_TIMEOUT_SECONDS
+
+    value = payload.get("run_channel_timeout_seconds", SESSION_ACTION_TIMEOUT_SECONDS)
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not 0 < float(value) <= SESSION_CHANNEL_MAX_TIMEOUT_SECONDS):
+        raise ValueError("invalid session channel deadline")
+    return float(value)
+
+
 def _request_object(raw: Mapping[str, Any], *, kind: str, capability_id: str) -> Any:
     request = dict(raw)
     if kind == "executor":
@@ -252,13 +268,10 @@ def run(payload_path: str | Path, *, captured=None) -> int:
             if type(channel_fd) is not int or channel_fd < 3:
                 raise ValueError("invalid inherited session channel")
             from astrid.core.execution.session_client import SessionClient
-            from astrid.core.execution.executor.runner import SESSION_ACTION_TIMEOUT_SECONDS
 
-            host_timeout = payload.get("run_channel_timeout_seconds", SESSION_ACTION_TIMEOUT_SECONDS)
-            if isinstance(host_timeout, bool) or not isinstance(host_timeout, (int, float)) or not 0 < float(host_timeout) <= 900:
-                raise ValueError("invalid session channel deadline")
             session_client = SessionClient(
-                channel_fd, run_id=payload.get("run_channel_run_id"), timeout_seconds=float(host_timeout))
+                channel_fd, run_id=payload.get("run_channel_run_id"),
+                timeout_seconds=session_channel_timeout(payload))
         try:
             result = run_executor(_request_object(request_payload, kind=kind, capability_id=capability_id), registry, _admission=admission, _session=session_client)
         finally:
