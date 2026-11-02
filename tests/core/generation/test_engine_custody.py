@@ -40,7 +40,8 @@ class Handler(BaseHTTPRequestHandler):
   prompt_id=request['client_id']
   with (started.parent/'prompts').open('a') as f: f.write(prompt_id+'\n')
   data=json.dumps({'prompt_id':prompt_id,'number':1,'node_errors':{}}).encode()
-  self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+  self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);self.wfile.flush()
+  if mode.read_text()=='kill_after_accept': os.kill(os.getpid(),9)
  def log_message(self,*args): pass
  def do_GET(self):
   setting=mode.read_text()
@@ -1025,6 +1026,48 @@ time.sleep(60)
         assert rerun.exit_code == 0 and rerun.stdout == "rerun\n"
         assert _call(client, payload, "health")["owner_id"] == first["owner_id"]
         assert len(started.read_text().splitlines()) == 1
+    finally:
+        outside.terminate()
+        outside.wait(timeout=5)
+
+
+def test_owned_comfy_killed_after_prompt_acceptance_has_coded_failure_and_recovers(session):
+    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+
+    client, payload, recipe, root, mode, started = session
+    first = _call(client, payload)
+    comfy_pid = int(started.read_text().splitlines()[-1])
+    registry = Path(root, "runtime/out/sessions/vibecomfy-h3")
+    supervisor_pid = json.loads((registry / "launch.json").read_text())["pid"]
+    outside = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    mode.write_text("kill_after_accept")
+    target = ComfyTargetClient(ComfyTarget(f"http://127.0.0.1:{recipe.start.port}", "attached"))
+    try:
+        acceptance = target.submit_prompt({"client_id": "killed-after-acceptance", "prompt": {}})
+        assert acceptance["prompt_id"] == "killed-after-acceptance"
+        assert (root / "prompts").read_text().splitlines() == ["killed-after-acceptance"]
+        _wait(lambda: not _alive(comfy_pid))
+        with pytest.raises(Exception) as captured_failure:
+            target.history(acceptance["prompt_id"])
+        surfaced = captured_failure.value
+
+        # The killed ComfyUI child is reaped with its owner. An unrelated
+        # process survives, and the same installation owner can start healthy.
+        client.stop_owned(deadline=time.monotonic() + 15)
+        assert not _alive(comfy_pid) and not _alive(supervisor_pid)
+        assert outside.poll() is None
+        mode.write_text("healthy")
+        rerun = _call(client, payload)
+        assert rerun["healthy"] is True and rerun["owner_id"] != first["owner_id"]
+        assert len(started.read_text().splitlines()) == 2
+        assert outside.poll() is None
+
+        assert surfaced.code == "transport_failed"
+        assert surfaced.retryable is True
+        fix = surfaced.fix.lower()
+        assert "restart comfyui" in fix
+        assert "retry history reconciliation" in fix
+        assert "do not resubmit the prompt" in fix
     finally:
         outside.terminate()
         outside.wait(timeout=5)

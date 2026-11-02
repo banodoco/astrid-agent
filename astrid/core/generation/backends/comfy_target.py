@@ -269,8 +269,25 @@ class ComfyTargetClient:
 
     def history(self, prompt_id: str) -> dict[str, Any]:
         prompt_id = self._prompt_id(prompt_id)
-        result = self._json("/history/" + urllib_parse.quote(prompt_id, safe=""), timeout=30,
-                            response_limit=MAX_JSON_BYTES, acknowledge_empty=False)
+        try:
+            result = self._json("/history/" + urllib_parse.quote(prompt_id, safe=""), timeout=30,
+                                response_limit=MAX_JSON_BYTES, acknowledge_empty=False)
+        except urllib_error.URLError as exc:
+            # A history read is safe to retry only after this client witnessed
+            # acceptance. Keep HTTP response errors and all unaccepted prompt
+            # failures on their existing paths.
+            if prompt_id not in self._witnessed_prompts or isinstance(exc, urllib_error.HTTPError):
+                raise
+            error = TransportError(
+                "Comfy history is temporarily unreachable after prompt acceptance; "
+                "the accepted prompt was not resubmitted."
+            )
+            error.retryable = True
+            error.fix = (
+                "Restart ComfyUI, then retry history reconciliation for this accepted prompt; "
+                "do not resubmit the prompt."
+            )
+            raise error from exc
         if not isinstance(result, dict):
             raise ValueError("Comfy history response is not an object")
         return result

@@ -123,7 +123,7 @@ def test_gateway_reports_missing_provider_key_as_terminal_precondition(monkeypat
         error = CapabilityPreconditionError("FAL_KEY is required for this provider.")
         error.code = "GENERATION_KEY_MISSING"
         error.field = "credentials"
-        error.fix = "Configure FAL_KEY and retry."
+        error.fix = "Set FAL_KEY in the shell environment before retrying."
         raise error
 
     @contextmanager
@@ -144,6 +144,7 @@ def test_gateway_reports_missing_provider_key_as_terminal_precondition(monkeypat
     assert "code: GENERATION_KEY_MISSING" in captured.err
     assert "FAL_KEY is required" in captured.err
     assert "fix: astrid generate describe --entry flux-schnell" in captured.err
+    assert "Set FAL_KEY in the shell environment before retrying." in captured.err
     assert events == ["client-open", "generation-dispatched", "client-close"]
 
 
