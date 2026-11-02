@@ -139,6 +139,42 @@ def test_raw_captured_release0_macos_program_root_action_is_admitted(tmp_path, m
     manager.publish_launch_admission(version, data)
 
     assert manager.path.read_bytes() != captured
+    assert plistlib.loads(manager.path.read_bytes())["ProgramArguments"] == command(
+        version, data, env_file=manager.env_file,
+    )
+    assert not manager.env_file.exists()
+
+
+def test_raw_captured_release0_macos_foreign_action_refuses_before_mutation(tmp_path, monkeypatch):
+    manager, version, data, _legacy, _legacy_settings = _posix_service(tmp_path, monkeypatch, "darwin")
+    captured = _captured_r0_macos_definition(version, data)
+    foreign = captured.replace(
+        str(manager.env_file).encode(), str(tmp_path / "foreign" / "service-env.json").encode(), 1,
+    )
+    assert foreign != captured
+    manager.path.write_bytes(foreign)
+
+    with pytest.raises(ValueError, match="unknown or changed action/owner"):
+        manager.publish_launch_admission(version, data)
+
+    assert manager.path.read_bytes() == foreign
+    assert not manager.env_file.exists()
+    assert not list(manager.path.parent.glob(".astrid-*"))
+
+
+def test_raw_captured_release0_macos_foreign_owner_refuses_before_mutation(tmp_path, monkeypatch):
+    manager, version, data, _legacy, _legacy_settings = _posix_service(tmp_path, monkeypatch, "darwin")
+    captured = _captured_r0_macos_definition(version, data)
+    manager.path.write_bytes(captured)
+    write_json(manager.selection, {"owner": "foreign.installer", "program_root": str(manager.root),
+                                   "data_root": str(data)})
+
+    with pytest.raises(ValueError, match="service record belongs to another installer"):
+        manager.publish_launch_admission(version, data)
+
+    assert manager.path.read_bytes() == captured
+    assert not manager.env_file.exists()
+    assert not list(manager.path.parent.glob(".astrid-*"))
 
 
 @pytest.mark.parametrize("system", ["darwin", "linux"])
