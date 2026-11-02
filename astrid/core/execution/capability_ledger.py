@@ -172,11 +172,6 @@ _HISTORICAL_SOURCE_LABELS: tuple[dict[str, Any], ...] = (
     },
 )
 
-# These personal adapters are opt-in project packs.  They may be present in
-# an editable checkout, but they are not part of the canonical source census;
-# their executor contracts remain represented by the optional matrix rows.
-_OPTIONAL_PROJECT_PACK_IDS = frozenset({"discord_local", "seedance_local"})
-
 _HISTORICAL_EXECUTOR_ROWS: tuple[dict[str, Any], ...] = (
     {
         "id": "iteration.prepare",
@@ -185,7 +180,7 @@ _HISTORICAL_EXECUTOR_ROWS: tuple[dict[str, Any], ...] = (
         "discovery_status": "historical_only",
         "executable": False,
         "reason": "Retired thread/sidecar iteration preparation executor.",
-        "source": "historical: astrid/core/contracts/output_result_exemptions.json",
+        "source": "historical-only",
     },
     {
         "id": "training.asset_cache",
@@ -194,7 +189,7 @@ _HISTORICAL_EXECUTOR_ROWS: tuple[dict[str, Any], ...] = (
         "discovery_status": "historical_only",
         "executable": False,
         "reason": "Retired persistent URL asset-cache executor.",
-        "source": "historical: astrid/core/contracts/output_result_exemptions.json",
+        "source": "historical-only",
     },
 )
 
@@ -278,9 +273,14 @@ def _census_check(current: set[str], approved: list[str] | None, quarantined: se
 
 
 def _source_labels(repo_root: Path, *, excluded: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    from astrid.core.pack import load_pack_manifest
+
     rows: list[dict[str, Any]] = []
     for manifest in sorted((repo_root / "astrid" / "packs").glob("*/pack.yaml")):
-        if manifest.parent.name in _OPTIONAL_PROJECT_PACK_IDS or manifest.parent.name in excluded:
+        if manifest.parent.name in excluded:
+            continue
+        pack = load_pack_manifest(manifest)
+        if pack.extensions.get("astrid", {}).get("project_scope") == "optional":
             continue
         raw = _load_manifest_payload(manifest)
         labels = raw.get("capabilities", []) if isinstance(raw, Mapping) else []
@@ -318,24 +318,77 @@ def _aliases(repo_root: Path, *, excluded: frozenset[str] = frozenset()) -> list
 
 
 def _executor_inventory(repo_root: Path) -> list[dict[str, Any]]:
-    source = repo_root / "astrid" / "core" / "contracts" / "output_result_exemptions.json"
-    payload = json.loads(source.read_text(encoding="utf-8"))
-    non_exempt = payload.get("non_exempt", [])
-    exemptions = payload.get("exemptions", {})
-    if not isinstance(non_exempt, list) or not isinstance(exemptions, Mapping):
-        raise CapabilityLedgerError(f"{source}: invalid executor snapshot")
+    from astrid.core.execution.executor.registry import load_default_registry
+    from astrid.core.pack import load_pack_manifest
+
     rows: list[dict[str, Any]] = []
-    for capability_id in sorted(set(str(value) for value in non_exempt)):
-        rows.append({"id": capability_id, "result_contract": "manifest", "disposition": "historical", "source": str(source.relative_to(repo_root))})
-    for capability_id, detail in sorted(exemptions.items()):
-        detail = detail if isinstance(detail, Mapping) else {}
+    parsed_packs = {}
+    for definition in load_default_registry().list():
+        capability_id = definition.id
+        pack_id = capability_id.split(".", 1)[0]
+        manifest = repo_root / "astrid" / "packs" / pack_id / "pack.yaml"
+        if not manifest.is_file():
+            pack_root = definition.metadata.get("pack_root")
+            if pack_root is not None:
+                manifest = Path(pack_root) / "pack.yaml"
+        _pack_id, action_id = capability_id.split(".", 1)
+        try:
+            pack = parsed_packs.get(pack_id)
+            if pack is None:
+                pack = load_pack_manifest(manifest)
+                parsed_packs[pack_id] = pack
+            detail = (
+                pack.extensions.get("astrid", {})
+                .get("output_result_exemptions", {})
+                .get("actions", {})
+                .get(action_id)
+            )
+        except Exception as exc:
+            raise CapabilityLedgerError(f"cannot read output-result policy for {capability_id}: {exc}") from exc
+        if isinstance(detail, Mapping):
+            result_contract = "exempted"
+            reason = str(detail.get("note", ""))
+            reasons = [str(value) for value in detail.get("reasons", [])]
+        elif definition.metadata.get("output_result_manifest") is True:
+            result_contract = "manifest"
+            reason = ""
+            reasons = []
+        else:
+            raise CapabilityLedgerError(f"{manifest}: missing output-result policy for {capability_id}")
         rows.append({
             "id": str(capability_id),
-            "result_contract": "exempted",
+            "result_contract": result_contract,
             "disposition": "historical",
-            "reason": str(detail.get("note", "")),
-            "source": str(source.relative_to(repo_root)),
+            "reason": reason,
+            "reasons": reasons,
+            "source": (
+                str(manifest.relative_to(repo_root))
+                if manifest.is_relative_to(repo_root)
+                else str(manifest)
+            ),
         })
+
+    # External Hivemind declarations remain sourced from the compatibility
+    # capability manifest until M3-05/M1-12 installs the owning pack.
+    source = repo_root / "config" / "astrid-beta-capabilities.json"
+    if not source.is_file():
+        source = Path(__file__).resolve().parents[3] / "config" / "astrid-beta-capabilities.json"
+    try:
+        matrix = json.loads(source.read_text(encoding="utf-8"))
+        external_ids = sorted(
+            str(item["id"]) for item in matrix["capabilities"]
+            if str(item.get("id", "")).startswith("hivemind.")
+        )
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise CapabilityLedgerError(f"cannot read external capability declarations {source}: {exc}") from exc
+    rows.extend({
+        "id": capability_id,
+        "result_contract": "exempted",
+        "disposition": "historical",
+        "reason": "Optional Hivemind action is declared outside the bundled pack inventory.",
+        "reasons": ["external-escape-hatch"],
+        "source": str(source.relative_to(repo_root)) if source.is_relative_to(repo_root) else str(source),
+    } for capability_id in external_ids)
     rows.extend(dict(row) for row in _HISTORICAL_EXECUTOR_ROWS if row["id"] not in {item["id"] for item in rows})
     return rows
 

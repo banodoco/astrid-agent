@@ -22,6 +22,16 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        foley_map:
+          reasons:
+          - paid
+          note: Orchestrates fal.fal_foley calls (paid fal.ai API key) per tile; writes
+            its tiles manifest, prompts and review page but does not yet emit the universal
+            result manifest.
 actions:
   tile_video:
     name: Tile Video

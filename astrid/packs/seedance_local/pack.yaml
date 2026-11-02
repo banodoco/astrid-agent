@@ -6,6 +6,9 @@ status: experimental
 domain: integration
 stability: experimental
 support: project
+extensions:
+  astrid:
+    project_scope: optional
 visibility: visible
 description: Personal, temporary Seedance 2.0 reference-video generation through fal.ai.
 keywords:

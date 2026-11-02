@@ -14,57 +14,13 @@ from typing import Any, Iterable, Literal
 import yaml
 
 # ---------------------------------------------------------------------------
-# Known first-party pack IDs and internal directories
+# Non-pack entries in the source packs root. Pack inventory itself is derived
+# from the manifests present in that root.
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _FIRST_PARTY_PACKS_ROOT = _REPO_ROOT / "astrid" / "packs"
-_FIRST_PARTY_PACK_IDS = (
-    "astrid_motion",
-    "blender",
-    "capture",
-    "chiptune",
-    "comfy_wrap",
-    "developer",
-    "discord_local",
-    "editorial",
-    "fal",
-    "foley",
-    "generation",
-    "h3_av",
-    "iteration",
-    "local",
-    "media",
-    "moirae",
-    "music",
-    "pixel",
-    "rendering",
-    "runpod",
-    "seedance_local",
-    "stream_content",
-    "training",
-    "understanding",
-    "vibecomfy",
-    "video_editing",
-    "wan2gp",
-    "youtube",
-    "typed_timeline",
-    "timeline",
-)
-_TRACKED_FIRST_PARTY_PACK_IDS = tuple(
-    pack_id for pack_id in _FIRST_PARTY_PACK_IDS
-    if pack_id not in {"discord_local", "seedance_local"}
-)
-# ``_core`` is a skill-only shell. Runtime product mount directories
-# retain executable CLI adapters but intentionally have no ``pack.yaml``:
-# their durable state belongs to the neutral workspace runtime, not a local
-# schema host.
-_FIRST_PARTY_INTERNAL_DIRS = {"_core", "references", "shots"}
-# Engine recipe inputs are first-party inventory, but not capability packs or
-# Runtime mounts.  They intentionally have no ``pack.yaml`` and are consumed
-# only by the engine installer/recipe loader.
-_FIRST_PARTY_ENGINE_RESOURCE_DIRS = {"comfyui"}
-_EXCLUDED_FIRST_PARTY_DIRS = {"external", "hivemind"}
+# ``_core`` remains a manifestless skill shell until M3-15 relocates it.
 _IGNORED_PACKS_ROOT_DIRS = {"__pycache__"}
 
 ValidationContext = Literal["standalone", "assembled"]
@@ -201,11 +157,7 @@ def is_first_party_packs_root_candidate(path: str | Path) -> bool:
         if child.is_dir()
         and not child.name.startswith(".")
         and child.name not in _IGNORED_PACKS_ROOT_DIRS
-        and child.name in (
-            set(_FIRST_PARTY_PACK_IDS)
-            | _FIRST_PARTY_INTERNAL_DIRS
-            | _FIRST_PARTY_ENGINE_RESOURCE_DIRS
-        )
+        and (pack_manifest_path(child) is not None or child.name == "_core" or (child / "cli.py").is_file())
     }
     if root == _FIRST_PARTY_PACKS_ROOT:
         return True
@@ -399,6 +351,8 @@ def _first_party_inventory(
     pack_roots: Iterable[str | Path] | None,
 ) -> tuple[list[str], tuple[Path, ...], list[str], list[str]]:
     """Resolve first-party root dispositions without discovering packs."""
+    from astrid.core.pack import pack_manifest_path
+
     if not root.is_dir():
         return [f"{root}: first-party packs root does not exist"], (), [], []
 
@@ -409,42 +363,24 @@ def _first_party_inventory(
         and not child.name.startswith(".")
         and child.name not in _IGNORED_PACKS_ROOT_DIRS
     }
-    runtime_mounts = sorted(
-        name for name in _FIRST_PARTY_INTERNAL_DIRS - {"_core"} if name in child_dirs
-    )
-    excluded = sorted(
-        name for name in _EXCLUDED_FIRST_PARTY_DIRS if name in child_dirs
-    )
+    runtime_mounts = sorted(name for name, child in child_dirs.items() if (child / "cli.py").is_file())
+    excluded: list[str] = []
     if pack_roots is not None:
         selected = tuple(Path(path).expanduser().resolve() for path in pack_roots)
         return [], selected, excluded, runtime_mounts
 
-    expected = set(_FIRST_PARTY_PACK_IDS if root == _FIRST_PARTY_PACKS_ROOT else _TRACKED_FIRST_PARTY_PACK_IDS)
-    if root == _FIRST_PARTY_PACKS_ROOT:
-        expected |= _FIRST_PARTY_ENGINE_RESOURCE_DIRS
-    # Mirrored/test roots may omit optional personal packs, but a known
-    # optional pack is still valid when explicitly present. Keep the allowed
-    # inventory wider than the required inventory so only unknown roots fail.
-    allowed = (
-        set(_FIRST_PARTY_PACK_IDS)
-        | _FIRST_PARTY_INTERNAL_DIRS
-        | _FIRST_PARTY_ENGINE_RESOURCE_DIRS
-        | _EXCLUDED_FIRST_PARTY_DIRS
-    )
     errors: list[str] = []
-    for pack_id in sorted(expected - set(child_dirs)):
-        errors.append(f"missing first-party pack directory: {pack_id}")
-    for name in sorted(set(child_dirs) - allowed):
-        errors.append(f"unexpected top-level directory: {name}")
     selected: list[Path] = []
-    for pack_id in _FIRST_PARTY_PACK_IDS:
-        pack_dir = child_dirs.get(pack_id)
-        if pack_dir is None:
+    for name, child in sorted(child_dirs.items()):
+        if name == "_core" or name in runtime_mounts:
             continue
-        if not (pack_dir / "pack.yaml").is_file():
-            errors.append(f"{pack_id}: pack manifest not found (pack.yaml)")
+        if pack_manifest_path(child) is None:
+            if any(path.is_file() for path in child.rglob("*")):
+                excluded.append(name)
+            else:
+                errors.append(f"unexpected top-level directory: {name}")
             continue
-        selected.append(pack_dir)
+        selected.append(child)
     core_dir = child_dirs.get("_core")
     if core_dir is None:
         errors.append("missing internal directory: _core")

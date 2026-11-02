@@ -49,6 +49,41 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    skills:
+      default: true
+    generation_availability:
+      actions:
+        video_editing.thumbnail_maker:
+          available: false
+          error:
+            code: generation_action_unavailable
+            message: video_editing.thumbnail_maker generation is not implemented
+        video_editing.animate_image:
+          available: false
+          error:
+            code: generation_route_unqualified
+            message: video_editing.animate_image is unavailable because this generation
+              route has not been qualified
+    output_result_exemptions:
+      actions:
+        event_talks:
+          reasons:
+          - no-artifact
+          note: Emits only the event-talk workflow plan JSON; the render step is still
+            a stub, so no media artifact is produced.
+        sync_draft_voiceover:
+          reasons:
+          - paid
+          note: Requests changed speech through generation.generate_speech (paid TTS
+            provider) and publishes through the authoring client; returns a structured
+            report and receipt rather than the universal result manifest.
+        thumbnail_maker:
+          reasons:
+          - no-artifact
+          note: Emits only the thumbnail workflow plan and source evidence; generate-thumbnails
+            is still a stub, so no image artifact is produced.
 actions:
   sync_draft_voiceover:
     name: Synchronize draft voiceover

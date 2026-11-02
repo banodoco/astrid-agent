@@ -133,6 +133,7 @@ def _optional_pack_extensions(value: Any, *, path: str) -> dict[str, Any]:
         "editor",
         "schemas",
         "artifact_types",
+        "astrid",
     }
     unknown_keys = sorted(set(data) - allowed_keys)
     if unknown_keys:
@@ -173,6 +174,11 @@ def _optional_pack_extensions(value: Any, *, path: str) -> dict[str, Any]:
         normalized["artifact_types"] = _normalize_artifact_types(
             data["artifact_types"],
             path=f"{path}.artifact_types",
+        )
+    if "astrid" in data:
+        normalized["astrid"] = _normalize_json_object(
+            data["astrid"],
+            path=f"{path}.astrid",
         )
     return normalized
 

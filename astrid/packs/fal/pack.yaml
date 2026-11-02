@@ -32,6 +32,17 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        fal_foley:
+          reasons:
+          - paid
+          - GPU
+          - external-escape-hatch
+          note: fal.ai hunyuan-video-foley model requiring FAL_KEY API token and external
+            GPU infrastructure.
 actions:
   fal_foley:
     name: fal Hunyuan-Video Foley

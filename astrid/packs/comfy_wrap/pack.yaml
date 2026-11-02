@@ -34,6 +34,16 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        run:
+          reasons:
+          - GPU
+          - external-escape-hatch
+          note: Runs ComfyUI workflows through external VibeComfy/ComfyUI tooling requiring
+            GPU.
 actions:
   run:
     name: Comfy Workflow Run

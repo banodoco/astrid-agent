@@ -55,6 +55,19 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        human_review:
+          reasons:
+          - no-artifact
+          note: Interactive HTTP review server for human-gate approval with no stable
+            output artifact.
+        inspect_cut:
+          reasons:
+          - no-artifact
+          note: Read-only inspection tool for cut run directories with no produced artifact.
 actions:
   arrange:
     cache:

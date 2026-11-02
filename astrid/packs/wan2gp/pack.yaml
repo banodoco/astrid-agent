@@ -39,6 +39,37 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    generation_availability:
+      actions:
+        wan2gp.generate_video:
+          available: false
+          error:
+            code: generation_route_unqualified
+            message: wan2gp.generate_video is unavailable because this generation route
+              has not been qualified
+      models:
+        wan-2.2:
+          available: false
+          error:
+            code: generation_route_unqualified
+            message: wan-2.2 generation is unavailable because this model has not been
+              qualified
+        wan-templates:
+          available: false
+          error:
+            code: generation_route_unqualified
+            message: Wan generation templates are unavailable because they have not
+              been qualified
+      template_models:
+        video/wan: wan-templates
+    output_result_exemptions:
+      actions:
+        validate_settings:
+          reasons:
+          - no-artifact
+          note: Compiles and validates Wan2GP settings without producing a media artifact.
 actions:
   generate_video:
     name: Wan2GP Generate Video

@@ -59,6 +59,39 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    skills:
+      default: true
+    generation_availability:
+      actions:
+        vibecomfy.character_animation:
+          available: false
+          error:
+            code: generation_route_unqualified
+            message: vibecomfy.character_animation is unavailable because this generation
+              route has not been qualified
+    output_result_exemptions:
+      actions:
+        edit:
+          reasons:
+          - external-escape-hatch
+          note: Edits VibeComfy workflows through external VibeComfy CLI; outputs stay
+            with the external tool.
+        import:
+          reasons:
+          - external-escape-hatch
+          note: Imports workflows through the external VibeComfy porting service; the
+            canonical bundle outputs are settled without a universal result manifest.
+        inspect:
+          reasons:
+          - external-escape-hatch
+          note: Inspects VibeComfy workflows through external VibeComfy CLI with no
+            Astrid result receipt.
+        validate:
+          reasons:
+          - external-escape-hatch
+          note: Validates VibeComfy workflows through external VibeComfy CLI.
 actions:
   import:
     name: VibeComfy Import

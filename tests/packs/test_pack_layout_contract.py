@@ -17,10 +17,6 @@ import subprocess
 from pathlib import Path
 
 from astrid.core.pack import discover_packs
-from astrid.core.pack.validate_first_party import (
-    _FIRST_PARTY_PACK_IDS,
-    _TRACKED_FIRST_PARTY_PACK_IDS,
-)
 
 # ── repo-root-relative paths ────────────────────────────────────────────────
 
@@ -46,13 +42,16 @@ _REMOVED_MARKER_IMPORT_PATHS = (
     "astrid.packs.media.actions.clip_extract.run",
 )
 
-# ── known shipped pack ids (must remain stable across layout changes) ───────
-# Every immediate subdirectory of astrid/packs/ that contains a pack
-# manifest is a "shipped pack".  The single source of truth is the first-party
-# validator's inventory; the tracked subset excludes the local-only packs that
-# may be gitignored in a given checkout.
-_SHIPPED_PACK_IDS = frozenset(_FIRST_PARTY_PACK_IDS)
-_TRACKED_SHIPPED_PACK_IDS = frozenset(_TRACKED_FIRST_PARTY_PACK_IDS)
+# Pack identity is read from the manifests in the source tree.
+_SHIPPED_PACK_IDS = frozenset(path.parent.name for path in _PACKS_ROOT.glob("*/pack.yaml"))
+_TRACKED_SHIPPED_PACK_IDS = frozenset(
+    pack_id for pack_id in _SHIPPED_PACK_IDS
+    if not subprocess.run(
+        ["git", "check-ignore", "-q", "--", f"astrid/packs/{pack_id}"],
+        capture_output=True,
+        cwd=_REPO_ROOT,
+    ).returncode == 0
+)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

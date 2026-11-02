@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from functools import lru_cache
-from importlib.resources import files
 from typing import Any
 
 from astrid.core.contracts.errors import AstridError
@@ -12,11 +10,24 @@ from astrid.core.contracts.errors import AstridError
 
 @lru_cache(maxsize=1)
 def availability_declaration() -> dict[str, Any]:
-    """Return the canonical generation availability declaration as JSON data."""
-    resource = files("astrid.core.generation").joinpath("availability.json")
-    payload = json.loads(resource.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        raise RuntimeError("invalid generation availability declaration")
+    """Collect live availability policy from parsed installed pack manifests."""
+    from astrid.core.pack import discover_packs
+
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "actions": {},
+        "fixture_only_routes": {},
+        "models": {},
+        "template_models": {},
+    }
+    for pack in discover_packs():
+        policy = pack.extensions.get("astrid", {}).get("generation_availability", {})
+        if not isinstance(policy, dict):
+            continue
+        for section in ("actions", "fixture_only_routes", "models", "template_models"):
+            values = policy.get(section, {})
+            if isinstance(values, dict):
+                payload[section].update(values)
     return payload
 
 
