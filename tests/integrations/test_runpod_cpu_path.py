@@ -55,25 +55,46 @@ def _same_root_lifecycle(root, realm_root, realm_id):
     manifest = data / "source-manifest.json"
     manifest.write_text(json.dumps({"profile": "astrid", "source_checkout": str(source),
         "runtime_checkout": str(runtime), "runtime_environment": sys.prefix}))
+    lock = json.loads((source / "runtime.lock.json").read_text())
+    runtime_sha = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+    assert runtime_sha == lock["source_commit"]
     digest = _sha(manifest.read_bytes())
     environment = {key: os.environ[key] for key in ("HOME", "PATH", "TMPDIR", "LANG") if key in os.environ}
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     receipts = []
     def cli(*args):
-        argv = [sys.executable, "-I", "-B", "-m", "astrid_runtime", *args,
+        # Bootstrap only the explicitly selected Runtime source. Agent selection
+        # belongs to production CLI and the manifest, never this launcher's path.
+        argv = [sys.executable, "-I", "-B", "-c",
+                "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); "
+                "runpy.run_module('astrid_runtime',run_name='__main__')", str(runtime), *args,
                 "--profile", "astrid", "--data-root", str(data), "--source-manifest", str(manifest),
                 "--hosted-origin", "off", "--json"]
         result = subprocess.run(argv, env=environment, capture_output=True, text=True, timeout=90)
         payload = json.loads(result.stdout)
-        receipts.append({"argv": argv, "exit": result.returncode, "result": payload})
+        receipts.append({"argv": argv, "exit": result.returncode, "result": payload,
+                         "runtime_sha": runtime_sha, "lock_runtime_sha": lock["source_commit"]})
         (root / "runtime-lifecycle.json").write_text(json.dumps(receipts, indent=2))
         assert result.returncode == 0, {"result": payload, "stderr": result.stderr}
         assert _sha(manifest.read_bytes()) == digest
         return payload
+    hosts = []
     def snapshot():
+        from astrid.sdk import host_bootstrap
+        # Start the real selected owner's resident host at this launcher root.
+        with pytest.MonkeyPatch.context() as selected:
+            selected.setenv("ASTRID_RUNTIME_DATA_ROOT", str(data))
+            selected.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", str(manifest))
+            selected.setenv("ASTRID_PACK_HOST_PYTHON", sys.executable)
+            assert AstridClient.open_from_launcher().projects.list().ok
         support = data / "runtime"
+        host = json.loads((support / "generic-host.json").read_text())
+        assert host["source_checkout"] == str(source)
+        assert host_bootstrap._registered_host_status(host) == "ours"
+        hosts.append(host)
         discovery = json.loads((support / "discovery.json").read_text())
         marker = json.loads((support / "instance.lock").read_text())
+        assert host["runtime_instance_id"] == marker["runtime_instance_id"]
         assert marker["realm_id"] == discovery["active_realm"] == realm_id
         assert marker["realm_root"] == discovery["realm_root"] == str(realm_root)
         for name in ("pid", "process_birth_id", "runtime_instance_id"):
@@ -86,7 +107,8 @@ def _same_root_lifecycle(root, realm_root, realm_id):
         health = LocalRuntimeBoundary._http_health_payload(discovery["endpoint"])
         assert health["status"] == "ok" and health["runtime_instance_id"] == marker["runtime_instance_id"]
         receipts.append({"snapshot": {"data_root": str(data), "manifest_sha256": digest,
-            "profile_sha256": _sha(profile_path.read_bytes()), "owner": marker, "discovery": discovery}})
+            "profile_sha256": _sha(profile_path.read_bytes()), "owner": marker, "discovery": discovery,
+            "host": host, "host_kernel_birth_id": LocalRuntimeBoundary.process_birth_identity(host["pid"])}})
         (root / "runtime-lifecycle.json").write_text(json.dumps(receipts, indent=2))
         return marker
     cli("workspace", "attach", "--realm-root", str(realm_root), "--realm-id", realm_id,
@@ -100,6 +122,14 @@ def _same_root_lifecycle(root, realm_root, realm_id):
         running = False
         assert LocalRuntimeBoundary.process_birth_identity(prior["pid"]) != prior["process_birth_id"]
         assert not (data / "runtime" / "discovery.json").exists()
+        from astrid.sdk import host_bootstrap
+        assert host_bootstrap._host_birth_identity(hosts[-1]["pid"]) != hosts[-1]["process_birth_id"]
+        assert not (data / "runtime" / "generic-host.json").exists()
+        receipts.append({"after_down": {"host_pid": hosts[-1]["pid"],
+            "host_after_birth": host_bootstrap._host_birth_identity(hosts[-1]["pid"]),
+            "runtime_after_birth": LocalRuntimeBoundary.process_birth_identity(prior["pid"]),
+            "registration_exists": False, "discovery_exists": False}})
+        (root / "runtime-lifecycle.json").write_text(json.dumps(receipts, indent=2))
         cli("up")
         running = True
         current = snapshot()
@@ -108,6 +138,14 @@ def _same_root_lifecycle(root, realm_root, realm_id):
     finally:
         if running:
             cli("down")
+            from astrid.sdk import host_bootstrap
+            assert host_bootstrap._host_birth_identity(hosts[-1]["pid"]) != hosts[-1]["process_birth_id"]
+            assert LocalRuntimeBoundary.process_birth_identity(current["pid"]) != current["process_birth_id"]
+            assert not (data / "runtime" / "generic-host.json").exists()
+            receipts.append({"final_down": {"host": hosts[-1], "host_after_birth":
+                host_bootstrap._host_birth_identity(hosts[-1]["pid"]), "runtime_after_birth":
+                LocalRuntimeBoundary.process_birth_identity(current["pid"])}})
+            (root / "runtime-lifecycle.json").write_text(json.dumps(receipts, indent=2))
 
 
 def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
