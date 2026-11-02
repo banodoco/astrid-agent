@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 from astrid.packs.runpod.generation import prepare_retained_generation
 from astrid.packs.runpod.target_selection import (
     PaidSelectionError, RunPodOffer, RunPodSelectionOwner, _digest, _number,
@@ -408,7 +409,7 @@ def build_host_adapter(*, preferences, engine, holds, quiesce, credentials, envi
         runtime_lock["source_commit"], vibe.pin.revision,
     )
     config = RunPodConfig(api_key=credential, transport="https",
-                          allowed_cuda_versions=("13.0",))
+                          allowed_cuda_versions=DEFAULT_ALLOWED_CUDA_VERSIONS)
     selection = broker_selection(preferences, config, account_ref=preferences.provider_account_ref,
                                  data_root=None, compatibility=compatibility)
     async def drain(record):

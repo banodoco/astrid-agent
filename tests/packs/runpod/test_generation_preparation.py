@@ -662,40 +662,53 @@ def test_missing_sdk_cancel_bridge_retains_custody_and_reports_stop_unknown(gene
     }
 
 
-def test_host_adapter_composition_quotes_approved_cuda_version(small_lease, monkeypatch, tmp_path):
-    """The real retained host composition passes its CUDA policy to the quote boundary."""
+def test_host_adapter_composition_quotes_approved_cuda_version(monkeypatch, tmp_path):
+    """The real composition admits a 13.1 host at the provider HTTP boundary."""
     import importlib.util
-    from pathlib import Path
+    import httpx
     from astrid.packs.runpod import adapter as adapter_module
-    import runpod_lifecycle
-    from types import SimpleNamespace
+    from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 
     source = Path(adapter_module.__file__)
     spec = importlib.util.spec_from_file_location("test_host_composed_runpod_adapter", source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    observed = {}
+    observed = []
+    host_cuda = "13.1"
 
-    async def availability(**kwargs):
-        observed.update(kwargs)
-        return SimpleNamespace(gpu_type_id="gpu-exact", datacenters=[SimpleNamespace(
-            status="available", price_per_hour=1.0, datacenter_id="DC-test")])
+    def send(client, request, **kwargs):
+        assert request.method == "POST" and request.url.host in {"api.runpod.io", "graphql.runpod.io"}
+        body = json.loads(request.content)
+        query, variables = body["query"], body.get("variables", {})
+        if "GpuCatalogue" in query:
+            data = {"gpuTypes": [{"id": "gpu-exact", "displayName": "GPU fixture"}]}
+        elif "DataCenterStock" in query:
+            allowed = variables["availability"]["allowedCudaVersions"]
+            observed.append(tuple(allowed))
+            assert tuple(allowed) == DEFAULT_ALLOWED_CUDA_VERSIONS
+            data = {"dataCenters": [{"id": "DC-test", "storageSupport": False,
+                "gpuAvailability": [{"gpuTypeId": "gpu-exact", "available": host_cuda in allowed,
+                                     "stockStatus": "High" if host_cuda in allowed else "None"}]}]}
+        else:
+            assert "DataCenterPrices" in query
+            assert tuple(variables["p0"]["allowedCudaVersions"]) == DEFAULT_ALLOWED_CUDA_VERSIONS
+            data = {"gpuTypes": [{"id": "gpu-exact", "dc0": {
+                "stockStatus": "High", "uninterruptablePrice": 1.0}}]}
+        return httpx.Response(200, request=request, json={"data": data})
 
-    monkeypatch.setattr(runpod_lifecycle, "gpu_availability", availability)
-    from runpod_lifecycle import api
-    monkeypatch.setattr(api, "get_network_volumes", lambda key: [{
-        "id": small_lease.prefs.volume_id, "name": small_lease.prefs.volume_name,
-        "size": small_lease.prefs.volume_size_gb, "dataCenterId": "DC-test",
-    }])
+    monkeypatch.setattr(httpx.Client, "send", send)
+    monkeypatch.setattr(socket.socket, "connect", lambda *args: pytest.fail("external socket forbidden"))
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "runtime-data"))
     adapter = module.build_host_adapter(
-        preferences=small_lease.raw, engine="comfyui", holds=lambda *a, **k: None,
+        preferences={"provider_account_ref": "cuda-policy", "gpu_types": ["GPU fixture"],
+                     "image": "fixture/cuda130@sha256:" + "1" * 64},
+        engine="comfyui", holds=lambda *a, **k: None,
         quiesce=lambda *a, **k: None, credentials=lambda name: "fake-only",
         environ={"ASTRID_RUNPOD_SOURCE_ROOT": str(tmp_path / "source")},
     )
     try:
         quote = adapter.quote()
         assert quote["offer"]["gpu_type_id"] == "gpu-exact"
-        assert observed["allowed_cuda_versions"] == ("13.0",)
+        assert observed == [DEFAULT_ALLOWED_CUDA_VERSIONS] and host_cuda in observed[0]
     finally:
         adapter.lease_owner.close()
