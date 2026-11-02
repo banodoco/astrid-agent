@@ -4,6 +4,8 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -79,6 +81,75 @@ def test_local_schema_refuses_foreign_owner(staged_schema, monkeypatch):
     monkeypatch.setattr(_local_schema, "owned_by_current_user", lambda *_args, **_kw: False)
     with pytest.raises(ValueError, match="owner/mode"):
         _local_schema.verified_schema_path(root, str(schema))
+
+
+def test_owner_mode_rejection_reports_paths_security_process_and_filesystem(staged_schema, tmp_path, monkeypatch):
+    root, schema = staged_schema
+    # Model the installer's version/a and version/py layout without changing admission.
+    version = tmp_path / "version"
+    prefix = version / "py"
+    installed = prefix / "lib" / "site-packages"
+    installed.parent.mkdir(parents=True)
+    shutil.move(str(root), str(installed))
+    source = version / "a" / _local_schema.SCHEMA_RELATIVE_PATH
+    source.parent.mkdir(parents=True)
+    shutil.copyfile(installed / _local_schema.SCHEMA_RELATIVE_PATH, source)
+    schema = installed / _local_schema.SCHEMA_RELATIVE_PATH
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    # Force the actual rejection branch on both Windows and POSIX.
+    rejected = schema.parent
+    monkeypatch.setattr(_local_schema, "owned_by_current_user",
+                        lambda path, *_args, **_kw: path != rejected)
+    with pytest.raises(ValueError, match="foreign owner/mode") as exc:
+        _local_schema.verified_schema_path(installed, str(schema))
+    details = json.loads(str(exc.value).split("diagnostics: ", 1)[1])
+    assert details["configured_schema_resolved"] == str(schema.resolve())
+    assert details["selected_schema_resolved"] == str(schema.resolve())
+    assert details["source_schema_inferred_resolved"] == str(source.resolve())
+    assert details["rejected_path_resolved"] == str(rejected.resolve())
+    for path in (schema, schema.parent, source, source.parent):
+        entry = details["paths"][str(path)]
+        assert entry["filesystem"] != "unavailable" or not sys.platform.startswith(("linux", "win32"))
+        if sys.platform == "win32":
+            assert entry["owner_sid"].startswith("S-")
+            assert entry["owner_dacl_sddl"].startswith("O:")
+        else:
+            facts = path.stat()
+            assert (entry["uid"], entry["gid"], entry["mode"]) == (
+                facts.st_uid, facts.st_gid, oct(facts.st_mode & 0o7777))
+    process = details["process"]
+    if sys.platform == "win32":
+        assert process["user_sid"].startswith("S-")
+        assert process["owner_sid"].startswith("S-")
+        assert isinstance(process["elevated"], bool)
+    else:
+        assert process["euid"] == os.geteuid()
+        assert process["egid"] == os.getegid()
+        assert process["elevated"] == (os.geteuid() == 0)
+
+
+def test_owner_diagnostics_do_not_run_on_admission(staged_schema, monkeypatch):
+    root, schema = staged_schema
+    monkeypatch.setattr(_local_schema, "owned_by_current_user", lambda *_args, **_kw: True)
+    def unexpected(*_args):
+        pytest.fail("diagnostics ran on admission")
+    monkeypatch.setattr(_local_schema, "_owner_failure_diagnostics", unexpected)
+    assert _local_schema.verified_schema_path(root, str(schema)) == schema
+
+
+def test_owner_diagnostics_failure_preserves_rejection(staged_schema, monkeypatch):
+    root, schema = staged_schema
+    monkeypatch.setattr(_local_schema, "owned_by_current_user", lambda *_args, **_kw: False)
+    def unavailable(*_args):
+        raise RuntimeError("sensitive diagnostic failure")
+    if sys.platform == "win32":
+        monkeypatch.setattr(_local_schema, "_windows_context", unavailable)
+    else:
+        monkeypatch.setattr(_local_schema, "_posix_filesystem", unavailable)
+    with pytest.raises(ValueError, match="foreign owner/mode") as exc:
+        _local_schema.verified_schema_path(root, str(schema))
+    assert '"diagnostics": "unavailable"' in str(exc.value)
+    assert "sensitive diagnostic failure" not in str(exc.value)
 
 
 def test_bootstrap_refuses_mutated_staged_contract(staged_schema):
