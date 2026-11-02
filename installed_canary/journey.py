@@ -119,8 +119,8 @@ def run(ctx):
     backend.stop(version, ctx.install / 'data')
     stopped_on_failure = False
     try:
-        pack = ctx.install / 'canary-pack'
-        require(not pack.exists(), 'pack-inventory', pack, 'fresh test-owned pack required')
+        pack = ctx.install / 'canary-pack' / 'installed_canary'
+        require(not pack.parent.exists(), 'pack-inventory', pack.parent, 'fresh test-owned pack required')
         shutil.copytree(ASSETS, pack, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyo'))
         expected_inventory = ctx.payload['parent_inventory']
         require(inventory(pack) == _pack_inventory(pack) == expected_inventory,
