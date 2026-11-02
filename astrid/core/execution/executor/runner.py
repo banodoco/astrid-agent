@@ -334,15 +334,23 @@ def _action_input_values(executor: ExecutorDefinition, request: ExecutorRunReque
 
 
 
-def _declares_session(function: Any) -> bool:
+# Per-run session operation timeout; the worker's client uses the same value.
+SESSION_ACTION_TIMEOUT_SECONDS = 60.0
+
+
+def _declares_parameter(function: Any, name: str) -> bool:
     import inspect
 
     try:
-        parameter = inspect.signature(function).parameters.get("session")
+        parameter = inspect.signature(function).parameters.get(name)
     except (TypeError, ValueError):
         return False
     return parameter is not None and parameter.kind in (
         inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+
+
+def _declares_session(function: Any) -> bool:
+    return _declares_parameter(function, "session")
 
 
 def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest,
@@ -382,6 +390,11 @@ def _run_python_action(executor: ExecutorDefinition, request: ExecutorRunRequest
     if _session is not None and _declares_session(function):
         # The session client is passed by keyword and only to actions that declare it.
         call_values["session"] = _session
+        # Host-owned run values are passed only when the action declares them.
+        if _declares_parameter(function, "output_root"):
+            call_values["output_root"] = Path(str(request.out)).expanduser().resolve() if request.out else None
+        if _declares_parameter(function, "timeout_seconds"):
+            call_values["timeout_seconds"] = SESSION_ACTION_TIMEOUT_SECONDS
     action_result = function(**call_values)
     validate_action_output_definition(executor, action_result)
     return ExecutorRunResult(executor_id=executor.id, kind=executor.kind,

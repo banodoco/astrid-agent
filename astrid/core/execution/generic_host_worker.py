@@ -252,9 +252,10 @@ def run(payload_path: str | Path, *, captured=None) -> int:
             if type(channel_fd) is not int or channel_fd < 3:
                 raise ValueError("invalid inherited session channel")
             from astrid.core.execution.session_client import SessionClient
+            from astrid.core.execution.executor.runner import SESSION_ACTION_TIMEOUT_SECONDS
 
             session_client = SessionClient(
-                channel_fd, run_id=payload.get("run_channel_run_id"), timeout_seconds=60.0)
+                channel_fd, run_id=payload.get("run_channel_run_id"), timeout_seconds=SESSION_ACTION_TIMEOUT_SECONDS)
         try:
             result = run_executor(_request_object(request_payload, kind=kind, capability_id=capability_id), registry, _admission=admission, _session=session_client)
         finally:
