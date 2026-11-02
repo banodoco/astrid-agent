@@ -845,3 +845,212 @@ def test_real_host_reports_installed_and_observed_digest_mismatch(
         "pack_id": "hello_ext", "origin": "user", "installed_digest": installed,
         "observed_digest": observed, "modified": True,
     }]
+
+
+@pytest.mark.parametrize("construction_platform", ["linux", "unsupported"])
+def test_host_retains_capture_mechanism_selected_at_construction(
+    tmp_path, monkeypatch, construction_platform,
+):
+    root = _write_action_pack(tmp_path / "packs" / "hello_ext")
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    with monkeypatch.context() as selection:
+        selection.setattr(generic_host.sys, "platform", construction_platform)
+        host = GenericPackHost(pack_roots=[root], client=runtime, attempt_root=tmp_path / "attempt")
+    host.discover()
+    task = _real_host_task(runtime, "hello_ext.run", "construction-policy")
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    dispatched = []
+
+    def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        dispatched.append(True)
+        output_root.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(payload={}, process_id=12345, returncode=0)
+
+    monkeypatch.setattr(host, "_run_command_definition", execute)
+    # Exercise host admission after changing the construction-time inputs.
+    with monkeypatch.context() as changed:
+        changed.setattr(generic_host.sys, "platform",
+                        "unsupported" if construction_platform == "linux" else "linux")
+        if construction_platform == "linux":
+            host.run_task(task, lease_token="construction-lease")
+        else:
+            with pytest.raises(HostError, match="file lease support"):
+                host.run_task(task, lease_token="construction-lease")
+    receipt = json.loads((tmp_path / "attempt" / "result.json").read_text())
+    if construction_platform == "linux":
+        assert dispatched == [True]
+        assert receipt["status"] == "succeeded"
+        assert receipt["pack_provenance"][0]["observed_digest"] == pack_digest(root)
+    else:
+        assert dispatched == [] and runtime.failures
+        assert receipt["status"] == "failed"
+        assert not receipt.get("pack_provenance")
+
+
+def _composition_pack(tmp_path, route):
+    """Use the same test-owned packs as focused coverage, with a real child."""
+    root = (
+        _write_action_pack(tmp_path / "packs" / "hello_ext")
+        if route == "selected-action"
+        else _write_legacy_pack(tmp_path / "packs" / "hello_ext")
+    )
+    sentinel = tmp_path / "child-side-effect"
+    script = (
+        "import json,sys; from pathlib import Path; "
+        "Path(sys.argv[1]).write_text('child ran'); "
+        "Path(sys.argv[2]).mkdir(parents=True,exist_ok=True); "
+        "Path(sys.argv[2], 'answer.txt').write_text('composition answer'); "
+        "print(json.dumps(dict(pack_provenance=[dict(pack_id='forged')]))); "
+    )
+    outputs = [{"name": "answer", "type": "file", "path_template": "{out}/answer.txt",
+                "artifact_type": "text/plain"}]
+    if route == "selected-action":
+        # Exercise the real selected-pack command loader in the worker process.
+        (root / "emit.py").write_text(script, encoding="utf-8")
+        manifest = yaml.safe_load((root / "pack.yaml").read_text(encoding="utf-8"))
+        manifest["actions"]["run"]["invocation"]["command"]["argv"] = [
+            "{python_exec}", "-m", "astrid.packs.hello_ext.emit", str(sentinel), "{out}",
+        ]
+        manifest["actions"]["run"]["outputs"] = outputs
+        (root / "pack.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    else:
+        path = root / "executors" / "echo" / "executor.yaml"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["command"]["argv"] = ["{python_exec}", "-c", script, str(sentinel), "{out}"]
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "generation.txt").write_text("generation one\n", encoding="utf-8")
+    installed = pack_digest(root)
+    write_pin(root / "PIN", {
+        "version": 1, "source": "https://example.invalid/packs.git#hello_ext",
+        "commit": "1" * 40, "digest_rule": "pack-tree-v1", "digest": installed,
+        "origin": "user",
+    })
+    return root, sentinel, installed
+
+
+def _cli_composition(tmp_path, monkeypatch, real_runtime, route, scenario):
+    """Real CLI, Runtime realm/discovery/catalog, Agent loader, host and child.
+
+    No component under test is substituted. The only race injection delegates
+    every filesystem read, then attempts a competing nonblocking write after
+    the final verification traversal has read its last fixture source bytes.
+    """
+    import signal
+    import sys
+    from astrid.core.gateway.dispatch import compose_profile_handoff
+    from astrid_runtime_client import WorkspaceClient
+
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    monkeypatch.delenv("ASTRID_PACK_HOST_SERVICE_MODE", raising=False)
+    monkeypatch.setenv("ASTRID_HOST_LOG_MB", "0")
+    root, sentinel, installed = _composition_pack(tmp_path, route)
+    if scenario == "modified":
+        (root / "generation.txt").write_text("generation two\n", encoding="utf-8")
+    observed = pack_digest(root)
+    support = tmp_path / "support"
+    daemon = real_runtime(tmp_path / "realm", support_root=support,
+                          log_directory=tmp_path / "runtime-logs")
+    # These publications are made by the real Runtime, not authored by the test.
+    discovery_path = support / "discovery.json"
+    discovery = daemon.discovery.read()
+    catalog = daemon.catalog.read()
+    assert discovery["endpoint"] == daemon.endpoint
+    assert catalog["selected_realm_id"] == discovery["active_realm"]
+    boot = support / "astrid-host" / "boot-manifest.json"
+    compose_profile_handoff(boot, support_root=support)
+    attempt = tmp_path / "attempt"
+    argv = ["astrid-generic-host", "--pack-root", str(root),
+            "--runtime-endpoint", daemon.endpoint,
+            "--runtime-discovery-file", str(discovery_path),
+            "--credential-file", str(daemon.worker_credential_path),
+            "--support-root", str(support), "--boot-manifest-path", str(boot),
+            "--attempt-root", str(attempt), "--register"]
+    # CLI installs process handlers; restore the caller's exact dispositions.
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    previous_journal = generic_host._task_scope._journal
+    try:
+        monkeypatch.setattr(sys, "argv", argv)
+        assert generic_host._cli() == 0
+        generated = WorkspaceClient(daemon.endpoint, daemon.token)
+        capabilities, cursor = generated.list_capabilities()
+        selected = next(cap for cap in capabilities if cap.capability_id == "hello_ext.run")
+        assert selected.status == "ready" and cursor is None
+        registered = generated.get_executor("astrid-pack-host")
+        assert any(cap.capability_id == selected.capability_id and
+                   cap.definition_digest == selected.definition_digest
+                   for cap in registered.capabilities)
+        project = generated.create_project("Composition", slug="composition", idempotency_key="project")
+        task = generated.admit_task(
+            capability_id=selected.capability_id, capability_digest=selected.definition_digest,
+            input_object_ids=[], project_id=project.project_id, idempotency_key="task",
+        )
+        changed = []
+        original_read = Path.read_bytes
+
+        def final_read_mutation(path):
+            content = original_read(path)
+            if scenario == "final-read-write" and path == root / "pack.yaml" and not changed:
+                frame = sys._getframe(1)
+                while frame is not None:
+                    if (frame.f_code is generic_host._run_pack_provenance.__code__
+                            and "pin_path" in frame.f_locals):
+                        # pack.yaml is last in pack_digest's sorted source list;
+                        # generation.txt has already been read on this traversal.
+                        changed.append("attempted")
+                        try:
+                            fd = os.open(root / "generation.txt", os.O_WRONLY | os.O_TRUNC | os.O_NONBLOCK)
+                        except BlockingIOError:
+                            changed.append("blocked")
+                        else:
+                            with os.fdopen(fd, "wb") as stream:
+                                stream.write(b"generation two\n")
+                            changed.append("written")
+                        break
+                    frame = frame.f_back
+            return content
+
+        monkeypatch.setattr(Path, "read_bytes", final_read_mutation)
+        monkeypatch.setattr(sys, "argv", [*argv, "run", "--once"])
+        if scenario == "final-read-write":
+            with pytest.raises(HostError, match="write attempted during capture"):
+                generic_host._cli()
+        else:
+            assert generic_host._cli() == 0
+        terminal = generated.get_task(task.task_id)
+        receipt = json.loads((attempt / "result.json").read_text(encoding="utf-8"))
+        assert receipt["task_id"] == task.task_id
+        assert receipt["attempt_id"] == terminal.attempt_id
+        assert receipt["capability_id"] == "hello_ext.run"
+        if scenario == "final-read-write":
+            assert changed == ["attempted", "blocked"]
+            assert terminal.state == receipt["status"] == "failed"
+            assert not sentinel.exists()
+            assert not receipt.get("pack_provenance")
+            assert not receipt.get("outputs", {}).get("artifacts")
+        else:
+            assert sentinel.read_text() == "child ran"
+            assert terminal.state == receipt["status"] == "succeeded"
+            assert receipt["pack_provenance"] == [{
+                "pack_id": "hello_ext", "origin": "user", "installed_digest": installed,
+                "observed_digest": observed, "modified": scenario == "modified",
+            }]
+            stdout = (attempt / "task-stdout-tail.log").read_text(encoding="utf-8")
+            assert json.loads(stdout)["pack_provenance"] == [{"pack_id": "forged"}]
+            process = receipt["raw_result"]["process_evidence"]
+            assert process["child_boundary"] == "subprocess" and process["returncode"] == 0
+            assert process["process_id"] > 0
+            import hashlib
+            digest = "sha256:" + hashlib.sha256(b"composition answer").hexdigest()
+            assert generated.get_object(digest).data == b"composition answer"
+    finally:
+        generic_host._task_scope.set_orphan_journal(previous_journal)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+@pytest.mark.parametrize("scenario", ["matching", "modified", "final-read-write"])
+def test_production_cli_runtime_capture_composition(tmp_path, monkeypatch, real_runtime, route, scenario):
+    _cli_composition(tmp_path, monkeypatch, real_runtime, route, scenario)
