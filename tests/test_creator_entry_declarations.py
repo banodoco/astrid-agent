@@ -28,10 +28,6 @@ def test_pack_intent_projection_keeps_creator_selection_clear() -> None:
             ],
             "intent": "registered catalog or workflow modes",
         },
-        "wan2gp": {
-            "entrypoints": ["wan2gp.generate_video", "wan2gp.validate_settings"],
-            "intent": "explicitly selected",
-        },
         "fal": {
             "entrypoints": ["fal.fal_foley", "fal.h3_video"],
             "intent": "explicitly selected",
@@ -53,7 +49,6 @@ def test_pack_intent_projection_keeps_creator_selection_clear() -> None:
 def test_only_declared_generation_actions_carry_generation_publication() -> None:
     declared = {
         "vibecomfy": {"video_enhance", "character_animation"},
-        "wan2gp": {"generate_video"},
         "fal": {"fal_foley", "h3_video"},
     }
 
@@ -72,11 +67,9 @@ def test_only_declared_generation_actions_carry_generation_publication() -> None
     assert not vibecomfy["edit"].get("metadata", {}).get("generation_publication")
     assert not vibecomfy["validate"].get("metadata", {}).get("generation_publication")
     assert not vibecomfy["run"].get("metadata", {}).get("generation_publication")
-    wan2gp = _manifest("wan2gp")["actions"]
-    assert not wan2gp["validate_settings"].get("metadata", {}).get("generation_publication")
 
 
 def test_changed_pack_declarations_pass_pack_validation() -> None:
-    for pack_id in ("vibecomfy", "wan2gp", "fal"):
+    for pack_id in ("vibecomfy", "fal"):
         errors, _warnings = validate_pack(ROOT / "astrid" / "packs" / pack_id)
         assert errors == [], f"{pack_id}: {errors}"

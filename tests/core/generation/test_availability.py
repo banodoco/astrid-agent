@@ -56,7 +56,7 @@ def test_executor_documentation_uses_action_decision_and_retains_qualified(monke
     from astrid.core.generation import availability
     from scripts import gen_capability_index as generator
 
-    ids = ['wan2gp.generate_video', 'video_editing.animate_image',
+    ids = ['video_editing.animate_image',
            'vibecomfy.character_animation', 'synthetic.qualified']
     declaration = {**availability.availability_declaration()}
     declaration['actions'] = {**declaration['actions'], 'synthetic.qualified': {'available': True}}
