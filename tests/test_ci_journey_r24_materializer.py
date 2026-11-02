@@ -430,6 +430,106 @@ def test_pinokiod_port_preflight_matches_all_interface_engine_bind(monkeypatch):
     assert selected["address"] == ("0.0.0.0", 42123)
 
 
+class _RuntimeStart:
+    returncode = None
+
+    def poll(self):
+        return None
+
+
+class _HealthResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+def _stub_runtime_health(monkeypatch, health):
+    class Opener:
+        def open(self, *_args, **_kwargs):
+            return _HealthResponse()
+
+    monkeypatch.setattr(materializer.urllib.request, "build_opener",
+                        lambda *_args, **_kwargs: Opener())
+    monkeypatch.setattr(materializer.json, "load", lambda _response: health)
+
+
+def test_wait_runtime_retries_absent_discovery_until_present(monkeypatch, tmp_path):
+    data = tmp_path / "data"
+    discovery = data / "runtime/discovery.json"
+    calls = []
+
+    def sleep(_seconds):
+        calls.append("sleep")
+        discovery.parent.mkdir(parents=True, exist_ok=True)
+        discovery.write_text(json.dumps({
+            "endpoint": "http://127.0.0.1:17340",
+            "runtime_instance_id": "instance",
+        }))
+
+    monkeypatch.setattr(materializer.time, "sleep", sleep)
+    _stub_runtime_health(monkeypatch, {
+        "status": "ok", "runtime_instance_id": "instance",
+    })
+
+    observed = materializer._wait_runtime(data, _RuntimeStart(), timeout=10)
+
+    assert calls == ["sleep"]
+    assert observed["runtime_instance_id"] == "instance"
+
+
+def test_wait_runtime_permanent_absence_is_bounded(monkeypatch, tmp_path):
+    clock = iter((0.0, 1.0, 2.0))
+    monkeypatch.setattr(materializer.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(materializer.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(materializer.MaterializerError, match="readiness timeout"):
+        materializer._wait_runtime(tmp_path / "data", _RuntimeStart(), timeout=2)
+
+
+@pytest.mark.parametrize(
+    "write,match",
+    [
+        (lambda path: path.write_text("{"), "Expecting"),
+        (lambda path: path.write_text(json.dumps({
+            "endpoint": "https://127.0.0.1:17340",
+            "runtime_instance_id": "instance",
+        })), "endpoint mismatch"),
+    ],
+)
+def test_wait_runtime_rejects_invalid_discovery_without_retry(monkeypatch, tmp_path,
+                                                               write, match):
+    discovery = tmp_path / "data/runtime/discovery.json"
+    discovery.parent.mkdir(parents=True)
+    write(discovery)
+    monkeypatch.setattr(materializer.time, "sleep",
+                        lambda _seconds: pytest.fail("invalid discovery must not retry"))
+
+    with pytest.raises((json.JSONDecodeError, materializer.MaterializerError), match=match):
+        materializer._wait_runtime(tmp_path / "data", _RuntimeStart(), timeout=10)
+
+
+def test_wait_runtime_preserves_runtime_identity_check(monkeypatch, tmp_path):
+    discovery = tmp_path / "data/runtime/discovery.json"
+    discovery.parent.mkdir(parents=True)
+    discovery.write_text(json.dumps({
+        "endpoint": "http://127.0.0.1:17340",
+        "runtime_instance_id": "foreign",
+    }))
+    _stub_runtime_health(monkeypatch, {
+        "status": "ok", "runtime_instance_id": "instance",
+    })
+    clock = iter((0.0, 1.0, 2.0))
+    monkeypatch.setattr(materializer.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(materializer.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(materializer.MaterializerError, match="readiness timeout"):
+        materializer._wait_runtime(tmp_path / "data", _RuntimeStart(), timeout=2)
+
+
 @pytest.mark.parametrize("value", [
     "http://127.0.0.1:17340@foreign.example",
     "https://127.0.0.1:17340",
