@@ -119,7 +119,8 @@ def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(socket.socket, "connect", local_only)
     assert console.main(["generate", "list", "--json"]) == 0
     inventory = json.loads(capsys.readouterr().out)
-    selected = next(row for row in inventory if row["id"] == "z-image" and row["backend"] == "local")
+    selected = next(row for row in inventory if row["id"] == "z-image" and row["backend"] == "local"
+                    and row["mode"] == "t2i")
     assert selected["template"] == "image/z_image_turbo"
     (tmp_path / "generate-list.json").write_text(json.dumps(inventory, indent=2))
     output = tmp_path / "dry.png"
@@ -191,6 +192,10 @@ class ProviderHTTP:
         if "DataCenterPrices" in query:
             assert variables["p0"]["dataCenterId"] == "DC-unpinned"
             return {"gpuTypes": [{"id": "gpu-exact", "dc0": {"stockStatus": "High", "uninterruptablePrice": 1.0}}]}
+        if "query GpuTypes" in query:
+            # The actual SDK validates the accepted exact ID before create.
+            assert 'id: "gpu-exact"' in query
+            return {"gpuTypes": [{"id": "gpu-exact", "displayName": "CPU fixture GPU"}]}
         if "podFindAndDeployOnDemand" in query:
             record = json.loads(self.claim_path.read_text())
             assert record["state"] == "allocation_pending"
@@ -333,15 +338,22 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     # These are the only substitutions: provider HTTP, plus a fail-closed
     # socket guard. Runtime, host, admission, adapter, lease and transport run.
     send = httpx.Client.send
+    def provider_response(request):
+        try:
+            return provider.handle(request)
+        except Exception as error:
+            (tmp_path / "provider-http-failure.json").write_text(json.dumps({
+                "type": type(error).__name__, "message": str(error)[:1000]}))
+            raise
     def http_send(client, request, **kwargs):
         if request.url.host in {"127.0.0.1", "localhost", "::1"}:
             return send(client, request, **kwargs)
-        response = provider.handle(request)
+        response = provider_response(request)
         if not kwargs.get("stream"):
             response.read()
         return response
     def requests_send(session, request, **kwargs):
-        response = provider.handle(httpx.Request(request.method, request.url, content=request.body))
+        response = provider_response(httpx.Request(request.method, request.url, content=request.body))
         result = requests.Response()
         result.status_code, result._content = response.status_code, response.read()
         return result
@@ -439,6 +451,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
                     "release": record["cleanup"], "receipt": result.to_dict()}
         (tmp_path / "cpu-receipt.json").write_text(json.dumps(evidence, default=str, indent=2))
     finally:
+        (tmp_path / "provider-http-events.json").write_text(json.dumps(provider.events, indent=2))
         host._shutdown.set()
         worker.join(timeout=35)
         assert not worker.is_alive()
