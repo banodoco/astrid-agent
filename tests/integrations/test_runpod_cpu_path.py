@@ -454,7 +454,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert generation["source_task_id"] == result.task_id and generation["status"] == "completed"
         variants, cursor = owner.list_variants(generation["generation_id"])
         assert cursor is None and len(variants) == 1
-        assert variants[0]["object_id"] == _sha(image_path.read_bytes())
+        assert variants[0]["object_id"] == "sha256:" + _sha(image_path.read_bytes())
         assert client.runs.show(run_id).ok
         record = json.loads(claim_path.read_text())
         assert record["lease"]["state"] == "idle" and record["paid_limits"]["idle_seconds"] == 1800
