@@ -131,6 +131,40 @@ def test_install_candidate_preserves_the_first_identity_error(tmp_path, monkeypa
         )
 
 
+def test_install_candidate_captures_runner_local_installer_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(materializer, "_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        materializer,
+        "_installed",
+        lambda *args: (_ for _ in ()).throw(
+            materializer.MaterializerError("installed data root mismatch")
+        ),
+    )
+    source = tmp_path / ".local/state/astrid-runtime/logs/install.log"
+    source.parent.mkdir(parents=True)
+    source.write_text("Download checksum mismatch: https://example.invalid/ffmpeg\n",
+                      encoding="utf-8")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    receipt = {}
+    with pytest.raises(materializer.MaterializerError, match="installed data root mismatch"):
+        materializer._install_candidate(
+            node=tmp_path / "node", pterm=tmp_path / "pterm",
+            resource=tmp_path / "resource", manifest=tmp_path / "manifest.json",
+            home=tmp_path, env={}, evidence=evidence, receipt=receipt,
+            expected_vibecomfy={"sha": "a" * 40},
+        )
+    captured = evidence / "astrid-installer.log"
+    assert captured.read_bytes() == source.read_bytes()
+    assert receipt["installer_log_diagnostic"] == {
+        "path": str(source),
+        "captured": True,
+        "bytes": source.stat().st_size,
+        "evidence_path": str(captured),
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+
+
 def test_install_candidate_persists_bounded_identity_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(materializer, "_run", lambda *args, **kwargs: None)
     resource = tmp_path / "resource"

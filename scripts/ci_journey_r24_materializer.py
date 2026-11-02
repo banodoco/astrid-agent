@@ -360,6 +360,7 @@ def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Pat
     _run(pterm_argv(node, pterm, install_script),
          log=evidence / "install.log", receipt=receipt, label="pinokio-install",
          env=env, cwd=home, timeout=3600)
+    _capture_installer_log(home, evidence, receipt)
     try:
         return _installed(resource / "app/astrid", manifest, expected_vibecomfy)
     except MaterializerError as exc:
@@ -381,6 +382,43 @@ def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Pat
             "pinokio-install transport completed without a valid installed candidate: "
             f"{exc}"
         ) from exc
+
+
+def _capture_installer_log(home: Path, evidence: Path,
+                           receipt: dict[str, Any], *, max_bytes: int = 4 * 1024 * 1024) -> None:
+    """Best-effort copy of the runner-local App installer log into evidence.
+
+    The App's Linux bootstrap uses ``$HOME/.local/state`` when the child
+    environment does not retain ``XDG_STATE_HOME``.  This capture is diagnostic
+    only: it never changes installer state or turns a missing/oversized log
+    into an install failure.
+    """
+    source = home / ".local/state/astrid-runtime/logs/install.log"
+    record: dict[str, Any] = {"path": str(source), "captured": False}
+    try:
+        selected_home = home.resolve(strict=True)
+        if source.is_symlink() or not source.is_file():
+            record["reason"] = "missing-or-nonregular"
+        else:
+            resolved = source.resolve(strict=True)
+            if selected_home not in resolved.parents:
+                record["reason"] = "outside-installer-home"
+            else:
+                size = resolved.stat().st_size
+                record["bytes"] = size
+                if size > max_bytes:
+                    record["reason"] = "oversized"
+                else:
+                    target = evidence / "astrid-installer.log"
+                    shutil.copyfile(resolved, target)
+                    record.update(
+                        captured=True,
+                        evidence_path=str(target),
+                        sha256=_sha(target),
+                    )
+    except (OSError, ValueError) as exc:
+        record["reason"] = type(exc).__name__
+    receipt["installer_log_diagnostic"] = record
 
 
 def _require_port_free(port: int = PORT) -> None:
