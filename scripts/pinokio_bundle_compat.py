@@ -38,6 +38,7 @@ _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _PUBLISHED = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 _CANDIDATE_FIELDS = {"app", "agent", "runtime", "pinokio", "manifest_sha256"}
+_CANDIDATE_DOCUMENT_FIELDS = _CANDIDATE_FIELDS | {"artifacts"}
 _TUPLE_FIELDS = _CANDIDATE_FIELDS | {"artifacts", "published_at"}
 _ARTIFACT_PATHS = {
     "public/install": "public/install",
@@ -126,6 +127,29 @@ def load_current_tuple(path: Path) -> tuple[bytes, dict[str, Any], dict[str, str
     return raw, value, candidate
 
 
+def load_candidate(path: Path) -> tuple[bytes, dict[str, Any], dict[str, str]]:
+    if not path.is_absolute() or path.is_symlink():
+        raise CompatibilityError("absolute nonsymlink candidate JSON required")
+    raw = _regular(path.resolve(strict=True))
+    value = _decode(raw)
+    if not isinstance(value, dict) or set(value) != _CANDIDATE_DOCUMENT_FIELDS:
+        raise CompatibilityError("candidate document fields differ")
+    candidate = {key: value[key] for key in _CANDIDATE_FIELDS}
+    if any(not isinstance(candidate[key], str) or not _HEX40.fullmatch(candidate[key])
+           for key in ("app", "agent", "runtime", "pinokio")):
+        raise CompatibilityError("candidate commit identity differs")
+    if (not isinstance(candidate["manifest_sha256"], str)
+            or not _HEX64.fullmatch(candidate["manifest_sha256"])):
+        raise CompatibilityError("candidate manifest identity differs")
+    artifacts = value["artifacts"]
+    if not isinstance(artifacts, dict) or set(artifacts) != set(_ARTIFACT_PATHS):
+        raise CompatibilityError("candidate artifact inventory differs")
+    if any(not isinstance(digest, str) or not _HEX64.fullmatch(digest)
+           for digest in artifacts.values()):
+        raise CompatibilityError("candidate artifact identity differs")
+    return raw, value, candidate
+
+
 def _git(root: Path, *args: str) -> bytes:
     try:
         return subprocess.check_output(
@@ -191,16 +215,22 @@ def boundary() -> dict[str, object]:
 
 
 def generate(args: argparse.Namespace) -> dict[str, Any]:
-    tuple_raw, full_tuple, candidate = load_current_tuple(args.current_tuple)
+    source_path = args.candidate or args.current_tuple
+    tuple_raw, full_tuple, candidate = (
+        load_candidate(source_path) if args.candidate
+        else load_current_tuple(source_path)
+    )
     if candidate != r24.R24_CANDIDATE or candidate != provider.LIVE_CANDIDATE:
-        raise CompatibilityError("runner candidate differs from CURRENT-TUPLE")
+        raise CompatibilityError("runner candidate differs from the supplied binding")
     if not (args.producer_ref == provider.LIVE_PRODUCER_REF
-            == mode_actions.MODE_PRODUCER_REF == push_admission.PRODUCER_REF):
-        raise CompatibilityError("producer refs do not form one bundle")
+            == push_admission.PRODUCER_REF):
+        raise CompatibilityError("R-24 producer refs do not form one bundle")
+    if args.mode_producer_ref != mode_actions.MODE_PRODUCER_REF:
+        raise CompatibilityError("mode producer ref differs from the audited binding")
 
     runner = _checkout(args.runner_checkout, args.runner_ref)
     producer = _checkout(args.producer_checkout, args.producer_ref)
-    mode_producer = _checkout(args.mode_producer_checkout, args.producer_ref)
+    mode_producer = _checkout(args.mode_producer_checkout, args.mode_producer_ref)
     if len({runner, producer, mode_producer}) != 3:
         raise CompatibilityError("runner and producer checkouts must be distinct")
     checkouts = {
@@ -219,25 +249,25 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
             or parsed_manifest.get("release") != 1
             or any((parsed_manifest.get(name) or {}).get("sha") != candidate[name]
                    for name in ("agent", "runtime"))):
-        raise CompatibilityError("App manifest differs from CURRENT-TUPLE")
+        raise CompatibilityError("App manifest differs from the supplied candidate")
     for name, relative in _ARTIFACT_PATHS.items():
         if _sha(_regular(checkouts["app"] / relative)) != full_tuple["artifacts"][name]:
-            raise CompatibilityError(f"App artifact differs from CURRENT-TUPLE: {name}")
+            raise CompatibilityError(f"App artifact differs from the supplied candidate: {name}")
 
     producer_sources = {
         **provider.LIVE_PRODUCER_FILES,
         **provider.LIVE_INTERFACE_FILES,
-        **mode_actions.MODE_PRODUCER_FILES,
     }
+    mode_producer_sources = dict(mode_actions.MODE_PRODUCER_FILES)
     _bound_sources(producer, args.producer_ref, producer_sources)
-    _bound_sources(mode_producer, args.producer_ref, producer_sources)
+    _bound_sources(mode_producer, args.mode_producer_ref, mode_producer_sources)
     binding = _decode(_regular(producer / "pinokio/providers/r24-linux-binding.json"))
     if (not isinstance(binding, dict) or binding.get("candidate") != candidate
             or binding.get("stop_sha256") != provider.LIVE_STOP["sha256"]):
-        raise CompatibilityError("producer binding differs from CURRENT-TUPLE")
+        raise CompatibilityError("producer binding differs from the supplied candidate")
     stop = _regular(checkouts["pinokio"] / "pinokio/stop.js")
     if _sha(stop) != provider.LIVE_STOP["sha256"]:
-        raise CompatibilityError("published Pinokio Stop differs from producer binding")
+        raise CompatibilityError("candidate Pinokio Stop differs from producer binding")
 
     request_data = {
         "schema": provider.REQUEST_SCHEMA,
@@ -288,7 +318,7 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
         "schema": SCHEMA,
         "status": "compatible",
         "generated_from": {
-            "path": str(args.current_tuple.resolve(strict=True)),
+            "path": str(source_path.resolve(strict=True)),
             "sha256": _sha(tuple_raw),
         },
         "tuple": full_tuple,
@@ -304,6 +334,10 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
                 producer / "pinokio/providers/r24-linux-binding.json"
             )),
         },
+        "mode_producer": {
+            "ref": args.mode_producer_ref,
+            "sources": mode_producer_sources,
+        },
         "compatibility": {
             "producer_request_sha256": consumed_request.sha256,
             "producer_serializer_executed": True,
@@ -318,12 +352,15 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
 
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
-    value.add_argument("--current-tuple", type=Path, required=True)
+    source = value.add_mutually_exclusive_group(required=True)
+    source.add_argument("--current-tuple", type=Path)
+    source.add_argument("--candidate", type=Path)
     value.add_argument("--runner-checkout", type=Path, required=True)
     value.add_argument("--runner-ref", required=True)
     value.add_argument("--producer-checkout", type=Path, required=True)
     value.add_argument("--mode-producer-checkout", type=Path, required=True)
     value.add_argument("--producer-ref", required=True)
+    value.add_argument("--mode-producer-ref", required=True)
     value.add_argument("--app-checkout", type=Path, required=True)
     value.add_argument("--agent-checkout", type=Path, required=True)
     value.add_argument("--runtime-checkout", type=Path, required=True)

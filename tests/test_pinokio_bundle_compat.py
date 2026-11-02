@@ -24,6 +24,14 @@ CURRENT = {
     },
     "published_at": "2026-11-02T17:55:27Z",
 }
+CANDIDATE = {
+    "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
+    "artifacts": dict(CURRENT["artifacts"]),
+}
 PRODUCER = "13cb31104c8aae655d0ee04efdb9537aa111e340"
 
 
@@ -34,6 +42,16 @@ def test_current_tuple_parser_accepts_exact_shape(tmp_path) -> None:
     assert json.loads(raw) == CURRENT
     assert full == CURRENT
     assert candidate == {key: CURRENT[key] for key in compat._CANDIDATE_FIELDS}
+
+
+def test_provisional_candidate_parser_accepts_exact_shape_without_publication(tmp_path) -> None:
+    path = tmp_path / "candidate.json"
+    path.write_text(json.dumps(CANDIDATE), encoding="utf-8")
+    raw, full, candidate = compat.load_candidate(path)
+    assert json.loads(raw) == CANDIDATE
+    assert full == CANDIDATE
+    assert candidate == {key: CANDIDATE[key] for key in compat._CANDIDATE_FIELDS}
+    assert "published_at" not in full
 
 
 @pytest.mark.parametrize("mutation", ["extra", "artifact", "sha", "time"])
@@ -60,6 +78,9 @@ def test_provisional_runner_and_split_producers_remain_nonqualifying() -> None:
     assert provider.LIVE_PRODUCER_REF == push_admission.PRODUCER_REF
     assert provider.LIVE_PRODUCER_REF != PRODUCER
     assert mode_actions.MODE_PRODUCER_REF == PRODUCER
+    assert r24.R24_CANDIDATE == {
+        key: CANDIDATE[key] for key in compat._CANDIDATE_FIELDS
+    }
     assert compat.boundary() == {
         "authenticated_custody": False,
         "qualification": "not-evaluated",
