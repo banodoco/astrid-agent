@@ -1,4 +1,6 @@
 import json
+import mmap
+import os
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -441,4 +443,255 @@ def test_unpinned_selected_pack_origin_and_digest_are_written_by_real_host(tmp_p
     assert receipt["pack_provenance"] == [{
         "pack_id": "hello_ext", "origin": "folder", "installed_digest": None,
         "observed_digest": observed, "modified": None,
+    }]
+
+
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+@pytest.mark.parametrize("change", ["ordinary-edit", "replacement", "removal"])
+def test_real_host_refuses_change_after_last_capture_read(tmp_path, monkeypatch, route, change):
+    """Mutate immediately after pack_digest reads its last source byte."""
+    pack_root = (
+        _write_action_pack(tmp_path / "packs" / "hello_ext")
+        if route == "selected-action"
+        else _write_legacy_pack(tmp_path / "packs" / "hello_ext")
+    )
+    payload = pack_root / "generation.txt"
+    payload.write_text("generation one\n", encoding="utf-8")
+    installed = pack_digest(pack_root)
+    write_pin(pack_root / "PIN", {
+        "version": 1, "source": "https://example.invalid/packs.git#hello_ext",
+        "commit": "1" * 40, "digest_rule": "pack-tree-v1",
+        "digest": installed, "origin": "user",
+    })
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    run_root = tmp_path / "run"
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], client=runtime, attempt_root=run_root)
+    host.discover()
+    task = _real_host_task(runtime, "hello_ext.run", "task-last-read")
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    command_calls = []
+
+    def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        command_calls.append(True)
+        output_root.mkdir(parents=True, exist_ok=True)
+        (output_root / "answer.txt").write_text("done\n", encoding="utf-8")
+        return SimpleNamespace(payload={}, process_id=12345, returncode=0)
+
+    monkeypatch.setattr(host, "_run_command_definition", execute)
+    original_read = Path.read_bytes
+    digest_active = False
+    changed = False
+
+    def last_read_mutation(path):
+        nonlocal changed
+        content = original_read(path)
+        # pack.yaml sorts after the other regular fixture files in both routes.
+        # Mutate only after its bytes have actually been read by a real digest.
+        if digest_active and path == pack_root / "pack.yaml" and not changed:
+            changed = True
+            if change == "ordinary-edit":
+                try:
+                    fd = os.open(payload, os.O_WRONLY | os.O_TRUNC | os.O_NONBLOCK)
+                except BlockingIOError:
+                    pass  # A file lease refused the competing write.
+                else:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(b"generation two\n")
+            elif change == "replacement":
+                _replace_selected_pack(pack_root)
+            else:
+                shutil.rmtree(pack_root)
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", last_read_mutation)
+    from astrid.core.pack import identity
+
+    original_digest = identity.pack_digest
+
+    def digest_with_last_read(root):
+        nonlocal digest_active
+        is_selected = Path(root).resolve() == pack_root.resolve()
+        previous = digest_active
+        if is_selected:
+            digest_active = True
+        try:
+            return original_digest(root)
+        finally:
+            digest_active = previous
+
+    monkeypatch.setattr(identity, "pack_digest", digest_with_last_read)
+    refused = False
+    try:
+        host.run_task(task, lease_token="lease-last-read")
+    except (HostError, ValueError):
+        refused = True
+
+    assert changed, "mutation hook did not run after the selected pack's last read"
+    receipt_path = run_root / "result.json"
+    if receipt_path.exists():
+        assert not json.loads(receipt_path.read_text(encoding="utf-8")).get("pack_provenance")
+    assert refused
+    assert command_calls == []
+    assert runtime.failures
+
+
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+def test_real_host_refuses_capture_while_writable_mmap_is_open(tmp_path, monkeypatch, route):
+    """An existing writable mapping prevents acquisition of a complete read fence."""
+    pack_root = (
+        _write_action_pack(tmp_path / "packs" / "hello_ext")
+        if route == "selected-action"
+        else _write_legacy_pack(tmp_path / "packs" / "hello_ext")
+    )
+    payload = pack_root / "generation.txt"
+    payload.write_text("generation one\n", encoding="utf-8")
+    installed = pack_digest(pack_root)
+    write_pin(pack_root / "PIN", {
+        "version": 1, "source": "https://example.invalid/packs.git#hello_ext",
+        "commit": "1" * 40, "digest_rule": "pack-tree-v1",
+        "digest": installed, "origin": "user",
+    })
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    run_root = tmp_path / "run"
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], client=runtime, attempt_root=run_root)
+    host.discover()
+    task = _real_host_task(runtime, "hello_ext.run", "task-writable-mmap")
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    command_calls = []
+
+    def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        command_calls.append(True)
+        output_root.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(payload={}, process_id=12345, returncode=0)
+
+    monkeypatch.setattr(host, "_run_command_definition", execute)
+    refused = False
+    with payload.open("r+b") as stream:
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE) as mapped:
+            mapped[:] = b"generation two\n"
+            mapped.flush()
+            try:
+                host.run_task(task, lease_token="lease-writable-mmap")
+            except (HostError, ValueError):
+                refused = True
+
+    receipt_path = run_root / "result.json"
+    if receipt_path.exists():
+        assert not json.loads(receipt_path.read_text(encoding="utf-8")).get("pack_provenance")
+    assert refused
+    assert command_calls == []
+    assert runtime.failures
+
+
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+def test_real_host_terminal_serialization_does_not_reread_source_or_pin(
+    tmp_path, monkeypatch, route,
+):
+    pack_root = (
+        _write_action_pack(tmp_path / "packs" / "hello_ext")
+        if route == "selected-action"
+        else _write_legacy_pack(tmp_path / "packs" / "hello_ext")
+    )
+    installed = pack_digest(pack_root)
+    write_pin(pack_root / "PIN", {
+        "version": 1, "source": "https://example.invalid/packs.git#hello_ext",
+        "commit": "1" * 40, "digest_rule": "pack-tree-v1",
+        "digest": installed, "origin": "user",
+    })
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    run_root = tmp_path / "run"
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], client=runtime, attempt_root=run_root)
+    host.discover()
+    task = _real_host_task(runtime, "hello_ext.run", "task-terminal-read")
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    from astrid.core.pack import identity
+
+    digest_calls = []
+    pin_calls = []
+    original_digest = identity.pack_digest
+    original_pin = identity.read_pin
+
+    def count_digest(root):
+        if Path(root).resolve() == pack_root.resolve():
+            digest_calls.append(True)
+        return original_digest(root)
+
+    def count_pin(path):
+        if Path(path) == pack_root / "PIN":
+            pin_calls.append(True)
+        return original_pin(path)
+
+    monkeypatch.setattr(identity, "pack_digest", count_digest)
+    monkeypatch.setattr(identity, "read_pin", count_pin)
+    terminal_phase = False
+    original_read = Path.read_bytes
+
+    def guard_source_reads(path):
+        if terminal_phase and path.is_relative_to(pack_root):
+            raise AssertionError(f"terminal serialization reread selected source: {path}")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guard_source_reads)
+    counts_at_execution = None
+
+    def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        nonlocal terminal_phase, counts_at_execution
+        counts_at_execution = (len(digest_calls), len(pin_calls))
+        output_root.mkdir(parents=True, exist_ok=True)
+        (output_root / "answer.txt").write_text("done\n", encoding="utf-8")
+        terminal_phase = True
+        return SimpleNamespace(payload={}, process_id=12345, returncode=0)
+
+    monkeypatch.setattr(host, "_run_command_definition", execute)
+    host.run_task(task, lease_token="lease-terminal-read")
+
+    assert counts_at_execution is not None
+    assert digest_calls and pin_calls
+    assert (len(digest_calls), len(pin_calls)) == counts_at_execution
+    receipt = json.loads((run_root / "result.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "succeeded"
+    assert receipt["pack_provenance"][0]["installed_digest"] == installed
+
+
+@pytest.mark.parametrize("route", ["selected-action", "legacy-executor"])
+def test_real_host_reports_installed_and_observed_digest_mismatch(
+    tmp_path, monkeypatch, route,
+):
+    pack_root = (
+        _write_action_pack(tmp_path / "packs" / "hello_ext")
+        if route == "selected-action"
+        else _write_legacy_pack(tmp_path / "packs" / "hello_ext")
+    )
+    installed = pack_digest(pack_root)
+    write_pin(pack_root / "PIN", {
+        "version": 1, "source": "https://example.invalid/packs.git#hello_ext",
+        "commit": "1" * 40, "digest_rule": "pack-tree-v1",
+        "digest": installed, "origin": "user",
+    })
+    payload = pack_root / "generation.txt"
+    payload.write_text("generation two\n", encoding="utf-8")
+    observed = pack_digest(pack_root)
+    runtime = FakeRuntime()
+    runtime.INLINE_SETTLEMENT_OUTPUTS = True
+    run_root = tmp_path / "run"
+    host = GenericPackHost(pack_roots=[tmp_path / "packs"], client=runtime, attempt_root=run_root)
+    host.discover()
+    task = _real_host_task(runtime, "hello_ext.run", "task-digest-mismatch")
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+
+    def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        output_root.mkdir(parents=True, exist_ok=True)
+        (output_root / "answer.txt").write_text("done\n", encoding="utf-8")
+        return SimpleNamespace(payload={}, process_id=12345, returncode=0)
+
+    monkeypatch.setattr(host, "_run_command_definition", execute)
+    host.run_task(task, lease_token="lease-digest-mismatch")
+
+    receipt = json.loads((run_root / "result.json").read_text(encoding="utf-8"))
+    assert receipt["pack_provenance"] == [{
+        "pack_id": "hello_ext", "origin": "user", "installed_digest": installed,
+        "observed_digest": observed, "modified": True,
     }]
