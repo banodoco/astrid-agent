@@ -98,6 +98,33 @@ def test_install_candidate_preserves_the_first_identity_error(tmp_path, monkeypa
         )
 
 
+def test_installed_mode_receipt_is_parsed_and_bound_without_deriving_from_route(tmp_path):
+    resource = tmp_path / "resource"
+    mode_file = resource / "app/install-mode.json"
+    mode_file.parent.mkdir(parents=True)
+    mode_file.write_text('{"schema_version": 1, "mode": "backend"}\n', encoding="utf-8")
+    assert materializer._pinokio_install_mode_receipt(resource, "backend") == {
+        "schema_version": 1, "mode": "backend",
+    }
+    with pytest.raises(materializer.MaterializerError, match="differs from the selected route"):
+        materializer._pinokio_install_mode_receipt(resource, "local")
+
+
+@pytest.mark.parametrize("payload", [
+    '{"schema_version": 1, "mode": "backend", "declared": true}',
+    '{"schema_version": true, "mode": "backend"}',
+    '{"schema_version": 1, "mode": "backend", "mode": "local"}',
+    '{"schema_version": 1, "mode": "unknown"}',
+])
+def test_installed_mode_receipt_rejects_extra_typed_duplicate_and_unknown_fields(tmp_path, payload):
+    resource = tmp_path / "resource"
+    mode_file = resource / "app/install-mode.json"
+    mode_file.parent.mkdir(parents=True)
+    mode_file.write_text(payload, encoding="utf-8")
+    with pytest.raises(materializer.MaterializerError, match="installed Pinokio mode receipt"):
+        materializer._pinokio_install_mode_receipt(resource, "backend")
+
+
 def test_runner_local_home_reaches_child_outside_pinokio_home(tmp_path):
     run_root = tmp_path / "run"
     pinokio_home = run_root / "pinokio-home"

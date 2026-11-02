@@ -420,6 +420,33 @@ def _installed(backend: Path, candidate_manifest: Path) -> tuple[dict[str, Any],
     return version, data
 
 
+def _pinokio_install_mode_receipt(resource: Path, expected_mode: str) -> dict[str, Any]:
+    path = resource / "app/install-mode.json"
+    if path.is_symlink() or not path.is_file():
+        raise MaterializerError("installed Pinokio mode receipt is unavailable")
+
+    def closed_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise MaterializerError("installed Pinokio mode receipt has duplicate fields")
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(path.read_bytes(), object_pairs_hook=closed_object)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise MaterializerError("installed Pinokio mode receipt is malformed") from exc
+    if (not isinstance(value, dict)
+            or set(value) != {"schema_version", "mode"}
+            or type(value.get("schema_version")) is not int
+            or value["schema_version"] != 1
+            or value.get("mode") not in {"backend", "local"}
+            or value["mode"] != expected_mode):
+        raise MaterializerError("installed Pinokio mode receipt differs from the selected route")
+    return {"schema_version": value["schema_version"], "mode": value["mode"]}
+
+
 def _installed_env(version: dict[str, Any], data: Path) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items()
            if key not in {"PYTHONPATH", "PYTHONHOME"}}
@@ -669,6 +696,16 @@ def execute(args: argparse.Namespace) -> int:
             node=node, pterm=pterm, resource=resource, manifest=manifest,
             home=home, env=engine_env, evidence=evidence, receipt=receipt,
         )
+        mode_path = resource / "app/install-mode.json"
+        receipt["pinokio_install_mode_receipt"] = _pinokio_install_mode_receipt(
+            resource, "backend")
+        receipt["pinokio_install_mode_binding"] = {
+            "source": "installed-app/install-mode.json",
+            "sha256": _sha(mode_path),
+            "slot_id": mode_actions.MODES["backend"],
+            "candidate": PUBLISHED_CANDIDATE,
+        }
+        _write(receipt_path, receipt)
         backend = resource / "app/astrid"
         owner = {"schema_version": 1, "run_id": uuid.uuid4().hex,
                  "root": str(backend.resolve()), "data_root": str(data)}
