@@ -1,12 +1,14 @@
-"""M2-11a Luna E: test-pack end-to-end session wiring.
+"""M2-11a Luna E/H: test-pack end-to-end session wiring.
 
 Real: GenericPackHost discover/admit/run_task, the admitted worker subprocess
 (generic_host_worker in a child interpreter), the inherited socketpair, the
 worker-side SessionClient, SessionChannelBroker, and _HostManagedSessionAdapter
-(including its host-side settings recompile).
+(including its host-side compile of raw inputs and the echoed compiled_settings).
 
 Stubbed: only the host edge ``GenericPackHost.invoke_wan_session`` and the
-runtime client (``FakeRuntime``), exactly as the existing v3 tests do.
+runtime client (``FakeRuntime``), exactly as the existing v3 tests do. The
+sessionprobe host profile is registered by this test, since profiles are
+host-owned and keyed by managed tool; it reuses the wan2gp host compile.
 """
 from __future__ import annotations
 
@@ -19,7 +21,8 @@ import yaml
 from astrid.core.execution import session_channel as session_channel_module
 from astrid.core.execution.guards import ExecutionGuardPolicy
 from astrid.core.execution.executor.runner import SESSION_ACTION_TIMEOUT_SECONDS
-from astrid.core.execution.generic_host import GenericPackHost
+from astrid.core.execution.generic_host import GenericPackHost, ManagedToolProfile
+from astrid.packs.wan2gp.src.driver import compile_host_settings
 from tests.test_generic_host import FakeRuntime as _CurrentFakeRuntime
 
 
@@ -31,22 +34,20 @@ TAMPER = "TAMPER"
 # report for that production finding. Not xfailed: the repo forbids xfail.
 RUN_DEADLINE_SECONDS = 600.0
 
+# The action sees only the public surface: the error type from astrid.packs.session.
+# It sends RAW inputs; the host profile compiles them and echoes compiled_settings.
 ACTION_SOURCE = '''
-# Public-surface only: the pack may not deep-import astrid.core or wan2gp
-# (import_violation). The settings literal mirrors the host's wan2gp compile
-# for inputs {message, prompt}; the host recompiles and compares exactly.
-SETTINGS_MIRROR = {
-    "force_fps": "8", "image_refs_strengths": [], "model": "wan-2.2",
-    "model_type": "vace_fun_14B_2_2", "num_inference_steps": 4,
-    "resolution": "512x512", "seed": 0, "video_length": 9,
-}
+from astrid.packs.session import SessionChannelError
+
+TAMPER = "TAMPER"
 
 
 def session_probe(*, message, prompt, output_root, timeout_seconds, session):
     progress = session.progress()
-    settings = {**SETTINGS_MIRROR, "message": message, "prompt": prompt}
-    if message == "TAMPER":
-        settings = {**settings, "prompt": "worker-tampered"}
+    inputs = {"message": message, "prompt": prompt}
+    if message == TAMPER:
+        # Raw inputs the host profile rejects (unsupported resolution).
+        inputs = {**inputs, "resolution": "bogus"}
     report = {
         "session_type": type(session).__name__,
         "output_root": str(output_root),
@@ -56,10 +57,8 @@ def session_probe(*, message, prompt, output_root, timeout_seconds, session):
         "evidence": None,
     }
     try:
-        report["evidence"] = session.submit(settings, timeout_seconds=timeout_seconds)
-    except Exception as exc:
-        if type(exc).__name__ != "SessionChannelError":
-            raise
+        report["evidence"] = session.submit(inputs, timeout_seconds=timeout_seconds)
+    except SessionChannelError as exc:
         report["refused_code"] = exc.code
     return report
 '''
@@ -119,6 +118,9 @@ def _host_and_definition(tmp_path, monkeypatch, *, policy=None):
 
     # Host edge only: the real adapter calls this, nothing above it is replaced.
     monkeypatch.setattr(host, "invoke_wan_session", fake_invoke_wan_session)
+    # Host-owned profile for this managed tool (test wiring; packs cannot add one).
+    host._managed_tool_profiles[PACK_ID] = ManagedToolProfile(
+        compile_settings=compile_host_settings, invoke=fake_invoke_wan_session)
     return host, runtime, calls
 
 
@@ -168,8 +170,8 @@ def test_worker_gets_real_session_client_with_host_deadline_and_compiled_setting
     host, runtime, calls = _host_and_definition(tmp_path, monkeypatch)
     _spy_invoke_capability(host, monkeypatch, children, requests)
     started = time.monotonic()
-    result = _payload(host.run_task(_task(runtime, "probe-ok", {"message": "hello", "prompt": "a red fox"}),
-                                    lease_token="lease"))
+    inputs = {"message": "hello", "prompt": "a red fox"}
+    result = _payload(host.run_task(_task(runtime, "probe-ok", inputs), lease_token="lease"))
     ended = time.monotonic()
 
     # 1. Real worker-side client, host-owned output root, deadline-derived timeout.
@@ -187,12 +189,15 @@ def test_worker_gets_real_session_client_with_host_deadline_and_compiled_setting
     assert result["task"]["status"] == "completed"
 
     # 2. Exactly one host invocation, with the host-compiled settings.
+    expected = compile_host_settings(inputs)
     assert len(calls) == 1
-    from astrid.packs.wan2gp.src.driver import compile_host_settings
-    assert calls[0]["settings"] == compile_host_settings({"message": "hello", "prompt": "a red fox"})
+    assert calls[0]["settings"] == expected
     assert calls[0]["settings"]["prompt"] == "a red fox"
-    assert report["evidence"] == {"result": {"success": True}, "process_id": 4242, "returncode": 0}
     assert 0 < calls[0]["timeout"] <= timeout
+
+    # 3. The evidence echoes exactly what the host compiled and invoked.
+    assert report["evidence"] == {"result": {"success": True}, "process_id": 4242, "returncode": 0,
+                                  "compiled_settings": expected}
 
     # 4. Channel closed after run_task returns: broker closed, both sockets closed.
     assert len(brokers) == 1 and brokers[0].closed is True
@@ -200,7 +205,7 @@ def test_worker_gets_real_session_client_with_host_deadline_and_compiled_setting
     assert len(children) == 1 and children[0].fileno() == -1
 
 
-def test_worker_submit_with_differing_settings_is_refused_before_invocation(tmp_path, monkeypatch, wiring):
+def test_worker_submit_with_host_rejected_inputs_is_refused_before_invocation(tmp_path, monkeypatch, wiring):
     brokers, children = wiring
     requests = []
     host, runtime, calls = _host_and_definition(tmp_path, monkeypatch)
@@ -209,7 +214,7 @@ def test_worker_submit_with_differing_settings_is_refused_before_invocation(tmp_
                                     lease_token="lease"))
 
     report = runtime.settlements[-1][2]["result"]["action_result"]
-    # 3. Worker's copy is refused by the host; the action sees the error code.
+    # 3. The worker's raw inputs are rejected by the host profile; the action sees the error code.
     assert report["refused_code"] == "invalid_settings"
     assert report["evidence"] is None
     assert calls == []
