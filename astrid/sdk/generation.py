@@ -25,9 +25,10 @@ from .exceptions import (
 from .results import _reconstruct_generation_result
 
 if TYPE_CHECKING:
+    from astrid.core.generation.engine_contracts import Placement
+
     from .execution_request import ExecutionRequest
     from .results import InvocationResult
-    from astrid.core.generation.engine_contracts import Placement
 
 
 WorkflowFile = str | Path | Mapping[str, Any]
@@ -67,8 +68,8 @@ class GenerationInputError(CapabilityValidationError):
     """Keep the SDK validation taxonomy while carrying the shared envelope."""
 
     def __init__(self, message: str, *, entry=None):
-        from astrid.core.generation.preflight import generation_error
         from astrid.core.generation.entries import public_description
+        from astrid.core.generation.preflight import generation_error
         if entry is not None and 'inputs' in entry:
             entry = public_description(entry)
         error = generation_error(ValueError(message), entry=entry,
@@ -140,6 +141,7 @@ def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
 
 def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
     import hashlib
+
     from astrid.core.execution.managed_inputs import managed_file_digest
     client = controls.get('client')
     importer = getattr(getattr(client, 'media', None), 'import_file', None)
@@ -239,6 +241,7 @@ def _generation_controls(*, engine, consent, max_usd, deadline):
 def _runpod_paid_controls(controls):
     """Per-call authority only; saved preferences never supply consent/bounds."""
     from datetime import datetime, timezone
+
     from astrid.core.generation.preflight import generation_error
     consent = tuple(controls.get('consent', ()))
     cap, deadline = controls.get('max_usd'), controls.get('deadline')
@@ -253,6 +256,7 @@ def _runpod_paid_controls(controls):
 
 def _bind_runpod_preparation(prepared, *, client, owner, recovery_path, capability_id):
     from astrid.core.generation.preflight import generation_error
+
     from .invocation import retain_prepared_owner
     if not prepared.selection_path or not callable(prepared.endpoint_checkout):
         raise generation_error(ValueError('RunPod preparation omitted attested endpoint custody'),
@@ -272,8 +276,8 @@ def _generation_boundary(method):
     """Project legacy SDK failures without changing their exception taxonomy."""
     @wraps(method)
     def call(*args, **kwargs):
-        from astrid.core.generation.preflight import generation_error
         from astrid.core.contracts.errors import AstridError
+        from astrid.core.generation.preflight import generation_error
         try:
             result = method(*args, **kwargs)
         except AstridSDKError as exc:
@@ -515,18 +519,20 @@ def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any
     import secrets
     from tempfile import TemporaryDirectory
 
+    from vibecomfy.model_assets import _referenced_model_values
+    from vibecomfy.workflow_bundle import emit_bundle
+
     from astrid.core.generation.backends.comfy_target import ComfyTargetClient
     from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+    from astrid.core.generation.features import backend_descriptors_from_pack
     from astrid.core.generation.model_root import (
-        ModelRootBinding, validate_model_root_binding,
+        ModelRootBinding,
+        validate_model_root_binding,
     )
     from astrid.core.model_catalog import registry as catalog
     from astrid.core.model_catalog.schema import validate_registry_with_backends
     from astrid.core.model_catalog.taxonomy import GenerationTaxonomyRegistry
-    from astrid.core.generation.features import backend_descriptors_from_pack
     from astrid.core.pack import load_pack_manifest
-    from vibecomfy.model_assets import _referenced_model_values
-    from vibecomfy.workflow_bundle import emit_bundle
 
     def canonical(value: Any) -> bytes:
         return json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -705,7 +711,10 @@ class GenerationFacade:
                 payload = readiness_envelope()
                 payload['preferences'] = targets.read_config().get('runpod', {})
                 if not save and client is not None:
-                    from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+                    from astrid.core.generation.preflight import (
+                        call_runpod_owner,
+                        runpod_generation_owner,
+                    )
                     payload['target'] = dict(call_runpod_owner(runpod_generation_owner(client).describe))
                 return payload
             if updates:
@@ -732,7 +741,7 @@ class GenerationFacade:
             _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
             if target != 'runpod' or entry is not None or workflow is not None:
                 raise GenerationInputError('target describe requires only target=runpod')
-            from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+            from astrid.core.generation.preflight import call_runpod_owner, runpod_generation_owner
             return dict(call_runpod_owner(runpod_generation_owner(client).describe))
         if bool(entry) == bool(workflow):
             raise GenerationInputError('describe requires an entry or a workflow')
@@ -751,7 +760,7 @@ class GenerationFacade:
         if canonical_engine(engine) != 'comfyui':
             raise GenerationInputError('Phase 1 release supports only comfyui')
         if target == 'runpod':
-            from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+            from astrid.core.generation.preflight import call_runpod_owner, runpod_generation_owner
             return call_runpod_owner(runpod_generation_owner(client).release, wait=wait)
         bridge = getattr(client, 'release_generation', None)
         if not callable(bridge):
@@ -898,7 +907,8 @@ class GenerationFacade:
         if inputs is not None:
             raise GenerationInputError('workflow inputs require an explicit target')
         from astrid.core.generation.backends.registry import (
-            GenerationBackendRegistry, resolve_workflow_descriptor,
+            GenerationBackendRegistry,
+            resolve_workflow_descriptor,
         )
 
         resolve_workflow_descriptor(
@@ -964,10 +974,12 @@ class GenerationFacade:
         from astrid.core.contracts.errors import AstridError
         from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
         from astrid.core.generation.preflight import (
+            compare_versions,
+            generation_error,
+            readiness_envelope,
             require_generation_target_readiness,
             select_generation_target,
             validate_generation_request,
-            generation_error, readiness_envelope, compare_versions,
         )
 
         paid = _runpod_paid_controls(controls) if target == 'runpod' else None
@@ -1028,7 +1040,8 @@ class GenerationFacade:
                            and not entry.get("registry_id")]
             candidates.sort(key=rank)
         from astrid.core.generation.availability import (
-            require_model_available, require_entry_available,
+            require_entry_available,
+            require_model_available,
         )
         automatic = model is None and workflow_entry is None
         qualified = []
@@ -1219,6 +1232,7 @@ class GenerationFacade:
             asset_arguments: dict[str, Any] = {}
             if assets:
                 import zipfile
+
                 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
                 manifest = build_asset_manifest(assets)
                 archive = root / "assets.zip"
@@ -1229,6 +1243,7 @@ class GenerationFacade:
                 asset_arguments["managed_assets"] = import_member(archive)
             if runpod_owner is not None:
                 import uuid
+
                 from astrid.core.generation.preflight import call_runpod_owner
                 prepared = call_runpod_owner(runpod_owner.prepare, workflow=workflow, inputs=dict(inputs), **paid)
                 if controls.get('recovery_path') is None:
@@ -1267,7 +1282,11 @@ class GenerationFacade:
     def _resolve_public_entry(*, entry: str, model: str | None,
                               mode: str | None, modality: str,
                               inputs: Mapping[str, Any], registry: Any):
-        from astrid.core.generation.entries import describe_entry, resolve_entry_inputs, validate_inputs
+        from astrid.core.generation.entries import (
+            describe_entry,
+            resolve_entry_inputs,
+            validate_inputs,
+        )
 
         if model is not None and model != entry:
             raise CapabilityValidationError("model and entry select different generation entries")
@@ -1571,7 +1590,10 @@ class GenerationFacade:
             if not inputs.get("request") or not inputs.get("asset_map"):
                 raise CapabilityValidationError("H3 requires request and asset_map")
             if target == 'runpod':
-                from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+                from astrid.core.generation.preflight import (
+                    call_runpod_owner,
+                    runpod_generation_owner,
+                )
                 paid = _runpod_paid_controls(controls)
                 if client is None:
                     raise CapabilityPreconditionError('RunPod H3 requires a retained host owner client')

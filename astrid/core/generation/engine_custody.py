@@ -6,13 +6,10 @@ The session marker fences owner loss. It never authorizes PID adoption.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-from dataclasses import asdict, replace
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import select
 import signal
@@ -24,18 +21,29 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from dataclasses import asdict, replace
+from pathlib import Path
 
 from runtime_protocol import platform as native
 
 from . import engine_recipe as recipes
 from ._engine_python_bootstrap import engine_child_env
 from .engine_contracts import (
-    CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
-    EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
-    RecipeValidationError, UnsafePathError, UnsupportedPlatform,
+    CommandRequest,
+    CommandResult,
+    CustodyUnresolved,
+    DeadlineExceeded,
+    EndpointHealthError,
+    EndpointOwnershipError,
+    EngineError,
+    IntegrityError,
+    RecipeValidationError,
+    UnsafePathError,
+    UnsupportedPlatform,
 )
-from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
 from .engine_platforms import LinuxPlatformAdapter
+from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _SCHEMA = "astrid.engine-service.v1"
 _FRAME_LIMIT = 16 * 1024 * 1024
@@ -669,7 +677,8 @@ class _Supervisor:
             try:
                 if not _listener_owned(self.engine.process, self.recipe.start.port):
                     raise ValueError("listener does not belong to the owned engine")
-                check = lambda: self.check(channel, deadline)
+                def check():
+                    return self.check(channel, deadline)
                 _get_json(self.recipe.start.port, health.path, 1024 * 1024, deadline, check)
                 nodes = _get_json(self.recipe.start.port, health.object_info_path, 32 * 1024 * 1024, deadline, check)
                 if not set(health.required_nodes) <= nodes.keys():

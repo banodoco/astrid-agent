@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib.util
 import shutil
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
 if TYPE_CHECKING:
     from astrid.packs.runpod.prepared_task import PreparedWorkerSelection
@@ -77,7 +77,6 @@ def call_runpod_owner(method: Callable[..., Any], /, **kwargs: Any) -> Any:
 
 from astrid.core.contracts.errors import AstridError
 from astrid.core.generation.interfaces import ReadinessEnvelope, ReadinessFix, ReadinessIssue
-
 
 _CORE_CODES = {
     'COMFY_TARGET_UNAVAILABLE': 'target_unreachable',
@@ -343,6 +342,7 @@ def _comfyui_runtime_available() -> bool:
 def _managed_install_fix() -> ReadinessFix | None:
     """Describe the indexed local installer for this host without running it."""
     import platform
+
     from astrid.core.generation.engine_contracts import EngineError
     from astrid.core.generation.engine_local_endpoint import default_engine_root
     from astrid.core.generation.engine_recipe import load_recipe_index, load_recipe_model_lock

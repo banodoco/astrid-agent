@@ -674,6 +674,7 @@ def resolve_comfy_models(client: ComfyTargetClient, registry: Any,
 def _main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
+
     from astrid.core.model_catalog.registry import ModelRegistry
 
     parser = argparse.ArgumentParser(description="Resolve catalog roles on an attached Comfy target")
