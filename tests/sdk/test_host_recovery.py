@@ -21,7 +21,9 @@ from astrid.core.execution.generic_host import (
     source_checkout_digest,
 )
 from astrid.sdk import host_bootstrap
-from tests.sdk.test_host_bootstrap_source_identity import _materialize_source_closure
+from tests.sdk.test_host_bootstrap_source_identity import (
+    _materialize_source_closure as _materialize_host_closure,
+)
 
 FAKE_PID = 4242
 MODULE_ARGS = ["-m", "astrid.core.execution.generic_host", "run", "--support-root"]
@@ -32,6 +34,13 @@ LEADER = ("import subprocess,sys,time;"
           "time.sleep(300 if sys.argv[3]=='stay' else 0)")
 
 
+def _materialize_source_closure(root: Path) -> None:
+    _materialize_host_closure(root)
+    fixture_matrix = root / "astrid" / "resources" / "astrid-beta-capabilities.json"
+    fixture_matrix.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(product_resource("astrid-beta-capabilities.json"), fixture_matrix)
+
+
 class Harness:
     def __init__(self, tmp_path: Path, monkeypatch) -> None:
         self.tmp, self.mp = tmp_path, monkeypatch
@@ -39,10 +48,6 @@ class Harness:
         self.source = tmp_path / "source"
         (self.source / "astrid" / "packs").mkdir(parents=True)
         _materialize_source_closure(self.source)
-        packaged_matrix = product_resource("astrid-beta-capabilities.json")
-        fixture_matrix = self.source / "astrid" / "resources" / "astrid-beta-capabilities.json"
-        fixture_matrix.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(packaged_matrix, fixture_matrix)
         self.support = tmp_path / "support"
         (self.support / "credentials").mkdir(parents=True)
         self.credential = self.support / "credentials" / "worker.token"

@@ -31,6 +31,8 @@ def serialize_terminal_result(
     This mapping performs no I/O, validation, error coercion or publication;
     those remain the caller's responsibility, including any fallback receipt.
     """
+    from astrid.sdk.results import _json_safe
+
     receipt = result.to_dict()
     receipt.update({
         "status": status, "task_id": task_id, "attempt_id": attempt_id,
@@ -42,4 +44,6 @@ def serialize_terminal_result(
         "publication": {"status": "settled" if settled else "not_settled",
                         "receipt": settlement, "effect": effect},
     })
-    return receipt
+    # Runtime lifecycle calls return typed SDK DTOs. Preserve their structured
+    # settlement evidence before the host writes its terminal receipt.
+    return _json_safe(receipt)

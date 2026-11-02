@@ -253,7 +253,9 @@ class ProviderHTTP:
     def handle(self, request):
         host, path, method = request.url.host, request.url.path, request.method
         request.read()
-        body = json.loads(request.content) if request.content and request.content[:1] == b"{" else {}
+        body = (json.loads(request.content)
+                if request.content and request.headers.get("content-type", "").split(";", 1)[0] == "application/json"
+                else {})
         self.events.append((method, host, path))
         def reply(data, status=200):
             encoded = json.dumps(data).encode()
@@ -372,7 +374,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
     def requests_send(session, request, **kwargs):
         if httpx.URL(request.url).host in {"127.0.0.1", "localhost", "::1"}:
             return send_requests(session, request, **kwargs)
-        response = provider_response(httpx.Request(request.method, request.url, content=request.body))
+        response = provider_response(httpx.Request(request.method, request.url, headers=request.headers, content=request.body))
         result = requests.Response()
         result.status_code, result._content = response.status_code, response.read()
         return result
