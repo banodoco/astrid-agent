@@ -35,18 +35,13 @@ TOLERANCE_SECONDS = 5.0
 
 ACTION_SOURCE = '''
 # Public-surface only: the pack may not deep-import astrid.core or wan2gp
-# (import_violation). The settings literal mirrors the host's wan2gp compile
-# for inputs {message, prompt}; the host recompiles and compares exactly.
-SETTINGS_MIRROR = {
-    "force_fps": "8", "image_refs_strengths": [], "model": "wan-2.2",
-    "model_type": "vace_fun_14B_2_2", "num_inference_steps": 4,
-    "resolution": "512x512", "seed": 0, "video_length": 9,
-}
+# (import_violation). The worker submits RAW inputs; the host compiles its own
+# admitted copy and refuses any difference (review X-6, S-1).
 
 
 def session_probe(*, message, prompt, output_root, timeout_seconds, session):
     progress = session.progress()
-    settings = {**SETTINGS_MIRROR, "message": message, "prompt": prompt}
+    settings = {"message": message, "prompt": prompt}
     report = {
         "session_type": type(session).__name__,
         "output_root": str(output_root),
