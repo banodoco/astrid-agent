@@ -12,8 +12,9 @@ from pathlib import Path
 
 if __package__:
     from .journey_matrix import (
-        GPU_MATRIX,
+        DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
         END_STATE_INVENTORY,
+        GPU_MATRIX,
         M4_4A_BACKEND_MATRIX,
         M4_4A_BACKEND_SIDECARS,
         M4_4A_OLD_LAUNCHER_REF,
@@ -24,14 +25,17 @@ if __package__:
         M4_4B_LOCAL_SMOKE,
         M4_6_MATRIX,
         M4_6_SLOT_IDS,
+        PINOKIO_R1_SNAPSHOT_ACTIONS,
+        PINOKIO_R1_SNAPSHOT_SCENARIO_ASSERTIONS,
         RELEASE1_JOB_IDS,
         RELEASE1_MATRIX,
     )
 else:
     try:
         from journey_matrix import (
-            GPU_MATRIX,
+            DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
             END_STATE_INVENTORY,
+            GPU_MATRIX,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
             M4_4A_OLD_LAUNCHER_REF,
@@ -42,13 +46,16 @@ else:
             M4_4B_LOCAL_SMOKE,
             M4_6_MATRIX,
             M4_6_SLOT_IDS,
+            PINOKIO_R1_SNAPSHOT_ACTIONS,
+            PINOKIO_R1_SNAPSHOT_SCENARIO_ASSERTIONS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
-            GPU_MATRIX,
+            DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
             END_STATE_INVENTORY,
+            GPU_MATRIX,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
             M4_4A_OLD_LAUNCHER_REF,
@@ -59,6 +66,8 @@ else:
             M4_4B_LOCAL_SMOKE,
             M4_6_MATRIX,
             M4_6_SLOT_IDS,
+            PINOKIO_R1_SNAPSHOT_ACTIONS,
+            PINOKIO_R1_SNAPSHOT_SCENARIO_ASSERTIONS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
         )
@@ -77,6 +86,16 @@ RUNNER_PROVENANCE = {
     "ubuntu-22.04": ("Linux", "ubuntu22"),
     "windows-2022": ("Windows", "win22"),
     "macos-15": ("macOS", "macos15"),
+}
+
+# Pinokio's installed ``app/install-mode.json`` is the only reviewed
+# observation that distinguishes the physical backend and fully-local routes.
+# The release matrix names the declared slot mode; a receipt must retain this
+# parsed installed-mode record separately so the declared label cannot promote
+# a backend installation as a fully-local result.
+PINOKIO_INSTALLED_MODE_BY_SLOT_MODE = {
+    "pinokio-backend": "backend",
+    "pinokio-fully-local": "local",
 }
 
 
@@ -220,6 +239,21 @@ def _release1_row_errors(candidate, contract, row):
         errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
     if row.get("mode") != contract["mode"]:
         errors.append(f"{job_id}: mode does not match the required matrix")
+    if contract["mode"] in PINOKIO_INSTALLED_MODE_BY_SLOT_MODE:
+        expected_installed_mode = PINOKIO_INSTALLED_MODE_BY_SLOT_MODE[contract["mode"]]
+        installed_mode = row.get("pinokio_install_mode_receipt")
+        if not isinstance(installed_mode, dict):
+            errors.append(f"{job_id}: Pinokio installed-mode receipt is absent or malformed")
+        elif (type(installed_mode.get("schema_version")) is not int
+              or installed_mode.get("schema_version") != 1):
+            errors.append(f"{job_id}: Pinokio installed-mode receipt has an unknown schema")
+        elif installed_mode.get("mode") not in {"backend", "local"}:
+            errors.append(f"{job_id}: Pinokio installed-mode receipt has an unknown mode")
+        elif installed_mode["mode"] != expected_installed_mode:
+            errors.append(
+                f"{job_id}: declared {contract['mode']} slot conflicts with "
+                f"installed receipt mode {installed_mode['mode']!r}"
+            )
     if row.get("scenario") != contract.get("leg", "fresh-install"):
         errors.append(f"{job_id}: scenario does not match the required matrix leg")
     if row.get("runner_image") != contract["runner"]:
@@ -763,6 +797,70 @@ def _visibility_receipts(results):
     return release1, m4_5, m4_6, errors
 
 
+def _pinokio_snapshot_end_state_errors(row, obligation):
+    """Require the Option-B R1 snapshot/end-state evidence for one Pinokio ID.
+
+    These fields establish only the action-boundary/end-state assertion.  The
+    separately inventoried gap-free custody and removal-authority-continuity
+    claim is deferred and must not appear in this snapshot record.
+    """
+    errors = []
+    snapshot = row.get("pinokio_snapshot_end_state")
+    if not isinstance(snapshot, dict):
+        return ["Pinokio action-boundary snapshot/end-state evidence is absent"]
+    if snapshot.get("evidence_class") != "action-boundary-snapshots":
+        errors.append("Pinokio evidence class must be action-boundary-snapshots")
+    boundaries = snapshot.get("action_boundaries")
+    if not isinstance(boundaries, dict):
+        errors.append("Pinokio action-boundary snapshots are absent")
+    else:
+        for action in PINOKIO_R1_SNAPSHOT_ACTIONS:
+            if boundaries.get(action) != "pass":
+                errors.append(f"Pinokio {action} action-boundary snapshot did not pass")
+    for assertion in (
+        "bounded_polling",
+        "independent_initial_census",
+        "independent_final_census",
+        "exactly_one_owner",
+        "uninstall_end_state",
+        "data_invariant",
+    ):
+        if snapshot.get(assertion) != "pass":
+            errors.append(f"Pinokio {assertion} assertion did not pass")
+    if obligation["id"].startswith("keep_data_uninstall:"):
+        if snapshot.get("data_disposition") != "kept":
+            errors.append("Pinokio keep-data uninstall did not retain data")
+    scenario_id = obligation["id"].split(":", 1)[0]
+    scenario_assertions = snapshot.get("scenario_assertions")
+    if not isinstance(scenario_assertions, dict):
+        errors.append(f"Pinokio {scenario_id} end-state assertions are absent")
+    else:
+        for assertion in PINOKIO_R1_SNAPSHOT_SCENARIO_ASSERTIONS[scenario_id]:
+            if scenario_assertions.get(assertion) != "pass":
+                errors.append(f"Pinokio {scenario_id} {assertion} assertion did not pass")
+    for forbidden in ("custody_continuity", "gap_free_custody", "removal_authorization_continuity"):
+        if forbidden in snapshot:
+            errors.append(f"Pinokio snapshot evidence must not assert {forbidden}")
+    return errors
+
+
+def deferred_pinokio_continuity_statuses():
+    """Expose, but never evaluate, the exact claims deferred from the R1 gate."""
+    return tuple(
+        {
+            "id": row["id"],
+            "assertion_id": row["assertion_id"],
+            "status": "deferred-R1.x",
+            "r1_gate": row["r1_gate"],
+            "release_scope": row["release_scope"],
+            "decision_pointer": row["decision_pointer"],
+            "removal_authorization_relation": row["removal_authorization_relation"],
+            "reasons": ("excluded from the R1 gate by Hannah's Option B decision",),
+        }
+        for row in DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS
+    )
+
+
 def evaluate_end_state_obligations(candidate, results):
     """Return the closed END-STATE inventory with fail-closed row statuses.
 
@@ -810,6 +908,19 @@ def evaluate_end_state_obligations(candidate, results):
                         for name in ("app", "agent", "runtime", "pinokio"))):
                     row_errors.append("M4-5 receipt candidate differs from the frozen checker candidate")
                 status = "passed" if not row_errors else "failed"
+        elif kind == "m4-6-snapshot-end-state":
+            job_id = obligation["job_id"]
+            entries = release1.get(job_id, [])
+            if not entries:
+                status = "not-run"
+                row_errors.append("missing Pinokio action-boundary snapshot receipt")
+            elif len(entries) != 1:
+                status = "failed"
+                row_errors.append("duplicate Pinokio action-boundary snapshot receipts")
+            else:
+                row_errors.extend(_release1_row_errors(candidate, release1_contracts[job_id], entries[0][0]))
+                row_errors.extend(_pinokio_snapshot_end_state_errors(entries[0][0], obligation))
+                status = "passed" if not row_errors else "failed"
         elif kind == "m4-6":
             job_id = obligation["job_id"]
             entries = m4_6.get(job_id, [])
@@ -833,17 +944,25 @@ def evaluate_end_state_obligations(candidate, results):
         statuses.append({
             "id": identity,
             "phase": obligation["phase"],
+            "r1_gate": obligation.get("r1_gate", "required"),
             "status": status,
             "reasons": tuple(row_errors),
         })
     return statuses, errors
 
 
-def format_end_state_obligations(statuses):
+def format_end_state_obligations(statuses, deferred_statuses=()):
     lines = ["## Release-obligation visibility", ""]
     for row in statuses:
         reason = "; ".join(row["reasons"]) if row["reasons"] else "validated by the existing receipt predicate"
         lines.append(f"- [{row['status']}] {row['id']} ({row['phase']}): {reason}")
+    if deferred_statuses:
+        lines.extend(("", "## Deferred R1.x continuity obligations", ""))
+        for row in deferred_statuses:
+            lines.append(
+                f"- [{row['status']}] {row['id']} ({row['removal_authorization_relation']}): "
+                f"{row['release_scope']}; {row['decision_pointer']}; {'; '.join(row['reasons'])}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -952,10 +1071,12 @@ def main():
             candidate = read(args.candidate)
             validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
             obligation_statuses, visibility_errors = evaluate_end_state_obligations(candidate, args.results)
+            deferred_continuity_statuses = deferred_pinokio_continuity_statuses()
             errors.extend(visibility_errors)
             errors.extend(
                 f"{row['id']}: obligation status {row['status']}"
-                for row in obligation_statuses if row["status"] != "passed"
+                for row in obligation_statuses
+                if row["r1_gate"] == "required" and row["status"] != "passed"
             )
         elif args.aggregate_m4_4b_local:
             if args.results is None:
@@ -1003,7 +1124,9 @@ def main():
     heading = "## Journey evidence: " + ("FAIL" if errors else "PASS")
     report = heading + "\n\n" + ("\n".join(f"- {error}" for error in errors) if errors else "All required scenarios and candidate identity verified.") + "\n"
     if args.report_end_state_obligations and "obligation_statuses" in locals():
-        report += "\n" + format_end_state_obligations(obligation_statuses)
+        report += "\n" + format_end_state_obligations(
+            obligation_statuses, deferred_continuity_statuses
+        )
     print(report)
     if os.getenv("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:

@@ -45,6 +45,10 @@ def release1_receipts(tmp_path):
         else:
             row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                     "managed_by": "pinokio", "foreground_fallback": False}
+            row["pinokio_install_mode_receipt"] = {
+                "schema_version": 1,
+                "mode": gate.PINOKIO_INSTALLED_MODE_BY_SLOT_MODE[contract["mode"]],
+            }
         receipt = tmp_path / contract["job_id"] / "journey-result.json"
         receipt.parent.mkdir(exist_ok=True)
         receipt.write_text(json.dumps(row), encoding="utf-8")
@@ -217,6 +221,76 @@ def test_release1_macos_rows_require_macos15_and_hosted_provenance(tmp_path):
             assert any(job_id in error and message in error
                        for error in gate.evaluate_release1_matrix(candidate, tmp_path)), (job_id, field)
         receipt.write_text(json.dumps(original), encoding='utf-8')
+
+
+def test_pinokio_slots_bind_declared_mode_to_the_installed_mode_receipt(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+
+    for contract in gate.RELEASE1_MATRIX:
+        if contract["mode"] == "direct":
+            continue
+        receipt = tmp_path / contract["job_id"] / "journey-result.json"
+        row = json.loads(receipt.read_text(encoding="utf-8"))
+        assert row["pinokio_install_mode_receipt"] == {
+            "schema_version": 1,
+            "mode": gate.PINOKIO_INSTALLED_MODE_BY_SLOT_MODE[contract["mode"]],
+        }
+
+
+def test_pinokio_slots_reject_cross_mode_installed_receipts_in_both_directions(tmp_path):
+    for job_id, actual_mode in (
+        ("pinokio-backend-macos", "local"),
+        ("pinokio-fully-local-macos", "backend"),
+    ):
+        candidate = release1_receipts(tmp_path)
+        receipt = tmp_path / job_id / "journey-result.json"
+        row = json.loads(receipt.read_text(encoding="utf-8"))
+        row["pinokio_install_mode_receipt"]["mode"] = actual_mode
+        receipt.write_text(json.dumps(row), encoding="utf-8")
+        assert any(
+            f"{job_id}: declared" in error and "conflicts with installed receipt mode" in error
+            for error in gate.evaluate_release1_matrix(candidate, tmp_path)
+        )
+
+
+def test_pinokio_slots_reject_missing_malformed_and_unknown_installed_modes(tmp_path):
+    for mutate, message in (
+        (lambda row: row.pop("pinokio_install_mode_receipt"), "absent or malformed"),
+        (lambda row: row.update(pinokio_install_mode_receipt=[]), "absent or malformed"),
+        (lambda row: row["pinokio_install_mode_receipt"].pop("schema_version"), "unknown schema"),
+        (lambda row: row["pinokio_install_mode_receipt"].update(schema_version=True), "unknown schema"),
+        (lambda row: row["pinokio_install_mode_receipt"].pop("mode"), "unknown mode"),
+        (lambda row: row["pinokio_install_mode_receipt"].update(mode="direct"), "unknown mode"),
+    ):
+        candidate = release1_receipts(tmp_path)
+        job_id = "pinokio-fully-local-macos"
+        receipt = tmp_path / job_id / "journey-result.json"
+        row = json.loads(receipt.read_text(encoding="utf-8"))
+        mutate(row)
+        receipt.write_text(json.dumps(row), encoding="utf-8")
+        assert any(job_id in error and message in error
+                   for error in gate.evaluate_release1_matrix(candidate, tmp_path)), message
+
+
+def test_release1_rejects_missing_malformed_and_unknown_slot_values(tmp_path):
+    for value in (None, 3, "pinokio-unknown-macos"):
+        candidate = release1_receipts(tmp_path)
+        receipt = tmp_path / "pinokio-fully-local-macos" / "journey-result.json"
+        row = json.loads(receipt.read_text(encoding="utf-8"))
+        row["job_id"] = value
+        receipt.write_text(json.dumps(row), encoding="utf-8")
+        assert any("unknown or absent Release-1 job id" in error
+                   for error in gate.evaluate_release1_matrix(candidate, tmp_path)), value
+
+
+def test_direct_rows_remain_unaffected_by_the_pinokio_installed_mode_contract(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    for job_id in ("direct-linux", "direct-macos", "direct-windows"):
+        receipt = tmp_path / job_id / "journey-result.json"
+        row = json.loads(receipt.read_text(encoding="utf-8"))
+        assert "pinokio_install_mode_receipt" not in row
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
 
 
 def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():

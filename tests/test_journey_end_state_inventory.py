@@ -6,7 +6,13 @@ import subprocess
 from collections import Counter
 
 from scripts import check_journey_evidence as gate
-from scripts.journey_matrix import END_STATE_INVENTORY, M4_5_SCENARIO_IDS, M4_6_SLOT_IDS, RELEASE1_MATRIX
+from scripts.journey_matrix import (
+    DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
+    END_STATE_INVENTORY,
+    M4_5_SCENARIO_IDS,
+    M4_6_SLOT_IDS,
+    RELEASE1_MATRIX,
+)
 
 
 def candidate():
@@ -45,6 +51,10 @@ def release1_row(contract, pinned):
     else:
         row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                  "managed_by": "pinokio", "foreground_fallback": False}
+        row["pinokio_install_mode_receipt"] = {
+            "schema_version": 1,
+            "mode": gate.PINOKIO_INSTALLED_MODE_BY_SLOT_MODE[contract["mode"]],
+        }
     return row
 
 
@@ -60,6 +70,70 @@ def write_release1_set(root, pinned):
 
 def by_id(statuses):
     return {row["id"]: row for row in statuses}
+
+
+OPTION_B_DEFERRED_IDS = {
+    "interruption-recovery:pinokio-backend-linux",
+    "rollback:pinokio-backend-linux",
+    "keep_data_uninstall:pinokio-backend-linux",
+    "stop_safety:pinokio-backend-linux",
+    "interruption-recovery:pinokio-fully-local-linux",
+    "rollback:pinokio-fully-local-linux",
+    "keep_data_uninstall:pinokio-fully-local-linux",
+    "stop_safety:pinokio-fully-local-linux",
+    "interruption-recovery:pinokio-backend-macos",
+    "rollback:pinokio-backend-macos",
+    "keep_data_uninstall:pinokio-backend-macos",
+    "stop_safety:pinokio-backend-macos",
+    "interruption-recovery:pinokio-fully-local-macos",
+    "rollback:pinokio-fully-local-macos",
+    "keep_data_uninstall:pinokio-fully-local-macos",
+    "stop_safety:pinokio-fully-local-macos",
+    "interruption-recovery:pinokio-backend-windows",
+    "rollback:pinokio-backend-windows",
+    "keep_data_uninstall:pinokio-backend-windows",
+    "stop_safety:pinokio-backend-windows",
+    "interruption-recovery:pinokio-fully-local-windows",
+    "rollback:pinokio-fully-local-windows",
+    "keep_data_uninstall:pinokio-fully-local-windows",
+    "stop_safety:pinokio-fully-local-windows",
+}
+
+
+def option_b_snapshot_end_state():
+    return {
+        "evidence_class": "action-boundary-snapshots",
+        "action_boundaries": {
+            "install": "pass", "start": "pass", "stop": "pass",
+            "retry-after-stop": "pass", "update": "pass", "uninstall": "pass",
+        },
+        "bounded_polling": "pass",
+        "independent_initial_census": "pass",
+        "independent_final_census": "pass",
+        "exactly_one_owner": "pass",
+        "uninstall_end_state": "pass",
+        "data_invariant": "pass",
+        "data_disposition": "kept",
+        "scenario_assertions": {
+            "interruption-recovery": {
+                "durable_journal": "pass", "same_operation_recovery": "pass",
+                "terminal_identity": "pass", "data_preserved": "pass",
+            },
+            "rollback": {
+                "controlled_candidate_failure": "pass", "release0_identity": "pass",
+                "healthy_restart": "pass", "data_preserved": "pass",
+            },
+            "keep_data_uninstall": {
+                "program_removed": "pass", "service_removed": "pass",
+                "data_kept": "pass", "sentinel_preserved": "pass",
+            },
+            "stop_safety": {
+                "refused_stop": "pass", "unknown_stop": "pass",
+                "no_update_retry_or_activation": "pass", "data_unchanged": "pass",
+                "release0_identity": "pass",
+            },
+        },
+    }
 
 
 def test_end_state_inventory_lists_every_required_obligation_once():
@@ -78,6 +152,46 @@ def test_end_state_inventory_lists_every_required_obligation_once():
             "interrupted-migration-restore"} <= set(ids)
 
 
+def test_option_b_defers_exactly_the_pinokio_continuity_claims_not_their_r1_end_states():
+    deferred = {row["id"]: row for row in DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS}
+    assert set(deferred) == OPTION_B_DEFERRED_IDS
+    assert len(deferred) == 24
+    assert all(
+        row["release_scope"] == "deferred-R1.x (Hannah decision, 2026-11-02 option B)"
+        and row["decision_pointer"] == "/home/user/repo/docs/merge-plan/DECISIONS.md:316"
+        and row["r1_gate"] == "excluded-deferred-R1.x"
+        and row["claim"] == "gap-free Pinokio custody and removal-authorization continuity"
+        for row in deferred.values()
+    )
+    assert {row["id"] for row in deferred.values()
+            if row["removal_authorization_relation"] == "direct-removal"} == {
+        item for item in OPTION_B_DEFERRED_IDS if item.startswith("keep_data_uninstall:")
+    }
+    assert all(
+        row["removal_authorization_relation"] == "slot-coupled-removal"
+        for row in deferred.values() if not row["id"].startswith("keep_data_uninstall:")
+    )
+
+    r1_rows = {row["id"]: row for row in END_STATE_INVENTORY}
+    assert all(row.get("r1_gate", "required") == "required" for row in END_STATE_INVENTORY)
+    assert all(
+        r1_rows[obligation_id]["evidence_kind"] == "m4-6-snapshot-end-state"
+        for obligation_id in OPTION_B_DEFERRED_IDS
+    )
+    assert all(
+        r1_rows[obligation_id]["source"] == "check_journey_evidence.py:_pinokio_snapshot_end_state_errors"
+        for obligation_id in OPTION_B_DEFERRED_IDS
+    )
+    assert all(
+        r1_rows[obligation_id]["assertion_id"] == deferred[obligation_id]["r1_snapshot_assertion_id"]
+        for obligation_id in OPTION_B_DEFERRED_IDS
+    )
+    statuses = gate.deferred_pinokio_continuity_statuses()
+    assert {row["id"] for row in statuses} == OPTION_B_DEFERRED_IDS
+    assert {row["status"] for row in statuses} == {"deferred-R1.x"}
+    assert {row["r1_gate"] for row in statuses} == {"excluded-deferred-R1.x"}
+
+
 def test_obligation_statuses_are_complete_and_missing_routes_are_not_run(tmp_path):
     statuses, errors = gate.evaluate_end_state_obligations(candidate(), tmp_path)
     assert not errors
@@ -91,6 +205,36 @@ def test_obligation_statuses_are_complete_and_missing_routes_are_not_run(tmp_pat
     report = gate.format_end_state_obligations(statuses)
     assert report.count("\n- [") == 64
     assert "[passed]" not in report
+
+
+def test_pinokio_snapshot_end_state_fails_closed_when_required_evidence_is_missing(tmp_path):
+    pinned = candidate()
+    write_release1_set(tmp_path, pinned)
+
+    rows = by_id(gate.evaluate_end_state_obligations(pinned, tmp_path)[0])
+    assert all(rows[obligation_id]["status"] == "failed" for obligation_id in OPTION_B_DEFERRED_IDS)
+    assert all(
+        "Pinokio action-boundary snapshot/end-state evidence is absent" in rows[obligation_id]["reasons"]
+        for obligation_id in OPTION_B_DEFERRED_IDS
+    )
+    # The unrelated direct M4-6 check has not been excluded or promoted.
+    assert rows["rollback:direct-linux"]["status"] == "not-run"
+    assert rows["rollback:direct-linux"]["reasons"] == (
+        "hosted M4-6 route is unimplemented; no receipt",
+    )
+
+
+def test_pinokio_snapshot_end_state_rejects_a_custody_continuity_claim(tmp_path):
+    pinned = candidate()
+    paths = write_release1_set(tmp_path, pinned)
+    receipt = json.loads(paths["pinokio-backend-linux"].read_text(encoding="utf-8"))
+    receipt["pinokio_snapshot_end_state"] = option_b_snapshot_end_state()
+    receipt["pinokio_snapshot_end_state"]["custody_continuity"] = "claimed"
+    paths["pinokio-backend-linux"].write_text(json.dumps(receipt), encoding="utf-8")
+
+    row = by_id(gate.evaluate_end_state_obligations(pinned, tmp_path)[0])["rollback:pinokio-backend-linux"]
+    assert row["status"] == "failed"
+    assert "Pinokio snapshot evidence must not assert custody_continuity" in row["reasons"]
 
 
 def test_obligation_statuses_attribute_pass_failed_skipped_duplicate_and_wrong_tuple(tmp_path):
@@ -184,4 +328,5 @@ def test_checker_cli_lists_the_closed_inventory_and_fails_not_run_rows(tmp_path,
     output = capsys.readouterr().out
     assert "## Journey evidence: FAIL" in output
     assert "## Release-obligation visibility" in output
+    assert "## Deferred R1.x continuity obligations" in output
     assert output.count("\n- [not-run] ") == 64
