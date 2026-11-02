@@ -28,7 +28,7 @@ pytestmark = [pytest.mark.usefixtures("source_query"),
 
 @pytest.fixture
 def captured(tmp_path, monkeypatch):
-    monkeypatch.setattr(composed_frame, "renderer_environment_identity", lambda: "stable-renderer")
+    monkeypatch.setattr(composed_frame, "renderer_environment_identity", lambda *_args: "stable-renderer")
     snapshot, _ = saved(monkeypatch)
     p, calls = provider(tmp_path, monkeypatch, snapshot)
     p.capture(cards(0, 24), tmp_path / "first")
@@ -155,7 +155,7 @@ def test_changed_capture_input_cannot_reuse_rows(captured, tmp_path, monkeypatch
     elif changed == "source":
         snapshot["metadata"]["capture_authority"]["parent_content_digest"] = "sha256:" + "f" * 64
     elif changed == "renderer":
-        monkeypatch.setattr(composed_frame, "renderer_environment_identity", lambda: "new-renderer-source")
+        monkeypatch.setattr(composed_frame, "renderer_environment_identity", lambda *_args: "new-renderer-source")
     retained = {"authority": snapshot["metadata"]["capture_authority"],
                 "config": snapshot["config"], "registry": snapshot["registry"]}
     snapshot["metadata"]["capture_identity"] = "sha256:" + hashlib.sha256(json.dumps(
