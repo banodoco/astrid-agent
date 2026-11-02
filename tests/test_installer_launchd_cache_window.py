@@ -74,7 +74,10 @@ class _Backend:
         self.calls.append("finish")
 
 
-def test_published_plist_interruption_recovers_only_through_c1_stop(tmp_path):
+def test_published_plist_interruption_recovers_only_through_c1_stop(tmp_path, monkeypatch):
+    # The double has no Runtime interpreter; this test exercises the C1 handoff.
+    monkeypatch.setattr('astrid.installer.core.inspect_schema',
+                        lambda *_args, **_kwargs: {'identity': {'version': 33}, 'target': 33})
     root, data = tmp_path / "program", tmp_path / "data"
     old_folder = root / "versions" / "old"
     old_folder.mkdir(parents=True)
