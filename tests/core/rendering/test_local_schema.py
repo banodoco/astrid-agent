@@ -12,8 +12,9 @@ import pytest
 
 from astrid.core import timeline
 from astrid.core.foundation.paths import REPO_ROOT
-from astrid.core.rendering import _local_schema, remotion_runtime
-from astrid.core.timeline import banodoco_schema
+from astrid.core.rendering import _local_schema as render_schema
+from astrid.core.rendering import remotion_runtime
+from astrid.core.timeline import _local_schema, banodoco_schema
 from astrid.sdk import host_bootstrap
 
 
@@ -76,9 +77,40 @@ def test_local_schema_refuses_writable_inputs(staged_schema, target):
 
 def test_local_schema_refuses_foreign_owner(staged_schema, monkeypatch):
     root, schema = staged_schema
-    monkeypatch.setattr(_local_schema, "owned_by_current_user", lambda *_args, **_kw: False)
+    monkeypatch.setattr(_local_schema.platform, "is_current_user", lambda _facts: False)
     with pytest.raises(ValueError, match="owner/mode"):
         _local_schema.verified_schema_path(root, str(schema))
+
+
+
+@pytest.mark.parametrize("change", ["none", "origin", "digest", "owner", "regular_file", "verifier_mode"])
+def test_timeline_reader_applies_verified_admission(staged_schema, tmp_path, monkeypatch, change):
+    if change == "verifier_mode" and sys.platform == "win32":
+        pytest.skip("POSIX mode bits do not represent Windows ACLs")
+    root, schema = staged_schema
+    reader_path = root / "astrid/core/timeline/banodoco_schema.py"
+    spec = importlib.util.spec_from_file_location("selected_timeline_reader", reader_path)
+    reader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reader)
+    configured = schema
+    if change == "origin":
+        configured = tmp_path / schema.name
+        configured.write_bytes(schema.read_bytes())
+    elif change == "digest":
+        schema.write_text("{}")
+    elif change == "owner":
+        monkeypatch.setattr(_local_schema.platform, "is_current_user", lambda _facts: False)
+    elif change == "regular_file":
+        schema.unlink()
+        schema.mkdir()
+    elif change == "verifier_mode":
+        (root / "astrid/core/timeline/_local_schema.py").chmod(0o777)
+    monkeypatch.setenv(reader.ASTRID_TIMELINE_SCHEMA_PYTHONPATH, str(configured))
+    if change == "none":
+        assert reader.load_vendored_timeline_schema() == json.loads(schema.read_text())
+    else:
+        with pytest.raises(ValueError):
+            reader.load_vendored_timeline_schema()
 
 
 def test_bootstrap_refuses_mutated_staged_contract(staged_schema):
@@ -96,7 +128,7 @@ def test_canonical_reader_refuses_foreign_or_stale_contract(monkeypatch, change)
     else:
         monkeypatch.setattr(banodoco_schema, "load_vendored_timeline_schema", lambda: {})
     with pytest.raises(ValueError, match="foreign origin|stale contract"):
-        _local_schema.load_verified_schema(REPO_ROOT, str(schema))
+        render_schema.load_verified_schema(REPO_ROOT, str(schema))
 
 
 @pytest.mark.parametrize("change", ["foreign_ref", "missing_ref", "invalid_schema", "nonfinite"])
@@ -125,7 +157,7 @@ def test_reader_rejects_invalid_schema_and_reference_closure(staged_schema, monk
     spec.loader.exec_module(reader)
     monkeypatch.setattr(timeline, "banodoco_schema", reader)
     with pytest.raises((ValueError, KeyError, jsonschema.SchemaError)):
-        _local_schema.load_verified_schema(root, str(schema_path))
+        render_schema.load_verified_schema(root, str(schema_path))
 
 
 def test_strict_probe_consumes_the_selected_canonical_reader(monkeypatch, capsys):
@@ -136,6 +168,7 @@ def test_strict_probe_consumes_the_selected_canonical_reader(monkeypatch, capsys
     closure = json.loads(capsys.readouterr().out)
     assert closure["origin"] == str(schema)
     assert str(Path(_local_schema.__file__)) in closure["module_files"]
+    assert str(Path(render_schema.__file__)) in closure["module_files"]
     assert str(Path(banodoco_schema.__file__)) in closure["module_files"]
     assert closure["startup"]["executable"] == sys.executable
 
@@ -156,7 +189,7 @@ def test_installed_probe_refuses_a_nonisolated_interpreter(monkeypatch):
     {"tracks": [], "clips": [], "unknown": True},
 ])
 def test_retained_canonical_schema_constraints(payload):
-    schema = _local_schema.load_verified_schema(REPO_ROOT, str(REPO_ROOT / _local_schema.SCHEMA_RELATIVE_PATH))
+    schema = render_schema.load_verified_schema(REPO_ROOT, str(REPO_ROOT / _local_schema.SCHEMA_RELATIVE_PATH))
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(payload, schema)
     with pytest.raises((ValueError, jsonschema.ValidationError)):
@@ -174,7 +207,7 @@ def test_role_aware_canonical_contract_is_shared_and_does_not_mutate_payload():
     payload = {"tracks": [{"id": "source", "kind": "visual", "label": "Source", "role": "source"}],
                "clips": []}
     before = copy.deepcopy(payload)
-    schema = _local_schema.load_verified_schema(REPO_ROOT, str(REPO_ROOT / _local_schema.SCHEMA_RELATIVE_PATH))
+    schema = render_schema.load_verified_schema(REPO_ROOT, str(REPO_ROOT / _local_schema.SCHEMA_RELATIVE_PATH))
     jsonschema.validate(payload, schema)
     assert banodoco_schema.validate_timeline_config_for_container(payload) == before
     assert payload == before
@@ -347,8 +380,8 @@ def test_windows_schema_admission_uses_sid_policy(tmp_path, monkeypatch, layout,
 
     monkeypatch.setattr(security, "_handle", handle)
     monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix)))
-    monkeypatch.setattr(_local_schema, "owned_by_current_user",
-                        lambda *_args, **_kwargs: pytest.fail("owner-only DACL predicate was called"))
+    monkeypatch.setattr(_local_schema.platform, "is_current_user",
+                        lambda *_args: pytest.fail("POSIX ownership predicate was called"))
     if case in {"safe", "user_distinct_default", "default_owner"}:
         assert _local_schema.verified_schema_path(root, str(schema)) == schema
         assert schema in checked
