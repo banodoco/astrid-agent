@@ -21,7 +21,7 @@ pytest_plugins = ("tests.editing_conformance.test_current_pair_reader",)
 
 pytestmark = pytest.mark.integration
 
-RUNTIME_COMMIT = "d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b"
+RUNTIME_COMMIT = "de98a5aa44768419656bfeffcdaa1b2eda9e9845"
 ARCHIVE_HASH = "2915bd4ac0d46954d19c30f87a517b82074218699978e650fab03fcba81b72d3"
 PROJECT = "7b6f2bae8ffe42bf925216c38249ed79"
 REVISION = "a3e671256f1c42b8837d3e118c97b21b"

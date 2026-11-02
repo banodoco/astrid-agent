@@ -22,7 +22,7 @@ from tests.helpers.runtime import use_runtime
 pytestmark = pytest.mark.integration
 # Keep this bounded real-HTTP qualification on the reviewed current Runtime
 # reader; do not switch either side of the public handshake to a fake route.
-CATALOG_RUNTIME = "d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b"
+CATALOG_RUNTIME = "de98a5aa44768419656bfeffcdaa1b2eda9e9845"
 RUNTIME = use_runtime(CATALOG_RUNTIME)
 import runtime_protocol  # noqa: E402, F401, I001  # lock the daemon fixture to CATALOG_RUNTIME
 
