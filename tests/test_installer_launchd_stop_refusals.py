@@ -124,7 +124,7 @@ def _trusted_bootstrap_venv(backend, version):
     version.python.unlink(missing_ok=True)
     version.python.symlink_to(target)
     config = version.root / "py" / "pyvenv.cfg"
-    config.write_text(f"home = {target.parent}\nversion_info = 3.11.13\n", encoding="utf-8")
+    config.write_text(f"home = {target.parent}\n", encoding="utf-8")
     config.chmod(0o600)
     return target, config, bootstrap
 
@@ -753,7 +753,7 @@ def test_trusted_bootstrap_venv_refuses_each_provenance_mismatch(tmp_path, monke
         wrong.parent.mkdir()
         wrong.write_text("#!/bin/sh\n", encoding="utf-8")
         wrong.chmod(0o700)
-        config.write_text(f"home = {wrong.parent}\n", encoding="utf-8")
+        config.write_text(f"home = {target.parent}\n", encoding="utf-8")
         version.python.unlink()
         version.python.symlink_to(wrong)
     else:

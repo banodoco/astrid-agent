@@ -603,23 +603,18 @@ class Service:
                     or not owned_by_current_user(config, config_stat)
                     or stat.S_IMODE(config_stat.st_mode) & 0o022):
                 return False
-            homes, versions = [], []
+            homes = []
             for line in config.read_text(encoding="utf-8").splitlines():
                 key, separator, value = line.partition("=")
                 if separator and key.strip().lower() == "home":
                     homes.append(value.strip())
-                if separator and key.strip().lower() == "version_info":
-                    versions.append(value.strip())
-            if len(homes) != 1 or not homes[0] or len(versions) != 1:
+            if len(homes) != 1 or not homes[0]:
                 return False
             home = Path(homes[0])
             if not home.is_absolute() or home != Path(os.path.abspath(home)):
                 return False
             home = absolute(home)
-            version = re.fullmatch(r"([1-9][0-9]*)\.([0-9]+)\.[0-9]+", versions[0])
-            if (executable.parent != home
-                    or version is None
-                    or executable.name != f"python{version.group(1)}.{version.group(2)}"):
+            if executable.parent != home:
                 return False
 
             bootstrap = bootstrap_root(self.home, "darwin")
