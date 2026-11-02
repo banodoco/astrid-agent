@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,11 +20,48 @@ from astrid.core.contracts.schema import CommandSpec, Port
 from astrid.core.execution.executor.registry import ExecutorRegistry, load_default_registry as load_executor_registry
 from astrid.core.execution.executor.runner import ExecutorRunRequest, build_executor_command
 from astrid.core.execution.generic_host import GenericPackHost
+from astrid.packs.wan2gp.actions.generate_video_session import run as session_run
 from astrid.packs.wan2gp.src.compiler import compile_from_inputs
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WAN_GENERATE_VIDEO_ID = "wan2gp.generate_video"
+WAN_SESSION_RUNTIME_MODULE = "astrid.packs.wan2gp.actions.generate_video_session.run"
+FOLEY_TILE_VIDEO_ID = "foley.tile_video"
 GENERIC_HOST = REPO_ROOT / "astrid/core/execution/generic_host.py"
+
+WAN_SESSION_PUBLIC_INPUTS: dict[str, Any] = {
+    "prompt": "p",
+    "model": "wan-2.2",
+    "negative_prompt": "blurry",
+    "resolution": "512x512",
+    "frames": 9,
+    "fps": "8",
+    "seed": 7,
+    "guidance_scale": 5.5,
+    "steps": 4,
+    "loras": "[]",
+}
+
+
+class _SubmitCaptured(Exception):
+    """Raised by the capturing session to stop the action right after submit."""
+
+
+class _CapturingSession:
+    """Session double that records the submitted settings and never returns evidence."""
+
+    def __init__(self) -> None:
+        self.submitted: dict[str, Any] | None = None
+        self.timeout_seconds: float | None = None
+        self.cancel_calls: list[str] = []
+
+    def submit(self, settings: dict[str, Any], timeout_seconds: float) -> Any:
+        self.submitted = dict(settings)
+        self.timeout_seconds = timeout_seconds
+        raise _SubmitCaptured
+
+    def cancel(self, reason: str) -> None:
+        self.cancel_calls.append(reason)
 
 
 def _assert_flag_value(argv: tuple[str, ...], flag: str, value: str) -> None:
@@ -62,6 +101,99 @@ def test_wan_generation_controls_are_transported_by_shared_expander() -> None:
     # The v3 action declares no ``out`` input arg: output placement is owned
     # by the host (``{out}/manifest.json`` result manifest), not the argv.
     assert "--out" not in result.argv
+
+
+def test_command_kind_input_args_are_transported_to_argv_flags(tmp_path: Path) -> None:
+    """Command-kind property on a non-wan fixture: each declared input_arg reaches its flag."""
+    definition = load_executor_registry().get(FOLEY_TILE_VIDEO_ID)
+    assert definition.command is not None
+    input_args = tuple(definition.command.input_args)
+    assert {mapping.input for mapping in input_args} == {
+        "grid", "overlap", "trim", "force", "dry_run",
+    }
+    values = {
+        "video": str(tmp_path / "clip.mp4"),
+        "out": str(tmp_path / "out"),
+        "python_exec": "python",
+        "grid": "3x2",
+        "overlap": 0.5,
+        "trim": 4.0,
+        "force": True,
+        "dry_run": False,
+    }
+
+    result = expand_command(
+        definition.command,
+        definition.inputs,
+        values,
+        definition.metadata,
+    )
+    assert_provided_inputs_bound(
+        result,
+        definition.inputs,
+        values,
+        definition.metadata,
+    )
+
+    _assert_flag_value(result.argv, "--grid", "3x2")
+    _assert_flag_value(result.argv, "--overlap", "0.5")
+    _assert_flag_value(result.argv, "--trim", "4.0")
+    # Boolean input_args are flag-only: truthy emits the flag, falsy emits nothing.
+    assert "--force" in result.argv
+    assert "--dry-run" not in result.argv
+    # Declared input_args are transported by the mapping, not auto-forwarded.
+    assert {"grid", "overlap", "trim", "force"} <= set(result.bound_inputs)
+    assert "grid" not in result.auto_forwarded_inputs
+
+
+def test_wan_session_action_transports_public_inputs_to_submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Python-kind property: each declared public input reaches the session submit under its compiled key."""
+    definition = load_executor_registry().get(WAN_GENERATE_VIDEO_ID)
+    assert definition.metadata["runtime_module"] == WAN_SESSION_RUNTIME_MODULE
+    assert definition.metadata.get("host_session") == "wan2gp"
+    declared = [port.name for port in definition.inputs]
+    assert declared == list(WAN_SESSION_PUBLIC_INPUTS)
+
+    parameters = inspect.signature(session_run.generate_video_session).parameters
+    for name in declared:
+        assert name in parameters, f"declared input {name!r} is not a session function parameter"
+
+    seen_by_compiler: dict[str, Any] = {}
+    real_compile = session_run.compile_host_settings
+
+    def recording_compile(inputs: dict[str, Any]) -> dict[str, Any]:
+        seen_by_compiler.update(inputs)
+        return real_compile(inputs)
+
+    monkeypatch.setattr(session_run, "compile_host_settings", recording_compile)
+    session = _CapturingSession()
+
+    with pytest.raises(_SubmitCaptured):
+        session_run.generate_video_session(
+            **WAN_SESSION_PUBLIC_INPUTS,
+            output_root=tmp_path / "out",
+            timeout_seconds=30.0,
+            session=session,
+        )
+
+    # Public names are preserved up to the compiler: frames stays frames.
+    assert seen_by_compiler == WAN_SESSION_PUBLIC_INPUTS
+    assert "video_length" not in seen_by_compiler
+
+    # The submit carries each value under its native key.
+    assert session.submitted is not None
+    assert session.submitted["prompt"] == "p"
+    assert session.submitted["model"] == "wan-2.2"
+    assert session.submitted["negative_prompt"] == "blurry"
+    assert session.submitted["resolution"] == "512x512"
+    assert session.submitted["video_length"] == 9
+    assert session.submitted["force_fps"] == "8"
+    assert session.submitted["seed"] == 7
+    assert session.submitted["guidance_scale"] == 5.5
+    assert session.submitted["num_inference_steps"] == 4
+    assert session.submitted["loras"] == "[]"
+    assert session.timeout_seconds == 30.0
+    assert session.cancel_calls == []
 
 
 def test_json_input_args_are_encoded_as_json() -> None:
