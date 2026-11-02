@@ -6,10 +6,11 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+from runtime_protocol import platform
+
 from astrid.installer import cli
 from astrid.installer.backend import Backend
 from astrid.installer.choices import RECOMMENDED_CHOICES
-from runtime_protocol import platform
 
 
 def test_prompt_accepts_recommended_setup_with_enter_and_y():
@@ -130,6 +131,36 @@ def test_summary_does_not_claim_failed_or_unreached_work(capsys):
     assert "Skill destinations: sync failed" in output
     assert "Failure: ValueError: failed safely" in output
     assert "running and ready" not in output
+
+
+def test_summary_reports_command_off_effects_and_keeps_way_back(capsys):
+    choices = {**RECOMMENDED_CHOICES, "command": False}
+    cli._print_run_summary(choices, mode="install", outcomes={
+        "startup": "registered; readiness not confirmed",
+        "command": {
+            "action": "disabled", "path": None, "path_hint": None, "error": None,
+            "removed_shim": True, "removed_path": True,
+        },
+        "skills": {"ok": True, "destinations": []},
+    })
+    output = capsys.readouterr().out
+    assert "Command/PATH: off; Astrid's command shim removed, Astrid's PATH entry removed." in output
+    assert "Way back:" in output and "--command off" in output
+
+
+def test_summary_reports_added_and_absent_windows_path_truthfully(capsys):
+    cli._print_run_summary(RECOMMENDED_CHOICES, mode="install", outcomes={
+        "startup": "registered; readiness not confirmed",
+        "command": {
+            "action": "ready", "path": r"C:\\Astrid\\astrid.cmd", "path_hint": None,
+            "error": None, "path_added": r"C:\\Astrid", "path_present": True,
+            "shim_change": "created",
+        },
+        "skills": {"ok": True, "destinations": []},
+    })
+    output = capsys.readouterr().out
+    assert "user PATH entry added" in output
+    assert "Way back:" in output and "--command on" in output
 
 
 def test_backend_skill_result_exposes_actual_targets(tmp_path, monkeypatch):

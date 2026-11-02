@@ -35,7 +35,7 @@ from .core import (
     read_json,
     write_json,
 )
-from .launcher import install_shim, owned_shim, remove_shim
+from .launcher import install_shim, owned_shim, remove_owned_command
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
 from .tools import binary, clone_source, install_tools, source
@@ -1389,7 +1389,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         if marker.get("owner") != "haus.astrid.runtime" and not (kept and bootstrap_only):
             raise ValueError("Refusing to remove an unowned installation directory.")
         realm_root = self.preflight_remove(root, data, delete_data=delete_data)
-        remove_shim(self.service)
+        remove_owned_command(self.service, marker.get("command_shim"), marker.get("command_path"))
         data_targets = [data] if delete_data else []
         if delete_data and realm_root is not None and realm_root != data and data not in realm_root.parents:
             data_targets.insert(0, realm_root)
@@ -1457,21 +1457,59 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 platform.owner_only(stream.fileno())
                 stream.write(line + "\n")
 
+        marker = self.root / "install.json"
+        current_marker = read_json(marker)
+        choices = getattr(self.service, "choices", None) or {}
+        command_on = choices.get("command", True)
+        if not command_on:
+            removed = {"shim": False, "path": False}
+            error = None
+            try:
+                removed = remove_owned_command(
+                    self.service, current_marker.get("command_shim"), current_marker.get("command_path"))
+            except Exception as exc:  # noqa: BLE001 - optional command cleanup must not stop setup
+                error = type(exc).__name__
+                report(f"Astrid command cleanup failed ({error}); check the recorded shim and PATH entry.")
+            self.command_result = {
+                "action": "disabled", "path": None, "path_hint": None, "error": error,
+                "path_added": None, "path_present": False,
+                "removed_shim": removed["shim"], "removed_path": removed["path"],
+            }
+            if error is None:
+                write_json(marker, {**current_marker, "command_shim": None, "command_path": None})
+            try:
+                webbrowser.open("https://astrid.haus/?connect=1")
+            except OSError:
+                pass
+            return
+
         shim = hint = None
         error = None
+        effects = {}
         try:
-            shim, hint = install_shim(self.service, say=report)
+            # Once Astrid has recorded a PATH entry it added, maintenance may
+            # retain it but must not restore it after the user removes it. A
+            # prior shim receipt also marks this as maintenance: don't add a
+            # PATH entry that was pre-existing and later removed by the user.
+            previously_owned_path = current_marker.get("command_path")
+            shim, hint = install_shim(self.service, say=report,
+                                      manage_path=not bool(previously_owned_path or current_marker.get("command_shim")),
+                                      details=effects)
         except Exception as exc:  # noqa: BLE001 - the command shim is optional; installation must still finish
             error = type(exc).__name__
             report(f"Astrid command shim setup failed ({type(exc).__name__}); use the run-astrid launcher.")
         self.command_result = {
+            "action": "ready" if shim else "skipped",
             "path": str(shim) if shim else None,
             "path_hint": hint,
             "error": error,
+            "path_added": effects.get("path_added"),
+            "path_present": effects.get("path_present", False),
+            "shim_change": effects.get("shim_change"),
         }
-        marker = self.root / "install.json"
-        command_shim = shim if self.service.system == "win32" or hint is None else None
-        write_json(marker, {**read_json(marker), "command_shim": str(command_shim) if command_shim else None})
+        write_json(marker, {**current_marker,
+                            "command_shim": str(shim) if shim else current_marker.get("command_shim"),
+                            "command_path": effects.get("path_added") or previously_owned_path})
         try:
             webbrowser.open("https://astrid.haus/?connect=1")
         except OSError:

@@ -111,10 +111,33 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
         command = outcomes.get("command")
         if command is None:
             print("  Command/PATH: not reached in this run.")
+        elif command.get("action") == "disabled":
+            effects = []
+            if command.get("removed_shim"):
+                effects.append("Astrid's command shim removed")
+            if command.get("removed_path"):
+                effects.append("Astrid's PATH entry removed")
+            if command.get("error"):
+                message = f"; cleanup failed ({command['error']})"
+            else:
+                message = "; " + ", ".join(effects) if effects else "; no owned command/PATH changes were needed"
+            print("  Command/PATH: off" + message + ".")
         elif command.get("error"):
             print(f"  Command/PATH: setup failed ({command['error']}); use the run-astrid launcher.")
         elif command.get("path") is None:
             print("  Command/PATH: command shim was skipped; see the installer output above.")
+        elif command.get("action") == "ready":
+            change = command.get("shim_change") or "available"
+            detail = f"shim {change} at {safe(command['path'])}"
+            if command.get("path_added"):
+                detail += f"; user PATH entry added: {safe(command['path_added'])}"
+            elif command.get("path_present"):
+                detail += "; PATH already contains Astrid's command directory"
+            elif command.get("path_hint"):
+                detail += "; follow the PATH instruction above"
+            elif command.get("path_present") is False:
+                detail += "; PATH entry remains absent"
+            print("  Command/PATH: " + detail + ".")
         elif command.get("path_hint"):
             print(f"  Command/PATH: shim created at {safe(command['path'])}; follow the PATH instruction above.")
         else:

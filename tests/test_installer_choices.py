@@ -167,7 +167,7 @@ def test_service_registration_persists_choices_and_preserves_selection_fields(tm
         "uninstall_receipt": {"state": "retained"},
         "unknown_field": {"keep": True},
     })
-    manager.choices = {**RECOMMENDED_CHOICES, "skills": False}
+    manager.choices = {**RECOMMENDED_CHOICES, "command": False, "skills": False}
 
     manager.register(version, tmp_path / "workspace")
     record = read_json(manager.selection)
