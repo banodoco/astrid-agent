@@ -804,6 +804,34 @@ def test_static_discover_admit_dry_run_and_owned_child(tmp_path):
     assert runtime.registrations[0][1]["resource_keys"] == ["cpu"]
 
 
+def test_owned_child_imports_runtime_without_ambient_pythonpath(tmp_path, monkeypatch):
+    # Parent-only sys.path setup can hide an uninstalled Runtime until this
+    # boundary. Runtime must be provisioned into sys.executable, as in CI and
+    # the managed installer; arbitrary source paths must remain excluded.
+    ambient = tmp_path / "ambient"
+    shadow = ambient / "runtime_protocol"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text("raise AssertionError('ambient Runtime imported')\n")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, (
+        str(ambient), os.environ.get("PYTHONPATH"),
+    ))))
+    code = """def run(value):
+    import os, runtime_protocol, sys
+    return {'runtime': runtime_protocol.__file__, 'python': sys.executable,
+            'pid': os.getpid(), 'pythonpath': os.environ['PYTHONPATH']}
+"""
+    _, host, _, definition, admission = pack(tmp_path, code=code)
+    result = invoke(tmp_path, host, definition, admission)
+    assert result.ok
+    returned = result.payload["action_result"]
+    assert returned["python"] == sys.executable
+    assert returned["pid"] != os.getpid()
+    assert Path(returned["runtime"]).name == "__init__.py"
+    assert Path(returned["runtime"]).parent.name == "runtime_protocol"
+    assert not Path(returned["runtime"]).is_relative_to(ambient)
+    assert str(ambient) not in returned["pythonpath"].split(os.pathsep)
+
+
 def test_real_generic_host_worker_uses_utf8_mode_with_default_off_control(tmp_path, monkeypatch):
     code = "def run(value='default'):\n    import sys\n    return sys.flags.utf8_mode\n"
     _, host, _, definition, admission = pack(tmp_path, code=code)
