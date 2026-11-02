@@ -40,8 +40,8 @@ def _same_process_identity(expected, observed):
 
 
 def _binding(root, version, data):
-    from astrid.installer.core import absolute, current, read_json
-    from astrid.installer.service import launch_admission
+    from .core import absolute, current, read_json
+    from .service import launch_admission
 
     root, data = absolute(root), absolute(data)
     marker = read_json(root / "install.json")
@@ -158,7 +158,7 @@ class Custody:
 @contextlib.contextmanager
 def stopped_custody(root, backend):
     """Acquire, never probe/release, stopped admission; None means running."""
-    from astrid.installer.service import pinokio_lock_paths
+    from .service import pinokio_lock_paths
 
     paths = pinokio_lock_paths(backend.service.home, backend.service.system)
     process = subprocess.Popen(
@@ -186,7 +186,7 @@ def operation(root, backend):
         return
     with stopped_custody(root, backend) as custody:
         if custody is None:
-            from astrid.installer.app_update import qualify_running, selection
+            from .app_update import qualify_running, selection
 
             _old, data, _identity = selection(root, backend, allow_transaction=True)
             # The preflight probe is not admission: Start can win that race.

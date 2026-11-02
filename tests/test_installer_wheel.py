@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 CHAT_RESOURCES = ("chat/service.mjs", "chat/astrid-acp-local-only.yml", "chat/THIRD_PARTY_LICENSES.txt")
-OMP_RESOURCES = ("installer/omp/recipe.json",)
+OMP_RESOURCES = ("installer/omp/recipe.json", "installer/predecessors.json")
 INSTALLER_IMPORT_RESOURCES = (
     "core/__init__.py",
     "core/generation/__init__.py",
