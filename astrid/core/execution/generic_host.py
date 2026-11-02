@@ -9799,6 +9799,7 @@ class GenericPackHost:
         child_env: Mapping[str, str] | None = None,
         require_network_startup: bool = False,
         run_channel: socket.socket | None = None,
+        run_channel_run_id: str | None = None,
         network_broker_required: bool = False,
         storage_estimate: Mapping[str, int] | None = None,
         child_bridge: Any | None = None,
@@ -9913,7 +9914,10 @@ class GenericPackHost:
             if run_channel is not None:
                 # Per-run session channel: pass only the child fd number. The
                 # admitted token and the host-side handle never enter the payload.
+                if not isinstance(run_channel_run_id, str) or not run_channel_run_id:
+                    raise HostError("session channel requires its run id")
                 payload["run_channel_fd"] = run_channel.fileno()
+                payload["run_channel_run_id"] = run_channel_run_id
                 inherited_fds += (run_channel.fileno(),)
             request_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             if child_bridge is not None:

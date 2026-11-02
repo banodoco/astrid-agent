@@ -116,6 +116,8 @@ def _run_worker(tmp_path: Path, definition, admission, capability_id: str, *, me
     }
     if run_channel_fd is not None:
         payload["run_channel_fd"] = run_channel_fd
+        # The host sets the run id with the channel (contract: run_channel_run_id).
+        payload["run_channel_run_id"] = "run-wiring-test"
     request_path = tmp_path / "request.json"
     request_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     code = generic_host_worker.run(request_path)
