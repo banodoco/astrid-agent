@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.request
 
 
@@ -70,6 +71,144 @@ def powershell(code, name, *, show=True, timeout=300):
                 "$ErrorActionPreference='Stop'; "
                 "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); " + code], name,
                show=show, timeout=timeout)
+
+
+# Get-ScheduledTask's query-not-found error is different from a failed query.
+# Record exception details for diagnosis and never suppress other failures.
+SCHEDULED_TASK_PREFLIGHT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+try {
+    $tasks = @(Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop)
+    $items = @($tasks | ForEach-Object {
+        @{ path = $_.TaskPath; executables = @($_.Actions | ForEach-Object { $_.Execute }) }
+    })
+    @{ status = 'present'; tasks = $items } | ConvertTo-Json -Depth 5 -Compress
+    exit 0
+} catch {
+    $record = $_
+    $detail = @{
+        type = $record.Exception.GetType().FullName
+        fully_qualified_error_id = $record.FullyQualifiedErrorId
+        message = $record.Exception.Message
+        hresult = $record.Exception.HResult
+        category = [string]$record.CategoryInfo.Category
+    }
+    if ($record.FullyQualifiedErrorId -eq 'CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask' -and
+        $record.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+        @{ status = 'absent'; error = $detail } | ConvertTo-Json -Depth 5 -Compress
+        exit 0
+    }
+    @{ status = 'error'; error = $detail } | ConvertTo-Json -Depth 5 -Compress
+    exit 1
+}
+"""
+
+
+def scheduled_task_preflight(leg="manager-prerequisite", *, timeout=30):
+    """Record the query, its process result, and fail closed on malformed output."""
+    env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
+    argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", SCHEDULED_TASK_PREFLIGHT]
+    evidence = {"status": "error", "argv": argv, "exit_code": None, "stdout": "", "stderr": ""}
+    save(f"preflight-scheduled-task-{leg}.json", evidence)
+    result = None
+    try:
+        result = subprocess.run(argv, env=env, capture_output=True, timeout=timeout, check=False)
+        evidence.update(exit_code=result.returncode,
+                        stdout=result.stdout.decode("utf-8-sig", errors="replace"),
+                        stderr=result.stderr.decode("utf-8-sig", errors="replace"))
+        try:
+            observation = json.loads(evidence["stdout"])
+            status = observation.get("status") if isinstance(observation, dict) else None
+            valid_present = (status == "present" and isinstance(observation.get("tasks"), list)
+                             and bool(observation["tasks"])
+                             and all(isinstance(task, dict) and isinstance(task.get("path"), str)
+                                     and isinstance(task.get("executables"), list)
+                                     and all(isinstance(item, str) for item in task["executables"])
+                                     for task in observation["tasks"]))
+            if result.returncode == 0 and (status == "absent" or valid_present):
+                evidence.update(status=status, observation=observation)
+            elif result.returncode != 0 and status == "error":
+                evidence["observation"] = observation
+            else:
+                evidence["protocol_error"] = "Unexpected query result or exit code"
+        except (ValueError, TypeError):
+            evidence["protocol_error"] = "Invalid query JSON"
+    except Exception as exc:
+        def decoded(value):
+            return value.decode("utf-8-sig", errors="replace") if isinstance(value, bytes) else value or ""
+        evidence.update(stdout=decoded(getattr(exc, "stdout", None) or getattr(result, "stdout", None)),
+                        stderr=decoded(getattr(exc, "stderr", None) or getattr(result, "stderr", None)),
+                        exit_code=getattr(exc, "returncode", getattr(result, "returncode", None)),
+                        process_error=traceback.format_exc())
+    save(f"preflight-scheduled-task-{leg}.json", evidence)
+    # The named artifact boundary does not upload this file; retain the same
+    # structured observation in the hosted job log as well.
+    print(f"Scheduled Task preflight ({leg}): {json.dumps(evidence, ensure_ascii=True)}", flush=True)
+    if evidence["status"] == "error":
+        raise RuntimeError(f"Scheduled Task preflight failed; see preflight-scheduled-task-{leg}.json")
+    return evidence["observation"]
+
+
+
+SCHEDULED_TASK_ORIGIN = (
+    "$c=Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue; "
+    "[pscustomobject]@{PSVersion=$PSVersionTable.PSVersion.ToString(); "
+    "PSEdition=$PSVersionTable.PSEdition; CommandType=[string]$c.CommandType; "
+    "Source=$c.Source; ModuleName=$c.ModuleName; ModulePath=$c.Module.Path} | ConvertTo-Json -Compress"
+)
+
+
+def scheduled_task_diagnostics(name="preflight-scheduled-task.txt", *, leg="manager-prerequisite", timeout=30):
+    """Capture shell origin and the authoritative structured query, including failures."""
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
+    prefix = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
+    records = {"origin": {"argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                                    prefix + SCHEDULED_TASK_ORIGIN],
+                          "stdout": "", "stderr": "", "exit_code": None, "error": "not run"}}
+    records["query"] = {"argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                                  SCHEDULED_TASK_PREFLIGHT],
+                        "stdout": "", "stderr": "", "exit_code": None, "error": "not run"}
+
+    def checkpoint():
+        destination = EVIDENCE / name
+        temporary = destination.with_name(destination.name + ".tmp")
+        temporary.write_text(json.dumps(records, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+        temporary.replace(destination)
+
+    checkpoint()
+    record = records["origin"]
+    argv = record["argv"]
+    def decoded(value):
+        return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+    try:
+        result = subprocess.run(argv, env=env, capture_output=True, encoding="utf-8",
+                                errors="replace", timeout=timeout, check=False)
+        record.update(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
+        record.pop("error")
+    except subprocess.TimeoutExpired as exc:
+        record.update(stdout=decoded(exc.stdout), stderr=decoded(exc.stderr),
+                      error=traceback.format_exc())
+    except Exception as exc:
+        record.update(stdout=decoded(getattr(exc, "stdout", None)),
+                      stderr=decoded(getattr(exc, "stderr", None)),
+                      exit_code=getattr(exc, "returncode", None), error=traceback.format_exc())
+    finally:
+        checkpoint()
+    try:
+        observation = scheduled_task_preflight(leg, timeout=timeout)
+    finally:
+        structured = json.loads((EVIDENCE / f"preflight-scheduled-task-{leg}.json").read_text(encoding="utf-8"))
+        records["query"] = structured
+        records["query"]["classification"] = {"absent": "not-found", "present": "present"}.get(
+            structured["status"], "error")
+        checkpoint()
+    record = records["origin"]
+    if record.get("error") or record["exit_code"] != 0:
+        raise RuntimeError(f"{name}: origin exit {record['exit_code']}" +
+                           (f" ({record['error']})" if record.get("error") else ""))
+    return observation
 
 
 def source(repo):
