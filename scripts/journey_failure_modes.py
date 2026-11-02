@@ -55,6 +55,7 @@ RELEASE0_BOOTSTRAP_SHA256: Final = {
 }
 RUNNER_PROVENANCE: Final = {
     "macos-14": ("macos", "macOS", "macos14"),
+    "macos-15": ("macos", "macOS", "macos15"),
     "ubuntu-24.04": ("linux", "Linux", "ubuntu24"),
     "windows-2022": ("windows", "Windows", "win22"),
 }
@@ -182,8 +183,11 @@ def _release0_fixture_errors(value: object) -> list[str]:
 
 def _runner_errors(observation: Mapping, contract: Mapping) -> list[str]:
     errors = []
-    runner = contract["runner"]
-    expected_os, expected_runner_os, expected_image = RUNNER_PROVENANCE[runner]
+    runner = contract.get("runner")
+    expected = RUNNER_PROVENANCE.get(runner)
+    if expected is None:
+        return [f"runner: no pinned hosted provenance for {runner!r}"]
+    expected_os, expected_runner_os, expected_image = expected
     for name, expected in (
         ("slot_id", contract["job_id"]),
         ("job_id", contract["job_id"]),

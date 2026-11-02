@@ -21,6 +21,60 @@ def test_all_nine_os_mode_slots_admit_complete_machine_observations(slot_id: str
     assert not failure.validate_receipt(receipt, PROVISIONAL_CANDIDATE, slot_id)
 
 
+@pytest.mark.parametrize(
+    "slot_id", ("direct-macos", "pinokio-backend-macos", "pinokio-fully-local-macos")
+)
+def test_macos15_matrix_slots_require_exact_hosted_provenance(slot_id: str) -> None:
+    observation = valid_observation(slot_id)
+    foreign_slot = next(
+        candidate
+        for candidate in ("direct-macos", "pinokio-backend-macos", "pinokio-fully-local-macos")
+        if candidate != slot_id
+    )
+
+    assert failure.SLOT_CONTRACTS[slot_id]["runner"] == "macos-15"
+    assert failure.RUNNER_PROVENANCE["macos-15"] == ("macos", "macOS", "macos15")
+    observation.update(os="macos", runner_image="macos-15", os_build="macOS-15.7-arm64")
+    observation["runner_provenance"] = {
+        "RUNNER_OS": "macOS", "ImageOS": "macos15", "ImageVersion": "20261030.1"
+    }
+
+    receipt = failure.create_receipt(slot_id, PROVISIONAL_CANDIDATE, observation)
+
+    assert receipt["status"] == "pass"
+    assert not failure.validate_receipt(receipt, PROVISIONAL_CANDIDATE, slot_id)
+
+    for field, value, message in (
+        ("slot", foreign_slot, "slot_id:"),
+        ("os", "linux", "os:"),
+        ("runner_image", "macos-14", "runner_image:"),
+        ("os_build", "Linux-6.8", "os_build:"),
+        ("RUNNER_OS", "Linux", "runner_provenance:"),
+        ("ImageOS", "macos14", "runner_provenance:"),
+        ("ImageVersion", "", "runner_provenance:"),
+    ):
+        bad = copy.deepcopy(observation)
+        if field == "slot":
+            bad.update(slot_id=value, job_id=value)
+        elif field in ("RUNNER_OS", "ImageOS", "ImageVersion"):
+            bad["runner_provenance"][field] = value
+        else:
+            bad[field] = value
+
+        rejected = failure.create_receipt(slot_id, PROVISIONAL_CANDIDATE, bad)
+
+        assert rejected["status"] == "fail", field
+        assert any(message in error for error in rejected["verification"]["failed_assertions"]), field
+
+
+def test_unknown_runner_contract_fails_closed_without_keyerror() -> None:
+    contract = {**failure.SLOT_CONTRACTS["direct-macos"], "runner": "macos-unknown"}
+
+    errors = failure._runner_errors(valid_observation("direct-macos"), contract)
+
+    assert errors == ["runner: no pinned hosted provenance for 'macos-unknown'"]
+
+
 @pytest.mark.parametrize("slot_id", ("direct-macos", "direct-linux", "direct-windows"))
 def test_interruption_recovery_is_explicit_per_os(slot_id: str) -> None:
     observation = valid_observation(slot_id)
