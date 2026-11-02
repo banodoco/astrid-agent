@@ -44,6 +44,10 @@ DESIGNATION_VERSION = "runtime.role-custody-designation/v1"
 ROLE_REFERENCE_VERSION = "runtime.role-custody-reference/v1"
 
 
+# Runtime owns the platform custody implementation; this module adapts it (see parity test).
+from astrid_runtime import custody_broker as _rt  # noqa: E402
+from runtime_protocol.linux_process_binding import LinuxBindingError as _LinuxBindingError  # noqa: E402
+
 class CustodyError(RuntimeError):
     """The exact registered Runtime incarnation cannot be proved or signalled."""
 
@@ -574,167 +578,40 @@ def _token_from_words(words: Sequence[int]) -> _AuditToken:
     return token
 
 
-def _linux_binding():
-    """Runtime's Linux primitives (runtime_protocol, the admitted route); errors map to CustodyError."""
-    from runtime_protocol import linux_process_binding
-    return linux_process_binding
 
 
 def audit_token_details(words: Sequence[int]) -> dict[str, object]:
-    if sys.platform == "win32":
-        return _windows_platform().handoff_token_details(list(words))
-    if sys.platform.startswith("linux"):
-        binding = _linux_binding()
-        try:
-            return binding.details(words)
-        except binding.LinuxBindingError as exc:
-            raise CustodyError("linux process token is unavailable") from exc
-    if sys.platform != "darwin":
-        raise CustodyError("Darwin audit-token custody is unavailable")
-    token = _token_from_words(words)
-    libbsm = ctypes.CDLL("/usr/lib/libbsm.0.dylib", use_errno=True)
-    libbsm.audit_token_to_pid.argtypes = [_AuditToken]
-    libbsm.audit_token_to_pid.restype = ctypes.c_int
-    libbsm.audit_token_to_pidversion.argtypes = [_AuditToken]
-    libbsm.audit_token_to_pidversion.restype = ctypes.c_int
-    raw = bytes(token)
-    return {
-        "pid": int(libbsm.audit_token_to_pid(token)),
-        "pidversion": int(libbsm.audit_token_to_pidversion(token)),
-        "uid": int(token.value[1]),
-        "sha256": _digest_bytes(raw),
-    }
+    """Delegate to the Runtime implementation (single source of truth); map its errors to this module's CustodyError."""
+    try:
+        return _rt.audit_token_details(words)
+    except (_rt.CustodyError, _LinuxBindingError) as exc:
+        raise CustodyError(str(exc)) from exc
 
 
-def _windows_platform():
-    """Runtime's Windows handoff primitives (runtime_protocol.platform); no local Windows implementation."""
-    from runtime_protocol import platform as _runtime_platform
-    return _runtime_platform
 
 
 def _peer_token(connection: socket.socket) -> dict[str, object]:
-    if sys.platform == "win32":
-        return _windows_platform().handoff_peer_token(connection)
-    if sys.platform.startswith("linux"):
-        # Same Linux mechanism as Runtime (SO_PEERCRED + /proc observation, pidns and boot scoped).
-        from runtime_protocol import linux_process_binding
-        try:
-            return linux_process_binding.peer_token(connection)
-        except linux_process_binding.LinuxBindingError as exc:
-            raise CustodyError("linux peer identity is unavailable") from exc
-    if sys.platform != "darwin":
-        raise CustodyError("Darwin audit-token custody is unavailable")
-    raw = connection.getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN, TOKEN_BYTES)
-    if len(raw) != TOKEN_BYTES:
-        raise CustodyError("LOCAL_PEERTOKEN returned an invalid token size")
-    token = _AuditToken.from_buffer_copy(raw)
-    details = audit_token_details([int(value) for value in token.value])
-    return {**details, "words": [int(value) for value in token.value]}
+    """Delegate to the Runtime implementation (single source of truth); map its errors to this module's CustodyError."""
+    try:
+        return _rt._peer_token(connection)
+    except (_rt.CustodyError, _LinuxBindingError) as exc:
+        raise CustodyError(str(exc)) from exc
 
 
 def current_process_audit_token(pid: int) -> dict[str, object]:
-    """Read one live process token through a retained Mach task-name port."""
-    if sys.platform == "win32":
-        return _windows_platform().handoff_token(pid)
-    if sys.platform.startswith("linux"):
-        binding = _linux_binding()
-        try:
-            return binding.token(pid)
-        except binding.LinuxBindingError as exc:
-            raise CustodyError("linux process token is unavailable") from exc
-
-    if sys.platform != "darwin" or int(pid) <= 0:
-        raise CustodyError("Darwin audit-token custody is unavailable")
-    library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-    library.task_name_for_pid.argtypes = [
-        ctypes.c_uint32, ctypes.c_int, ctypes.POINTER(ctypes.c_uint32),
-    ]
-    library.task_name_for_pid.restype = ctypes.c_int
-    library.task_info.argtypes = [
-        ctypes.c_uint32, ctypes.c_int,
-        ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_uint32),
-    ]
-    library.task_info.restype = ctypes.c_int
-    library.pid_for_task.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_int)]
-    library.pid_for_task.restype = ctypes.c_int
-    library.mach_port_deallocate.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
-    library.mach_port_deallocate.restype = ctypes.c_int
-    task_self = ctypes.c_uint32.in_dll(library, "mach_task_self_").value
-    task_name = ctypes.c_uint32(0)
-    result = int(library.task_name_for_pid(task_self, int(pid), ctypes.byref(task_name)))
-    if result != 0:
-        raise NativeTokenCaptureError(f"final-ready Runtime task-name port is unavailable (substage=task_name_for_pid, kern_return={result}, candidate_pid={pid})",
-                                      substage="task_name_for_pid", kern_return=result,
-                                      port_acquired=bool(task_name.value))
-
-    def read_token(substage: str) -> list[int]:
-        token = _AuditToken()
-        count = ctypes.c_uint32(TASK_AUDIT_TOKEN_COUNT)
-        result = int(library.task_info(
-            task_name.value,
-            TASK_AUDIT_TOKEN,
-            ctypes.cast(ctypes.byref(token), ctypes.POINTER(ctypes.c_int32)),
-            ctypes.byref(count),
-        ))
-        if result != 0 or count.value != TASK_AUDIT_TOKEN_COUNT:
-            raise NativeTokenCaptureError(f"final-ready Runtime audit token is unavailable (substage={substage}, kern_return={result}, count={count.value}, candidate_pid={pid})",
-                                          substage=substage, kern_return=result,
-                                          port_acquired=True, count=int(count.value))
-        return [int(value) for value in token.value]
-
-    primary_error = None
+    """Delegate to the Runtime implementation (single source of truth); map its errors to this module's CustodyError."""
     try:
-        first = read_token("task_info_first")
-        bound_pid = ctypes.c_int(0)
-        result = int(library.pid_for_task(task_name.value, ctypes.byref(bound_pid)))
-        if result != 0 or bound_pid.value != int(pid):
-            raise NativeTokenCaptureError(f"final-ready Runtime task port changed process (substage=pid_for_task, kern_return={result}, candidate_pid={pid}, bound_pid={bound_pid.value})",
-                                          substage="pid_for_task", kern_return=result, port_acquired=True)
-        second = read_token("task_info_second")
-        if first != second:
-            raise NativeTokenCaptureError("final-ready Runtime audit token changed while binding",
-                                          substage="token_consistency", kern_return=0, port_acquired=True)
-        return {**audit_token_details(first), "words": first}
-    except BaseException as error:
-        primary_error = error
-        raise
-    finally:
-        result = int(library.mach_port_deallocate(task_self, task_name.value))
-        if type(primary_error) is NativeTokenCaptureError:
-            primary_error.capture_failure["port_release_succeeded"] = result == 0
-        if result != 0:
-            release_error = NativeTokenCaptureError(f"final-ready Runtime task-name port release failed (substage=mach_port_deallocate, kern_return={result}, candidate_pid={pid})",
-                                                   substage="mach_port_deallocate", kern_return=result, port_acquired=True)
-            if primary_error is not None:
-                primary_error.port_release_error = release_error
-                primary_error.add_note(str(release_error))
-            else:
-                raise release_error
+        return _rt.current_process_audit_token(pid)
+    except (_rt.CustodyError, _LinuxBindingError) as exc:
+        raise CustodyError(str(exc)) from exc
 
 
 def signal_audit_token(words: Sequence[int], signum: int) -> None:
-    if sys.platform == "win32":
-        return _windows_platform().handoff_signal_token(words, signum)
-    if sys.platform.startswith("linux"):
-        binding = _linux_binding()
-        try:
-            return binding.signal(words, signum)
-        except binding.LinuxBindingError as exc:
-            raise CustodyError("linux process signal refused") from exc
-    if int(signum) not in _admitted_signals():
-        raise CustodyError("custody signal is outside the admitted set")
-    if sys.platform != "darwin":
-        raise CustodyError("Darwin audit-token custody is unavailable")
-    token = _token_from_words(words)
-    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-    function = library.proc_signal_with_audittoken
-    function.argtypes = [ctypes.POINTER(_AuditToken), ctypes.c_int]
-    function.restype = ctypes.c_int
-    ctypes.set_errno(0)
-    result = int(function(ctypes.byref(token), int(signum)))
-    observed_errno = int(ctypes.get_errno())
-    if result != 0:
-        raise AuditTokenSignalError(result, observed_errno)
+    """Delegate to the Runtime implementation (single source of truth); map its errors to this module's CustodyError."""
+    try:
+        return _rt.signal_audit_token(words, signum)
+    except (_rt.CustodyError, _LinuxBindingError) as exc:
+        raise CustodyError(str(exc)) from exc
 
 
 def _resume_audit_token_once(words: Sequence[int]) -> None:
@@ -844,29 +721,11 @@ def _atomic_owner_json(path: Path, value: Mapping[str, object]) -> None:
 
 
 def _open_authority_scope_lock(scope_root: Path) -> int:
-    root = Path(os.path.abspath(scope_root))
-    if not root.is_absolute() or root.is_symlink():
-        raise CustodyError("custody authority scope is unsafe")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    observed_root = os.lstat(root)
-    if (
-        not stat.S_ISDIR(observed_root.st_mode)
-        or not owned_by_current_user(scope_root, observed_root, mode=0o700)
-    ):
-        raise CustodyError("custody authority scope is not owner-only")
-    descriptor = os.open(
-        root / AUTHORITY_SCOPE_LOCK,
-        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600,
-    )
-    os.set_inheritable(descriptor, False)
-    observed = os.fstat(descriptor)
-    if (
-        not stat.S_ISREG(observed.st_mode)
-        or not owned_by_current_user(descriptor, observed, mode=0o600)
-    ):
-        os.close(descriptor)
-        raise CustodyError("custody authority scope lock is not owner-only")
-    return descriptor
+    """Delegate to the Runtime implementation (single source of truth); map its errors to this module's CustodyError."""
+    try:
+        return _rt._open_authority_scope_lock(scope_root)
+    except (_rt.CustodyError, _LinuxBindingError) as exc:
+        raise CustodyError(str(exc)) from exc
 
 
 def _read_owner_file(path: Path) -> tuple[bytes, os.stat_result]:
@@ -1606,47 +1465,11 @@ class RoleCustodyAuthority:
 
 
 def default_process_identity(pid: int, *, timeout: float = 1.0) -> dict[str, object] | None:
-    """Return identity, None only for proven absence, and raise on observation failure."""
-
-    if timeout <= 0:
-        raise CustodyError("process identity observation deadline expired")
-    if sys.platform == "win32":
-        return platform.process_identity(pid)
-    if sys.platform.startswith("linux"):
-        from runtime_protocol import platform as _runtime_platform
-        return _runtime_platform.process_identity(pid, timeout=timeout)
-    if sys.platform == "darwin":
-        rows = _darwin_process_records(pid)
-        if not rows:
-            return None  # Observation only; never a retained wait/reap.
-        row = rows[0]
-        if row["status"] == 5:
-            raise DarwinProcessExitedError("Darwin process identity observed a zombie; exit/reap remains unproved")
-        if row["status"] not in {1, 2, 3, 4}:
-            raise CustodyError("Darwin process identity is not live")
-        return {"pid": row["pid"], "uid": row["uid"], "parent_pid": row["parent_pid"],
-                "birth_id": _ps_lstart_birth(row["start_sec"])}
+    """Delegate to the Runtime implementation (single source of truth); map its errors to this module's CustodyError."""
     try:
-        result = subprocess.run(
-            ["/bin/ps", "-ww", "-o", "uid=", "-o", "ppid=", "-o", "lstart=", "-p", str(pid)],
-            stdin=subprocess.DEVNULL,
-            text=True, capture_output=True, check=False, timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise CustodyError("process identity observation failed") from exc
-    rendered = result.stdout.strip()
-    if result.returncode == 1 and not rendered and not result.stderr.strip():
-        return None
-    if result.returncode != 0:
-        raise CustodyError(
-            f"process identity observation failed with status {result.returncode}"
-        )
-    if not rendered:
-        raise CustodyError("process identity observation returned no identity")
-    parts = rendered.split(None, 2)
-    if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
-        raise CustodyError("process identity observation was malformed")
-    return {"pid": pid, "uid": int(parts[0]), "parent_pid": int(parts[1]), "birth_id": "ps-lstart:" + parts[2]}
+        return _rt.default_process_identity(pid, timeout=timeout)
+    except (_rt.CustodyError, _LinuxBindingError) as exc:
+        raise CustodyError(str(exc)) from exc
 
 PROTOCOL_VERSION = 1
 DARWIN_UNIX_SOCKET_PATH_MAX_BYTES = 103
@@ -1681,38 +1504,11 @@ def _create_compact_socket_root() -> Path:
     return root
 
 def _append_owner_jsonl(path: Path, value: Mapping[str, object]) -> None:
-    """Durably append one owner-only authority record without replacing peers."""
-
-    if not path.is_absolute() or path.is_symlink():
-        raise CustodyError("custody authority journal path is unsafe")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    parent = os.lstat(path.parent)
-    if (
-        stat.S_ISLNK(parent.st_mode)
-        or not stat.S_ISDIR(parent.st_mode)
-        or not owned_by_current_user(path.parent, parent, mode=0o700)
-    ):
-        raise CustodyError("custody authority journal parent is not owner-only")
-    encoded = _canonical(dict(value)) + b"\n"
-    if len(encoded) > FRAME_LIMIT:
-        raise CustodyError("custody authority journal record exceeds its hard limit")
-    descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+    """Delegate to the Runtime implementation (single source of truth); map its errors to this module's CustodyError."""
     try:
-        observed = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(observed.st_mode)
-            or not owned_by_current_user(descriptor, observed, mode=0o600)
-        ):
-            raise CustodyError("custody authority journal is not owner-only")
-        if os.write(descriptor, encoded) != len(encoded):
-            raise CustodyError("custody authority journal append was incomplete")
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        return _rt._append_owner_jsonl(path, value)
+    except (_rt.CustodyError, _LinuxBindingError) as exc:
+        raise CustodyError(str(exc)) from exc
 
 def _acquire_scope_admission(scope_root: Path, *, timeout: float) -> int:
     descriptor = _open_authority_scope_lock(scope_root)
@@ -2357,60 +2153,11 @@ def custody_wrapper_argv(executable: str) -> list[str]:
     return [executable, "-X", "utf8", "-I", "-S", "-u", "-c", bootstrap, "--custody-exec"]
 
 def child_exec_from_environment() -> int:
-    encoded = os.environ.get("ASTRID_RUNTIME_CUSTODY_TARGET_B64", "")
+    """Delegate to the Runtime implementation (single source of truth); map its errors to this module's CustodyError."""
     try:
-        argv = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CustodyError("custody target argv is invalid") from exc
-    if not isinstance(argv, list) or not argv or any(not isinstance(v, str) or "\0" in v for v in argv):
-        raise CustodyError("custody target argv is invalid")
-    # Session creation changes Darwin's audit-token pidversion.  Complete it
-    # before the broker samples the pre-exec token.  The target may perform
-    # further launcher execs, so this provisional token is rebound only after
-    # Runtime readiness by the parent that retains the direct-child handle.
-    if os.environ.get("ASTRID_RUNTIME_CUSTODY_START_SESSION") == "1":
-        platform.start_session()
-    try:
-        timeout = float(os.environ.get("ASTRID_RUNTIME_CUSTODY_TIMEOUT_SECONDS", "5"))
-    except ValueError as exc:
-        raise CustodyError("custody registration timeout is invalid") from exc
-    if not math.isfinite(timeout) or timeout <= 0 or timeout > 60:
-        raise CustodyError("custody registration timeout is invalid")
-    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    # The broker durably checkpoints the pre-exec registration before its ACK.
-    # Use the broker's own bounded timeout so a slow fsync cannot make the child
-    # abandon a registration the broker is still entitled to complete.
-    connection.settimeout(timeout)
-    connection.connect(os.environ.get("ASTRID_RUNTIME_CUSTODY_SOCKET", ""))
-    os.set_inheritable(connection.fileno(), True)
-    frame = {
-        "version": PROTOCOL_VERSION, "command": "register_pre_exec",
-        "run_id": os.environ.get("ASTRID_RUNTIME_CUSTODY_RUN_ID", ""),
-        "role": os.environ.get("ASTRID_RUNTIME_CUSTODY_ROLE", ""),
-        "pid": os.getpid(), "ppid": os.getppid(),
-        "argv_digest": _digest_bytes(_canonical(argv)),
-    }
-    _send_frame(connection, frame)
-    ack = _read_frame(connection)
-    if (
-        ack.get("status") != "registered" or ack.get("run_id") != frame["run_id"]
-        or ack.get("role") != frame["role"] or ack.get("pid") != os.getpid()
-        or ack.get("registration_digest") != _digest_bytes(_canonical(frame))
-    ):
-        raise CustodyError("custody registration acknowledgement is invalid")
-    engine_channel = os.environ.get("ASTRID_RUNTIME_CUSTODY_ROLE") == "engine"
-    command_channel = os.environ.pop("ASTRID_COMMAND_CUSTODY_ENABLED", "") == "1"
-    for name in tuple(os.environ):
-        if name.startswith("ASTRID_RUNTIME_CUSTODY_"):
-            os.environ.pop(name, None)
-    descriptor = connection.detach()
-    if engine_channel:
-        os.environ["ASTRID_ENGINE_CONTROL_FD"] = str(descriptor)
-    elif command_channel:
-        os.environ[_COMMAND_INVENTORY_FD] = str(descriptor)
-    os.set_inheritable(descriptor, True)
-    _posix_spawn_setexec_suspended(argv, dict(os.environ))
-    raise AssertionError("suspended SETEXEC returned")
+        return _rt.child_exec_from_environment()
+    except (_rt.CustodyError, _LinuxBindingError) as exc:
+        raise CustodyError(str(exc)) from exc
 
 
 # Private command-owner inventory reads. Frames never authorize arbitrary argv.
