@@ -310,10 +310,10 @@ def generate(args: argparse.Namespace) -> dict[str, Any]:
             "GITHUB_SHA": args.runner_ref,
             "GITHUB_WORKFLOW_SHA": args.runner_ref,
             "GITHUB_EVENT_NAME": "workflow_dispatch",
-            "GITHUB_REF": "refs/heads/lane/M-PIN/R-PIN-INTEGRATOR",
+            "GITHUB_REF": "refs/heads/lane/M-PIN/R-PIN-INTEGRATOR-R3",
             "GITHUB_WORKFLOW_REF": (
                 f"{push_admission.REPOSITORY}/{push_admission.WORKFLOW_PATH}"
-                "@refs/heads/lane/M-PIN/R-PIN-INTEGRATOR"
+                "@refs/heads/lane/M-PIN/R-PIN-INTEGRATOR-R3"
             ),
         },
         runner_ref=args.runner_ref,
