@@ -470,13 +470,16 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                   import_contract: ImportContract | None = None,
                   builds: Mapping[str, Mapping[str, Any]] | None = None,
                   toolchain: Mapping[str, Any] | None = None, remove: tuple[str, ...] = (),
-                  intent: Literal["explicit", "defaults"] = "explicit", refresh: Refresh | None = None,
+                  intent: Literal["explicit", "defaults", "update", "rollback"] = "explicit",
+                  refresh: Refresh | None = None,
+                  consent: Callable[[Mapping[str, Any]], bool] | None = None,
                   boundary: Callable[[str], None] | None = None) -> GroupResult:
     """Validate -> build -> publish a same-source, same-commit dependency group.
 
-    Only explicitly named ids are updated. Defaults honor durable removal
-    tombstones and cannot take over user/folder packs. Dependencies are facts
-    from this candidate collection plus explicitly selected host/core facts;
+    Only explicitly named ids are updated. Defaults, updates, and rollbacks
+    honor durable removal tombstones; defaults also cannot take over
+    user/folder packs. Only an explicit install clears a removal. Dependencies
+    are facts from this candidate collection plus explicitly selected host/core facts;
     installation never fetches an undeclared dependency or pack update.
     ``boundary`` is a trusted host observability hook, never pack code.
     All mutation callers must use this orchestration rather than composing
@@ -485,7 +488,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
     root = _root(packs_root)
     packs = dict(packs)
     remove = tuple(remove)
-    if (intent not in {"explicit", "defaults"} or (intent == "defaults" and origin != "default")
+    if (intent not in {"explicit", "defaults", "update", "rollback"}
+            or (intent == "defaults" and origin != "default")
             or any(not isinstance(i, str) or not _ID.fullmatch(i) for i in (*packs, *remove))
             or set(packs) & set(remove) or set(remove) & {"personal", "core", "astrid"}):
         raise PackInstallError("invalid_request", "Use disjoint valid install/removal ids and an explicit default origin.")
@@ -508,9 +512,9 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
         root.mkdir(exist_ok=True)
         old = _state(root)
         tombstones = set(old["removals"]) | set(remove)
-        if intent == "defaults":
+        if intent in {"defaults", "update", "rollback"}:
             packs = {i: p for i, p in packs.items() if i not in tombstones}
-        else:
+        if intent == "explicit":
             tombstones.difference_update(packs)
         retired = _directory(root.parent / ".astrid-retired", create=True)
         candidate = retired / tx
@@ -545,6 +549,15 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     facts[pack_id] = item
             commit = revision
             source_text = _git_source(str(source)) if revision is not None and packs else None
+            if intent == "update":
+                for pack_id in packs:
+                    installed_pin_path = root / pack_id / "PIN"
+                    if not installed_pin_path.is_file():
+                        continue
+                    installed_pin = read_pin(installed_pin_path)
+                    if (installed_pin.get("origin") != origin
+                            or installed_pin.get("source", "").split("#", 1)[0] != source_text):
+                        raise PackInstallError("pin_mismatch", f"Pack {pack_id} has a conflicting source PIN; update from its installed source.")
             for index, (pack_id, subpath) in enumerate(sorted(packs.items())):
                 prepared = work / str(index)
                 prepared.mkdir()
@@ -610,6 +623,24 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             # cannot alter an earlier pack's admitted bytes unnoticed.
             for request, result in build_records:
                 _verify_artifacts(request, result)
+            if consent is not None:
+                changes = {
+                    "intent": intent,
+                    "source": source_text,
+                    "revision": commit,
+                    "packs": {
+                        pack_id: {
+                            "before": read_pin(root / pack_id / "PIN") if (root / pack_id / "PIN").is_file() else None,
+                            "after": dict(identities[pack_id][1]),
+                            "before_digest": pack_digest(root / pack_id) if (root / pack_id).is_dir() else None,
+                            "after_digest": identities[pack_id][0],
+                        }
+                        for pack_id in sorted(packs)
+                    },
+                    "removals": sorted(tombstones),
+                }
+                if consent(changes) is not True:
+                    raise PackInstallError("user_cancelled", "The pack update was not committed because consent was not given.")
             # A newer inventory revision subsumes an unacknowledged one. Carry
             # its changed ids forward so a delta consumer cannot miss a commit.
             pending_ids = old["refresh"]["changed_ids"] if old["refresh"] else ()
@@ -665,6 +696,126 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 (retired / ("." + tx + ".transaction.lock")).unlink(missing_ok=True)
             except OSError:
                 pass  # Housekeeping cannot mask a publication/durability result.
+
+
+def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[str],
+                   transaction_id: str | None = None,
+                   expected_pins: Mapping[str, Mapping[str, Any]] | None = None,
+                   refresh: Refresh | None = None,
+                   consent: Callable[[Mapping[str, Any]], bool] | None = None) -> GroupResult:
+    """Restore selected packs from the generation retired by the active commit.
+
+    The rollback itself is a complete atomic collection publication. Current
+    tombstones win over the retired generation, and packs outside ``pack_ids``
+    are copied from the live collection unchanged. Restored pack directories
+    are copied as complete installed state, including build-hook admission and
+    artifact-manifest files under ``.build``.
+    """
+    root = _root(packs_root)
+    ids = tuple(sorted(set(pack_ids)))
+    if not ids or any(not isinstance(i, str) or not _ID.fullmatch(i) for i in ids):
+        raise PackInstallError("invalid_request", "Select one or more valid pack IDs to roll back.")
+    expected_pins = {key: dict(value) for key, value in (expected_pins or {}).items()}
+    with group_read_lock(root, exclusive=True):
+        state = _state(root)
+        active_tx = state["transaction_id"]
+        if not active_tx or (transaction_id is not None and transaction_id != active_tx):
+            raise PackInstallError("rollback_conflict", "Rollback must name the currently active committed generation.")
+        prior = _directory(root.parent / ".astrid-retired" / active_tx)
+        prior_state = _state(prior)
+        if prior_state["revision"] < 1 or prior_state["transaction_id"] == active_tx:
+            raise PackInstallError("uncommitted_generation", "The active generation has no prior committed generation to restore.")
+        current_paths = _paths(root)
+        prior_paths = _paths(prior)
+        tombstones = set(state["removals"]) | set(prior_state["removals"])
+        before = {}
+        for pack_id in ids:
+            current_pin = read_pin(current_paths[pack_id] / "PIN") if pack_id in current_paths and (current_paths[pack_id] / "PIN").is_file() else None
+            prior_pin = read_pin(prior_paths[pack_id] / "PIN") if pack_id in prior_paths and (prior_paths[pack_id] / "PIN").is_file() else None
+            if pack_id in expected_pins and current_pin != expected_pins[pack_id]:
+                raise PackInstallError("rollback_conflict", f"Pack {pack_id} no longer has the expected committed PIN.")
+            if current_pin and current_pin.get("origin") == "personal":
+                raise PackInstallError("reserved_id", "Personal packs cannot be replaced by a rollback.")
+            if current_pin and prior_pin and (current_pin.get("source") != prior_pin.get("source")
+                                               or current_pin.get("origin") != prior_pin.get("origin")):
+                raise PackInstallError("rollback_conflict", f"Pack {pack_id} has conflicting source pins; refusing rollback.")
+            before[pack_id] = {"current": current_pin, "restore": prior_pin,
+                               "current_digest": pack_digest(current_paths[pack_id]) if pack_id in current_paths else None,
+                               "restore_digest": pack_digest(prior_paths[pack_id]) if pack_id in prior_paths else None}
+        preview = {"intent": "rollback", "packs": before, "removals": sorted(tombstones)}
+        if consent is not None and consent(preview) is not True:
+            raise PackInstallError("user_cancelled", "The pack rollback was not committed because consent was not given.")
+
+        retired = _directory(root.parent / ".astrid-retired", create=True)
+        tx = uuid4().hex
+        candidate = retired / tx
+        candidate.mkdir(mode=0o700)
+        identity = (candidate.stat().st_dev, candidate.stat().st_ino)
+        published = False
+        try:
+            _tree(root)
+            shutil.copytree(root, candidate, dirs_exist_ok=True)
+            candidate.chmod(0o700)
+            (candidate / ".install.lock").unlink(missing_ok=True)
+            (candidate / _STATE).unlink(missing_ok=True)
+            admissions = dict(state["admissions"])
+            for pack_id in ids:
+                target = candidate / pack_id
+                if target.exists():
+                    shutil.rmtree(target)
+                admissions.pop(pack_id, None)
+                if pack_id not in tombstones and pack_id in prior_paths:
+                    # Preserve the complete installed tree. In particular,
+                    # M1-16 build-hook admission/artifact records belong to the
+                    # generation and must follow it through rollback.
+                    shutil.copytree(prior_paths[pack_id], target)
+                    if pack_id in prior_state["admissions"]:
+                        admissions[pack_id] = prior_state["admissions"][pack_id]
+            facts = {}
+            for pack_id, path in _paths(candidate).items():
+                if pack_id == "personal":
+                    continue
+                manifest, item = _facts(path)
+                facts[pack_id] = item
+            contract = ImportContract(
+                facade_exports=frozenset(pack_api.__all__), sdk_names=frozenset(sdk.__all__),
+                core_pack_apis={i: f"astrid.packs.{i}.api" for i, f in facts.items() if f.get("origin") == "core"})
+            for pack_id, path in _paths(candidate).items():
+                if pack_id == "personal":
+                    continue
+                manifest, item = _facts(path)
+                checked = validate_pack(mode="inventory", manifest=manifest, candidate=item, selected=facts,
+                                        core_api=pack_api.VERSION, release_pins={}, python_packages={},
+                                        import_violations=check_pack_imports(path, contract=contract, manifest=manifest))
+                if not checked["ok"]:
+                    raise PackInstallError(checked["code"], checked["reason"], compatibility=checked)
+            changed_ids = tuple(sorted(set(ids) | (set(state["refresh"]["changed_ids"]) if state["refresh"] else set())))
+            new_state = {"version": 1, "revision": state["revision"] + 1, "transaction_id": tx,
+                         "removals": sorted(tombstones), "admissions": admissions,
+                         "refresh": {"transaction_id": tx, "revision": state["revision"] + 1,
+                                     "changed_ids": list(changed_ids)}}
+            _write_state(candidate, new_state)
+            _sync_tree(candidate)
+            _sync_directory(retired)
+            _publish(candidate, root)
+            published = True
+            _sync_directory(retired)
+            _sync_directory(root.parent)
+            pending = _refresh(root, new_state, refresh)
+            return GroupResult(tx, new_state["revision"], changed_ids, _paths(root), pending, candidate)
+        finally:
+            if not published:
+                try:
+                    current = root.stat()
+                    published = (current.st_dev, current.st_ino) == identity
+                except OSError:
+                    pass
+            if not published:
+                shutil.rmtree(candidate, ignore_errors=True)
+            try:
+                (retired / ("." + tx + ".transaction.lock")).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 __all__ = ["install_group", "rollback_group", "read_group", "read_retired_group", "retry_refresh", "group_read_lock",
