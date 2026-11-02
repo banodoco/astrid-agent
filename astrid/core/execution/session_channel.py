@@ -16,7 +16,7 @@ SESSION_CHANNEL_VERSION = "astrid.session-channel/v1"
 
 _ALLOWED_OPS = frozenset({"submit", "progress", "cancel"})
 _REQUEST_KEYS = frozenset({"version", "run_id", "seq", "op", "args"})
-_SUBMIT_ARG_KEYS = frozenset({"settings", "timeout_seconds"})
+_SUBMIT_ARG_KEYS = frozenset({"inputs", "timeout_seconds"})
 _CANCEL_ARG_KEYS = frozenset({"reason"})
 
 
@@ -178,22 +178,22 @@ class SessionChannelBroker:
         if self._ended:
             raise _Refusal("run_ended", "run has already ended")
         if set(args) != _SUBMIT_ARG_KEYS:
-            raise _Refusal("protocol", "submit args must be exactly settings and timeout_seconds")
-        settings = args["settings"]
+            raise _Refusal("protocol", "submit args must be exactly inputs and timeout_seconds")
+        inputs = args["inputs"]
         timeout = args["timeout_seconds"]
         if not _is_number(timeout) or not math.isfinite(timeout) or timeout <= 0:
             raise _Refusal("protocol", "timeout_seconds must be a positive finite number")
-        if not isinstance(settings, dict):
-            raise _Refusal("invalid_settings", "settings must be an object")
+        if not isinstance(inputs, dict):
+            raise _Refusal("invalid_settings", "inputs must be an object")
         try:
-            self._session.validate_settings(settings)
+            self._session.validate_settings(inputs)
         except ValueError:
             raise _Refusal("invalid_settings", "settings were rejected by host validation") from None
         except Exception:
             raise _Refusal("host_error", "host session validation failed") from None
         # Consume the one submit before calling out, so a raising submit is not retried.
         self._submitted = True
-        result = self._host_call(self._session.submit, dict(settings), float(timeout))
+        result = self._host_call(self._session.submit, dict(inputs), float(timeout))
         if not isinstance(result, Mapping):
             raise _Refusal("host_error", "host submit returned a non-object result")
         return dict(result)

@@ -110,12 +110,12 @@ class SessionClient:
     def timeout_seconds(self) -> float:
         return self._timeout
 
-    def submit(self, settings: Mapping[str, Any], timeout_seconds: float) -> dict[str, Any]:
-        """Start the run once. Never retried. Returns the evidence mapping."""
-        if not isinstance(settings, Mapping):
-            raise ValueError("settings must be a mapping")
+    def submit(self, inputs: Mapping[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        """Start the run once with raw inputs. The host compiles them. Never retried."""
+        if not isinstance(inputs, Mapping):
+            raise ValueError("inputs must be a mapping")
         run_budget = _check_timeout(timeout_seconds, "timeout_seconds")
-        args = {"settings": dict(settings), "timeout_seconds": run_budget}
+        args = {"inputs": dict(inputs), "timeout_seconds": run_budget}
         # The host may take the whole run budget before answering; allow the
         # client-side client timeout on top of it.
         return self._request("submit", args, wait=run_budget + self._timeout)

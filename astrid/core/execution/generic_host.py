@@ -1785,44 +1785,52 @@ def _declares_managed_session(record: Any) -> bool:
     return isinstance(declaration, Mapping) and declaration.get("session") == "managed_tool"
 
 
+@dataclass(frozen=True)
+class ManagedToolProfile:
+    """Host-owned rules for one managed tool. Pack code never supplies these."""
+
+    compile_settings: Callable[[Mapping[str, Any]], dict[str, Any]]
+    invoke: Callable[..., Any]
+
+
 class _HostManagedSessionAdapter:
     """Host side of the per-run session channel. Authority never leaves the host.
 
-    The host recomputes the settings from its own inputs and refuses any worker
-    submission that differs, so the worker's copy is never trusted. The admitted
-    token stays here; no identity crosses to the worker.
+    Compilation and validation come from the host-owned profile for the declaring
+    managed tool, never from the worker or the pack. The worker sends raw inputs;
+    the host compiles them, invokes once, and echoes the compiled settings back.
     """
 
-    def __init__(self, host: "GenericPackHost", *, managed_token: Any, inputs: Mapping[str, Any],
-                 progress_path: Path, timeout_cap: float, cancelled: Callable[[], bool]) -> None:
-        self._host = host
+    def __init__(self, *, profile: ManagedToolProfile, managed_token: Any, inputs: Mapping[str, Any],
+                 progress_path: Path, timeout_cap: float, cancelled: Callable[[], bool],
+                 cancel_session: Callable[[Any, str], Any]) -> None:
+        self._profile = profile
         self._token = managed_token
+        self._cancel_session = cancel_session
         self._inputs = dict(inputs)
         self._progress_path = progress_path
         self._timeout_cap = timeout_cap
         self._cancelled = cancelled
         self._submitted = False
 
-    def validate_settings(self, settings: Mapping[str, Any]) -> None:
-        from astrid.packs.wan2gp.src.driver import compile_host_settings
+    def validate_settings(self, inputs: Mapping[str, Any]) -> None:
+        if not isinstance(inputs, Mapping):
+            raise ValueError("inputs must be an object")
+        self._profile.compile_settings(dict(inputs))
 
-        if not isinstance(settings, Mapping):
-            raise ValueError("settings must be an object")
-        if dict(settings) != compile_host_settings(self._inputs):
-            raise ValueError("submitted settings differ from the host-compiled settings")
-
-    def submit(self, settings: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
-        from astrid.packs.wan2gp.src.driver import compile_host_settings
-
+    def submit(self, inputs: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
         if self._submitted:
             raise RuntimeError("submit is allowed once per run")
         self._submitted = True
-        host_settings = compile_host_settings(self._inputs)
+        compiled = self._profile.compile_settings(dict(inputs))
         timeout = max(0.1, min(float(timeout_seconds), self._timeout_cap))
-        evidence = self._host.invoke_wan_session(
-            self._token, host_settings, timeout=timeout, cancelled=self._cancelled,
+        evidence = self._profile.invoke(
+            self._token, compiled, timeout=timeout, cancelled=self._cancelled,
             progress_path=self._progress_path)
-        return dict(evidence) if isinstance(evidence, Mapping) else {"result": None}
+        result = dict(evidence) if isinstance(evidence, Mapping) else {"result": None}
+        # Non-secret echo of what the host compiled and invoked.
+        result["compiled_settings"] = compiled
+        return result
 
     def progress(self) -> dict[str, Any]:
         try:
@@ -1832,7 +1840,7 @@ class _HostManagedSessionAdapter:
 
     def cancel(self, reason: str) -> dict[str, Any]:
         try:
-            self._host.managed_tool_session.cancel(self._token, outcome=str(reason)[:200])
+            self._cancel_session(self._token, str(reason)[:200])
         except Exception:
             return {"state": "cancel_requested"}
         return {"state": "cancel_requested"}
@@ -6276,6 +6284,13 @@ class GenericPackHost:
         # The fence was set by a Runtime restart (not an incompatible Runtime).
         self._runtime_restarted = False
         self._registration_refresh_blocked = False
+        # Host-owned managed-tool profiles, keyed by managed tool (pack id). Only
+        # host code registers entries; a pack cannot add one (M2-11a P2).
+        from astrid.packs.wan2gp.src.driver import compile_host_settings as _wan_compile
+
+        self._managed_tool_profiles: dict[str, ManagedToolProfile] = {
+            "wan2gp": ManagedToolProfile(compile_settings=_wan_compile, invoke=self.invoke_wan_session),
+        }
         self.capability_matrix_path = Path(capability_matrix).expanduser().resolve() if capability_matrix else self._default_matrix_path()
         # Keep the mapping live when the default is os.environ so test/runtime
         # credential rotation is observed without snapshotting secret values.
@@ -11996,12 +12011,17 @@ class GenericPackHost:
                     if _declares_managed_session(record):
                         from astrid.core.execution.session_channel import SessionChannelBroker
 
+                        profile = self._managed_tool_profiles.get(str(record.definition.metadata.get("source_pack") or ""))
+                        if profile is None:
+                            # Fail closed before any run starts: no host profile, no channel.
+                            raise HostError("managed tool has no registered host profile")
                         parent_end, child_end = socket.socketpair()
                         session_adapter = _HostManagedSessionAdapter(
-                            self, managed_token=managed_token, inputs=inputs,
+                            profile=profile, managed_token=managed_token, inputs=inputs,
                             progress_path=root / ".astrid-progress.json",
                             timeout_cap=max(0.1, execution_deadline - time.monotonic()),
-                            cancelled=cancelled)
+                            cancelled=cancelled,
+                            cancel_session=lambda token, reason: self.managed_tool_session.cancel(token, outcome=reason))
                         broker = SessionChannelBroker(task_id, session_adapter, parent_end,
                                                       admission_token=managed_token)
                         session_channel = _HostSessionChannel(broker, parent_end, child_end, task_id)
