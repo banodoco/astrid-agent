@@ -77,3 +77,38 @@ def test_port_guard_refuses_occupied_port(monkeypatch):
             raise OSError('already in use')
     monkeypatch.setattr(capture.socket, 'socket', lambda *args: Occupied())
     assert capture.port_free() is False
+
+
+def test_refused_host_does_not_create_private_temp_root(tmp_path, monkeypatch):
+    home = tmp_path / 'home'
+    runner_temp = home / 'actions-runner/_work/_temp'
+    runner_temp.mkdir(parents=True)
+    github_env = tmp_path / 'github-env'
+    github_env.write_text('')
+    monkeypatch.setattr(capture, 'UID', os.getuid())
+    monkeypatch.setattr(capture.sys, 'platform', 'darwin')
+    monkeypatch.setattr(capture.pwd, 'getpwuid', lambda _: SimpleNamespace(pw_dir=str(home)))
+    monkeypatch.setenv('RUNNER_NAME', 'hannah-mac')
+    monkeypatch.setenv('RUNNER_TEMP', str(runner_temp))
+    monkeypatch.setenv('GITHUB_ENV', str(github_env))
+    monkeypatch.setattr(capture.shutil, 'disk_usage', lambda _: SimpleNamespace(free=20_000_000_000))
+    monkeypatch.setattr(capture, 'service_absent', lambda: False)
+    monkeypatch.setattr(capture.tempfile, 'mkdtemp', lambda **kw: pytest.fail('capture root must not be created'))
+    with pytest.raises(SystemExit):
+        capture.main()
+    custody = json.loads((runner_temp / 'r05-artifact/custody.json').read_text())
+    assert custody['error'] == 'Runner Runtime service present or absence unverified'
+
+
+def test_error_reporting_does_not_leak_unknown_exception_text():
+    assert capture.safe_error(OSError('password=abc /Users/person/secret')) == 'Unexpected operation failure; inspect runner-owned private evidence'
+    assert capture.safe_error(RuntimeError('Source operation failed: driver/clone')) == 'Source operation failed: driver/clone'
+
+
+def test_global_guard_is_rechecked_just_before_driver():
+    import inspect
+    source = inspect.getsource(capture.main)
+    assert source.count('guard_host(home)') == 2
+    assert source.rindex('guard_host(home)') < source.index('argv = [str(py)')
+    assert 'host_owners_exist()' in inspect.getsource(capture.guard_host)
+    assert 'port_free()' in inspect.getsource(capture.guard_host)

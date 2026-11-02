@@ -53,6 +53,31 @@ def port_free():
     return True
 
 
+def guard_host(home):
+    if shutil.disk_usage(home).free < 10_000_000_000:
+        raise RuntimeError("Insufficient disk")
+    if not service_absent():
+        raise RuntimeError("Runner Runtime service present or absence unverified")
+    plist = home / "Library/LaunchAgents/haus.astrid.runtime.plist"
+    if plist.exists() or plist.is_symlink():
+        raise RuntimeError("Runner Runtime plist already exists")
+    if host_owners_exist():
+        raise RuntimeError("Host has existing Runtime owner; no installation attempted")
+    if not port_free():
+        raise RuntimeError("Default Runtime port is occupied; no installation attempted")
+
+
+def safe_error(exc):
+    known = {"Insufficient disk", "Runner Runtime service present or absence unverified",
+             "Runner Runtime plist already exists", "Host has existing Runtime owner; no installation attempted",
+             "Default Runtime port is occupied; no installation attempted", "Runner-owned Python is unavailable",
+             "Runner Python version differs", "Fresh capture root is unsafe", "Insufficient disk before source operation",
+             "Source checkout identity differs", "Frozen fixture hashes differ", "Receipt runner image is not local"}
+    text = str(exc)
+    source_error = re.fullmatch(r"Source operation failed: (driver|release0-agent|release0-runtime)/(clone|fetch|checkout)", text)
+    return text if isinstance(exc, RuntimeError) and (text in known or source_error) else "Unexpected operation failure; inspect runner-owned private evidence"
+
+
 def digest(path):
     h = hashlib.sha256()
     with path.open("rb") as src:
@@ -117,9 +142,9 @@ def redact(data, home, root):
 
 
 def export_capture(root, home, output, status):
-    original = root / "run/capture-upload"
+    original = root / "run/capture-upload" if root is not None else None
     source_rows = []
-    if original.is_dir() and not original.is_symlink():
+    if original is not None and original.is_dir() and not original.is_symlink():
         for source in sorted(original.rglob("*")):
             if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(original): continue
             name = source.relative_to(original)
@@ -143,9 +168,7 @@ def main():
     if os.getuid() != UID or os.environ.get("RUNNER_NAME") != "hannah-mac" or sys.platform != "darwin":
         raise RuntimeError("Runner identity is not the dedicated macOS runner")
     home = Path(pwd.getpwuid(UID).pw_dir)
-    root = Path(tempfile.mkdtemp(prefix="astrid-r0-capture-src.", dir="/private/tmp"))
-    if root.is_symlink() or root.resolve() != root or root.stat().st_uid != UID or stat.S_IMODE(root.stat().st_mode) != 0o700:
-        raise RuntimeError("Fresh capture root is unsafe")
+    root = None
     runner_temp = Path(os.environ["RUNNER_TEMP"])
     if (runner_temp != home / "actions-runner/_work/_temp" or runner_temp.resolve() != runner_temp
             or not runner_temp.is_dir() or runner_temp.is_symlink() or runner_temp.stat().st_uid != UID):
@@ -156,12 +179,11 @@ def main():
     status = {"status": "not-run", "runner_custody": "hannah-mac; macOS self-hosted diagnostic", "qualification": False,
               "expected_runner_image": "local", "refs": {name: ref for name, (_, ref) in REFS.items()}, "stages": {}}
     try:
-        if shutil.disk_usage(home).free < 10_000_000_000: raise RuntimeError("Insufficient disk")
-        if not service_absent(): raise RuntimeError("Runner Runtime service present or absence unverified")
-        plist = home / "Library/LaunchAgents/haus.astrid.runtime.plist"
-        if plist.exists() or plist.is_symlink(): raise RuntimeError("Runner Runtime plist already exists")
-        if host_owners_exist(): raise RuntimeError("Host has existing Runtime owner; no installation attempted")
-        if not port_free(): raise RuntimeError("Default Runtime port is occupied; no installation attempted")
+        guard_host(home)
+        # Do not leave a task root behind when host preflight refuses.
+        root = Path(tempfile.mkdtemp(prefix="astrid-r0-capture-src.", dir="/private/tmp"))
+        if root.is_symlink() or root.resolve() != root or root.stat().st_uid != UID or stat.S_IMODE(root.stat().st_mode) != 0o700:
+            raise RuntimeError("Fresh capture root is unsafe")
         pyroot = home / "actions-runner/_work/_tool/Python/3.11.18/arm64"
         py = pyroot / "bin/python3.11"
         if (pyroot.is_symlink() or pyroot.resolve() != pyroot or not py.is_file()
@@ -187,8 +209,8 @@ def main():
         if checked["exit"] != 0: raise RuntimeError("Frozen fixture hashes differ")
         status["fixture_sha256sums"] = digest(fixture / "SHA256SUMS")
         status["stages"]["fixture-check"] = "pass"
-        if not service_absent() or host_owners_exist() or not port_free():
-            raise RuntimeError("Host became unavailable before capture")
+        # Recheck service, global owner census and fixed port immediately before execution.
+        guard_host(home)
         argv = [str(py), "-u", str(root / "driver/scripts/ci_journey.py"), "--shared-executor", "authentic-r0-capture",
                 "--run-root", str(root / "run"), "--root", str(root / "run/program"), "--data-root", str(root / "run/data"),
                 "--shell", "sh", "--fixture", str(fixture), "--release0-agent-checkout", str(root / "release0-agent"),
@@ -202,7 +224,8 @@ def main():
                                  "cleanup": (value.get("cleanup") or {}).get("status"), "r1_update_invoked": value.get("r1_update_invoked")}
             if status["receipt"]["runner_image"] != "local": raise RuntimeError("Receipt runner image is not local")
     except Exception as exc:
-        status["error"] = str(exc).replace(str(root), "<CAPTURE_ROOT>").replace(str(home), "<RUNNER_HOME>")
+        status["error"] = safe_error(exc)
+        status["error_type"] = type(exc).__name__
     finally:
         try: status["service_absent_after"] = service_absent()
         except Exception: status["service_absent_after"] = "unverified"
