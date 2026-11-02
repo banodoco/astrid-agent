@@ -407,7 +407,8 @@ def bootstrap_release0(fixture: Path, manifest: Path, shell: str, evidence: Path
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
         journey.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-                     fixture / "served" / "install.ps1", *flags], evidence / "release0-bootstrap.log", env=env)
+                     fixture / "served" / "install.ps1", *flags], evidence / "release0-bootstrap.log", env=env,
+                    legacy_bootstrap=True)
     else:
         journey.run([shell, fixture / "served" / "install", *flags],
                     evidence / "release0-bootstrap.log", env=env)
@@ -566,7 +567,8 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         old_birth = journey.process_birth(old_pid)
         if not old_birth:
             raise RuntimeError("Cannot establish the release-0 Runtime process identity")
-        journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
+        journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data,
+                         legacy_bootstrap=True)
         start_direct_runtime(evidence / "release1")
         journey.wait_ready(data)
         version_path, selected_data, version = journey.installation(root, data)

@@ -64,6 +64,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
+    "windows-bootstrap-environment.log",
     "runtime-owner-processes.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
@@ -1085,13 +1086,29 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
     return version_path, data, version
 
 
-def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600) -> str:
+def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600,
+        legacy_bootstrap: bool = False) -> str:
     log.parent.mkdir(parents=True, exist_ok=True)
     parts = [str(part) for part in argv]
     if (log.name == "seed.json" and len(parts) >= 4 and
             Path(parts[2]).name == "journey_workspace.py" and parts[3] == "seed"):
         return run_seed(parts, log, env=env, timeout=timeout)
     with log.open("w", encoding="utf-8") as stream:
+        if legacy_bootstrap and sys.platform == "win32":
+            child_env = dict(os.environ if env is None else env)
+            inherited = next((value for key, value in child_env.items() if key.casefold() == "psmodulepath"), None)
+            diagnostic = json.dumps({"bootstrap": log.name, "PSModulePath": inherited,
+                                     "PSEdition": child_env.get("JOURNEY_LAUNCHER_PSEDITION")})
+            with (log.parent.parent / "windows-bootstrap-environment.log").open("a", encoding="utf-8") as diagnostic_stream:
+                diagnostic_stream.write(diagnostic + "\n")
+            print(f"Windows bootstrap prelaunch: {diagnostic}", flush=True)
+            child_env = {key: value for key, value in child_env.items() if key.casefold() != "psmodulepath"}
+            windows_env = {key.casefold(): value for key, value in child_env.items()}
+            child_env["PSModulePath"] = ";".join((
+                ntpath.join(windows_env["programfiles"], "WindowsPowerShell", "Modules"),
+                ntpath.join(windows_env["systemroot"], "System32", "WindowsPowerShell", "v1.0", "Modules"),
+            ))
+            env = child_env
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
     if sys.platform == "win32" and log.name == "release0-bootstrap.log" and log.parent.name == "release0":
@@ -1141,7 +1158,7 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
 
 
 def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
-              evidence: Path, root: Path, data: Path) -> None:
+              evidence: Path, root: Path, data: Path, legacy_bootstrap: bool = False) -> None:
     flags: list[str | Path] = ["--manifest", manifest_path, "--root", root,
                                "--data-root", data]
     if mode == "update":
@@ -1151,7 +1168,7 @@ def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
     if sys.platform == "win32":
         run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", app / "public" / "install.ps1", *flags], evidence / f"{mode}-bootstrap.log",
-            env=env)
+            env=env, legacy_bootstrap=legacy_bootstrap)
     else:
         run([shell, app / "public" / "install", *flags],
             evidence / f"{mode}-bootstrap.log", env=env)
@@ -1199,15 +1216,41 @@ def _runtime_owner_command(command: str) -> bool:
              re.search(r"main\(\s*\[\s*['\"]run['\"]", command) is not None))
 
 
+class _RuntimeOwnerPids(list):
+    """PID list carrying bounded identity evidence for a failed strict census."""
+
+    def __init__(self, pids: list[int], details: list[dict]):
+        super().__init__(pids)
+        self.details = details
+
+
+def _runtime_owner_detail(row: dict, command: str) -> dict:
+    """Retain identity fields without copying the long service prelude."""
+    return {
+        "command_sha256": hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest(),
+        "creation_date": str(row.get("CreationDate") or "")[:128] or None,
+        "executable_path": str(row.get("ExecutablePath") or "")[:1024] or None,
+        "matcher": ("runtime_protocol-start" if "-m runtime_protocol start" in command
+                    else "astrid_runtime-cli-run"),
+        "parent_pid": int(row["ParentProcessId"]) if row.get("ParentProcessId") is not None else None,
+        "pid": int(row["ProcessId"]),
+    }
+
+
 def runtime_processes(data: Path) -> list[int]:
     """Count every live Runtime owner process on this isolated journey host."""
     if sys.platform == "win32":
         rows = json.loads(windows.powershell(
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+            "Get-CimInstance Win32_Process | Select-Object "
+            "ProcessId,ParentProcessId,CreationDate,ExecutablePath,CommandLine | ConvertTo-Json -Compress",
             "runtime-owner-processes.json", show=False, timeout=30))
         rows = rows if isinstance(rows, list) else [rows]
-        return [int(row["ProcessId"]) for row in rows if
-                _runtime_owner_command(str(row.get("CommandLine") or ""))]
+        matched = [(row, str(row.get("CommandLine") or "")) for row in rows
+                   if _runtime_owner_command(str(row.get("CommandLine") or ""))]
+        return _RuntimeOwnerPids(
+            [int(row["ProcessId"]) for row, _command in matched],
+            [_runtime_owner_detail(row, command) for row, command in matched[:8]],
+        )
     # The installed prelude can be long and can contain newlines. Ask ps for
     # the full command, then keep continuation lines with their process.
     output = subprocess.check_output(["ps", "-ww", "-axo", "pid=,command="], text=True)
@@ -1226,7 +1269,14 @@ def assert_one_runtime(data: Path) -> None:
     discovery = healthy(data)
     owners = runtime_processes(data)
     if owners != [int(discovery["pid"])]:
-        raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
+        # The raw process file can be replaced by cleanup censuses. Keep a
+        # bounded, non-command-line identity summary in the retained receipt.
+        details = getattr(owners, "details", [])
+        diagnostic = json.dumps(details, sort_keys=True, separators=(",", ":"))
+        raise RuntimeError(
+            f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}; "
+            f"bounded_owner_census={diagnostic}"
+        )
 
 
 def wait_ready(data: Path, *, timeout: int = 900) -> None:
