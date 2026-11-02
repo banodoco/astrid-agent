@@ -111,7 +111,7 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
         return None
     project_root = Path(project_root).resolve()
     raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
-    roots = [loader.packs_root(), project_root / "astrid" / "packs",
+    roots = [loader.packs_root(), Path.home() / "Astrid" / "packs", project_root / "astrid" / "packs",
              Path(__file__).with_name("schemas")]
     roots.extend(source.pack_root for source in managed_inventory.sources)
     for raw_root in (*extra_pack_roots, *filter(None, raw_env.split(os.pathsep))):
@@ -460,6 +460,8 @@ def discover_pack_metadata(
                     continue
                 manifest_path = pack_manifest_path(child)
             except (OSError, PackValidationError) as exc:
+                if loader._fail_closed(child.name, loader.REQUIRED_PACK_IDS):
+                    raise PackValidationError(f"{child}: {exc}") from exc
                 # Per-child pre-scan failures (e.g. an unreadable pack
                 # directory) skip only that child, matching the
                 # per-manifest isolation below.
@@ -480,11 +482,13 @@ def discover_pack_metadata(
                     else None,
                 )
             except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
+                if loader._fail_closed(child.name, loader.REQUIRED_PACK_IDS):
+                    raise PackValidationError(f"{child}: {exc}") from exc
                 _LOGGER.warning(
                     "skipping %s pack %s: manifest failed to load: %s",
                     source_kind,
                     manifest_path,
-                    exc,
+                    " ".join(str(exc).split()),
                 )
                 continue
             if pack.id == "local":
@@ -492,15 +496,8 @@ def discover_pack_metadata(
             if pack.visibility == "hidden":
                 continue
             if pack.id in seen:
-                _LOGGER.warning(
-                    "skipping duplicate pack id %r in %s root %s (%s and %s)",
-                    pack.id,
-                    source_kind,
-                    resolved,
-                    seen[pack.id],
-                    manifest_path,
-                )
-                continue
+                raise PackValidationError(
+                    f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {manifest_path}")
             seen[pack.id] = manifest_path
             _add(
                 pack,
@@ -510,7 +507,10 @@ def discover_pack_metadata(
                 else None,
             )
 
-    source_packs = scan()
+    # Collect every layer before compatibility checks, so dependencies may
+    # resolve across roots. Preserve the injectable scanner seam for callers.
+    source_packs = (loader.scan_packs(loader.packs_root(), strict=False, _validate=False).packs
+                    if scan is _default_discover_packs else scan())
     for pack in source_packs:
         if pack.id == "local":
             continue
@@ -523,7 +523,8 @@ def discover_pack_metadata(
         local_packs = (
             source_packs
             if scan is _default_discover_packs and loader.packs_root().resolve() == project_pack_root
-            else scan(project_pack_root)
+            else (loader.scan_packs(project_pack_root, strict=False, _validate=False).packs
+                  if scan is _default_discover_packs else scan(project_pack_root))
         )
         for pack in local_packs:
             if pack.id == "local" and pack.root.resolve() == local_pack_root.resolve():
@@ -533,6 +534,8 @@ def discover_pack_metadata(
         for source in managed_inventory.sources:
             _scan_external_root(source.pack_root, MANAGED_SOURCE_KIND)
 
+    if scan is _default_discover_packs:
+        _scan_external_root(Path.home() / "Astrid" / "packs", "extra")
     raw_env_roots = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
     if extra_pack_roots or raw_env_roots:
         for extra_root in extra_pack_roots:
@@ -542,6 +545,17 @@ def discover_pack_metadata(
                 continue
             _scan_external_root(env_root, "env")
 
+    if scan is _default_discover_packs:
+        records = {item.pack.id: managed_by_root[item.pack.root.resolve()]
+                   for item in discovered if item.pack.root.resolve() in managed_by_root}
+        admitted, _ = loader._isolate_incompatible_packs(
+            [item.pack for item in discovered], source_records=records)
+        admitted_roots = {pack.root.resolve() for pack in admitted}
+        unique_roots: set[Path] = set()
+        discovered = [item for item in discovered
+                      if item.pack.root.resolve() in admitted_roots
+                      and not (item.pack.root.resolve() in unique_roots
+                               or unique_roots.add(item.pack.root.resolve()))]
     result = tuple(discovered)
     if fingerprint is not None and fingerprint == _discovery_fingerprint(
         project_root, extra_pack_roots, managed_inventory, scan
