@@ -1,0 +1,126 @@
+name: Native Windows diagnostic lock proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic-lock-proof:
+    name: Native diagnostic checkpoint lock selector
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      EXPECTED_BASE: cabeb4032909d21f8c8305137e8ceeb60ef5300a
+      SELECTOR: tests/test_journey_diagnostic_checkpoint.py::test_windows_empty_owner_lock_preserves_full_preseed_checkpoint
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Check out the dispatched Agent head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the focused test dependencies
+        shell: pwsh
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest==9.0.2 pytest-timeout>=2.4 jsonschema>=4.0 PyYAML>=6.0
+
+      - name: Install the pinned Runtime protocol used by the test harness
+        shell: pwsh
+        run: python scripts/ci_install_runtime.py
+
+      - name: Run and retain the native diagnostic lock selector
+        id: proof
+        shell: pwsh
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCHED_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          $ErrorActionPreference = "Continue"
+          $proofRoot = Join-Path $PWD "native-lock-proof"
+          New-Item -ItemType Directory -Path $proofRoot -Force | Out-Null
+
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:DISPATCHED_SHA) {
+            throw "checked-out head $head does not equal dispatched sha $env:DISPATCHED_SHA"
+          }
+          git merge-base --is-ancestor $env:EXPECTED_BASE $head
+          $baseExit = $LASTEXITCODE
+          if ($baseExit -ne 0) {
+            throw "dispatched head $head is not descended from expected base $env:EXPECTED_BASE"
+          }
+
+          $command = "python -m pytest -q -s -rP $env:SELECTOR"
+          & python -m pytest -q -s -rP $env:SELECTOR 2>&1 |
+            Tee-Object -FilePath (Join-Path $proofRoot "selector.log")
+          $innerExit = $LASTEXITCODE
+          if ($null -eq $innerExit) {
+            $innerExit = 1
+          }
+
+          $log = Get-Content -Raw -Path (Join-Path $proofRoot "selector.log")
+          $requiredSignals = @(
+            "native denied path:",
+            "Traceback (most recent call last):",
+            "PermissionError"
+          )
+          $missingSignals = @($requiredSignals | Where-Object { -not $log.Contains($_) })
+          $evidenceExit = if ($missingSignals.Count -eq 0) { 0 } else { 1 }
+          $logHash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $proofRoot "selector.log")).Hash.ToLowerInvariant()
+
+          $record = [ordered]@{
+            schema_version = 1
+            repository = $env:REPOSITORY
+            run_id = $env:RUN_ID
+            run_attempt = $env:RUN_ATTEMPT
+            ref = $env:REF
+            ref_name = $env:REF_NAME
+            dispatched_sha = $env:DISPATCHED_SHA
+            checked_out_head = $head
+            expected_base = $env:EXPECTED_BASE
+            expected_base_ancestor_exit = $baseExit
+            workflow_ref = $env:WORKFLOW_REF
+            workflow_sha = $env:WORKFLOW_SHA
+            runner_os = $env:RUNNER_OS
+            runner_arch = $env:RUNNER_ARCH
+            selector = $env:SELECTOR
+            command = $command
+            inner_exit = $innerExit
+            required_signals = $requiredSignals
+            missing_signals = $missingSignals
+            evidence_validation_exit = $evidenceExit
+            selector_log_sha256 = $logHash
+          }
+          $record | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 -Path (Join-Path $proofRoot "proof-record.json")
+          "inner_exit=$innerExit" | Set-Content -Encoding ascii -Path (Join-Path $proofRoot "inner-exit.txt")
+          "evidence_validation_exit=$evidenceExit" | Add-Content -Encoding ascii -Path (Join-Path $proofRoot "inner-exit.txt")
+          "inner_exit=$innerExit" | Add-Content -Path $env:GITHUB_OUTPUT
+          "evidence_validation_exit=$evidenceExit" | Add-Content -Path $env:GITHUB_OUTPUT
+
+          if ($innerExit -ne 0) {
+            exit $innerExit
+          }
+          exit $evidenceExit
+
+      - name: Upload native Windows diagnostic lock proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-diagnostic-lock-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: native-lock-proof/
+          if-no-files-found: error
+          retention-days: 90
