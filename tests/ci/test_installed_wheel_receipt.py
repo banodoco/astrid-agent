@@ -63,7 +63,7 @@ class InstalledWheelReceiptTests(unittest.TestCase):
             return result
 
     def test_matching_sidecar_and_valid_junit_are_green(self):
-        receipt = self.make_receipt()
+        receipt = self.make_receipt(c07=True)
         self.assertEqual(receipt["status"], "green")
         self.assertTrue(receipt["tuple"]["composition"]["sidecar_matches"])
         self.assertEqual(receipt["installed_selector"]["junit"]["tests"], 1)
