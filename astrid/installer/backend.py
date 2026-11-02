@@ -434,10 +434,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         provenance and HTTP-instance binding below; it is never a live-owner
         verdict on its own.
         """
-        expected_match = re.fullmatch(r"proc-start-ticks:([0-9]+)", expected)
-        actual_match = (re.fullmatch(r"proc-start-ticks:([0-9]+);boot:([^;]+);pidns:([0-9]+)", actual)
-                        if isinstance(actual, str) else None)
-        return bool(expected_match and actual_match and expected_match.group(1) == actual_match.group(1))
+        expected_match = re.fullmatch(r"proc-start-ticks:([1-9][0-9]*)", expected)
+        actual_match = (
+            re.fullmatch(
+                r"proc-start-ticks:([1-9][0-9]*);boot:([0-9a-f]{8}"
+                r"-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12});pidns:([1-9][0-9]*)",
+                actual,
+            )
+            if isinstance(actual, str) else None
+        )
+        return bool(
+            expected_match and actual_match and expected_match.group(1) == actual_match.group(1)
+        )
 
     @staticmethod
     def _discovery_owner_state(discovery: dict) -> str:
@@ -499,8 +507,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 boundary = LocalRuntimeBoundary()
                 health = boundary.owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
                 from .legacy_identity import admitted as legacy_admitted
-                admitted_legacy = (self.process_control is not None and self.managed_by is None
-                                   and legacy_admitted(installed, health, discovery, program_root=self.root))
+                admitted_legacy = (
+                    self.process_control is not None and self.managed_by is None
+                    and legacy_admitted(installed, health, discovery, program_root=self.root)
+                )
                 # An unscoped R0 birth is insufficient authority even when
                 # its tick prefixes the current scoped observation.  Only the
                 # exact predecessor, selected-install, and HTTP instance

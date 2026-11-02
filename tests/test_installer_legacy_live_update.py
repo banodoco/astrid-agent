@@ -12,6 +12,11 @@ from astrid.installer.core import Installer, Version, current, write_json
 from astrid.installer.service import render
 from tests.test_installer_lifecycle import LifecycleBackend
 
+SCOPED_R0_BIRTH = (
+    "proc-start-ticks:19;boot:63de1c31-9fcc-4784-bf4c-7d3d3ce35985"
+    ";pidns:7"
+)
+
 
 @pytest.fixture
 def legacy(tmp_path, monkeypatch):
@@ -220,7 +225,7 @@ def test_linux_r0_unscoped_birth_requires_exact_legacy_binding(legacy, monkeypat
     discovery["process_birth_id"] = "proc-start-ticks:19"
     write_json(data / "runtime/discovery.json", discovery)
     monkeypatch.setattr("runtime_protocol.platform.process_identity", lambda pid: {
-        "pid": pid, "birth_id": "proc-start-ticks:19;boot:boot;pidns:7"})
+        "pid": pid, "birth_id": SCOPED_R0_BIRTH})
 
     backend = gate(root, data)
     assert backend._legacy_identity_admitted
@@ -230,11 +235,16 @@ def test_linux_r0_unscoped_birth_requires_exact_legacy_binding(legacy, monkeypat
     with pytest.raises(RuntimeError, match="startup identity cannot be verified"):
         gate(root, data)
 
+    health.pop("identity")
+    health["runtime_instance_id"] = "replacement"
+    with pytest.raises(RuntimeError, match="startup identity cannot be verified"):
+        gate(root, data)
+
 
 @pytest.mark.parametrize("actual", [
-    "proc-start-ticks:20;boot:boot;pidns:7",  # another incarnation
-    "proc-start-ticks:19;boot:boot",  # incomplete scope
-    "proc-start-ticks:19;boot:boot;pidns:7;extra:value",  # unrecognized encoding
+    SCOPED_R0_BIRTH.replace("ticks:19", "ticks:20"),  # another incarnation
+    SCOPED_R0_BIRTH.rsplit(";pidns:", 1)[0],  # incomplete scope
+    SCOPED_R0_BIRTH + ";extra:value",  # unrecognized encoding
 ])
 def test_linux_r0_unscoped_birth_refuses_nonmatching_or_partial_scope(legacy, monkeypatch, actual):
     root, data, _, discovery, _ = legacy
@@ -252,7 +262,7 @@ def test_linux_r0_unscoped_birth_does_not_bypass_update_context(legacy, monkeypa
     discovery["process_birth_id"] = "proc-start-ticks:19"
     write_json(data / "runtime/discovery.json", discovery)
     monkeypatch.setattr("runtime_protocol.platform.process_identity", lambda pid: {
-        "pid": pid, "birth_id": "proc-start-ticks:19;boot:boot;pidns:7"})
+        "pid": pid, "birth_id": SCOPED_R0_BIRTH})
 
     backend = Backend(root, root / "install.log", root / "uv")
     with pytest.raises(RuntimeError, match="startup identity cannot be verified"):
