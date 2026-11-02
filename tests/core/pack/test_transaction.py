@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -29,9 +30,14 @@ def git(root: Path, *args: str) -> str:
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
 
 
-def manifest(pack_id: str, dependencies: tuple[str, ...] = ()) -> str:
-    packs = "" if not dependencies else "  packs: [" + ", ".join(dependencies) + "]\n"
-    dependency_field = "" if not dependencies else "dependencies:\n" + packs
+def manifest(pack_id: str, dependencies: tuple[str, ...] = (),
+             python_requirements: tuple[str, ...] = ()) -> str:
+    dependency_lines = []
+    if dependencies:
+        dependency_lines.append("  packs: [" + ", ".join(dependencies) + "]")
+    if python_requirements:
+        dependency_lines.append("  python_requirements: [" + ", ".join(python_requirements) + "]")
+    dependency_field = "" if not dependency_lines else "dependencies:\n" + "\n".join(dependency_lines) + "\n"
     return (f"schema_version: 3\nid: {pack_id}\nname: {pack_id.title()}\nversion: 1.0.0\n"
             'pack_api: "1.0"\n' + dependency_field +
             "documentation: {kind: none, reason: Transaction fixture.}\n")
@@ -95,6 +101,13 @@ def group_bytes(root: Path) -> dict[str, bytes]:
     return {pack_id: (path / "payload.txt").read_bytes() for pack_id, path in snapshot.paths.items()}
 
 
+def tree_snapshot(root: Path) -> dict[str, bytes | None]:
+    if not root.exists():
+        return {}
+    return {path.relative_to(root).as_posix():
+            (None if path.is_dir() else path.read_bytes()) for path in root.rglob("*")}
+
+
 def assert_group_pins(root: Path, expected_commit: str, expected_payloads: dict[str, bytes]) -> None:
     snapshot = read_group(root)
     assert set(snapshot.paths) == set(expected_payloads)
@@ -109,6 +122,32 @@ def assert_group_pins(root: Path, expected_commit: str, expected_payloads: dict[
 
 def accepted_refresh(**kwargs):
     return {"version": 1, "accepted": True, "revision": kwargs["committed_revision"], "reason": "ok"}
+
+
+def contract_builder(request):
+    """Writer-shaped M4 result with real bundle and manifest hashes."""
+    stage = Path(request["stage_root"])
+    source_digest = request["source_digest"]
+    graph_digest = hashlib.sha256(b"[]").hexdigest()
+    entry = f"/* astrid-graph-index-sha256:{graph_digest} */\nexport default 1;\n".encode()
+    bundle_digest = hashlib.sha256(entry).hexdigest()
+    build_dir = stage / ".build"
+    build_dir.mkdir(exist_ok=True)
+    (build_dir / f"{source_digest}.js").write_bytes(entry)
+    artifact = {"version": 1, "packId": request["pack_id"], "sourceDigest": source_digest,
+                "digest": bundle_digest, "graphIndexDigest": graph_digest,
+                "toolchainDigest": request["toolchain"].get("lock_sha256"), "entry": "index.js",
+                "extensionManifest": request["extension_manifest"],
+                "sharedModules": None,
+                "files": [{"path": "index.js", "disk": f".build/{source_digest}.js",
+                           "sha256": bundle_digest, "size": len(entry), "mime": "text/javascript"}]}
+    return {"version": 1, "ok": True, "pack_id": request["pack_id"],
+            "source_digest": source_digest, "artifact_manifest": artifact}
+
+
+def contract_builds():
+    return {pack_id: {"entry": "src/index.tsx", "extension_manifest": {"id": pack_id}}
+            for pack_id in GROUP}
 
 
 def kill_child_at_boundary(repo: Repository, root: Path, tmp_path: Path,
@@ -781,30 +820,114 @@ def test_real_packs_update_command_and_rollback_restore_previous_generation(
     assert all(read_pin(path / "PIN")["commit"] == old_commit for path in rolled_back.paths.values())
 
 
+@pytest.mark.parametrize("configured_override", [None, "override"])
+def test_update_and_rollback_cli_default_to_configured_user_collection(
+        repo: Repository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_override: str | None) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+    from astrid.core.pack.loader import packs_root as bundled_packs_root
+
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    unrelated = tmp_path / "unrelated-packs"
+    unrelated.mkdir()
+    marker = unrelated / "do-not-touch"
+    marker.write_text("unrelated\n", encoding="utf-8")
+    if configured_override:
+        selected = tmp_path / configured_override
+        monkeypatch.setenv("ASTRID_PACKS_PATH", str(selected))
+    else:
+        selected = home / "Astrid" / "packs"
+    bundled = bundled_packs_root().resolve()
+    bundled_before = tree_snapshot(bundled)
+    unrelated_before = tree_snapshot(unrelated)
+    original_commit = repo.commit
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                           "--pack", "alpha=packs/alpha", "--pack", "shared=packs/shared"]) == 0
+    assert set(read_group(selected).paths) == {"alpha", "shared"}
+    newer = repo.next_revision()
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", newer,
+                           "--pack", "alpha=packs/alpha", "--pack", "shared=packs/shared"]) == 0
+    assert packs_cli_main(["rollback", "--pack", "alpha", "--pack", "shared"]) == 0
+    assert all(read_pin(path / "PIN")["commit"] == original_commit for path in read_group(selected).paths.values())
+    assert marker.read_text(encoding="utf-8") == "unrelated\n"
+    assert tree_snapshot(bundled) == bundled_before
+    assert tree_snapshot(unrelated) == unrelated_before
+
+
+@pytest.mark.parametrize("configured_root", ["", "relative/packs"])
+def test_update_cli_refuses_disabled_or_invalid_configured_collection(
+        repo: Repository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_root: str) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+    from astrid.core.pack.loader import packs_root as bundled_packs_root
+
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ASTRID_PACKS_PATH", configured_root)
+    bundled = bundled_packs_root().resolve()
+    bundled_before = tree_snapshot(bundled)
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                           "--pack", "alpha=packs/alpha"]) == 2
+    assert not (home / "Astrid" / "packs").exists()
+    assert tree_snapshot(bundled) == bundled_before
+
+
+def test_rollback_uses_explicit_interpreter_snapshot_for_python_requirements(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from importlib import metadata
+    from importlib.metadata import PackageNotFoundError
+    from astrid.core.pack.transaction import rollback_group
+
+    # Use only the selected interpreter's installed distribution metadata, with
+    # no synthetic package or path injection.
+    packages = {dist.metadata.get("Name", "").lower().replace("_", "-").replace(".", "-"): dist.version
+                for dist in metadata.distributions() if dist.metadata.get("Name")}
+    assert "pytest" in packages
+    alpha_manifest = repo.work / "packs" / "alpha" / "pack.yaml"
+    alpha_manifest.write_text(manifest("alpha", ("shared",), ("pytest",)), encoding="utf-8")
+    first_commit = repo.publish()
+    install_group(source=repo.bare, revision=first_commit, packs=GROUP, packs_root=packs_root,
+                  python_packages=packages)
+    alpha_manifest.write_text(manifest("alpha", ("shared",)), encoding="utf-8")
+    second_commit = repo.publish()
+    install_group(source=repo.bare, revision=second_commit, packs=GROUP, packs_root=packs_root,
+                  python_packages=packages, intent="update")
+    current = read_group(packs_root)
+    rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                   transaction_id=current.transaction_id, python_packages=packages)
+    restored = read_group(packs_root).paths["alpha"]
+    assert "python_requirements: [pytest]" in (restored / "pack.yaml").read_text(encoding="utf-8")
+
+    # A genuinely absent distribution in a retained generation must refuse.
+    (repo.work / "packs" / "alpha" / "payload.txt").write_text("alpha-v3\n", encoding="utf-8")
+    third_commit = repo.publish()
+    install_group(source=repo.bare, revision=third_commit, packs=GROUP, packs_root=packs_root,
+                  python_packages=packages, intent="update")
+    current = read_group(packs_root)
+    missing_name = "astrid-rev-b5-absent-8c6a7d"
+    with pytest.raises(PackageNotFoundError):
+        metadata.version(missing_name)
+    retained_alpha = packs_root.parent / ".astrid-retired" / current.transaction_id / "alpha" / "pack.yaml"
+    retained_alpha.write_text(manifest("alpha", ("shared",), (missing_name,)), encoding="utf-8")
+    before = group_bytes(packs_root)
+    with pytest.raises(PackInstallError) as failure:
+        rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"),
+                       transaction_id=current.transaction_id, python_packages=packages)
+    assert failure.value.code == "missing_python"
+    assert group_bytes(packs_root) == before
+
+
 def test_rollback_restores_build_hook_metadata_with_the_pack_generation(
         repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import astrid.core.pack.transaction as transaction
     from astrid.core.pack.transaction import rollback_group
 
-    def build_with_generation_records(request):
-        """Model build-hook records committed with each staged pack tree."""
-        stage = Path(request["stage_root"])
-        source_digest = request["source_digest"]
-        build_dir = stage / ".build"
-        build_dir.mkdir(exist_ok=True)
-        admission = {"version": 1, "packId": request["pack_id"],
-                     "sourceDigest": source_digest}
-        artifact_manifest = {"version": 1, "packId": request["pack_id"],
-                             "sourceDigest": source_digest}
-        (build_dir / "admission.json").write_text(
-            json.dumps(admission, sort_keys=True), encoding="utf-8")
-        (build_dir / f"{source_digest}.artifact-manifest.json").write_text(
-            json.dumps(artifact_manifest, sort_keys=True), encoding="utf-8")
-        return {"version": 1, "ok": True, "pack_id": request["pack_id"],
-                "source_digest": source_digest, "artifact_manifest": None}
-
-    monkeypatch.setattr(transaction, "build_pack_assets", build_with_generation_records)
-    install(repo, packs_root, refresh=accepted_refresh)
+    monkeypatch.setattr(transaction, "build_pack_assets", contract_builder)
+    install(repo, packs_root, refresh=accepted_refresh, builds=contract_builds())
     prior = read_group(packs_root).paths["alpha"]
     prior_digest = pack_digest(prior)
     prior_commit = read_pin(prior / "PIN")["commit"]
@@ -813,7 +936,8 @@ def test_rollback_restores_build_hook_metadata_with_the_pack_generation(
     prior_manifest = prior_manifest_path.read_bytes()
 
     new_commit = repo.next_revision()
-    second = install(repo, packs_root, revision=new_commit, refresh=accepted_refresh)
+    second = install(repo, packs_root, revision=new_commit, refresh=accepted_refresh,
+                     builds=contract_builds())
     current = read_group(packs_root).paths["alpha"]
     current_digest = pack_digest(current)
     assert (current / ".build" / "admission.json").read_bytes() != prior_admission
@@ -822,6 +946,17 @@ def test_rollback_restores_build_hook_metadata_with_the_pack_generation(
     current_admission = json.loads((current / ".build" / "admission.json").read_text(encoding="utf-8"))
     assert current_admission["sourceDigest"] == current_digest
     assert read_pin(current / "PIN")["commit"] == new_commit
+    manifest_bytes = (current / ".build" / f"{current_digest}.artifact-manifest.json").read_bytes()
+    artifact_manifest = read_group(packs_root).admissions["alpha"]["artifact_manifest"]
+    assert manifest_bytes == json.dumps(artifact_manifest, sort_keys=True,
+                                        separators=(",", ":"), ensure_ascii=False).encode()
+    assert b"\n" not in manifest_bytes
+    admission_record = json.loads((current / ".build" / "admission.json").read_text(encoding="utf-8"))
+    assert admission_record == {"version": 1, "packId": "alpha", "sourceDigest": current_digest,
+                                "digest": current_admission["digest"],
+                                "artifactManifestDigest": hashlib.sha256(manifest_bytes).hexdigest(),
+                                "committedRevision": read_group(packs_root).revision,
+                                "transactionId": read_group(packs_root).transaction_id}
 
     retired = read_retired_group(packs_root=packs_root, transaction_id=second.transaction_id)
     retired_alpha = retired.paths["alpha"]
@@ -832,11 +967,79 @@ def test_rollback_restores_build_hook_metadata_with_the_pack_generation(
                    transaction_id=second.transaction_id, refresh=accepted_refresh)
     restored = read_group(packs_root).paths["alpha"]
     assert read_pin(restored / "PIN")["commit"] == prior_commit
-    assert (restored / ".build" / "admission.json").read_bytes() == prior_admission
+    assert (restored / ".build" / "admission.json").read_bytes() != prior_admission
     assert (restored / ".build" / f"{prior_digest}.artifact-manifest.json").read_bytes() == prior_manifest
-    admission = json.loads((restored / ".build" / "admission.json").read_text(encoding="utf-8"))
-    assert admission["packId"] == "alpha"
-    assert admission["sourceDigest"] == pack_digest(restored) == prior_digest
+    rollback_record = json.loads((restored / ".build" / "admission.json").read_text(encoding="utf-8"))
+    snapshot = read_group(packs_root)
+    assert rollback_record["packId"] == "alpha"
+    assert rollback_record["sourceDigest"] == pack_digest(restored) == prior_digest
+    assert rollback_record["committedRevision"] == snapshot.revision
+    assert rollback_record["transactionId"] == snapshot.transaction_id
+    assert rollback_record["artifactManifestDigest"] == hashlib.sha256(
+        (restored / ".build" / f"{prior_digest}.artifact-manifest.json").read_bytes()).hexdigest()
+
+
+def test_contract_admission_tamper_refuses_update_before_publication(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import astrid.core.pack.transaction as transaction
+
+    monkeypatch.setattr(transaction, "build_pack_assets", contract_builder)
+    install(repo, packs_root, refresh=accepted_refresh, builds=contract_builds())
+    before = group_bytes(packs_root)
+    before_state = read_group(packs_root)
+    target = repo.next_revision()
+
+    def tampered_builder(request):
+        result = contract_builder(request)
+        entry = Path(request["stage_root"]) / f".build/{request['source_digest']}.js"
+        entry.write_bytes(entry.read_bytes() + b"tampered")
+        return result
+
+    monkeypatch.setattr(transaction, "build_pack_assets", tampered_builder)
+    with pytest.raises(PackInstallError) as failure:
+        install_group(source=repo.bare, revision=target, packs=GROUP, packs_root=packs_root,
+                      python_packages={}, builds=contract_builds(), intent="update")
+    assert failure.value.code == "hash_mismatch"
+    assert group_bytes(packs_root) == before
+    assert read_group(packs_root).transaction_id == before_state.transaction_id
+
+
+@pytest.mark.parametrize("phase", ["before_swap", "swapped"])
+def test_contract_admission_interruption_retry_keeps_record_revision_aligned(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch, phase: str) -> None:
+    import astrid.core.pack.transaction as transaction
+
+    monkeypatch.setattr(transaction, "build_pack_assets", contract_builder)
+    install(repo, packs_root, refresh=accepted_refresh, builds=contract_builds())
+    previous = read_group(packs_root)
+    target = repo.next_revision()
+
+    def interrupt(at):
+        if at == phase:
+            raise RuntimeError("simulated interruption")
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        install_group(source=repo.bare, revision=target, packs=GROUP, packs_root=packs_root,
+                      python_packages={}, builds=contract_builds(), intent="update",
+                      boundary=interrupt)
+    visible = read_group(packs_root)
+    if phase == "before_swap":
+        assert visible.transaction_id == previous.transaction_id
+        install_group(source=repo.bare, revision=target, packs=GROUP, packs_root=packs_root,
+                      python_packages={}, builds=contract_builds(), intent="update",
+                      refresh=accepted_refresh)
+        visible = read_group(packs_root)
+    else:
+        assert visible.revision == previous.revision + 1
+        assert retry_refresh(packs_root=packs_root, refresh=accepted_refresh) is False
+        visible = read_group(packs_root)
+    for pack_id in GROUP:
+        record = json.loads((visible.paths[pack_id] / ".build" / "admission.json").read_text(encoding="utf-8"))
+        assert record["committedRevision"] == visible.revision
+        assert record["transactionId"] == visible.transaction_id
+        manifest_bytes = (visible.paths[pack_id] / ".build" /
+                          f"{record['sourceDigest']}.artifact-manifest.json").read_bytes()
+        assert record["artifactManifestDigest"] == hashlib.sha256(manifest_bytes).hexdigest()
 
 
 @pytest.mark.parametrize("failure", ["build", "swap"])
@@ -898,6 +1101,28 @@ def test_real_update_and_rollback_preserve_removals_and_unrelated_packs(
     assert read_pin(snapshot.paths["extra"] / "PIN")["commit"] == base_commit
     assert (snapshot.paths["extra"] / "payload.txt").read_text() == "extra-v1\n"
     assert (snapshot.paths["personal"] / "marker.txt").read_text() == "personal\n"
+
+
+def test_rollback_does_not_restore_tombstone_cleared_by_explicit_readd(
+        repo: Repository, packs_root: Path) -> None:
+    from astrid.core.pack.transaction import rollback_group
+
+    digests = {pack_id: pack_digest(repo.work / subpath) for pack_id, subpath in GROUP.items()}
+    install_group(source=repo.bare, revision=repo.commit, packs=GROUP, packs_root=packs_root,
+                  python_packages={}, origin="default", intent="defaults", expected_digests=digests)
+    install_group(source=repo.bare, packs={}, packs_root=packs_root, python_packages={}, remove=("alpha",))
+    assert read_group(packs_root).removals == ("alpha",)
+    explicit = install_group(source=repo.bare, revision=repo.commit, packs={"alpha": "packs/alpha"},
+                             packs_root=packs_root, python_packages={}, origin="default",
+                             expected_digests={"alpha": digests["alpha"]})
+    assert read_group(packs_root).removals == ()
+    rollback_group(packs_root=packs_root, pack_ids=("alpha",), transaction_id=explicit.transaction_id)
+    restored = read_group(packs_root)
+    assert "alpha" not in restored.paths
+    assert restored.removals == ()
+    install_group(source=repo.bare, revision=repo.commit, packs=GROUP, packs_root=packs_root,
+                  python_packages={}, origin="default", intent="defaults", expected_digests=digests)
+    assert "alpha" in read_group(packs_root).paths
 
 
 def test_rollback_refuses_conflicting_current_source_pin(repo: Repository, packs_root: Path) -> None:
