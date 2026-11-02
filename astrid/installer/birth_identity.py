@@ -2,50 +2,16 @@
 
 from __future__ import annotations
 
-
-def _current_linux_scope(pid: int) -> tuple[str, str] | None:
-    """Return the current boot and host PID namespace for one local PID.
-
-    Runtime's scoped Linux spelling is produced from ``/proc/<pid>/ns/pid``.
-    A Release-0 record did not retain either scope component, so bridge it only
-    when the observed process is still in this installer's host namespace and
-    the observed boot is the current boot.  Any unreadable or malformed proc
-    fact is an unresolved identity, never compatibility.
-    """
-    from pathlib import Path
-    from uuid import UUID
-
-    if type(pid) is not int or pid <= 0:
-        return None
-    proc = Path("/proc")
-    try:
-        boot = (proc / "sys" / "kernel" / "random" / "boot_id").read_text(encoding="utf-8").strip()
-        target_namespace = (proc / str(pid) / "ns" / "pid").stat().st_ino
-        host_namespace = (proc / "self" / "ns" / "pid").stat().st_ino
-    except (OSError, UnicodeError, ValueError):
-        return None
-    try:
-        canonical_boot = str(UUID(boot))
-    except ValueError:
-        return None
-    if canonical_boot != boot or type(target_namespace) is not int or type(host_namespace) is not int:
-        return None
-    if target_namespace <= 0 or host_namespace <= 0 or target_namespace != host_namespace:
-        return None
-    return boot, str(host_namespace)
-
-
 def birth_ids_match(recorded, observed, recorded_pid: int, observed_pid: int) -> bool:
-    """Match exact IDs, or only the proven R0-to-R1 Linux successor form.
+    """Match exact IDs, or Runtime's proven R0-to-R1 Linux successor form.
 
     The Release-0 spelling contains merely a process start tick.  It is not
-    authority by itself: it can bridge only to the reviewed scoped Release-1
-    spelling for a caller-verified PID in the current boot and this host PID
-    namespace.  All other unrecognized, partial, or unavailable observations
+    authority by itself.  Runtime owns the legacy bridge and re-observes the
+    caller-selected PID before accepting the scoped Release-1 spelling.  All
+    other unrecognized, partial, unavailable, or older-Runtime observations
     fail closed.
     """
-    import re
-    import sys
+    from runtime_protocol import platform
 
     if (not isinstance(recorded, str) or not recorded or not isinstance(observed, str) or not observed
             or type(recorded_pid) is not int or recorded_pid <= 0
@@ -53,14 +19,9 @@ def birth_ids_match(recorded, observed, recorded_pid: int, observed_pid: int) ->
         return False
     if recorded == observed:
         return True
-    if sys.platform != "linux":
+    try:
+        return platform.legacy_linux_birth_matches_live_owner(recorded, observed, pid=recorded_pid) is True
+    except (AttributeError, OSError, TypeError, ValueError):
+        # A retained Runtime without the reviewed bridge, or any unavailable
+        # native observation, is never an authority to signal a legacy owner.
         return False
-    legacy = re.fullmatch(r"proc-start-ticks:([1-9][0-9]*)", recorded)
-    scoped = re.fullmatch(
-        r"proc-start-ticks:([1-9][0-9]*);boot:"
-        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12});pidns:([1-9][0-9]*)",
-        observed,
-    )
-    if legacy is None or scoped is None or legacy.group(1) != scoped.group(1):
-        return False
-    return _current_linux_scope(recorded_pid) == (scoped.group(2), scoped.group(3))
