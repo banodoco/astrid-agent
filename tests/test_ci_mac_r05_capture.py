@@ -1,0 +1,79 @@
+import base64
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from scripts import ci_mac_r05_capture as capture
+
+
+def test_manual_workflow_embeds_script_and_never_uploads_logs():
+    root = Path(__file__).parents[1]
+    workflow = (root / '.github/workflows/journey.yml').read_text()
+    match = re.search(r'base64\.b64decode\("([A-Za-z0-9+/=]+)", validate=True\)', workflow)
+    assert match and base64.b64decode(match.group(1)) == (root / 'scripts/ci_mac_r05_capture.py').read_bytes()
+    assert 'workflow_dispatch:' in workflow and 'actions/checkout' not in workflow
+    assert 'Upload sanitized capture and checksums' in workflow
+
+
+def test_capture_environment_is_truthful_and_excludes_credentials(tmp_path, monkeypatch):
+    for key in ('ASTRID_CI_EXPECTED_RUNNER', 'ImageOS', 'ImageVersion', 'GITHUB_TOKEN'):
+        monkeypatch.setenv(key, 'do-not-copy')
+    monkeypatch.setenv('RUNNER_OS', 'macOS')
+    env = capture.environment(tmp_path / 'home', tmp_path / 'fresh', tmp_path / 'python/bin/python3.11')
+    assert env['RUNNER_OS'] == 'macOS' and env['RUNNER_TEMP'] == str(tmp_path / 'fresh')
+    assert all(key not in env for key in ('ASTRID_CI_EXPECTED_RUNNER', 'ImageOS', 'ImageVersion', 'GITHUB_TOKEN'))
+
+
+def test_host_census_rejects_exact_runtime_match_but_not_unrelated():
+    assert capture.owner_match("python -I -c from astrid_runtime.cli import main; main(['run'])")
+    assert capture.owner_match('python -m runtime_protocol start')
+    assert not capture.owner_match('python -m unrelated start')
+
+
+def test_export_copies_only_capture_and_recomputes_recursive_hashes(tmp_path):
+    home = tmp_path / 'home'
+    root = tmp_path / 'fresh'
+    data = root / 'run/capture-upload/nested'
+    data.mkdir(parents=True)
+    (data / 'receipt.json').write_text(json.dumps({'path': str(home / 'secret'), 'value': 'ok'}))
+    (root / 'private-logs').mkdir()
+    (root / 'private-logs' / 'do-not-send.log').write_text('secret')
+    outside = tmp_path / 'outside'
+    outside.write_text('sensitive')
+    (data / 'escape.txt').symlink_to(outside)
+    output = tmp_path / 'artifact'
+    output.mkdir()
+    capture.export_capture(root, home, output, {'status': 'captured'})
+    text = (output / 'capture-upload/nested/receipt.json').read_text()
+    assert str(home) not in text and '<RUNNER_HOME>' in text
+    assert not (output / 'private-logs').exists() and not (output / 'capture-upload/nested/escape.txt').exists()
+    for row in (output / 'SHA256SUMS').read_text().splitlines():
+        sha, path = row.split('  ', 1)
+        assert hashlib.sha256((output / path).read_bytes()).hexdigest() == sha
+    assert 'SHA256SUMS  SHA256SUMS' not in (output / 'SHA256SUMS').read_text()
+
+
+@pytest.mark.parametrize('code,text,expected', [
+    (113, 'Could not find service "haus.astrid.runtime" in domain for user gui: 503', True),
+    (113, 'Bad request.\nCould not find service "haus.astrid.runtime" in domain for user gui: 503', True),
+    (1, 'Could not find service "haus.astrid.runtime" in domain for user gui: 503', False),
+    (113, 'Could not find service "other" in domain for user gui: 503', False),
+])
+def test_service_absence_is_exact(monkeypatch, code, text, expected):
+    monkeypatch.setattr(capture.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=code, stderr=text))
+    assert capture.service_absent() is expected
+
+
+def test_port_guard_refuses_occupied_port(monkeypatch):
+    class Occupied:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def bind(self, address):
+            assert address == ('127.0.0.1', 17340)
+            raise OSError('already in use')
+    monkeypatch.setattr(capture.socket, 'socket', lambda *args: Occupied())
+    assert capture.port_free() is False
