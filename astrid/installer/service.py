@@ -547,26 +547,111 @@ class Service:
                 or observed.get("uid") != platform.current_user()
                 or not birth_ids_match(owner_birth_id, observed.get("birth_id"), owner_pid, observed.get("pid"))
                 or resolved_executable != resolved_expected
-                or not resolved_executable.is_relative_to(root)):
+                or not self._trusted_launchd_interpreter(expected, resolved_executable)):
             raise ValueError("The launchd service does not match the selected Runtime owner.")
+        format = ("astrid-launchd-r0-live-owner/v1"
+                  if resolved_executable.is_relative_to(root)
+                  else "astrid-launchd-r0-live-owner/v2")
         return {
-            "format": "astrid-launchd-r0-live-owner/v1",
+            "format": format,
             "pid": pid,
             "discovery_birth_id": owner_birth_id,
             "process_birth_id": observed["birth_id"],
             "uid": observed["uid"],
+            **({"program": str(expected)} if format.endswith("/v2") else {}),
             "executable": str(resolved_executable),
         }
+
+    def _trusted_launchd_interpreter(self, program: Path, executable: Path) -> bool:
+        """Accept an R0 venv link only when its bootstrap provenance is closed.
+
+        The configured program remains the authority: it must be a link-free
+        child of the selected root, then resolve to the live executable.  An
+        outside-root target is allowed only for the R0 bootstrap tree derived
+        from this Service's authenticated home/layout, never from an inherited
+        installer environment variable or from the plist itself.
+        """
+        try:
+            root = self.root.resolve(strict=True)
+            program = Path(program)
+            executable = Path(executable)
+            if (not program.is_absolute() or not executable.is_absolute()
+                    or program != Path(os.path.abspath(program))
+                    or executable != Path(os.path.abspath(executable))):
+                return False
+            program_parent = absolute(program.parent)
+            if (program_parent != program.parent or not program.is_relative_to(root)
+                    or not program_parent.is_relative_to(root)
+                    or program.resolve(strict=True) != executable
+                    or executable.resolve(strict=True) != executable
+                    or not stat.S_ISREG(executable.lstat().st_mode)):
+                return False
+            # This is the pre-existing direct-in-root case.  It goes through
+            # the same path normalisation and resolution checks as the venv
+            # exception so retained v1 witnesses cannot bypass this rule.
+            if executable.is_relative_to(root):
+                return True
+            # No Windows stop authority has an equivalent live process
+            # provenance predicate yet; do not infer one from path shape.
+            if self.system != "darwin" or not program.is_symlink():
+                return False
+
+            venv = absolute(program.parent.parent)
+            config = venv / "pyvenv.cfg"
+            config_stat = config.lstat()
+            if (not stat.S_ISREG(config_stat.st_mode)
+                    or not owned_by_current_user(config, config_stat)
+                    or stat.S_IMODE(config_stat.st_mode) & 0o022):
+                return False
+            homes = []
+            for line in config.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key.strip().lower() == "home":
+                    homes.append(value.strip())
+            if len(homes) != 1 or not homes[0]:
+                return False
+            home = Path(homes[0])
+            if not home.is_absolute() or home != Path(os.path.abspath(home)):
+                return False
+            home = absolute(home)
+            if executable.parent != home:
+                return False
+
+            bootstrap = bootstrap_root(self.home, "darwin")
+            bootstrap_python = absolute(bootstrap / "python")
+            bootstrap = bootstrap_python.parent
+            if (not bootstrap_python.is_dir()
+                    or not executable.is_relative_to(bootstrap_python)):
+                return False
+            # All entries between the stable bootstrap root and the interpreter
+            # must be current-user-owned and unavailable to group/other writers.
+            # ``absolute`` above also proves their parents have no links.
+            entries = [bootstrap]
+            entry = bootstrap
+            for part in executable.relative_to(bootstrap).parts:
+                entry /= part
+                entries.append(entry)
+            for entry in entries:
+                observed_stat = entry.lstat()
+                if (not owned_by_current_user(entry, observed_stat)
+                        or stat.S_IMODE(observed_stat.st_mode) & 0o022):
+                    return False
+            return True
+        except (OSError, RuntimeError, ValueError, UnicodeError):
+            return False
 
     def _validated_launchd_bootout_identity(self, value: dict | None) -> dict | None:
         """Validate the durable live tuple that can disambiguate pre-bootout recovery."""
         if value is None:
             return None
-        expected = {
+        v1_expected = {
             "format", "pid", "discovery_birth_id", "process_birth_id", "uid", "executable",
         }
-        if (not isinstance(value, dict) or set(value) != expected
-                or value.get("format") != "astrid-launchd-r0-live-owner/v1"
+        v2_expected = {*v1_expected, "program"}
+        if (not isinstance(value, dict)
+                or (value.get("format") == "astrid-launchd-r0-live-owner/v1" and set(value) != v1_expected)
+                or (value.get("format") == "astrid-launchd-r0-live-owner/v2" and set(value) != v2_expected)
+                or value.get("format") not in {"astrid-launchd-r0-live-owner/v1", "astrid-launchd-r0-live-owner/v2"}
                 or type(value.get("pid")) is not int or value["pid"] <= 0
                 or not isinstance(value.get("discovery_birth_id"), str)
                 or not value["discovery_birth_id"].strip()
@@ -579,10 +664,13 @@ class Service:
             raise ValueError("The retained R0 LaunchAgent live identity is invalid.")
         try:
             executable = Path(value["executable"])
-            root = self.root.resolve(strict=True)
-            if (not executable.is_absolute()
-                    or executable.resolve(strict=True) != executable
-                    or not executable.is_relative_to(root)):
+            program = Path(value.get("program", value["executable"]))
+            if (not self._trusted_launchd_interpreter(program, executable)
+                    # A v1 record never carried the in-root venv path needed
+                    # to prove an external target.  Preserve its old, narrow
+                    # meaning rather than retroactively reinterpreting bytes.
+                    or (value["format"].endswith("/v1")
+                        and not executable.is_relative_to(self.root.resolve(strict=True)))):
                 raise ValueError("invalid retained executable")
         except (OSError, RuntimeError, ValueError) as exc:
             raise ValueError("The retained R0 LaunchAgent live identity is invalid.") from exc
