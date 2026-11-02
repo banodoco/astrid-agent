@@ -543,6 +543,44 @@ def test_small_lease_restart_terminates_even_unexpired_custody(small_lease):
     assert c.creates == 1
 
 
+def test_small_lease_owner_process_death_releases_lock_and_recovers(small_lease):
+    import multiprocessing
+
+    c = small_lease
+    context = multiprocessing.get_context("fork")
+    parent, child = context.Pipe()
+
+    def hold_custody():
+        try:
+            c.fresh().acquire(c.grant)
+            child.send((c.creates, c.pods))
+            child.recv()  # The parent kills the owner without close().
+        except BaseException as exc:
+            child.send(("error", repr(exc)))
+
+    process = context.Process(target=hold_custody)
+    process.start()
+    child.close()
+    try:
+        assert parent.poll(10), "owner did not acquire custody"
+        creates, pods = parent.recv()
+        assert creates == 1, pods
+        c.creates, c.pods[:] = creates, pods
+        process.kill()
+        process.join(10)
+        assert process.exitcode is not None and process.exitcode < 0
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(10)
+        parent.close()
+    restored = c.fresh()
+    restored.recover()
+    assert c.creates == 1 and c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["cleanup"]["absence"]["account_list_absent"] is True
+
+
 def test_small_lease_lost_create_reconciles_without_replacement(small_lease):
     c = small_lease
     owner = c.fresh()
@@ -586,6 +624,10 @@ def test_small_lease_lost_delete_ack_and_failed_get_remain_pending(small_lease):
     c.absent_get = True
     owner.recover()
     assert c.read()["state"] == "cleanup_complete" and c.deletes == ["pod-1"]
+    assert c.read()["cleanup"]["absence"] == {
+        "provider_account_ref": "account-a", "pod_id": "pod-1", "exact_get_status": 404,
+        "account_list_succeeded": True, "account_list_absent": True,
+    }
 
 
 @pytest.mark.parametrize("field", ["recipe_digest", "model_lock_digest", "runtime_commit", "vibecomfy_commit"])
@@ -692,6 +734,37 @@ def test_small_lease_idle_never_extends_paid_deadline(small_lease):
     assert c.read()["lease"]["idle_expires_at"] == paid
     c.clock.advance(10)
     assert c.deletes == ["pod-1"]
+
+
+@pytest.mark.parametrize("phase", ["active", "idle"])
+def test_small_lease_expiry_retries_transient_custody_read_failure(small_lease, monkeypatch, phase):
+    c = small_lease
+    owner = c.fresh()
+    invocation = owner.acquire(c.grant, requested_idle_seconds=10)
+    if phase == "idle":
+        owner.settle(invocation)
+        remaining = 10
+    else:
+        remaining = c.read()["lease"]["paid_expires_at"] - c.clock()
+
+    read = c.owner._read
+    failed = False
+
+    def transient_read():
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("transient custody read failure")
+        return read()
+
+    monkeypatch.setattr(c.owner, "_read", transient_read)
+    c.clock.advance(remaining)
+    assert failed and not c.deletes
+    assert c.read()["state"] == "claimed"
+    c.clock.advance(1)
+    assert c.deletes == ["pod-1"]
+    assert c.read()["state"] == "cleanup_complete"
+    assert c.read()["cleanup"]["absence"]["account_list_absent"] is True
 
 
 def test_small_lease_drain_allows_exact_holder_settlement_without_reopening(small_lease):

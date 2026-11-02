@@ -110,7 +110,7 @@ class RunPodLeaseOwner:
         self.environ, self.service_environ = environ, service_environ
         self.epoch = secrets.token_hex(16)
         self.lock = threading.RLock()
-        self.deadline_timer = self.warm_lease = self.key = None
+        self.deadline_timer = self.expiry_retry_timer = self.warm_lease = self.key = None
         self.closed, self.started = False, False
         self._release_inflight = False
         selection._read()  # Refuse unsafe paths before opening custody.
@@ -158,6 +158,9 @@ class RunPodLeaseOwner:
         return value
 
     def _cancel(self) -> None:
+        if self.expiry_retry_timer is not None:
+            self.expiry_retry_timer.cancel()
+            self.expiry_retry_timer = None
         if self.deadline_timer is not None:
             self.deadline_timer.cancel()
             self.deadline_timer = None
@@ -186,6 +189,7 @@ class RunPodLeaseOwner:
                                         lambda: self._expire("paid_deadline", generation, operation))
 
     def _expire(self, reason: str, generation: int, operation: str) -> None:
+        deadline_timer = self.deadline_timer
         try:
             with self.lock:
                 record = self._read()
@@ -201,8 +205,14 @@ class RunPodLeaseOwner:
         except Exception as exc:
             with self.lock:
                 self.last_error_type = type(exc).__name__
-                if not self.closed and self.deadline_timer is None:
-                    self.deadline_timer = self.timer(1, lambda: self._expire(reason, generation, operation))
+                # A fired deadline timer remains stored in deadline_timer. A
+                # transient journal read failure must not silently lose the
+                # only expiry; retain the independent paid timer as well.
+                # release() already installs its own retry on release failure.
+                if not self.closed and (self.deadline_timer is None or self.deadline_timer is deadline_timer):
+                    if self.expiry_retry_timer is not None:
+                        self.expiry_retry_timer.cancel()
+                    self.expiry_retry_timer = self.timer(1, lambda: self._expire(reason, generation, operation))
 
     def recover(self) -> None:
         """Startup barrier: reconcile, then terminate the prior host's lease."""
