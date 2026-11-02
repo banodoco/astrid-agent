@@ -168,14 +168,20 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
     if moment == "entry":
         replacement()
     elif moment == "between_reads":
+        # The race replaces an already published owner. Keep its first read
+        # internally consistent so this exercises replacement admission.
+        _publish_owner(paths)
         read_support_json = bootstrap._read_support_json
-        replaced = False
+        discovery_reads = 0
 
         def replace_between_reads(path):
-            nonlocal replaced
+            nonlocal discovery_reads
             result = read_support_json(path)
-            if path == paths.discovery_path and not replaced:
-                replaced = True
+            if path == paths.discovery_path:
+                discovery_reads += 1
+            # The first discovery read belongs to preflight. Replace after the
+            # admission read so its paired lock reread sees the new identity.
+            if path == paths.discovery_path and discovery_reads == 2:
                 replacement()
             return result
 
