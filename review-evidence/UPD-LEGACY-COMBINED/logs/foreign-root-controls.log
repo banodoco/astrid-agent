@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.0.2, pluggy-1.7.0 -- /home/user/merge/ws/M-R1FIX/queue/running/UPD-LEGACY-COMBINED/venv/bin/python
+rootdir: /home/user/merge/ws/M-R1FIX/queue/running/UPD-LEGACY-COMBINED/repo
+configfile: pyproject.toml
+plugins: timeout-2.4.0
+timeout: 90.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 2 items
+
+tests/test_installer_legacy_live_update.py::test_legacy_refuses_valid_version_with_foreign_program_root PASSED [ 50%]
+tests/test_installer_legacy_live_update.py::test_legacy_refuses_selected_version_under_foreign_program_root PASSED [100%]
+
+============================== 2 passed in 1.09s ===============================

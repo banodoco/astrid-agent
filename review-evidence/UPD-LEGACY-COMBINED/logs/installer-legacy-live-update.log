@@ -1,0 +1,57 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.0.2, pluggy-1.7.0 -- /home/user/merge/ws/M-R1FIX/queue/running/UPD-LEGACY-COMBINED/venv/bin/python
+rootdir: /home/user/merge/ws/M-R1FIX/queue/running/UPD-LEGACY-COMBINED/repo
+configfile: pyproject.toml
+plugins: timeout-2.4.0
+timeout: 90.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 45 items
+
+tests/test_installer_legacy_live_update.py::test_live_legacy_update_reaches_stop_migrate_restart[linux-[Service]] PASSED [  2%]
+tests/test_installer_legacy_live_update.py::test_live_legacy_update_reaches_stop_migrate_restart[darwin-<plist] PASSED [  4%]
+tests/test_installer_legacy_live_update.py::test_live_legacy_update_reaches_stop_migrate_restart[win32-<Task] PASSED [  6%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[health_digest] PASSED [  8%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[health_protocol] PASSED [ 11%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[health_status] PASSED [ 13%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[health_instance] PASSED [ 15%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[discovery_identity] PASSED [ 17%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[health_identity] PASSED [ 20%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[version_identity] PASSED [ 22%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[manifest] PASSED [ 24%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[selection] PASSED [ 26%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[manager] PASSED [ 28%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[contract_digest] PASSED [ 31%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[contract_protocol] PASSED [ 33%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[contract_schema] PASSED [ 35%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[contract_origin] PASSED [ 37%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[profile] PASSED [ 40%]
+tests/test_installer_legacy_live_update.py::test_nonmatching_or_partial_identity_is_refused[record_fields] PASSED [ 42%]
+tests/test_installer_legacy_live_update.py::test_explicit_null_identity_is_refused_without_mutating_discovery[health] PASSED [ 44%]
+tests/test_installer_legacy_live_update.py::test_explicit_null_identity_is_refused_without_mutating_discovery[discovery] PASSED [ 46%]
+tests/test_installer_legacy_live_update.py::test_explicit_null_identity_is_refused_without_mutating_discovery[both] PASSED [ 48%]
+tests/test_installer_legacy_live_update.py::test_legacy_refuses_valid_version_with_foreign_program_root PASSED [ 51%]
+tests/test_installer_legacy_live_update.py::test_legacy_refuses_selected_version_under_foreign_program_root PASSED [ 53%]
+tests/test_installer_legacy_live_update.py::test_current_low_level_null_refused_and_explicit_identity_preserved[None] PASSED [ 55%]
+tests/test_installer_legacy_live_update.py::test_current_low_level_null_refused_and_explicit_identity_preserved[identity1] PASSED [ 57%]
+tests/test_installer_legacy_live_update.py::test_native_rechecks_legacy_tuple_and_discovery PASSED [ 60%]
+tests/test_installer_legacy_live_update.py::test_legacy_exception_requires_update_context PASSED [ 62%]
+tests/test_installer_legacy_live_update.py::test_cli_admits_only_reviewed_update_target[1-0] PASSED [ 64%]
+tests/test_installer_legacy_live_update.py::test_cli_admits_only_reviewed_update_target[2-1] PASSED [ 66%]
+tests/test_installer_legacy_live_update.py::test_native_acceptance_and_worker_binding_revalidate[None] PASSED [ 68%]
+tests/test_installer_legacy_live_update.py::test_native_acceptance_and_worker_binding_revalidate[request_identity1] PASSED [ 71%]
+tests/test_installer_legacy_live_update.py::test_frozen_policy_matches_reviewed_release_manifest PASSED [ 73%]
+tests/test_installer_legacy_live_update.py::test_qualification_and_live_admission_use_same_classifier PASSED [ 75%]
+tests/test_installer_legacy_live_update.py::test_missing_shipped_table_fails_closed PASSED [ 77%]
+tests/test_installer_legacy_live_update.py::test_missing_or_malformed_resource_refuses[None] PASSED [ 80%]
+tests/test_installer_legacy_live_update.py::test_missing_or_malformed_resource_refuses[not json] PASSED [ 82%]
+tests/test_installer_legacy_live_update.py::test_missing_or_malformed_resource_refuses[{}] PASSED [ 84%]
+tests/test_installer_legacy_live_update.py::test_missing_or_malformed_resource_refuses[[{"action": "update", "target_release": 2}]] PASSED [ 86%]
+tests/test_installer_legacy_live_update.py::test_missing_or_malformed_resource_refuses[[\n  {\n    "id": "served-runtime-6d53-identityless-v31",\n    "app_manifest_commit": "d174f667aa04a7c43e6b0f767abb168b6022a6ab",\n    "installed_manifest_sha256": "4610f44b4dfe39d932753115668779390ed2287d15e2bd8c9568e62bbb6d60ff",\n    "install_manifest_schema_version": 1,\n    "agent_sha": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",\n    "runtime_sha": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",\n    "protocol": "workspace.v1",\n    "schema_digest": "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b",\n    "workspace_schema_version": 31,\n    "version_record_keys": [\n      "env",\n      "profile",\n      "python",\n      "root"\n    ],\n    "manifest_release": 0,\n    "python_version": "3.11.13",\n    "version_id_prefix": "3204bb00-6d53a190-",\n    "action": "update",\n    "target_release": 1,\n    "installed_manifest_vibecomfy_default_sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"\n  }\n]\n ] PASSED [ 88%]
+tests/test_installer_legacy_live_update.py::test_unlisted_target_refused[None] PASSED [ 91%]
+tests/test_installer_legacy_live_update.py::test_unlisted_target_refused[0] PASSED [ 93%]
+tests/test_installer_legacy_live_update.py::test_unlisted_target_refused[2] PASSED [ 95%]
+tests/test_installer_legacy_live_update.py::test_unlisted_target_refused[True] PASSED [ 97%]
+tests/test_installer_legacy_live_update.py::test_unlisted_target_refused[1] PASSED [100%]
+
+============================== 45 passed in 2.97s ==============================

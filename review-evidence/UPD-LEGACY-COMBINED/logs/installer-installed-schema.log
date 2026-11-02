@@ -1,0 +1,22 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.0.2, pluggy-1.7.0 -- /home/user/merge/ws/M-R1FIX/queue/running/UPD-LEGACY-COMBINED/venv/bin/python
+rootdir: /home/user/merge/ws/M-R1FIX/queue/running/UPD-LEGACY-COMBINED/repo
+configfile: pyproject.toml
+plugins: timeout-2.4.0
+timeout: 90.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 10 items
+
+tests/test_installer_installed_schema.py::test_stage_binds_installed_reader_validator_and_service_to_verified_schema PASSED [ 10%]
+tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[missing-source] PASSED [ 20%]
+tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[missing-wheel] PASSED [ 30%]
+tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[symlink-source] PASSED [ 40%]
+tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[symlink-wheel] PASSED [ 50%]
+tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[mismatch-source] PASSED [ 60%]
+tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[mismatch-wheel] PASSED [ 70%]
+tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[missing] PASSED [ 80%]
+tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[symlink] PASSED [ 90%]
+tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[mismatch] PASSED [100%]
+
+======================== 10 passed in 88.01s (0:01:28) =========================
