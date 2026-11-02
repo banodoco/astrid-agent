@@ -102,3 +102,29 @@ def test_helper_cleanup_removes_only_matching_finished_label(monkeypatch):
 ])
 def test_missing_service_requires_exact_exit_and_label(code, text, expected):
     assert helper.missing_service(SimpleNamespace(returncode=code, stderr=text), "runner.label") == expected
+
+
+def test_service_identity_rejects_changed_plist_before_launchctl(tmp_path, monkeypatch):
+    import hashlib
+    import os
+    import plistlib
+    monkeypatch.setattr(helper, "UID", os.getuid())
+    home = tmp_path / "home"
+    runner = home / "actions-runner"
+    launch = home / "Library/LaunchAgents"
+    runner.mkdir(parents=True)
+    launch.mkdir(parents=True)
+    label = "runner.example"
+    plist = launch / (label + ".plist")
+    data = plistlib.dumps({"Label": label, "ProgramArguments": [str(runner / "runsvc.sh")]})
+    plist.write_bytes(data)
+    (runner / ".service").write_text(str(plist))
+    monkeypatch.setattr(helper, "PLIST_SHA", hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(helper, "LABEL_SHA", hashlib.sha256(label.encode()).hexdigest())
+    calls = []
+    monkeypatch.setattr(helper.subprocess, "run", lambda *a, **k: calls.append(a) or SimpleNamespace(returncode=0, stdout=str(runner / "runsvc.sh")))
+    assert helper.identity(home) == "gui/503/runner.example"
+    plist.write_bytes(data + b" ")
+    with pytest.raises(RuntimeError, match="plist changed"):
+        helper.identity(home)
+    assert len(calls) == 1
