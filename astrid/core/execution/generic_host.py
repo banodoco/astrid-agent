@@ -12378,6 +12378,7 @@ class LocalExecutionPreparation:
         self._lock = threading.RLock()
         self._prepare_done = threading.Event()
         self._prepare_done.set()
+        self._host_only_owner_exit = threading.Event()
         self._claim_host: GenericPackHost | None = None
         self._activation_grant: dict[str, Any] | None = None
         self._retained_relay_actor: Any | None = None
@@ -12397,6 +12398,16 @@ class LocalExecutionPreparation:
         self._handoff_journal_path: Path | None = None
         self._handoff_lock_fd: int | None = None
         self._handoff_journal_ready = False
+
+    def run_claim_loop(self, run: Callable[[], Any]) -> Any:
+        result = run()
+        if (self._request or {}).get("profile", {}).get("execution_mode") == "host_only_cpu":
+            # shutdown() fences claims before the private control thread can
+            # send its absence ACK. Keep this retained host alive until the
+            # owner signals its final exit, or loses the original channel.
+            # A claim-loop return alone must not race that ACK or its reap.
+            self._host_only_owner_exit.wait()
+        return result
 
     def _acquire_handoff_journal(self, scope: Path) -> bool:
         if self._handoff_lock_fd is not None:
@@ -13902,6 +13913,7 @@ class LocalExecutionPreparation:
                 self.control_error = exc
             finally:
                 control.close()
+                self._host_only_owner_exit.set()
         thread = threading.Thread(target=serve, name="astrid-host-control", daemon=True)
         thread.start()
         return thread
@@ -15058,10 +15070,14 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         managed_shutdowns.append(stdin_shutdown)
 
     def handle_shutdown(_signum, _frame):
-        if stdin_shutdown is not None:
-            stdin_shutdown.request_shutdown(_signum)
-        else:
-            _handle_host_shutdown_signal(host, _signum)
+        try:
+            if stdin_shutdown is not None:
+                stdin_shutdown.request_shutdown(_signum)
+            else:
+                _handle_host_shutdown_signal(host, _signum)
+        finally:
+            if preparation is not None:
+                preparation._host_only_owner_exit.set()
 
     platform.install_stop_handlers(handle_shutdown)
     # `kill -USR1 <pid>` writes every thread's Python stack to the host log,
@@ -15198,7 +15214,8 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         if not args.register:
             host.register()
         def run_host_loop():
-            return host.run(once=args.once, poll_seconds=args.poll_seconds, max_tasks=args.max_tasks)
+            run = lambda: host.run(once=args.once, poll_seconds=args.poll_seconds, max_tasks=args.max_tasks)
+            return preparation.run_claim_loop(run) if preparation is not None else run()
 
         result = stdin_shutdown.run_loop(run_host_loop) if stdin_shutdown is not None else run_host_loop()
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
