@@ -180,6 +180,14 @@ def _runpod_target_policy(controls, *, engine="comfyui"):
             **{name: controls[name] for name in names}, **paid, "consent": list(paid["consent"])}
 
 
+def _refuse_runpod_foley():
+    from astrid.core.generation.preflight import generation_error
+    raise generation_error(ValueError('Foley is not supported on RunPod; use the Fal Foley action.'),
+        code='foley_runpod_unsupported', details={'field': 'target'}, fixes=[{
+            'argv': ['astrid', 'generate', 'describe', '--entry', 'hunyuan-video-foley'],
+            'scope': 'read_only'}])
+
+
 def _runpod_operation(operation, *, client, wait, include_quote=False):
     """Submit an ordinary task to the retained host's target owner."""
     from astrid.packs.runpod.target_selection import read_runpod_preferences
@@ -1667,15 +1675,29 @@ class GenerationFacade:
             return result
         return _reconstruct_generation_result(result)
 
+    @_generation_boundary
     def audio(
         self,
         *,
-        model: str,
+        model: str | None = None,
+        entry: str | None = None,
+        target: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
+        engine: str | None = None,
+        consent: tuple[str, ...] = (),
+        max_usd: float | None = None,
+        deadline: str | None = None,
+        offer_digest: str | None = None,
+        preparation_seconds: float | None = None,
+        execution_seconds: float | None = None,
+        idle_seconds: float | None = None,
+        wait: bool = True,
         out: Path | str | None = None,
         project: str | None = None,
         client: Any | None = None,
+        recovery_path: Path | str | None = None,
+        resume: bool = False,
         project_root: str | Path | None = None,
         extra_pack_roots: tuple[str, ...] = (),
         banodoco_config: Any | None = None,
@@ -1689,7 +1711,45 @@ class GenerationFacade:
         argv: tuple[str, ...] = (),
         **inputs: Any,
     ) -> Any:
+        """Generate audio through the typed action or a selected workflow target."""
+        if target == 'runpod' and mode == 'sfx':
+            _refuse_runpod_foley()
         _reject_retired_generation_inputs(inputs)
+        inputs = _public_input_values(inputs)
+        controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
+        controls.update(offer_digest=offer_digest, preparation_seconds=preparation_seconds,
+                        execution_seconds=execution_seconds, idle_seconds=idle_seconds)
+        sdk_module = importlib.import_module(self.sdk_module_name)
+        registry = None
+        if entry is not None:
+            registry = sdk_module._load_model_registry(project_root=project_root, extra_pack_roots=extra_pack_roots)
+            description, inputs = self._resolve_public_entry(entry=entry, model=model, mode=mode,
+                modality='audio', inputs=inputs, registry=registry)
+            model, mode = entry, description['mode']
+            if target == 'runpod' and mode == 'sfx':
+                _refuse_runpod_foley()
+            if description['source'] == 'workflow' and target is None:
+                target = 'auto'
+        if engine is not None and target is None:
+            target = 'auto'
+        if target is not None:
+            if mode is None:
+                raise CapabilityValidationError('mode is required for audio target generation')
+            if registry is None:
+                registry = sdk_module._load_model_registry(project_root=project_root, extra_pack_roots=extra_pack_roots)
+            return self._generate_on_target(
+                registry=registry, model=model, mode=mode, modality='audio', target=target,
+                execution=execution, inputs=inputs, dry_run=dry_run, client=client, out=out,
+                project=project, project_root=project_root, extra_pack_roots=extra_pack_roots,
+                banodoco_config=banodoco_config, active_theme=active_theme,
+                include_missing_roots=include_missing_roots, brief=brief,
+                check_binaries=check_binaries, python_exec=python_exec, verbose=verbose, argv=argv,
+                **controls, **({'wait': False} if not wait else {}),
+                **({'recovery_path': recovery_path} if recovery_path is not None else {}),
+                **({'resume': True} if resume else {}),
+            )
+        if recovery_path is not None or resume or not wait:
+            raise CapabilityValidationError('audio recovery and no-wait require an explicit target')
         if mode == "tts":
             speech_inputs = _speech_inputs_from_audio_request(inputs)
             invoke_out, invoke_project = _resolve_invoke_destination(
@@ -1720,13 +1780,12 @@ class GenerationFacade:
             if dry_run:
                 return result
             return _reconstruct_generation_result(result)
-        """Generate audio through the same typed preflight as image/video."""
-
-        sdk_module = importlib.import_module(self.sdk_module_name)
-        registry = sdk_module._load_model_registry(
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-        )
+        if model is None:
+            raise CapabilityValidationError('model is required when target is omitted')
+        if registry is None:
+            registry = sdk_module._load_model_registry(
+                project_root=project_root, extra_pack_roots=extra_pack_roots,
+            )
         try:
             model_entry = registry.get(model)
         except KeyError as exc:
