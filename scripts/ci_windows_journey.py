@@ -25,6 +25,7 @@ EVIDENCE = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())) / "X5-wind
 HEALTH_URL = "http://127.0.0.1:17340/api/runtime/v1/health"
 TASK_OUTPUT_TAIL_BYTES = 65536
 TASK_OUTPUT_METADATA_BYTES = 2048
+_LAST_HOST_READINESS_OBSERVATION = None
 
 
 def _powershell_quote(value):
@@ -366,18 +367,57 @@ def healthy():
                 value["runtime_instance_id"] == discovery.get("runtime_instance_id"))
 
 
+def _report_host_readiness(observation):
+    """Print only readiness-state changes so hosted failures retain the distinction."""
+    global _LAST_HOST_READINESS_OBSERVATION
+    encoded = json.dumps(observation, sort_keys=True, separators=(",", ":"))
+    if encoded != _LAST_HOST_READINESS_OBSERVATION:
+        print(f"Pack-host readiness observation: {encoded}", flush=True)
+        _LAST_HOST_READINESS_OBSERVATION = encoded
+
+
 def host_ready():
     value = health()
     if not value or value.get("status") != "ok":
+        _report_host_readiness({
+            "health_status": value.get("status") if isinstance(value, dict) else "unavailable",
+            "ready_file": {"status": "not-probed"},
+            "service": {"state": "unavailable"},
+        })
         return False
     service = next((row for row in value.get("services", []) if row.get("name") == "pack-host"), {})
     ready_path = data_root() / "runtime" / "generic-host.ready.json"
-    if service.get("state") != "running" or not ready_path.is_file():
+    ready_is_file = ready_path.is_file()
+    service_observation = {
+        key: service.get(key) for key in ("state", "reason", "last_exit", "restart_count")
+        if service.get(key) is not None
+    }
+    base_observation = {
+        "expected_runtime_instance_id": value.get("runtime_instance_id"),
+        "health_status": value.get("status"),
+        "ready_file": {"path": str(ready_path), "status": "present" if ready_is_file else "absent"},
+        "service": service_observation,
+    }
+    if service.get("state") != "running" or not ready_is_file:
+        _report_host_readiness(base_observation)
         return False
     try:
         ready = json.loads(ready_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        _report_host_readiness({
+            **base_observation,
+            "ready_file": {**base_observation["ready_file"], "status": "unreadable-or-invalid",
+                           "error_type": type(exc).__name__},
+        })
         return False
+    _report_host_readiness({
+        **base_observation,
+        "ready_file": {
+            **base_observation["ready_file"],
+            "runtime_instance_id": ready.get("runtime_instance_id"),
+            "marker_status": ready.get("status"),
+        },
+    })
     save("pack-host-ready.json", ready)
     return (ready.get("status") == "ready" and bool(value.get("runtime_instance_id")) and
             ready.get("runtime_instance_id") == value["runtime_instance_id"])

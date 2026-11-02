@@ -143,9 +143,11 @@ def test_partial_install_and_unmarked_job_child_are_not_missed(command):
 @pytest.mark.parametrize("state,instance,expected", [
     ("starting", "current", False), ("running", "stale", False), ("running", "current", True),
 ])
-def test_ready_file_must_belong_to_running_service(tmp_path, monkeypatch, state, instance, expected):
+def test_ready_file_must_belong_to_running_service(
+        tmp_path, monkeypatch, capsys, state, instance, expected):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(journey, "_LAST_HOST_READINESS_OBSERVATION", None)
     (tmp_path / "runtime").mkdir()
     (tmp_path / "runtime" / "generic-host.ready.json").write_text(json.dumps({
         "status": "ready", "runtime_instance_id": instance,
@@ -154,6 +156,52 @@ def test_ready_file_must_belong_to_running_service(tmp_path, monkeypatch, state,
         "status": "ok", "runtime_instance_id": "current", "services": [{"name": "pack-host", "state": state}],
     })
     assert journey.host_ready() is expected
+    line = capsys.readouterr().out.strip()
+    observation = json.loads(line.removeprefix("Pack-host readiness observation: "))
+    assert observation["service"] == {"state": state}
+    if state == "running":
+        assert observation["ready_file"]["marker_status"] == "ready"
+        assert observation["ready_file"]["runtime_instance_id"] == instance
+
+
+def test_host_ready_reports_absent_marker_and_service_state(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(journey, "_LAST_HOST_READINESS_OBSERVATION", None)
+    (tmp_path / "runtime").mkdir()
+    monkeypatch.setattr(journey, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current", "services": [{
+            "name": "pack-host", "state": "restarting", "reason": "exited",
+            "last_exit": 7, "restart_count": 2,
+        }],
+    })
+
+    assert journey.host_ready() is False
+    line = capsys.readouterr().out.strip()
+    observation = json.loads(line.removeprefix("Pack-host readiness observation: "))
+    assert observation["service"] == {
+        "last_exit": 7, "reason": "exited", "restart_count": 2, "state": "restarting",
+    }
+    assert observation["ready_file"]["status"] == "absent"
+    assert observation["expected_runtime_instance_id"] == "current"
+
+
+def test_host_ready_reports_malformed_current_marker_without_weakening_predicate(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(journey, "_LAST_HOST_READINESS_OBSERVATION", None)
+    (tmp_path / "runtime").mkdir()
+    (tmp_path / "runtime" / "generic-host.ready.json").write_text("{", encoding="utf-8")
+    monkeypatch.setattr(journey, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current",
+        "services": [{"name": "pack-host", "state": "running"}],
+    })
+
+    assert journey.host_ready() is False
+    line = capsys.readouterr().out.strip()
+    observation = json.loads(line.removeprefix("Pack-host readiness observation: "))
+    assert observation["service"] == {"state": "running"}
+    assert observation["ready_file"]["status"] == "unreadable-or-invalid"
+    assert observation["ready_file"]["error_type"] == "JSONDecodeError"
 
 
 @pytest.mark.parametrize("state,outputs,expected", [
