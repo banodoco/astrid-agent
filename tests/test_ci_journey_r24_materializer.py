@@ -160,6 +160,7 @@ def test_install_candidate_persists_bounded_identity_inputs(tmp_path, monkeypatc
         materializer._install_candidate(
             node=tmp_path / "node", pterm=tmp_path / "pterm", resource=resource,
             manifest=manifest, home=tmp_path, env={}, evidence=evidence, receipt=receipt,
+            expected_vibecomfy={"sha": "a" * 40},
         )
     diagnostic = json.loads((evidence / "installed-identity.json").read_text())
     assert diagnostic["current"]["text"] == "v1\n"
@@ -626,6 +627,12 @@ def test_derived_vibecomfy_identity_is_exactly_accepted(tmp_path):
     assert selected["identity"] == {"release": 1, "managed_by": "pinokio"}
 
 
+def test_missing_agent_pin_fails_closed(tmp_path):
+    with pytest.raises(materializer.MaterializerError, match="pin is unavailable"):
+        materializer._derive_vibecomfy_identity(
+            tmp_path / "agent", validated_agent_ref="a" * 40)
+
+
 @pytest.mark.parametrize("installed", [
     {"candidate": True},
     {"candidate": True, "vibecomfy": None},
@@ -659,6 +666,17 @@ def test_installed_vibecomfy_is_bound_to_candidate_agent_pin(tmp_path):
         tmp_path / "binding", {"candidate": True, "vibecomfy": {"sha": "a" * 40}})
     with pytest.raises(materializer.MaterializerError, match="candidate identity"):
         materializer._installed(backend, manifest, expected)
+
+
+def test_unchanged_manifest_fields_are_required(tmp_path):
+    backend, manifest = _identity_backend(
+        tmp_path / "unchanged-fields",
+        {"candidate": True, "other": {"value": "tampered"},
+         "vibecomfy": {"sha": "a" * 40}},
+        {"candidate": True, "other": {"value": "original"}},
+    )
+    with pytest.raises(materializer.MaterializerError, match="candidate identity"):
+        materializer._installed(backend, manifest, {"sha": "a" * 40})
 
 
 def test_candidate_app_vibecomfy_source_mismatch_fails_closed(tmp_path):
