@@ -86,7 +86,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
-}) | PACK_HOST_READINESS_EVIDENCE_NAMES
+})
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 OWNER_CENSUS_MAX_RECORDS = 8
 OWNER_ASSERTION_SNAPSHOT = "runtime-owner-assertion.json"
@@ -591,7 +591,16 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
-def retain_named_evidence(evidence: Path, phase: str) -> dict[str, str]:
+def retained_pack_host_evidence_name(name: str) -> str:
+    """Map a finite pack-host diagnostic source to the existing hosted pattern."""
+    if name not in PACK_HOST_READINESS_EVIDENCE_NAMES:
+        raise ValueError(f"Unexpected pack-host readiness evidence name: {name}")
+    if name.endswith(".json"):
+        name = f"{name.removesuffix('.json')}-manifest.log"
+    return f"runtime-service-service-{name}"
+
+
+def retain_named_evidence(evidence: Path, phase: str) -> dict[str, tuple[str, str]]:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent.parent / "evidence-upload" / phase
     try:
@@ -622,14 +631,16 @@ def retain_named_evidence(evidence: Path, phase: str) -> dict[str, str]:
     retained_sources = {}
     for source in sources:
         name = source.name
-        if (name not in JOURNEY_EVIDENCE_NAMES and
+        is_pack_host_diagnostic = name in PACK_HOST_READINESS_EVIDENCE_NAMES
+        if (name not in JOURNEY_EVIDENCE_NAMES and not is_pack_host_diagnostic and
                 not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
             continue
-        if name in retained_sources:
+        target_name = retained_pack_host_evidence_name(name) if is_pack_host_diagnostic else name
+        if target_name in {row[0] for row in retained_sources.values()}:
             continue
         if not source.is_file() or source.is_symlink():
             continue
-        target = destination / name
+        target = destination / target_name
         try:
             if source.suffix == ".log":
                 with source.open("rb") as stream:
@@ -637,7 +648,7 @@ def retain_named_evidence(evidence: Path, phase: str) -> dict[str, str]:
                     target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
             else:
                 shutil.copyfile(source, target)
-            retained_sources[name] = source.relative_to(evidence).as_posix()
+            retained_sources[name] = (target_name, source.relative_to(evidence).as_posix())
         except Exception as exc:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
@@ -717,18 +728,28 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         if sys.platform == "win32":
             pack_host = []
             for observation in PACK_HOST_READINESS_OBSERVATIONS:
-                path = destination / f"pack-host-readiness-{observation}.json"
+                source_name = f"pack-host-readiness-{observation}.json"
+                retained = retained_sources.get(source_name)
+                target_name = retained[0] if retained is not None else retained_pack_host_evidence_name(source_name)
+                path = destination / target_name
                 item = {
                     "observation": observation,
                     "status": "captured" if path.is_file() else "unavailable",
                     "path": path.relative_to(run_root).as_posix() if path.is_file() else None,
                 }
                 if path.is_file():
-                    item["source_path"] = retained_sources.get(path.name)
+                    item["source_path"] = retained[1] if retained is not None else None
                     try:
                         captured = read_json(path)
                         item["capture_status"] = ("observed" if captured.get("schema_version") == 1
                                                   else "malformed")
+                        for log in captured.get("logs", []):
+                            source = log.get("evidence") if isinstance(log, dict) else None
+                            log_retention = retained_sources.get(source)
+                            if log_retention is not None:
+                                log["retained_evidence_path"] = (
+                                    destination / log_retention[0]).relative_to(run_root).as_posix()
+                        item["capture"] = captured
                     except (OSError, ValueError, json.JSONDecodeError):
                         item["capture_status"] = "malformed"
                 pack_host.append(item)
