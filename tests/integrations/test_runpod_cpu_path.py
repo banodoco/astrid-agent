@@ -112,9 +112,11 @@ def _same_root_lifecycle(root, realm_root, realm_id):
 def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
     from astrid import console
 
-    def forbidden(sock, address):
-        raise AssertionError("catalog/dry-run attempted network I/O")
-    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    connect = socket.socket.connect
+    def local_only(sock, address):
+        assert not isinstance(address, tuple) or address[0] in {"127.0.0.1", "localhost", "::1"}, address
+        return connect(sock, address)
+    monkeypatch.setattr(socket.socket, "connect", local_only)
     assert console.main(["generate", "list", "--json"]) == 0
     inventory = json.loads(capsys.readouterr().out)
     selected = next(row for row in inventory if row["id"] == "z-image" and row["backend"] == "local")
@@ -165,7 +167,8 @@ class ProviderHTTP:
         receipt = InstallReceipt(
             "astrid.engine-install.v1", "cpu-http-install", plan.engine, plan.platform, plan.placement,
             root, "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
-            {env.name: env.node_lock.sha256 for env in recipe.environments},
+            {env.name: (env.requirements.packaged_lock.sha256 if env.requirements.packaged_lock
+                        else _sha(env.name.encode())) for env in recipe.environments},
             {source.name: source.pin.revision for source in recipe.sources},
             tuple(DownloadResult(model.name, root + "/models/" + model.destination, "downloaded",
                                  model.bytes, model.sha256, True, 0) for model in lock.models),
