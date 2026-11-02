@@ -1,9 +1,12 @@
 """TST-B1: focused custody and result-contract tests for named installed journeys."""
 
 import argparse
+from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -540,6 +543,64 @@ def test_failure_diagnostics_records_unavailable_install_and_manager_error(tmp_p
     assert before["service_manager"]["observation_status"] == "error"
     assert before["service_manager"]["error"] == "manager command exited 1"
     assert journey.read_json(run_root / before["service_manager"]["path"])["stderr"] == "manager unavailable"
+
+
+def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps
+
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="release0-to-release1", shell="powershell.exe", retain_for_next_leg=False)
+    raw = b"first product error\r\n\xff\x00" + b"x" * (journey.EVIDENCE_LOG_LIMIT + 31)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+
+    @contextmanager
+    def sentinel(*unused):
+        yield SimpleNamespace(pid=123), "birth"
+
+    monkeypatch.setattr(journey, "sentinel_process", sentinel)
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *unused: {"alive": True})
+
+    def process(argv, **kwargs):
+        assert str(argv[0]) == "powershell.exe"
+        kwargs["stdout"].buffer.write(raw)
+        return SimpleNamespace(returncode=37)
+
+    monkeypatch.setattr(journey.subprocess, "run", process)
+
+    def failed_journey(*unused):
+        journey.write_json(evidence / "journey-result.json",
+                           {"status": "not-run", "scenario": args.leg})
+        root.mkdir()
+        (root / "current").write_text("v0")
+        journey_version_jumps.bootstrap_release0(tmp_path / "fixture", tmp_path / "manifest",
+                                                 args.shell, evidence / "release0", root, data)
+
+    monkeypatch.setattr(journey, "_execute_owned", failed_journey)
+    monkeypatch.setattr(journey, "installation", lambda *unused: (None, data, {"python": "python"}))
+
+    def cleanup(*unused, **kwargs):
+        shutil.rmtree(evidence / "release0")
+        (root / "current").unlink()
+
+    monkeypatch.setattr(journey, "installed_cli", cleanup)
+    monkeypatch.setattr(journey, "runtime_processes", lambda *unused: [])
+    with pytest.raises(RuntimeError, match=r"release0-bootstrap.log: exit 37"):
+        journey.execute(args)
+
+    staged = evidence.parent / "evidence-upload"
+    for phase in ("before-cleanup", "after-cleanup"):
+        receipt = journey.read_json(staged / phase / "journey-result.json")
+        entry = receipt["failure_diagnostics"][phase]["release0_bootstrap"]
+        assert receipt["status"] == "fail"
+        assert entry == {"status": "captured", "path": (staged / phase / "release0-bootstrap.log").relative_to(run_root).as_posix(),
+                         "exit_code": 37, "sha256": hashlib.sha256(raw).hexdigest()}
+        assert (run_root / entry["path"]).read_bytes() == raw
 
 
 def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
