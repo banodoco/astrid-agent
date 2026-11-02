@@ -91,3 +91,14 @@ def test_helper_cleanup_removes_only_matching_finished_label(monkeypatch):
     monkeypatch.setattr(helper.subprocess, "run", fake)
     assert helper.remove_own_helper(run) == "removed"
     assert calls[-1] == ["/bin/launchctl", "remove", "haus.astrid.runner-restart.123-1"]
+
+
+@pytest.mark.parametrize("code,text,expected", [
+    (113, 'Could not find service "runner.label" in domain for user gui: 503', True),
+    (113, 'Bad request.\nCould not find service "runner.label" in domain for user gui: 503', True),
+    (1, 'Could not find service "runner.label" in domain for user gui: 503', False),
+    (113, 'Could not find service "other" in domain for user gui: 503', False),
+    (113, 'error: Could not find service "runner.label" in domain for user gui: 503', False),
+])
+def test_missing_service_requires_exact_exit_and_label(code, text, expected):
+    assert helper.missing_service(SimpleNamespace(returncode=code, stderr=text), "runner.label") == expected

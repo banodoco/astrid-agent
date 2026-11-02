@@ -78,12 +78,18 @@ def listener_pid(home):
     return pids[0]
 
 
+def missing_service(result, label):
+    expected = f'Could not find service "{label}" in domain for user gui: {UID}'
+    actual = result.stderr.strip().replace("\r\n", "\n")
+    return result.returncode == 113 and actual in {expected, "Bad request.\n" + expected}
+
+
 def recover(home):
     target, plist = configured_identity(home)
     probe = subprocess.run(["/bin/launchctl", "print", target], capture_output=True, text=True, timeout=15)
     if probe.returncode != 0:
         # Bootstrapping this exact pinned plist is safe only if it is absent.
-        if "Could not find service" not in probe.stderr:
+        if not missing_service(probe, target.rsplit("/", 1)[-1]):
             raise RuntimeError("Cannot prove service is absent")
         subprocess.run(["/bin/launchctl", "bootstrap", "gui/503", str(plist)], capture_output=True, text=True, timeout=30, check=True)
     else:
@@ -97,7 +103,7 @@ def remove_own_helper(run_dir):
     target = "gui/503/" + label
     result = subprocess.run(["/bin/launchctl", "print", target], capture_output=True, text=True, timeout=15)
     if result.returncode != 0:
-        if "Could not find service" in result.stderr:
+        if missing_service(result, label):
             return "already-absent"
         raise RuntimeError("Cannot inspect helper label")
     if ("/usr/bin/python3" not in result.stdout
