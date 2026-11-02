@@ -40,6 +40,29 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def test_cpu_runpod_public_catalog_and_dry_run(tmp_path, monkeypatch, capsys):
+    from astrid import console
+
+    def forbidden(sock, address):
+        raise AssertionError("catalog/dry-run attempted network I/O")
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    assert console.main(["generate", "list", "--json"]) == 0
+    inventory = json.loads(capsys.readouterr().out)
+    selected = next(row for row in inventory if row["id"] == "z-image" and row["backend"] == "local")
+    assert selected["template"] == "image/z_image_turbo"
+    (tmp_path / "generate-list.json").write_text(json.dumps(inventory, indent=2))
+    output = tmp_path / "dry.png"
+    assert console.main(["generate", "image", "A red cube on a white tabletop.",
+        "--model", selected["id"], "--target", "runpod", "--engine", "comfyui",
+        "--width", "1024", "--height", "1024", "--steps", "8", "--seed", "0",
+        "--out", str(output), "--consent", "paid", "--max-usd", "2",
+        "--deadline", "2099-01-01T00:00:00Z", "--dry-run", "--json"]) == 0
+    dry = json.loads(capsys.readouterr().out)
+    assert dry["target"]["placement"] == "runpod" and dry["entry"]["model"] == selected["id"]
+    assert not output.exists()
+    (tmp_path / "generate-dry-run.json").write_text(json.dumps(dry, indent=2))
+
+
 class ProviderHTTP:
     """RunPod GraphQL/REST and pod-agent HTTP contracts, with no host doubles."""
 
