@@ -206,6 +206,20 @@ def scan_pack_roots(
         quarantined.extend(rejected)
     return PackScan(tuple(packs), tuple(quarantined))
 
+
+def scan_configured_packs(
+    extra_roots: tuple[str | Path, ...] = (), *, include_hidden: bool = False,
+) -> PackScan:
+    """Scan configured and managed roots together with optional caller roots."""
+    from astrid.core.pack.source_setup import active_source_inventory
+
+    inventory = active_source_inventory()
+    sources = inventory.sources if inventory is not None else ()
+    return scan_pack_roots(
+        (*_default_pack_roots(), *(source.pack_root for source in sources), *extra_roots),
+        include_hidden=include_hidden, source_records={source.pack_id: source for source in sources},
+    )
+
 def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
     if manifest_path is None:
         return None
@@ -376,8 +390,8 @@ def pack_quarantine_report(
     roots: tuple[str | Path, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Return read-only JSON-shaped optional-pack quarantine records."""
-    scan_roots = roots if roots is not None else _default_pack_roots()
-    return [record.to_dict() for record in scan_pack_roots(scan_roots).quarantined]
+    scan = scan_pack_roots(roots) if roots is not None else scan_configured_packs()
+    return [record.to_dict() for record in scan.quarantined]
 
 
 def pack_quarantine_section() -> dict[str, Any]:

@@ -199,6 +199,9 @@ def validate_pack(*, mode: Literal["install", "inventory", "execute"],
             elif import_violations:
                 fail("import_violation")
     reason, fix = ("", "") if code == "compatible" else _CODES[code]
+    if code == "missing_dep":
+        missing = sorted(dep for dep in deps if dep not in selected)
+        reason = f"{reason} Missing: {', '.join(missing)}."
     return {
         "version": 1, "pack_id": pack_id, "ok": code == "compatible", "code": code,
         "reason": reason, "fix": fix, "dependencies": deps, "warnings": sorted(set(warnings)),
