@@ -66,7 +66,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "preflight-scheduled-task.txt",
     "runtime-owner-processes.json",
-    "runtime-service-runtime.log",
+    "runtime-service.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
@@ -551,22 +551,27 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
 
 
 def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> dict:
-    """Retain bounded tails of the run-owned Runtime and named service logs."""
+    """Retain bounded tails of the run-owned installer and service logs.
+
+    ``runtime-service.log`` is the log configured by the installer service on
+    every supported platform.  It is deliberately distinct from
+    ``runtime.log``: the latter is a Runtime-process diagnostic, while this
+    receipt's named lifecycle evidence is the login-service log.
+    """
+    evidence.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
         log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
     elif sys.platform == "win32":
         log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
     else:
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
-    paths = [log_dir / "install.log", log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    paths = [log_dir / "install.log", log_dir / "runtime-service.log"]
     observations = {}
     for source in paths:
-        observations[source.name] = "unavailable"
+        observations[source.name] = "not-produced-at-snapshot"
         if source.is_symlink() or not source.is_file():
             continue
-        name = ("install.log" if source.name == "install.log" else
-                "runtime-service-runtime.log" if source.name == "runtime.log" else
-                f"runtime-service-{source.name}")
+        name = source.name
         target = evidence / name
         try:
             with source.open("rb") as stream:
@@ -576,7 +581,7 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         except Exception as exc:
             print(f"Journey Runtime log capture ({phase}) failed for {source.name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            observations[source.name] = "error"
+            observations[source.name] = "capture-error"
     return observations
 
 

@@ -148,3 +148,15 @@ def test_existing_allowlist_and_receipt_requirements_still_fail_closed(tmp_path)
     (root / "before-cleanup" / "journey-result.json").unlink()
     with pytest.raises(ValueError, match="No staged journey-result.json"):
         boundary.prepare(root)
+
+
+def test_additional_diagnostics_are_declared_as_console_exceptions(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "evidence-upload"
+    _stage(root, "before-cleanup", 100)
+    (root / "before-cleanup" / "verify-install.log").write_text("failure context\n")
+
+    monkeypatch.setattr(boundary.sys, "argv", ["boundary", str(root)])
+    assert boundary.main() == 0
+    output = capsys.readouterr().out
+    assert "additional diagnostic; not lifecycle acceptance evidence" in output
+    assert "before-cleanup/verify-install.log" in output

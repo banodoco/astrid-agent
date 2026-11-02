@@ -31,7 +31,10 @@ def test_nested_bootstraps_and_truthful_phase_observations(tmp_path, monkeypatch
         journey.write_json(ev / f"manager-state-{phase}.json", {"unit_file": "real" if phase == "before-cleanup" else None})
         (ev / f"unit-file-{phase}.txt").write_text("unit" if phase == "before-cleanup" else "Unit file unavailable")
     monkeypatch.setattr(journey, "capture_manager_state", manager)
-    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *args: {"install.log": "unavailable", "runtime.log": "unavailable"})
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *args: {
+        "install.log": "not-produced-at-snapshot",
+        "runtime-service.log": "not-produced-at-snapshot",
+    })
     journey.snapshot_failure_evidence(evidence, root, data, "before-cleanup")
     shutil.rmtree(evidence / "busy")
     (evidence / "final-uninstall.log").write_text("cleanup result")
@@ -49,12 +52,48 @@ def test_nested_bootstraps_and_truthful_phase_observations(tmp_path, monkeypatch
     assert a["uninstall"]["final_uninstall"] == "captured"
     assert b["unit_file"]["observation_status"] == "captured"
     assert a["unit_file"]["observation_status"] == "unavailable"
-    assert b["install_log"]["source_observation"] == "unavailable"
+    assert b["install_log"]["source_observation"] == "not-produced-at-snapshot"
     assert b["runtime_service"]["status"] == "unavailable"
     assert b["service_manager"]["observation_status"] == "observed"
     assert "busy/update-bootstrap.log" in b["bootstrap"]["source_paths"]
     assert "busy/update-bootstrap.log" not in a["bootstrap"]["source_paths"]
     assert b["receipt"]["status"] == a["receipt"]["status"] == "captured"
+
+
+@pytest.mark.parametrize("platform, relative", [
+    ("linux", "home/.local/state/astrid-runtime/logs"),
+    ("darwin", "home/Library/Logs/Astrid Runtime"),
+    ("win32", "localappdata/Astrid Runtime/logs"),
+])
+def test_runtime_service_capture_uses_installer_service_log_path(tmp_path, monkeypatch, platform, relative):
+    run_root = tmp_path / "run"
+    log_dir = run_root / relative
+    log_dir.mkdir(parents=True)
+    (log_dir / "install.log").write_text("installer output\n")
+    (log_dir / "runtime-service.log").write_text("service output\n")
+    # A Runtime-process log is not a substitute for the service log and is not
+    # an R-01 lifecycle member.
+    (log_dir / "runtime.log").write_text("runtime process output\n")
+    evidence = run_root / "evidence"
+    monkeypatch.setattr(journey.sys, "platform", platform)
+
+    observations = journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+
+    assert observations == {"install.log": "captured", "runtime-service.log": "captured"}
+    assert (evidence / "install.log").read_text() == "installer output\n"
+    assert (evidence / "runtime-service.log").read_text() == "service output\n"
+    assert not (evidence / "runtime-service-runtime.log").exists()
+
+
+def test_runtime_service_absence_is_not_produced_not_collector_error(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    (run_root / "home/.local/state/astrid-runtime/logs").mkdir(parents=True)
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+
+    assert journey.capture_runtime_service_logs(run_root / "evidence", run_root, "before-cleanup") == {
+        "install.log": "not-produced-at-snapshot",
+        "runtime-service.log": "not-produced-at-snapshot",
+    }
 
 
 def test_seed_streams_are_bounded_and_oversized_stdout_fails_explicitly(tmp_path):

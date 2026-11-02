@@ -20,6 +20,14 @@ PHASES = frozenset({"before-cleanup", "after-cleanup"})
 BOOTSTRAP_LOG = "release0-bootstrap.log"
 METADATA_SUFFIX = ".metadata.json"
 SERVICE_LOG = re.compile(r"runtime-service-service-.+\.log\Z")
+LIFECYCLE_EVIDENCE_NAMES = frozenset({
+    "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
+    "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
+    "runtime-service.log",
+    "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
+    "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
+    "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+})
 
 
 def _regular(path: Path) -> bool:
@@ -96,6 +104,19 @@ def _bootstrap_candidates(root: Path, files: list[Path]) -> list[dict]:
     return candidates
 
 
+def _is_lifecycle_evidence(name: str) -> bool:
+    return (name in LIFECYCLE_EVIDENCE_NAMES or
+            name.startswith("runtime-service-service-bootstrap-"))
+
+
+def _report_additional_diagnostics(root: Path, files: list[Path]) -> None:
+    """Make every non-lifecycle upload member an explicit Actions-console exception."""
+    for path in files:
+        if not _is_lifecycle_evidence(path.name):
+            print("Journey evidence console exception (additional diagnostic; not lifecycle acceptance evidence): "
+                  f"{path.relative_to(root).as_posix()}", flush=True)
+
+
 def _allocate(candidates: list[dict], budget: int) -> list[int]:
     """Allocate retained prefixes deterministically and without exceeding budget."""
     allocations = [0] * len(candidates)
@@ -145,6 +166,8 @@ def prepare(root: Path, max_bytes: int = MAX_ARTIFACT_BYTES) -> int:
     if not any(path.name == "journey-result.json" for path in files):
         raise ValueError(f"No staged journey-result.json receipt exists under {root}")
 
+    _report_additional_diagnostics(root, files)
+
     estimate = sum(path.stat().st_size + ENTRY_OVERHEAD for path in files)
     if estimate < max_bytes:
         return estimate
@@ -175,7 +198,8 @@ def prepare(root: Path, max_bytes: int = MAX_ARTIFACT_BYTES) -> int:
         minimum += len(metadata) + ENTRY_OVERHEAD * 2  # zero-byte log and its metadata
     if minimum >= max_bytes:
         raise ValueError(
-            f"Minimum named journey evidence estimate is {minimum} bytes; limit is below {max_bytes} bytes")
+            f"Minimum named journey evidence estimate is {minimum} bytes; minimum footprint cannot fit "
+            f"below {max_bytes} bytes")
 
     allocations = _allocate(candidates, max_bytes - 1 - minimum)
     receipt_bytes = {}
