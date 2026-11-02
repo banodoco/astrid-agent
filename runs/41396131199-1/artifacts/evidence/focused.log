@@ -1,0 +1,135 @@
+........................................................................ [  4%]
+........................................................................ [  8%]
+........................................................................ [ 13%]
+........................................................................ [ 17%]
+........................................................................ [ 22%]
+........................................................................ [ 26%]
+........................................................................ [ 31%]
+........................................................................ [ 35%]
+........................................................................ [ 40%]
+........................................................................ [ 44%]
+........................................................................ [ 49%]
+........................................................................ [ 53%]
+........................................................................ [ 58%]
+..s..................................................................... [ 62%]
+........................................................................ [ 67%]
+........................................................................ [ 71%]
+........................................................................ [ 76%]
+........................................................................ [ 80%]
+........................................................................ [ 85%]
+........................................................................ [ 89%]
+........................................................................ [ 94%]
+...............................................................sssssssss [ 98%]
+s.......................                                                 [100%]
+----------------------------- declared skips (11) ------------------------------
+SKIPPED [windows_installer] tests/test_installer_platforms.py::test_chat_command_windows_rejects_text_and_accepts_external_cmd: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_disable_preserves_saved_task_registration_and_autostart_choice: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_register_scheduled_task_accepts_rendered_xml_string: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_task_cleanup_preserves_powershell_success_and_failure[absent-stop]: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_task_cleanup_preserves_powershell_success_and_failure[absent-unregister]: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_task_cleanup_preserves_powershell_success_and_failure[action_failure-stop]: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_task_cleanup_preserves_powershell_success_and_failure[action_failure-unregister]: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_task_cleanup_preserves_powershell_success_and_failure[lookup_failure-stop]: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_task_cleanup_preserves_powershell_success_and_failure[lookup_failure-unregister]: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_task_cleanup_preserves_powershell_success_and_failure[present-stop]: needs native Windows installer APIs
+SKIPPED [windows_installer] tests/test_installer_windows_tasks.py::test_task_cleanup_preserves_powershell_success_and_failure[present-unregister]: needs native Windows installer APIs
+------------------ left out of this run by lane (95 entries) -------------------
+[app_checkout] NO CI job runs this lane (manual: run it by hand with -m app_checkout)
+  DESELECTED tests/test_installer_bootstrap_refusals.py::test_real_posix_bootstrap_handoff_preserves_refusal_status_and_update_flag[forwarded_flags0-direct]
+  DESELECTED tests/test_installer_bootstrap_refusals.py::test_real_posix_bootstrap_handoff_preserves_refusal_status_and_update_flag[forwarded_flags0-pipe]
+  DESELECTED tests/test_installer_bootstrap_refusals.py::test_real_posix_bootstrap_handoff_preserves_refusal_status_and_update_flag[forwarded_flags1-direct]
+  DESELECTED tests/test_installer_bootstrap_refusals.py::test_real_posix_bootstrap_handoff_preserves_refusal_status_and_update_flag[forwarded_flags1-pipe]
+  DESELECTED tests/test_installer_bootstrap_refusals.py::test_windows_bootstrap_forwards_core_refusal_and_keeps_scriptblock_open
+[integration] run by CI job lanes-integration
+  DESELECTED tests/test_installer_engine_bootstrap.py::test_unseeded_installer_environment_bootstraps_recipe_uv
+  DESELECTED tests/test_installer_lifecycle.py::test_real_backend_upgrade_binding_survives_fresh_controller_recovery
+  DESELECTED tests/test_installer_pinokio_activation.py::test_update_candidate_and_rollback_activate_under_retained_custody[recovered]
+  DESELECTED tests/test_installer_pinokio_activation.py::test_update_candidate_and_rollback_activate_under_retained_custody[recovered_running_candidate]
+  DESELECTED tests/test_installer_pinokio_activation.py::test_update_candidate_and_rollback_activate_under_retained_custody[rolled_back]
+  DESELECTED tests/test_installer_pinokio_activation.py::test_update_candidate_and_rollback_activate_under_retained_custody[updated]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pinokio_session_binds_real_runtime_to_pending_launch_intent[app]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pinokio_session_binds_real_runtime_to_pending_launch_intent[migration]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[before_owner-backend-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[before_owner-backend-retained]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[candidate_ready-backend-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[candidate_ready-backend-retained]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[migrated-backend-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[migrated-backend-retained]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[migrated-local-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[migrated-local-retained]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[stopping-backend-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[stopping-backend-retained]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[switched-backend-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[switched-backend-retained]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[add-local-two-stop-build]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[incapable-candidate-runtime]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[incapable-retained-runtime]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[malformed-stop-marker]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[midstop-crash-after-stop]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[midstop-crash-during-term]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[missing-stop-marker]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[running-backend]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[running-local]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[stopped-backend]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[stopped-local]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[unknown-stop-binding]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[unrelated-candidate-runtime]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[unrelated-retained-runtime]
+  DESELECTED tests/test_installer_real_product_root.py::test_staged_product_root_is_admitted_by_validate_candidate
+  DESELECTED tests/test_installer_transaction_authority.py::test_new_interpreter_recovers_real_completed_c1_stop[app]
+  DESELECTED tests/test_installer_transaction_authority.py::test_new_interpreter_recovers_real_completed_c1_stop[migration]
+  DESELECTED tests/test_installer_update_recovery.py::test_app_transaction_recovery_never_mutates_workspace[staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_app_transaction_recovery_never_mutates_workspace[started]
+  DESELECTED tests/test_installer_update_recovery.py::test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed[restore-key-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed[restore-realm-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed[restore-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real_c1[legacy-catalog-copy-staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real_c1[legacy-catalog-deleted]
+  DESELECTED tests/test_installer_update_recovery.py::test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real_c1[legacy-realm-replaced]
+  DESELECTED tests/test_installer_update_recovery.py::test_candidate_validation_failure_keeps_owner_pointer_and_workspace
+  DESELECTED tests/test_installer_update_recovery.py::test_legacy_staged_migration_journal_with_backup_restores_workspace
+  DESELECTED tests/test_installer_update_recovery.py::test_recovery_stop_refusal_keeps_durable_transaction_unchanged
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_also_recovers_before_workspace_inspection
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[backed_up]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[migrated]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[pointer-publish]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[runtime:planned]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[start-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stop-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[switched]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[verified]
+  DESELECTED tests/test_installer_update_recovery.py::test_same_schema_direct_migration_recovery_preserves_post_switch_workspace
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[activated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[complete]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[migration-committed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[planned]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[restarted]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-realm-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-support-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[backed_up]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[backup-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[complete]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[migrated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[pointer-publish]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:activated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:migration-committed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:planned]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:restarted]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stage-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[start-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stop-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[switched]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[verified]
+[omp] NO CI job runs this lane (manual: run it by hand with -m omp)
+  DESELECTED tests/test_verify_installed.py::test_broken_real_bridge_model_command_fails_verify
+1597 passed, 11 skipped, 95 deselected in 256.00s (0:04:15)

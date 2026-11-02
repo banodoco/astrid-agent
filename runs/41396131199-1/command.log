@@ -1,0 +1,188 @@
+From https://github.com/banodoco/astrid-agent
+ * branch            3204bb00135bec8ee2d2d3fb21eed5abfceca649 -> FETCH_HEAD
+Collecting pytest==9.0.2
+  Downloading pytest-9.0.2-py3-none-any.whl.metadata (7.6 kB)
+Collecting pytest-timeout>=2.4
+  Downloading pytest_timeout-2.4.0-py3-none-any.whl.metadata (20 kB)
+Collecting setuptools==80.9.0
+  Downloading setuptools-80.9.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting wheel==0.46.3
+  Downloading wheel-0.46.3-py3-none-any.whl.metadata (2.4 kB)
+Collecting build
+  Downloading build-1.6.1-py3-none-any.whl.metadata (5.6 kB)
+Collecting pyyaml
+  Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+Collecting jsonschema
+  Downloading jsonschema-4.26.0-py3-none-any.whl.metadata (7.6 kB)
+Collecting filelock
+  Downloading filelock-4.2.6-py3-none-any.whl.metadata (2.0 kB)
+Collecting python-dotenv
+  Downloading python_dotenv-1.2.4-py3-none-any.whl.metadata (29 kB)
+Collecting uv
+  Downloading uv-0.13.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (11 kB)
+Collecting Pillow
+  Downloading pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (9.1 kB)
+Collecting iniconfig>=1.0.1 (from pytest==9.0.2)
+  Downloading iniconfig-2.3.1-py3-none-any.whl.metadata (2.8 kB)
+Collecting packaging>=22 (from pytest==9.0.2)
+  Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+Collecting pluggy<2,>=1.5 (from pytest==9.0.2)
+  Downloading pluggy-1.7.0-py3-none-any.whl.metadata (5.0 kB)
+Collecting pygments>=2.7.2 (from pytest==9.0.2)
+  Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting pyproject_hooks (from build)
+  Downloading pyproject_hooks-1.3.3-py3-none-any.whl.metadata (1.3 kB)
+Collecting attrs>=22.2.0 (from jsonschema)
+  Downloading attrs-26.1.0-py3-none-any.whl.metadata (8.8 kB)
+Collecting jsonschema-specifications>=2023.03.6 (from jsonschema)
+  Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting referencing>=0.28.4 (from jsonschema)
+  Downloading referencing-0.37.0-py3-none-any.whl.metadata (2.8 kB)
+Collecting rpds-py>=0.25.0 (from jsonschema)
+  Downloading rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
+Collecting typing-extensions>=4.4.0 (from referencing>=0.28.4->jsonschema)
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Downloading pytest-9.0.2-py3-none-any.whl (374 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 374.8/374.8 kB 72.2 MB/s eta 0:00:00
+Downloading setuptools-80.9.0-py3-none-any.whl (1.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 148.0 MB/s eta 0:00:00
+Downloading wheel-0.46.3-py3-none-any.whl (30 kB)
+Downloading pytest_timeout-2.4.0-py3-none-any.whl (14 kB)
+Downloading build-1.6.1-py3-none-any.whl (31 kB)
+Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 135.1 MB/s eta 0:00:00
+Downloading jsonschema-4.26.0-py3-none-any.whl (90 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 90.6/90.6 kB 37.8 MB/s eta 0:00:00
+Downloading filelock-4.2.6-py3-none-any.whl (164 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 164.4/164.4 kB 61.2 MB/s eta 0:00:00
+Downloading python_dotenv-1.2.4-py3-none-any.whl (23 kB)
+Downloading uv-0.13.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (17.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 17.3/17.3 MB 167.5 MB/s eta 0:00:00
+Downloading pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (7.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.1/7.1 MB 165.1 MB/s eta 0:00:00
+Downloading attrs-26.1.0-py3-none-any.whl (67 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 67.5/67.5 kB 24.9 MB/s eta 0:00:00
+Downloading iniconfig-2.3.1-py3-none-any.whl (7.6 kB)
+Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+Downloading packaging-26.3-py3-none-any.whl (129 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 130.0/130.0 kB 51.1 MB/s eta 0:00:00
+Downloading pluggy-1.7.0-py3-none-any.whl (27 kB)
+Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 155.9 MB/s eta 0:00:00
+Downloading referencing-0.37.0-py3-none-any.whl (26 kB)
+Downloading rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (371 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 371.3/371.3 kB 96.0 MB/s eta 0:00:00
+Downloading pyproject_hooks-1.3.3-py3-none-any.whl (10 kB)
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 45.6/45.6 kB 15.6 MB/s eta 0:00:00
+Installing collected packages: uv, typing-extensions, setuptools, rpds-py, pyyaml, python-dotenv, pyproject_hooks, pygments, pluggy, Pillow, packaging, iniconfig, filelock, attrs, wheel, referencing, pytest, build, pytest-timeout, jsonschema-specifications, jsonschema
+Successfully installed Pillow-13.0.0 attrs-26.1.0 build-1.6.1 filelock-4.2.6 iniconfig-2.3.1 jsonschema-4.26.0 jsonschema-specifications-2025.9.1 packaging-26.3 pluggy-1.7.0 pygments-2.21.0 pyproject_hooks-1.3.3 pytest-9.0.2 pytest-timeout-2.4.0 python-dotenv-1.2.4 pyyaml-6.0.3 referencing-0.37.0 rpds-py-2026.9.1 setuptools-80.9.0 typing-extensions-4.16.0 uv-0.13.6 wheel-0.46.3
+Processing ./runtime
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Processing ./agent
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: astrid-runtime, astrid
+  Building wheel for astrid-runtime (pyproject.toml): started
+  Building wheel for astrid-runtime (pyproject.toml): finished with status 'done'
+  Created wheel for astrid-runtime: filename=astrid_runtime-0.1.0-py3-none-any.whl size=844614 sha256=d93e60ad5330b8360958ba531e86a9adc8f030b8cee81041c5666457e94692e6
+  Stored in directory: /tmp/pip-ephem-wheel-cache-kvhxb8f1/wheels/77/b9/92/8387f27cb8372eb38081ae345b2b73fd2c62c79df949d12e56
+  Building wheel for astrid (pyproject.toml): started
+  Building wheel for astrid (pyproject.toml): finished with status 'done'
+  Created wheel for astrid: filename=astrid-0.1.0-py3-none-any.whl size=58748376 sha256=f4ceb72628efeb4146f30feacadf06d3774134e122608bd7c653a7e2f692efc5
+  Stored in directory: /tmp/pip-ephem-wheel-cache-kvhxb8f1/wheels/7c/fc/96/a3803f02193b2c62bd3cfd0776721bdf7b23360db5a95c0eac
+Successfully built astrid-runtime astrid
+Installing collected packages: astrid-runtime, astrid
+Successfully installed astrid-0.1.0 astrid-runtime-0.1.0
+collection=0
+nonzero_collection=0
+focused=0
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[migrated-backend-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[migrated-backend-retained]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[migrated-local-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[migrated-local-retained]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[stopping-backend-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[stopping-backend-retained]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[switched-backend-current]
+  DESELECTED tests/test_installer_pinokio_integration.py::test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration[switched-backend-retained]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[add-local-two-stop-build]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[incapable-candidate-runtime]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[incapable-retained-runtime]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[malformed-stop-marker]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[midstop-crash-after-stop]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[midstop-crash-during-term]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[missing-stop-marker]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[running-backend]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[running-local]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[stopped-backend]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[stopped-local]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[unknown-stop-binding]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[unrelated-candidate-runtime]
+  DESELECTED tests/test_installer_pinokio_stopped_update.py::test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority[unrelated-retained-runtime]
+  DESELECTED tests/test_installer_real_product_root.py::test_staged_product_root_is_admitted_by_validate_candidate
+  DESELECTED tests/test_installer_transaction_authority.py::test_new_interpreter_recovers_real_completed_c1_stop[app]
+  DESELECTED tests/test_installer_transaction_authority.py::test_new_interpreter_recovers_real_completed_c1_stop[migration]
+  DESELECTED tests/test_installer_update_recovery.py::test_app_transaction_recovery_never_mutates_workspace[staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_app_transaction_recovery_never_mutates_workspace[started]
+  DESELECTED tests/test_installer_update_recovery.py::test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed[restore-key-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed[restore-realm-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed[restore-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real_c1[legacy-catalog-copy-staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real_c1[legacy-catalog-deleted]
+  DESELECTED tests/test_installer_update_recovery.py::test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real_c1[legacy-realm-replaced]
+  DESELECTED tests/test_installer_update_recovery.py::test_candidate_validation_failure_keeps_owner_pointer_and_workspace
+  DESELECTED tests/test_installer_update_recovery.py::test_legacy_staged_migration_journal_with_backup_restores_workspace
+  DESELECTED tests/test_installer_update_recovery.py::test_recovery_stop_refusal_keeps_durable_transaction_unchanged
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_also_recovers_before_workspace_inspection
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[backed_up]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[migrated]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[pointer-publish]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[runtime:planned]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[start-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stop-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[switched]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[verified]
+  DESELECTED tests/test_installer_update_recovery.py::test_same_schema_direct_migration_recovery_preserves_post_switch_workspace
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[activated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[complete]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[migration-committed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[planned]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[restarted]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-realm-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-support-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[backed_up]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[backup-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[complete]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[migrated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[pointer-publish]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:activated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:migration-committed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:planned]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:restarted]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stage-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[start-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stop-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[switched]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[verified]
+[omp] NO CI job runs this lane (manual: run it by hand with -m omp)
+  DESELECTED tests/test_verify_installed.py::test_broken_real_bridge_model_command_fails_verify
+1597 passed, 11 skipped, 95 deselected in 256.00s (0:04:15)
