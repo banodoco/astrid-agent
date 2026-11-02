@@ -1779,6 +1779,99 @@ def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
+def _declares_managed_session(record: Any) -> bool:
+    """True for a python action that declares `session: managed_tool` (M2-11a)."""
+    declaration = record.definition.metadata.get("action_declaration")
+    return isinstance(declaration, Mapping) and declaration.get("session") == "managed_tool"
+
+
+class _HostManagedSessionAdapter:
+    """Host side of the per-run session channel. Authority never leaves the host.
+
+    The host recomputes the settings from its own inputs and refuses any worker
+    submission that differs, so the worker's copy is never trusted. The admitted
+    token stays here; no identity crosses to the worker.
+    """
+
+    def __init__(self, host: "GenericPackHost", *, managed_token: Any, inputs: Mapping[str, Any],
+                 progress_path: Path, timeout_cap: float, cancelled: Callable[[], bool]) -> None:
+        self._host = host
+        self._token = managed_token
+        self._inputs = dict(inputs)
+        self._progress_path = progress_path
+        self._timeout_cap = timeout_cap
+        self._cancelled = cancelled
+        self._submitted = False
+
+    def validate_settings(self, settings: Mapping[str, Any]) -> None:
+        from astrid.packs.wan2gp.src.driver import compile_host_settings
+
+        if not isinstance(settings, Mapping):
+            raise ValueError("settings must be an object")
+        if dict(settings) != compile_host_settings(self._inputs):
+            raise ValueError("submitted settings differ from the host-compiled settings")
+
+    def submit(self, settings: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        from astrid.packs.wan2gp.src.driver import compile_host_settings
+
+        if self._submitted:
+            raise RuntimeError("submit is allowed once per run")
+        self._submitted = True
+        host_settings = compile_host_settings(self._inputs)
+        timeout = max(0.1, min(float(timeout_seconds), self._timeout_cap))
+        evidence = self._host.invoke_wan_session(
+            self._token, host_settings, timeout=timeout, cancelled=self._cancelled,
+            progress_path=self._progress_path)
+        return dict(evidence) if isinstance(evidence, Mapping) else {"result": None}
+
+    def progress(self) -> dict[str, Any]:
+        try:
+            return json.loads(self._progress_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def cancel(self, reason: str) -> dict[str, Any]:
+        try:
+            self._host.managed_tool_session.cancel(self._token, outcome=str(reason)[:200])
+        except Exception:
+            return {"state": "cancel_requested"}
+        return {"state": "cancel_requested"}
+
+
+class _HostSessionChannel:
+    """One per-run socketpair: host keeps the parent end, the child end goes to the worker."""
+
+    def __init__(self, broker: Any, parent: socket.socket, child: socket.socket, run_id: str) -> None:
+        self.broker = broker
+        self._parent = parent
+        self.child = child
+        self.run_id = run_id
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        def serve() -> None:
+            try:
+                while not self.broker.closed:
+                    self.broker.serve_one()
+            except Exception:
+                pass
+            finally:
+                self.close()
+
+        self._thread = threading.Thread(target=serve, name="astrid-session-channel", daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        try:
+            self.broker.close()
+        finally:
+            for sock in (self.child, self._parent):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+
 def _capability_digest(value: Any) -> str:
     """Return the wire-format digest required by the Runtime capability contract."""
     return "sha256:" + _canonical_digest(value)
@@ -11896,6 +11989,20 @@ class GenericPackHost:
                         # Presence is an entrypoint guard only. Parent authority
                         # comes exclusively from the authenticated child bridge.
                         worker_env["ASTRID_TASK_RUN_ID"] = task_id
+                    session_channel = None
+                    if _declares_managed_session(record):
+                        from astrid.core.execution.session_channel import SessionChannelBroker
+
+                        parent_end, child_end = socket.socketpair()
+                        session_adapter = _HostManagedSessionAdapter(
+                            self, managed_token=managed_token, inputs=inputs,
+                            progress_path=root / ".astrid-progress.json",
+                            timeout_cap=max(0.1, execution_deadline - time.monotonic()),
+                            cancelled=cancelled)
+                        broker = SessionChannelBroker(task_id, session_adapter, parent_end,
+                                                      admission_token=managed_token)
+                        session_channel = _HostSessionChannel(broker, parent_end, child_end, task_id)
+                        session_channel.start()
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -11919,10 +12026,14 @@ class GenericPackHost:
                             network_broker_required=network_broker is not None,
                             storage_estimate=storage_estimate,
                             child_bridge=child_bridge,
+                            run_channel=session_channel.child if session_channel is not None else None,
+                            run_channel_run_id=session_channel.run_id if session_channel is not None else None,
                         )
                     finally:
                         worker_env.clear()
                         worker_secrets.clear()
+                        if session_channel is not None:
+                            session_channel.close()
             finally:
                 # The outer run_task finally owns lease-pump shutdown and
                 # cleanup; this boundary only preserves child env cleanup.
