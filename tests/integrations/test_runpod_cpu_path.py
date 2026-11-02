@@ -268,6 +268,9 @@ class ProviderHTTP:
             if path == "/v1/pods":
                 return reply(self.pods)
             return reply(self.pods[0] if self.pods else {}, 200 if self.pods else 404)
+        if host == "astrid-egress-preflight-8000.proxy.runpod.net":
+            assert method == "GET" and path == "/health"
+            return reply({}, 404)
         assert host == self.pod_id + "-8000.proxy.runpod.net", host
         if path == "/health":
             return reply({"ok": True, "protocol": 1})
