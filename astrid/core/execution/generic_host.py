@@ -4265,6 +4265,22 @@ def source_checkout_closure_digest(checkout: str | Path) -> str:
     return str(source_checkout_closure(checkout)["digest"])
 
 
+def _custody_birth_identity() -> str:
+    """Birth identity in the Runtime custody format (platform.process_identity), fail closed.
+
+    The host compares its own identity with the Runtime's custody records, which use
+    runtime_protocol.platform.process_identity. process_birth_identity() stays the
+    SSH/remote-owner token and must not be used for these comparisons.
+    """
+    from runtime_protocol import platform as _runtime_platform
+
+    identity = _runtime_platform.process_identity(os.getpid())
+    birth = identity.get("birth_id") if isinstance(identity, Mapping) else None
+    if not isinstance(birth, str) or not birth:
+        raise HostError("host custody birth identity is unavailable")
+    return birth
+
+
 def process_birth_identity(pid: int | None = None) -> str:
     """Return the OS birth token used to distinguish a reused PID."""
     return _process_birth_identity(pid)
@@ -12464,7 +12480,7 @@ class LocalExecutionPreparation:
             and grant.get("channel_id") == self.channel_id
             and grant.get("executor_incarnation") == binding.get("executor_incarnation")
             and grant.get("evidence_digest") == binding.get("launch_evidence_digest")
-            and grant.get("host") == {"pid": os.getpid(), "birth_id": process_birth_identity()}
+            and grant.get("host") == {"pid": os.getpid(), "birth_id": _custody_birth_identity()}
             and owner.get("runtime_instance_id") == binding.get("original_owner_epoch")
             and owner.get("coordinator_epoch") == binding.get("original_owner_epoch")
         )
@@ -13408,7 +13424,7 @@ class LocalExecutionPreparation:
             result = {"version": _LOCAL_PREPARATION_VERSION, "status": "prepared",
                 "execution_mode": "host_only_cpu", "operation_id": self.operation_id, "channel_id": self.channel_id,
                 "owner_epoch": request["owner_epoch"], "session_config_digest": profile["session_config_digest"],
-                "processes": {"host": {"pid": os.getpid(), "birth_id": process_birth_identity()}}}
+                "processes": {"host": {"pid": os.getpid(), "birth_id": _custody_birth_identity()}}}
             self.result = result
             return json.loads(json.dumps(result))
 
@@ -13438,7 +13454,7 @@ class LocalExecutionPreparation:
         # Verification authenticates the original Runtime actor and exact host
         # token. The host never adopts authority over its own parent.
         reference_target = capabilities["host"]["target"]
-        if reference_target.get("pid") != os.getpid() or reference_target.get("birth_id") != process_birth_identity():
+        if reference_target.get("pid") != os.getpid() or reference_target.get("birth_id") != _custody_birth_identity():
             raise HostError("host-only cleanup reference targets another incarnation")
         intent = _handoff_digest(dict(request))
         with self._lock:
@@ -14018,7 +14034,7 @@ class _NativeEngineGraph:
             measured = self._measure_registry(root, nonce, listener_pid)
             if measured is not None:
                 self.readiness_profile = {"vibecomfy_session": measured}
-                return {"processes": {"host": {"pid": os.getpid(), "birth_id": process_birth_identity()},
+                return {"processes": {"host": {"pid": os.getpid(), "birth_id": _custody_birth_identity()},
                                       "engine": {"pid": self.process.pid, "birth_id": self.process._astrid_process_birth},
                                       "engine_listener": {"pid": listener_pid, "birth_id": registration["identity"]["birth_id"]}},
                         "engine_binding": {"supervisor_pid": self.process.pid, "listener_pid": listener_pid,
@@ -14182,7 +14198,7 @@ class _NativeEngineGraph:
         measured = self._measure_registry(Path(self.profile["engine_launch"]["session_root"]), self._launch_nonce, listener_pid)
         if measured is None:
             raise HostError("prepared engine readiness registry is incomplete")
-        return {"processes": {"host": {"pid": os.getpid(), "birth_id": process_birth_identity()},
+        return {"processes": {"host": {"pid": os.getpid(), "birth_id": _custody_birth_identity()},
                               "engine": {"pid": self.process.pid, "birth_id": self.process._astrid_process_birth},
                               "engine_listener": {"pid": listener_pid, "birth_id": self.listener.registration["identity"]["birth_id"]}},
                 "engine_binding": {"supervisor_pid": self.process.pid, "listener_pid": listener_pid, "listener_parent_pid": self.process.pid, "socket_owner_pid": listener_pid},
@@ -14381,7 +14397,7 @@ def _await_worker_activation(
     expected_credential = Path(credential_file).expanduser()
     if not expected_credential.is_absolute():
         raise HostError("parked credential reference must be absolute")
-    actual_birth = process_birth_identity()
+    actual_birth = _custody_birth_identity()
     if not actual_birth:
         raise HostError("parked host process birth identity is unavailable")
 

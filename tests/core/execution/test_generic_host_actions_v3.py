@@ -1339,7 +1339,7 @@ def test_host_only_cleanup_ack_requires_actual_child_owner_shutdown(tmp_path,mon
         calls.append('shutdown')
         if cleanup_failure: raise module.CleanupUncertainError('owned child unresolved')
     preparation._claim_host=SimpleNamespace(shutdown=shutdown)
-    ref={'target':{'pid':os.getpid(),'birth_id':module.process_birth_identity()}}
+    ref={'target':{'pid':os.getpid(),'birth_id':module._custody_birth_identity()}}
     class Authority:
         def __init__(self,*args):pass
         def verify_reference(self,*args,**kwargs):calls.append('verify')
@@ -1681,7 +1681,7 @@ def test_host_only_cleanup_consumes_real_custody_reference_verifier(tmp_path, mo
     host_pid = os.getpid()
     owner_pid = host_pid + 1000000
     identities = {owner_pid: {"pid": owner_pid, "uid": os.getuid(), "birth_id": "runtime-owner-birth"},
-                  host_pid: {"pid": host_pid, "uid": os.getuid(), "birth_id": module.process_birth_identity()}}
+                  host_pid: {"pid": host_pid, "uid": os.getuid(), "birth_id": module._custody_birth_identity()}}
     tokens = {pid: {"pid": pid, "uid": os.getuid(), "pidversion": pid,
                     "sha256": f"sha256:fixture-{pid}", "words": [pid] * 8} for pid in identities}
     monkeypatch.setattr(custody, "audit_token_details", lambda words: {k: v for k, v in tokens[words[0]].items() if k != "words"})
