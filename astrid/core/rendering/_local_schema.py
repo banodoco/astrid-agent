@@ -6,10 +6,15 @@ import json
 from pathlib import Path
 
 from astrid.core.timeline._local_schema import (
-    READER_INPUTS,
-    SCHEMA_RELATIVE_PATH,
+    READER_INPUTS as READER_INPUTS,
+)
+from astrid.core.timeline._local_schema import (
+    SCHEMA_RELATIVE_PATH as SCHEMA_RELATIVE_PATH,
+)
+from astrid.core.timeline._local_schema import (
     verified_schema_path,
 )
+
 
 def load_verified_schema(source_root: Path, configured: str) -> dict:
     """Use the canonical reader without accepting an ambient or cached contract."""

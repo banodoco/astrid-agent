@@ -12,9 +12,9 @@ import pytest
 
 from astrid.core import timeline
 from astrid.core.foundation.paths import REPO_ROOT
-from astrid.core.rendering import _local_schema as render_schema, remotion_runtime
-from astrid.core.timeline import _local_schema
-from astrid.core.timeline import banodoco_schema
+from astrid.core.rendering import _local_schema as render_schema
+from astrid.core.rendering import remotion_runtime
+from astrid.core.timeline import _local_schema, banodoco_schema
 from astrid.sdk import host_bootstrap
 
 
@@ -85,6 +85,8 @@ def test_local_schema_refuses_foreign_owner(staged_schema, monkeypatch):
 
 @pytest.mark.parametrize("change", ["none", "origin", "digest", "owner", "regular_file", "verifier_mode"])
 def test_timeline_reader_applies_verified_admission(staged_schema, tmp_path, monkeypatch, change):
+    if change == "verifier_mode" and sys.platform == "win32":
+        pytest.skip("POSIX mode bits do not represent Windows ACLs")
     root, schema = staged_schema
     reader_path = root / "astrid/core/timeline/banodoco_schema.py"
     spec = importlib.util.spec_from_file_location("selected_timeline_reader", reader_path)
