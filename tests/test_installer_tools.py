@@ -1,5 +1,6 @@
 """Use qualified PATH media tools or the pinned archive, with recorded selection."""
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -43,6 +44,116 @@ def test_download_sends_astrid_user_agent(tmp_path, monkeypatch):
     assert requests[0][0].get_header("User-agent") == f"astrid-installer/{tools.ASTRID_VERSION}"
     assert requests[0][1] == 120
     assert target.read_bytes() == b"archive bytes"
+
+
+def test_download_checksum_mismatch_records_digests_without_url_credentials(tmp_path, monkeypatch):
+    import io
+
+    received = b"unexpected archive bytes"
+    expected = hashlib.sha256(b"expected archive bytes").hexdigest()
+
+    class Response(io.BytesIO):
+        status = 206
+        headers = {
+            "Content-Type": "application/x-xz; charset=ignored",
+            "Content-Length": str(len(received)),
+            "ETag": 'W/"archive-7.0.2"',
+            "Last-Modified": "Sun, 02 Nov 2026 23:00:00 GMT",
+            "Authorization": "Bearer response-secret",
+            "Proxy-Authorization": "Basic proxy-secret",
+            "Cookie": "response-cookie",
+            "Set-Cookie": "set-cookie-secret",
+            "Proxy-Authenticate": "proxy-authenticate-secret",
+            "X-Unallowlisted": "unallowlisted-secret",
+        }
+
+        def geturl(self):
+            return "https://example.invalid/archive.tar.xz"
+
+    def urlopen(*_args, **_kwargs):
+        return Response(received)
+
+    monkeypatch.setattr(tools.urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(ValueError) as error:
+        tools.download(
+            "https://user:secret@example.invalid/archive.zip",
+            tmp_path / "archive.zip",
+            sha256=expected,
+        )
+
+    message = str(error.value)
+    assert f"expected SHA-256 {expected}" in message
+    assert f"received SHA-256 {hashlib.sha256(received).hexdigest()}" in message
+    assert f"network SHA-256 {hashlib.sha256(received).hexdigest()}" in message
+    assert f"network byte count {len(received)}" in message
+    assert f"file byte count {len(received)}" in message
+    assert "HTTP status 206" in message
+    assert "final URL https://example.invalid/archive.tar.xz" in message
+    assert "Content-Type application/x-xz" in message
+    assert f"Content-Length {len(received)}" in message
+    assert 'ETag W/"archive-7.0.2"' in message
+    assert "Last-Modified 2026-11-02T23:00:00Z" in message
+    assert "user:secret" not in message
+    assert "redirect-user" not in message
+    assert "redirect-secret" not in message
+    assert "query-secret" not in message
+    assert "fragment-secret" not in message
+    assert "response-secret" not in message
+    assert "proxy-secret" not in message
+    assert "response-cookie" not in message
+    assert "set-cookie-secret" not in message
+    assert "proxy-authenticate-secret" not in message
+    assert "unallowlisted-secret" not in message
+
+
+def test_download_checksum_mismatch_omits_unsafe_final_url(tmp_path, monkeypatch):
+    import io
+
+    received = b"unexpected archive bytes"
+    expected = hashlib.sha256(b"expected archive bytes").hexdigest()
+
+    class Response(io.BytesIO):
+        def geturl(self):
+            return "https://redirect-user:redirect-secret@example.invalid/archive.tar.xz?token=query-secret#fragment-secret"
+
+    monkeypatch.setattr(tools.urllib.request, "urlopen", lambda *_args, **_kwargs: Response(received))
+
+    with pytest.raises(ValueError) as error:
+        tools.download("https://user:secret@example.invalid/archive.zip", tmp_path / "archive.zip", sha256=expected)
+
+    message = str(error.value)
+    assert "final URL omitted (unsafe component)" in message
+    assert "user:secret" not in message
+    assert "redirect-user" not in message
+    assert "redirect-secret" not in message
+    assert "query-secret" not in message
+    assert "fragment-secret" not in message
+
+
+def test_download_checksum_mismatch_distinguishes_network_bytes_from_local_mutation(tmp_path, monkeypatch):
+    import io
+
+    network_bytes = b"network archive bytes"
+    locally_mutated_bytes = b"locally mutated archive bytes"
+    expected = hashlib.sha256(b"expected archive bytes").hexdigest()
+    original_file_sha256 = tools._file_sha256
+
+    def file_sha256_after_local_mutation(path):
+        path.write_bytes(locally_mutated_bytes)
+        return original_file_sha256(path)
+
+    monkeypatch.setattr(tools.urllib.request, "urlopen", lambda *_args, **_kwargs: io.BytesIO(network_bytes))
+    monkeypatch.setattr(tools, "_file_sha256", file_sha256_after_local_mutation)
+
+    with pytest.raises(ValueError) as error:
+        tools.download("https://example.invalid/archive.zip", tmp_path / "archive.zip", sha256=expected)
+
+    message = str(error.value)
+    assert f"network SHA-256 {hashlib.sha256(network_bytes).hexdigest()}" in message
+    assert f"received SHA-256 {hashlib.sha256(locally_mutated_bytes).hexdigest()}" in message
+    assert f"network byte count {len(network_bytes)}" in message
+    assert f"file byte count {len(locally_mutated_bytes)}" in message
 
 
 def media_binary(directory, name):

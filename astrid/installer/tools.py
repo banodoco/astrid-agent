@@ -13,6 +13,8 @@ import tarfile
 import urllib.parse
 import urllib.request
 import zipfile
+from datetime import UTC
+from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
 from runtime_protocol import platform
 
@@ -27,6 +29,107 @@ MANIFEST_SOURCE_REPOSITORIES = {
     "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
     "runpod": "https://github.com/runpod/runpod-python.git",
 }
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def _file_sha256(path: Path) -> tuple[str, int]:
+    """Hash a downloaded file without retaining an archive-sized bytes object."""
+    digest = hashlib.sha256()
+    byte_count = 0
+    with path.open("rb") as input_file:
+        while chunk := input_file.read(_DOWNLOAD_CHUNK_BYTES):
+            digest.update(chunk)
+            byte_count += len(chunk)
+    return digest.hexdigest(), byte_count
+
+
+def _safe_final_url(response: object) -> str:
+    """Return only an HTTPS origin/path, never a response URL's secrets."""
+    geturl = getattr(response, "geturl", None)
+    if not callable(geturl):
+        return "final URL omitted (unavailable)"
+    try:
+        value = geturl()
+    except Exception:
+        return "final URL omitted (unavailable)"
+    if not isinstance(value, str) or len(value) > 2048:
+        return "final URL omitted (unavailable)"
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return "final URL omitted (invalid)"
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return "final URL omitted (not HTTPS with a host)"
+    if (parsed.username is not None or parsed.password is not None
+            or "?" in value or "#" in value):
+        return "final URL omitted (unsafe component)"
+    host = parsed.hostname
+    if any(ord(character) < 32 or ord(character) == 127 for character in host + parsed.path):
+        return "final URL omitted (invalid)"
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority += f":{port}"
+    sanitized = urllib.parse.urlunsplit(("https", authority, parsed.path, "", ""))
+    return f"final URL {sanitized}"
+
+
+def _safe_response_metadata(response: object) -> tuple[str, str, str, str, str, str]:
+    """Format the tiny response allowlist used only in checksum mismatch errors."""
+    status = getattr(response, "status", None)
+    if status is None:
+        getcode = getattr(response, "getcode", None)
+        if callable(getcode):
+            try:
+                status = getcode()
+            except Exception:
+                status = None
+    status_value = (f"HTTP status {status}"
+                    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599
+                    else "HTTP status omitted (unavailable or invalid)")
+
+    headers = getattr(response, "headers", None)
+    get_header = getattr(headers, "get", None)
+    content_type = content_length = etag = last_modified = None
+    if callable(get_header):
+        try:
+            content_type = get_header("Content-Type")
+            content_length = get_header("Content-Length")
+            etag = get_header("ETag")
+            last_modified = get_header("Last-Modified")
+        except Exception:
+            content_type = content_length = etag = last_modified = None
+
+    media_type = (content_type.split(";", 1)[0].strip().lower()
+                  if isinstance(content_type, str) and len(content_type) <= 256 else "")
+    if re.fullmatch(r"[!#$%&'*+.^_`|~0-9a-z-]+/[!#$%&'*+.^_`|~0-9a-z-]+", media_type):
+        content_type_value = f"Content-Type {media_type}"
+    else:
+        content_type_value = "Content-Type omitted (unavailable or invalid)"
+
+    if isinstance(content_length, str) and re.fullmatch(r"[0-9]{1,19}", content_length):
+        length = int(content_length)
+        content_length_value = (f"Content-Length {length}" if length <= 2**63 - 1
+                                else "Content-Length omitted (invalid)")
+    else:
+        content_length_value = "Content-Length omitted (unavailable or invalid)"
+
+    if (isinstance(etag, str) and len(etag) <= 256
+            and re.fullmatch(r'(?:W/)?"[\x21\x23-\x7e]*"', etag)):
+        etag_value = f"ETag {etag}"
+    else:
+        etag_value = "ETag omitted (unavailable or invalid)"
+
+    last_modified_value = "Last-Modified omitted (unavailable or invalid)"
+    if isinstance(last_modified, str) and len(last_modified) <= 128:
+        try:
+            parsed_date = parsedate_to_datetime(last_modified)
+            if parsed_date.tzinfo is not None:
+                last_modified_value = f"Last-Modified {parsed_date.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}"
+        except (TypeError, ValueError, IndexError, OverflowError):
+            pass
+    return (status_value, _safe_final_url(response), content_type_value, content_length_value,
+            etag_value, last_modified_value)
 
 
 def omp_source(pin: dict) -> str | dict:
@@ -127,9 +230,25 @@ def download(url: str, target: Path, *, sha256: str | None = None) -> None:
         raise ValueError("Installer downloads require HTTPS.")
     request = urllib.request.Request(url, headers={"User-Agent": f"astrid-installer/{ASTRID_VERSION}"})
     with urllib.request.urlopen(request, timeout=120) as response, target.open("wb") as output:
-        shutil.copyfileobj(response, output)
-    if sha256 and hashlib.sha256(target.read_bytes()).hexdigest() != sha256:
-        raise ValueError(f"Download checksum mismatch: {url}")
+        if sha256:
+            stream_digest = hashlib.sha256()
+            stream_bytes = 0
+            response_metadata = _safe_response_metadata(response)
+            while chunk := response.read(_DOWNLOAD_CHUNK_BYTES):
+                output.write(chunk)
+                stream_digest.update(chunk)
+                stream_bytes += len(chunk)
+        else:
+            shutil.copyfileobj(response, output)
+    if sha256:
+        received, file_bytes = _file_sha256(target)
+        if received != sha256:
+            raise ValueError(
+                f"Download checksum mismatch: expected SHA-256 {sha256}, "
+                f"received SHA-256 {received}; network SHA-256 {stream_digest.hexdigest()}; "
+                f"network byte count {stream_bytes}; file byte count {file_bytes}; "
+                f"{'; '.join(response_metadata)}."
+            )
 
 
 def archive_path(name: str) -> Path:
