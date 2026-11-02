@@ -277,25 +277,62 @@ def test_build_manifest_copies_inputs_and_outputs() -> None:
 def test_output_result_registry_conformance_covers_default_registry() -> None:
     registry = load_default_registry()
     registry_ids = {definition.id for definition in registry.list()}
+    from astrid.core.execution.orchestrator.registry import (
+        OrchestratorRegistry,
+        load_default_registry as load_default_orchestrator_registry,
+    )
     from astrid.core.execution.capability_ledger import _executor_inventory
 
+    default_parent_registry = load_default_orchestrator_registry(executor_registry=registry)
+    local_parent_definitions = tuple(
+        definition for definition in default_parent_registry.list()
+        if definition.metadata.get("local_orchestrator") is True
+    )
+    parent_registry = OrchestratorRegistry(
+        local_parent_definitions, executor_registry=registry
+    )
+    parent_ids = {definition.id for definition in parent_registry.list()}
+    runnable_ids = registry_ids | parent_ids
     rows = {
-        row["id"]: row for row in _executor_inventory(Path.cwd())
-        if row["id"] in registry_ids or row["id"].startswith("hivemind.")
+        row["id"]: row for row in _executor_inventory(
+            Path.cwd(), executor_registry=registry, orchestrator_registry=parent_registry
+        )
+        if row["id"] in runnable_ids or row["id"].startswith("hivemind.")
     }
     non_exempt_ids = {key for key, row in rows.items() if row["result_contract"] == "manifest"}
     exempted_ids = {key for key, row in rows.items() if row["result_contract"] == "exempted"}
     listed_ids = non_exempt_ids | exempted_ids
     assert non_exempt_ids.isdisjoint(exempted_ids)
-    assert registry_ids <= listed_ids
+    assert runnable_ids <= listed_ids
+    assert set(rows[capability_id]["kind"] for capability_id in parent_ids) == {"orchestrator"}
+    for parent_id in parent_ids:
+        parent = parent_registry.get(parent_id)
+        parent_pack_id, parent_action_id = parent_id.split(".", 1)
+        owning_manifest = Path(parent.metadata["pack_root"]) / "pack.yaml"
+        owning_pack = yaml.safe_load(owning_manifest.read_text(encoding="utf-8"))
+        assert owning_pack["id"] == parent_pack_id
+        parent_action = owning_pack["actions"][parent_action_id]
+        exemptions = (
+            owning_pack.get("extensions", {}).get("astrid", {})
+            .get("output_result_exemptions", {}).get("actions", {})
+        )
+        expected_policy = "exempted" if parent_action_id in exemptions else "manifest"
+        assert parent_action["metadata"].get("output_result_manifest") is True or expected_policy == "exempted"
+        assert rows[parent_id]["result_contract"] == expected_policy
     assert "h3_av.publication_finalizer" in non_exempt_ids
     assert registry.get("h3_av.publication_finalizer").metadata.get("output_result_manifest") is True
 
     # Independently read the selected pack manifests instead of treating the
     # inventory reader as the authority for first-party adoption.
     manifest_adopters: set[str] = set()
+    declared_exemptions: set[str] = set()
     for manifest_path in sorted(Path("astrid/packs").glob("*/pack.yaml")):
         pack = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+        declared_exemptions.update(
+            f"{pack['id']}.{local_id}"
+            for local_id in pack.get("extensions", {}).get("astrid", {})
+                .get("output_result_exemptions", {}).get("actions", {})
+        )
         for local_id, action in (pack.get("actions") or {}).items():
             if not isinstance(action, dict):
                 continue
@@ -305,8 +342,25 @@ def test_output_result_registry_conformance_covers_default_registry() -> None:
                 and metadata.get("output_result_manifest") is True
             ):
                 manifest_adopters.add(f"{pack['id']}.{local_id}")
-    assert manifest_adopters <= registry_ids
-    assert manifest_adopters <= non_exempt_ids
+    assert manifest_adopters <= runnable_ids
+    # An explicit exemption remains authoritative even when the action also
+    # declares a manifest output. Check both cases against independently read
+    # authored facts, retaining the independent examples below.
+    strict_adopters = manifest_adopters - declared_exemptions
+    exempted_adopters = manifest_adopters & declared_exemptions
+    assert strict_adopters <= non_exempt_ids
+    assert {"runpod.exec", "runpod.session", "fal.fal_foley"} <= exempted_adopters
+    assert exempted_adopters <= exempted_ids
+    assert "h3_av.publication_finalizer" in strict_adopters
+    assert "video_editing.hype" in strict_adopters
+    hype_manifest = yaml.safe_load(
+        Path("astrid/packs/video_editing/pack.yaml").read_text(encoding="utf-8")
+    )
+    hype_action = hype_manifest["actions"]["hype"]
+    assert hype_action["metadata"]["local_orchestrator"] is True
+    assert hype_action["metadata"]["output_result_manifest"] is True
+    assert rows["video_editing.hype"]["kind"] == "orchestrator"
+    assert rows["video_editing.hype"]["result_contract"] == "manifest"
 
     # Pin both sides of the classification with representative authored facts:
     # the pack manifest declares adoption, while these known non-adopters need

@@ -50,15 +50,29 @@ def test_catalog_preserves_stage1_capability_census() -> None:
     orchestrators = load_orchestrators(executor_registry=executors)
     elements = load_elements()
     assert tuple(pack.id for pack in packs) == PACK_IDS
-    # Census from the exact-base source manifests: 30 pack manifests, 108
-    # action declarations (one local parent is an orchestrator), and 44 distinct
-    # qualified element IDs (45 element.yaml files include one duplicate ID).
+    # Keep the intended executor/parent split independent of the current
+    # parser result. The 108 action declarations must project to 107 executors
+    # and one local parent; observing 108/0 does not satisfy that role contract.
+    # Installed local-parent projection is asserted separately. The 45 element
+    # descriptors contain 44 distinct qualified IDs.
     assert (len(packs), len(executors.list()), len(orchestrators.list()), len(elements.list())) == (
         30,
         107,
         1,
         44,
     )
+
+    hype = orchestrators.get("video_editing.hype")
+    assert hype.metadata["source_pack"] == "video_editing"
+    assert hype.metadata["runtime_module"] == "astrid.packs.video_editing.actions.hype.entrypoint"
+    assert hype.child_executors == (
+        "editorial.transcribe", "editorial.scenes", "editorial.quality_zones",
+        "editorial.shots", "editorial.triage", "understanding.scene_describe",
+        "editorial.quote_scout", "training.pool_build", "training.pool_merge",
+        "editorial.arrange", "video_editing.cut", "editorial.refine",
+        "rendering.render", "editorial.editor_review", "editorial.validate",
+    )
+    assert hype.metadata["local_orchestrator"] is True
 
 
 def test_bundled_resources_are_confined_and_readable() -> None:

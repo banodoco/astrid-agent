@@ -968,6 +968,22 @@ actions:
       - rendering.render
       - editorial.editor_review
       - editorial.validate
+      child_actions:
+      - editorial.transcribe
+      - editorial.scenes
+      - editorial.quality_zones
+      - editorial.shots
+      - editorial.triage
+      - understanding.scene_describe
+      - editorial.quote_scout
+      - training.pool_build
+      - training.pool_merge
+      - editorial.arrange
+      - video_editing.cut
+      - editorial.refine
+      - rendering.render
+      - editorial.editor_review
+      - editorial.validate
       provides:
       - hype_video
     cache:
@@ -979,6 +995,7 @@ actions:
       - ffmpeg
       - ffprobe
     metadata:
+      local_orchestrator: true
       runtime_entrypoint: main
       runtime_file: actions/hype/entrypoint.py
       runtime_module: astrid.packs.video_editing.actions.hype.entrypoint
