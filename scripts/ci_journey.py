@@ -1216,15 +1216,41 @@ def _runtime_owner_command(command: str) -> bool:
              re.search(r"main\(\s*\[\s*['\"]run['\"]", command) is not None))
 
 
+class _RuntimeOwnerPids(list):
+    """PID list carrying bounded identity evidence for a failed strict census."""
+
+    def __init__(self, pids: list[int], details: list[dict]):
+        super().__init__(pids)
+        self.details = details
+
+
+def _runtime_owner_detail(row: dict, command: str) -> dict:
+    """Retain identity fields without copying the long service prelude."""
+    return {
+        "command_sha256": hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest(),
+        "creation_date": str(row.get("CreationDate") or "")[:128] or None,
+        "executable_path": str(row.get("ExecutablePath") or "")[:1024] or None,
+        "matcher": ("runtime_protocol-start" if "-m runtime_protocol start" in command
+                    else "astrid_runtime-cli-run"),
+        "parent_pid": int(row["ParentProcessId"]) if row.get("ParentProcessId") is not None else None,
+        "pid": int(row["ProcessId"]),
+    }
+
+
 def runtime_processes(data: Path) -> list[int]:
     """Count every live Runtime owner process on this isolated journey host."""
     if sys.platform == "win32":
         rows = json.loads(windows.powershell(
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+            "Get-CimInstance Win32_Process | Select-Object "
+            "ProcessId,ParentProcessId,CreationDate,ExecutablePath,CommandLine | ConvertTo-Json -Compress",
             "runtime-owner-processes.json", show=False, timeout=30))
         rows = rows if isinstance(rows, list) else [rows]
-        return [int(row["ProcessId"]) for row in rows if
-                _runtime_owner_command(str(row.get("CommandLine") or ""))]
+        matched = [(row, str(row.get("CommandLine") or "")) for row in rows
+                   if _runtime_owner_command(str(row.get("CommandLine") or ""))]
+        return _RuntimeOwnerPids(
+            [int(row["ProcessId"]) for row, _command in matched],
+            [_runtime_owner_detail(row, command) for row, command in matched[:8]],
+        )
     # The installed prelude can be long and can contain newlines. Ask ps for
     # the full command, then keep continuation lines with their process.
     output = subprocess.check_output(["ps", "-ww", "-axo", "pid=,command="], text=True)
@@ -1243,7 +1269,14 @@ def assert_one_runtime(data: Path) -> None:
     discovery = healthy(data)
     owners = runtime_processes(data)
     if owners != [int(discovery["pid"])]:
-        raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
+        # The raw process file can be replaced by cleanup censuses. Keep a
+        # bounded, non-command-line identity summary in the retained receipt.
+        details = getattr(owners, "details", [])
+        diagnostic = json.dumps(details, sort_keys=True, separators=(",", ":"))
+        raise RuntimeError(
+            f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}; "
+            f"bounded_owner_census={diagnostic}"
+        )
 
 
 def wait_ready(data: Path, *, timeout: int = 900) -> None:

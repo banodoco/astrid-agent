@@ -682,6 +682,37 @@ def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
         journey.assert_one_runtime(tmp_path)
 
 
+def test_tst_b1_windows_duplicate_owner_error_retains_bounded_identity_evidence(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    owner = (r"C:\Astrid\pythonw.exe -X utf8 -I -c "
+             "from astrid_runtime.cli import main; main(['run', '--profile', 'astrid'])")
+    rows = [
+        {"ProcessId": 2972, "ParentProcessId": 1920,
+         "CreationDate": "2026-11-02T17:18:18.000000+00:00",
+         "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner},
+        {"ProcessId": 3032, "ParentProcessId": 1920,
+         "CreationDate": "2026-11-02T17:18:21.973746+00:00",
+         "ExecutablePath": r"C:\Astrid\pythonw.exe", "CommandLine": owner},
+    ]
+
+    def powershell(code, *unused, **kwargs):
+        assert "ParentProcessId,CreationDate,ExecutablePath,CommandLine" in code
+        return json.dumps(rows)
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 3032})
+    with pytest.raises(RuntimeError) as failure:
+        journey.assert_one_runtime(tmp_path)
+    message = str(failure.value)
+    assert "selected Runtime owner 3032, found [2972, 3032]" in message
+    assert '"matcher":"astrid_runtime-cli-run"' in message
+    assert '"parent_pid":1920' in message
+    assert '"creation_date":"2026-11-02T17:18:21.973746+00:00"' in message
+    assert hashlib.sha256(owner.encode()).hexdigest() in message
+    assert owner not in message
+
+
 @pytest.mark.parametrize("owners", [[], [4124], [4123, 4124], [4123, 4123]])
 def test_tst_b1_rejects_missing_foreign_or_duplicate_runtime_owner(tmp_path, monkeypatch, owners):
     monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
