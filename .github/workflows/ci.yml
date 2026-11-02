@@ -7,6 +7,15 @@ on:
   push:
     branches: [main, release-1, "int/**"]
   workflow_dispatch:
+    inputs:
+      agent_sha:
+        description: Immutable full Agent commit to test
+        required: true
+        type: string
+      selector:
+        description: Exact Windows schema ACL selectors
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -55,6 +64,170 @@ jobs:
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
           key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+
+  windows-schema-acl-carrier:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Windows schema ACL carrier
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # The focused selectors are registered to this existing Windows lane.
+      ASTRID_CI_JOB: windows-native-and-installer
+    steps:
+      - name: Check out the dispatched Agent commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.agent_sha }}
+          fetch-depth: 1
+
+      - name: Initialize evidence and assert immutable request
+        id: request
+        shell: pwsh
+        env:
+          AGENT_SHA: ${{ inputs.agent_sha }}
+          SELECTOR: ${{ inputs.selector }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = 'windows-schema-acl-evidence'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          Set-Content -Path "$evidence/requested-agent-sha.txt" -Value $env:AGENT_SHA
+          Set-Content -Path "$evidence/requested-selector.txt" -Value $env:SELECTOR
+          $expectedSelector = 'tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign'
+          if ($env:AGENT_SHA -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'agent_sha must be a lowercase full 40-hex commit'
+          }
+          if ($env:SELECTOR -cne $expectedSelector) {
+            throw 'selector does not equal the exact Windows schema ACL selector pair'
+          }
+          $actual = (git rev-parse HEAD).Trim()
+          Set-Content -Path "$evidence/checked-out-agent-sha.txt" -Value $actual
+          if ($actual -cne $env:AGENT_SHA) {
+            throw "checked-out Agent SHA $actual does not equal requested $env:AGENT_SHA"
+          }
+          "agent_sha=$actual" >> $env:GITHUB_OUTPUT
+          "selector=$env:SELECTOR" >> $env:GITHUB_OUTPUT
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package with dev extras
+        run: python -m pip install -e '.[dev]'
+
+      - name: Install the pinned Runtime and client
+        run: python scripts/ci_install_runtime.py
+
+      - name: Collect and run exact Windows schema ACL selectors
+        id: pytest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = 'windows-schema-acl-evidence'
+          $pathSelector = 'tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls'
+          $daclSelector = 'tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign'
+          python -m pytest --collect-only -q -p no:cacheprovider $pathSelector $daclSelector 2>&1 | Tee-Object -FilePath "$evidence/windows-schema-acl-collection.log"
+          $collectionExit = $LASTEXITCODE
+          python -m pytest -q -p no:cacheprovider --junitxml=windows-schema-acl.xml tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign 2>&1 | Tee-Object -FilePath "$evidence/windows-schema-acl.log"
+          $pytestExit = $LASTEXITCODE
+          if (Test-Path windows-schema-acl.xml) {
+            Copy-Item windows-schema-acl.xml "$evidence/windows-schema-acl.xml" -Force
+          } else {
+            Set-Content -Path "$evidence/windows-schema-acl.xml.missing" -Value 'pytest did not create windows-schema-acl.xml'
+          }
+          Set-Content -Path "$evidence/collection-exit.txt" -Value $collectionExit
+          Set-Content -Path "$evidence/pytest-inner-exit.txt" -Value $pytestExit
+          "collection_exit=$collectionExit" >> $env:GITHUB_OUTPUT
+          "pytest_exit=$pytestExit" >> $env:GITHUB_OUTPUT
+
+      - name: Record Windows schema ACL receipt
+        if: always()
+        shell: pwsh
+        env:
+          AGENT_SHA: ${{ steps.request.outputs.agent_sha }}
+          SELECTOR: ${{ steps.request.outputs.selector }}
+          COLLECTION_EXIT: ${{ steps.pytest.outputs.collection_exit }}
+          PYTEST_EXIT: ${{ steps.pytest.outputs.pytest_exit }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = 'windows-schema-acl-evidence'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $pathSelector = 'tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls'
+          $daclSelector = 'tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign'
+          $collectionNodes = @()
+          if (Test-Path "$evidence/windows-schema-acl-collection.log") {
+            $collectionNodes = @(Get-Content "$evidence/windows-schema-acl-collection.log" | Where-Object { $_ -like 'tests/core/rendering/test_local_schema.py::*' })
+          }
+          $pathNodes = @($collectionNodes | Where-Object { $_ -like "*$pathSelector*" })
+          $daclNodes = @($collectionNodes | Where-Object { $_ -like "*$daclSelector*" })
+          $junitNodes = @()
+          $skipped = -1
+          $failed = -1
+          $junitState = 'missing'
+          if (Test-Path "$evidence/windows-schema-acl.xml") {
+            try {
+              [xml]$junit = Get-Content -Raw "$evidence/windows-schema-acl.xml"
+              $junitNodes = @($junit.SelectNodes('//testcase'))
+              $skipped = @($junit.SelectNodes('//testcase/skipped')).Count
+              $failed = @($junit.SelectNodes('//testcase/failure')).Count + @($junit.SelectNodes('//testcase/error')).Count
+              $junitState = 'parsed'
+            } catch {
+              $junitState = "parse-error: $($_.Exception.Message)"
+            }
+          }
+          $collectionNodes | Set-Content "$evidence/windows-schema-acl-collected-nodes.txt"
+          $junitNodes | ForEach-Object { "$($_.classname)::$($_.name)" } | Set-Content "$evidence/windows-schema-acl-junit-nodes.txt"
+          @(
+            "selector=$env:SELECTOR"
+            "checked_out_agent_sha=$env:AGENT_SHA"
+            "collection_exit=$env:COLLECTION_EXIT"
+            "pytest_exit=$env:PYTEST_EXIT"
+            "collected_nodes=$($collectionNodes.Count)"
+            "path_selector_collected=$($pathNodes.Count)"
+            "dacl_selector_collected=$($daclNodes.Count)"
+            "junit_testcases=$($junitNodes.Count)"
+            "skipped_nodes=$skipped"
+            "failed_nodes=$failed"
+            "junit_state=$junitState"
+          ) | Set-Content "$evidence/windows-schema-acl-summary.txt"
+          Get-ChildItem -Path $evidence -File | Sort-Object Name | Get-FileHash -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLower())  $($_.Name)" | Add-Content "$evidence/windows-schema-acl-summary.txt"
+          }
+
+      - name: Upload Windows schema ACL evidence
+        id: evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-schema-acl-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          path: windows-schema-acl-evidence
+          if-no-files-found: error
+
+      - name: Fail closed on collection, pytest, skips, or incomplete coverage
+        if: always()
+        shell: pwsh
+        env:
+          COLLECTION_EXIT: ${{ steps.pytest.outputs.collection_exit }}
+          PYTEST_EXIT: ${{ steps.pytest.outputs.pytest_exit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $summary = @{}
+          Get-Content windows-schema-acl-evidence/windows-schema-acl-summary.txt | ForEach-Object {
+            $parts = $_ -split '=', 2
+            if ($parts.Count -eq 2) { $summary[$parts[0]] = $parts[1] }
+          }
+          foreach ($key in @('collection_exit', 'pytest_exit', 'collected_nodes', 'path_selector_collected', 'dacl_selector_collected', 'junit_testcases', 'skipped_nodes', 'failed_nodes')) {
+            if (-not $summary.ContainsKey($key) -or $summary[$key] -notmatch '^\d+$') {
+              throw "missing or invalid $key in focused receipt"
+            }
+          }
+          if ($env:COLLECTION_EXIT -ne '0' -or [int]$summary['collection_exit'] -ne 0) { throw 'selector collection failed' }
+          if ($env:PYTEST_EXIT -ne '0' -or [int]$summary['pytest_exit'] -ne 0) { throw 'pytest failed' }
+          if ([int]$summary['skipped_nodes'] -ne 0) { throw "requested selectors skipped $($summary['skipped_nodes']) node(s)" }
+          if ([int]$summary['failed_nodes'] -ne 0) { throw "requested selectors failed $($summary['failed_nodes']) node(s)" }
+          if ([int]$summary['collected_nodes'] -le 0 -or [int]$summary['path_selector_collected'] -le 0 -or [int]$summary['dacl_selector_collected'] -le 0) { throw 'one or both requested selectors did not collect' }
+          if ([int]$summary['junit_testcases'] -ne [int]$summary['collected_nodes']) { throw 'JUnit testcase count does not equal the collected node count' }
 
   checks:
     name: fast checks
