@@ -66,6 +66,7 @@ class _BridgeStub:
 
 def _invoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, *,
             run_channel: socket.socket | None = None,
+            run_channel_run_id: str | None = None,
             child_bridge: Any | None = None) -> dict[str, Any]:
     """Run invoke_capability once with a stubbed launcher and record what it sent."""
     captured: dict[str, Any] = {"terminated": []}
@@ -100,7 +101,7 @@ def _invoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, *,
         request={"note": "wiring"},
         attempt=attempt,
         child_env=CHILD_ENV,
-        run_channel=run_channel,
+        run_channel=run_channel, run_channel_run_id=run_channel_run_id or "run-host-wiring-test",
         child_bridge=child_bridge,
     )
     captured["result"] = result
@@ -132,13 +133,13 @@ def channel_pair():
 def test_payload_gains_only_run_channel_fd_int_equal_to_child_fileno(tmp_path, monkeypatch, channel_pair):
     _parent, child = channel_pair
     baseline = _invoke(tmp_path, monkeypatch, "attempt-baseline")
-    wired = _invoke(tmp_path, monkeypatch, "attempt-wired", run_channel=child)
+    wired = _invoke(tmp_path, monkeypatch, "attempt-wired", run_channel=child, run_channel_run_id="run-host-wiring-test")
 
     # The only new payload key is the fd number; everything else is unchanged.
     assert "run_channel_fd" in wired["payload"], "run_channel hunk missing: payload has no run_channel_fd"
     added = set(wired["payload"]) - set(baseline["payload"])
     removed = set(baseline["payload"]) - set(wired["payload"])
-    assert added == {"run_channel_fd"}, f"unexpected new payload keys: {sorted(added)}"
+    assert added == {"run_channel_fd", "run_channel_run_id"}, f"unexpected new payload keys: {sorted(added)}"
     assert removed == set(), f"payload keys dropped: {sorted(removed)}"
     value = wired["payload"]["run_channel_fd"]
     assert type(value) is int and value == child.fileno()
@@ -147,7 +148,7 @@ def test_payload_gains_only_run_channel_fd_int_equal_to_child_fileno(tmp_path, m
 def test_payload_has_no_token_admission_broker_or_handle_key_added(tmp_path, monkeypatch, channel_pair):
     _parent, child = channel_pair
     baseline = _invoke(tmp_path, monkeypatch, "attempt-baseline")
-    wired = _invoke(tmp_path, monkeypatch, "attempt-wired", run_channel=child)
+    wired = _invoke(tmp_path, monkeypatch, "attempt-wired", run_channel=child, run_channel_run_id="run-host-wiring-test")
 
     assert "run_channel_fd" in wired["payload"], "run_channel hunk missing: payload has no run_channel_fd"
     # "admission" is a pre-existing key (value None when no admission is given),
@@ -165,7 +166,7 @@ def test_pass_fds_is_exactly_the_child_end_fd(tmp_path, monkeypatch, channel_pai
     # Pre-existing contributors to inherited_fds on this path: none. The source
     # channel needs _runtime_external_sources (unset here), the remotion lease
     # needs rendering.timeline_visualize, and child_bridge is None.
-    wired = _invoke(tmp_path, monkeypatch, "attempt-wired", run_channel=child)
+    wired = _invoke(tmp_path, monkeypatch, "attempt-wired", run_channel=child, run_channel_run_id="run-host-wiring-test")
     assert wired["pass_fds"] == (child.fileno(),)
 
 
@@ -175,7 +176,7 @@ def test_pass_fds_with_child_bridge_adds_bridge_fd_alongside_channel(tmp_path, m
     try:
         bridge = _BridgeStub(bridge_child.fileno())
         wired = _invoke(tmp_path, monkeypatch, "attempt-wired",
-                        run_channel=child, child_bridge=bridge)
+                        run_channel=child, run_channel_run_id="run-host-wiring-test", child_bridge=bridge)
         # The bridge fd was already passed before this change; the channel fd is added on top.
         assert sorted(wired["pass_fds"]) == sorted((child.fileno(), bridge_child.fileno()))
         assert len(wired["pass_fds"]) == 2
@@ -196,7 +197,7 @@ def test_token_and_admission_repr_absent_from_payload_argv_env(tmp_path, monkeyp
     )
     broker = SessionChannelBroker(RUN_ID, FakeSession(), parent, admission_token=token)
     try:
-        wired = _invoke(tmp_path, monkeypatch, "attempt-wired", run_channel=child)
+        wired = _invoke(tmp_path, monkeypatch, "attempt-wired", run_channel=child, run_channel_run_id="run-host-wiring-test")
     finally:
         broker.end_run()
         broker.close()
