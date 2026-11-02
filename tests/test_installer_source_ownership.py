@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
@@ -9,7 +10,7 @@ import pytest
 
 from astrid.installer.backend import Backend
 from astrid.installer.core import Version, write_json
-from astrid.installer.service import _release0_service_command
+from astrid.installer.service import LABEL, _release0_service_command
 
 RELEASE0_MANIFEST = Path(__file__).parent / "fixtures" / "release0" / "served" / "install-manifest.json"
 RELEASE0_SCHEMA = "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b"
@@ -36,7 +37,7 @@ def _profile(data: Path, runtime: Path, agent: Path) -> Path:
     return path
 
 
-def _supported_release0_owner(tmp_path, monkeypatch):
+def _supported_release0_owner(tmp_path, monkeypatch, *, real_launchd=False):
     from astrid_runtime.paths import RuntimePaths
     from runtime_protocol import platform
 
@@ -68,7 +69,25 @@ def _supported_release0_owner(tmp_path, monkeypatch):
         installed, data, windows=False, log=backend.service.log,
         env_file=backend.service.env_file,
     ))
-    backend.service.validate_stop_target = Mock(return_value={"arguments": arguments})
+    if real_launchd:
+        write_json(folder / "version.json", installed.document())
+        backend.service.selection = tmp_path / "selection.json"
+        write_json(backend.service.selection, {
+            "owner": LABEL, "program_root": str(backend.root), "data_root": str(data),
+        })
+        backend.service.path = tmp_path / "Library/LaunchAgents" / f"{LABEL}.plist"
+        backend.service.path.parent.mkdir(parents=True)
+        backend.service.path.write_bytes(plistlib.dumps({
+            "Label": LABEL, "ProgramArguments": list(arguments),
+        }))
+        lines = [
+            f"gui/{platform.current_user()}/{LABEL} = {{", "\tstate = running",
+            f"\tpath = {backend.service.path}", f"\tprogram = {arguments[0]}",
+            "\targuments = {", "\n".join(arguments), "\t}", "\tpid = 4242", "}",
+        ]
+        backend.service.run = Mock(return_value="\n".join(lines))
+    else:
+        backend.service.validate_stop_target = Mock(return_value={"arguments": arguments})
     return backend, data, paths, installed, health
 
 
@@ -105,10 +124,16 @@ def test_live_b1_source_identity_refuses_after_process_and_instance_validation(t
 
 
 def test_live_supported_identityless_release0_uses_exact_launchd_owner_proof(tmp_path, monkeypatch):
-    backend, data, _paths, installed, _health = _supported_release0_owner(tmp_path, monkeypatch)
+    from runtime_protocol import platform
+
+    backend, data, _paths, installed, _health = _supported_release0_owner(
+        tmp_path, monkeypatch, real_launchd=True,
+    )
 
     assert not backend.source_checkout_ownership(data, installed)
-    backend.service.validate_stop_target.assert_called_once_with(installed, data, owner_pid=4242)
+    backend.service.run.assert_called_once_with([
+        "launchctl", "print", f"gui/{platform.current_user()}/{LABEL}",
+    ])
 
 
 @pytest.mark.parametrize("damage", [
