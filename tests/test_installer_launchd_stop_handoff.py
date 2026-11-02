@@ -82,7 +82,8 @@ def _launchd_harness(backend, data, old, boundary, events, monkeypatch):
         if argv[:2] == ["launchctl", "bootout"]:
             assert argv[2] == target
             if loaded["version"] == old:
-                assert boundary.live, "R0 bootout must precede Runtime C1 process exit"
+                assert (boundary.live or not loaded["running"]), (
+                    "R0 bootout must precede Runtime C1 process exit")
             assert loaded["version"] is not None
             bootouts.append(tuple(argv))
             events.append("launchctl-bootout")
@@ -423,6 +424,73 @@ def test_fresh_recovery_after_prebootout_interruption_restores_retained_r0(tmp_p
     assert bootouts == [("launchctl", "bootout", target)]
     assert core.current(backend.root) == old
     assert loaded["version"] == old
+    assert loaded["bootstrap_bytes"] == [original_r0_plist]
+    assert backend.service.path.read_bytes() == original_r0_plist
+
+
+def test_fresh_recovery_boots_out_matching_stopped_r0_without_owner_and_restores(tmp_path, monkeypatch):
+    """The 20:37Z definition-plus-no-owner witness survives controller loss."""
+    backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    old, candidate = _version(backend, "old", 17), _version(backend, "candidate", 18)
+    core.switch(backend.root, old)
+    backend.has_workspace = lambda *_: True
+    backend.workspace = lambda *_: {"realm_id": "realm-1", "realm_root": str(paths.realms_dir / "realm-1")}
+    backend.stage = lambda *_: candidate
+    backend.validate_candidate = lambda *_: None
+    backend.backup = lambda *_: None
+    backend.upgrade = lambda *_: None
+    backend.verify = lambda *_args, **_kwargs: None
+    events = []
+    _real_c1_stop(data, boundary, events)
+    loaded, _observations, bootouts, target, _crash = _launchd_harness(
+        backend, data, old, boundary, events, monkeypatch,
+    )
+    original_r0_plist, original_r0_action = _r0_program_root_plist(backend.service, old, data)
+    loaded["action"] = original_r0_action
+    loaded["r0_action"] = original_r0_action
+    loaded["running"] = False
+    boundary.live = False
+    paths.discovery_path.unlink()
+    paths.instance_lock_path.unlink()
+    launchd_run = backend.service.run
+    print_count = 0
+
+    def interrupt_second_admission(argv):
+        nonlocal print_count
+        if [str(value) for value in argv][:2] == ["launchctl", "print"]:
+            print_count += 1
+            if print_count == 2:
+                raise _LaunchdControllerExit("controller died before stopped-job bootout")
+        return launchd_run(argv)
+
+    backend.service.run = interrupt_second_admission
+    with pytest.raises(_LaunchdControllerExit, match="before stopped-job bootout"):
+        core.Installer(backend.root, data, backend, say=lambda _line: None).run("update", {})
+
+    interrupted = core.read_json(backend.root / "update-transaction.json")
+    assert interrupted["step"] == "stopping"
+    assert interrupted["launchd_r0_plist"]["bootout_intent"] is True
+    assert interrupted["launchd_r0_plist"]["bootout_identity"] is None
+    assert bootouts == []
+    assert loaded["version"] == old
+    assert loaded["running"] is False
+
+    fresh = Backend(backend.root, tmp_path / "fresh-install.log", tmp_path / "fresh-uv")
+    fresh.service.system = "darwin"
+    fresh.service.path = fresh.service.home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+    fresh.service.selection = install_selection(fresh.service.home, "darwin")
+    fresh.service.run = backend.service.run
+    fresh._stop_boundary = boundary
+    fresh.verify = lambda *_args, **_kwargs: None
+
+    core.Installer(backend.root, data, fresh, say=lambda _line: None)._recover_update()
+
+    terminal = core.read_json(backend.root / "update-transaction.json")
+    assert terminal["step"] == "rolled_back"
+    assert bootouts == [("launchctl", "bootout", target)]
+    assert core.current(backend.root) == old
+    assert loaded["version"] == old
+    assert loaded["running"] is False
     assert loaded["bootstrap_bytes"] == [original_r0_plist]
     assert backend.service.path.read_bytes() == original_r0_plist
 

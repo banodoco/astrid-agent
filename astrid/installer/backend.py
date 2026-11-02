@@ -829,16 +829,28 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     if launchd_booted_out:
                         if launchd_identity is not None:
                             recovering = bool(active is not None and active[1])
+                            # M-INT's 20:37Z ruling admits a loaded R0 job
+                            # with no PID only when the retained definition
+                            # still matches and Runtime's fresh census has no
+                            # owner.  A live owner still needs the exact
+                            # durable PID/birth/executable witness below.
+                            retained_stopped_r0 = (
+                                retained_bootout_identity is None
+                                and launchd_identity.get("live_owner") is None
+                                and owner_pid is None
+                            )
                             if (not recovering or not is_retained_r0
-                                    or not self.service.launchd_bootout_identity_matches(
-                                        launchd_identity, retained_bootout_identity)):
+                                    or not (retained_stopped_r0
+                                            or self.service.launchd_bootout_identity_matches(
+                                                launchd_identity, retained_bootout_identity))):
                                 raise ValueError(
                                     "A launchd service appeared after the R0 bootout; refusing to stop it.")
-                            # The exact process admitted before the persisted
-                            # intent is still loaded, so the bootout cannot have
-                            # completed. Re-run the immediate admission and
-                            # bootout; a changed/reused PID or birth identity
-                            # remains a replacement and is refused above.
+                            # The retained live owner, or the expressly
+                            # admitted stopped/no-owner R0 definition, is
+                            # still loaded. Re-run the immediate admission and
+                            # bootout. A changed/reused PID or birth identity,
+                            # a changed definition, or a newly live owner all
+                            # remain a replacement and are refused above.
                             self.service.bootout_admitted_launchd(
                                 data, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
                                 expected_identity=launchd_identity,
