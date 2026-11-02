@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+import shutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -521,7 +523,7 @@ def test_failure_retains_install_and_manager_before_cleanup_and_preserves_primar
     assert before["service_manager"]["status"] == "captured"
     assert before["service_manager"]["observation_status"] == "observed"
     assert journey.read_json(run_root / before["service_manager"]["path"])["stdout"] == "ActiveState=active\n"
-    assert not (run_root / "evidence" / "evidence-upload" / "before-cleanup" / "unrelated-secret.txt").exists()
+    assert not (run_root / "evidence-upload" / "before-cleanup" / "unrelated-secret.txt").exists()
 
 
 def test_failure_diagnostics_records_unavailable_install_and_manager_error(tmp_path, monkeypatch):
@@ -676,8 +678,11 @@ def test_windows_preflight_records_query_streams_origin_and_exit(tmp_path, monke
     assert all(not any(key.casefold() == "psmodulepath" for key in call[1]["env"]) for call in calls)
     assert "CmdletizationQuery_NotFound_TaskName," in windows.SCHEDULED_TASK_QUERY
     assert "else { throw }" in windows.SCHEDULED_TASK_QUERY
-    journey.retain_named_evidence(tmp_path, "before-cleanup")
-    assert (tmp_path.parent / "evidence-upload" / "before-cleanup" / "preflight-scheduled-task.txt").is_file()
+    evidence = tmp_path / "run" / "evidence" / "preflight"
+    evidence.mkdir(parents=True)
+    shutil.copyfile(tmp_path / "preflight-scheduled-task.txt", evidence / "preflight-scheduled-task.txt")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    assert (tmp_path / "run" / "evidence-upload" / "before-cleanup" / "preflight-scheduled-task.txt").is_file()
 
 
 def test_windows_preflight_absence_and_foreign_owner_rejection(tmp_path, monkeypatch):
@@ -831,3 +836,83 @@ def test_windows_diagnostics_expression_preserves_python_traceback(tmp_path, mod
     if "preflight sentinel" in expected:
         assert "partial stdout" in result.stdout
         assert "preflight leg: release0-to-release1" in result.stdout
+
+
+@pytest.mark.parametrize("exit_code", [0, 7], ids=["success", "failure"])
+def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
+    from scripts import journey_version_jumps
+
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="release0-to-release1", shell="sh", retain_for_next_leg=False)
+    script = tmp_path / "driver" / "scripts" / "journey_workspace.py"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "import json, pathlib, sys\n"
+        "payload = pathlib.Path(sys.argv[sys.argv.index('--request') + 1]).read_bytes()\n"
+        "sys.stdout.buffer.write(json.dumps({'payload': json.loads(payload)}).encode() + b'\\n')\n"
+        "sys.stderr.buffer.write(b'diagnostic-' + b'x' * 1048600)\n"
+        f"sys.exit({exit_code})\n", encoding="utf-8")
+    monkeypatch.setattr(journey, "ROOT", script.parent.parent)
+    monkeypatch.setattr(journey, "workspace_root", lambda unused: data / "realm")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "installation", lambda *unused: (None, data, {"python": sys.executable}))
+    monkeypatch.setattr(journey, "runtime_processes", lambda *unused: [])
+    evidence = run_root / "evidence" / args.leg
+    payload = {"project": "seed ü", "generation": "before", "task_id": None}
+    def run_owned(*unused):
+        root.mkdir()
+        (root / "current").write_text("v0")
+        journey.write_json(evidence / "journey-result.json", {"status": "pass"})
+        result = journey_version_jumps.workspace(
+            {"python": sys.executable, "env": {}}, data, evidence / "release0-api-seed", "seed", payload)
+        assert result == {"payload": payload}
+        return {"status": "pass"}
+    monkeypatch.setattr(journey, "_execute_owned", run_owned)
+    def cleanup(*unused, **kwargs):
+        (root / "current").unlink()
+        shutil.rmtree(evidence / "release0-api-seed")
+    monkeypatch.setattr(journey, "installed_cli", cleanup)
+    if exit_code:
+        with pytest.raises(RuntimeError, match="seed.json: exit 7"):
+            journey.execute(args)
+    else:
+        assert journey.execute(args)["status"] == "pass"
+    assert not (evidence / "release0-api-seed").exists()
+    staged = run_root / "evidence-upload" / "before-cleanup"
+    prefix = "runtime-service-service-seed-0001-"
+    request = (staged / (prefix + "input.log")).read_bytes()
+    assert request == (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    command = json.loads((staged / (prefix + "command.log")).read_bytes())
+    assert command[:4] == [sys.executable, "-I", str(script), "seed"]
+    assert command[-2:] == ["--request", str(evidence / "release0-api-seed" / "seed-request.json")]
+    assert (staged / (prefix + "stdout.log")).read_bytes() == json.dumps({"payload": json.loads(request)}).encode() + b"\n"
+    assert (staged / (prefix + "stderr.log")).read_bytes() == b"diagnostic-" + b"x" * 1048600
+    assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": exit_code}
+
+
+def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch):
+    from scripts import journey_version_jumps
+
+    script = tmp_path / "driver" / "scripts" / "journey_workspace.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("import pathlib, sys\n"
+                      "sys.stdout.buffer.write(pathlib.Path(sys.argv[-1]).read_bytes())\n", encoding="utf-8")
+    monkeypatch.setattr(journey, "ROOT", script.parent.parent)
+    monkeypatch.setattr(journey, "workspace_root", lambda unused: tmp_path / "realm")
+    data = tmp_path / "run" / "data"
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    for generation in ("one", "two"):
+        assert journey_version_jumps.workspace(
+            {"python": sys.executable, "env": {}}, data, evidence / "seed", "seed",
+            {"generation": generation}) == {"generation": generation}
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
+    for index, generation in enumerate(("one", "two"), 1):
+        prefix = f"runtime-service-service-seed-{index:04d}-"
+        assert json.loads((staged / (prefix + "input.log")).read_bytes()) == {"generation": generation}
+        assert json.loads((staged / (prefix + "stdout.log")).read_bytes()) == {"generation": generation}
+        assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": 0}

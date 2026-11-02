@@ -566,7 +566,7 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
 
 def retain_named_evidence(evidence: Path, phase: str) -> None:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
-    destination = evidence.parent / "evidence-upload" / phase
+    destination = evidence.parent.parent / "evidence-upload" / phase
     try:
         destination.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
@@ -592,6 +592,25 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    # The existing hosted boundary accepts this legacy service-log filename
+    # pattern. Flatten the seed directories into it without truncating bytes.
+    # Numbering follows sorted relative paths so distinct invocations survive.
+    seed_dirs = sorted(path for path in evidence.glob("**/seed-diagnostics/*")
+                       if len(path.name) >= 4 and path.name.isascii() and path.name.isdecimal())
+    for index, directory in enumerate(seed_dirs, 1):
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        for kind in ("input", "command", "stdout", "stderr", "exit"):
+            suffix = "json" if kind in {"input", "command", "exit"} else "txt"
+            source = directory / f"{kind}.{suffix}"
+            if source.is_file() and not source.is_symlink():
+                target = destination / f"runtime-service-service-seed-{index:04d}-{kind}.log"
+                try:
+                    shutil.copyfile(source, target)
+                except Exception as exc:
+                    print(f"Journey seed evidence copy ({phase}) failed for {source}: "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
 
 def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:
     """Stage named diagnostics and bind their availability to the journey receipt."""
@@ -600,7 +619,7 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         capture_runtime_service_logs(evidence, run_root, phase)
         capture_manager_state(evidence, data, phase)
         retain_named_evidence(evidence, phase)
-        destination = evidence.parent / "evidence-upload" / phase
+        destination = evidence.parent.parent / "evidence-upload" / phase
         recorded = read_json(result_path) if result_path.is_file() else {}
         diagnostic = {}
         for key, name in (("install_log", "install.log"),
@@ -1025,12 +1044,50 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
 
 def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600) -> str:
     log.parent.mkdir(parents=True, exist_ok=True)
+    parts = [str(part) for part in argv]
+    if (log.name == "seed.json" and len(parts) >= 4 and
+            Path(parts[2]).name == "journey_workspace.py" and parts[3] == "seed"):
+        return run_seed(parts, log, env=env, timeout=timeout)
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
     output = log.read_text(encoding="utf-8-sig", errors="replace")
     if result.returncode:
         raise RuntimeError(f"{log.name}: exit {result.returncode}; see {log}")
+    return output
+
+
+def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> str:
+    """Preserve the exact seed request, argv and separate byte streams per call."""
+    directory = log.parent / "seed-diagnostics"
+    directory.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while True:
+        invocation = directory / f"{index:04d}"
+        try:
+            invocation.mkdir()
+            break
+        except FileExistsError:
+            index += 1
+    request = Path(argv[argv.index("--request") + 1])
+    shutil.copyfile(request, invocation / "input.json")
+    write_json(invocation / "command.json", argv)
+    status = {"exit_code": None}
+    try:
+        with ((invocation / "stdout.txt").open("wb") as stdout,
+              (invocation / "stderr.txt").open("wb") as stderr):
+            result = subprocess.run(argv, env=env, stdout=stdout, stderr=stderr,
+                                    timeout=timeout, check=False)
+        status["exit_code"] = result.returncode
+    except Exception as exc:
+        status["error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        write_json(invocation / "exit.json", status)
+        shutil.copyfile(invocation / "stdout.txt", log)
+    output = log.read_text(encoding="utf-8-sig", errors="replace")
+    if result.returncode:
+        raise RuntimeError(f"{log.name}: exit {result.returncode}; see {invocation}")
     return output
 
 
