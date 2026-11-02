@@ -94,7 +94,7 @@ def test_environment_preserves_genuine_runner_temp(tmp_path):
     assert 'TMPDIR' not in env and 'GITHUB_TOKEN' not in env
 
 
-def test_low_disk_interrupts_driver_process_group(monkeypatch, tmp_path):
+def test_low_disk_terminates_job_children_and_spares_driver(monkeypatch, tmp_path):
     task = tmp_path / 'task'
     logs = task / 'logs'
     logs.mkdir(parents=True)
@@ -103,8 +103,39 @@ def test_low_disk_interrupts_driver_process_group(monkeypatch, tmp_path):
     monkeypatch.setattr(r18.subprocess, 'Popen', lambda *a, **kw: process)
     monkeypatch.setattr(r18.shutil, 'disk_usage', lambda _: SimpleNamespace(free=2_999_999_999))
     calls = []
-    monkeypatch.setattr(r18.os, 'killpg', lambda pid, sig: calls.append((pid, sig)))
+    monkeypatch.setattr(r18, 'stop_job_children', lambda pid: calls.append(pid) or [766])
+    monkeypatch.setattr(r18.os, 'kill', lambda *args: pytest.fail('driver must be spared'))
     monkeypatch.setattr(r18.time, 'sleep', lambda _: None)
     result = r18.run_driver(['driver'], task, {}, task, logs)
-    assert calls == [(765, r18.signal.SIGINT)]
-    assert result['disk_interrupt_requested'] is True and result['exit'] == 130
+    assert calls == [765]
+    assert result['terminated_job_children'] == 1
+    assert result['disk_threshold_crossed'] is True and result['exit'] == 130
+
+
+def test_term_stops_real_installer_that_ignores_interrupt(monkeypatch):
+    import signal
+    import subprocess
+    import sys
+    import time
+    monkeypatch.setattr(r18, 'UID', os.getuid())
+    program = '''import subprocess,sys
+p = subprocess.Popen(['/bin/bash','-c',"trap ':' INT; trap 'exit 143' TERM; while :; do sleep 1; done"])
+print(p.pid, flush=True)
+sys.exit(p.wait())
+'''
+    driver = subprocess.Popen([sys.executable, '-c', program], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+    try:
+        child = int(driver.stdout.readline().strip())
+        time.sleep(0.25)
+        os.kill(child, signal.SIGINT)
+        time.sleep(0.2)
+        os.kill(child, 0)  # The installer really ignored SIGINT.
+        targets = r18.stop_job_children(driver.pid)
+        assert child in targets
+        driver.wait(timeout=10)
+        assert driver.returncode == 143
+    finally:
+        if driver.poll() is None:
+            os.killpg(driver.pid, signal.SIGTERM)
+            driver.wait(timeout=10)

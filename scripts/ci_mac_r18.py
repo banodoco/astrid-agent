@@ -87,27 +87,54 @@ def stage(name, argv, cwd, env, logs, home):
 
 
 
+def stop_job_children(driver_pid):
+    """TERM same-UID members of the driver's private process group, excluding driver."""
+    listed = subprocess.run(["/bin/ps", "-axo", "uid=,pid=,pgid=,stat="],
+                            capture_output=True, text=True, timeout=10, check=True)
+    targets = []
+    for line in listed.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 4:
+            raise RuntimeError("Cannot establish runner process group")
+        uid, pid, group = map(int, fields[:3])
+        if uid == UID and group == driver_pid and pid != driver_pid and not fields[3].startswith("Z"):
+            targets.append(pid)
+    signaled = []
+    for pid in targets:
+        try:
+            if os.getpgid(pid) == driver_pid:
+                os.kill(pid, signal.SIGTERM)
+                signaled.append(pid)
+        except ProcessLookupError:
+            pass
+    return signaled
+
+
 def run_driver(argv, task, env, home, logs):
-    """Keep watching disk; SIGINT asks the driver's own finally block to clean up."""
+    """Stop installer children on low disk; leave the driver to run its cleanup."""
     with (logs / "journey.log").open("wb") as out:
         proc = subprocess.Popen(argv, cwd=str(task), env=env, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         interrupted = False
-        terminated = False
+        grace_expired = False
         interrupted_at = None
+        signaled = []
+        census_failed = False
         while proc.poll() is None:
             if not interrupted and shutil.disk_usage(home).free < 3_000_000_000:
-                try: os.killpg(proc.pid, signal.SIGINT)
-                except ProcessLookupError: pass
+                try: signaled = stop_job_children(proc.pid)
+                except Exception:
+                    # Unknown job state: do not interrupt the driver while it may be cleaning up.
+                    census_failed = True
                 interrupted = True
                 interrupted_at = time.monotonic()
-            elif interrupted and not terminated and time.monotonic() - interrupted_at >= 300:
-                # Bounded grace for the driver's own cleanup; never kill a launchd service.
-                try: os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError: pass
-                terminated = True
+            elif interrupted and not grace_expired and time.monotonic() - interrupted_at >= 300:
+                # Never force-kill the runner's launchd service or interrupt cleanup a second time.
+                grace_expired = True
+                print("Disk abort cleanup exceeded grace; waiting for driver or job timeout", flush=True)
             time.sleep(3)
-    return {"exit": proc.returncode, "disk_interrupt_requested": interrupted,
-            "cleanup_grace_expired": terminated}
+    return {"exit": proc.returncode, "disk_threshold_crossed": interrupted,
+            "terminated_job_children": len(signaled), "process_census_failed": census_failed,
+            "cleanup_grace_expired": grace_expired}
 
 
 def make_candidate(task):
