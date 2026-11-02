@@ -295,6 +295,9 @@ def test_fresh_recovery_bootouts_stopped_job_once_and_is_repeatable(tmp_path, mo
 @pytest.mark.parametrize("failure_point", ["backup", "candidate_verify"])
 def test_downstream_update_failure_runs_real_c1_rollback_and_keeps_old_selected(
         tmp_path, monkeypatch, failure_point):
+    # A backup is needed only when the staged Runtime has a different schema.
+    monkeypatch.setattr(core, 'inspect_schema', lambda _backend, version, _realm, **_kwargs:
+                        {'identity': {'version': version.release}, 'target': 18})
     backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
     old, candidate = _version(backend, "old", 17), _version(backend, "candidate", 18)
     core.switch(backend.root, old)

@@ -235,7 +235,7 @@ print(json.dumps({'origins': origins, 'schema': str(path),
 ''')
     assert value["schema"] == str(installed_schema)
     assert value["sha256"] == SCHEMA_SHA256
-    assert value["producer"] == PRODUCER
+    assert value["producer"] == LOCK_PRODUCER
     profile = core.read_json(version.profile)
     assert profile["source_checkout"] == str(state.product_root)
     assert profile["source_digest"] == value["digest"]
