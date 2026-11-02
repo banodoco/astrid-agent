@@ -449,7 +449,15 @@ jobs:
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
+      - name: Try verified local Agent cache for self-hosted smoke
+        id: cache_agent
+        if: matrix.runner == 'astrid-mac'
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ fromJSON(needs.config.outputs.candidate).agent }}
+        run: python agent/scripts/ci_cached_checkout.py agent "$CANDIDATE_SHA"
       - name: Check out frozen Agent candidate
+        if: matrix.runner != 'astrid-mac' || steps.cache_agent.outputs.hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-agent
@@ -460,14 +468,30 @@ jobs:
           fetch-depth: 0
           filter: blob:none
           persist-credentials: false
+      - name: Try verified local Runtime cache for self-hosted smoke
+        id: cache_runtime
+        if: matrix.runner == 'astrid-mac'
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ fromJSON(needs.config.outputs.candidate).runtime }}
+        run: python agent/scripts/ci_cached_checkout.py runtime "$CANDIDATE_SHA"
       - name: Check out frozen Runtime candidate
+        if: matrix.runner != 'astrid-mac' || steps.cache_runtime.outputs.hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-runtime
           ref: ${{ fromJSON(needs.config.outputs.candidate).runtime }}
           path: runtime
           persist-credentials: false
+      - name: Try verified local Pinokio cache for self-hosted smoke
+        id: cache_pinokio
+        if: matrix.runner == 'astrid-mac'
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
+        run: python agent/scripts/ci_cached_checkout.py pinokio "$CANDIDATE_SHA"
       - name: Check out frozen Pinokio candidate
+        if: matrix.runner != 'astrid-mac' || steps.cache_pinokio.outputs.hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-pinokio
