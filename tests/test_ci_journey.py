@@ -89,6 +89,10 @@ def _diagnostic_release0_state(tmp_path, monkeypatch, *, write_state=True):
     version_root = root / "versions" / "release0"
     version_root.mkdir(parents=True)
     data.mkdir(parents=True)
+    realm = run_root / "realm"
+    realm.mkdir()
+    (realm / "realm.sqlite3").write_bytes(b"pre-seed release-0 realm")
+    journey.write_json(data / "runtime" / "discovery.json", {"realm_root": str(realm)})
     journey.write_json(root / "install.json", {"data_root": str(data)})
     journey.write_json(run_root / journey.OWNER_FILE, {
         "schema_version": 1, "run_id": "a" * 32,
