@@ -6,10 +6,54 @@ on:
         description: Stage, verify after an idle service restart, or rollback
         type: choice
         required: true
-        options: [stage, verify, rollback]
+        options: [diagnose, stage, verify, rollback]
 permissions:
   contents: read
 jobs:
+  diagnose:
+    if: inputs.phase == 'diagnose'
+    runs-on: [self-hosted, macOS, astrid-mac]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect runner service identity without changing it
+        shell: bash
+        working-directory: /
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import hashlib, json, os, plistlib, pwd, re, stat, subprocess
+          from pathlib import Path
+          try:
+              if os.getuid() != 503 or os.environ.get("RUNNER_NAME") != "hannah-mac":
+                  raise ValueError("Unexpected runner identity")
+              home = Path(pwd.getpwuid(503).pw_dir)
+              root = home / "actions-runner"
+              service = root / ".service"
+              st = service.lstat()
+              if not stat.S_ISREG(st.st_mode) or st.st_uid != 503:
+                  raise ValueError("Invalid runner service record")
+              path = Path(service.read_text().strip())
+              if path.parent != home / "Library/LaunchAgents" or path.suffix != ".plist":
+                  raise ValueError("Unexpected runner service location")
+              st = path.lstat()
+              if not stat.S_ISREG(st.st_mode) or st.st_uid != 503:
+                  raise ValueError("Invalid runner service plist")
+              data = path.read_bytes()
+              plist = plistlib.loads(data)
+              label = plist.get("Label")
+              if not isinstance(label, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", label) or path.name != label + ".plist":
+                  raise ValueError("Unexpected runner service label")
+              args = plist.get("ProgramArguments", [])
+              expected = str(root / "runsvc.sh")
+              loaded = subprocess.run(["/bin/launchctl", "print", "gui/503/" + label], text=True, capture_output=True, timeout=15)
+              print(json.dumps({"status": "observed", "label_sha256": hashlib.sha256(label.encode()).hexdigest(),
+                  "plist_sha256": hashlib.sha256(data).hexdigest(), "expected_runner_command_in_plist": expected in args,
+                  "launchctl_loaded": loaded.returncode == 0,
+                  "expected_runner_command_in_loaded_service": expected in loaded.stdout,
+                  "service_configured_run_at_load": plist.get("RunAtLoad"), "service_keep_alive": plist.get("KeepAlive")}))
+          except Exception:
+              print(json.dumps({"status": "refused", "reason": "Runner service identity could not be established"}))
+              raise SystemExit(1)
+          PY
   stage_or_rollback:
     if: inputs.phase == 'stage' || inputs.phase == 'rollback'
     runs-on: [self-hosted, macOS, astrid-mac]
