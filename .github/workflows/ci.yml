@@ -39,6 +39,12 @@ jobs:
         run: python -m pytest -q tests/sdk/test_host_recovery.py tests/test_services.py -k windows
       - name: Check Remotion admission and captured source handoff
         run: python -m pytest -q tests/core/rendering/test_remotion_host_regressions.py
+      - name: Check native Windows schema ACL behavior
+        run: python -m pytest -q tests/core/rendering/test_local_schema.py -m windows_native
+      - name: Check installed Windows schema admission regression
+        run: >-
+          python -m pytest -q
+          'tests/core/rendering/test_local_schema.py::test_windows_schema_admission_uses_sid_policy[safe-installed]'
       - name: Check native Windows process and permission behavior
         run: >-
           python -m pytest -q
