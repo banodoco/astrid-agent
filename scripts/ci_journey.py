@@ -923,7 +923,7 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
         manager = "launchd"
     elif sys.platform == "win32":
         # Retain the query even if the subsequent manager prerequisite fails.
-        windows.scheduled_task_preflight()
+        windows.scheduled_task_preflight(args.leg)
         # The command checks both the PowerShell service-manager module and its
         # scheduler surface; it does not manufacture or start a task.
         version = windows.powershell(

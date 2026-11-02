@@ -443,9 +443,11 @@ jobs:
       - name: Capture Windows scheduled-task query diagnostics
         if: always() && matrix.job_id == 'direct-windows'
         shell: powershell
+        env:
+          JOURNEY_LEG: ${{ matrix.leg }}
         run: |
           $env:PYTHONPATH = "$pwd/agent"
-          python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_preflight()"
+          python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_preflight(os.environ['JOURNEY_LEG'])"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain hosted service-manager prerequisite diagnostics
         if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')

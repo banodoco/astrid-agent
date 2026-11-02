@@ -664,6 +664,50 @@ def test_windows_journey_success_returns_zero(tmp_path, monkeypatch):
     assert journey.main() == 0
 
 
+@pytest.mark.parametrize("status,exit_code", [("absent", 0), ("present", 0), ("error", 1)])
+def test_direct_windows_workflow_preflight_invocation(tmp_path, monkeypatch, capsys, status, exit_code):
+    workflow = (WORKFLOW.parent / "journey.yml").read_text(encoding="utf-8")
+    step = workflow.split("      - name: Capture Windows scheduled-task query diagnostics\n", 1)[1].split(
+        "      - name: Retain hosted service-manager prerequisite diagnostics\n", 1)[0]
+    assert "JOURNEY_LEG: ${{ matrix.leg }}" in step
+    assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in step
+    command = next(line.strip() for line in step.splitlines() if line.strip().startswith('python -c '))
+    code = command.removeprefix('python -c "').removesuffix('"')
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("JOURNEY_LEG", "release0-to-release1")
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
+    response = {"status": status}
+    if status == "present":
+        response["tasks"] = [{"path": "\\", "executables": [r"C:\journey\python.exe"]}]
+    if status == "error":
+        response["error"] = {"message": "Access denied"}
+    monkeypatch.setattr(journey.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
+        argv, exit_code, json.dumps(response).encode(), b"diagnostic stderr"))
+    if status == "error":
+        with pytest.raises(RuntimeError, match="Scheduled Task preflight failed"):
+            exec(code, {})
+    else:
+        exec(code, {})
+    evidence = json.loads((tmp_path / "journey-manager-direct-windows" /
+                           "preflight-scheduled-task-release0-to-release1.json").read_text())
+    assert evidence["status"] == status and evidence["observation"] == response
+    assert evidence["exit_code"] == exit_code and evidence["stderr"] == "diagnostic stderr"
+    prefix = "Scheduled Task preflight (release0-to-release1): "
+    assert json.loads(capsys.readouterr().out.strip().removeprefix(prefix)) == evidence
+
+
+def test_windows_manager_prerequisite_passes_lifecycle_leg(tmp_path, monkeypatch):
+    monkeypatch.setattr(shared_journey.sys, "platform", "win32")
+    calls = []
+    monkeypatch.setattr(journey, "scheduled_task_preflight", lambda leg: calls.append(leg))
+    monkeypatch.setattr(journey, "powershell", lambda *args, **kwargs: "5.1")
+    args = shared_journey.argparse.Namespace(job_id="direct-windows", mode="direct",
+                                            leg="release0-to-release1")
+    result = shared_journey.release1_manager_prerequisite(args, tmp_path)
+    assert calls == ["release0-to-release1"]
+    assert result["outcome"] == "pass" and result["manager"] == "task-scheduler"
+
+
 def test_windows_scheduled_task_preflight_records_timeout_output(tmp_path, monkeypatch):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     def timeout(*args, **kwargs):
