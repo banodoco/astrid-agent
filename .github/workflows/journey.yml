@@ -444,9 +444,54 @@ jobs:
         if: always() && matrix.job_id == 'direct-windows'
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'journey-manager-direct-windows'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $stdout = Join-Path $evidence 'preflight-python-stdout.txt'
+          $stderr = Join-Path $evidence 'preflight-python-stderr.txt'
+          $status = Join-Path $evidence 'preflight-launch.json'
+          $original = 'python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ[''RUNNER_TEMP'']) / ''journey-manager-direct-windows''; w.scheduled_task_preflight()"'
+          $code = "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_diagnostics()"
+          # Start-Process passes this argument string to CreateProcess on Windows.
+          $arguments = '-u -c "' + $code + '"'
+          $record = [ordered]@{
+            original_command = $original; executable = 'python'; arguments = $arguments
+            stdout = $stdout; stderr = $stderr; exit_code = $null; exception = $null
+            origin = [ordered]@{
+              PSVersion = $PSVersionTable.PSVersion.ToString(); PSEdition = $PSVersionTable.PSEdition
+              CommandType = $null; Source = $null; ModuleName = $null; ModulePath = $null
+            }
+            origin_exception = $null
+          }
+          function Save-PreflightLaunch {
+            [IO.File]::WriteAllText($status, ($record | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+          }
+          [IO.File]::WriteAllText($stdout, '')
+          [IO.File]::WriteAllText($stderr, '')
+          Save-PreflightLaunch
+          try {
+            $command = Get-Command Get-ScheduledTask -ErrorAction Stop
+            $record.origin.CommandType = [string]$command.CommandType
+            $record.origin.Source = $command.Source
+            $record.origin.ModuleName = $command.ModuleName
+            $record.origin.ModulePath = $command.Module.Path
+          } catch {
+            $record.origin_exception = ($_ | Format-List * -Force | Out-String) + "`n" + $_.Exception.ToString()
+          }
+          Save-PreflightLaunch
           $env:PYTHONPATH = "$pwd/agent"
-          python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_preflight()"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          try {
+            $record.executable = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+            Save-PreflightLaunch
+            $process = Start-Process -FilePath $record.executable -ArgumentList $arguments -Wait -PassThru `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+            $record.exit_code = $process.ExitCode
+          } catch {
+            $record.exception = ($_ | Format-List * -Force | Out-String) + "`n" + $_.Exception.ToString()
+          } finally {
+            Save-PreflightLaunch
+          }
+          if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }
       - name: Retain hosted service-manager prerequisite diagnostics
         if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')
         uses: actions/upload-artifact@v4
