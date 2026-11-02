@@ -311,6 +311,7 @@ def test_stage_refuses_unusable_uv_before_creating_candidate(tmp_path, monkeypat
 def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         tmp_path, monkeypatch, capsys, outcome, schema_changed):
     """A usable old Runtime/profile can carry ownership while payload is rebuilt."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "workspace"
     old_root = root / "versions" / "old"
     for path in (old_root / "a", old_root / "r", old_root / "tools"):
