@@ -1,0 +1,87 @@
+name: Windows native schema ACL selectors
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_ref:
+        description: Full 40-character Agent candidate commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  windows-native-schema-acl:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Validate candidate SHA and initialize evidence
+        shell: pwsh
+        env:
+          AGENT_REF: ${{ inputs.agent_ref }}
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'windows-native-schema-acl'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          @{
+            requested_agent_ref = $env:AGENT_REF
+            workflow_ref = $env:GITHUB_WORKFLOW_REF
+            workflow_sha = $env:GITHUB_WORKFLOW_SHA
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            job = $env:GITHUB_JOB
+            runner_os = $env:RUNNER_OS
+          } | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $evidence 'binding.json')
+          if ($env:AGENT_REF -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'agent_ref must be a full lowercase 40-character commit SHA'
+          }
+      - name: Checkout exact Agent candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.agent_ref }}
+          persist-credentials: false
+      - name: Verify checkout identity
+        shell: pwsh
+        env:
+          AGENT_REF: ${{ inputs.agent_ref }}
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $actual | Set-Content -Encoding ascii (Join-Path $env:RUNNER_TEMP 'windows-native-schema-acl/checked-out-sha.txt')
+          if ($actual -cne $env:AGENT_REF) { throw "Candidate checkout mismatch: $actual" }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install package with dev extras
+        run: python -m pip install -e '.[dev]'
+      - name: Install pinned Runtime and client
+        run: python scripts/ci_install_runtime.py
+      - name: Run the two native ACL selectors
+        shell: pwsh
+        run: |
+          @'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          evidence = Path(os.environ["RUNNER_TEMP"]) / "windows-native-schema-acl"
+          command = [sys.executable, "-m", "pytest", "-q", "-rA",
+                     f"--junitxml={evidence / 'junit.xml'}",
+                     "tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls",
+                     "tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign"]
+          with (evidence / "pytest.log").open("w", encoding="utf-8") as log:
+              result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False)
+          print((evidence / "pytest.log").read_text(encoding="utf-8", errors="replace"), flush=True)
+          (evidence / "pytest-exit-code.txt").write_text(f"{result.returncode}\n", encoding="ascii")
+          print(f"Inner pytest exit code: {result.returncode}", flush=True)
+          sys.exit(result.returncode)
+          '@ | python -u -
+          exit $LASTEXITCODE
+      - name: Upload native ACL evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-schema-acl-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-native-schema-acl/
+          if-no-files-found: error
