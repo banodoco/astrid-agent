@@ -1,0 +1,341 @@
+name: Merge Linux suite
+
+on:
+  push:
+    branches: ['venue/**']
+  workflow_dispatch:
+    inputs:
+      agent_ref:
+        description: Agent ref
+        required: true
+        type: string
+      runtime_ref:
+        description: Runtime ref
+        required: true
+        type: string
+      app_ref:
+        description: App ref
+        required: true
+        type: string
+      pinokio_ref:
+        description: Pinokio ref
+        required: true
+        type: string
+      command:
+        description: Bash command to execute from the workspace root
+        required: true
+        type: string
+      artifact_paths:
+        description: Newline-separated workspace-relative artifact paths or globs
+        required: true
+        type: string
+      slot:
+        description: Suite slot (requests in the same slot queue)
+        required: true
+        default: '1'
+        type: choice
+        options: ['1', '2', '3', '4', '5', '6']
+  workflow_call:
+    inputs:
+      agent_ref:
+        required: true
+        type: string
+      runtime_ref:
+        required: true
+        type: string
+      app_ref:
+        required: true
+        type: string
+      pinokio_ref:
+        required: true
+        type: string
+      command:
+        required: true
+        type: string
+      artifact_paths:
+        required: true
+        type: string
+      slot:
+        required: false
+        default: '1'
+        type: string
+    secrets:
+      repository_token:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    outputs:
+      agent_ref: ${{ steps.parse.outputs.agent_ref }}
+      runtime_ref: ${{ steps.parse.outputs.runtime_ref }}
+      app_ref: ${{ steps.parse.outputs.app_ref }}
+      pinokio_ref: ${{ steps.parse.outputs.pinokio_ref }}
+      command: ${{ steps.parse.outputs.command }}
+      artifact_paths: ${{ steps.parse.outputs.artifact_paths }}
+      slot: ${{ steps.parse.outputs.slot }}
+    steps:
+      - name: Check out push inputs
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: venue-inputs
+          persist-credentials: false
+      - name: Parse and validate inputs
+        id: parse
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_INPUTS: ${{ toJSON(inputs) }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib, uuid
+
+          if os.environ['EVENT_NAME'] == 'push':
+              data = json.loads(pathlib.Path('venue-inputs/inputs.json').read_text())
+          else:
+              data = json.loads(os.environ['DISPATCH_INPUTS'])
+          keys = ('agent_ref', 'runtime_ref', 'app_ref', 'pinokio_ref', 'command', 'artifact_paths', 'slot')
+          if not isinstance(data, dict):
+              raise ValueError('inputs must be a JSON object')
+          for key in keys:
+              if not isinstance(data.get(key), str) or not data[key].strip():
+                  raise ValueError(f'{key} must be a nonempty string')
+          for key in keys[:4]:
+              if '\n' in data[key] or '\r' in data[key]:
+                  raise ValueError(f'{key} must be a single line')
+          if data['slot'] not in ('1', '2', '3', '4', '5', '6'):
+              raise ValueError('slot must be 1 through 6')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              for key in keys:
+                  delimiter = f'EOF_{uuid.uuid4().hex}'
+                  print(f'{key}<<{delimiter}\n{data[key]}\n{delimiter}', file=out)
+          PYCODE
+
+  suite:
+    needs: inputs
+    # Slots queue separately within the caller repository, up to 100 waiting.
+    concurrency:
+      group: merge-linux-suite-${{ needs.inputs.outputs.slot }}
+      queue: max
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      ASTRID_AGENT_CHECKOUT: ${{ github.workspace }}/agent
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/runtime
+      ASTRID_APP_CHECKOUT: ${{ github.workspace }}/app
+      ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/pinokio
+    steps:
+      - name: Initialize evidence and validate slot
+        env:
+          SLOT: ${{ needs.inputs.outputs.slot }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/merge-suite-evidence"
+          printf 'EVIDENCE_DIR=%s/merge-suite-evidence\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          case "$SLOT" in 1|2|3|4|5|6) ;; *) echo 'slot must be 1 through 6' >&2; exit 1 ;; esac
+      - name: Record requested inputs
+        env:
+          AGENT_REF: ${{ needs.inputs.outputs.agent_ref }}
+          RUNTIME_REF: ${{ needs.inputs.outputs.runtime_ref }}
+          APP_REF: ${{ needs.inputs.outputs.app_ref }}
+          PINOKIO_REF: ${{ needs.inputs.outputs.pinokio_ref }}
+          COMMAND: ${{ needs.inputs.outputs.command }}
+          ARTIFACT_PATHS: ${{ needs.inputs.outputs.artifact_paths }}
+          SLOT: ${{ needs.inputs.outputs.slot }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib
+          keys = ('agent_ref', 'runtime_ref', 'app_ref', 'pinokio_ref', 'command', 'artifact_paths', 'slot')
+          data = {key: os.environ[key.upper()] for key in keys}
+          pathlib.Path(os.environ['EVIDENCE_DIR'], 'requested-inputs.json').write_text(json.dumps(data, indent=2) + '\n')
+          PYCODE
+      - name: Check out Agent
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.inputs.outputs.agent_ref }}
+          path: agent
+          token: ${{ secrets.repository_token || github.token }}
+          persist-credentials: false
+      - name: Check out Runtime
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ needs.inputs.outputs.runtime_ref }}
+          path: runtime
+          token: ${{ secrets.repository_token || github.token }}
+          persist-credentials: false
+      - name: Check out App
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ${{ needs.inputs.outputs.app_ref }}
+          path: app
+          token: ${{ secrets.repository_token || github.token }}
+          persist-credentials: false
+      - name: Check out Pinokio
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ needs.inputs.outputs.pinokio_ref }}
+          path: pinokio
+          token: ${{ secrets.repository_token || github.token }}
+          persist-credentials: false
+      - name: Record effective checkout identities
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+        run: |
+          for repo in agent runtime app pinokio; do
+            printf '%s %s\n' "$repo" "$(git -C "$repo" rev-parse HEAD)"
+          done | tee "$EVIDENCE_DIR/tuple.txt" >> "$GITHUB_STEP_SUMMARY"
+          printf 'workflow_repository %s\nworkflow_ref %s\nworkflow_sha %s\nrun_id %s\nrun_attempt %s\n' "$WORKFLOW_REPOSITORY" "$WORKFLOW_REF" "$WORKFLOW_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$EVIDENCE_DIR/tuple.txt"
+      - name: Run requested command
+        id: suite
+        env:
+          SUITE_COMMAND: ${{ needs.inputs.outputs.command }}
+        run: |
+          set +e
+          bash --noprofile --norc -eo pipefail -c "$SUITE_COMMAND" 2>&1 | tee "$EVIDENCE_DIR/command.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$code" > "$EVIDENCE_DIR/exit-code.txt"
+          printf 'exit_code=%s\n' "$code" >> "$GITHUB_OUTPUT"
+      - name: Collect requested files for git publication
+        id: collect
+        if: ${{ always() && github.event_name == 'push' && steps.suite.outcome != 'skipped' }}
+        env:
+          ARTIFACT_PATHS: ${{ needs.inputs.outputs.artifact_paths }}
+        run: |
+          python3 - <<'PYCODE'
+          import glob, os, pathlib, shutil
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          dest = pathlib.Path(os.environ['EVIDENCE_DIR']) / 'artifacts'
+          dest.mkdir(parents=True, exist_ok=True)
+          selected = set()
+          for line in os.environ['ARTIFACT_PATHS'].splitlines():
+              pattern = line.strip()
+              if not pattern:
+                  continue
+              exclude = pattern.startswith('!')
+              pattern = pattern[1:] if exclude else pattern
+              path = pathlib.PurePosixPath(pattern)
+              if path.is_absolute() or '..' in path.parts:
+                  raise ValueError(f'artifact path must stay inside workspace: {pattern}')
+              matches = set()
+              for name in glob.glob(str(root / pattern), recursive=True, include_hidden=True):
+                  item = pathlib.Path(name)
+                  if item.is_dir() and not item.is_symlink():
+                      matches.update(p for p in item.rglob('*') if p.is_file())
+                  elif item.is_file():
+                      matches.add(item)
+              selected.difference_update(matches) if exclude else selected.update(matches)
+          for item in sorted(selected):
+              if not item.resolve().is_relative_to(root):
+                  raise ValueError(f'artifact escapes workspace: {item}')
+              rel = item.relative_to(root)
+              if '\n' in str(rel) or '\r' in str(rel):
+                  raise ValueError('artifact filenames may not contain newlines')
+              target = dest / rel
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(item, target)
+          if not selected:
+              raise ValueError('no requested artifact files found')
+          PYCODE
+      - name: Check out repository for results publication
+        if: ${{ always() && github.event_name == 'push' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: venue-publish
+          persist-credentials: true
+      - name: Publish git receipt and artifacts
+        if: ${{ always() && github.event_name == 'push' }}
+        env:
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_HEAD: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          SUITE_OUTCOME: ${{ steps.suite.outcome }}
+          COLLECT_OUTCOME: ${{ steps.collect.outcome }}
+          INNER_EXIT: ${{ steps.suite.outputs.exit_code }}
+          REQUESTED_INPUTS: ${{ toJSON(needs.inputs.outputs) }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in refs/heads/venue/*) result_ref="refs/heads/venue-results/${SOURCE_REF#refs/heads/venue/}" ;; *) exit 1 ;; esac
+          git check-ref-format "$result_ref"
+          mkdir -p "$RUNNER_TEMP/merge-suite-evidence"
+          export EVIDENCE_DIR="$RUNNER_TEMP/merge-suite-evidence"
+          python3 - <<'PYCODE'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path(os.environ['EVIDENCE_DIR'])
+          requested = json.loads(os.environ['REQUESTED_INPUTS'])
+          (root / 'requested-inputs.json').write_text(json.dumps(requested, indent=2, sort_keys=True) + '\n')
+          effective = {}
+          for repo in ('agent', 'runtime', 'app', 'pinokio'):
+              import subprocess
+              result = subprocess.run(['git', '-C', repo, 'rev-parse', 'HEAD'], capture_output=True, text=True)
+              effective[repo] = result.stdout.strip() if result.returncode == 0 else None
+          files = sorted(p for p in root.rglob('*') if p.is_file() and p not in (root / 'receipt.json', root / 'SHA256SUMS'))
+          inventory = [{'path': p.relative_to(root).as_posix(), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(), 'bytes': p.stat().st_size} for p in files]
+          receipt = {'repository': os.environ['GITHUB_REPOSITORY'], 'event': os.environ['EVENT_NAME'],
+                     'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                     'source_ref': os.environ['SOURCE_REF'], 'source_head': os.environ['SOURCE_HEAD'],
+                     'workflow_repository': os.environ['WORKFLOW_REPOSITORY'], 'workflow_ref': os.environ['WORKFLOW_REF'],
+                     'workflow_sha': os.environ['WORKFLOW_SHA'], 'requested_inputs': requested,
+                     'effective_tuple': effective, 'command': requested.get('command'),
+                     'inner_exit_code': int(os.environ['INNER_EXIT']) if os.environ['INNER_EXIT'] else None,
+                     'suite_step_outcome': os.environ['SUITE_OUTCOME'], 'artifact_collection_outcome': os.environ['COLLECT_OUTCOME'], 'inventory': inventory}
+          (root / 'receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+          files = sorted(p for p in root.rglob('*') if p.is_file() and p != root / 'SHA256SUMS')
+          (root / 'SHA256SUMS').write_text(''.join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}\n" for p in files))
+          PYCODE
+          cd venue-publish
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          set +e
+          git ls-remote --exit-code --heads origin "$result_ref" > /dev/null
+          remote_status=$?
+          set -e
+          if [ "$remote_status" -eq 0 ]; then
+            git fetch --no-tags origin "$result_ref:refs/remotes/origin/venue-result"
+            git switch --detach refs/remotes/origin/venue-result
+          elif [ "$remote_status" -eq 2 ]; then
+            git switch --orphan venue-result
+          else
+            exit "$remote_status"
+          fi
+          run_dir="runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$run_dir"
+          mkdir -p "$run_dir"
+          cp -a "$EVIDENCE_DIR/." "$run_dir/"
+          git add -f "$run_dir"
+          git commit -m "Venue result $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
+          git push origin "HEAD:$result_ref"
+      - name: Upload suite artifacts
+        if: ${{ always() && steps.suite.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge-suite-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ needs.inputs.outputs.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload tuple and exit code
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge-suite-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/merge-suite-evidence/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Propagate command exit code
+        if: ${{ always() && steps.suite.outputs.exit_code != '' }}
+        env:
+          EXIT_CODE: ${{ steps.suite.outputs.exit_code }}
+        run: exit "$EXIT_CODE"
