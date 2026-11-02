@@ -28,7 +28,7 @@ from runtime_protocol.dirfd import filesystem as os
 from astrid.core import timeline
 from astrid.pack_api import build_manifest, write_manifest
 from astrid.core.foundation.paths import REPO_ROOT
-from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import SCHEMA_VERSION as RENDER_SCHEMA_VERSION
 from astrid.core.rendering.contracts import RenderRequest
 from astrid.core.rendering.delivery_audio import METADATA_KEY as DELIVERY_AUDIO_KEY
 from astrid.core.rendering.delivery_audio import DeliveryAudioTarget
@@ -476,7 +476,7 @@ def render(
             config[str(key)] = overlaid
     request = RenderRequest.from_dict(
         {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": RENDER_SCHEMA_VERSION,
             "timeline_path": str(Path(timeline_path).expanduser().resolve()),
             "assets_registry_path": str(Path(assets_path).expanduser().resolve()),
             "output_name": out_path.name,

@@ -2,10 +2,11 @@
 """Mechanically move pack imports to the frozen Astrid pack APIs.
 
 Run from any directory with ``python scripts/codemod_pack_api.py``.  Only
-imports whose names exist in ``astrid.pack_api`` are moved.  Private symbols,
-module imports, and the explicitly identified core-pack imports are retained
-when they cannot be represented by the public surface; the JSON report makes
-those follow-up items reviewable.  A second run makes no changes.
+imports whose names and defining modules match ``astrid.pack_api`` exports are
+moved.  Private symbols, same-name exports from another module, module imports,
+and the explicitly identified core-pack imports are retained when they cannot
+be represented by the public surface; the JSON report makes those follow-up
+items reviewable.  A second run makes no changes.
 """
 
 from __future__ import annotations
@@ -63,10 +64,15 @@ def _pack_for(path: Path) -> str | None:
         return None
 
 
+def _is_export_from(module: str, name: str, export_origins: dict[str, str]) -> bool:
+    """Return whether a public name is exported from this defining module."""
+    return export_origins.get(name) == module
+
+
 def codemod(*, write: bool) -> dict[str, object]:
     from astrid import pack_api
 
-    exports = set(pack_api.__all__) - {"VERSION"}
+    export_origins = pack_api._EXPORTS
     report: dict[str, object] = {
         "converted_statements": 0,
         "converted_names": 0,
@@ -110,7 +116,7 @@ def codemod(*, write: bool) -> dict[str, object]:
             if module.startswith("astrid.core"):
                 replacement_module = "astrid.pack_api"
                 for alias in node.names:
-                    if alias.name in exports:
+                    if _is_export_from(module, alias.name, export_origins):
                         converted.append(alias)
                     else:
                         unresolved.append(alias.name)
