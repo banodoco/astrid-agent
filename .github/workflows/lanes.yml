@@ -863,7 +863,7 @@ jobs:
                   "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "unavailable"),
                   "job": os.environ.get("GITHUB_JOB", "unavailable"),
                   "run_ref": os.environ.get("GITHUB_REF", "unavailable"),
-                  "requested_agent": os.environ.get("GITHUB_SHA", "unavailable"),
+                  "dispatch_sha": os.environ.get("GITHUB_SHA", "unavailable"),
                   "requested_harness": c07_harness,
                   "harness_effective": harness_effective,
               },

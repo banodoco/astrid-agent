@@ -42,7 +42,12 @@ class InstalledWheelReceiptTests(unittest.TestCase):
                 digest = hashlib.sha256(tarball.read_bytes()).hexdigest() if sidecar == "matching" else sidecar
                 (remotion / "artifact.tgz.sha256").write_text(digest + "\n")
             env = os.environ.copy()
-            env.update({"ASTRID_INSTALLED_RECEIPT_DIR": str(receipt), "GITHUB_SHA": "harness-sha"})
+            env.update({
+                "ASTRID_INSTALLED_RECEIPT_DIR": str(receipt),
+                "GITHUB_SHA": "dispatch-sha",
+                "C07_MODE": "c07",
+                "C07_AGENT_SHA": "product-agent-sha",
+            })
             env.update({"OUTCOME_" + name.upper(): "success" for name in STEPS})
             env.update({"OUTCOME_" + name.upper(): c07_outcome if c07 else "skipped" for name in C07_STEPS})
             env["C07_MODE"] = "c07" if c07 else "normal"
@@ -62,6 +67,9 @@ class InstalledWheelReceiptTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "green")
         self.assertTrue(receipt["tuple"]["composition"]["sidecar_matches"])
         self.assertEqual(receipt["installed_selector"]["junit"]["tests"], 1)
+        self.assertEqual(receipt["workflow"]["dispatch_sha"], "dispatch-sha")
+        self.assertEqual(receipt["tuple"]["agent_requested"], "product-agent-sha")
+        self.assertNotEqual(receipt["workflow"]["dispatch_sha"], receipt["tuple"]["agent_requested"])
 
     def test_unavailable_invalid_or_zero_test_junit_fails_closed(self):
         for junit in (None, "", "<testsuite", '<testsuite tests="0" failures="0" errors="0" skipped="0"/>', '<testsuite tests="1" failures="0" errors="0" skipped="0"/>', '<other tests="1"/>', '<testsuite tests="1" failures="-1" errors="0" skipped="0"/>'):
