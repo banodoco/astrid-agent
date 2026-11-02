@@ -15,6 +15,7 @@ import shlex
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
+from threading import Event, Thread
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -171,6 +172,35 @@ def _response(result):
         error = result.error
         raise WorkspaceClientError(0, error.code, error.message, dict(error.details))
     return result.as_dict()
+
+
+def _commit_request_until(client, project_id, timeline_id, body, key, deadline, cancel_event):
+    """Wait for one exact POST, while allowing the caller to cancel its wait."""
+    completed = Event()
+    outcome = []
+
+    def send():
+        try:
+            outcome.append((True, _response(client.timelines.commit(
+                project_id, timeline_id, body, idempotency_key=key))))
+        except BaseException as exc:  # propagate the generated client's exact failure
+            outcome.append((False, exc))
+        finally:
+            completed.set()
+
+    worker = Thread(target=send, name="timeline-commit-post", daemon=True)
+    worker.start()
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("timeline commit cancelled; original request remains saved")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("timeline commit response exceeded the user-editing deadline")
+        if completed.wait(min(remaining, 0.05 if cancel_event is not None else remaining)):
+            ok, result = outcome[0]
+            if ok:
+                return result
+            raise result
 
 
 def _pin(value):
@@ -1097,9 +1127,9 @@ class TimelineSession:
                 if self.cancel_event is not None and self.cancel_event.is_set():
                     raise InterruptedError("timeline commit cancelled; original request remains saved")
                 try:
-                    result = _response(self.client.timelines.commit(
-                        self.project_id, self.timeline_id, body, idempotency_key=flight["key"],
-                    ))
+                    result = _commit_request_until(
+                        self.client, self.project_id, self.timeline_id, body, flight["key"],
+                        deadline, self.cancel_event)
                     break
                 except Exception as exc:
                     details = getattr(exc, "details", {})

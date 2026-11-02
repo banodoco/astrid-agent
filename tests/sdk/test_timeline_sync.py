@@ -1057,7 +1057,14 @@ def test_user_editing_deadline_saves_pending_and_cancellation_keeps_flight(conne
     cancel_path = path.parent / "cancelled.json"
     cancel_generated = Generated(cancel_path)
     cancel_client = Client(cancel_generated)
-    cancel_generated.refusal = generated.refusal
+    entered, release = Event(), Event()
+
+    def blocked_post(*args, **kwargs):
+        entered.set()
+        release.wait(2)
+        raise generated.refusal
+
+    cancel_generated.commit_timeline = blocked_post
     cancelled = TimelineSession.open(
         "project-slug", "timeline-slug", client=cancel_client, outbox_path=cancel_path,
         user_editing_timeout=5, user_editing_interval=2, cancel_event=cancel,
@@ -1067,13 +1074,49 @@ def test_user_editing_deadline_saves_pending_and_cancellation_keeps_flight(conne
     timer = Timer(0.01, cancel.set)
     timer.start()
     try:
+        assert entered.wait(1)
         with pytest.raises(InterruptedError, match="cancelled"):
             cancelled.flush(idempotency_key="cancel-wait")
     finally:
         timer.cancel()
+        release.set()
     after = json.loads(cancel_path.read_bytes())
     assert after["flight"] == before
     assert not after["pending_changes"]
+
+
+def test_user_editing_deadline_includes_an_unanswered_post(connected):
+    from threading import Event
+
+    from astrid.sdk.timeline.sync import CommitOutcomeUnknown
+
+    client, _, path = connected
+    stalled_path = path.parent / "stalled.json"
+    generated = Generated(stalled_path)
+    client = Client(generated)
+    entered, release = Event(), Event()
+
+    def stalled_post(*args, **kwargs):
+        entered.set()
+        release.wait(2)
+        raise ApiError(409, "refused", "still editing",
+                       details={"status": "refused", "reason": "user_editing"})
+
+    generated.commit_timeline = stalled_post
+    session = TimelineSession.open(
+        "project-slug", "timeline-slug", client=client, outbox_path=stalled_path,
+        user_editing_timeout=0.02, user_editing_interval=0.005,
+    )
+    session.queue_move("parent/clip:a", 5)
+    try:
+        with pytest.raises(CommitOutcomeUnknown):
+            session.flush(idempotency_key="stalled-post")
+        assert entered.is_set()
+        saved = json.loads(stalled_path.read_bytes())
+        assert saved["flight"] is not None
+        assert not saved["pending_changes"]
+    finally:
+        release.set()
 
 
 def test_user_editing_does_not_rerun_commit_function(connected, monkeypatch):
