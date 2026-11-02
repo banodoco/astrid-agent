@@ -263,6 +263,9 @@ def test_final_live_provider_pins_are_exact():
         "pinokio/providers/r24-linux-binding.json": "89582d987efb569bfc7f41a4ecb3ec800c9f3e10e7e849b0100a42a78b292f52",
         "pinokio/providers/r24-schema.json": "233f989b29f54d082e1287c200b70b14b0315a9d763d05bcff824e556c648ffc",
     }
+    assert provider.LIVE_INTERFACE_FILES == {
+        "pinokio/providers/R24-LINUX.md": "2a2eb76b14d90544dc8a800764b20283d56ef34622dc331eaebd59997800a03c",
+    }
     assert provider.LIVE_CANDIDATE == {
         "app": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
         "agent": "2de0726d1eaea7f7bd141251e088aa9fdf224525",
