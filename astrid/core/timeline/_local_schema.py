@@ -127,5 +127,3 @@ def verified_schema_path(source_root: Path, configured: str) -> Path:
     if pin.get("sha256") != actual:
         raise ValueError("local timeline schema does not match its Runtime source pin")
     return expected
-
-
