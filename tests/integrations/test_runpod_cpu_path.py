@@ -456,6 +456,11 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         record = json.loads(claim_path.read_text())
         assert record["state"] == "cleanup_complete" and record["cleanup"]["absence"]["exact_get_status"] == 404
         assert not provider.pods and len(provider.prompts) == 1
+        released_owner = host._target_bindings.provider
+        observations = len(provider.events)
+        assert setup({**changed, "budget_cap_usd": 1.25}).ok
+        assert host._target_bindings.provider is not released_owner and released_owner.lease_owner.closed
+        assert len(provider.events) == observations, "setup after verified release observed the provider"
         evidence = {"task_id": result.task_id, "run_id": run_id, "generation_id": generation.generation_id,
                     "output_object": variants[0].object_id, "delivered_file": str(image_path),
                     "sha256": _sha(image_path.read_bytes()), "synthetic_inference": True,
