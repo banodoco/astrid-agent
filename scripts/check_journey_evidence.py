@@ -107,6 +107,25 @@ SELF_HOSTED_MACOS_COLLECTOR_VERSION = 2
 SELF_HOSTED_MACOS_COLLECTION_SCHEMA_VERSION = 2
 SELF_HOSTED_MACOS_TRUSTED_CONTEXT_SCHEMA_VERSION = 3
 SELF_HOSTED_MACOS_MAX_FRESHNESS_SECONDS = 900
+# These names are a closed artifact boundary below the downloaded
+# ``after-cleanup`` receipt directory.  The receipt's existing collection
+# digests are digests of these exact raw bytes, not a re-serialized summary.
+# The trusted context binds the receipt bytes, so a later edit cannot replace
+# the raw-byte digest claims.
+#
+# Retention and re-hashing make a supplied collection reviewable; they do not
+# establish that a source was independent or complete.  Those assertions stay
+# mandatory in the collection contract below.
+SELF_HOSTED_MACOS_RAW_FILES = {
+    "initial_census": "initial-census.raw",
+    "final_census": "final-census.raw",
+    "event_sequence": "events.raw",
+}
+SELF_HOSTED_MACOS_RAW_MAX_BYTES = {
+    "initial_census": 1024 * 1024,
+    "final_census": 1024 * 1024,
+    "event_sequence": 64 * 1024 * 1024,
+}
 
 
 def _migrate_macos_receipt_key(contract):
@@ -145,7 +164,72 @@ def _labels(value, *, subject):
     return labels, None
 
 
-def _self_hosted_collection_errors(receipt, trusted_context):
+def _self_hosted_raw_collection_errors(collection, raw_dir):
+    """Re-hash a closed retained raw collection artifact directory.
+
+    The directory is an aggregate input, not a runner-selected receipt field.
+    M-CI must download it from the same direct-macOS artifact as the canonical
+    post-cleanup receipt.  A missing, substituted, unsafe, empty, or oversized
+    raw source fails closed.
+    """
+    if raw_dir is None:
+        return ["self-hosted macOS: raw collection artifact directory is absent"]
+    raw_dir = Path(raw_dir)
+    if raw_dir.is_symlink() or not raw_dir.is_dir():
+        return ["self-hosted macOS: raw collection artifact directory is absent or unsafe"]
+
+    errors = []
+    expected_names = set(SELF_HOSTED_MACOS_RAW_FILES.values())
+    try:
+        actual_names = {entry.name for entry in raw_dir.iterdir()}
+    except OSError as exc:
+        return [f"self-hosted macOS: raw collection artifact directory is unreadable: {exc}"]
+    missing = sorted(expected_names - actual_names)
+    extra = sorted(actual_names - expected_names)
+    if missing:
+        errors.append("self-hosted macOS: raw collection artifact is absent: " + ", ".join(missing))
+    if extra:
+        errors.append("self-hosted macOS: raw collection artifact directory has unknown entries: "
+                      + ", ".join(extra))
+
+    for field, filename in SELF_HOSTED_MACOS_RAW_FILES.items():
+        path = raw_dir / filename
+        if path.is_symlink() or not path.is_file():
+            if filename in actual_names:
+                errors.append(
+                    f"self-hosted macOS: {field.replace('_', ' ')} raw artifact is absent or unsafe"
+                )
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            errors.append(
+                f"self-hosted macOS: {field.replace('_', ' ')} raw bytes are unreadable: {exc}"
+            )
+            continue
+        if size <= 0 or size > SELF_HOSTED_MACOS_RAW_MAX_BYTES[field]:
+            errors.append(
+                f"self-hosted macOS: {field.replace('_', ' ')} raw bytes are empty or exceed the bound"
+            )
+            continue
+        item = collection.get(field) if isinstance(collection, dict) else None
+        expected = item.get("sha256") if isinstance(item, dict) else None
+        if isinstance(expected, str) and DIGEST.fullmatch(expected):
+            try:
+                actual = digest(path)
+            except OSError as exc:
+                errors.append(
+                    f"self-hosted macOS: {field.replace('_', ' ')} raw bytes are unreadable: {exc}"
+                )
+            else:
+                if actual != expected:
+                    errors.append(
+                        f"self-hosted macOS: {field.replace('_', ' ')} raw bytes digest differs from the receipt"
+                    )
+    return errors
+
+
+def _self_hosted_collection_errors(receipt, trusted_context, raw_dir):
     """Require the R-30 collector facts rather than treating a pass bit as proof.
 
     The API cannot observe the private lifecycle itself.  These fields therefore
@@ -230,10 +314,11 @@ def _self_hosted_collection_errors(receipt, trusted_context):
         errors.append("self-hosted macOS: event loss counters are absent, nonzero, or incomplete")
     if collection.get("inner_exit") != 0:
         errors.append("self-hosted macOS: inner exit is missing or nonzero")
+    errors.extend(_self_hosted_raw_collection_errors(collection, raw_dir))
     return errors
 
 
-def self_hosted_macos_identity_errors(candidate, receipt, trusted_context, receipt_sha256):
+def self_hosted_macos_identity_errors(candidate, receipt, trusted_context, receipt_sha256, raw_dir):
     """Bind a self-hosted receipt to context fetched outside that runner.
 
     ``trusted_context`` is intentionally a separate checker input.  It must be
@@ -333,7 +418,7 @@ def self_hosted_macos_identity_errors(candidate, receipt, trusted_context, recei
         errors.append(receipt_label_error)
     if receipt_labels is not None and labels is not None and receipt_labels != labels:
         errors.append("self-hosted macOS: receipt runner labels differ from trusted context")
-    errors.extend(_self_hosted_collection_errors(receipt, trusted_context))
+    errors.extend(_self_hosted_collection_errors(receipt, trusted_context, raw_dir))
     return errors
 
 
@@ -579,7 +664,7 @@ def evaluate_release1_matrix(candidate, results):
     return errors
 
 
-def evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_path):
+def evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_path, raw_dir):
     """Admit only the separately authenticated hannah-mac direct-macOS receipt.
 
     This profile never relaxes the normal hosted aggregate: its API-built
@@ -600,7 +685,7 @@ def evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_
         return [f"self-hosted macOS: trusted Actions context is unreadable: {exc}"]
 
     errors = self_hosted_macos_identity_errors(
-        candidate, receipt, trusted_context, digest(receipt_path)
+        candidate, receipt, trusted_context, digest(receipt_path), raw_dir
     )
     contract = next(row for row in RELEASE1_MATRIX if row["job_id"] == "direct-macos")
     if receipt.get("job_id") != contract["job_id"]:
@@ -618,7 +703,7 @@ def evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_
     return errors
 
 
-def evaluate_release1_with_self_hosted_macos(candidate, results, receipt_path, trusted_context_path):
+def evaluate_release1_with_self_hosted_macos(candidate, results, receipt_path, trusted_context_path, raw_dir):
     """Require eight hosted rows and exactly one authenticated direct-macOS row."""
     errors = []
     expected = {row["job_id"]: row for row in RELEASE1_MATRIX if row["job_id"] != "direct-macos"}
@@ -661,7 +746,7 @@ def evaluate_release1_with_self_hosted_macos(candidate, results, receipt_path, t
         if row.get("venue") not in (None, "hosted"):
             errors.append(f"{job_id}: hosted row is relabelled as self-hosted")
         errors.extend(_release1_row_errors(candidate, contract, row))
-    errors.extend(evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_path))
+    errors.extend(evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_path, raw_dir))
     return errors
 
 
@@ -1271,6 +1356,8 @@ def main():
                         help="downloaded direct-macOS journey-result.json, never the trusted context")
     parser.add_argument("--trusted-context", type=Path,
                         help="gate-built GitHub Actions API context for a self-hosted macOS receipt")
+    parser.add_argument("--self-hosted-macos-raw-dir", type=Path,
+                        help="downloaded retained raw census/event files for a self-hosted macOS receipt")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
                         help="require all three hosted Pinokio backend M4-4a receipts")
     parser.add_argument("--aggregate-m4-5", action="store_true",
@@ -1324,27 +1411,31 @@ def main():
             errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))
         elif args.aggregate_self_hosted_macos:
             if (args.self_hosted_macos_receipt is None or args.trusted_context is None
+                    or args.self_hosted_macos_raw_dir is None
                     or args.results is not None or args.expected_runner is not None
                     or args.expected_shell is not None or args.required or args.allow_source_override
                     or args.prepare_only):
                 raise ValueError(
                     "self-hosted macOS aggregate requires only --candidate, --app-checkout, "
-                    "--self-hosted-macos-receipt and --trusted-context"
+                    "--self-hosted-macos-receipt, --trusted-context and --self-hosted-macos-raw-dir"
                 )
             errors.extend(evaluate_self_hosted_macos_receipt(
-                candidate, args.self_hosted_macos_receipt, args.trusted_context
+                candidate, args.self_hosted_macos_receipt, args.trusted_context,
+                args.self_hosted_macos_raw_dir
             ))
         elif args.aggregate_release1_with_self_hosted_macos:
             if (args.results is None or args.self_hosted_macos_receipt is None
-                    or args.trusted_context is None or args.expected_runner is not None
+                    or args.trusted_context is None or args.self_hosted_macos_raw_dir is None
+                    or args.expected_runner is not None
                     or args.expected_shell is not None or args.required or args.allow_source_override
                     or args.prepare_only):
                 raise ValueError(
                     "combined self-hosted macOS aggregate requires --candidate, --app-checkout, --results, "
-                    "--self-hosted-macos-receipt and --trusted-context"
+                    "--self-hosted-macos-receipt, --trusted-context and --self-hosted-macos-raw-dir"
                 )
             errors.extend(evaluate_release1_with_self_hosted_macos(
-                candidate, args.results, args.self_hosted_macos_receipt, args.trusted_context
+                candidate, args.results, args.self_hosted_macos_receipt, args.trusted_context,
+                args.self_hosted_macos_raw_dir
             ))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:

@@ -133,11 +133,24 @@ def authenticated_row(frozen):
 def write_bound(tmp_path, receipt, context):
     receipt_path = tmp_path / "self-hosted" / "after-cleanup" / "journey-result.json"
     context_path = tmp_path / "trusted-actions-context.json"
+    raw_dir = receipt_path.parent / "self-hosted-macos-raw"
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir()
+    raw_bytes = {
+        "initial_census": b'{"source":"independent","phase":"initial"}\n',
+        "final_census": b'{"source":"independent","phase":"final"}\n',
+        "event_sequence": b'{"seq":1}\n{"seq":2}\n{"seq":3}\n',
+    }
+    for field, filename in gate.SELF_HOSTED_MACOS_RAW_FILES.items():
+        path = raw_dir / filename
+        path.write_bytes(raw_bytes[field])
+        item = receipt["self_hosted_collection"].get(field)
+        if isinstance(item, dict):
+            item["sha256"] = hashlib.sha256(raw_bytes[field]).hexdigest()
     receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
     context["receipt_sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
     context_path.write_text(json.dumps(context, sort_keys=True), encoding="utf-8")
-    return receipt_path, context_path
+    return receipt_path, context_path, raw_dir
 
 
 def evaluate(tmp_path, receipt=None, context=None):
@@ -145,13 +158,13 @@ def evaluate(tmp_path, receipt=None, context=None):
     good_receipt, good_context = authenticated_row(frozen)
     receipt = good_receipt if receipt is None else receipt
     context = good_context if context is None else context
-    receipt_path, context_path = write_bound(tmp_path, receipt, context)
-    return frozen, receipt_path, context_path
+    receipt_path, context_path, raw_dir = write_bound(tmp_path, receipt, context)
+    return frozen, receipt_path, context_path, raw_dir
 
 
 def test_self_hosted_macos_accepts_only_the_complete_api_bound_record(tmp_path):
-    frozen, receipt_path, context_path = evaluate(tmp_path)
-    assert not gate.evaluate_self_hosted_macos_receipt(frozen, receipt_path, context_path)
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path)
+    assert not gate.evaluate_self_hosted_macos_receipt(frozen, receipt_path, context_path, raw_dir)
 
 
 @pytest.mark.parametrize(
@@ -198,46 +211,46 @@ def test_self_hosted_macos_required_negative_controls_fail_closed(tmp_path, muta
         receipt["self_hosted_collection"]["inner_exit"] = 1
     elif mutation == "hosted-relabel":
         receipt["runner_image"] = "macos-15"
-    receipt_path, context_path = write_bound(tmp_path, receipt, context)
+    receipt_path, context_path, raw_dir = write_bound(tmp_path, receipt, context)
     assert any(expected in error for error in gate.evaluate_self_hosted_macos_receipt(
-        frozen, receipt_path, context_path
+        frozen, receipt_path, context_path, raw_dir
     )), mutation
 
 
 def test_self_hosted_macos_rejects_a_wrong_artifact_after_api_binding(tmp_path):
-    frozen, receipt_path, context_path = evaluate(tmp_path)
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["execution_identity"]["runner_name"] = "forged-after-hash"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any("trusted receipt digest differs" in error for error in gate.evaluate_self_hosted_macos_receipt(
-        frozen, receipt_path, context_path
+        frozen, receipt_path, context_path, raw_dir
     ))
 
 
 def test_self_hosted_macos_derives_freshness_only_after_job_completion(tmp_path):
-    frozen, receipt_path, context_path = evaluate(tmp_path)
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert "freshness_seconds" not in receipt["self_hosted_collection"]
     context = json.loads(context_path.read_text(encoding="utf-8"))
     assert context["receipt_ended_at"] == receipt["self_hosted_collection"]["ended_at"]
     assert context["freshness_seconds"] == 540
-    assert not gate.evaluate_self_hosted_macos_receipt(frozen, receipt_path, context_path)
+    assert not gate.evaluate_self_hosted_macos_receipt(frozen, receipt_path, context_path, raw_dir)
 
 
 def test_self_hosted_macos_rejects_missing_or_negative_trusted_freshness(tmp_path):
     frozen = candidate()
     receipt, context = authenticated_row(frozen)
     del context["freshness_seconds"]
-    receipt_path, context_path = write_bound(tmp_path, receipt, context)
+    receipt_path, context_path, raw_dir = write_bound(tmp_path, receipt, context)
     assert any("missing freshness_seconds" in error for error in gate.evaluate_self_hosted_macos_receipt(
-        frozen, receipt_path, context_path
+        frozen, receipt_path, context_path, raw_dir
     ))
 
     receipt, context = authenticated_row(frozen)
     context["freshness_seconds"] = -1
-    receipt_path, context_path = write_bound(tmp_path / "negative", receipt, context)
+    receipt_path, context_path, raw_dir = write_bound(tmp_path / "negative", receipt, context)
     assert any("trusted freshness" in error for error in gate.evaluate_self_hosted_macos_receipt(
-        frozen, receipt_path, context_path
+        frozen, receipt_path, context_path, raw_dir
     ))
 
 
@@ -246,9 +259,9 @@ def test_self_hosted_macos_rejects_stale_post_job_freshness(tmp_path):
     receipt, context = authenticated_row(frozen)
     context["job_completed_at"] = "2026-11-02T20:16:02Z"
     context["freshness_seconds"] = 902
-    receipt_path, context_path = write_bound(tmp_path, receipt, context)
+    receipt_path, context_path, raw_dir = write_bound(tmp_path, receipt, context)
     assert any("trusted freshness" in error for error in gate.evaluate_self_hosted_macos_receipt(
-        frozen, receipt_path, context_path
+        frozen, receipt_path, context_path, raw_dir
     ))
 
 
@@ -256,31 +269,75 @@ def test_self_hosted_macos_rejects_wrong_job_or_forged_context_timestamp(tmp_pat
     frozen = candidate()
     receipt, context = authenticated_row(frozen)
     context["job_id"] = 987654321
-    receipt_path, context_path = write_bound(tmp_path, receipt, context)
+    receipt_path, context_path, raw_dir = write_bound(tmp_path, receipt, context)
     assert any("receipt job_id differs" in error for error in gate.evaluate_self_hosted_macos_receipt(
-        frozen, receipt_path, context_path
+        frozen, receipt_path, context_path, raw_dir
     ))
 
     receipt, context = authenticated_row(frozen)
     context["receipt_ended_at"] = "2026-11-02T20:01:01Z"
-    receipt_path, context_path = write_bound(tmp_path / "timestamp", receipt, context)
+    receipt_path, context_path, raw_dir = write_bound(tmp_path / "timestamp", receipt, context)
     assert any("trusted receipt end time differs" in error for error in gate.evaluate_self_hosted_macos_receipt(
-        frozen, receipt_path, context_path
+        frozen, receipt_path, context_path, raw_dir
     ))
 
 
 def test_self_hosted_macos_rejects_tampered_raw_receipt_timestamp(tmp_path):
-    frozen, receipt_path, context_path = evaluate(tmp_path)
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["self_hosted_collection"]["ended_at"] = "2026-11-02T20:01:01Z"
     receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
     assert any("trusted receipt digest differs" in error for error in gate.evaluate_self_hosted_macos_receipt(
-        frozen, receipt_path, context_path
+        frozen, receipt_path, context_path, raw_dir
     ))
 
 
+def test_self_hosted_macos_rehashes_retained_raw_bytes_and_rejects_tampering(tmp_path):
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path)
+    (raw_dir / gate.SELF_HOSTED_MACOS_RAW_FILES["event_sequence"]).write_bytes(b"tampered\n")
+    assert any("event sequence raw bytes digest differs" in error
+               for error in gate.evaluate_self_hosted_macos_receipt(
+                   frozen, receipt_path, context_path, raw_dir
+               ))
+
+
+def test_self_hosted_macos_rejects_missing_or_lost_retained_raw_sources(tmp_path):
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path)
+    (raw_dir / gate.SELF_HOSTED_MACOS_RAW_FILES["initial_census"]).unlink()
+    assert any("raw collection artifact is absent" in error
+               for error in gate.evaluate_self_hosted_macos_receipt(
+                   frozen, receipt_path, context_path, raw_dir
+               ))
+
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path / "lost")
+    for path in raw_dir.iterdir():
+        path.unlink()
+    raw_dir.rmdir()
+    assert any("raw collection artifact directory is absent" in error
+               for error in gate.evaluate_self_hosted_macos_receipt(
+                   frozen, receipt_path, context_path, raw_dir
+               ))
+
+
+def test_self_hosted_macos_rejects_raw_sources_that_exceed_the_bound(tmp_path, monkeypatch):
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path)
+    monkeypatch.setitem(gate.SELF_HOSTED_MACOS_RAW_MAX_BYTES, "event_sequence", 1)
+    assert any("event sequence raw bytes are empty or exceed the bound" in error
+               for error in gate.evaluate_self_hosted_macos_receipt(
+                   frozen, receipt_path, context_path, raw_dir
+               ))
+
+
+def test_self_hosted_macos_refuses_to_admit_a_receipt_without_raw_sources(tmp_path):
+    frozen, receipt_path, context_path, _ = evaluate(tmp_path)
+    assert any("raw collection artifact directory is absent" in error
+               for error in gate.evaluate_self_hosted_macos_receipt(
+                   frozen, receipt_path, context_path, None
+               ))
+
+
 def test_combined_aggregate_preserves_eight_hosted_rows_and_rejects_relabelling(tmp_path):
-    frozen, receipt_path, context_path = evaluate(tmp_path)
+    frozen, receipt_path, context_path, raw_dir = evaluate(tmp_path)
     hosted = tmp_path / "hosted"
     for contract in gate.RELEASE1_MATRIX:
         if contract["job_id"] == "direct-macos":
@@ -289,7 +346,7 @@ def test_combined_aggregate_preserves_eight_hosted_rows_and_rejects_relabelling(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(release1_row(contract, frozen)), encoding="utf-8")
     assert not gate.evaluate_release1_with_self_hosted_macos(
-        frozen, hosted, receipt_path, context_path
+        frozen, hosted, receipt_path, context_path, raw_dir
     )
 
     pinokio = next(hosted.rglob("journey-result.json"))
@@ -297,7 +354,7 @@ def test_combined_aggregate_preserves_eight_hosted_rows_and_rejects_relabelling(
     row["venue"] = "self-hosted"
     pinokio.write_text(json.dumps(row), encoding="utf-8")
     assert any("hosted row is relabelled" in error for error in gate.evaluate_release1_with_self_hosted_macos(
-        frozen, hosted, receipt_path, context_path
+        frozen, hosted, receipt_path, context_path, raw_dir
     ))
 
 
