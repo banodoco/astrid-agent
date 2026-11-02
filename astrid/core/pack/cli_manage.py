@@ -33,6 +33,27 @@ def _selected_root(override: str | None) -> Path:
     return root
 
 
+def _composition_roots(target_root: Path, *, include_default: bool) -> tuple[Path, ...]:
+    """Freeze the host's explicitly selected external roots at CLI entry."""
+    configured = os.environ.get("ASTRID_PACKS_PATH")
+    values = ([Path(item).expanduser() for item in configured.split(os.pathsep) if item]
+              if configured is not None else
+              ([Path.home() / "Astrid" / "packs"] if include_default else []))
+    roots = []
+    for value in values:
+        if not value.is_absolute():
+            raise PackInstallError("unsafe_path", "Selected external pack roots must be absolute paths.")
+        resolved = value.resolve()
+        if resolved != target_root.resolve():
+            roots.append(resolved)
+    return tuple(dict.fromkeys(roots))
+
+
+def _core_root() -> Path:
+    from .loader import packs_root
+    return packs_root().resolve()
+
+
 def _validation_snapshot() -> tuple[Mapping[str, str], Mapping[str, Mapping[str, str]]]:
     packages = {
         dist.metadata.get("Name", "").lower().replace("_", "-").replace(".", "-"): dist.version
@@ -96,9 +117,12 @@ def _handle_update(args) -> int:
     try:
         packs = _pack_specs(args.packs)
         root = _selected_root(args.packs_root)
+        selected_roots = _composition_roots(root, include_default=args.packs_root is None)
         packages, pins = _validation_snapshot()
         result = install_group(source=args.source, revision=args.revision, packs=packs,
-                               packs_root=root, python_packages=packages, release_pins=pins, intent="update",
+                               packs_root=root, selected_roots=selected_roots,
+                               core_root=_core_root(),
+                               python_packages=packages, release_pins=pins, intent="update",
                                consent=_confirm_update)
     except (PackInstallError, OSError, EOFError) as exc:
         print(str(exc), file=sys.stderr)
@@ -110,9 +134,11 @@ def _handle_update(args) -> int:
 def _handle_rollback(args) -> int:
     try:
         root = _selected_root(args.packs_root)
+        selected_roots = _composition_roots(root, include_default=args.packs_root is None)
         packages, pins = _validation_snapshot()
         result = rollback_group(packs_root=root, pack_ids=args.pack_ids,
                                 transaction_id=args.transaction_id, consent=_confirm_rollback,
+                                selected_roots=selected_roots, core_root=_core_root(),
                                 python_packages=packages, release_pins=pins)
     except (PackInstallError, OSError, EOFError) as exc:
         print(str(exc), file=sys.stderr)
