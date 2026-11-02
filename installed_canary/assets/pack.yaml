@@ -1,0 +1,39 @@
+{
+  "actions": {
+    "parent": {
+      "description": "Submit only H3 prepare",
+      "inputs": [
+        {
+          "name": "request_oid",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "bundle_oid",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "request",
+          "required": true,
+          "type": "file"
+        },
+        {
+          "name": "input_bundle",
+          "required": true,
+          "type": "file"
+        }
+      ],
+      "invocation": {
+        "function": "run",
+        "kind": "python",
+        "path": "actions/parent.py"
+      },
+      "outputs": {}
+    }
+  },
+  "id": "installed_canary",
+  "name": "Installed CPU canary",
+  "schema_version": 3,
+  "version": "1.0.0"
+}

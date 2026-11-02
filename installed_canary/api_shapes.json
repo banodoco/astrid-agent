@@ -1,0 +1,226 @@
+[
+  {
+    "module": "astrid.installer.backend",
+    "attribute": "Backend",
+    "positional": 3,
+    "keywords": []
+  },
+  {
+    "module": "astrid.installer.backend",
+    "attribute": "Backend.stop",
+    "positional": 3,
+    "keywords": []
+  },
+  {
+    "module": "astrid.installer.backend",
+    "attribute": "Backend.start",
+    "positional": 3,
+    "keywords": []
+  },
+  {
+    "module": "astrid.installer.backend",
+    "attribute": "Backend.verify",
+    "positional": 4,
+    "keywords": []
+  },
+  {
+    "module": "astrid.installer.core",
+    "attribute": "current",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "astrid.installer.core",
+    "attribute": "read_json",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "astrid.installer.core",
+    "attribute": "write_json",
+    "positional": 2,
+    "keywords": []
+  },
+  {
+    "module": "runtime_protocol.local_worker_composition",
+    "attribute": "_pack_inventory",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "astrid.core.execution.capability_ledger",
+    "attribute": "load_capability_ledger",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "astrid.core.execution.generic_host",
+    "attribute": "GenericPackHost",
+    "positional": 0,
+    "keywords": [
+      "pack_roots",
+      "capability_matrix",
+      "boot_manifest_path",
+      "boot_manifest_hash"
+    ]
+  },
+  {
+    "module": "runtime_protocol.local_worker",
+    "attribute": "_digest",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "astrid.sdk.invocation",
+    "attribute": "invoke_result",
+    "positional": 1,
+    "keywords": [
+      "kind",
+      "inputs",
+      "child_key",
+      "stage",
+      "input_refs",
+      "timeout_seconds"
+    ]
+  },
+  {
+    "module": "astrid.core.execution._child_bridge",
+    "attribute": "resource",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "astrid.core.execution._child_bridge",
+    "attribute": "task_resource",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "astrid.sdk.execution_request",
+    "attribute": "normalize_execution_request",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "runtime_protocol.auth",
+    "attribute": "CredentialStore",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "runtime_protocol.auth",
+    "attribute": "CredentialStore.actor_metadata",
+    "positional": 2,
+    "keywords": []
+  },
+  {
+    "module": "astrid_runtime_client",
+    "attribute": "WorkspaceClient",
+    "positional": 2,
+    "keywords": []
+  },
+  {
+    "module": "astrid_runtime_client",
+    "attribute": "WorkspaceClient.create_project",
+    "positional": 2,
+    "keywords": [
+      "slug",
+      "idempotency_key"
+    ]
+  },
+  {
+    "module": "astrid_runtime_client",
+    "attribute": "WorkspaceClient.list_capabilities",
+    "positional": 1,
+    "keywords": [
+      "cursor",
+      "limit"
+    ]
+  },
+  {
+    "module": "astrid_runtime_client",
+    "attribute": "WorkspaceClient.ingest_project_object",
+    "positional": 3,
+    "keywords": [
+      "filename",
+      "media_type",
+      "idempotency_key"
+    ]
+  },
+  {
+    "module": "astrid_runtime_client",
+    "attribute": "WorkspaceClient.admit_task",
+    "positional": 1,
+    "keywords": [
+      "capability_id",
+      "capability_digest",
+      "project_id",
+      "input_object_ids",
+      "spec",
+      "execution_request",
+      "child_delegation",
+      "idempotency_key"
+    ]
+  },
+  {
+    "module": "astrid_runtime_client",
+    "attribute": "WorkspaceClient.list_events",
+    "positional": 1,
+    "keywords": [
+      "cursor",
+      "limit"
+    ]
+  },
+  {
+    "module": "astrid_runtime_client",
+    "attribute": "WorkspaceClient.get_task",
+    "positional": 2,
+    "keywords": []
+  },
+  {
+    "module": "astrid.installer.worker_profile",
+    "attribute": "write_worker_profile",
+    "positional": 3,
+    "keywords": []
+  },
+  {
+    "module": "astrid_runtime.custody_broker",
+    "attribute": "default_process_identity",
+    "positional": 1,
+    "keywords": []
+  },
+  {
+    "module": "runtime_protocol.local_execution_supervisor",
+    "attribute": "runtime_owner_record",
+    "positional": 2,
+    "keywords": []
+  },
+  {
+    "module": "runtime_protocol.verified_host_launch",
+    "attribute": "_stream_member_digest",
+    "positional": 2,
+    "keywords": []
+  },
+  {
+    "module": "runtime_protocol.verified_host_launch",
+    "attribute": "read_source",
+    "positional": 2,
+    "keywords": []
+  },
+  {
+    "module": "astrid_runtime.custody_broker",
+    "attribute": "RoleBoundCustodyBroker",
+    "positional": 0,
+    "keywords": [
+      "role",
+      "identity_provider",
+      "ledger_root"
+    ]
+  },
+  {
+    "module": "astrid_runtime.custody_broker",
+    "attribute": "RoleBoundCustodyBroker.abort_before_spawn",
+    "positional": 1,
+    "keywords": []
+  }
+]
