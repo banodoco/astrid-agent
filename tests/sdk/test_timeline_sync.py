@@ -1050,8 +1050,8 @@ def test_user_editing_deadline_saves_pending_and_cancellation_keeps_flight(conne
     assert caught.value.fix == f'tl.retry("{record["id"]}")'
     assert len(generated.calls) >= 2
 
-    from threading import Timer
     from threading import Event
+    from threading import Thread
 
     cancel = Event()
     cancel_path = path.parent / "cancelled.json"
@@ -1070,15 +1070,21 @@ def test_user_editing_deadline_saves_pending_and_cancellation_keeps_flight(conne
         user_editing_timeout=5, user_editing_interval=2, cancel_event=cancel,
     )
     cancelled.queue_move("parent/clip:b", 7)
-    before = json.loads(cancel_path.read_bytes())["flight"]
-    timer = Timer(0.01, cancel.set)
-    timer.start()
-    try:
-        assert entered.wait(1)
+
+    def flush_until_cancelled():
         with pytest.raises(InterruptedError, match="cancelled"):
             cancelled.flush(idempotency_key="cancel-wait")
+
+    worker = Thread(target=flush_until_cancelled)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        before = json.loads(cancel_path.read_bytes())["flight"]
+        cancel.set()
+        worker.join(1)
+        assert not worker.is_alive()
     finally:
-        timer.cancel()
+        cancel.set()
         release.set()
     after = json.loads(cancel_path.read_bytes())
     assert after["flight"] == before

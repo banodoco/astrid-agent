@@ -193,6 +193,11 @@ def _commit_request_until(client, project_id, timeline_id, body, key, deadline, 
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise InterruptedError("timeline commit cancelled; original request remains saved")
+        if completed.is_set():
+            ok, result = outcome[0]
+            if ok:
+                return result
+            raise result
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("timeline commit response exceeded the user-editing deadline")
@@ -1115,6 +1120,7 @@ class TimelineSession:
                 elif state.get('media_imports'):
                     flight['imports'] = copy.deepcopy(state['media_imports'])
                 state["flight"] = flight
+                state.setdefault("pending_changes", {})
                 self.outbox.write(state)
             body = self._flight_body(state, flight, idempotency_key, dry_run)
             if "fence" not in flight:  # Preserve requests persisted before fencing was added.
@@ -1123,13 +1129,15 @@ class TimelineSession:
             flight = copy.deepcopy(flight)
         try:
             deadline = time.monotonic() + self.user_editing_timeout
+            response_deadline = deadline + self.user_editing_timeout
             while True:
-                if self.cancel_event is not None and self.cancel_event.is_set():
-                    raise InterruptedError("timeline commit cancelled; original request remains saved")
                 try:
+                    # The exact flight is already durable. Start its POST
+                    # before observing cancellation so a cancellation racing
+                    # this boundary cannot strand an unsent flight.
                     result = _commit_request_until(
                         self.client, self.project_id, self.timeline_id, body, flight["key"],
-                        deadline, self.cancel_event)
+                        response_deadline, self.cancel_event)
                     break
                 except Exception as exc:
                     details = getattr(exc, "details", {})
