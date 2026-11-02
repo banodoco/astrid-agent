@@ -240,6 +240,23 @@ def test_discovery_cache_hashes_only_selected_roots_and_invalidates_them(
 ) -> None:
     source = tmp_path / "source/astrid/packs"
     _write_pack(source, "bundled")
+    hidden_local = source / "local"
+    hidden_local.mkdir()
+    (hidden_local / "pack.yaml").write_text(
+        '{"schema_version":3,"id":"local","name":"Local","version":"1.0.0",'
+        '"pack_api":"1.0","visibility":"hidden","rendering":{}}',
+        encoding="utf-8",
+    )
+    hidden_asset = hidden_local / "elements/effects/legacy/element.yaml"
+    hidden_asset.parent.mkdir(parents=True)
+    hidden_asset.write_text("hidden legacy asset", encoding="utf-8")
+    ignored_assets = []
+    for ignored_name in (".ignored", "__pycache__"):
+        ignored = source / ignored_name
+        ignored.mkdir()
+        ignored_manifest = ignored / "pack.yaml"
+        ignored_manifest.write_text("not a pack", encoding="utf-8")
+        ignored_assets.append(ignored_manifest)
     project = tmp_path / "project"
     unselected_project_packs = project / "astrid/packs"
     unselected_project_packs.mkdir(parents=True)
@@ -247,31 +264,53 @@ def test_discovery_cache_hashes_only_selected_roots_and_invalidates_them(
     project_bytes.write_text("initial", encoding="utf-8")
     extra_root = tmp_path / "extra"
     selected = _write_pack(extra_root, "selected")
+    selected_asset = selected / "assets/payload.bin"
+    selected_asset.parent.mkdir()
+    selected_asset.write_bytes(b"selected asset v1")
     monkeypatch.setattr(loader, "packs_root", lambda: source)
     monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
         identity="empty-inventory", sources=(),
     ))
     fingerprint = pack_discovery._tree_fingerprint
+    real_file_digest = pack_discovery.hashlib.file_digest
+    hashed_files = []
+
+    def record_file_digest(stream, algorithm, *args, **kwargs):
+        hashed_files.append(Path(stream.name).resolve())
+        return real_file_digest(stream, algorithm, *args, **kwargs)
 
     with mock.patch(
         "astrid.core.pack.discovery._tree_fingerprint", wraps=fingerprint,
     ) as fingerprint_calls, mock.patch.object(
         loader, "scan_packs", wraps=loader.scan_packs,
-    ) as scans, pack_discovery_scope():
+    ) as scans, mock.patch.object(
+        pack_discovery.hashlib, "file_digest", side_effect=record_file_digest,
+    ), pack_discovery_scope():
         first = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+        assert "local" not in [row.id for row in first]
+        assert selected_asset.resolve() in hashed_files
+        assert hidden_asset.resolve() not in hashed_files
+        assert all(path.resolve() not in hashed_files for path in ignored_assets)
         project_bytes.write_text("changed but still unselected", encoding="utf-8")
+        hidden_asset.write_text("hidden asset changed", encoding="utf-8")
         unchanged = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
         assert unchanged == first
         assert scans.call_count == 1
 
-        manifest_path = selected / "pack.yaml"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["description"] = "selected root changed"
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        selected_asset.write_bytes(b"selected asset v2")
         invalidated = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
-
         assert scans.call_count == 2
-        assert next(row for row in invalidated if row.id == "selected").pack.description == "selected root changed"
+        assert any(row.id == "selected" for row in invalidated)
+
+        manifest_path = hidden_local / "pack.yaml"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["visibility"] = "visible"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        visible = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+        assert scans.call_count == 3
+        assert [row.id for row in visible if row.id == "local"] == ["local"]
+        assert hidden_asset.resolve() in hashed_files
+
         hashed_roots = {Path(call.args[0]).resolve() for call in fingerprint_calls.call_args_list}
         assert unselected_project_packs.resolve() not in hashed_roots
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from astrid.core.pack import discover_packs, load_pack_manifest, loader
+from astrid.core.pack import PackValidationError, discover_packs, load_pack_manifest, loader
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.discovery import (
     DiscoveredPack,
@@ -172,16 +172,44 @@ def test_external_broken_hidden_and_duplicate_roots_are_isolated(tmp_path: Path,
     assert "broken" in caplog.text and "managed_broken" in caplog.text
 
 
-def test_broken_source_is_quarantined_and_core_shell_is_not_a_pack(tmp_path: Path) -> None:
+def test_discover_pack_metadata_refuses_malformed_supported_v3_source(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    packs = tmp_path / "packs"
+    malformed = write_pack(packs, "malformed")
+    manifest_path = malformed / "pack.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["pack_api"] = []
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    inventory(monkeypatch)
+    monkeypatch.setattr(loader, "packs_root", lambda: packs)
+
+    with pytest.raises(PackValidationError, match="pack_api"):
+        discover_pack_metadata(project_root=tmp_path)
+
+
+def test_unsupported_source_versions_are_quarantined_and_core_shell_is_not_a_pack(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    packs = tmp_path / "packs"
     core = tmp_path / "_core/docs"
     core.mkdir(parents=True)
     (core / "SKILL.md").write_text(SKILL)
     assert discover_packs(tmp_path) == ()
-    assert (core / "SKILL.md").read_text() == SKILL
-    broken = write_pack(tmp_path, "broken")
-    (broken / "pack.yaml").write_text("schema_version: 999\n")
-    scan = loader.scan_packs(tmp_path, strict=True)
+    legacy = write_pack(packs, "legacy_v2", version=2)
+    unsupported = write_pack(packs, "unsupported")
+    (unsupported / "pack.yaml").write_text("schema_version: 999\n", encoding="utf-8")
+
+    scan = loader.scan_packs(packs, strict=True)
     assert scan.packs == ()
-    assert [(row.pack_id, row.manifest_path) for row in scan.quarantined] == [
-        ("broken", broken / "pack.yaml")
-    ]
+    quarantined = {row.pack_id: row for row in scan.quarantined}
+    assert set(quarantined) == {"legacy_v2", "unsupported"}
+    assert quarantined["legacy_v2"].manifest_path == legacy / "pack.yaml"
+    assert quarantined["unsupported"].manifest_path == unsupported / "pack.yaml"
+    assert "Migrate to v3" in quarantined["legacy_v2"].error
+    assert "not supported" in quarantined["unsupported"].error
+    inventory(monkeypatch)
+    monkeypatch.setattr(loader, "packs_root", lambda: packs)
+    assert discover_pack_metadata(project_root=tmp_path) == ()
+    assert discover_packs(packs) == ()
+    assert (core / "SKILL.md").read_text() == SKILL

@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.pack import (
     PackDefinition,
@@ -64,12 +66,16 @@ def pack_discovery_scope():
         _discovery_cache.reset(token)
 
 
-def _tree_fingerprint(root: Path) -> str:
-    """Read contents, names and file kinds, including untracked resources.
+def _tree_fingerprint(
+    root: Path, *, pack_root: bool = False, pack_collection: bool = True
+) -> str:
+    """Fingerprint selected discovery content, including untracked resources.
 
-    A stat-only key misses same-size edits with restored timestamps. Tracking
-    the entire tree also covers added manifests, alternate manifests, deleted
-    resources and new symlinks that canonical admission must reject.
+    Pack collections select direct, non-hidden pack directories. Their
+    manifests stay in the key so changing visibility or adding a manifest
+    invalidates discovery, while hidden packs and scanner-ignored directories
+    contribute no descendant bytes. An explicitly selected pack root is
+    fingerprinted only when its manifest is visible.
     """
     digest = hashlib.sha256()
 
@@ -89,6 +95,8 @@ def _tree_fingerprint(root: Path) -> str:
             add(os.fsencode(os.readlink(path)))
         elif stat.S_ISDIR(mode):
             for child in sorted(path.iterdir()):
+                if child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
+                    continue
                 visit(child)
         elif stat.S_ISREG(mode):
             with path.open("rb") as stream:
@@ -96,7 +104,44 @@ def _tree_fingerprint(root: Path) -> str:
         else:
             raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
 
-    visit(root)
+    def selected_pack(path: Path, *, include_descendants: bool) -> None:
+        manifest = path / "pack.yaml"
+        visit(manifest)
+        try:
+            with manifest.open("r", encoding="utf-8") as stream:
+                payload = yaml.safe_load(stream)
+        except (OSError, yaml.YAMLError):
+            return
+        if not isinstance(payload, dict) or payload.get("visibility", "public") == "hidden":
+            return
+        if include_descendants:
+            for child in sorted(path.iterdir()):
+                if child.name == "pack.yaml":
+                    continue
+                if child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
+                    continue
+                visit(child)
+
+    if pack_root:
+        selected_pack(root, include_descendants=True)
+    elif pack_collection:
+        add(os.fsencode(root.relative_to(root)))
+        try:
+            children = sorted(root.iterdir())
+        except OSError:
+            raise
+        for child in children:
+            if child.is_symlink() or not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
+                continue
+            manifest = child / "pack.yaml"
+            if manifest.is_file():
+                selected_pack(child, include_descendants=True)
+            else:
+                # A newly admitted canonical manifest must change the key.
+                add(os.fsencode(child.name))
+                add(b"missing pack.yaml")
+    else:
+        visit(root)
     return digest.hexdigest()
 
 
@@ -112,14 +157,20 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
     # The project's former ``astrid/packs`` tree is not a discovery input.
     # Only the bundled source root and explicitly selected external roots
     # participate in admission and therefore in cache identity.
-    roots = [loader.packs_root(), Path(__file__).with_name("schemas")]
-    roots.extend(source.pack_root for source in managed_inventory.sources)
+    roots = [(loader.packs_root(), True, False), (Path(__file__).with_name("schemas"), False, False)]
+    roots.extend((source.pack_root, False, True) for source in managed_inventory.sources)
     for raw_root in (*extra_pack_roots, *filter(None, raw_env.split(os.pathsep))):
         root = Path(raw_root).expanduser()
-        roots.append(root if root.is_absolute() else project_root / root)
+        resolved = root if root.is_absolute() else project_root / root
+        roots.append((resolved, not (resolved / "pack.yaml").is_file(), (resolved / "pack.yaml").is_file()))
     try:
-        trees = tuple((str(root), str(root.resolve()), _tree_fingerprint(root.resolve()))
-                      for root in dict.fromkeys(roots))
+        trees = tuple(
+            (
+                str(root), str(root.resolve()),
+                _tree_fingerprint(root.resolve(), pack_root=is_pack, pack_collection=is_collection),
+            )
+            for root, is_collection, is_pack in dict.fromkeys(roots)
+        )
     except OSError:
         return None  # Unreadable/racing inputs use ordinary admission and its errors.
     return (str(project_root), tuple(extra_pack_roots), raw_env, managed_inventory.identity, trees)

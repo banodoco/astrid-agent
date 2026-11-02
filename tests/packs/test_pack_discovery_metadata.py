@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,7 @@ from astrid.core.pack import (
     load_pack_manifest,
     loader,
     pack_manifest_path,
+    source_setup,
 )
 from astrid.core.pack.discovery import (
     ASTRID_PACKS_PATH_ENV,
@@ -178,21 +180,47 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
 
     def test_checkout_hides_legacy_local_but_selected_external_local_is_discovered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            extra_root = Path(tmp) / "extra"
-            extra_local = _make_pack(extra_root, "local")
-            with mock.patch(
-                "astrid.core.pack.source_setup.active_source_inventory",
-                return_value=SimpleNamespace(sources=(), identity="empty-inventory"),
-            ):
+            root = Path(tmp)
+            repository_parent = root / "external-repository"
+            external_pack = _make_pack(repository_parent, "local")
+            repository = external_pack.root
+            (repository / "asset.txt").write_text("selected external pack", encoding="utf-8")
+            subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+            subprocess.run(
+                ["git", "-C", str(repository), "add", "pack.yaml", "asset.txt"], check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repository), "-c", "user.name=Pack Test",
+                 "-c", "user.email=pack-test@example.invalid", "commit", "--quiet", "-m", "local pack"],
+                check=True,
+            )
+            revision = subprocess.run(
+                ["git", "-C", str(repository), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            state_path = root / "source-state.json"
+            data_root = root / "installed-sources"
+            declaration = source_setup.SourceDeclaration(
+                pack_id="local", repository=str(repository), revision=revision,
+            )
+            source_setup.provision((declaration,), state_path=state_path, data_root=data_root)
+
+            with mock.patch.dict(os.environ, {
+                source_setup.SOURCE_STATE_ENV: str(state_path),
+                source_setup.SOURCE_DATA_ENV: str(data_root),
+                ASTRID_PACKS_PATH_ENV: "",
+            }):
+                inventory = source_setup.active_source_inventory()
                 discovered = discover_pack_metadata(
                     project_root=REPO_ROOT,
-                    extra_pack_roots=(str(extra_root),),
                 )
 
             locals_ = [row for row in discovered if row.id == "local"]
+            self.assertEqual(len(inventory.sources), 1)
+            self.assertEqual(inventory.sources[0].pack_id, "local")
             self.assertEqual(
                 [(row.source_kind, row.pack_dir) for row in locals_],
-                [("extra", extra_local.root)],
+                [("managed", inventory.sources[0].pack_root)],
             )
             legacy_local = loader.packs_root().resolve() / "local"
             self.assertNotIn(
