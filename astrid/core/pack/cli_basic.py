@@ -19,6 +19,7 @@ import yaml
 from astrid.core.contracts.errors import AstridError
 from astrid.core.pack import (
     PackDefinition,
+    PackValidationError,
     discover_packs,
     packs_root,
 )
@@ -835,7 +836,11 @@ def _handle_new(args: argparse.Namespace) -> int:
 
 def _handle_list(args: argparse.Namespace) -> int:
     """Handler for ``packs list``."""
-    packs = _filtered_packs(args)
+    try:
+        packs = _filtered_packs(args)
+    except PackValidationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     from .cli_manage import origin_and_modified
 
     rows = []

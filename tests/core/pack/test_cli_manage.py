@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from astrid.core.pack.cli import main
 from astrid.core.pack.identity import pack_digest, write_pin
@@ -244,8 +247,6 @@ def test_changed_folder_after_consent_is_rejected(tmp_path: Path, monkeypatch, c
 
 
 def test_core_id_collision_is_rejected_even_with_user_pin(tmp_path: Path, monkeypatch) -> None:
-    import pytest
-
     from astrid.core.pack import loader
     from astrid.core.pack._common import PackValidationError
     from astrid.core.pack.discovery import discover_pack_metadata
@@ -261,41 +262,41 @@ def test_core_id_collision_is_rejected_even_with_user_pin(tmp_path: Path, monkey
     (user_root / "packs" / "shared" / "PIN").write_text("present\n", encoding="utf-8")
     monkeypatch.setattr(loader, "packs_root", lambda: core_root / "packs")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(user_root / "packs"))
     with pytest.raises(PackValidationError, match="conflicts with a core pack"):
         discover_pack_metadata(extra_pack_roots=(str(user_root / "packs"),))
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    assert packs_cli_main(["list"]) != 0
 
 
-def test_initialized_personal_pack_is_discovered_and_listed_from_selected_root(
+def test_default_personal_pack_keeps_identity_with_single_and_multiple_extra_roots(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     from astrid.core.pack.discovery import discover_pack_metadata
 
     home = tmp_path / "home"
-    selected = tmp_path / "selected-packs"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-
     default_personal = ensure_personal_pack()
-    default_records = discover_pack_metadata(
-        personal_packs_root=home / "Astrid" / "packs",
-        extra_pack_roots=(str(home / "Astrid" / "packs"),),
-    )
-    assert next(item for item in default_records if item.id == "personal").source_kind == "personal"
-    assert main(["list"]) == 0
-    assert "Personal" in capsys.readouterr().out
-    assert default_personal.is_dir()
-
-    home = tmp_path / "selected-home"
-    monkeypatch.setenv("ASTRID_PACKS_PATH", str(selected))
-    selected_personal = ensure_personal_pack()
-    selected_records = discover_pack_metadata(
-        personal_packs_root=selected,
-        extra_pack_roots=(str(selected),),
-    )
-    assert next(item for item in selected_records if item.id == "personal").source_kind == "personal"
-    assert main(["list"]) == 0
-    assert "Personal" in capsys.readouterr().out
-    assert selected_personal.is_dir()
+    roots = [tmp_path / "extra-one" / "packs", tmp_path / "extra-two" / "packs"]
+    for index, root in enumerate(roots, start=1):
+        make_pack(root.parent, f"extra{index}")
+    personal_root = home / "Astrid" / "packs"
+    for configured in (roots[:1], roots):
+        monkeypatch.setenv("ASTRID_PACKS_PATH", os.pathsep.join(map(str, configured)))
+        records = discover_pack_metadata()
+        personal = next(item for item in records if item.id == "personal")
+        assert personal.source_kind == "personal"
+        assert personal.pack.root.resolve() == (personal_root / "personal").resolve()
+        assert {item.id for item in records} >= {"personal", "extra1"}
+        if len(configured) == 2:
+            assert "extra2" in {item.id for item in records}
+        assert main(["list"]) == 0
+        listing = capsys.readouterr().out
+        assert "Personal" in listing
+        assert "extra1" in listing
+        assert default_personal.is_dir()
 
 
 def test_personal_impostor_and_duplicate_are_rejected(tmp_path: Path, monkeypatch) -> None:
@@ -317,3 +318,97 @@ def test_personal_impostor_and_duplicate_are_rejected(tmp_path: Path, monkeypatc
             personal_packs_root=canonical_root,
             extra_pack_roots=(str(canonical_root), str(impostor_root)),
         )
+
+
+@pytest.mark.parametrize("duplicate_kind", ["hidden", "malformed", "manifestless"])
+def test_duplicate_directory_name_refuses_discovery_and_real_list(
+    tmp_path: Path, monkeypatch, capsys, duplicate_kind: str
+) -> None:
+    from astrid.core.pack import loader
+    from astrid.core.pack._common import PackValidationError
+    from astrid.core.pack.discovery import discover_pack_metadata
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    core = tmp_path / "core" / "packs"
+    source = tmp_path / "source" / "packs"
+    make_pack(core.parent, "collision")
+    make_pack(source.parent, "collision")
+    source_manifest = source / "collision" / "pack.yaml"
+    expected_message = "duplicate pack directory name"
+    if duplicate_kind == "hidden":
+        source_manifest.write_text(source_manifest.read_text().replace(
+            "documentation:", "visibility: hidden\ndocumentation:"), encoding="utf-8")
+        expected_message = "conflicts with a core pack"
+    elif duplicate_kind == "malformed":
+        source_manifest.write_text("schema_version: [malformed\n", encoding="utf-8")
+    else:
+        source_manifest.unlink()
+    monkeypatch.setattr(loader, "packs_root", lambda: core)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(source))
+
+    with pytest.raises(PackValidationError, match=expected_message):
+        discover_pack_metadata()
+    assert packs_cli_main(["list"]) != 0
+    captured = capsys.readouterr()
+    assert expected_message in captured.err
+
+
+def test_personal_impostor_refuses_real_list(tmp_path: Path, monkeypatch, capsys) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    canonical = tmp_path / "home" / "Astrid" / "packs"
+    impostor = tmp_path / "impostor"
+    ensure_personal_pack(canonical)
+    (impostor / "personal").mkdir(parents=True)
+    (impostor / "personal" / "pack.yaml").write_bytes(
+        (canonical / "personal" / "pack.yaml").read_bytes()
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(impostor))
+    assert packs_cli_main(["list"]) != 0
+    assert "reserved for the canonical personal root" in capsys.readouterr().err
+
+
+def test_gateway_discovery_loads_installed_pack_and_refuses_duplicate(tmp_path: Path, monkeypatch) -> None:
+    from astrid.core.gateway.hivemind import installed_pack_ids
+
+    installed = tmp_path / "installed"
+    make_pack(installed, "gatewayfixture")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(installed / "packs"))
+    assert "gatewayfixture" in installed_pack_ids()
+
+    duplicate = tmp_path / "duplicate"
+    make_pack(duplicate, "gatewayfixture")
+    monkeypatch.setenv(
+        "ASTRID_PACKS_PATH",
+        os.pathsep.join((str(installed / "packs"), str(duplicate / "packs"))),
+    )
+    assert "gatewayfixture" not in installed_pack_ids()
+
+
+def test_generic_host_constructs_and_refuses_external_pack_discovery(tmp_path: Path, monkeypatch) -> None:
+    from astrid.core.execution.generic_host import GenericPackHost
+    from astrid.core.pack._common import PackValidationError
+
+    installed = tmp_path / "installed" / "packs"
+    make_pack(installed.parent, "hostfixture")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(installed))
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(json.dumps({"schema_version": 1, "capabilities": []}), encoding="utf-8")
+    host = GenericPackHost(
+        pack_roots=[installed], client=None, capability_matrix=matrix
+    )
+    discovered = host.discover()
+    assert any(record.id == "hostfixture.call_api" for record in discovered)
+
+    duplicate = tmp_path / "duplicate" / "packs"
+    make_pack(duplicate.parent, "hostfixture")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", os.pathsep.join((str(installed), str(duplicate))))
+    refused_host = GenericPackHost(
+        pack_roots=[installed, duplicate], client=None,
+        capability_matrix=matrix,
+    )
+    with pytest.raises(PackValidationError, match="duplicate pack id"):
+        refused_host.discover()
+    assert "hostfixture.call_api" not in refused_host.capabilities

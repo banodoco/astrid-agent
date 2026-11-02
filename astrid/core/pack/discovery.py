@@ -397,6 +397,21 @@ def discover_pack_metadata(
 
     discovered: list[DiscoveredPack] = []
     scanned_external_roots: set[Path] = set()
+    pack_names: dict[str, tuple[Path, str | None]] = {}
+
+    def _register_pack_name(path: Path, pack_id: str | None = None) -> tuple[Path, str | None] | None:
+        """Record names before filtering, retaining ids for collision policy."""
+        previous = pack_names.get(path.name)
+        if previous is None:
+            pack_names[path.name] = (path, pack_id)
+        elif previous[0].resolve() == path.resolve():
+            if pack_id is not None:
+                pack_names[path.name] = (path, pack_id)
+        elif pack_id is not None and previous[1] is not None and pack_id != previous[1]:
+            raise PackValidationError(
+                f"duplicate pack directory name {path.name!r} across {previous[0]} and {path}"
+            )
+        return previous
 
     def _add(pack: PackDefinition, source_kind: str, *, source_record: Any | None = None) -> None:
         if pack.id == "personal":
@@ -495,11 +510,18 @@ def discover_pack_metadata(
             )
             return
         for child in children:
+            if not child.is_dir() or child.name == "__pycache__":
+                continue
+            previous_name = _register_pack_name(child)
+            if child.name.startswith("."):
+                continue
             try:
-                if not child.is_dir() or child.name.startswith(".") or child.name == "__pycache__":
-                    continue
                 manifest_path = pack_manifest_path(child)
             except (OSError, PackValidationError) as exc:
+                if previous_name is not None:
+                    raise PackValidationError(
+                        f"duplicate pack directory name {child.name!r} across {previous_name[0]} and {child}"
+                    ) from exc
                 if loader._fail_closed(child.name, loader.REQUIRED_PACK_IDS):
                     raise PackValidationError(f"{child}: {exc}") from exc
                 # Per-child pre-scan failures (e.g. an unreadable pack
@@ -513,6 +535,10 @@ def discover_pack_metadata(
                 )
                 continue
             if manifest_path is None:
+                if previous_name is not None:
+                    raise PackValidationError(
+                        f"duplicate pack directory name {child.name!r} across {previous_name[0]} and {child}"
+                    )
                 continue
             try:
                 pack = load_pack_manifest(
@@ -522,6 +548,10 @@ def discover_pack_metadata(
                     else None,
                 )
             except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
+                if previous_name is not None:
+                    raise PackValidationError(
+                        f"duplicate pack directory name {child.name!r} across {previous_name[0]} and {child}"
+                    ) from exc
                 if loader._fail_closed(child.name, loader.REQUIRED_PACK_IDS):
                     raise PackValidationError(f"{child}: {exc}") from exc
                 _LOGGER.warning(
@@ -533,8 +563,15 @@ def discover_pack_metadata(
                 continue
             if pack.id == "local":
                 continue
-            if pack.visibility == "hidden" and not include_hidden:
-                continue
+            if previous_name is not None and previous_name[1] is None:
+                raise PackValidationError(
+                    f"duplicate pack directory name {child.name!r} across {previous_name[0]} and {child}"
+                )
+            if previous_name is not None and previous_name[1] != pack.id:
+                raise PackValidationError(
+                    f"duplicate pack directory name {child.name!r} across {previous_name[0]} and {child}"
+                )
+            _register_pack_name(child, pack.id)
             _add(
                 pack,
                 source_kind,
@@ -551,6 +588,7 @@ def discover_pack_metadata(
     for pack in source_packs:
         if pack.id == "local":
             continue
+        _register_pack_name(Path(pack.root), pack.id)
         _add(pack, "source")
 
     if local_pack_root is not None and project_pack_root.is_dir():
@@ -566,6 +604,7 @@ def discover_pack_metadata(
         )
         for pack in local_packs:
             if pack.id == "local" and pack.root.resolve() == local_pack_root.resolve():
+                _register_pack_name(Path(pack.root), pack.id)
                 _add(pack, "local")
 
     if managed_inventory is not None:
@@ -574,6 +613,8 @@ def discover_pack_metadata(
 
     if scan is _default_discover_packs:
         _scan_external_root(Path.home() / "Astrid" / "packs", "extra")
+    if selected_personal_root is not None:
+        _scan_external_root(selected_personal_root, "extra")
     raw_env_roots = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
     if extra_pack_roots or raw_env_roots:
         for extra_root in extra_pack_roots:
@@ -585,6 +626,8 @@ def discover_pack_metadata(
 
     from astrid.core.pack.ownership import first_pack_owner
     discovered = first_pack_owner(discovered)
+    if not include_hidden:
+        discovered = [item for item in discovered if item.pack.visibility != "hidden"]
 
     if scan is _default_discover_packs:
         records = {item.pack.id: managed_by_root[item.pack.root.resolve()]

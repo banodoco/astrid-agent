@@ -145,7 +145,7 @@ def test_runtime_discovery_binds_default_and_configured_personal_root(tmp_path, 
     else:
         monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
 
-    discovered = discover_pack_metadata(project_root=tmp_path)
+    discovered = discover_pack_metadata(project_root=tmp_path, personal_packs_root=canonical_root)
     personal = next(item for item in discovered if item.id == "personal")
     assert personal.source_kind == "personal"
     assert personal.pack.root == canonical_root / "personal"

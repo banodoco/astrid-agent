@@ -85,9 +85,7 @@ def _handle_add(args: argparse.Namespace) -> int:
     pack_id = args.pack_id
     subpath = args.subpath
     source = args.source
-    root = resolve_personal_packs_root(args.packs_root)
-    if root is None:
-        raise PackInstallError("invalid_packs_root", "Configure an absolute user packs root before installing.")
+    root = _selected_root(args.packs_root)
 
     def consent(changes: dict[str, Any]) -> bool:
         staged_root = Path(changes["packs"][pack_id]["staged_root"])
@@ -123,9 +121,7 @@ def _handle_add(args: argparse.Namespace) -> int:
 
 
 def _handle_remove(args: argparse.Namespace) -> int:
-    root = resolve_personal_packs_root(args.packs_root)
-    if root is None:
-        raise PackInstallError("invalid_packs_root", "Configure an absolute user packs root before removing packs.")
+    root = _selected_root(args.packs_root)
     ids = tuple(dict.fromkeys(args.pack_ids))
     if not ids:
         raise PackInstallError("invalid_request", "Supply at least one pack id to remove.")
@@ -182,7 +178,20 @@ def build_remove_parser(subparsers: Any) -> None:
     parser.add_argument("--yes", action="store_true", help="Confirm the removal transaction.")
     parser.set_defaults(handler=_handle_remove_error)
 def _selected_root(override: str | None) -> Path:
-    root = resolve_personal_packs_root(override)
+    # Management storage remains selectable with the historical single
+    # collection setting. Discovery treats this variable as additional roots
+    # and never uses it to identify the personal pack.
+    configured = override
+    if configured is None:
+        raw = os.environ.get("ASTRID_PACKS_PATH")
+        if raw is not None:
+            entries = raw.split(os.pathsep)
+            if len(entries) != 1 or not entries[0].strip():
+                raise PackInstallError(
+                    "unsafe_path", "Configure one absolute user pack collection before managing packs."
+                )
+            configured = entries[0]
+    root = resolve_personal_packs_root(configured)
     if root is None:
         raise PackInstallError("unsafe_path", "Configure an absolute user pack collection with ASTRID_PACKS_PATH.")
     return root

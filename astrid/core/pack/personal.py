@@ -21,17 +21,12 @@ _MANIFEST = (
 def resolve_personal_packs_root(root: str | os.PathLike[str] | None = None) -> Path | None:
     """Return the canonical collection root without creating or modifying it.
 
-    An explicit root takes precedence. Otherwise ``ASTRID_PACKS_PATH`` replaces
-    the default ``~/Astrid/packs`` root; an empty override disables it.
+    An explicit root takes precedence. Otherwise the canonical collection is
+    ``~/Astrid/packs``. ``ASTRID_PACKS_PATH`` names additional collections and
+    never changes the identity of the personal pack.
     """
     if root is None:
-        configured = os.environ.get(ASTRID_PACKS_PATH_ENV)
-        if configured is None:
-            candidate = Path.home() / "Astrid" / "packs"
-        elif not configured.strip():
-            return None
-        else:
-            candidate = Path(configured).expanduser()
+        candidate = Path.home() / "Astrid" / "packs"
     else:
         candidate = Path(root).expanduser()
     if not candidate.is_absolute():
