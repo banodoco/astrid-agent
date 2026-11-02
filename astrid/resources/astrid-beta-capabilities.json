@@ -1,0 +1,1506 @@
+{
+ "schema_version": 1,
+ "profile": "astrid-beta-current-mac",
+ "capabilities": [
+  {
+   "id": "blender.render",
+   "disposition": "optional",
+   "evidence_reason": "Optional local Blender integration; retained with truthful binary preflight.",
+   "adapter_family": "render",
+   "resource_keys": [
+    "render"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "blender",
+    "ffmpeg"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "comfy_wrap.run",
+   "disposition": "optional",
+   "evidence_reason": "Optional local-generation wrapper; retained with truthful VibeComfy preflight.",
+   "adapter_family": "local_generation",
+   "resource_keys": [
+    "gpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "id": "capture.web_page",
+   "disposition": "optional",
+   "evidence_reason": "Headless Chromium capture of one https page to PNG plus provenance receipt; network limited to the requested https host through the host broker (dynamic_url_inputs).",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "chiptune.compose",
+   "disposition": "optional",
+   "evidence_reason": "Local numpy NES-style chiptune synthesis with bar-snapped sections and a beat grid; no network, no samples, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "numpy"
+   ]
+  },
+  {
+   "id": "chiptune.midi",
+   "disposition": "optional",
+   "evidence_reason": "Local numpy NES-style rendering of a Standard MIDI File (melody, arpeggio and bass voices); no network, no samples, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "numpy"
+   ]
+  },
+  {
+   "id": "chiptune.sfx",
+   "disposition": "optional",
+   "evidence_reason": "Local numpy chiptune one-shot synthesis (single and zip batch); no network, no samples, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "numpy"
+   ]
+  },
+  {
+   "id": "editorial.arrange",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.boundary_candidates",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.editor_review",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.human_notes",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.human_review",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.inspect_cut",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.pacing",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.quality_zones",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.quote_scout",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.refine",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.scenes",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.script_pipeline",
+   "disposition": "optional",
+   "evidence_reason": "Optional provider-backed editorial path; retained with truthful preflight.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.shots",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.transcribe",
+   "disposition": "optional",
+   "evidence_reason": "Optional credential-backed transcription; retained with truthful preflight.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "OPENAI_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.triage",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "editorial.validate",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/editorial capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "fal.fal_foley",
+   "disposition": "optional",
+   "evidence_reason": "Optional hosted FAL integration; retained with truthful credential preflight.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "fal.h3_video",
+   "disposition": "optional",
+   "evidence_reason": "Optional hosted FAL integration; retained with truthful credential preflight.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "foley.foley_map",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "foley.foley_review",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/media capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "foley.tile_video",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/media capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_audio",
+   "disposition": "required",
+   "evidence_reason": "Required generation facade; provider credentials are checked at call time.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY",
+    "WAVESPEED_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_image",
+   "disposition": "required",
+   "evidence_reason": "Required image-generation facade; provider credentials are checked at call time.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_image_codex",
+   "disposition": "required",
+   "evidence_reason": "Bounded canonical Codex image profile with ordered CAS references and ChatGPT CLI authentication.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": [],
+   "required_binaries": ["codex"],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_image_cloud_i2i",
+   "disposition": "required",
+   "evidence_reason": "Narrow z-image cloud i2i capability with an enforced whole-task storage envelope; provider credentials are checked at call time.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_image_edit",
+   "disposition": "required",
+   "evidence_reason": "Unified bounded cloud image-edit capability with source-only Qwen, source-only Klein, and source-plus-mask Qwen inpaint profiles under one typed CAS/storage envelope; provider credentials are checked at call time.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_image_upscale",
+   "disposition": "required",
+   "evidence_reason": "Bounded SeedVR2 image-upscale capability with project-CAS source custody and provider readiness gated by FAL_KEY.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_image_openai",
+   "disposition": "required",
+   "evidence_reason": "Required GPT image facade; OpenAI credential readiness is explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "OPENAI_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_speech",
+   "disposition": "required",
+   "evidence_reason": "Draft speech synthesis via declared Edge TTS egress (api.msedgeservices.com:443, legacy fallback speech.platform.bing.com:443) and ffmpeg.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "edge-tts",
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "generation.generate_video",
+   "disposition": "required",
+   "evidence_reason": "Required video-generation facade; provider credentials are checked at call time.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "h3_av.compile",
+   "disposition": "required",
+   "evidence_reason": "Deterministic H3 request compilation is a CPU-bound local contract step.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "h3_av.compose",
+   "disposition": "required",
+   "evidence_reason": "H3 candidate composition is a CPU-bound local contract step.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "h3_av.prepare",
+   "disposition": "required",
+   "evidence_reason": "H3 request preparation is a CPU-bound local contract step.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "h3_av.publication_finalizer",
+   "disposition": "required",
+   "evidence_reason": "H3 publication finalization verifies and stages the declared candidate using local CPU-bound file operations.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "h3_av.verify",
+   "disposition": "required",
+   "evidence_reason": "H3 candidate verification is a CPU-bound local contract step.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "h3_av.transform",
+   "disposition": "optional",
+   "evidence_reason": "Tracked local orchestration parent waits on seven delegated children without an exclusive execution resource. Each child retains its own resource reservation, admission and readiness.",
+   "adapter_family": "orchestration",
+   "resource_keys": [],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "id": "video_editing.sync_draft_voiceover",
+   "disposition": "required",
+   "evidence_reason": "Caller-authorized draft voiceover synchronization over the canonical timeline and generation speech route.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "iteration.assemble",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "iteration.experiment_import",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "iteration.experiment_prepare",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "iteration.experiment_review",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/iteration capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "iteration.experiment_review_session",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/interactive iteration review capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "media.clip_extract",
+   "disposition": "required",
+   "evidence_reason": "Required local FFmpeg media capability; binary preflight is explicit.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "media.gif_search",
+   "disposition": "optional",
+   "evidence_reason": "Optional network-backed media search; retained with truthful preflight.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "GIPHY_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "media.speech_repair_lavasr",
+   "disposition": "optional",
+   "evidence_reason": "Optional hosted speech repair; retained with truthful preflight.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "pixel.cutout",
+   "disposition": "optional",
+   "evidence_reason": "Local Pillow/numpy chroma or flat-background cutout with hard alpha; no network, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "PIL",
+    "numpy"
+   ]
+  },
+  {
+   "id": "pixel.sprites",
+   "disposition": "optional",
+   "evidence_reason": "Local Pillow/numpy sheet split, lattice snap, and hard-alpha cutout; no network or GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "PIL",
+    "numpy"
+   ]
+  },
+  {
+   "id": "pixel.snap",
+   "disposition": "optional",
+   "evidence_reason": "Local Pillow/numpy pixel-grid snap and palette quantize; no network, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "PIL",
+    "numpy"
+   ]
+  },
+  {
+   "id": "pixel.strip",
+   "disposition": "optional",
+   "evidence_reason": "Local Pillow/numpy join of ordered pixel-art frames into one shared-grid horizontal strip; no network, no GPU.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "PIL",
+    "numpy"
+   ]
+  },
+  {
+   "id": "music.align",
+   "disposition": "optional",
+   "evidence_reason": "Local numpy onset/chroma alignment of MIDI or audio using ffmpeg decoding.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg"
+   ],
+   "required_packages": [
+    "numpy"
+   ]
+  },
+  {
+   "id": "music.level",
+   "disposition": "optional",
+   "evidence_reason": "Local ffmpeg ebur128 measurement of a used audio source span.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "music.beats",
+   "disposition": "optional",
+   "evidence_reason": "Local numpy beat and downbeat analysis of ffmpeg-decoded music.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg"
+   ],
+   "required_packages": [
+    "numpy"
+   ]
+  },
+  {
+   "id": "music.duck",
+   "disposition": "optional",
+   "evidence_reason": "Local ffmpeg loudness analysis and speech-keyed gain shaping for a pinned music snapshot; writes a managed ducked WAV and analysis report.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_packages": [
+    "numpy"
+   ]
+  },
+  {
+   "id": "moirae.moirae",
+   "disposition": "optional",
+   "evidence_reason": "Optional terminal-video capability; retained with truthful binary preflight.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "asciinema",
+    "agg",
+    "ffmpeg"
+   ],
+   "required_packages": []
+  },
+    {
+      "id": "rendering.assemble_timeline",
+      "disposition": "required",
+      "evidence_reason": "Built-in canonical timeline assembly proposal path covered by the generic host.",
+      "adapter_family": "render",
+      "resource_keys": ["render"],
+      "required_env": [],
+      "required_binaries": [],
+      "required_packages": []
+    },
+    {
+      "id": "rendering.html_canvas_effect",
+   "disposition": "required",
+   "evidence_reason": "Current-machine render family capability covered by the generic host.",
+   "adapter_family": "render",
+   "resource_keys": [
+    "render"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "rendering.render",
+   "disposition": "required",
+   "evidence_reason": "Required managed rendering path; Node/Remotion/FFmpeg readiness is explicit.",
+   "adapter_family": "render",
+   "requires_remotion": "selected",
+   "resource_keys": [
+    "render"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "rendering.sprite_sheet",
+   "disposition": "optional",
+   "evidence_reason": "Optional render variant; retained with truthful binary preflight.",
+   "adapter_family": "render",
+   "resource_keys": [
+    "render"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "rendering.timeline_storyboard",
+   "disposition": "required",
+   "evidence_reason": "Current-machine render family capability covered by the generic host.",
+   "adapter_family": "render",
+   "resource_keys": [
+    "render"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "rendering.timeline_visualize",
+   "disposition": "required",
+   "evidence_reason": "Current-machine render family capability covered by the generic host.",
+   "adapter_family": "render",
+   "resource_keys": [
+    "render"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "rendering.timeline_export_plan",
+   "disposition": "required",
+   "evidence_reason": "Timeline transfer N2/N4 acceptance covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "rendering.timeline_prepare_import",
+   "disposition": "required",
+   "evidence_reason": "Timeline transfer N2/N4 acceptance covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.exec",
+   "disposition": "optional",
+   "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.provision",
+   "disposition": "optional",
+   "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.pull",
+   "disposition": "optional",
+   "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.session",
+   "disposition": "optional",
+   "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "runpod.teardown",
+   "disposition": "optional",
+   "evidence_reason": "Optional remote execution integration; excluded from local beta readiness.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "stream_content.clip_candidates",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/media analysis capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "stream_content.distill",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe",
+    "tesseract"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "stream_content.segment_map",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/media analysis capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe",
+    "tesseract"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "training.pool_build",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/training utility capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "training.dataset_build",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/training orchestration capability covered by the generic host; child provider readiness is explicit.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "training.pool_merge",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/training utility capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "training.training_run",
+   "disposition": "required",
+   "evidence_reason": "Required provider-backed training orchestration; package and config-declared credential readiness are explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "jsonschema"
+   ]
+  },
+  {
+   "id": "training.search_loras",
+   "disposition": "required",
+   "evidence_reason": "Required model-search facade; Hugging Face credentials are explicit when used.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "HF_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "typed_timeline.map",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/timeline utility capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "understanding.audio_understand",
+   "disposition": "required",
+   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "OPENAI_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "understanding.scene_describe",
+   "disposition": "required",
+   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "GEMINI_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "understanding.understand",
+   "disposition": "required",
+   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "OPENAI_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "understanding.video_understand",
+   "disposition": "required",
+   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "GEMINI_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "understanding.visual_understand",
+   "disposition": "required",
+   "evidence_reason": "Required provider-backed analysis facade; credential readiness is explicit.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [
+    "OPENAI_API_KEY"
+   ],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "vibecomfy.run",
+   "disposition": "required",
+   "evidence_reason": "Required supported local-generation profile; VibeComfy readiness is explicit.",
+   "adapter_family": "local_generation",
+   "resource_keys": [
+    "gpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "id": "vibecomfy.character_animation",
+   "disposition": "optional",
+   "evidence_reason": "CPU-admitted bounded Wan Animate profile; mode=animate, two CAS media inputs, and exposed controls bind to the pinned ready graph. GPU execution/output proof remains open.",
+   "adapter_family": "local_generation",
+   "resource_keys": [
+    "gpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "id": "vibecomfy.validate",
+   "disposition": "required",
+   "evidence_reason": "Required CPU-only canonical workflow validation path; VibeComfy readiness is explicit.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "id": "vibecomfy.video_enhance",
+   "disposition": "optional",
+   "evidence_reason": "CPU-admitted bounded video-upscale profile; source audio/FPS and scale controls bind to the pinned ready graph. Interpolation, color correction, non-maximum quality, and GPU output proof remain fail-closed/open.",
+   "adapter_family": "local_generation",
+   "resource_keys": [
+    "gpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "adapter_family": "provider",
+   "disposition": "required",
+   "evidence_reason": "Required public action in the active core Video Editing pack; provider credentials and network readiness are explicit.",
+   "id": "video_editing.animate_image",
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_env": [
+    "FAL_KEY"
+   ],
+   "required_packages": [],
+   "resource_keys": [
+    "provider"
+   ]
+  },
+  {
+   "id": "video_editing.cut",
+   "disposition": "required",
+   "evidence_reason": "Current-machine CPU/video editing capability covered by the generic host.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "adapter_family": "cpu",
+   "disposition": "required",
+   "evidence_reason": "Required public action in the active core Video Editing pack; local binary readiness is explicit.",
+   "id": "video_editing.event_talks",
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe",
+    "tesseract"
+   ],
+   "required_env": [],
+   "required_packages": [],
+   "resource_keys": [
+    "cpu"
+   ]
+  },
+  {
+   "adapter_family": "cpu",
+   "disposition": "required",
+   "evidence_reason": "Required public action in the active core Video Editing pack; local binary readiness is explicit.",
+   "id": "video_editing.hype",
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_env": [],
+   "required_packages": [],
+   "resource_keys": [
+    "cpu"
+   ]
+  },
+  {
+   "adapter_family": "cpu",
+   "disposition": "required",
+   "evidence_reason": "Required public action in the active core Video Editing pack; local execution dependencies are explicit.",
+   "id": "video_editing.iteration_video",
+   "required_binaries": [],
+   "required_env": [],
+   "required_packages": [],
+   "resource_keys": [
+    "cpu"
+   ]
+  },
+  {
+   "adapter_family": "provider",
+   "disposition": "required",
+   "evidence_reason": "Required public action in the active core Video Editing pack; provider credentials and network readiness are explicit.",
+   "id": "video_editing.logo_ideas",
+   "required_binaries": [],
+   "required_env": [
+    "FIREWORKS_API_KEY",
+    "FAL_KEY"
+   ],
+   "required_packages": [],
+   "resource_keys": [
+    "provider"
+   ]
+  },
+  {
+   "adapter_family": "cpu",
+   "disposition": "required",
+   "evidence_reason": "Required public action in the active core Video Editing pack; local binary readiness is explicit.",
+   "id": "video_editing.thumbnail_maker",
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_env": [],
+   "required_packages": [],
+   "resource_keys": [
+    "cpu"
+   ]
+  },
+  {
+   "adapter_family": "provider",
+   "disposition": "required",
+   "evidence_reason": "Required public action in the active core Video Editing pack; provider credentials and network readiness are explicit.",
+   "id": "video_editing.vary_grid",
+   "required_binaries": [],
+   "required_env": [
+    "FIREWORKS_API_KEY",
+    "FAL_KEY"
+   ],
+   "required_packages": [],
+   "resource_keys": [
+    "provider"
+   ]
+  },
+  {
+   "id": "youtube.upload",
+   "disposition": "optional",
+   "evidence_reason": "Optional external publishing integration; not required for local beta.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "youtube.youtube_audio",
+   "disposition": "optional",
+   "evidence_reason": "Optional external media import integration; retained with truthful binary preflight.",
+   "adapter_family": "provider",
+   "resource_keys": [
+    "provider"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "yt-dlp",
+    "ffmpeg"
+   ],
+   "required_packages": []
+  },
+  {
+   "id": "vibecomfy.inspect",
+   "disposition": "required",
+   "evidence_reason": "Required CPU-only canonical workflow inspection path; read-only IR projection over admitted artifacts.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "id": "vibecomfy.edit",
+   "disposition": "required",
+   "evidence_reason": "Required CPU-only canonical workflow edit path; typed successor transitions over admitted bundles.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "id": "vibecomfy.import",
+   "disposition": "required",
+   "evidence_reason": "Required canonical workflow origin path; CPU-only import and bundle inspection.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": [
+    "vibecomfy"
+   ]
+  },
+  {
+   "id": "hivemind.contribute",
+   "disposition": "optional",
+   "evidence_reason": "Optional Hivemind contribution route; provider credentials are checked at call time.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": ["HIVEMIND_CONTRIBUTOR_KEY"],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "hivemind.get_item",
+   "disposition": "optional",
+   "evidence_reason": "Optional read-only Hivemind item retrieval through the public corpus API.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "hivemind.ingest_article",
+   "disposition": "optional",
+   "evidence_reason": "Optional Hivemind article ingestion route; provider credentials are checked at call time.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": ["HIVEMIND_CONTRIBUTOR_KEY"],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "hivemind.ingest_workflow",
+   "disposition": "optional",
+   "evidence_reason": "Optional Hivemind workflow ingestion route; provider credentials are checked at call time.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": ["HIVEMIND_CONTRIBUTOR_KEY"],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "hivemind.ingest_youtube",
+   "disposition": "optional",
+   "evidence_reason": "Optional Hivemind YouTube ingestion route; provider and yt-dlp readiness are explicit.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": ["HIVEMIND_CONTRIBUTOR_KEY"],
+   "required_binaries": ["yt-dlp"],
+   "required_packages": []
+  },
+  {
+   "id": "hivemind.refresh_media",
+   "disposition": "optional",
+   "evidence_reason": "Optional Hivemind Discord media refresh route through the public API.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "hivemind.search",
+   "disposition": "optional",
+   "evidence_reason": "Optional read-only Hivemind corpus search through the public API.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "seedance_local.reference_video",
+   "disposition": "optional",
+   "evidence_reason": "Optional hosted FAL integration; retained with truthful credential preflight.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": ["FAL_KEY"],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "wan2gp.generate_video",
+   "disposition": "optional",
+   "evidence_reason": "Optional native Wan2GP worker capability; the pinned engine is disclosed by the executor and runs only on a configured worker.",
+   "adapter_family": "local_generation",
+   "resource_keys": [
+    "gpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "wan2gp.validate_settings",
+   "disposition": "optional",
+   "evidence_reason": "Optional native Wan2GP settings validation; compilation is available without engine execution.",
+   "adapter_family": "local_generation",
+   "resource_keys": [
+    "gpu"
+   ],
+   "required_env": [],
+   "required_binaries": [],
+   "required_packages": []
+  },
+  {
+   "id": "discord_local.command",
+   "disposition": "optional",
+   "evidence_reason": "Optional personal Discord adapter; retained with truthful binary preflight.",
+   "adapter_family": "provider",
+   "resource_keys": ["provider"],
+   "required_env": [],
+   "required_binaries": ["node"],
+   "required_packages": []
+  }
+ ]
+}

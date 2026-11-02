@@ -67,7 +67,7 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
 def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
-    from vibecomfy.schema.provider import TargetSchemaProvider
+    from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
     from vibecomfy.schema.validate import (
         _choice_scope,
         validate_api_against_schema,
@@ -134,11 +134,20 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
             gaps.append("missing nodes: " + ", ".join(nodes))
         if missing_models:
             gaps.append("missing models: " + ", ".join(missing_models))
-        raise ProductionEngineError(
-            f"ComfyUI at {url}: {'; '.join(gaps)}. "
-            "See 'Missing nodes and models' in the VibeComfy skill "
-            "(packs/vibecomfy/docs/SKILL.md)."
+        from astrid.core.generation.asset_gaps import asset_readiness
+        readiness = asset_readiness(
+            getattr(bundle.workflow, 'metadata', {}).get('registry_id'),
+            nodes=missing_nodes, models=missing_models,
         )
+        import shlex
+        error = ProductionEngineError(
+            f"ComfyUI at {url}: {'; '.join(gaps)}. "
+            'Run: ' + shlex.join(readiness['fixes'][0]['argv']) +
+            ". See 'Missing nodes and models' in the VibeComfy skill (packs/vibecomfy/docs/SKILL.md)."
+        )
+        error.readiness = readiness
+        error.code = readiness['issues'][0]['code']
+        raise error
     errors = [issue.message for issue in issues if issue.severity == "error"]
     if errors:
         raise ProductionEngineError("ComfyUI workflow preflight failed: " + "; ".join(errors))
@@ -336,7 +345,9 @@ def run_local_server(
         except BaseException as exc:
             cleanup_prompts(url, destination)
             if "vibecomfy schema refresh" in str(exc) or getattr(exc, "next_action", None) == "vibecomfy schema refresh":
-                fix = "See 'Missing nodes and models' in the VibeComfy skill (packs/vibecomfy/docs/SKILL.md)"
+                from astrid.core.generation.asset_gaps import align_argv
+                import shlex
+                fix = 'Install the missing locked node pack: ' + shlex.join(align_argv())
                 raise ProductionEngineError(str(exc).replace("vibecomfy schema refresh", fix)) from exc
             raise
     finally:

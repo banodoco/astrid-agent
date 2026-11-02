@@ -32,6 +32,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import os
 import shlex
 import tarfile
@@ -42,6 +43,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from astrid.core.contracts.errors import AstridError
+
+from .pod_bootstrap import SCRIPT as POD_BOOTSTRAP_SCRIPT
 
 PLACEMENT = "runpod"
 ENGINE_ID = "vibecomfy-h3"
@@ -163,7 +166,7 @@ def sha256_file(path: Path) -> str:
 
 
 def source_digest(source_root: Path) -> str:
-    """Same digest ``scripts/pod_bootstrap.sh`` computes over the five source dirs."""
+    """Same digest the pack's bootstrap payload computes over the five source dirs."""
     lines: list[tuple[bytes, str]] = []
     for directory in SOURCE_DIRS:
         base = Path(source_root) / directory
@@ -308,6 +311,32 @@ class RemotePlacement:
         self._deadline_at: float | None = None
 
     # -- public ------------------------------------------------------------
+
+    def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float) -> RemoteRun:
+        """Bootstrap/install an exact existing claim for ordinary prepared work.
+
+        Claim/admission/release stay with their existing journal and Runtime
+        owners. This method never claims a pod or invokes the H3 transform.
+        """
+        if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+            raise RemotePlacementError("prepared claim has no remaining paid lifetime")
+        self._deadline_at = self._clock() + deadline_seconds
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        run_id = uuid.uuid4().hex
+        state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim)
+        try:
+            self._bootstrap(state)
+            self._install(state)
+            self._check_deadline("prepared install")
+        except BaseException:
+            if state.job_id is not None:
+                try:
+                    claim.ops.job_cancel(state.job_id)
+                except Exception:
+                    pass
+            raise
+        return state
 
     def run(
         self,
@@ -495,11 +524,15 @@ class RemotePlacement:
         work = f"{BOOTSTRAP_ROOT}/upload-{digest}"
         archive = state.local_out / "bootstrap-sources.tar.gz"
         _build_source_archive(self.source_root, archive)
-        script = Path(__file__).resolve().parents[3] / "scripts" / "pod_bootstrap.sh"
-        self._exec_ok(state, f"mkdir -p {shlex.quote(work)}", "bootstrap directory")
-        state.claim.ops.put(archive, f"{work}/sources.tar.gz")
-        state.claim.ops.put(script, f"{work}/pod_bootstrap.sh")
-        archive.unlink(missing_ok=True)
+        script = state.local_out / "pod_bootstrap.sh"
+        script.write_text(POD_BOOTSTRAP_SCRIPT, encoding="utf-8")
+        try:
+            self._exec_ok(state, f"mkdir -p {shlex.quote(work)}", "bootstrap directory")
+            state.claim.ops.put(archive, f"{work}/sources.tar.gz")
+            state.claim.ops.put(script, f"{work}/pod_bootstrap.sh")
+        finally:
+            archive.unlink(missing_ok=True)
+            script.unlink(missing_ok=True)
         command = (
             f"set -eu; cd {shlex.quote(work)}; tar -xzf sources.tar.gz -C . ; "
             f"mkdir -p src; for d in runpod-python astrid-runtime runpod-lifecycle astrid-agent VibeComfy; do "
@@ -800,6 +833,31 @@ class _HttpsOps:
         return self._call("detached_cancel", job_id)
 
 
+def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:
+    """Connect existing R02 custody without a provider lookup or another claim."""
+    from .prepared_task import _claim_target
+
+    _claim_target(record)
+    operation = record.get("operation_id")
+    if (record.get("state") != "claimed" or record.get("transport") != "https"
+            or record.get("acquisition_mode") != "allocate"
+            or record.get("release_authorized") is not True
+            or record.get("target_identity_verified") is not True
+            or not isinstance(operation, str)
+            or record.get("request_name") != "astrid-product-" + operation
+            or record.get("name") != record["request_name"]):
+        raise RemotePlacementError("ordinary preparation requires verified journal-created HTTPS custody")
+    return Claim(
+        pod_id=record["pod_id"], ops=_HttpsOps(record["pod_id"], _read_token(record)),
+        identity={key: record.get(key) for key in (
+            "operation_id", "pod_id", "provider_account_ref", "worker_image",
+            "network_volume_id", "volume_mount_path",
+        )},
+        transport="https", storage_name=record.get("network_volume_name"),
+        datacenter_id=record.get("network_volume_datacenter_id"), handle=dict(record),
+    )
+
+
 class LifecyclePodProvider:
     """Claims through ``scripts/claim_runpod_5090_backup.py`` and releases the exact pod."""
 
@@ -880,10 +938,16 @@ class LifecyclePodProvider:
         ))
 
     def pod_exists(self, pod_id: str) -> bool:
-        from runpod_lifecycle import RunPodConfig, api
+        from runpod_lifecycle import RunPodConfig
+        from .worker_preparation import read_exact_pod
 
         config = RunPodConfig.from_env(transport="https")
-        return api.get_pod_status(pod_id, config.api_key) is not None
+        status, record = read_exact_pod(config.api_key, pod_id)
+        if status == 404 and record is None:
+            return False
+        if status == 200 and isinstance(record, dict) and record.get("id") == pod_id:
+            return True
+        raise RemotePlacementError("exact pod GET did not establish presence or 404")
 
 
 def _read_token(handle: Mapping[str, Any]) -> str:

@@ -11,7 +11,10 @@ the checkout and then re-pointed at what it means in the view:
 * another materialised file  -> its view-relative path;
 * any other existing file    -> its absolute checkout path (docs, config, ...);
 * a ``packs/<id>/...`` route into a pack that is not available -> the link text
-  is kept but the link is dropped, so the view never advertises a dead route.
+  is kept but the link is dropped, so the view never advertises a dead route;
+* a link into a withheld developer-only skill (``metadata.astrid.audience:
+  developer`` that ``astrid skills sync --developer`` has not selected) -> the
+  same: the text stays, the link is dropped, and the skill is not copied.
 """
 
 from __future__ import annotations
@@ -81,6 +84,7 @@ class _ViewLinks:
     packs: dict[str, Path]  # composed pack id -> physical pack skill directory
     materialised: frozenset[str]  # view-relative core files written into the view
     extras: tuple[Path, ...] = ()
+    withheld: tuple[Path, ...] = ()  # physical dirs of unselected developer-only skills
 
     def target(self, raw: str, *, source: Path, dest: Path) -> object:
         path, tail = split_target(raw)
@@ -92,6 +96,10 @@ class _ViewLinks:
             _relative_within(source, extra) is not None and _relative_within(source_target, extra) is None
             for extra in self.extras
         )
+
+        # 0. A withheld developer-only skill is not in the view: keep the text.
+        if any(_relative_within(source_target, skill_dir) is not None for skill_dir in self.withheld):
+            return DROP
 
         # 1. The link means a file in the checkout: a composed pack skill or a
         #    core file that the view materialises.
@@ -156,7 +164,9 @@ def _materialise(source: Path, target: Path, links: _ViewLinks, *, pre: dict[str
     _write_view_file(target, rewrite_commands(text))
 
 
-def _materialise_pack(target: Path, source: Path, links: _ViewLinks, *, managed: bool) -> None:
+def _materialise_pack(
+    target: Path, source: Path, links: _ViewLinks, *, managed: bool, skip: frozenset[str] = frozenset()
+) -> None:
     if target.exists() or target.is_symlink():
         if target.is_symlink():
             target.unlink()
@@ -168,14 +178,21 @@ def _materialise_pack(target: Path, source: Path, links: _ViewLinks, *, managed:
                 recovery_command="remove the foreign entry or choose another profile",
             )
     target.mkdir(parents=True, exist_ok=True)
-    _copy_tree_if_changed(source, target)
+    _copy_tree_if_changed(source, target, skip=skip)
     for md in iter_markdown_files(source):
-        _materialise(md, target / md.relative_to(source), links)
+        relative = md.relative_to(source)
+        if relative.parts[0] in skip:
+            continue
+        _materialise(md, target / relative, links)
 
 
-def _copy_tree_if_changed(source: Path, target: Path) -> None:
-    """Reconcile a managed pack copy without touching unchanged entries."""
-    source_names = {child.name for child in source.iterdir()}
+def _copy_tree_if_changed(source: Path, target: Path, *, skip: frozenset[str] = frozenset()) -> None:
+    """Reconcile a managed pack copy without touching unchanged entries.
+
+    Top-level names in *skip* (withheld developer-only skills) are treated as
+    absent from the source, so a previous copy of them is removed.
+    """
+    source_names = {child.name for child in source.iterdir()} - skip
     for child in target.iterdir():
         if child.name not in source_names:
             if child.is_dir() and not child.is_symlink():
@@ -183,6 +200,8 @@ def _copy_tree_if_changed(source: Path, target: Path) -> None:
             else:
                 child.unlink()
     for child in source.iterdir():
+        if child.name in skip:
+            continue
         dest = target / child.name
         if child.is_dir() and not child.is_symlink():
             if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
@@ -253,8 +272,12 @@ def compose_view(
     dry_run: bool = False,
     refresh: set[str] | None = None,
     extras: list[SkillDescriptor] | None = None,
+    withheld: Iterable[SkillDescriptor] = (),
 ) -> tuple[SkillDescriptor, list[PlannedStep], list[SkillDescriptor]]:
     """Compose one harness view and return ``(gateway, steps, view_packs)``.
+
+    *withheld* extras (developer-only skills not selected for this harness)
+    are left out of their pack's copy, and links to them keep only their text.
 
     Pack copies are keyed by pack id and are therefore safe to reconcile without
     touching unrelated user files.  The returned gateway descriptor points at
@@ -262,6 +285,8 @@ def compose_view(
     """
     steps: list[PlannedStep] = []
     core_dir = Path(os.path.realpath(core.skill_dir))
+    withheld = [d for d in withheld if d.skill is not None]
+    withheld_ids = {d.skill_id for d in withheld}
     materialised = {"SKILL.md"}
     for rel in (*_CORE_FILES, _PACKS_REGISTRY):
         if (core_dir / rel).is_file():
@@ -271,7 +296,8 @@ def compose_view(
         core_dir=core_dir,
         packs={d.pack_id: Path(os.path.realpath(d.skill_dir)) for d in packs},
         materialised=frozenset(materialised),
-        extras=tuple(Path(os.path.realpath(d.skill_dir)) for d in (extras or [])),
+        extras=tuple(Path(os.path.realpath(d.skill_dir)) for d in (extras or []) if d.skill_id not in withheld_ids),
+        withheld=tuple(Path(os.path.realpath(d.skill_dir)) for d in withheld),
     )
 
     view_packs = view_descriptors(root, packs)
@@ -294,11 +320,24 @@ def compose_view(
         target = root / "packs" / descriptor.pack_id
         source = next(item.skill_dir for item in packs if item.pack_id == descriptor.pack_id)
         steps.append(PlannedStep(f"materialise {target} from {source}", target=target))
+        skip = frozenset(d.skill for d in withheld if d.pack_id == descriptor.pack_id)
+        for name in sorted(skip):
+            if (target / name).exists() or (target / name).is_symlink():
+                steps.append(PlannedStep(f"withhold developer skill {target / name}", target=target / name))
         if not dry_run:
-            pack_extras = [d for d in (extras or []) if d.pack_id == descriptor.pack_id]
+            pack_extras = [
+                d for d in (extras or [])
+                if d.pack_id == descriptor.pack_id and d.skill not in skip
+            ]
             if refresh is None or not target.is_dir():
-                _materialise_pack(target, source, links, managed=descriptor.pack_id in previous_ids)
+                _materialise_pack(target, source, links, managed=descriptor.pack_id in previous_ids, skip=skip)
             else:
+                for name in skip:
+                    stale = target / name
+                    if stale.is_dir() and not stale.is_symlink():
+                        shutil.rmtree(stale)
+                    elif stale.exists() or stale.is_symlink():
+                        stale.unlink()
                 if descriptor.pack_id in refresh:
                     preserved = {d.skill for d in pack_extras}
                     for child in target.iterdir():
@@ -309,7 +348,7 @@ def compose_view(
                         else:
                             child.unlink()
                     for child in source.iterdir():
-                        if child.name in preserved:
+                        if child.name in preserved or child.name in skip:
                             continue
                         dest = target / child.name
                         if child.is_dir():
@@ -317,7 +356,8 @@ def compose_view(
                         else:
                             shutil.copy2(child, dest)
                     for md in iter_markdown_files(source):
-                        if md.relative_to(source).parts[0] not in preserved:
+                        first = md.relative_to(source).parts[0]
+                        if first not in preserved and first not in skip:
                             _materialise(md, target / md.relative_to(source), links)
                 for extra in pack_extras:
                     if extra.skill_id in refresh:

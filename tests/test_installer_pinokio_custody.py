@@ -1,6 +1,7 @@
 """Stopped Pinokio updater custody keeps the kernel lock through activation."""
 
 import contextlib
+import json
 import subprocess
 import sys
 import time
@@ -86,6 +87,39 @@ def test_updater_close_keeps_custody_until_attached_runtime_closes(tmp_path):
             _assert_lock_free(lock_path)
         attached.close()
     _assert_lock_free(lock_path)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Pinokio filters XDG_DATA_HOME on Linux.")
+def test_custody_retains_foreground_and_legacy_locks_when_xdg_is_filtered(tmp_path, monkeypatch):
+    from astrid.installer.custody import attach
+    from astrid.installer.service import pinokio_lock_paths
+
+    root, data, home, backend, versions = _fixture(tmp_path)
+    paths = pinokio_lock_paths(home, sys.platform)
+    assert len(paths) == 2
+    with _custody(root, backend) as custody:
+        assert custody is not None
+        for path in paths:
+            with pytest.raises(ValueError, match="lock"):
+                _assert_lock_free(path)
+        ticket = custody.arm(versions["candidate"], data)
+        receipt_path = root / ".app-update-custody.json"
+        receipt = receipt_path.read_bytes()
+        altered = json.loads(receipt)
+        altered["lock"] = str(paths[1].resolve())
+        receipt_path.write_text(json.dumps(altered))
+        monkeypatch.delenv("XDG_DATA_HOME")
+        with pytest.raises(ValueError, match="lock owner identity changed"):
+            attach(ticket, root, versions["candidate"], data)
+        receipt_path.write_bytes(receipt)
+        attached = attach(ticket, root, versions["candidate"], data)
+        custody.close()
+        for path in paths:
+            with pytest.raises(ValueError, match="lock"):
+                _assert_lock_free(path)
+        attached.close()
+    for path in paths:
+        _assert_lock_free(path)
 
 
 @pytest.mark.parametrize("step,selected", [("switched", "candidate"),
@@ -222,6 +256,18 @@ def test_stale_activation_phase_without_operation_lock_refuses_start(tmp_path, s
     root, _data, _home, _backend, _versions = _fixture(tmp_path, step=step, selected=selected)
     with pytest.raises(ValueError, match="^Choose Update to finish$"):
         launch(root, [])
+
+
+@pytest.mark.parametrize("step,selected", [("staged", "old"), ("stopping", "old"),
+                                            ("stopped", "old"), ("switched", "candidate"),
+                                            ("rollback_selected", "old")])
+def test_ordinary_start_refuses_any_unfinished_transaction_even_with_operation_lock(tmp_path, step, selected):
+    from astrid.installer.foreground import launch
+
+    root, _data, _home, _backend, _versions = _fixture(tmp_path, step=step, selected=selected)
+    with locked(root / ".app-update.lock"):
+        with pytest.raises(ValueError, match="^Choose Update to finish$"):
+            launch(root, [])
 
 
 def test_actual_runtime_keeper_exits_if_lock_custodian_dies(tmp_path):

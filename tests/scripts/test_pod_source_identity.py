@@ -94,24 +94,15 @@ def runtime(monkeypatch):
     return importlib.import_module("astrid_runtime.bootstrap")
 
 
-def test_original_gitless_bundle_reproduces_retained_failure(repos, tmp_path, runtime):
-    """The previous tar filter dropped .git, making the real capture fail."""
-    from astrid.sdk.autobootstrap import AutoBootstrapError, _lifecycle_result
-
+def test_gitless_bundle_is_treated_as_unstamped_installed_profile(repos, tmp_path, runtime):
+    """Two unpacked roots without .git follow Runtime's installed-profile contract."""
     sources, _ = repos
     old = tmp_path / "old"
     old.mkdir()
     for name in ("astrid-runtime", "astrid-agent"):
         shutil.copytree(sources / name, old / name, ignore=shutil.ignore_patterns(".git", "ignored-local"))
-    with pytest.raises(runtime.BootstrapError, match="Requested Runtime identity could not be verified") as exc:
-        runtime._capture_requested_identity(profile(old))
-    with pytest.raises(AutoBootstrapError) as translated:
-        _lifecycle_result({"ok": False, "error": {"message": str(exc.value)}}, action="bootstrap",
-                          started=0, allowed_statuses=frozenset({"ready"}))
-    assert str(translated.value) == (
-        "neutral runtime bootstrap was not ready: Requested Runtime identity could not be verified.; "
-        "run the Astrid install line again"
-    )
+    assert all(not (old / name / ".git").exists() for name in ("astrid-runtime", "astrid-agent"))
+    assert runtime._capture_requested_identity(profile(old)) == {"release": 0, "managed_by": None}
 
 
 @pytest.mark.parametrize("linked_agent", [False, True], ids=["checkout", "linked-worktree"])

@@ -1,9 +1,15 @@
 name: Release-1 installed lifecycle receipts
 
 # This workflow is deliberately a receipt producer, not a release dispatcher.
-# A caller supplies one immutable candidate tuple; the final gate rejects any
-# missing, skipped, failed, duplicate, or foreground-substituted matrix result.
+# A caller or automatic resolver supplies one immutable candidate tuple; the
+# final gate rejects any missing, skipped, failed, duplicate, or
+# foreground-substituted matrix result.
 on:
+  push:
+    branches:
+      - int/r1
+  schedule:
+    - cron: '23 3 * * *'
   workflow_call:
     inputs:
       candidate:
@@ -24,7 +30,7 @@ on:
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
       direct_only:
-        description: Run only the three direct rows; the full Release-1 gate still requires all nine rows
+        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
         default: false
         type: boolean
@@ -91,7 +97,7 @@ on:
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
       direct_only:
-        description: Run only the three direct rows; the full Release-1 gate still requires all nine rows
+        description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
         default: false
         type: boolean
@@ -141,7 +147,7 @@ on:
 
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -175,25 +181,88 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: driver
           persist-credentials: false
+      - name: Check out latest App int/r1 manifest for automatic runs
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: int/r1
+          path: automatic-app
+          fetch-depth: 1
+          persist-credentials: false
+      - id: automatic_candidate
+        name: Resolve the checked-out App manifest tuple for automatic runs
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          app = Path("automatic-app")
+          manifest_path = app / "public" / "install-manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          app_ref = subprocess.check_output(
+              ["git", "-C", str(app), "rev-parse", "HEAD"], text=True
+          ).strip()
+          manifest_pinokio = (manifest.get("pinokio") or {}).get("sha")
+          if manifest_pinokio:
+              pinokio_ref = manifest_pinokio
+          else:
+              pinokio_ref = subprocess.check_output(
+                  [
+                      "git", "ls-remote", "https://github.com/banodoco/astrid-pinokio.git",
+                      "refs/heads/int/r1",
+                  ], text=True,
+              ).split()[0]
+          candidate = {
+              "app": app_ref,
+              "agent": (manifest.get("agent") or {}).get("sha"),
+              "runtime": (manifest.get("runtime") or {}).get("sha"),
+              "pinokio": pinokio_ref,
+              "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+              "artifacts": {
+                  path: hashlib.sha256((app / path).read_bytes()).hexdigest()
+                  for path in ("public/install", "public/install.sh", "public/install.ps1")
+              },
+          }
+          if any(not isinstance(candidate.get(key), str) or not candidate[key]
+                 for key in ("app", "agent", "runtime", "pinokio", "manifest_sha256")):
+              raise SystemExit("automatic App manifest resolution produced an incomplete candidate")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("candidate=" + json.dumps(candidate, separators=(",", ":")), file=output)
+              print("agent=" + candidate["agent"], file=output)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Automatic App manifest resolution\n\n")
+              summary.write(f"- App: {candidate['app']}\n")
+              summary.write(f"- Agent: {candidate['agent']}\n")
+              summary.write(f"- Runtime: {candidate['runtime']}\n")
+              summary.write(f"- Pinokio: {candidate['pinokio']}\n")
+              summary.write(f"- Manifest SHA-256: {candidate['manifest_sha256']}\n")
+          PY
       - id: config
         shell: bash
         env:
-          CANDIDATE: ${{ inputs.candidate }}
+          CANDIDATE: ${{ steps.automatic_candidate.outputs.candidate || inputs.candidate }}
           DRIVER_AGENT_REF: ${{ github.workflow_sha }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
-          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
-          STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref }}
-          M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs }}
-          DIRECT_ONLY: ${{ inputs.direct_only }}
-          DIRECT_OS: ${{ inputs.direct_os }}
-          M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only }}
-          M4_5_ENABLED: ${{ inputs.m4_5_enabled }}
-          M4_5_ONLY: ${{ inputs.m4_5_only }}
-          M4_5_BOUNDARY: ${{ inputs.m4_5_boundary }}
-          M4_5_BOUNDARY_ARGS: ${{ inputs.m4_5_boundary_args }}
-          M4_4B_ENABLED: ${{ inputs.m4_4b_enabled }}
-          M4_6_ENABLED: ${{ inputs.m4_6_enabled }}
-          M4_6_CANDIDATE: ${{ inputs.m4_6_candidate }}
+          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || 'bbba620e3d89eeff8021417f365e6ea584203105' }}
+          STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
+          M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
+          DIRECT_OS: ${{ inputs.direct_os || 'all' }}
+          DIRECT_ONLY: ${{ inputs.direct_only || false }}
+          M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
+          M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
+          M4_5_ONLY: ${{ inputs.m4_5_only || false }}
+          M4_5_BOUNDARY: ${{ inputs.m4_5_boundary || '' }}
+          M4_5_BOUNDARY_ARGS: ${{ inputs.m4_5_boundary_args || '[]' }}
+          M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
+          M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
+          M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -235,8 +304,10 @@ jobs:
           if direct_os not in {"all", "linux", "macos", "windows"}:
               raise SystemExit("direct_os must be one of all, linux, macos, windows")
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
-          if (direct_only or direct_os != "all") and (backend_only or m4_5_only):
-              raise SystemExit("direct selection cannot be combined with m4_4a_backend_only or m4_5_only")
+          if direct_only and (backend_only or m4_5_only):
+              raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
+          if direct_os != "all" and (backend_only or m4_5_only):
+              raise SystemExit("direct_os cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
           if m4_5_only and not m4_5_enabled:
               raise SystemExit("m4_5_only requires m4_5_enabled")
@@ -273,13 +344,13 @@ jobs:
           else:
               m4_6_candidate = {}
           matrix = [
-              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"direct-windows", "mode":"direct", "leg":"release0-to-release1", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"pinokio-backend-linux", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-backend-windows", "mode":"pinokio-backend", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
-              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-14", "shell":"sh", "os":"macos"},
+              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
@@ -331,7 +402,7 @@ jobs:
       - name: Check out frozen App candidate
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
@@ -368,11 +439,13 @@ jobs:
         run: |
           {
             echo "## Effective Release-1 journey tuple"
+            echo "- Trigger: ${{ github.event_name }} / ${{ github.sha }}"
             echo "- Driver Agent: $(git -C agent rev-parse HEAD)"
             echo "- Candidate App: $(git -C app rev-parse HEAD)"
             echo "- Candidate Agent: $(git -C candidate-agent rev-parse HEAD)"
             echo "- Candidate Runtime: $(git -C runtime rev-parse HEAD)"
             echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
+            echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze and validate candidate inputs
         shell: bash
@@ -381,6 +454,208 @@ jobs:
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
+      - name: Establish Linux user service manager
+        if: matrix.job_id == 'direct-linux'
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          # Hosted direct Linux row only. Keep diagnostics outside the driver's fresh root.
+          set -Eeuo pipefail
+          diag="$RUNNER_TEMP/journey-manager-direct-linux"
+          mkdir -p "$diag"
+          exec > >(tee "$diag/prerequisite.log") 2>&1
+          uid=$(id -u)
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          run_root="$RUNNER_TEMP/astrid-r1-direct-linux"
+          config="$run_root/home/.config"
+          data="$run_root/home/.local/share"
+          probe="journey-manager-path-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.service"
+          probe_dir="$config/systemd/user"
+          probe_created=0
+
+          diagnose() {
+            local rc=$?
+            trap - EXIT
+            if (( probe_created )); then
+              rm -f "$probe_dir/$probe"
+              systemctl --user daemon-reload || true
+              rmdir "$probe_dir" "$config/systemd" "$config" "$run_root/home" "$run_root" || true
+            fi
+            echo "setup_exit=$rc"
+            timeout 10s loginctl show-user "$uid" -p Name -p Linger -p State -p RuntimePath || true
+            timeout 10s sudo systemctl --no-pager --full status "user@$uid.service" | head -60 || true
+            timeout 10s systemctl --user show -p Version -p UnitPath -p NFailedUnits || true
+            timeout 10s systemctl --user show-environment || true
+            exit "$rc"
+          }
+          trap diagnose EXIT
+
+          probe_isolated_unit() {
+            # Prove discovery from the exact future installation directory, not merely the bus.
+            mkdir -p "$probe_dir"
+            probe_created=1
+            printf '[Unit]\nDescription=Journey unit search path probe\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n' > "$probe_dir/$probe"
+            timeout 10s systemctl --user daemon-reload
+            fragment=$(timeout 10s systemctl --user show "$probe" --property=FragmentPath --value)
+            test "$fragment" = "$probe_dir/$probe"
+            timeout 30s systemctl --user start "$probe"
+            rm "$probe_dir/$probe"
+            timeout 10s systemctl --user daemon-reload
+            rmdir "$probe_dir" "$config/systemd" "$config" "$run_root/home" "$run_root"
+            probe_created=0
+          }
+
+          # The runtime drop-in is interpreted by systemd, so restrict it to the ordinary
+          # GitHub runner temp path alphabet rather than accepting systemd specifiers.
+          [[ "$run_root" =~ ^/[a-zA-Z0-9_./-]+$ ]]
+          test ! -e "$run_root"
+          echo "uid=$uid runtime=$XDG_RUNTIME_DIR isolated_config=$config isolated_data=$data"
+          timeout 20s sudo loginctl enable-linger "$uid"
+          timeout 30s sudo systemctl start "user@$uid.service"
+          for attempt in {1..20}; do
+            if [[ -d "$XDG_RUNTIME_DIR" && -S "$XDG_RUNTIME_DIR/bus" ]] && \
+               timeout 3s systemctl --user show-environment >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          test "$(stat -c %u "$XDG_RUNTIME_DIR")" = "$uid"
+          test -S "$XDG_RUNTIME_DIR/bus"
+          timeout 10s systemctl --user show-environment >/dev/null
+          # Check the original manager before restarting it with a different search path.
+          test ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/astrid.service"
+          original=$(timeout 10s systemctl --user show astrid.service --property=LoadState --value || true)
+          test "$original" = not-found
+
+          dropin="/run/systemd/system/user@$uid.service.d"
+          sudo mkdir -p "$dropin"
+          # An explicit unit search path survives the fresh-root cleanup between this
+          # probe and the installer. The trailing colon retains systemd's default paths.
+          printf '[Service]\nEnvironment="XDG_CONFIG_HOME=%s" "XDG_DATA_HOME=%s" "SYSTEMD_UNIT_PATH=%s:"\n' "$config" "$data" "$probe_dir" | sudo tee "$dropin/90-astrid-journey.conf" >/dev/null
+          sudo systemctl daemon-reload
+          timeout 30s sudo systemctl restart "user@$uid.service"
+          for attempt in {1..20}; do
+            if timeout 3s systemctl --user show-environment >/dev/null; then break; fi
+            sleep 1
+          done
+          probe_isolated_unit
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          echo 'Native systemd user manager discovered and started the isolated-path probe.'
+      - name: Establish Windows Task Scheduler readiness
+        if: matrix.job_id == 'direct-windows'
+        shell: powershell
+        timeout-minutes: 3
+        run: |
+          # Hosted direct Windows row only. This must run in Windows PowerShell 5.1,
+          # like the driver's scheduled-task preflight.
+          $ErrorActionPreference = 'Stop'
+          $diag = Join-Path $env:RUNNER_TEMP 'journey-manager-direct-windows'
+          New-Item -ItemType Directory -Force -Path $diag | Out-Null
+          Start-Transcript -Path (Join-Path $diag 'prerequisite.log') | Out-Null
+          $taskName = 'Astrid-Journey-Manager-Probe-' + [guid]::NewGuid().ToString('N')
+          $registered = $false
+          $result = 1
+          try {
+              $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+              Write-Output "Identity: $identity"
+              $service = Get-Service -Name Schedule -ErrorAction Stop
+              Write-Output "Task Scheduler initial status: $($service.Status)"
+              if ($service.Status -ne 'Running') { Start-Service -Name Schedule -ErrorAction Stop }
+              $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+              Write-Output "Task Scheduler status: $((Get-Service -Name Schedule).Status)"
+
+              $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument '/c exit 0'
+              $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive
+              Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
+              $registered = $true
+              $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+              if ($task.TaskName -ne $taskName) { throw 'Scheduled-task query returned an unexpected task.' }
+              Write-Output 'Temporary task registration and query succeeded.'
+
+              $result = 0
+          } catch {
+              Write-Output ("Prerequisite failure: " + ($_ | Out-String))
+          } finally {
+              if ($registered) {
+                  try {
+                      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+                      Write-Output 'Temporary task removed.'
+                  } catch {
+                      Write-Output ("Temporary task cleanup failed: " + ($_ | Out-String))
+                      $result = 1
+                  }
+              }
+              Write-Output "setup_exit=$result"
+              Stop-Transcript | Out-Null
+          }
+          exit $result
+      - name: Capture Windows scheduled-task query diagnostics
+        if: always() && matrix.job_id == 'direct-windows'
+        shell: powershell
+        env:
+          JOURNEY_LEG: ${{ matrix.leg }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'journey-manager-direct-windows'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $stdout = Join-Path $evidence 'preflight-python-stdout.txt'
+          $stderr = Join-Path $evidence 'preflight-python-stderr.txt'
+          $status = Join-Path $evidence 'preflight-launch.json'
+          $original = 'python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ[''RUNNER_TEMP'']) / ''journey-manager-direct-windows''; w.scheduled_task_preflight()"'
+          $code = "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_diagnostics(leg=os.environ['JOURNEY_LEG'])"
+          # Start-Process passes this argument string to CreateProcess on Windows.
+          $arguments = '-u -c "' + $code + '"'
+          $record = [ordered]@{
+            original_command = $original; executable = 'python'; arguments = $arguments
+            stdout = $stdout; stderr = $stderr; exit_code = $null; exception = $null
+            origin = [ordered]@{
+              PSVersion = $PSVersionTable.PSVersion.ToString(); PSEdition = $PSVersionTable.PSEdition
+              CommandType = $null; Source = $null; ModuleName = $null; ModulePath = $null
+            }
+            origin_exception = $null
+          }
+          function Save-PreflightLaunch {
+            [IO.File]::WriteAllText($status, ($record | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+          }
+          [IO.File]::WriteAllText($stdout, '')
+          [IO.File]::WriteAllText($stderr, '')
+          Save-PreflightLaunch
+          try {
+            $command = Get-Command Get-ScheduledTask -ErrorAction Stop
+            $record.origin.CommandType = [string]$command.CommandType
+            $record.origin.Source = $command.Source
+            $record.origin.ModuleName = $command.ModuleName
+            $record.origin.ModulePath = $command.Module.Path
+          } catch {
+            $record.origin_exception = ($_ | Format-List * -Force | Out-String) + "`n" + $_.Exception.ToString()
+          }
+          Save-PreflightLaunch
+          $env:PYTHONPATH = "$pwd/agent"
+          try {
+            $record.executable = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+            Save-PreflightLaunch
+            $process = Start-Process -FilePath $record.executable -ArgumentList $arguments -Wait -PassThru `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+            $record.exit_code = $process.ExitCode
+          } catch {
+            $record.exception = ($_ | Format-List * -Force | Out-String) + "`n" + $_.Exception.ToString()
+          } finally {
+            Save-PreflightLaunch
+          }
+          Write-Output "Windows preflight Python stdout:"
+          Get-Content -LiteralPath $stdout | ForEach-Object { Write-Output $_ }
+          Write-Output "Windows preflight Python stderr:"
+          Get-Content -LiteralPath $stderr | ForEach-Object { Write-Output $_ }
+          if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }
+      - name: Retain hosted service-manager prerequisite diagnostics
+        if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: journey-manager-${{ matrix.job_id }}
+          path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
+          if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
@@ -417,32 +692,63 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Retain the matrix receipt even after a lifecycle failure
-        if: always() && matrix.job_id != 'direct-windows'
+      - name: Validate the named lifecycle evidence artifact boundary
+        id: evidence_boundary
+        if: always()
+        shell: pwsh
+        run: |
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
+          $allowedNames = @(
+            'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'install-bootstrap.log', 'update-bootstrap.log', 'start.log',
+            'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
+            'service-manager-prerequisite.log', 'direct-service-ownership.log',
+            'preflight-scheduled-task.txt', 'receipt.json', 'release0-bootstrap.log',
+            'before-cleanup-result.json',
+            'runtime-owner-processes.json', 'runtime-service-runtime.log',
+            'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
+            'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
+            'unit-file-before-cleanup.txt', 'unit-file-after-cleanup.txt'
+          )
+          $maxArtifactBytes = 49000000
+          # Reserve 1 KiB per file for the stored ZIP entry and central directory.
+          $estimatedArtifactBytes = 0L
+          $receiptCount = 0
+          if (Test-Path -LiteralPath $evidenceRoot) {
+            foreach ($file in Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force) {
+              $relative = [IO.Path]::GetRelativePath($evidenceRoot, $file.FullName).Replace('\', '/')
+              if ($relative -notmatch '^(before-cleanup|after-cleanup)/([^/]+)$') {
+                throw "Unexpected staged evidence path: $relative"
+              }
+              $name = $Matches[2]
+              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$') {
+                throw "Unexpected staged evidence filename: $relative"
+              }
+              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Staged evidence must be a regular file: $relative"
+              }
+              if ($name -eq 'journey-result.json') { $receiptCount++ }
+              $estimatedArtifactBytes += [long]$file.Length + 1024
+            }
+          }
+          if ($receiptCount -eq 0) {
+            throw "No staged journey-result.json receipt exists under $evidenceRoot"
+          }
+          if ($estimatedArtifactBytes -ge $maxArtifactBytes) {
+            throw "Named journey artifact estimate is $estimatedArtifactBytes bytes; limit is below $maxArtifactBytes bytes"
+          }
+          Write-Host "Validated named lifecycle artifact estimate: $estimatedArtifactBytes bytes (< $maxArtifactBytes)."
+      - name: Retain only the named lifecycle evidence after a lifecycle failure
+        if: always() && steps.evidence_boundary.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
           name: journey-receipt-${{ matrix.job_id }}
-          # Keep the job-id directory in the artifact so merge-multiple cannot
-          # overwrite nine identically named journey-result.json files.
-          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}
+          # The collector stages only allowlisted names in these two phase folders.
+          # Keep the job-id directory in the artifact to avoid receipt collisions.
+          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence-upload
           if-no-files-found: warn
-
-      - name: Retain allowlisted Windows direct receipt and bootstrap evidence
-        if: always() && matrix.job_id == 'direct-windows'
-        uses: actions/upload-artifact@v4
-        with:
-          retention-days: 30
-          name: journey-receipt-${{ matrix.job_id }}
-          # The root ownership record keeps run-root-relative receipt paths resolvable in the artifact.
-          path: |
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/tst-b1-owner.json
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/release0-to-release1/journey-result.json
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/before-cleanup/receipt.json
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/before-cleanup/release0-bootstrap.log
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/after-cleanup/receipt.json
-            ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/after-cleanup/release0-bootstrap.log
-          if-no-files-found: warn
+          compression-level: 0
 
   release2:
     if: needs.config.outputs.m4_5_enabled == 'true'
@@ -466,7 +772,7 @@ jobs:
       - name: Check out frozen App candidate
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
@@ -691,6 +997,7 @@ jobs:
           if-no-files-found: warn
 
   gate:
+    name: Journey evidence (exact tuple)
     if: always()
     needs: [config, journey, release2, m4_4b_local, failure_modes]
     runs-on: ubuntu-24.04
@@ -725,7 +1032,7 @@ jobs:
       - name: Check out frozen App candidate for aggregate validation
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false

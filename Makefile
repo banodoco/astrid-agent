@@ -92,7 +92,7 @@ lock-proof:
 	uv pip compile requirements/proof.in --universal --python-version 3.11 --generate-hashes --no-annotate --custom-compile-command 'make lock-proof' --output-file requirements/proof.lock
 
 lock-validate:
-	@$(PY) -c "from scripts.reshape.release_reproducibility import validate_dependency_locks; validate_dependency_locks(); print('✓ hashed dependency locks')"
+	@$(PY) -c "from scripts.reshape.release_reproducibility import validate_dependency_locks; validate_dependency_locks(); print('✓ hashed dependency locks and runtime wheels')"
 
 toolchain-record:
 	@$(PY) -m scripts.reshape.release_reproducibility --output out/release-toolchain.json >/dev/null

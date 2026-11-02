@@ -175,7 +175,7 @@ def _owner_alive(pid):
 @pytest.mark.skipif(sys.platform == "win32", reason="This joined fixture uses POSIX venv launchers; custody units run natively on Windows.")
 @pytest.mark.parametrize("outcome", ["updated", "rolled_back", "recovered", "recovered_running_candidate"])
 def test_update_candidate_and_rollback_activate_under_retained_custody(
-        tmp_path, monkeypatch, outcome):
+        tmp_path, monkeypatch, capsys, outcome):
     if not PINOKIO_SOURCE.is_dir():
         pytest.fail(f"Pinned Pinokio test source is unavailable: {PINOKIO_SOURCE}")
     node_target = shutil.which("node")
@@ -219,6 +219,8 @@ def test_update_candidate_and_rollback_activate_under_retained_custody(
     switch(root, old)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("ASTRID_HOME", str(home))
+    # The updater sees this override; the pinned Pinokio launcher omits it.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
 
     realm = {"realm_id": "realm", "realm_root": str(data / "realm")}
@@ -321,6 +323,15 @@ def test_update_candidate_and_rollback_activate_under_retained_custody(
             backend.stage = lambda *_args: pytest.fail("recovery must not stage a new update")
             manifest.unlink()
             uv.unlink()
+            if outcome == "recovered_running_candidate":
+                before = (root / "update-transaction.json").read_bytes()
+                assert cli.main(argv) == 1
+                assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in capsys.readouterr().out.splitlines()
+                assert current(root) == candidate
+                assert (root / "update-transaction.json").read_bytes() == before
+                assert [release for release, _ in observations] == [2]
+                running_version = candidate
+                lifecycle.stop(candidate, data)
             assert cli.main(argv) == 0
             assert current(root) == old
             assert read_json(root / "update-transaction.json")["step"] == "rolled_back"

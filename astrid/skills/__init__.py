@@ -82,6 +82,43 @@ def default_pack_ids(descriptors: Iterable[SkillDescriptor] | None = None) -> tu
     return tuple(d.pack_id for d in default_descriptors(descriptors))
 
 
+def developer_descriptors(
+    descriptors: Iterable[SkillDescriptor] | None = None,
+    extras: Iterable[SkillDescriptor] | None = None,
+) -> list[SkillDescriptor]:
+    """Return the units that ``--developer`` installs, in a stable order.
+
+    These are the extras whose SKILL.md declares ``metadata.astrid.audience:
+    developer`` plus the main skill of each pack that owns one (for example
+    ``developing-astrid``). The mains are already composed by a default sync;
+    ``--developer`` also links them into the harness by name. Only the
+    developer-only extras are withheld from a default view.
+    """
+    mains = list(descriptors if descriptors is not None else list_skills())
+    units = list(extras if extras is not None else discovery.list_extras(mains))
+    developer_extras = [d for d in units if d.skill is not None and d.developer_only]
+    pack_ids = {d.pack_id for d in developer_extras}
+    developer_mains = [d for d in mains if d.pack_id in pack_ids or d.developer_only]
+    return sorted([*developer_mains, *developer_extras], key=lambda d: (d.pack_id, d.skill or ""))
+
+
+def _withheld_extras(extras: Iterable[SkillDescriptor], current_state: dict, harness: str) -> list[SkillDescriptor]:
+    """Developer-only extras not selected for *harness*: kept out of its view."""
+    selected = current_state["skills"][harness]["skills"]
+    return [
+        d for d in extras
+        if d.skill is not None and d.developer_only and not selected.get(d.skill_id, {}).get("selected")
+    ]
+
+
+def _select_units(current_state: dict, harness: str, descriptors: Iterable[SkillDescriptor]) -> None:
+    for descriptor in descriptors:
+        _inventory(current_state, harness, descriptor)["selected"] = True
+        disabled = current_state["disabled_defaults"].setdefault(harness, [])
+        if descriptor.pack_id in disabled:
+            disabled.remove(descriptor.pack_id)
+
+
 
 def _locked_operation(fn):
     @wraps(fn)
@@ -91,8 +128,12 @@ def _locked_operation(fn):
     return wrapped
 
 
-def _units(pack_ids, skill_names, all_skills, *, uninstalling=False):
+def _units(pack_ids, skill_names, all_skills, *, uninstalling=False, developer=False):
     available = list_skills()
+    if developer:
+        if pack_ids is not None or skill_names or all_skills:
+            raise ValueError("--developer selects the developer skills; do not combine it with a pack, --skill or --all-skills")
+        return developer_descriptors(available)
     requested = list(pack_ids) if pack_ids is not None else None
     if requested is not None:
         by_id = {d.pack_id: d for d in available}
@@ -136,8 +177,9 @@ def install(
     state_path: Path | None = None,
     skill_names: Iterable[str] = (),
     all_skills: bool = False,
+    developer: bool = False,
 ) -> dict:
-    descriptors = _units(pack_ids, tuple(skill_names), all_skills)
+    descriptors = _units(pack_ids, tuple(skill_names), all_skills, developer=developer)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
     extras_for_digest = discovery.list_extras([d for d in descriptors if d.skill is None])
@@ -179,8 +221,11 @@ def install(
     if not dry_run:
         state.save(current_state, state_path)
         if any(d.skill for d in descriptors):
+            # A selected developer-only extra was withheld from its pack's copy,
+            # so refresh the pack too: its links to the extra become live again.
+            refresh_ids = {d.skill_id for d in descriptors} | {d.pack_id for d in descriptors if d.developer_only}
             return sync.__wrapped__(harness_names=targets, mechanism=mechanism, force=force,
-                                    state_path=state_path, refresh_ids={d.skill_id for d in descriptors})
+                                    state_path=state_path, refresh_ids=refresh_ids)
     return report
 
 
@@ -193,8 +238,9 @@ def uninstall(
     state_path: Path | None = None,
     skill_names: Iterable[str] = (),
     all_skills: bool = False,
+    developer: bool = False,
 ) -> dict:
-    descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True)
+    descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True, developer=developer)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
 
@@ -212,7 +258,8 @@ def uninstall(
                     current_state,
                     harness_name,
                     descriptor.skill_id,
-                    default=descriptor.skill is None and descriptor in default_descriptors(descriptors),
+                    # ``--developer`` only unlinks: developing-astrid stays composed.
+                    default=not developer and descriptor.skill is None and descriptor in default_descriptors(descriptors),
                 )
             for descriptor in descriptors:
                 _inventory(current_state, harness_name, descriptor)["selected"] = False
@@ -220,6 +267,12 @@ def uninstall(
 
     if not dry_run:
         state.save(current_state, state_path)
+        if targets and any(d.developer_only for d in descriptors):
+            # Recompose so the deselected developer-only skills leave the view.
+            hermes_install = current_state["installs"].get("hermes", {}).get("_core", {})
+            mechanism = "external-dir" if hermes_install.get("mechanism") == "external-dir" else "symlink"
+            resynced = sync.__wrapped__(harness_names=targets, mechanism=mechanism, state_path=state_path)
+            report["resync"] = resynced
     return report
 
 
@@ -237,10 +290,15 @@ def sync(
     proposed_state: dict | None = None,
     refresh_ids: set[str] | None = None,
     refresh_selected_only: bool = False,
+    developer: bool = False,
 ) -> dict:
     """Compose the gateway and selected skills, refresh units, and prune orphans.
 
     Deep sync also links enabled discoverable skills without changing selection.
+    Developer-only extras (``metadata.astrid.audience: developer``) stay out of
+    the view, even with *deep*, until selected. *developer* selects them and the
+    main skill of their pack for every target harness, so later plain syncs
+    keep them (``uninstall(developer=True)`` deselects them).
     """
     all_descriptors = list_skills()
     extras = discovery.list_extras(all_descriptors)
@@ -250,6 +308,12 @@ def sync(
     if proposed_state is not None and not dry_run:
         raise ValueError("proposed_state is only valid for a dry-run sync")
     current_state = proposed_state if proposed_state is not None else state.load(state_path)
+    if developer:
+        if dry_run:
+            current_state = copy.deepcopy(current_state)
+        developer_units = developer_descriptors(all_descriptors, extras)
+        for harness_name in targets:
+            _select_units(current_state, harness_name, developer_units)
 
     report: dict = {"actions": []}
 
@@ -297,14 +361,17 @@ def sync(
             pack_descriptors = [d for d in descriptors if d.pack_id != "_core"]
             view_root = view_parent / harness_name
             previous_view_ids = {p.name for p in (view_root / "packs").iterdir()} if (view_root / "packs").is_dir() else set()
+            withheld = _withheld_extras(extras, current_state, harness_name)
+            withheld_ids = {d.skill_id for d in withheld}
             gateway, view_steps, view_packs = compose_view(
                 view_root, core, pack_descriptors, dry_run=dry_run,
-                refresh=effective_refresh, extras=extras,
+                refresh=effective_refresh, extras=extras, withheld=withheld,
             )
             from dataclasses import replace
             view_extras = [replace(d, skill_dir=view_root / "packs" / d.pack_id / d.skill,
                                    skill_md=view_root / "packs" / d.pack_id / d.skill / "SKILL.md")
-                           for d in extras if d.pack_id in {p.pack_id for p in pack_descriptors}]
+                           for d in extras if d.pack_id in {p.pack_id for p in pack_descriptors}
+                           and d.skill_id not in withheld_ids]
             selected_ids = {sid for sid, item in current_state["skills"][harness_name]["skills"].items() if item.get("selected")}
             visible = [d for d in [*view_packs, *view_extras] if deep or d.skill_id in selected_ids]
             registry_target = gateway.skill_md.parent / "creative-work" / "references" / "packs.md"
@@ -493,13 +560,15 @@ def check(
             core = next(d for d in expected if d.pack_id == "_core")
             pack_descriptors = [d for d in expected if d.pack_id != "_core"]
             view_root = (state_path or state.state_path()).parent / "skills" / harness_name
+            withheld_ids = {d.skill_id for d in _withheld_extras(extras, current_state, harness_name)}
             gateway, _steps, registry_descriptors = compose_view(
                 view_root, core, pack_descriptors, dry_run=True
             )
             from dataclasses import replace
             view_extras = [replace(d, skill_dir=view_root / "packs" / d.pack_id / d.skill,
                                    skill_md=view_root / "packs" / d.pack_id / d.skill / "SKILL.md")
-                           for d in extras if d.pack_id in {p.pack_id for p in pack_descriptors}]
+                           for d in extras if d.pack_id in {p.pack_id for p in pack_descriptors}
+                           and d.skill_id not in withheld_ids]
             registry_descriptors = [*registry_descriptors, *view_extras]
             selected = {sid for sid, item in current_state["skills"][harness_name]["skills"].items() if item.get("selected")}
             expected = [gateway, *[d for d in registry_descriptors if deep or d.skill_id in selected]]
@@ -897,6 +966,7 @@ __all__ = [
     "check",
     "default_descriptors",
     "default_pack_ids",
+    "developer_descriptors",
     "doctor",
     "install",
     "list_skills",

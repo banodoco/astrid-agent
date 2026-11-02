@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,7 @@ def _common_options(command):
     command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
     command.add_argument('--max-usd', action=_Once, type=float)
     command.add_argument('--deadline', action=_Once, help='Absolute UTC execution deadline.')
+    command.add_argument('--recovery-path', action=_Once, help='Save the exact Runtime admission receipt.')
 
 
 def _entry_help(description: dict[str, Any]) -> str:
@@ -143,7 +145,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
             help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
-        command.add_argument("--out", help="Output destination passed to the runtime.")
+        command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
         command.add_argument("--width", action=_Once, type=int)
@@ -160,6 +162,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument('workflow', nargs='?')
     command.add_argument("--entry")
     command.add_argument("--mode")
+    command.add_argument('--target', action=_Once, help='Describe the retained RunPod target.')
+    command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
@@ -183,11 +187,25 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--json", action="store_true")
     _common_options(command)
+    command = sub.add_parser('align', help='Inspect locked managed assets; apply with explicit user_env consent.')
+    selection = command.add_mutually_exclusive_group()
+    selection.add_argument('--entry', action=_Once, metavar='ID')
+    selection.add_argument('--all', action='store_true')
+    command.add_argument('--apply', action='store_true')
+    command.add_argument('--consent', action='append', choices=('user_env',), default=[])
+    command.add_argument('--json', action='store_true')
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
     command.add_argument('--target', action=_Once, default='auto')
     command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument('--save', action='store_true')
     command.add_argument('--input', action='append', default=[])
+    command.add_argument('--json', action='store_true')
+    command = sub.add_parser('launch', help='Launch or re-probe only the selected human ComfyUI.')
+    command.add_argument('--target', action=_Once, default='auto')
+    command.add_argument('--engine', action=_Once, default='comfyui')
+    command.add_argument('--consent', action='append', choices=('user_env', 'paid'), default=[])
+    command.add_argument('--timeout', action=_Once, type=float, default=10.0,
+                         help='Launch and health deadline in seconds (positive, at most 30).')
     command.add_argument('--json', action='store_true')
     command = sub.add_parser('release', help='Admit release through the current host owner.')
     command.add_argument('--engine', required=True)
@@ -218,7 +236,7 @@ def _controls(parsed):
     controls = {}
     if parsed.no_wait:
         controls['wait'] = False
-    for name in ('engine', 'consent', 'max_usd', 'deadline'):
+    for name in ('engine', 'consent', 'max_usd', 'deadline', 'recovery_path'):
         value = getattr(parsed, name, None)
         if value is not None and value != []:
             controls[name] = value
@@ -279,6 +297,9 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     else:
         with _open_client() as client:
             result = generate(client)
+            if not parsed.no_wait:
+                from .delivery import deliver_generation
+                result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
     if getattr(result, "ok", True) is False:
         from astrid.core.generation.preflight import generation_error
         raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
@@ -302,16 +323,35 @@ def _main(argv: list[str]) -> int:
     if parsed.modality == 'list':
         from astrid.core.generation.listing import main as list_main
         return list_main(argv)
+    if parsed.modality == 'align':
+        from astrid.core.generation.asset_alignment import main as align_main
+        return align_main(parsed)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
+    if parsed.modality == 'launch':
+        payload = _generate_facade().launch(target=parsed.target, engine=parsed.engine,
+            consent=parsed.consent, timeout=parsed.timeout)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 2 if payload['status'] == 'blocked' else 0
     if parsed.modality == 'release':
         with _open_client() as client:
             result = _generate_facade().release(engine=parsed.engine, target=parsed.target,
                                                client=client, wait=not parsed.no_wait)
+        if getattr(result, 'ok', True) is False:
+            from astrid.core.generation.preflight import generation_error
+            raise generation_error(getattr(result, 'error', None) or ValueError('Release admission failed'),
+                                   task_id=getattr(result, 'kernel_task_id', None))
         payload = result.to_dict() if hasattr(result, 'to_dict') else result
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     if parsed.modality == "describe":
+        if parsed.target is not None:
+            if parsed.entry is not None or parsed.workflow is not None:
+                parser.error('target describe cannot also select an entry or workflow')
+            with _open_client() as client:
+                description = _generate_facade().describe(target=parsed.target, engine=parsed.engine, client=client)
+            print(json.dumps(description, indent=2, sort_keys=True))
+            return 0
         from astrid.core.generation.entries import describe_entry
         try:
             if bool(parsed.entry) == bool(parsed.workflow):
@@ -384,11 +424,22 @@ def _main(argv: list[str]) -> int:
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
     try:
         generate = getattr(_generate_facade(), parsed.modality)
-        if parsed.dry_run or (description is not None and description["source"] == "action"):
+        if parsed.dry_run:
             result = generate(**kwargs)
+        elif description is not None and description["source"] == "action" and parsed.target != 'runpod':
+            from astrid.sdk.generation import _action_client_scope
+            with _action_client_scope(_open_client) as current_client:
+                result = generate(**kwargs)
+                client = current_client()
+                if client is not None and not parsed.no_wait:
+                    from .delivery import deliver_generation
+                    result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
         else:
             with _open_client() as client:
                 result = generate(client=client, **kwargs)
+                if not parsed.no_wait:
+                    from .delivery import deliver_generation
+                    result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
     except AstridSDKError as exc:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.
@@ -406,6 +457,9 @@ def _main(argv: list[str]) -> int:
     payload = result.to_dict() if hasattr(result, "to_dict") else result
     if parsed.json or parsed.dry_run or not isinstance(payload, dict):
         print(json.dumps(payload, indent=2, sort_keys=True))
+    elif parsed.no_wait:
+        task_id = payload.get('kernel_task_id') or payload.get('task_id')
+        print(f'task: {task_id}' if task_id else json.dumps(payload, sort_keys=True))
     else:
         print(f"{parsed.modality} generation complete")
         for path in payload.get("image_paths", []):
@@ -419,7 +473,12 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     from astrid.core.generation.preflight import generation_error
     try:
-        return _main(argv)
+        scope = nullcontext()
+        if '--dry-run' in argv:
+            from astrid.core.pack.discovery import pack_discovery_scope
+            scope = pack_discovery_scope()
+        with scope:
+            return _main(argv)
     except (RuntimeError, ValueError, OSError, ImportError) as exc:
         error = generation_error(exc, code='missing_dependency' if isinstance(exc, ImportError) else None)
         if '--json' in argv:

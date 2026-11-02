@@ -27,6 +27,34 @@ setup declaration, not to an installer-specific manifest field such as
 The installed-wheel recovery entrypoint is `python -m astrid.skills sync` (or
 `python -m astrid.skills doctor --heal`).
 
+## Developer skills
+
+A default sync composes every first-party main skill, including
+`developing-astrid` (the `developer` pack), the entry point for people who
+change Astrid itself. Skills whose frontmatter declares
+`metadata: {astrid: {audience: developer}}` (`fast-iteration` and `releasing`)
+are developer-only: a default or `--deep` sync leaves them out of the view and
+drops links to them (their text stays).
+
+```bash
+python -m astrid.skills sync --developer                   # also install the developer skills
+python -m astrid.skills sync --developer --harness claude  # one harness
+python -m astrid.skills uninstall --developer              # remove them again
+```
+
+`--developer` selects the developer skills and `developing-astrid` for each
+target harness, so they are linked by name (`astrid-developer`,
+`astrid-developer-fast-iteration`, `astrid-developer-releasing` for Claude) and
+later plain syncs, including the installer's, keep them. `install --developer`
+does the same. `uninstall --developer` unlinks them, removes the developer-only
+skills from the view and leaves `developing-astrid` composed. The MCP server
+serves developer skills as prompts only when started with
+`python -m astrid.mcp_server --developer`.
+
+Hermes' `external-dir` mechanism registers the source packs directory itself,
+so every skill there is visible, developer skills included. Use the default
+`symlink` mechanism to keep them opt-in.
+
 ## SkillDescriptor contract
 
 Each pack that wants to be installable contributes one file:

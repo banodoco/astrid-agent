@@ -8,7 +8,8 @@ generation method is actually invoked.
 from __future__ import annotations
 
 import importlib
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
@@ -31,6 +32,32 @@ if TYPE_CHECKING:
 
 WorkflowFile = str | Path | Mapping[str, Any]
 
+# Accepted for explicit use while its default-route qualification is pending.
+_EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_v2a"})
+
+# A CLI caller can retain the validated action's connection through delivery.
+# Acquisition stays inside the SDK, after the action's preconditions succeed.
+_action_client_connection: ContextVar[Any] = ContextVar('generation_action_client_connection', default=None)
+
+
+@contextmanager
+def _action_client_scope(factory):
+    with ExitStack() as stack:
+        owner = None
+
+        @contextmanager
+        def connection():
+            nonlocal owner
+            if owner is None:
+                owner = stack.enter_context(factory())
+            yield owner
+
+        token = _action_client_connection.set(connection)
+        try:
+            yield lambda: owner
+        finally:
+            _action_client_connection.reset(token)
+
 
 class WorkflowInvocationClient(Protocol):
     def invoke_result(self, capability_id: str, *, kind: str, **kwargs: Any) -> InvocationResult: ...
@@ -52,6 +79,63 @@ class GenerationInputError(CapabilityValidationError):
 
     def to_envelope(self):
         return {**self.readiness, 'task_id': None}
+
+
+def _declared_output_count_from_document(document: Any) -> int | None:
+    """Count the sealed graph's declared final sinks, as VibeComfy's runtime does.
+
+    VibeComfy treats an output as a declared sink when it carries a node_id.
+    Returns None when the document declares no outputs list.
+    """
+    outputs = document.get("outputs") if isinstance(document, Mapping) else None
+    if not isinstance(outputs, list):
+        return None
+    return sum(1 for item in outputs
+               if isinstance(item, Mapping) and item.get("node_id") is not None)
+
+
+def _declared_output_count(companion: Path) -> int | None:
+    import json
+
+    try:
+        document = json.loads(companion.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return _declared_output_count_from_document(document)
+
+
+def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
+    """Refuse before any staging or admission unless exactly one declared sink exists."""
+    from astrid.core.generation.preflight import generation_error
+
+    if companion is not None:
+        if isinstance(companion, Mapping):
+            declared = _declared_output_count_from_document(companion)
+        elif isinstance(companion, (str, Path)):
+            declared = _declared_output_count(Path(companion))
+        else:
+            declared = None
+    elif isinstance(workflow, (str, Path)):
+        original = Path(workflow).expanduser().resolve()
+        if original.is_dir():
+            original = original / "workflow.py"
+        sealed = original.with_suffix(".vibe.json")
+        if not sealed.exists():
+            # Companion-less workflows (for example audio or raw-target) are not
+            # VibeComfy-declared and pass unchanged; any extra output still fails
+            # loudly at host harvest.
+            return
+        declared = _declared_output_count(sealed)
+    else:
+        return
+    # Refuse only when more than one final sink is declared. Zero or undeclared
+    # keeps VibeComfy's legacy full-output map, and extra undeclared outputs still
+    # fail loudly at host harvest.
+    if declared is not None and declared > 1:
+        raise generation_error(
+            ValueError(f"this workflow produces {declared} outputs; Phase 1 supports exactly one"),
+            code="unsupported_output_cardinality", details={"field": "workflow"},
+        )
 
 
 def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
@@ -150,6 +234,38 @@ def _generation_controls(*, engine, consent, max_usd, deadline):
     return {name: value for name, value in
             (('engine', engine), ('consent', tuple(consent)), ('max_usd', max_usd), ('deadline', deadline))
             if value is not None and value != ()}
+
+
+def _runpod_paid_controls(controls):
+    """Per-call authority only; saved preferences never supply consent/bounds."""
+    from datetime import datetime, timezone
+    from astrid.core.generation.preflight import generation_error
+    consent = tuple(controls.get('consent', ()))
+    cap, deadline = controls.get('max_usd'), controls.get('deadline')
+    _generation_controls(engine=controls.get('engine'), consent=consent,
+                         max_usd=cap, deadline=deadline)
+    if ('paid' not in consent or cap is None or deadline is None
+            or datetime.fromisoformat(deadline) <= datetime.now(timezone.utc)):
+        raise generation_error(ValueError('RunPod requires fresh paid consent, a positive max_usd and a future UTC deadline'),
+                               code='input_rejected', details={'field': 'consent'})
+    return dict(consent=consent, max_usd=cap, deadline=deadline)
+
+
+def _bind_runpod_preparation(prepared, *, client, owner, recovery_path, capability_id):
+    from astrid.core.generation.preflight import generation_error
+    from .invocation import retain_prepared_owner
+    if not prepared.selection_path or not callable(prepared.endpoint_checkout):
+        raise generation_error(ValueError('RunPod preparation omitted attested endpoint custody'),
+                               code='missing_dependency')
+    request = prepared.selection.execution_request(None)
+    if request.get('target', {}).get('kind') != 'runpod' or request.get('remote_activation_required') is not True:
+        raise generation_error(ValueError('RunPod preparation omitted its exact activation request'),
+                               code='input_rejected')
+    retain_prepared_owner(client, recovery_path=recovery_path, capability_id=capability_id,
+                          monitor=prepared.owner_tick, owner=owner,
+                          endpoint_checkout=prepared.endpoint_checkout,
+                          execution_request=request if capability_id == 'vibecomfy.run' else None)
+    return request
 
 
 def _generation_boundary(method):
@@ -349,7 +465,7 @@ def _resolve_invoke_destination(
 
 
 def _validate_catalog_target_request(*, registry, candidate, mode, modality, inputs):
-    """Keep matrix/input validation ahead of qualification and target probes."""
+    """Keep matrix and input validation ahead of qualification and target probes."""
     from astrid.core.generation.preflight import validate_generation_request
     mode_spec = candidate.modes.get(mode)
     spec = mode_spec.backends.get('local') if mode_spec is not None else None
@@ -537,8 +653,29 @@ class GenerationFacade:
         return generation_rows(kind)
 
     @_generation_boundary
+    def launch(self, *, target='auto', engine='comfyui', consent=(), timeout=10.0,
+               project_root=None):
+        """Launch/re-probe one selected human ComfyUI with fresh user_env consent.
+
+        Return the ordinary readiness envelope, including manual-start guidance
+        on failure. Never save consent or health, discover a fallback, or admit
+        a generation task. URL/env overrides resolve without prior launch facts.
+        """
+        from astrid.core.generation import targets
+        from astrid.core.generation.target_launch import launch_target
+
+        _generation_controls(engine=engine, consent=consent, max_usd=None, deadline=None)
+        if target == 'runpod':
+            raise GenerationInputError('launch requires a selected local human ComfyUI')
+        try:
+            selection = targets.resolve_target(target, repo=project_root)
+        except (ValueError, OSError) as exc:
+            raise GenerationInputError(str(exc)) from exc
+        return launch_target(selection, consent=consent, timeout=timeout).readiness
+
+    @_generation_boundary
     def targets(self, *, target='auto', engine='comfyui', save=False, inputs=None,
-                project_root=None):
+                project_root=None, client=None):
         """Inspect selection without probing; persist only an explicit save."""
         from astrid.core.generation import targets
         from astrid.core.generation.entries import merge_input_values
@@ -567,6 +704,9 @@ class GenerationFacade:
                     raise ValueError('provider inputs require --save')
                 payload = readiness_envelope()
                 payload['preferences'] = targets.read_config().get('runpod', {})
+                if not save and client is not None:
+                    from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+                    payload['target'] = dict(call_runpod_owner(runpod_generation_owner(client).describe))
                 return payload
             if updates:
                 raise ValueError('local target input updates are not supported; select an explicit URL')
@@ -584,25 +724,46 @@ class GenerationFacade:
         except (ValueError, OSError) as exc:
             raise GenerationInputError(str(exc)) from exc
 
-    def describe(self, entry: str | None = None, *, workflow=None, mode=None):
+    @_generation_boundary
+    def describe(self, entry: str | None = None, *, workflow=None, mode=None,
+                 target=None, engine='comfyui', client=None):
         from astrid.core.generation.entries import describe_entry, describe_workflow
+        if target is not None:
+            _generation_controls(engine=engine, consent=(), max_usd=None, deadline=None)
+            if target != 'runpod' or entry is not None or workflow is not None:
+                raise GenerationInputError('target describe requires only target=runpod')
+            from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+            return dict(call_runpod_owner(runpod_generation_owner(client).describe))
         if bool(entry) == bool(workflow):
             raise GenerationInputError('describe requires an entry or a workflow')
         return describe_entry(entry, mode=mode) if entry else describe_workflow(Path(workflow), mode=mode)
 
+    @_generation_boundary
     def release(self, *, engine: str, target: str, client=None, wait=False):
-        """Delegate release admission to the actual host owner, never HTTP free."""
+        """Release a managed engine through its verified owner; never HTTP free an unowned target.
+
+        Attached or unmanaged targets are refused and never receive an HTTP free.
+        The owned managed engine is verified as the registered loopback owner, then
+        released through the existing native unload path (CheckoutServerAdapter.release).
+        """
         from astrid.core.generation.preflight import generation_error
         from astrid.core.generation.targets import canonical_engine
         if canonical_engine(engine) != 'comfyui':
             raise GenerationInputError('Phase 1 release supports only comfyui')
+        if target == 'runpod':
+            from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+            return call_runpod_owner(runpod_generation_owner(client).release, wait=wait)
         bridge = getattr(client, 'release_generation', None)
         if not callable(bridge):
             raise generation_error(ValueError('The bound host release owner is unavailable'),
                 code='missing_dependency', details={'field': 'target'},
                 fixes=[{'argv': ['astrid', 'generate', 'targets', '--target', target],
                         'scope': 'read_only', 'details': {}}])
-        return bridge(engine='comfyui', target=target, wait=wait)
+        result = bridge(engine='comfyui', target=target, wait=wait)
+        if isinstance(result, dict) and result.get('ok') is False:
+            raise generation_error(ValueError(str(result.get('reason') or 'release was not proven')),
+                code='release_not_proven', details={'field': 'target'})
+        return result
 
     def _invoke(self, capability_id: str, /, **kwargs: Any) -> Any:
         sdk_module = importlib.import_module(self.sdk_module_name)
@@ -684,6 +845,7 @@ class GenerationFacade:
         Placement validates scheduling intent; it is never a creative input.
         Omitted domain values stay omitted so the action owns its defaults.
         """
+        _require_single_declared_output(workflow=workflow, companion=companion)
         if target is not None:
             from astrid.core.generation.entries import resolve_workflow_inputs
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
@@ -808,10 +970,13 @@ class GenerationFacade:
             generation_error, readiness_envelope, compare_versions,
         )
 
-        controls.pop('engine', None)
-        controls.pop('consent', None)
-        controls.pop('max_usd', None)
-        controls.pop('deadline', None)
+        paid = _runpod_paid_controls(controls) if target == 'runpod' else None
+        if target == 'runpod' and not dry_run:
+            receipt_path = controls.get('recovery_path')
+            if controls.get('resume') or receipt_path is not None and Path(receipt_path).expanduser().exists():
+                raise CapabilityValidationError('follow the existing RunPod task through the retained host; do not prepare again')
+        for name in ('engine', 'consent', 'max_usd', 'deadline'):
+            controls.pop(name, None)
 
         if execution not in {None, "local"}:
             raise CapabilityValidationError(
@@ -853,11 +1018,13 @@ class GenerationFacade:
                     raise CapabilityValidationError(str(exc)) from exc
         else:
             candidates = [("catalog", entry) for entry in registry.list_by_modality(modality)
-                          if mode in entry.modes and getattr(entry.modes[mode].backends.get("local"), "template", "")]
+                          if entry.id not in _EXPLICIT_ONLY_ENTRIES
+                          and mode in entry.modes and getattr(entry.modes[mode].backends.get("local"), "template", "")]
             candidates += [("workflow", entry) for entry in
                            [*({**entry, 'source': 'user-entry'} for entry in workflow_entries.user_entries()),
                             *({**entry, 'source': 'ready-template'} for entry in workflow_entries.ready_entries())]
                            if entry["kind"] == modality and mode in entry["modes"]
+                           and entry["id"] not in _EXPLICIT_ONLY_ENTRIES
                            and not entry.get("registry_id")]
             candidates.sort(key=rank)
         from astrid.core.generation.availability import (
@@ -891,7 +1058,13 @@ class GenerationFacade:
                 + '; '.join(f'{identifier}: {exc}' for identifier, exc in filtered),
                 code='generation_route_unqualified', recovery_command=filtered[0][1].fix)
         candidates = qualified
-        target_client = select_generation_target(target, repo=controls.get("project_root"))
+        runpod_owner = None
+        if target == 'runpod':
+            from astrid.core.generation.preflight import runpod_generation_owner
+            runpod_owner = runpod_generation_owner(controls.get('client'))
+        target_client = select_generation_target(target, repo=controls.get("project_root"),
+            entry_id=model or (workflow_entry or {}).get('registry_id') or (workflow_entry or {}).get('id'),
+            **({'runpod_owner': runpod_owner} if runpod_owner is not None else {}))
         backend = VibeComfyBackend(target_client=target_client)
 
         def import_member(path: Path) -> dict[str, Any]:
@@ -1025,7 +1198,8 @@ class GenerationFacade:
                        'inputs': inventory,
                        'effective_values': effective_values,
                        'accepted_inputs': sorted(inputs), 'rejected_inputs': []}
-        readiness = readiness_envelope(entry=description, target=target_record,
+        readiness = readiness_envelope(entry=description, target=(
+            {'engine': 'comfyui', 'placement': 'runpod'} if runpod_owner is not None else target_record),
                                       issues=compare_versions(recorded, observed))
         if dry_run:
             preview = dict(plan or {"model": entry_id, "mode": mode})
@@ -1053,6 +1227,16 @@ class GenerationFacade:
                     for record in manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
+            if runpod_owner is not None:
+                import uuid
+                from astrid.core.generation.preflight import call_runpod_owner
+                prepared = call_runpod_owner(runpod_owner.prepare, workflow=workflow, inputs=dict(inputs), **paid)
+                if controls.get('recovery_path') is None:
+                    controls['recovery_path'] = prepared.selection.journal_dir / ('generation-' + uuid.uuid4().hex + '.json')
+                controls['execution_request'] = _bind_runpod_preparation(prepared,
+                    client=controls.get('client'), owner=runpod_owner,
+                    recovery_path=controls['recovery_path'], capability_id='vibecomfy.run')
+                controls['placement'] = 'runpod'
             result = self.workflow(
                 python=import_member(root / "workflow.py"),
                 companion=import_member(root / "workflow.vibe.json"),
@@ -1064,7 +1248,7 @@ class GenerationFacade:
                 workflow_inputs=json.dumps({name: value for name, value in
                     (plan or {}).get('bindings', {}).items() if name not in assets},
                     sort_keys=True, allow_nan=False),
-                comfy_url=target_client.target.url if target_client is not None else None,
+                comfy_url=(target_client.target.url if target_client is not None and runpod_owner is None else None),
                 generation_intent={
                     "version": 1, "modality": modality, "partial_success_policy": "reject",
                     "groups": [{"group_key": "main", "selectors": [{
@@ -1141,6 +1325,7 @@ class GenerationFacade:
         out: Path | str | None = None,
         project: str | None = None,
         client: Any | None = None,
+        recovery_path: Path | str | None = None,
         project_root: str | Path | None = None,
         extra_pack_roots: tuple[str, ...] = (),
         banodoco_config: Any | None = None,
@@ -1198,6 +1383,7 @@ class GenerationFacade:
                 brief=brief, check_binaries=check_binaries, python_exec=python_exec,
                 verbose=verbose, argv=argv,
                 **controls, **({'wait': False} if not wait else {}),
+                **({'recovery_path': recovery_path} if recovery_path is not None else {}),
             )
         if model is None:
             raise CapabilityValidationError("model is required when target is omitted")
@@ -1293,6 +1479,7 @@ class GenerationFacade:
             verbose=verbose,
             argv=argv,
             **({'wait': False} if not wait else {}),
+            **({'recovery_path': recovery_path} if recovery_path is not None else {}),
         )
         if dry_run or not wait:
             return result
@@ -1379,23 +1566,43 @@ class GenerationFacade:
         if action_entry is not None:
             if action_entry["action"] != "h3_av.transform":
                 raise CapabilityPreconditionError("action-backed generation requires a Runtime-admitted parent")
-            if target not in (None, "auto", "managed") or execution not in (None, "local"):
+            if target not in (None, "auto", "managed", "runpod") or execution not in (None, "local"):
                 raise CapabilityValidationError("tracked H3 requires the default Runtime target")
             if not inputs.get("request") or not inputs.get("asset_map"):
                 raise CapabilityValidationError("H3 requires request and asset_map")
+            if target == 'runpod':
+                from astrid.core.generation.preflight import runpod_generation_owner, call_runpod_owner
+                paid = _runpod_paid_controls(controls)
+                if client is None:
+                    raise CapabilityPreconditionError('RunPod H3 requires a retained host owner client')
+                owner = runpod_generation_owner(client)
+                preview = call_runpod_owner(owner.validate_h3, inputs=inputs)
+                if dry_run:
+                    return preview
+                if resume:
+                    raise CapabilityValidationError('follow the existing RunPod task through the retained host; do not prepare again')
+                prepared = call_runpod_owner(owner.prepare_h3, inputs=inputs, **paid)
+                if recovery_path is None:
+                    import uuid
+                    recovery_path = prepared.selection.journal_dir / ('h3-parent-' + uuid.uuid4().hex + '.json')
+                _bind_runpod_preparation(prepared, client=client, owner=owner,
+                    recovery_path=recovery_path, capability_id='h3_av.transform')
+                inputs['prepared_worker'] = str(prepared.selection_path)
             controls = dict(kind="action", inputs=inputs, project=project, out=out,
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
                 banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
-                dry_run=dry_run, wait=True, read_managed_outputs=True,
+                dry_run=dry_run, wait=wait, read_managed_outputs=True,
                 recovery_path=recovery_path, resume=resume)
             if client is None and not dry_run:
                 # Reuse the ordinary owner launcher connection; the admitted
                 # parent, including prepared custody, stays in this context.
-                with sdk_module.AstridClient.open_from_launcher(start_pack_host=False) as owner:
+                connection = _action_client_connection.get()
+                with (connection() if connection is not None else
+                      sdk_module.AstridClient.open_from_launcher(start_pack_host=False)) as owner:
                     return owner.invoke_result("h3_av.transform", **controls)
             invoke = client.invoke_result if client is not None else sdk_module.invoke_result
             return invoke("h3_av.transform", **controls)
-        if recovery_path is not None or resume:
+        if resume or recovery_path is not None and target != 'runpod':
             raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
         resolved_mode = sdk_module._infer_video_mode(mode, inputs)
         if registry is None:
@@ -1415,6 +1622,7 @@ class GenerationFacade:
                 brief=brief, check_binaries=check_binaries, python_exec=python_exec,
                 verbose=verbose, argv=argv,
                 **controls, **({'wait': False} if not wait else {}),
+                **({'recovery_path': recovery_path} if recovery_path is not None else {}),
             )
         if model is None:
             raise CapabilityValidationError("model is required when target is omitted")

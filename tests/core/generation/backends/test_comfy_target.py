@@ -21,6 +21,37 @@ PROMPT = {"prompt": {"1": {"class_type": "Example", "inputs": {}}}}
 DESCRIPTOR = {"filename": "result.png", "subfolder": "renders", "type": "output"}
 
 
+def test_schema_refresh_reuses_only_successful_stats_for_this_client_and_capture(monkeypatch):
+    from astrid.core.generation.engine_readiness import ComfyProvenance
+
+    calls = []
+    def request(self, path, **kwargs):
+        calls.append((self.target.url, path))
+        if path == '/system_stats':
+            if sum(call[1] == path for call in calls) == 1:
+                raise OSError('temporary failure')
+            return {'system': {'comfyui_version': self.target.url}}
+        return {}
+    monkeypatch.setattr(ComfyTargetClient, 'request_json', request)
+    first = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    second = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8189', 'attached'))
+    provenance = ComfyProvenance()
+    with provenance.capture():
+        first.object_info()  # Failed stats stay retryable.
+        first.object_info()
+        first.object_info()  # Schema refresh does not repeat successful stats.
+        second.object_info()
+    assert [path for _, path in calls].count('/object_info') == 4
+    assert [path for _, path in calls].count('/system_stats') == 3
+    assert provenance.observed['engine'] == second.target.url
+    with provenance.capture():
+        first.object_info()  # Returning to another target needs fresh evidence.
+    assert provenance.observed['engine'] == first.target.url
+    with ComfyProvenance().capture():
+        first.object_info()
+    assert [path for _, path in calls].count('/system_stats') == 5
+
+
 @pytest.fixture
 def engine_configuration(tmp_path):
     root = tmp_path / "pod-input" / "astrid" / "task-1"
@@ -158,6 +189,18 @@ def test_attached_interrupt_is_scoped_to_its_witnessed_running_prompt(comfy, net
     ]
 
 
+@pytest.mark.parametrize("queue", [{}, {"queue_running": {}}, {"queue_running": [[0, None]]}])
+def test_invalid_queue_cannot_silently_skip_scoped_interrupt(queue, comfy, network, monkeypatch):
+    client = attached(network)
+    client.submit_prompt(PROMPT)
+    original = client.request_json
+    monkeypatch.setattr(client, "request_json", lambda path, payload=None, **kw:
+                        queue if path == "/queue" and payload is None else original(path, payload, **kw))
+    with pytest.raises(ValueError, match="running prompt identities"):
+        client.cancel_prompt("ours")
+    assert comfy["controls"] == [("/queue", {"delete": ["ours"]})]
+
+
 def test_local_request_compatibility_uses_guarded_prompt_submission(comfy, network):
     from astrid.core.generation.backends.vibecomfy_local_server import _request
 
@@ -171,6 +214,15 @@ def test_local_request_compatibility_uses_guarded_prompt_submission(comfy, netwo
 def test_json_response_limit_is_enforced(comfy, network):
     with pytest.raises(ValueError, match="too large"):
         attached(network).request_json("/queue", response_limit=8)
+
+
+def test_malformed_get_response_is_not_a_control_acknowledgement(comfy, network):
+    import io
+
+    client = attached(network)
+    client._opener = lambda request, timeout: io.BytesIO(b"not json")
+    with pytest.raises(ValueError, match="not JSON"):
+        client.request_json("/queue")
 
 
 def test_output_response_limit_does_not_publish(comfy, network, tmp_path, monkeypatch):
@@ -219,12 +271,26 @@ def test_pod_corrupt_chunks_do_not_publish(comfy, endpoint, local_tls, network, 
     {**DESCRIPTOR, "subfolder": "../input"},
     {**DESCRIPTOR, "type": "input"},
     {**DESCRIPTOR, "filename": "C:\\result.png"},
-    {**DESCRIPTOR, "unknown": "unsafe"},
+    {**DESCRIPTOR, "metadata": {"bad": float("nan")}},
+    {**DESCRIPTOR, "future": "x" * 65536},
+    {**DESCRIPTOR, "future": {1: "not a JSON key"}},
 ])
 def test_unsafe_output_descriptor_is_rejected_before_http(descriptor, comfy, network, tmp_path):
     with pytest.raises(ValueError):
         attached(network).download_output(descriptor, tmp_path / "result.png")
     assert network["upstream"] == []
+
+
+def test_live_save_image_descriptor_downloads_with_informational_fields(comfy, network, tmp_path):
+    descriptor = {"filename": "Qwen_image_2.1_astrid_600d5a93f03747788ff193e8b4370ab3_00001_.png",
+                  "subfolder": "", "type": "output",
+                  "metadata": {"kind": "image", "width": 512, "height": 512},
+                  "future": {"fullpath": "../../ignored", "labels": ["image"]}}
+    destination = tmp_path / "result.png"
+    attached(network).download_output(descriptor, destination)
+    assert destination.read_bytes() == network["image"]
+    assert network["upstream"][-1][1].startswith("/view?filename=Qwen_image_")
+    assert "metadata" not in network["upstream"][-1][1]
 
 
 def test_attached_redirect_is_not_followed(comfy, network):

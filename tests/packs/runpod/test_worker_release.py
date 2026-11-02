@@ -27,6 +27,7 @@ from tests.packs.runpod.test_worker_preparation import _claim_handle, _pod, _vol
 @pytest.fixture
 def release_case(tmp_path, monkeypatch):
     from runpod_lifecycle import api
+    from astrid.packs.runpod import worker_preparation
 
     path = tmp_path / "claim.json"
     target = {"kind": "runpod", "pod_id": "pod-exact", "provider_account_ref": "runpod-test-account"}
@@ -173,6 +174,10 @@ def release_case(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "list_pods", lambda key: list(pods))
     monkeypatch.setattr(api, "get_network_volumes", lambda key: [_volume()])
     monkeypatch.setattr(api, "terminate_pod", terminate)
+    monkeypatch.setattr(worker_preparation, "read_exact_pod", lambda key, pod_id: (
+        (200, next(p for p in pods if p["id"] == pod_id)) if any(p["id"] == pod_id for p in pods)
+        else (404, None)
+    ))
     def reconcile(pod_id, key, **kwargs):
         from runpod_lifecycle.errors import CleanupPendingError
         assert pod_id == binding.pod_id

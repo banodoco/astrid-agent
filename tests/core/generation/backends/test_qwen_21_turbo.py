@@ -109,11 +109,34 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
             registry=ModelRegistry.load_default(), model=None, mode=mode, modality='image',
             target=client.target.url, execution='local', inputs=params, dry_run=True,
         )
-        assert selected['entry'] == model
-        assert selected['approval']['status'] == 'approved'
+        assert selected['entry']['id'] == model
+        assert selected['entry']['model'] == model
+        if mode == 'edit':
+            # The graph was compiled above; facade approval must wait for
+            # the caller's image to be staged and the final graph sealed.
+            assert 'approval' not in selected['entry']
+            assert selected['entry']['effective_values']['image'] == 'input.png'
+            assert 'image_ref' in selected['entry']['accepted_inputs']
+        else:
+            assert selected['entry']['approval']['status'] == 'approved'
         assert requests == ['/object_info', '/object_info', '/system_stats', '/object_info']
     finally:
         server.shutdown(); server.server_close(); thread.join()
+
+
+@pytest.mark.parametrize('invalid', [42, True, {'path': 'input.png'}])
+def test_qwen_edit_image_requires_a_string_reference(invalid):
+    from astrid.core.generation.entries import _workflow_inputs, validate_inputs
+
+    workflow = workflow_from_ready('edit/qwen_image_2_1_turbo_edit')
+    fields = _workflow_inputs({'binds': {}, 'defaults': {}}, 'edit', workflow=workflow)
+    image = next(field for field in fields if field['name'] == 'image')
+    assert (image['type'], image['media_semantics']) == ('string', 'image')
+    assert validate_inputs({'inputs': fields}, {'image': 'input.png'}, required=False) == {'image': 'input.png'}
+    with pytest.raises(ValueError, match="entry input 'image' requires a string"):
+        validate_inputs({'inputs': fields}, {'image': invalid}, required=False)
+    with pytest.raises(ValueError, match='no declared scalar type'):
+        validate_inputs({'inputs': [{'name': 'other', 'type': 'image'}]}, {'other': 'input.png'}, required=False)
 
 
 def test_public_lock_matches_workflow_assets():
@@ -162,7 +185,7 @@ def test_shipped_graph_assets_match_indexed_recipe_lock(model, mode, template):
         assert asset['url'] == f'https://huggingface.co/{row.repository}/resolve/{row.revision}/{row.path}'
 
 
-def test_generate_pin_and_h3_pin_are_independent():
+def test_generate_and_h3_share_vibecomfy_pin():
     from astrid.core.generation.engine_recipe import load_recipe
 
     generate = load_recipe('vibecomfy', 'windows-x86_64-cu130')
@@ -171,12 +194,18 @@ def test_generate_pin_and_h3_pin_are_independent():
     h3_sources = {s.name: (s.pin.repository, s.pin.revision) for s in h3.sources}
     assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
-    assert {k: v for k, v in generate_sources.items() if k != 'comfyui'} == {
-        k: v for k, v in h3_sources.items() if k != 'comfyui'}
+    assert generate_sources['vibecomfy'] == (
+        'https://github.com/banodoco/VibeComfy.git', 'e2905d068d5851b9c32856d32b8251852a01d6dd')
+    assert h3_sources['vibecomfy'] == (
+        'https://github.com/banodoco/VibeComfy.git', 'e2905d068d5851b9c32856d32b8251852a01d6dd')
+    assert {k: v for k, v in generate_sources.items() if k not in {'comfyui', 'vibecomfy'}} == {
+        k: v for k, v in h3_sources.items() if k not in {'comfyui', 'vibecomfy'}}
 
     root = Path(__file__).parents[4] / 'astrid/packs/vibecomfy'
     env = json.loads((root / 'environment.windows-nvidia.json').read_text())
     assert env['pins']['sha256'] == hashlib.sha256((root / 'pins.json').read_bytes()).hexdigest()
+    legacy_pin = json.loads((root / 'pins.json').read_text())['sources']['vibecomfy']
+    assert (legacy_pin['repository'], legacy_pin['revision']) == generate_sources['vibecomfy']
     requirements = (root / 'requirements.windows-nvidia.txt').read_text().splitlines()
     constraints = generate.environments[0].requirements.constraints
     for requirement in ('comfy-kitchen==0.2.40', 'comfy-aimdo==0.6.0'):

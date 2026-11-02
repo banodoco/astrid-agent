@@ -154,7 +154,10 @@ def test_installed_cpu_origins_are_real_and_reject_mixed_source():
     from tests.helpers import h3_cpu_runtime as helper
 
     origins = _installed_execution_origins(helper._INSTALLED_EXECUTION_ROOT, sys.executable)
-    assert set(origins) == {"host", "child", "action", "client", "sdk"}
+    assert set(origins) == {
+        "host", "child", "action", "client", "sdk",
+        "runtime_protocol", "runtime_protocol.platform", "astrid_runtime",
+    }
     assert all(Path(path).is_relative_to(helper._INSTALLED_EXECUTION_ROOT) for path in origins.values())
     with pytest.raises(PackHostBootstrapError):
         _installed_execution_origins(helper.ASTRID_ROOT, sys.executable)
@@ -192,17 +195,39 @@ def test_installed_cpu_actions_retain_candidate_content_pins(tmp_path):
 
 @pytest.mark.installed
 def test_installed_cpu_renderer_uses_real_provisioned_outputs():
+    import sys
+    from astrid.core.rendering import _registry_origin
     from astrid.packs.rendering.rendering.renderers.remotion import run
     from tests.helpers import h3_cpu_runtime as helper
 
     assert Path(run.__file__).is_relative_to(helper._INSTALLED_EXECUTION_ROOT)
-    assert run.gen_effect_registry is None
+    assert run.gen_effect_registry is not None
+    carrier = Path(run.gen_effect_registry.__file__).resolve()
+    assert carrier == helper._INSTALLED_EXECUTION_ROOT / "astrid/core/rendering/_effect_registry.py"
+    assert not carrier.is_relative_to(helper.ASTRID_ROOT)
     project = Path(os.environ["ASTRID_REMOTION_PROJECT_DIR"])
     paths = run._registry_output_paths(project)
     assert len(paths) == 3
     assert {p.name for p in paths} == {"effects.generated.ts", "animations.generated.ts", "transitions.generated.ts"}
+    # The installed Composition release is a built, immutable package. Host
+    # registries belong beside the host entry point, so an installed run must
+    # work without the retired package TypeScript tree.
+    assert not (project / "node_modules/@banodoco/timeline-composition/typescript/src").exists()
+    assert run.gen_effect_registry.HOST_SRC == project / "src"
+    assert set(run.gen_effect_registry.OUTPUTS.values()) == set(paths)
+    state_path = project / run._REGISTRY_STATE_PATH
+    assert state_path.is_file() and state_path.stat().st_size > 0
+    argv = _registry_origin.installed_argv(sys.executable, run.remotion_runtime.__file__, generate=True)
+    operation = argv[argv.index("-c") + 1]
+    assert argv[argv.index("-c") + 2] == str(helper._INSTALLED_EXECUTION_ROOT)
+    assert "from astrid.core.rendering._effect_registry import main" in operation
+    assert "scripts/gen_effect_registry.py" not in operation
+    assert str(helper.ASTRID_ROOT / "scripts" / "gen_effect_registry.py") not in argv
+    run._regenerate_element_registries(project, None)
+    state = run._read_registry_state(project)
+    assert state == run.gen_effect_registry.compute_generated_registry_state()
+    assert run._registry_outputs_match_state(project, state)
     assert all(p.is_file() and p.stat().st_size > 0 for p in paths)
-    assert not (project / run._REGISTRY_STATE_PATH).exists()
 
 
 

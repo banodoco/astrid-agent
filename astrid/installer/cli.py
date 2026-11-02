@@ -52,12 +52,16 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("--uninstall", action="store_true")
     mode.add_argument("--doctor", nargs="?", const="__default__", metavar="PATH",
                       help="write a redacted support bundle using the installed version")
+    mode.add_argument("--update-recovery", action="store_true",
+                      help="plan or apply data-preserving recovery of unresolved update evidence")
     result.add_argument("--delete-data", action="store_true", help="also delete the selected data root during uninstall")
     result.add_argument("--root", type=Path, help="absolute managed program directory")
     result.add_argument("--managed-by", choices=["pinokio"], help="install without a login service; Pinokio owns the process")
     result.add_argument("--data-root", type=Path, help="absolute workspace support directory")
     result.add_argument("--manifest", type=Path, help="local copy of the pinned hosted install manifest")
     result.add_argument("--update-job", help=argparse.SUPPRESS)
+    result.add_argument("--apply", metavar="PLAN_SHA256",
+                        help="apply the reviewed --update-recovery plan hash")
     result.add_argument("--uv", type=Path, help="absolute pinned uv executable supplied by the bootstrap")
     result.add_argument("--sandbox", action="store_true",
                         help="run inside a seccomp sandbox such as OpenShell: Runtime's sandbox process control "
@@ -67,8 +71,28 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    mode = ("app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
+    mode = ("update-recovery" if args.update_recovery else "app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
             else "doctor" if args.doctor is not None else "install")
+    if args.apply and mode != "update-recovery":
+        parser().error("--apply is only valid with --update-recovery.")
+    if mode == "update-recovery":
+        if args.root is None or args.data_root is None:
+            parser().error("--update-recovery requires --root and --data-root.")
+        if args.manifest or args.managed_by or args.sandbox or args.delete_data or args.uv or args.update_job:
+            parser().error("--update-recovery only accepts --root, --data-root, and optional --apply.")
+        from .maintenance import MaintenanceRefusal, apply_update_recovery, plan_update_recovery
+
+        try:
+            result = (apply_update_recovery(args.root, args.data_root, args.apply)
+                      if args.apply else plan_update_recovery(args.root, args.data_root))
+        except MaintenanceRefusal as failure:
+            payload = {"state": "recovery-needed", "reason": failure.reason, "message": str(failure)}
+            if failure.plan is not None:
+                payload["plan"] = failure.plan
+            print(json.dumps(payload, sort_keys=True))
+            return 1
+        print(json.dumps(result, sort_keys=True))
+        return 0
     if args.delete_data and mode != "uninstall":
         parser().error("--delete-data is only valid for uninstall.")
     if args.managed_by and (args.root is None or not args.root.expanduser().is_absolute()):

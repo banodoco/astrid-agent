@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -37,7 +38,7 @@ from typing import Any
 from astrid.core.cli.domain_product import family_parsers
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
-EXCLUDED = {("preferences", "checkin"), ("preferences", "edit"), ("tasks", "follow")}
+EXCLUDED = {("preferences", "checkin"), ("preferences", "edit")}
 TIMEOUT = float(os.environ.get("ASTRID_MCP_TIMEOUT", "900"))
 
 
@@ -75,6 +76,8 @@ def _schema(action: argparse.Action) -> dict[str, Any]:
         item = {"type": "integer"}
     elif action.type is float:
         item = {"type": "number"}
+    elif getattr(action.type, "__name__", "") == "_positive_float":
+        item = {"type": "number", "exclusiveMinimum": 0}
     if action.choices is not None:
         item["enum"] = [c for c in action.choices]
     if isinstance(action, argparse._AppendAction) or action.nargs in ("*", "+") or isinstance(action.nargs, int) and action.nargs > 1:
@@ -162,6 +165,7 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
         raise ValueError(f"unknown arguments: {', '.join(sorted(unknown))}")
     argv = list(tool["path"])
     flags: list[str] = []
+    trailing_files: list[str] = []
     for spec in tool["args"]:
         if tool["path"] == ("timelines", "render") and spec["dest"] == "wait":
             continue
@@ -188,7 +192,14 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             value = json.dumps(value)
         option, kind = spec["option"], spec["kind"]
         if option is None:
-            argv += [str(v) for v in value] if isinstance(value, list) else [str(value)]
+            values = [str(v) for v in value] if isinstance(value, list) else [str(value)]
+            # A positional file must remain the final argument.  This leaves
+            # generated JSON and policy flags visible to argparse while still
+            # preserving a file argument as the command's terminal input.
+            if spec.get("value") == "file":
+                trailing_files += values
+            else:
+                argv += values
         elif kind == "_StoreTrueAction":
             if value:
                 flags.append(option)
@@ -209,7 +220,9 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
         flags.append("--detach")
     if tool["path"] == ("timelines", "edit") and "--no-sweep" not in flags:
         flags.append("--no-sweep")
-    return argv + flags + (["--json"] if tool["json"] else [])
+    if tool["json"]:
+        flags.append("--json")
+    return argv + flags + trailing_files
 
 
 def _astrid_env() -> dict[str, str]:
@@ -229,12 +242,19 @@ def _text(text: str, *, error: bool = False, structured: Any = None) -> dict[str
     return result
 
 
-def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess | dict[str, Any]:
+def _run(argv: list[str], cwd: Path, *, timeout: float | None = None,
+         install: bool = False) -> subprocess.CompletedProcess | dict[str, Any]:
+    if timeout is None:
+        timeout = TIMEOUT
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT, cwd=cwd,
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd,
                               stdin=subprocess.DEVNULL, env=_astrid_env())
     except subprocess.TimeoutExpired:
-        return _text(f"{' '.join(argv[-4:])} timed out after {TIMEOUT:.0f}s", error=True)
+        if install:
+            payload = {"error": {"code": "ENGINE_INSTALL_STILL_RUNNING_OR_TIMED_OUT",
+                                 "message": "Install outcome is uncertain. Check astrid engines status and the .astrid-engine/install.json receipt."}}
+            return _text(json.dumps(payload), error=True, structured=payload)
+        return _text(f"{' '.join(argv[-4:])} timed out after {timeout:.0f}s", error=True)
 
 
 def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -283,7 +303,14 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
             return _text(f"invalid arguments: {exc}", error=True)
         executable = Path(sys.executable).with_name("astrid-tools")
         command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
-        done = _run([*command, *argv], Path.cwd())
+        if tool["path"] == ("engines", "install"):
+            deadline = arguments.get("deadline")
+            if (isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+                    or not math.isfinite(deadline) or deadline <= 0 or deadline > 604800):
+                deadline = 3600
+            done = _run([*command, *argv], Path.cwd(), timeout=deadline + 120, install=True)
+        else:
+            done = _run([*command, *argv], Path.cwd())
         if isinstance(done, dict):
             return done
         result = _cli_result(done)
@@ -508,7 +535,14 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"document": document,
               "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
              ["document", "idempotency_key"], kind="timeline_document", command="publish"),
-    ]), **_generation_tools()}
+    ]), **_generation_tools(), **_engine_install_tools()}
+
+
+def _engine_install_tools():
+    from astrid.core.engine_cli import _parser
+
+    tools = _tools_for_parsers({'engines': _parser()})
+    return {'engines_install': tools['engines_install']}
 
 
 def _generation_tools():
@@ -542,15 +576,25 @@ def _frontmatter(text: str) -> tuple[dict[str, str], str]:
     return meta, body
 
 
-def build_prompts() -> dict[str, dict[str, Any]]:
+def build_prompts(*, developer: bool = False) -> dict[str, dict[str, Any]]:
+    """Expose pack skills as prompts; developer-only skills only with *developer*.
+
+    Mirrors ``astrid skills sync --developer``: a SKILL.md that declares
+    ``metadata.astrid.audience: developer`` is served only when the server was
+    started with ``--developer``.
+    """
     import astrid
+    from astrid.skills.discovery import DEVELOPER_AUDIENCE, text_audience
 
     packs = Path(astrid.__file__).resolve().parent / "packs"
     prompts: dict[str, dict[str, Any]] = {}
     for path in sorted(packs.rglob("SKILL.md")):
         if any(part in {"tests", "fixtures"} for part in path.parts):
             continue
-        meta, body = _frontmatter(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        if not developer and text_audience(text) == DEVELOPER_AUDIENCE:
+            continue
+        meta, body = _frontmatter(text)
         name = re.sub(r"[^A-Za-z0-9_-]+", "-", meta.get("name") or "").strip("-")
         if not name or name in prompts:
             name = re.sub(r"[^A-Za-z0-9_-]", "-", "-".join(path.relative_to(packs).parts[:-1]))
@@ -603,8 +647,13 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
     return error(-32601, f"method not found: {method}")
 
 
-def main() -> int:
-    state = {"tools": {**build_tools(), **_extra_tools()}, "prompts": build_prompts()}
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m astrid.mcp_server", description="Astrid's stdio MCP server.")
+    parser.add_argument("--developer", action="store_true",
+                        help="Also serve the developer skills (as `astrid skills sync --developer` installs them).")
+    args = parser.parse_args(argv or [])
+    prompts = build_prompts(developer=True) if args.developer else build_prompts()
+    state = {"tools": {**build_tools(), **_extra_tools()}, "prompts": prompts}
     log(f"ready: {len(state['tools'])} tools, {len(state['prompts'])} prompts")
     for line in sys.stdin:
         if not line.strip():
@@ -628,4 +677,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

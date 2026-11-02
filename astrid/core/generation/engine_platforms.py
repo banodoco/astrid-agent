@@ -6,6 +6,7 @@ import math
 import os
 import stat
 import string
+import sys
 import time
 
 from . import _engine_python_bootstrap as _bootstrap
@@ -75,10 +76,12 @@ class LinuxPlatformAdapter:
         # shared stdlib argv construction that the release handoff also uses.
         self.join(root, environment.relative_path)
         try:
+            bootstrap_uv = os.environ.get("ASTRID_INSTALL_UV") or None
             return _bootstrap.linux_bootstrap_commands(
                 install_root=self.validate_root(root), uv_version=environment.uv_version,
                 python_version=environment.python_version,
-                venv_relative_path=environment.relative_path)
+                venv_relative_path=environment.relative_path,
+                bootstrap_uv=bootstrap_uv, bootstrap_python=sys.executable if bootstrap_uv else None)
         except ValueError as exc:
             raise RecipeValidationError("invalid environment bootstrap pins") from exc
 

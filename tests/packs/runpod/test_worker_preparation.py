@@ -22,6 +22,14 @@ from astrid.packs.runpod.worker_preparation import (
 from tests.helpers.runtime import use_runtime
 
 
+@pytest.fixture(autouse=True)
+def fake_release_exact_get(monkeypatch):
+    # Legacy release fixtures now provide the independent GET404 observation.
+    # The R04 matrix exercises present/error/null/stale combinations explicitly.
+    from astrid.packs.runpod import worker_preparation
+    monkeypatch.setattr(worker_preparation, "read_exact_pod", lambda key, pod_id: (404, None))
+
+
 def _contract(**overrides: Any) -> RunPodTargetContract:
     values: dict[str, Any] = {
         "pod_id": "pod-exact",
@@ -571,6 +579,8 @@ def test_release_deletes_exact_pod_only_after_quiescence_and_proves_volume_prese
         "backup_volume_id": "vol-persist",
         "backup_volume_preserved": True,
         "confirmed_at": result["cleanup"]["confirmed_at"],
+        "absence": {"provider_account_ref": handle["provider_account_ref"], "pod_id": "pod-exact",
+                    "exact_get_status": 404, "account_list_succeeded": True, "account_list_absent": True},
     }
     assert json.loads(handle_path.read_text(encoding="utf-8"))["cleanup_status"] == "complete"
 
@@ -715,7 +725,7 @@ def test_release_does_not_delete_if_volume_identity_cannot_be_reconfirmed(
         )
 
     assert deletes == []
-    assert json.loads(handle_path.read_text(encoding="utf-8"))["state"] == "release_pending"
+    assert json.loads(handle_path.read_text(encoding="utf-8"))["state"] == "cleanup_pending"
 
 
 def test_release_does_not_claim_volume_preservation_after_identity_changes(
