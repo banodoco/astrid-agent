@@ -267,6 +267,9 @@ def test_windows_captured_acl_same_owner_is_admitted(monkeypatch):
     {"trustees": (544, 18, 18)},  # No effective user ACE.
     {"masks": (0, 0x1F01FF, 0x1F01FF)},
     {"masks": (0x20000, 0x1F01FF, 0x1F01FF)},  # READ_CONTROL alone.
+    {"masks": (1, 0x1F01FF, 0x1F01FF)},  # Read without execute/traverse.
+    {"masks": (0x20, 0x1F01FF, 0x1F01FF)},  # Execute/traverse without read.
+    {"masks": (0x90000000, 0x1F01FF, 0x1F01FF)},  # Unmapped generic bits.
     {"flags": (8, 16, 0)},  # Inherit-only user access.
 ])
 def test_windows_schema_rejects_unsafe_acl(monkeypatch, changes):
@@ -274,9 +277,15 @@ def test_windows_schema_rejects_unsafe_acl(monkeypatch, changes):
     assert not _local_schema._windows_schema_handle_is_safe(1)
 
 
-@pytest.mark.parametrize("mask", [1, 0x80000000, 0x10000000])
+@pytest.mark.parametrize("mask", [0x21, 0x1200A9, 0x1F01FF])
 def test_windows_schema_accepts_user_read_masks(monkeypatch, mask):
     _windows_acl_fixture(monkeypatch, masks=(mask, 0x1F01FF, 0x1F01FF))
+    assert _local_schema._windows_schema_handle_is_safe(1)
+
+
+def test_windows_schema_combines_effective_user_aces(monkeypatch):
+    _windows_acl_fixture(monkeypatch, trustees=(500, 500, 18), flags=(0, 0, 0),
+                         masks=(1, 0x20, 0x1F01FF))
     assert _local_schema._windows_schema_handle_is_safe(1)
 
 
@@ -390,7 +399,7 @@ def test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign(tmp_pa
 @pytest.mark.windows_native
 @pytest.mark.parametrize("layout,target", [("source", "schema"), ("installed", "schema"),
                                            ("installed", "source")])
-@pytest.mark.parametrize("case", ["safe", "zero", "unrelated", "foreign_write", "foreign_owner"])
+@pytest.mark.parametrize("case", ["default", "safe", "zero", "unrelated", "foreign_write", "foreign_owner"])
 def test_windows_native_schema_path_acl_controls(tmp_path, monkeypatch, layout, target, case):
     import ctypes
     from ctypes import wintypes
@@ -411,6 +420,13 @@ def test_windows_native_schema_path_acl_controls(tmp_path, monkeypatch, layout, 
     if layout == "installed":
         source.parent.mkdir(parents=True)
         source.write_bytes(schema.read_bytes())
+
+    if case == "default":
+        # Exercise the ACL inherited from the runner profile, without rewriting it.
+        assert _local_schema._windows_schema_path_is_safe(source if target == "source" else schema)
+        monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix)))
+        assert _local_schema.verified_schema_path(root, str(schema)) == schema
+        return
 
     user_sid = security._sid_text(security._user_sid())
     safe = f"D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BA)"
@@ -436,55 +452,58 @@ def test_windows_native_schema_path_acl_controls(tmp_path, monkeypatch, layout, 
     previous = None
     try:
         with security._handle(selected, write_dac=True) as (handle, _info):
-            security._set_dacl(handle, descriptor)
-            if case == "foreign_owner":
-                adv, kernel = security._api()
+            try:
+                security._set_dacl(handle, descriptor)
+                if case == "foreign_owner":
+                    adv, kernel = security._api()
 
-                class Luid(ctypes.Structure):
-                    _fields_ = [("low", wintypes.DWORD), ("high", wintypes.LONG)]
+                    class Luid(ctypes.Structure):
+                        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.LONG)]
 
-                class TokenPrivileges(ctypes.Structure):
-                    _fields_ = [("count", wintypes.DWORD), ("luid", Luid),
-                                ("attributes", wintypes.DWORD)]
+                    class TokenPrivileges(ctypes.Structure):
+                        _fields_ = [("count", wintypes.DWORD), ("luid", Luid),
+                                    ("attributes", wintypes.DWORD)]
 
-                adv.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR,
-                                                      ctypes.POINTER(Luid)]
-                adv.LookupPrivilegeValueW.restype = wintypes.BOOL
-                adv.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL,
-                                                       ctypes.POINTER(TokenPrivileges), wintypes.DWORD,
-                                                       ctypes.c_void_p, ctypes.c_void_p]
-                adv.AdjustTokenPrivileges.restype = wintypes.BOOL
-                security._check(adv.OpenProcessToken(kernel.GetCurrentProcess(), 0x20 | 0x8,
-                                                      ctypes.byref(token)))
-                privilege = TokenPrivileges(count=1, attributes=2)
-                security._check(adv.LookupPrivilegeValueW(None, "SeRestorePrivilege",
-                                                          ctypes.byref(privilege.luid)))
-                saved = TokenPrivileges()
-                saved_size = wintypes.DWORD()
-                ctypes.set_last_error(0)
-                security._check(adv.AdjustTokenPrivileges(token, False, ctypes.byref(privilege),
-                                                         ctypes.sizeof(saved), ctypes.byref(saved),
-                                                         ctypes.byref(saved_size)))
-                assert ctypes.get_last_error() == 0, "SeRestorePrivilege was not assigned"
-                previous = saved
-                owner_handle = kernel.ReOpenFile(handle, 0x000E0000, 3, 0x02200000)
-                if owner_handle == wintypes.HANDLE(-1).value:
-                    owner_handle = None
-                    raise ctypes.WinError(ctypes.get_last_error())
-                with security._descriptor("O:SY") as sd:
-                    adv.GetSecurityDescriptorOwner.argtypes = [security.P, ctypes.POINTER(security.P),
-                                                               ctypes.POINTER(wintypes.BOOL)]
-                    adv.GetSecurityDescriptorOwner.restype = wintypes.BOOL
-                    foreign_owner, defaulted = security.P(), wintypes.BOOL()
-                    security._check(adv.GetSecurityDescriptorOwner(sd, ctypes.byref(foreign_owner),
-                                                                    ctypes.byref(defaulted)))
-                    assert adv.SetSecurityInfo(owner_handle, 1, 1, foreign_owner, None, None, None) == 0
-            assert _local_schema._windows_schema_handle_is_safe(handle) == (case == "safe")
-        if case == "safe":
-            assert _local_schema.verified_schema_path(root, str(schema)) == schema
-        else:
-            with pytest.raises(ValueError, match="owner/mode"):
-                _local_schema.verified_schema_path(root, str(schema))
+                    adv.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                                          ctypes.POINTER(Luid)]
+                    adv.LookupPrivilegeValueW.restype = wintypes.BOOL
+                    adv.AdjustTokenPrivileges.argtypes = [wintypes.HANDLE, wintypes.BOOL,
+                                                           ctypes.POINTER(TokenPrivileges), wintypes.DWORD,
+                                                           ctypes.c_void_p, ctypes.c_void_p]
+                    adv.AdjustTokenPrivileges.restype = wintypes.BOOL
+                    security._check(adv.OpenProcessToken(kernel.GetCurrentProcess(), 0x20 | 0x8,
+                                                          ctypes.byref(token)))
+                    privilege = TokenPrivileges(count=1, attributes=2)
+                    security._check(adv.LookupPrivilegeValueW(None, "SeRestorePrivilege",
+                                                              ctypes.byref(privilege.luid)))
+                    saved = TokenPrivileges()
+                    saved_size = wintypes.DWORD()
+                    ctypes.set_last_error(0)
+                    security._check(adv.AdjustTokenPrivileges(token, False, ctypes.byref(privilege),
+                                                             ctypes.sizeof(saved), ctypes.byref(saved),
+                                                             ctypes.byref(saved_size)))
+                    assert ctypes.get_last_error() == 0, "SeRestorePrivilege was not assigned"
+                    previous = saved
+                    owner_handle = kernel.ReOpenFile(handle, 0x000E0000, 3, 0x02200000)
+                    if owner_handle == wintypes.HANDLE(-1).value:
+                        owner_handle = None
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    with security._descriptor("O:SY") as sd:
+                        adv.GetSecurityDescriptorOwner.argtypes = [security.P, ctypes.POINTER(security.P),
+                                                                   ctypes.POINTER(wintypes.BOOL)]
+                        adv.GetSecurityDescriptorOwner.restype = wintypes.BOOL
+                        foreign_owner, defaulted = security.P(), wintypes.BOOL()
+                        security._check(adv.GetSecurityDescriptorOwner(sd, ctypes.byref(foreign_owner),
+                                                                        ctypes.byref(defaulted)))
+                        assert adv.SetSecurityInfo(owner_handle, 1, 1, foreign_owner, None, None, None) == 0
+                assert _local_schema._windows_schema_handle_is_safe(handle) == (case == "safe")
+                if case == "safe":
+                    assert _local_schema.verified_schema_path(root, str(schema)) == schema
+                else:
+                    with pytest.raises(ValueError, match="owner/mode"):
+                        _local_schema.verified_schema_path(root, str(schema))
+            finally:
+                security._set_dacl(handle, safe)
     finally:
         if owner_handle is not None:
             adv, kernel = security._api()
@@ -494,5 +513,3 @@ def test_windows_native_schema_path_acl_controls(tmp_path, monkeypatch, layout, 
             if previous is not None:
                 security._check(adv.AdjustTokenPrivileges(token, False, ctypes.byref(previous), 0, None, None))
             kernel.CloseHandle(token)
-        with security._handle(selected, write_dac=True) as (handle, _info):
-            security._set_dacl(handle, safe)
