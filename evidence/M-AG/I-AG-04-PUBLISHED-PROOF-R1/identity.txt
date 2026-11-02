@@ -1,0 +1,16 @@
+Repository: banodoco/astrid-agent
+Proof lane identity: lane/M-AG/I-AG-04-PUBLISHED-PROOF-R1
+Agent HEAD: e425903f7a9fa5b82973281d15054c0716b46e2d
+Agent tree: 57c2f21f2f670500d800e88153ca6ee339adca53
+Agent parents: 89750ad807ecf119114e1962cc40222ae8a8b848 608b46c6c1aec28808ad17d806d936ebddd0f9c7
+Agent merge base: 89750ad807ecf119114e1962cc40222ae8a8b848 (first parent)
+Agent published predecessor for delta context: ddd5d278796641901bd11508863a8ea21e6c9697
+Runtime HEAD: 8d3e3af4ede6e3579ac673ae77794464f693bf1b
+Runtime tree: f97beb8148251ac79f84bc1a0c404f76f13fe13b
+Runtime parents: 1e6d899efa77a2d6ec247c38250f9748330bb587 5453366458f7b4ee874c94d15ae7952e3e82d3c3
+Expected Runtime producer input: 8d3e3af4ede6e3579ac673ae77794464f693bf1b
+runtime.lock.json source_commit: 5453366458f7b4ee874c94d15ae7952e3e82d3c3
+Runtime lock check inner exit: 1, exact failure preserved in vendor-lock-final.log
+Agent clone final status: clean, detached at exact HEAD
+Runtime clone final status: clean, detached at exact HEAD
+Product diff: none

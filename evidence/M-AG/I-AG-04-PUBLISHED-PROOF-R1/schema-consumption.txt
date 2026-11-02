@@ -1,0 +1,7 @@
+The final JUnit failure is later than the installed-schema consumer checks. The retained test first stages the wheel, verifies the installed schema SHA-256, verifies source and installed lock equality, then runs a child interpreter in isolated mode. The child output preserved in tmp/pytest-of-root/pytest-2/test_stage_binds_installed_rea0/install.log records:
+- installed reader, validator, host, service, and generated-client module origins under the candidate venv site-packages;
+- schema path under that same installed package tree;
+- schema SHA-256 f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08;
+- lock source_commit 5453366458f7b4ee874c94d15ae7952e3e82d3c3.
+
+The child script only prints this JSON after assertions that load_verified_schema succeeded, the installed reader opened that exact file, validator compilation opened that file, schema contents matched, and valid/invalid Timeline configurations were respectively accepted/rejected. The pytest then fails at tests/test_installer_installed_schema.py:238 because its constant PRODUCER is 1e6d899efa77a2d6ec247c38250f9748330bb587, while this tuple's Agent lock records 5453366458f7b4ee874c94d15ae7952e3e82d3c3. This is not a green installed-schema suite; it is evidence of the consumer binding plus an unresolved producer-identity mismatch.

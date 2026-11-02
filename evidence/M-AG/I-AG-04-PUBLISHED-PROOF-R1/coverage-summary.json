@@ -1,0 +1,70 @@
+{
+  "by_file": {
+    "tests.test_installer_installed_schema": 10,
+    "tests.test_installer_release0_service_adoption": 6,
+    "tests.test_installer_transaction_authority": 99
+  },
+  "collected": 115,
+  "errors": 0,
+  "failed": 11,
+  "failures": [
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert '5453366458f7...7952e3e82d3c3' == '1e6d899efa77...f9748330bb587'",
+      "node": "tests.test_installer_installed_schema::test_stage_binds_installed_reader_validator_and_service_to_verified_schema"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[pid-between_reads-migration]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[pid-between_reads-app]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[birth-between_reads-migration]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[birth-between_reads-app]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[instance-between_reads-migration]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[instance-between_reads-app]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[realm-between_reads-migration]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[realm-between_reads-app]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[root-between_reads-migration]"
+    },
+    {
+      "kind": "failure",
+      "message": "AssertionError: assert not True",
+      "node": "tests.test_installer_transaction_authority::test_recovery_preserves_transaction_and_replacement_at_every_admission[root-between_reads-app]"
+    }
+  ],
+  "junit": "evidence/focused-installer-schema-final.xml",
+  "passed": 104,
+  "skipped": 0
+}

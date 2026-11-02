@@ -1,0 +1,14 @@
+cd /home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/agent
+/home/user/merge/kit/codex/env-safe.sh env \
+  ASTRID_RUNTIME_CHECKOUT=/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/runtime \
+  PYTHONPATH=/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/runtime:/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/agent \
+  PIP_CACHE_DIR=/home/user/merge/cache/pip \
+  TMPDIR=/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/tmp \
+  XDG_CACHE_HOME=/home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/cache \
+  /home/user/merge/ws/M-AG/queue/running/I-AG-04-PUBLISHED-PROOF-R1/.venv-task/bin/python -m pytest \
+  -o addopts= -q \
+  --junitxml=../evidence/focused-installer-schema-final.xml \
+  tests/test_installer_installed_schema.py \
+  tests/test_installer_transaction_authority.py \
+  tests/test_installer_release0_service_adoption.py
+Inner exit: 1 (104 passed, 11 failed, 0 errors, 0 skipped; 115 collected)
