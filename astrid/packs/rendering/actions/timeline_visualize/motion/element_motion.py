@@ -131,11 +131,11 @@ def _declared_contract(
     return None
 
 
-def _pack_declarations(packs_root: Path, pack_id: str) -> tuple[dict[str, Any], ...]:
+def _pack_declarations(pack_root: Path, pack_id: str) -> tuple[dict[str, Any], ...]:
     """Project one named V3 pack's rendering declarations and resources."""
     if not pack_id or "/" in pack_id or "\\" in pack_id:
         return ()
-    pack_root = (packs_root / pack_id).resolve()
+    pack_root = pack_root.resolve()
     pack_manifest_path = pack_root / "pack.yaml"
     try:
         pack = load_manifest_mapping(pack_manifest_path, manifest_kind="V3 pack")
@@ -175,10 +175,6 @@ def _default_declarations(packs_root: Path) -> tuple[dict[str, Any], ...]:
     """Read motion declarations only from packs admitted by the element registry."""
     from astrid.core.element.registry import load_default_registry
 
-    if not packs_root.is_dir() or not any(
-        (child / "pack.yaml").is_file() for child in packs_root.iterdir() if child.is_dir()
-    ):
-        return ()
     project_root = packs_root.parent.parent
     registry = load_default_registry(project_root=project_root)
     installed_roots: dict[tuple[str, Path], None] = {}
@@ -187,10 +183,16 @@ def _default_declarations(packs_root: Path) -> tuple[dict[str, Any], ...]:
         if not pack_id:
             continue
         pack_root = element.root.parents[3]
+        # An explicit non-checkout root keeps the historical custom-root
+        # boundary for bundled packs while registry-selected external roots
+        # remain discoverable even when that checkout root is absent.
+        source_packs_root = (Path(REPO_ROOT) / "astrid" / "packs").resolve()
+        if packs_root.resolve() != source_packs_root and _within(pack_root, source_packs_root):
+            continue
         installed_roots[(pack_id, pack_root)] = None
     rows: list[dict[str, Any]] = []
     for pack_id, pack_root in sorted(installed_roots, key=lambda item: (item[0], str(item[1]))):
-        rows.extend(_pack_declarations(pack_root.parent, pack_id))
+        rows.extend(_pack_declarations(pack_root, pack_id))
     return tuple(rows)
 
 
@@ -414,9 +416,9 @@ def modules(
 
     ``declarations`` is the action/context handoff: each row contains
     ``pack_id``, ``kind``, ``id``, ``pack_root``, ``manifest_path`` and the
-    V3 rendering item's ``resources`` list.  With no handoff, ``modules()``
-    reads the two named current motion packs' ``pack.yaml`` declarations only
-    so existing callers retain a read-only discovery view.  Passing ``elements``
+    V3 rendering item's ``resources`` list. With no handoff, ``modules()``
+    reads declarations from packs admitted by the selected element registry.
+    Passing ``elements``
     makes that same declaration set resolve only the packs named by canonical
     ``elementRef.packId`` values; no directory scan or legacy fallback occurs.
 
