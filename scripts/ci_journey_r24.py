@@ -5,6 +5,7 @@ not authenticate hosted artifact custody or make a qualification decision.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -33,6 +34,8 @@ EXPORT_NAMES = frozenset({
 })
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+_BOOT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+_LOCAL_ENDPOINT = re.compile(r"http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}\Z")
 
 
 class JourneyProviderError(ValueError):
@@ -70,6 +73,72 @@ def _object(value: Any, fields: set[str], label: str) -> dict[str, Any]:
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _engine(value: Any, label: str) -> dict[str, Any]:
+    engine = _object(value, {"pid", "boot_id", "start_ticks", "port", "node_sha256"}, label)
+    if (type(engine["pid"]) is not int or engine["pid"] < 1
+            or not isinstance(engine["boot_id"], str) or not _BOOT_ID.fullmatch(engine["boot_id"])
+            or not isinstance(engine["start_ticks"], str)
+            or not re.fullmatch(r"[1-9][0-9]*", engine["start_ticks"])
+            or type(engine["port"]) is not int or not 1 <= engine["port"] <= 65535
+            or not isinstance(engine["node_sha256"], str)
+            or not _HEX64.fullmatch(engine["node_sha256"])):
+        raise JourneyProviderError(f"invalid {label}")
+    return engine
+
+
+def _runtime(value: Any, label: str) -> dict[str, Any]:
+    runtime = _object(value, {"pid", "process_birth_id", "runtime_instance_id",
+                              "runtime_session_id", "runtime_epoch", "endpoint", "realm_id"},
+                      label)
+    if (type(runtime["pid"]) is not int or runtime["pid"] < 1
+            or type(runtime["runtime_epoch"]) is not int or runtime["runtime_epoch"] < 1
+            or not isinstance(runtime["endpoint"], str)
+            or not _LOCAL_ENDPOINT.fullmatch(runtime["endpoint"])
+            or any(not isinstance(runtime[key], str) or not runtime[key]
+                   for key in ("process_birth_id", "runtime_instance_id", "runtime_session_id", "realm_id"))):
+        raise JourneyProviderError(f"invalid {label}")
+    return runtime
+
+
+def _captured_stream(value: Any, label: str, *, nonempty: bool) -> dict[str, Any]:
+    stream = _object(value, {"bytes", "sha256", "base64"}, label)
+    if (type(stream["bytes"]) is not int or not 0 <= stream["bytes"] <= 16384
+            or not isinstance(stream["sha256"], str) or not _HEX64.fullmatch(stream["sha256"])
+            or not isinstance(stream["base64"], str)):
+        raise JourneyProviderError(f"invalid {label}")
+    try:
+        decoded = base64.b64decode(stream["base64"], validate=True)
+    except (ValueError, UnicodeError) as exc:
+        raise JourneyProviderError(f"invalid {label}") from exc
+    if (len(decoded) != stream["bytes"] or _sha(decoded) != stream["sha256"]
+            or (nonempty and not decoded)):
+        raise JourneyProviderError(f"invalid {label}")
+    return stream
+
+
+def _action_invocation(value: Any, *, request_data: dict[str, Any], request_sha256: str,
+                       session: str, engine: dict[str, Any], digest: str) -> dict[str, Any]:
+    action = _object(value, {"schema", "request_sha256", "run_id", "session", "source",
+                             "source_sha256", "engine", "runtime_execution_sources",
+                             "returncode", "exit_code", "signal", "raw_result", "stderr",
+                             "raw_result_validated"}, "action invocation")
+    source = "pinokio/providers/r24-action.cjs"
+    if (action["schema"] != "astrid.r24.action-invocation.v1"
+            or action["request_sha256"] != request_sha256
+            or action["run_id"] != request_data["run_id"] or action["session"] != session
+            or action["source"] != source
+            or action["source_sha256"] != request_data["provider"]["sources"].get(source)
+            or action["runtime_execution_sources"] != provider.LIVE_RUNTIME_EXECUTION_SOURCES
+            or _engine(action["engine"], "action engine") != engine
+            or action["returncode"] != 0 or action["exit_code"] != 0
+            or action["signal"] is not None or action["raw_result_validated"] is not True
+            or _sha(_canonical(action)) != digest):
+        raise JourneyProviderError("action invocation binding mismatch")
+    _captured_stream(action["raw_result"], "action stdout", nonempty=True)
+    _captured_stream(action["stderr"], "action stderr", nonempty=False)
+    return action
 
 
 def _regular(path: Path, *, limit: int = 1024 * 1024) -> bytes:
@@ -157,6 +226,8 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
     selected = _object(selected, set(PUBLISHED_CANDIDATE), "candidate")
     if selected != PUBLISHED_CANDIDATE:
         raise JourneyProviderError("candidate differs from the published tuple")
+    if selected != provider.LIVE_CANDIDATE or selected["pinokio"] != provider.LIVE_STOP["ref"]:
+        raise JourneyProviderError("typed provider is not bound to the published tuple")
     if set(checkouts) != {"app", "agent", "runtime", "pinokio"}:
         raise JourneyProviderError("four candidate checkouts are required")
     roots = {name: _checkout(path, selected[name]) for name, path in checkouts.items()}
@@ -186,11 +257,15 @@ def prepare_request(*, run_root: Path, candidate_file: Path, config_file: Path,
     binding = _decode(binding_raw)
     if binding.get("candidate") != selected:
         raise JourneyProviderError("producer binding candidate differs from published tuple")
+    if binding.get("runtime_execution_sources") != provider.LIVE_RUNTIME_EXECUTION_SOURCES:
+        raise JourneyProviderError("producer runtime execution source inventory differs")
     stop = _regular(roots["pinokio"] / "pinokio/stop.js")
     committed_stop = _git(roots["pinokio"], "show", f"{selected['pinokio']}:pinokio/stop.js")
     if (_sha(stop) != binding.get("stop_sha256")
             or _sha(committed_stop) != binding.get("stop_sha256")):
         raise JourneyProviderError("candidate Stop differs from producer binding")
+    if binding["stop_sha256"] != provider.LIVE_STOP["sha256"]:
+        raise JourneyProviderError("typed provider Stop binding differs")
 
     config_raw, config = _read_json_file(config_file, "CONFIG")
     config = _validate_config(config, roots)
@@ -236,9 +311,13 @@ def validate_export(export: Path, request: provider.ProviderRequest,
     request_data = json.loads(request.canonical)
     rows = {row.kind: row for row in output.result.observations}
     session = None
-    common = {"schema", "request_sha256", "run_id", "session", "engine", "provider_ref", "kind"}
+    observed_engine = None
+    observed_runtime = None
+    action_digest = None
+    common = {"schema", "request_sha256", "run_id", "session", "engine", "provider_ref",
+              "runtime", "runtime_execution_sources", "action_invocation_sha256", "kind"}
     additions = {
-        "busy": {"engine_binding", "busy", "protected_before", "protected_after"},
+        "busy": {"engine_binding", "busy", "action_invocation", "protected_before", "protected_after"},
         "unknown": {"unknown", "protected_before", "protected_after"},
         "restoration": {"restoration", "protected_before", "protected_after", "control_removed"},
     }
@@ -252,14 +331,38 @@ def validate_export(export: Path, request: provider.ProviderRequest,
                 or observation["provider_ref"] != request_data["provider"]["ref"]
                 or observation["kind"] != kind
                 or not isinstance(current_session, str) or not _HEX32.fullmatch(current_session)
+                or rows[kind].source != "pinokio/providers/r24-action.cjs"
                 or rows[kind].source not in request_data["provider"]["sources"]
                 or rows[kind].evidence_sha256 != _sha(raw)):
             raise JourneyProviderError("raw observation binding mismatch")
+        engine = _engine(observation["engine"], "observation engine")
+        runtime = _runtime(observation["runtime"], "observation runtime")
+        digest = observation["action_invocation_sha256"]
+        if (not isinstance(digest, str) or not _HEX64.fullmatch(digest)
+                or observation["runtime_execution_sources"] != provider.LIVE_RUNTIME_EXECUTION_SOURCES):
+            raise JourneyProviderError("raw observation execution binding mismatch")
         if session is None:
             session = current_session
         elif session != current_session:
             raise JourneyProviderError("raw observations span multiple sessions")
+        if observed_engine is None:
+            observed_engine = engine
+        elif observed_engine != engine:
+            raise JourneyProviderError("raw observations span multiple engines")
+        if observed_runtime is None:
+            observed_runtime = runtime
+        elif observed_runtime != runtime:
+            raise JourneyProviderError("raw observations span multiple Runtime identities")
+        if action_digest is None:
+            action_digest = digest
+        elif action_digest != digest:
+            raise JourneyProviderError("raw observations span multiple action records")
+        if kind == "busy":
+            _action_invocation(observation["action_invocation"], request_data=request_data,
+                               request_sha256=request.sha256, session=current_session,
+                               engine=engine, digest=digest)
     assert session is not None
+    assert observed_engine is not None and observed_runtime is not None and action_digest is not None
     return session, inventory
 
 

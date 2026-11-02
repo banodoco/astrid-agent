@@ -163,20 +163,42 @@ _PRODUCER_FILES = {
     "pinokio/providers/r24-linux-binding.json": "aa081980bb143ea67eac9e36ca567af8f54a3cdcf7c6593ee130ed81a4d86d87",
     "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
 }
-# Final live-collector candidate.  It is an immutable producer input, not a
-# release pin or evidence authority.  The binding bytes at this ref still name
-# the earlier candidate tuple below; callers must compare that tuple with their
-# independently selected release before invocation.
-LIVE_PRODUCER_REF = "6bf95fd631864a5dbfa86df5ffc165493fffc41e"
+# This immutable live producer input is bound to the published Release-1
+# tuple below.  It is not a release pin, evidence authority, or qualification
+# decision: callers still authenticate their candidate inputs and custody.
+LIVE_PRODUCER_REF = "cd86889f4299c7f7aca720f0f20a11be01dacb34"
 LIVE_PRODUCER_FILES = {
-    "pinokio/providers/r24-linux.py": "9428f7b1224fdad6c29b037904920d4c49b80f676454c859a180f1a98f832392",
+    "pinokio/providers/r24-linux.py": "9fe1698833a0e6eb7a4c1337ad5fa0493db4444e6320d2d46b4ff2ccbfce1b2e",
     "pinokio/providers/r24-action.cjs": "042f533200723898aba2f15f78edfe98bc3197f9b161f4391b706a38469ca0f3",
     "pinokio/providers/r24-live-action.js": "0df87acefad6a365e97f7a846a7d6136e06d026840a10796f640396a7187ae78",
-    "pinokio/providers/r24-linux-binding.json": "11ec4932731b93bc0622f934a8974bcdcfb2350d932037e7a087a878f8c9834c",
-    "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
+    "pinokio/providers/r24-linux-binding.json": "89582d987efb569bfc7f41a4ecb3ec800c9f3e10e7e849b0100a42a78b292f52",
+    "pinokio/providers/r24-schema.json": "233f989b29f54d082e1287c200b70b14b0315a9d763d05bcff824e556c648ffc",
 }
 LIVE_INTERFACE_FILES = {
-    "pinokio/providers/R24-LINUX.md": "9989556ea36a9757bf7c7ae881a85a790e297e3505d198fe44fe589e8be9ab92",
+    "pinokio/providers/R24-LINUX.md": "39db49375eb1246f8670edad1c055bc84f78c94db7b08908a6b2a20ba003879e",
+}
+LIVE_CANDIDATE = {
+    "app": "ce1502e94b935fe6ef1e2f363fc6b55aade4a204",
+    "agent": "2de0726d1eaea7f7bd141251e088aa9fdf224525",
+    "runtime": "5453366458f7b4ee874c94d15ae7952e3e82d3c3",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "manifest_sha256": "920477210d01615a6698cda30f248552f13c712734e86ea56f283300cb1a9c87",
+}
+LIVE_STOP = {"ref": LIVE_CANDIDATE["pinokio"], "path": "pinokio/stop.js",
+             "sha256": "f9d62e4e6a826fccd9791ee211dae933f46c8f99019e145abb3db3bf9595fd48"}
+LIVE_RUNTIME_EXECUTION_SOURCES = {
+    "agent": {
+        "astrid_runtime_client/generated.py": "a37270d78067610509b25f64f45ac55a57d9e43506fc172a0747277069845c79",
+    },
+    "runtime": {
+        "contract/openapi/workspace-v1.yaml": "5d34e8e475406224bd1c6b95fa8f07b0a54c5b3e2f153fe06b03587495ed699b",
+        "contract/schemas/task.json": "15e7e63186eae0eec8132198ff7a70a5f7d1e5d3df88f6136fa41f2c4347c07b",
+        "runtime_protocol/daemon.py": "7f1ebbc9a658785a61ade692d4b27c259daae4b07f8ae184546f91057353dfeb",
+        "runtime_protocol/local_execution_supervisor.py": "bdffdf2d22c3ee2196ddc4747b0ad215fb20e75df0e1bdbd66c37b8e9536f5fd",
+        "runtime_protocol/local_worker.py": "168b15be9801fc13b3d0da4565255deeac6f1afb200ad1dab09351442ed9e03d",
+        "runtime_protocol/server.py": "15c0b2ed0ccdce05ff4f854211a3536d906f99b5f0c71df6ee990beef69160b7",
+        "runtime_protocol/service.py": "2459624249500779bc65aa409e28da607a21d1592e2e02aa438821da2686fe66",
+    },
 }
 # Preserve the internal names used by the R3 focused fixtures.
 _SUCCESS_PRODUCER_REF = LIVE_PRODUCER_REF
@@ -202,6 +224,7 @@ class DiagnosticResult:
 
 def _invoke_linux(request: ProviderRequest, config_json: str | bytes,
                   producer_root: str, producer_ref: str, producer_files: dict[str, str],
+                  candidate: dict[str, str], stop: dict[str, str],
                   *, live_config: bool = False, export_directory: str | None = None):
     """Validate immutable inputs and run one producer with separate streams."""
     import os
@@ -216,7 +239,7 @@ def _invoke_linux(request: ProviderRequest, config_json: str | bytes,
     if parsed != request:
         raise ProviderContractError("request integrity mismatch")
     data = _decode(request.canonical)
-    if (data["candidate"] != _CANDIDATE or data["stop"] != _STOP or
+    if (data["candidate"] != candidate or data["stop"] != stop or
             data["provider"] != {"ref": producer_ref, "sources": producer_files}):
         raise ProviderContractError("producer or candidate binding mismatch")
     config = _decode(config_json)
@@ -279,7 +302,8 @@ def _invoke_linux(request: ProviderRequest, config_json: str | bytes,
 def invoke_linux_diagnostic(request: ProviderRequest, config_json: str | bytes,
                             producer_root: str) -> DiagnosticResult:
     """Invoke the R1 diagnostic API; never qualify its output."""
-    proc = _invoke_linux(request, config_json, producer_root, _PRODUCER_REF, _PRODUCER_FILES)
+    proc = _invoke_linux(request, config_json, producer_root, _PRODUCER_REF, _PRODUCER_FILES,
+                         _CANDIDATE, _STOP)
     if proc.returncode != 0:
         raise ProviderContractError("producer failed or did not run")
     output = _object(_decode(proc.stdout), {"schema", "request_sha256", "action", "busy", "unknown",
@@ -313,7 +337,8 @@ def invoke_linux_provider(request: ProviderRequest, config_json: str | bytes,
     No supported driver route or evidence admission is enabled by this function.
     """
     proc = _invoke_linux(request, config_json, producer_root,
-                         LIVE_PRODUCER_REF, LIVE_PRODUCER_FILES, live_config=True)
+                         LIVE_PRODUCER_REF, LIVE_PRODUCER_FILES, LIVE_CANDIDATE, LIVE_STOP,
+                         live_config=True)
     if proc.returncode != 0:
         raise ProviderInvocationError("producer failed or did not run", proc.stderr,
                                       stdout=proc.stdout, returncode=proc.returncode)
@@ -334,7 +359,8 @@ def invoke_linux_provider_export(request: ProviderRequest, config_json: str | by
     stream boundary while adding the producer's immutable export argument.
     """
     proc = _invoke_linux(request, config_json, producer_root,
-                         LIVE_PRODUCER_REF, LIVE_PRODUCER_FILES, live_config=True,
+                         LIVE_PRODUCER_REF, LIVE_PRODUCER_FILES, LIVE_CANDIDATE, LIVE_STOP,
+                         live_config=True,
                          export_directory=export_directory)
     if proc.returncode != 0:
         raise ProviderInvocationError("producer failed or did not run", proc.stderr,
