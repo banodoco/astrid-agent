@@ -1,0 +1,130 @@
+{
+  "cli-help-compose": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "compose",
+      "--help"
+    ],
+    "exit": 0
+  },
+  "cli-help-edit": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "edit",
+      "--help"
+    ],
+    "exit": 0
+  },
+  "cli-help-plan": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "plan",
+      "--help"
+    ],
+    "exit": 0
+  },
+  "cli-help-root": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "--help"
+    ],
+    "exit": 0
+  },
+  "cli-help-run": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "run",
+      "--help"
+    ],
+    "exit": 0
+  },
+  "plan-generate-reference": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "plan",
+      "--prompt",
+      "A quiet cafe.",
+      "--duration",
+      "5",
+      "--reference",
+      "look.png",
+      "--asset-map",
+      "/home/user/astrid/orch/tasks/G0-RUN/GOLDENS/inputs/asset-map.json",
+      "--out",
+      "/home/user/astrid/orch/tasks/G0-RUN/GOLDENS/cases/plan/output"
+    ],
+    "exit": 0
+  },
+  "refusal-compose": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "compose",
+      "--prompt",
+      "A quiet cafe.",
+      "--duration",
+      "5",
+      "--reference",
+      "look.png",
+      "--out",
+      "/home/user/astrid/orch/tasks/G0-RUN/tmp/refusal-compose"
+    ],
+    "exit": 2
+  },
+  "refusal-edit": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "edit",
+      "--prompt",
+      "",
+      "--duration",
+      "5",
+      "--reference",
+      "look.png",
+      "--out",
+      "/home/user/astrid/orch/tasks/G0-RUN/tmp/refusal-edit"
+    ],
+    "exit": 2
+  },
+  "refusal-run": {
+    "argv": [
+      "/home/user/astrid/orch/tasks/G0-RUN/venv/bin/python",
+      "-m",
+      "astrid",
+      "h3",
+      "run",
+      "--prompt",
+      "A quiet cafe.",
+      "--duration",
+      "5",
+      "--reference",
+      "look.png",
+      "--out",
+      "/home/user/astrid/orch/tasks/G0-RUN/tmp/refusal-run"
+    ],
+    "exit": 2
+  }
+}

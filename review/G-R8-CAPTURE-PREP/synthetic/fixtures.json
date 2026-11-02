@@ -1,0 +1,8 @@
+{
+  "schema": "synthetic-g0-fixtures/v1",
+  "warning": "SYNTHETIC ONLY; this tuple and every state and artifact are fabricated and are not R8 evidence",
+  "tuple": {"agent": "SYNTHETIC", "runtime": "SYNTHETIC", "vibecomfy": "SYNTHETIC", "interpreter": "synthetic", "locks": "synthetic"},
+  "inputs": "synthetic input bytes for deterministic comparator exercise\n",
+  "json_baseline": {"result": "synthetic", "revision": 1},
+  "media": "SYNTHETIC BYTES; NOT AUDIO OR VIDEO\n"
+}

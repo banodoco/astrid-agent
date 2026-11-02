@@ -1,0 +1,733 @@
+{
+  "capture_sequence": [
+    "Before session: resolve executable argv, owner-approved exact fixture bytes/digests and baseline; prepare per-case evidence paths and enumerate the census.",
+    "Separately gated canary must reach verified readiness and pass real H3 admission/claim before the owner-authorized R8 window; otherwise stop.",
+    "In the authorized session record installed tuple and per-case fixture identities; run static/help/preview and preflight cases, recording no acquisition and refusals.",
+    "Run admitted H3 role capture, composition/verification, then delivery/export and final receipt; retain the raw material, associations and publication-absence evidence.",
+    "Run scoped cancel/recovery/error and shared machinery cases only where their exact procedures and gates are resolved; preserve attempted count and transition evidence.",
+    "Review immutable raw inventory, truthful coverage and aliases; construct capture index and reviewed allowances, then compare against a compatible complete baseline."
+  ],
+  "cases": [
+    {
+      "checks": [
+        "all verb/parser help",
+        "all applicable option values and combinations",
+        "exit status and stdout/stderr envelopes",
+        "SDK signature and dispatch behavior",
+        "no inferred equivalence between model and entry"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P1",
+      "command_gap": "Exact interpreter, environment, package invocation, argv and fixture identities are not given by the coverage map. G0-RUN's old `python -m astrid h3 ...` invocations used an older tuple and are reference only.",
+      "cpu_preparable": [
+        "Enumerate parser/signature rows from authoritative R8 source refs; author argv and schema matrix only after source/fixture identities are supplied."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:4,8-9,22-23",
+        "G0-RUN/REPORT.md:9,25-27"
+      ],
+      "expected_raw_files": [
+        "P1/<case-id>/argv.json",
+        "P1/<case-id>/stdout.bin",
+        "P1/<case-id>/stderr.bin",
+        "P1/<case-id>/result.json",
+        "P1/<case-id>/environment.json",
+        "P1/<case-id>/inputs/*"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P1",
+      "historical_command_template_note": "Derived from G0-RUN older tuple; confirm R8 installed interface before execution. These help probes alone do not satisfy P1.",
+      "historical_command_templates": [
+        "<installed-python> -m astrid h3 --help",
+        "<installed-python> -m astrid h3 plan --help",
+        "<installed-python> -m astrid h3 run --help",
+        "<installed-python> -m astrid h3 compose --help",
+        "<installed-python> -m astrid h3 edit --help"
+      ],
+      "id": "P1-public-surface",
+      "inputs_fixture_identity": "Freeze request/spec variants, option values from choices/constants/request schemas, and SDK inputs; record one SHA256 per byte-identical input bundle. Historical G0 input fixtures are not approved R8 identities.",
+      "order_after": [],
+      "public_operation": "CLI public verbs plan, run, compose, edit; SDK generation entry/invoke. Source coverage identifies packs/h3_av/cli.py and SDK generation signatures, but no runnable R8 invocation or complete case argv is supplied.",
+      "r8_only": [
+        "Execute each frozen CLI and SDK case on exact R8 tuple and retain raw outputs."
+      ],
+      "scenarios": [
+        "root and each parser --help",
+        "plan/run/compose/edit option-value and combination/refusal matrix",
+        "SDK entry/invoke controls, request-schema values, A-only --project and --idempotency-key surfaces"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "ordered stages and eligibility fields",
+        "versioned preview schemas",
+        "branch-specific output",
+        "no owner/admission/engine acquisition during dry-run"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P2",
+      "command_gap": "No R8 command, case matrix, fixture bytes or owner-approved readiness profile is supplied; old plan command is not transferable evidence.",
+      "cpu_preparable": [
+        "Build branch checklist and expected schema checklist; cannot assert exact output values without R8 source/schema and approved inputs."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:10",
+        "G0-FIXTURES/REPORT.md:13",
+        "G0-RUN/REPORT.md:10"
+      ],
+      "expected_raw_files": [
+        "P2/<case-id>/request.json",
+        "P2/<case-id>/preview.json",
+        "P2/<case-id>/preparation.json",
+        "P2/<case-id>/stderr.bin",
+        "P2/<case-id>/acquisition-witness.json"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P2",
+      "historical_command_template_note": "Derived from G0-RUN older tuple; placeholders require approved bytes, safe paths and verified R8 interface. It is not complete branch coverage.",
+      "historical_command_templates": [
+        "<installed-python> -m astrid h3 plan --prompt <prompt> --duration <seconds> --reference <fixture> --asset-map <map> --out <output-directory>"
+      ],
+      "id": "P2-preview-eligibility",
+      "inputs_fixture_identity": "Named immutable request/spec plus reference/managed-asset fixture per branch; exact fixture bytes and approved identities are absent.",
+      "order_after": [
+        "P1 fixture/operation map",
+        "P3 frozen input identities"
+      ],
+      "public_operation": "H3 plan and SDK dry-run/input preview are source/test seams; exact R8 argv and versioned output contract are not supplied.",
+      "r8_only": [
+        "Run preview and no-acquisition checks on the exact R8 installed tuple."
+      ],
+      "scenarios": [
+        "versioned static and rich previews",
+        "generate/reference and every request mode",
+        "Character Swap, Turbo, editorial, source, seed and sampler branches",
+        "no-acquisition witness for each preview/refusal"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "request/asset/member SHA256 and sizes",
+        "confinement",
+        "frozen source identity",
+        "validation errors precede acquisition",
+        "entry guard outcome"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P3",
+      "command_gap": "Missing approved fixture bytes, exact R8 path and invocation. Do not substitute historical synthetic fixture hashes.",
+      "cpu_preparable": [
+        "Define expected inventory fields and confinement cases; approved fixture source/identity must be furnished before concrete rows can be filled."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:11",
+        "G0-RUN/REPORT.md:7-8,11,23"
+      ],
+      "expected_raw_files": [
+        "P3/<case-id>/request.json",
+        "P3/<case-id>/source-inventory.json",
+        "P3/<case-id>/asset-map.json",
+        "P3/<case-id>/asset-members.json",
+        "P3/<case-id>/preflight.json",
+        "P3/<case-id>/refusal.json",
+        "P3/<case-id>/stderr.bin"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P3",
+      "id": "P3-frozen-inputs-assets",
+      "inputs_fixture_identity": "Exact approved request/spec/source files and asset bundle/member inventory required. G0-RUN reports missing pinned public_workspace.py (required SHA256 ce8a88a9e40965710bca31c9107bc3e61e0246b00137d63873e266bff4482d51) and absent approved T9 readiness profile; neither supplies approved R8 fixture identity.",
+      "order_after": [
+        "P1 case map"
+      ],
+      "public_operation": "H3 request/spec/planner, managed asset staging, real media preflight, and transform entry guard are identified seams; runnable R8 command absent.",
+      "r8_only": [
+        "Exercise real R8 request/asset custody and entry boundary; capture exact hashes and errors."
+      ],
+      "scenarios": [
+        "request and source freeze",
+        "managed assets and member hashes/sizes",
+        "path confinement and tamper/refusal",
+        "pre-acquisition validation error ordering",
+        "transform entry guard"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "raw media bytes and digest/size",
+        "declared role to actual file association",
+        "generated_audio binding",
+        "output count",
+        "role refusal behavior"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P4",
+      "command_gap": "Requires separately gated R8 GPU action and exact approved media/request fixtures. No CPU command can establish these engine outputs.",
+      "cpu_preparable": [
+        "Specify role/cardinality assertions and output naming; do not fabricate engine media or hashes."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:12",
+        "G0-FIXTURES/REPORT.md:15",
+        "G0-RUN/REPORT.md:12"
+      ],
+      "expected_raw_files": [
+        "P4/<case-id>/raw-engine-output.json",
+        "P4/<case-id>/video.bin",
+        "P4/<case-id>/audio.bin",
+        "P4/<case-id>/submission.json",
+        "P4/<case-id>/stderr.bin"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P4",
+      "id": "P4-raw-av-roles",
+      "inputs_fixture_identity": "Approved paired AV source and request fixtures with frozen bytes; exact R8 source identities and role matrix absent.",
+      "order_after": [
+        "P3 frozen inputs",
+        "P10 admitted and qualified execution context"
+      ],
+      "public_operation": "Real host/action execution to raw-engine output boundary. Fake Comfy graph is explicitly insufficient. No public executable R8 operation/command documented.",
+      "r8_only": [
+        "Submit approved R8 GPU scenarios; preserve raw engine response and every media output."
+      ],
+      "scenarios": [
+        "actual muxed audio/video output",
+        "paired separate video/audio outputs",
+        "generated_audio binding",
+        "wrong/missing role refusal",
+        "exact cardinality"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "final media byte hashes",
+        "decoded coverage witnesses",
+        "protected audio similarity >=0.985 where applicable",
+        "mask coverage",
+        "tamper rejected before publication",
+        "no topology allowance inferred"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P5",
+      "command_gap": "No approved fixture set, exact R8 invocation, or end-to-end product boundary contract to enumerate all expected values.",
+      "cpu_preparable": [
+        "Prepare schema and evidence checklist only; no media/hash claims."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:13",
+        "G0-COMPARATOR.md:4-6",
+        "G0-FIXTURES/REPORT.md:16",
+        "G0-RUN/REPORT.md:13"
+      ],
+      "expected_raw_files": [
+        "P5/<case-id>/compose.json",
+        "P5/<case-id>/verify.json",
+        "P5/<case-id>/witnesses.json",
+        "P5/<case-id>/final-video.bin",
+        "P5/<case-id>/final-audio.bin",
+        "P5/<case-id>/publication-state.json"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P5",
+      "id": "P5-compose-verify",
+      "inputs_fixture_identity": "Frozen approved source, mask, edit/continuation and AV fixtures; exact identities absent. Historical synthetic worker bytes are not R8 captures.",
+      "order_after": [
+        "P3 frozen inputs",
+        "P4 raw output roles"
+      ],
+      "public_operation": "Public compose/verify operations and real H3 final publication; exact R8 CLI argv/command not supplied.",
+      "r8_only": [
+        "Compose/verify actual R8 outputs and capture media plus decoded witnesses before publication."
+      ],
+      "scenarios": [
+        "compose and verify final bytes",
+        "decoded frame/FPS/duration/sample witnesses",
+        "moving/protected masks",
+        "protected audio similarity",
+        "tamper and verify-before-publish refusal",
+        "topology-specific replacement assertions"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "role/cardinality/MIME/port/status exact",
+        "hash and size match bytes",
+        "atomic success",
+        "no partial output after second-file failure"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P6",
+      "command_gap": "Exact output destination, expected schemas, invocation and atomic failure injection are unspecified.",
+      "cpu_preparable": [
+        "List schema assertions; exact failure injection mechanism unavailable."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:14",
+        "G0-COMPARATOR.md:5",
+        "G0-FIXTURES/REPORT.md:17",
+        "G0-RUN/REPORT.md:14"
+      ],
+      "expected_raw_files": [
+        "P6/<case-id>/delivery.json",
+        "P6/<case-id>/parent-manifest.json",
+        "P6/<case-id>/output-rows.json",
+        "P6/<case-id>/export-inventory.json",
+        "P6/<case-id>/publication-state.json",
+        "P6/<case-id>/delivered/*"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P6",
+      "id": "P6-managed-delivery-export",
+      "inputs_fixture_identity": "Approved delivery destination and output-role fixtures; exact identities absent.",
+      "order_after": [
+        "P4 raw roles",
+        "P5 verified compose output"
+      ],
+      "public_operation": "--out and action_cli delivery; A-only output delivery reader tests provide seams but no R8 invocation.",
+      "r8_only": [
+        "Run delivery/atomic export against actual R8 result and preserve bytes and publication-state observations."
+      ],
+      "scenarios": [
+        "SDK/CLI managed output delivery",
+        "parent media and manifest harvest",
+        "rows/roles/ports/MIME/hash/size",
+        "atomic export success",
+        "failed second-file export leaves no partial publication"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "retain raw receipt and status",
+        "receipt maps artifacts/witnesses faithfully",
+        "no fabricated removed child facts",
+        "editorial assertion retained",
+        "approved leaf allowances only"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P7",
+      "command_gap": "Need exact API entrypoints, status polling argv, schema version and run/task identity from accepted R8 source; cannot infer from historical receipt.",
+      "cpu_preparable": [
+        "Define required raw fields and association checks after exact schema available."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:15",
+        "G0-COMPARATOR.md:6-7",
+        "G0-FIXTURES/REPORT.md:18",
+        "G0-RUN/REPORT.md:15"
+      ],
+      "expected_raw_files": [
+        "P7/<case-id>/final-receipt.json",
+        "P7/<case-id>/status.json",
+        "P7/<case-id>/readback.json",
+        "P7/<case-id>/publication-map.json",
+        "P7/<case-id>/alias-map.json"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P7",
+      "id": "P7-receipt-status",
+      "inputs_fixture_identity": "Same frozen request and run identity as linked P2-P6; exact R8 fixture and run association must be retained.",
+      "order_after": [
+        "P5 verify",
+        "P6 delivery"
+      ],
+      "public_operation": "Final receipt/status reader and readback APIs; no runnable command or exact R8 schema provided.",
+      "r8_only": [
+        "Capture final R8 receipt and reader responses tied to exact run/media identities."
+      ],
+      "scenarios": [
+        "raw final receipt",
+        "status readers throughout lifecycle",
+        "publication/verification association",
+        "h3-final/v2 removed child witness mapping",
+        "editorial_approved assertion"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "accepted prompt identity",
+        "only owned prompt deleted/interrupted",
+        "queued/running/race outcomes",
+        "unknown stop reported honestly",
+        "no neighboring job impact"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P8",
+      "command_gap": "Requires accepted live prompt and explicit API signatures, job isolation and race schedule absent from references.",
+      "cpu_preparable": [
+        "Draft race schedule and ownership assertions; cannot establish engine queue semantics on CPU synthetic data."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:16",
+        "G0-FIXTURES/REPORT.md:19",
+        "G0-RUN/REPORT.md:16"
+      ],
+      "expected_raw_files": [
+        "P8/<case-id>/submit.json",
+        "P8/<case-id>/cancel-request.json",
+        "P8/<case-id>/queue-before.json",
+        "P8/<case-id>/queue-after.json",
+        "P8/<case-id>/interrupt.json",
+        "P8/<case-id>/status-timeline.json"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P8",
+      "id": "P8-cancellation",
+      "inputs_fixture_identity": "Approved cancel-capable R8 run and prompt/attempt identities; no accepted prompt fixture or successful lifecycle baseline documented.",
+      "order_after": [
+        "P4 accepted prompt/run",
+        "P10 qualified custody"
+      ],
+      "public_operation": "Prompt queue-delete/scoped interrupt and cancel/status reader seams; exact API/command absent.",
+      "r8_only": [
+        "Run cancel lifecycle cases on accepted R8 jobs; retain raw prompt and status transitions."
+      ],
+      "scenarios": [
+        "accepted prompt cancel",
+        "queued deletion",
+        "running scoped interrupt",
+        "races and duplicate cancel",
+        "honest unknown stop status"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "same task identity across follow",
+        "no replay under unknown ACK",
+        "crash/retry attempt fence",
+        "submission count exact",
+        "terminal association preserved"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P9",
+      "command_gap": "Need accepted tuple API entrypoints, crash injection/restart procedure, and exact durable identity fields. No runnable invocation specified.",
+      "cpu_preparable": [
+        "Prepare lifecycle assertion checklist; do not present manual synthetic settlement as R8 result."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:17",
+        "G0-FIXTURES/REPORT.md:20",
+        "G0-RUN/REPORT.md:17"
+      ],
+      "expected_raw_files": [
+        "P9/<case-id>/request.json",
+        "P9/<case-id>/admission-response.json",
+        "P9/<case-id>/engine-ack.json",
+        "P9/<case-id>/task-timeline.json",
+        "P9/<case-id>/attempts.json",
+        "P9/<case-id>/submission-count.json",
+        "P9/<case-id>/recovery-receipt.json"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P9",
+      "id": "P9-follow-ack-recovery",
+      "inputs_fixture_identity": "Frozen request plus durable task/attempt/submission identities; exact R8 action and recovery fixture unavailable.",
+      "order_after": [
+        "P3 frozen request",
+        "P4 admitted action",
+        "P10 custody"
+      ],
+      "public_operation": "Runtime response recovery and parent/prepared-owner recovery seams; exact R8 API/commands absent. Historical manually settled synthetic worker bytes are not qualifying evidence.",
+      "r8_only": [
+        "Exercise actual R8 recovery boundary and crash cases; retain raw runtime/action identity evidence."
+      ],
+      "scenarios": [
+        "follow same task",
+        "lost admission response",
+        "unknown engine ACK with no replay",
+        "same-task recovery",
+        "host crash/new attempt",
+        "submission count and attempt fencing"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "tuple identities exact",
+        "bind once before engine invocation",
+        "zero forbidden local RunPod reads",
+        "expiry holder-specific",
+        "crash release/reattach journal",
+        "terminal owner and cleanup evidence",
+        "1800-second default and precedence, holder-specific expiry and verified warm snapshot reuse from real lifecycle records"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P10",
+      "command_gap": "No approved readiness profile, complete source node, live endpoint or executable procedure supplied; GPU/lease boundary cannot be reproduced in CPU prep.",
+      "cpu_preparable": [
+        "Specify fields and required audit points only; cannot assert qualification/custody from synthetic CPU harness."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:18",
+        "G0-FIXTURES/REPORT.md:21",
+        "G0-RUN/REPORT.md:8,18,21-24"
+      ],
+      "expected_raw_files": [
+        "P10/<case-id>/tuple.json",
+        "P10/<case-id>/qualification.json",
+        "P10/<case-id>/claim.json",
+        "P10/<case-id>/endpoint-binding.json",
+        "P10/<case-id>/runpod-read-audit.json",
+        "P10/<case-id>/lease-timeline.json",
+        "P10/<case-id>/journal.json",
+        "P10/<case-id>/custody-terminal.json"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P10",
+      "id": "P10-qualification-lease-custody",
+      "inputs_fixture_identity": "Approved installed Agent/Runtime/VibeComfy tuple and owner-approved lifecycle/profile/manifest inputs. R8 tuple is frozen by brief but is not qualified by this inventory; historical fixture identity/profile are explicitly unapproved.",
+      "order_after": [
+        "separately gated installed readiness/claim pass"
+      ],
+      "public_operation": "Installed admission/claim, endpoint-binding, lease/journal and Runtime custody boundaries. Concrete source node/command for all future-K behavior is absent or differs from historical trees.",
+      "r8_only": [
+        "Run only within authorized and separately admitted R8 job; collect real installed qualification and custody evidence."
+      ],
+      "scenarios": [
+        "exact installed tuple qualification",
+        "endpoint bind once before engine call",
+        "local zero RunPod reads",
+        "lease holder-specific expiry",
+        "crash journal release/reattach",
+        "cleanup/custody terminal state",
+        "one warm-lease default/precedence of 1800 seconds and verified warm snapshot reuse"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "exact code/domain/field/fix envelope",
+        "stable refusal and error ordering",
+        "status distinctions",
+        "approved migration message",
+        "retired child-only codes enumerated without suppressing unrelated errors"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P11",
+      "command_gap": "Need authoritative error catalogue, input variants, CLI parsers and status API on exact R8 source; historical refusal samples cover only a subset.",
+      "cpu_preparable": [
+        "Extract full error enum/schema after R8 source references provided; no inferred errors."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:19",
+        "G0-FIXTURES/REPORT.md:22",
+        "G0-RUN/REPORT.md:19"
+      ],
+      "expected_raw_files": [
+        "P11/<case-id>/argv.json",
+        "P11/<case-id>/request.json",
+        "P11/<case-id>/stdout.bin",
+        "P11/<case-id>/stderr.bin",
+        "P11/<case-id>/error-envelope.json",
+        "P11/<case-id>/status.json"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P11",
+      "id": "P11-errors-status",
+      "inputs_fixture_identity": "One named invalid request per error family plus status-driving R8 lifecycle fixtures; exact error catalogue and request bytes are absent.",
+      "order_after": [
+        "P1 option map",
+        "P3 request fixtures",
+        "P8/P9 status cases"
+      ],
+      "public_operation": "CLI/request/receipt error and status surfaces; operator migration controls are source-defined, but exact complete R8 request/argv map absent.",
+      "r8_only": [
+        "Run actual invalid-input and lifecycle-status cases, capture raw stdout/stderr and structured envelopes."
+      ],
+      "scenarios": [
+        "H3_SOURCE_AV_*",
+        "mask/domain/field/fix envelopes",
+        "failed/cancel-requested/cancelled/unknown status",
+        "retired child-only controls and migration refusal",
+        "retired child-only error codes"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    },
+    {
+      "checks": [
+        "real validation and import receipt",
+        "training/iteration/stream fan-out associations",
+        "editorial recovery state",
+        "stitch controls and status",
+        "shared result associations"
+      ],
+      "command": null,
+      "command_fault_map_section": "COMMAND-FAULT-MAP.md, section P12",
+      "command_gap": "Need authoritative operation schemas, workflow fixtures and live target/receipt identity. H3 staged proof alone is insufficient.",
+      "cpu_preparable": [
+        "Enumerate operation/schema checklist once authoritative schemas and fixture identities exist."
+      ],
+      "evidence_refs": [
+        "G0-COVERAGE.md:20",
+        "G0-FIXTURES/REPORT.md:23",
+        "G0-RUN/REPORT.md:20"
+      ],
+      "expected_raw_files": [
+        "P12/<case-id>/workflow.json",
+        "P12/<case-id>/validate.json",
+        "P12/<case-id>/import-receipt.json",
+        "P12/<case-id>/fanout.json",
+        "P12/<case-id>/editorial-state.json",
+        "P12/<case-id>/stitch.json",
+        "P12/<case-id>/status.json"
+      ],
+      "expected_raw_names_are": "operator-selected collection paths; absent until captured; distinct scenarios get distinct case IDs",
+      "family": "P12",
+      "id": "P12-shared-machinery",
+      "inputs_fixture_identity": "Approved VibeComfy workflow and shared machinery fixtures with exact hashes; historical structural-only validate does not provide target/live identity.",
+      "order_after": [
+        "P3 frozen shared inputs",
+        "P10 qualified installed target where required"
+      ],
+      "public_operation": "VibeComfy validate/run.py and shared host/SDK child receipt/import/fan-out operations. No exact R8 commands or complete public operation list supplied.",
+      "r8_only": [
+        "Exercise real installed shared machinery on exact tuple and capture receipts and associations."
+      ],
+      "scenarios": [
+        "real VibeComfy validate import receipt",
+        "training/iteration/stream fan-out",
+        "editorial recoverable state",
+        "stitch controls",
+        "shared child import receipt"
+      ],
+      "state": "uncaptured",
+      "tuple": {
+        "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+        "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+        "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+        "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+      }
+    }
+  ],
+  "command_fault_map": "COMMAND-FAULT-MAP.md",
+  "evidence_record_per_case": [
+    "argv.json: exact argv and controlled environment identity with secrets excluded; note exit code and count",
+    "tuple.json: installed source/commit/tree/interpreter/lock provenance, including aligned Agent identity",
+    "inputs.json: fixture provenance, byte sizes and SHA256, media/tool identity and member associations",
+    "evidence inventory: raw file paths, sizes and SHA256; preserve IDs and verified aliases",
+    "absence.json: explicit observation for expected no acquisition or no publication; never infer absence from missing files"
+  ],
+  "evidence_sources": [
+    {
+      "lines": "1-24",
+      "path": "/home/user/astrid/repo/docs/merge-plan/handoff/M-GPU/PACKS-HANDOFF/G0-COVERAGE.md",
+      "purpose": "P1-P12 required families, seams, gaps and capture transition"
+    },
+    {
+      "lines": "1-7",
+      "path": "/home/user/astrid/repo/docs/merge-plan/handoff/M-GPU/PACKS-HANDOFF/G0-COMPARATOR.md",
+      "purpose": "capture schema, required surfaces, byte/path/evidence checks and comparison contract"
+    },
+    {
+      "lines": "1-27",
+      "path": "/home/user/astrid/orch/tasks/G0-FIXTURES/REPORT.md",
+      "purpose": "older tuple and partial CPU observations/gaps"
+    },
+    {
+      "lines": "1-27",
+      "path": "/home/user/astrid/orch/tasks/G0-RUN/REPORT.md",
+      "purpose": "older tuple and partial CLI/planner observations/gaps"
+    },
+    {
+      "lines": "1-18,30-35",
+      "path": "/home/user/astrid/proof-codex-gen/queue/done/051_R8_CAPTURE_PREP/brief.md",
+      "purpose": "authorized scope, exact R8 tuple, deliverable boundaries"
+    },
+    {
+      "lines": "1-44",
+      "path": "/home/user/astrid/proof-codex/queue/running/48_R8_VERIFIED_LAUNCH-r10b/brief.md",
+      "purpose": "frozen R8 session, authorization gates and stop conditions"
+    }
+  ],
+  "global_gaps": [
+    "No exact R8 argv, environment, interpreter command, fixture bytes/approved identities or source-to-case mapping has been supplied for any complete P1-P12 manifest.",
+    "No historical G0 capture is R8 evidence: old tuples differ; all P coverage remains uncaptured, and reports explicitly describe partial coverage.",
+    "Concrete artifact filenames listed here are proposed raw capture names, not evidence that those files exist or that invocations are runnable.",
+    "The R8 brief governs the later GPU session and is not authorization for this helper to execute capture operations.",
+    "Historical H81\u2192A537 census is not a complete R8 source-to-case mapping or an approved complete baseline; owner must resolve compatibility or A-only disposition before parity acceptance.",
+    "P10 is phased: installed readiness/admission is a gate before P4; endpoint/lease/custody lifecycle scenarios require their own run and may span later phases. Never wait for all P10 outcomes before beginning P4."
+  ],
+  "packet_revision": "052 / 2026-11-02",
+  "schema": "r8-g0-capture-manifest/v1",
+  "state_rule": "All families and scenarios are uncaptured. Transition only after real immutable raw evidence, exact installed tuple and invocation, nonzero executed/collected count, and reviewed source-to-case/artifact mapping. Record actual exit codes, including expected zero.",
+  "status": "BLOCKED: scenario-level executable commands, approved fixtures, and compatible full baseline have not been established",
+  "tuple": {
+    "agent": "35bae39a586711547722e2724f0a1d52895a2783",
+    "agent_alignment": "authorized lock-only alignment to the frozen runtime; record resulting Agent commit/tree and both lock digests",
+    "runtime": "aa1c91d9675296a2411e583bbd0330ddcc718044",
+    "vibecomfy": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+  },
+  "tuple_status": "frozen for later R8 session; not qualified here"
+}

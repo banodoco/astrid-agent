@@ -1,0 +1,52 @@
+source	option	H81_line	A537_line	H81_definition	A537_definition	capture
+astrid/core/action_cli.py	--asset-map	63	64	type=Path,required=True,help='JSON map of request asset ids to local files'	type=Path,required=True,help='JSON map of request asset ids to local files'	UNCAPTURED
+astrid/core/action_cli.py	--idempotency-key	ABSENT	68		help='reuse the same Runtime admission key when retrying this submission'	UNCAPTURED
+astrid/core/action_cli.py	--out	65	66	type=Path,required=True,help="directory that receives the action's outputs"	type=Path,required=True,help="directory that receives the action's outputs"	UNCAPTURED
+astrid/core/action_cli.py	--placement	64	65	choices=PLACEMENTS,required=True,help='where the engine runs (local only)'	choices=PLACEMENTS,required=True,help='where the engine runs (local only)'	UNCAPTURED
+astrid/core/action_cli.py	--project	ABSENT	67		help='use this project in the connected Runtime instead of a throw-away workspace'	UNCAPTURED
+astrid/core/action_cli.py	--request	62	63	type=Path,required=True,help='action request JSON'	type=Path,required=True,help='action request JSON'	UNCAPTURED
+astrid/core/action_cli.py	--timeout	66	69	type=float,default=3600.0,metavar='SECONDS',help='time limit for the action (default: 3600)'	type=float,default=3600.0,metavar='SECONDS',help='time limit for the action (default: 3600)'	UNCAPTURED
+astrid/packs/h3_av/actions/compile/run.py	--input-bundle	22	22	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/compile/run.py	--out	23	23	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/compile/run.py	--preparation	21	21	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--compilation	ABSENT	37		type=Path	UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--generated	34	35	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--generated-audio	ABSENT	36		type=Path	UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--generation-provenance	ABSENT	38			UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--input-bundle	33	34	type=Path	type=Path	UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--out	37	41	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--preparation	32	33	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--preservation-evidence	36	40	type=Path	type=Path	UNCAPTURED
+astrid/packs/h3_av/actions/compose/run.py	--source	35	39	type=Path	type=Path	UNCAPTURED
+astrid/packs/h3_av/actions/prepare/run.py	--fps	22	22	type=float,default=24.0	type=float,default=24.0	UNCAPTURED
+astrid/packs/h3_av/actions/prepare/run.py	--height	24	24	type=int,default=576	type=int,default=576	UNCAPTURED
+astrid/packs/h3_av/actions/prepare/run.py	--input-bundle	21	21	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/prepare/run.py	--out	26	26	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/prepare/run.py	--request	20	20	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/prepare/run.py	--sample-rate	25	25	type=int,default=48000	type=int,default=48000	UNCAPTURED
+astrid/packs/h3_av/actions/prepare/run.py	--width	23	23	type=int,default=1024	type=int,default=1024	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--asset-map	85	87	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--cleanup-receipt	110	112	type=Path,help='JSON receipt listing exact owned-resource cleanup postconditions'	type=Path,help='JSON receipt listing exact owned-resource cleanup postconditions'	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--dry-run	129	131	action='store_true'	action='store_true'	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--editorial-approved	105	107	action='store_true',help='record explicit editorial approval in the final receipt'	action='store_true',help='record explicit editorial approval in the final receipt'	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--execution-request	88	90	type=Path	type=Path	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--out	86	88	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--placement	120	122	choices=('local', 'runpod'),default=None,help='where the H3 engine runs (default: local, or runpod when a legacy --worker-qualification/--prepared-worker/runpod target is given)'	choices=('local', 'runpod'),default=None,help='where the H3 engine runs (default: local, or runpod when a legacy --worker-qualification/--prepared-worker/runpod target is given)'	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--prepared-worker	95	97	type=Path,help='select a prepared RunPod deployment for the canonical VibeComfy task'	type=Path,help='select a prepared RunPod deployment for the canonical VibeComfy task'	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--project	87	89			UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--request	84	86	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--require-worker-qualification	100	102	action='store_true',help='fail before admission unless a qualified or prepared worker is selected'	action='store_true',help='fail before admission unless a qualified or prepared worker is selected'	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--resume	115	117	action='store_true',help='resume from SDK recovery receipts or verified legacy locators without resampling'	action='store_true',help='resume from SDK recovery receipts or verified legacy locators without resampling'	UNCAPTURED
+astrid/packs/h3_av/actions/transform/run.py	--worker-qualification	90	92	type=Path,help='deployment-owned qualified-worker receipt required before targeted admission'	type=Path,help='deployment-owned qualified-worker receipt required before targeted admission'	UNCAPTURED
+astrid/packs/h3_av/actions/verify/run.py	--candidate	23	23	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/verify/run.py	--composition	22	22	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/verify/run.py	--input-bundle	21	21	type=Path	type=Path	UNCAPTURED
+astrid/packs/h3_av/actions/verify/run.py	--out	25	25	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/verify/run.py	--preparation	20	20	type=Path,required=True	type=Path,required=True	UNCAPTURED
+astrid/packs/h3_av/actions/verify/run.py	--source	24	24	type=Path	type=Path	UNCAPTURED
+astrid/packs/h3_av/cli.py	--asset-map	29	29	type=Path,help='JSON map of asset identifiers to local files'	type=Path,help='JSON map of asset identifiers to local files'	UNCAPTURED
+astrid/packs/h3_av/cli.py	--duration	24	24	type=float,help='output duration in seconds'	type=float,help='output duration in seconds'	UNCAPTURED
+astrid/packs/h3_av/cli.py	--out	26	26	type=Path,required=True,help='spec file to write' if name == 'edit' else 'output directory'	type=Path,required=True,help='spec file to write' if name == 'edit' else 'output directory'	UNCAPTURED
+astrid/packs/h3_av/cli.py	--prompt	23	23	help='generation prompt, or replacement prompt when editing a spec'	help='generation prompt, or replacement prompt when editing a spec'	UNCAPTURED
+astrid/packs/h3_av/cli.py	--reference	25	25	help='image asset identifier for a new generation spec'	help='image asset identifier for a new generation spec'	UNCAPTURED
+astrid/packs/h3_av/cli.py	--spec	22	22	type=Path,help='existing v1/v2 JSON or YAML request'	type=Path,help='existing v1/v2 JSON or YAML request'	UNCAPTURED
