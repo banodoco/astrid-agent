@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 UID = 503
-MIN_FREE = 10 * 1024**3
+MIN_FREE = 10_000_000_000
 AGENT_BRANCH = "lane/M-R1FIX/UPD-R0-INTERRUPTION-R2"
 RUNTIME_SHA = "255ecda21ba904520eb867936ef173cc5f7d3ae4"
 REPOS = {name: f"https://github.com/banodoco/astrid-{name}.git"
@@ -77,6 +77,31 @@ def git(args, env):
                 "-c", "gc.auto=0", "-c", "maintenance.auto=false", *args], env=env).stdout.strip()
 
 
+def validate_cache_config(name, content):
+    # A strict allowlist prevents includes, URL rewrites, redirects, extra
+    # headers, helpers and hooks from affecting later Git commands.
+    allowed = {
+        "core.repositoryformatversion": {"0"},
+        "core.filemode": {"true", "false"},
+        "core.bare": {"true"},
+        "core.ignorecase": {"true", "false"},
+        "core.precomposeunicode": {"true", "false"},
+        "remote.origin.url": {REPOS[name]},
+        "remote.origin.fetch": {"+refs/heads/*:refs/remotes/origin/*"},
+    }
+    seen = set()
+    for entry in content.split("\0"):
+        if not entry:
+            continue
+        key, sep, value = entry.partition("\n")
+        key = key.lower()
+        if not sep or key in seen or key not in allowed or value not in allowed[key]:
+            raise RuntimeError("Existing Git cache has unexpected local configuration")
+        seen.add(key)
+    if not {"core.repositoryformatversion", "core.bare", "remote.origin.url", "remote.origin.fetch"} <= seen:
+        raise RuntimeError("Existing Git cache is missing required local configuration")
+
+
 def cached_repo(root, name, ref, env):
     repo = root / f"{name}.git"
     existed = repo.exists() or repo.is_symlink()
@@ -86,8 +111,8 @@ def cached_repo(root, name, ref, env):
         git(["-C", str(repo), "remote", "add", "origin", REPOS[name]], env)
     else:
         verify_cache_tree(repo)
-        if git(["-C", str(repo), "config", "--get", "remote.origin.url"], env) != REPOS[name]:
-            raise RuntimeError("Existing Git cache has an unexpected origin")
+    config = git(["-C", str(repo), "config", "--local", "--no-includes", "--null", "--list"], env)
+    validate_cache_config(name, config)
     if git(["-C", str(repo), "rev-parse", "--is-bare-repository"], env) != "true":
         raise RuntimeError("Existing Git cache is not bare")
     git(["-C", str(repo), "fetch", "--no-tags", "--depth=1", "origin", ref], env)
@@ -143,7 +168,9 @@ def main():
     config_home = root / "git-home"
     owned_directory(config_home)
     env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(config_home),
-           "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": "/dev/null",
+           "GIT_CONFIG_GLOBAL": "/dev/null", "XDG_CONFIG_HOME": str(config_home),
+           "GIT_TERMINAL_PROMPT": "0"}
     if shutil.disk_usage(home).free < MIN_FREE: raise RuntimeError("Disk fell below the preflight minimum")
     result["caches"]["agent"] = {"ref": AGENT_BRANCH, "sha": cached_repo(root, "agent", f"refs/heads/{AGENT_BRANCH}", env)}
     if shutil.disk_usage(home).free < MIN_FREE: raise RuntimeError("Disk fell below the preflight minimum")
