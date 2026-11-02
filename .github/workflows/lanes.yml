@@ -374,6 +374,27 @@ jobs:
       - name: Install the Remotion dependencies
         run: npm ci --prefix remotion
 
+      # The installed selector verifies the wheel-owned registry carrier and
+      # its host-owned state.  Produce that state through the installed
+      # interpreter, just as an installed renderer does; the Composition
+      # package is a built artifact and supplies no TypeScript source tree.
+      - name: Generate the installed Remotion registry
+        run: |
+          "$RUNNER_TEMP/installed-venv/bin/python" -I - <<'PY'
+          import os
+          from pathlib import Path
+
+          from astrid.packs.rendering.rendering.renderers.remotion import run
+
+          project = Path(os.environ["ASTRID_REMOTION_PROJECT_DIR"])
+          run._regenerate_element_registries(project, None)
+          state = run._read_registry_state(project)
+          if state != run.gen_effect_registry.compute_generated_registry_state():
+              raise SystemExit("installed Remotion registry state does not match its generator")
+          if not run._registry_outputs_match_state(project, state):
+              raise SystemExit("installed Remotion registry outputs do not match their state")
+          PY
+
       - name: Installed tests
         run: >-
           "$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib
