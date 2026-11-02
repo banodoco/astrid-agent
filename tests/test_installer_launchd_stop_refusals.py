@@ -1,9 +1,10 @@
 """Refusal coverage for launchd identity revalidation at the real C1 handoff."""
 from __future__ import annotations
 
+import json
+import plistlib
 import subprocess
 import sys
-import plistlib
 from pathlib import Path
 
 import pytest
@@ -442,6 +443,62 @@ def test_r0_prebootout_admission_refuses_each_owner_mismatch(tmp_path, monkeypat
     assert signals == []
     assert not any(argv[1:2] == ["bootout"] for argv in queries)
     assert _preserved_selection_workspace(backend, data, paths) == before
+
+
+@pytest.mark.parametrize("mismatch,expected_false", [
+    ("pid", {"observed_pid_matches_launchd_pid", "discovery_birth_matches_observed_birth"}),
+    ("uid", {"observed_uid_matches_current_user"}),
+    ("birth", {"discovery_birth_matches_observed_birth"}),
+    ("executable", {"observed_executable_matches_launchd_program"}),
+    ("root", {"observed_executable_within_selected_root"}),
+])
+def test_launchd_live_owner_refusal_reports_each_predicate_member(
+        tmp_path, monkeypatch, mismatch, expected_false):
+    backend, _data, _paths, _boundary, version, _outputs, _queries, _bootouts, _stops, _signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    observed = {
+        "pid": 777, "uid": platform.current_user(), "birth_id": "birth-1",
+    }
+    executable = version.python
+    if mismatch == "pid":
+        observed["pid"] = 778
+    elif mismatch == "uid":
+        observed["uid"] += 1
+    elif mismatch == "birth":
+        observed["birth_id"] = "birth-2"
+    elif mismatch == "executable":
+        executable = version.root / "foreign-python"
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    elif mismatch == "root":
+        executable = tmp_path / "outside-python"
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        version.python.unlink()
+        version.python.symlink_to(executable)
+    monkeypatch.setattr(platform, "process_identity", lambda _pid: observed)
+    monkeypatch.setattr(platform, "process_executable", lambda _pid: str(executable))
+
+    with pytest.raises(ValueError, match="selected Runtime owner") as caught:
+        backend.service._launchd_live_pid_is_bound(
+            {"program": str(version.python)}, {"state": "running", "pid": 777},
+            owner_pid=777, owner_birth_id="birth-1",
+        )
+
+    diagnostic = json.loads(str(caught.value).split(" stop_identity=", 1)[1])
+    assert diagnostic["format"] == "astrid-launchd-owner-predicate/v1"
+    false_members = {name for name, result in diagnostic["checks"].items() if not result}
+    assert false_members == expected_false
+    assert diagnostic["values"]["launchd_pid"] == 777
+    assert diagnostic["values"]["discovery_pid"] == 777
+    assert diagnostic["values"]["resolved_launchd_program_parent_within_selected_root"] is True
+    assert diagnostic["values"]["launchd_program_is_symlink"] is (mismatch == "root")
+    assert set(diagnostic["checks"]) == {
+        "observed_pid_matches_launchd_pid",
+        "observed_uid_matches_current_user",
+        "discovery_birth_matches_observed_birth",
+        "observed_executable_matches_launchd_program",
+        "observed_executable_within_selected_root",
+    }
 
 
 def test_r0_post_bootout_reappearance_refuses_the_replacement_pid(tmp_path, monkeypatch):

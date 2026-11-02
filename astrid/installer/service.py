@@ -543,18 +543,60 @@ class Service:
             resolved_expected = expected.resolve(strict=True)
         except (OSError, RuntimeError, ValueError) as exc:
             raise ValueError("The launchd Runtime executable could not be validated.") from exc
-        if (not isinstance(observed, dict) or observed.get("pid") != pid
-                or observed.get("uid") != platform.current_user()
-                or not birth_ids_match(owner_birth_id, observed.get("birth_id"), owner_pid, observed.get("pid"))
-                or resolved_executable != resolved_expected
-                or not resolved_executable.is_relative_to(root)):
-            raise ValueError("The launchd service does not match the selected Runtime owner.")
+        observed_pid = observed.get("pid") if isinstance(observed, dict) else None
+        observed_uid = observed.get("uid") if isinstance(observed, dict) else None
+        observed_birth_id = observed.get("birth_id") if isinstance(observed, dict) else None
+        current_uid = platform.current_user()
+        checks = {
+            "observed_pid_matches_launchd_pid": (
+                isinstance(observed, dict) and observed_pid == pid
+            ),
+            "observed_uid_matches_current_user": observed_uid == current_uid,
+            "discovery_birth_matches_observed_birth": birth_ids_match(
+                owner_birth_id, observed_birth_id, owner_pid, observed_pid,
+            ),
+            "observed_executable_matches_launchd_program": (
+                resolved_executable == resolved_expected
+            ),
+            "observed_executable_within_selected_root": (
+                resolved_executable.is_relative_to(root)
+            ),
+        }
+        if not all(checks.values()):
+            resolved_expected_parent = expected.parent.resolve(strict=True)
+            diagnostic = {
+                "format": "astrid-launchd-owner-predicate/v1",
+                "checks": checks,
+                "values": {
+                    "launchd_pid": pid,
+                    "discovery_pid": owner_pid,
+                    "current_uid": current_uid,
+                    "observed_pid": observed_pid,
+                    "observed_uid": observed_uid,
+                    "discovery_birth_id": owner_birth_id,
+                    "observed_birth_id": observed_birth_id,
+                    "process_executable": str(executable),
+                    "launchd_program": str(expected),
+                    "resolved_process_executable": str(resolved_executable),
+                    "resolved_launchd_program": str(resolved_expected),
+                    "selected_program_root": str(root),
+                    "launchd_program_is_symlink": expected.is_symlink(),
+                    "resolved_launchd_program_parent": str(resolved_expected_parent),
+                    "resolved_launchd_program_parent_within_selected_root": (
+                        resolved_expected_parent.is_relative_to(root)
+                    ),
+                },
+            }
+            raise ValueError(
+                "The launchd service does not match the selected Runtime owner. "
+                "stop_identity=" + json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+            )
         return {
             "format": "astrid-launchd-r0-live-owner/v1",
             "pid": pid,
             "discovery_birth_id": owner_birth_id,
-            "process_birth_id": observed["birth_id"],
-            "uid": observed["uid"],
+            "process_birth_id": observed_birth_id,
+            "uid": observed_uid,
             "executable": str(resolved_executable),
         }
 
