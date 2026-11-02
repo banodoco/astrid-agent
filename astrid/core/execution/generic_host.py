@@ -48,6 +48,7 @@ import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType, SimpleNamespace
 from typing import IO, TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
@@ -4696,7 +4697,26 @@ def _pack_capture_inventory(root: Path) -> dict[Path, tuple[int, ...]]:
 
 
 @contextmanager
-def _selected_pack_capture(generation):
+def _unavailable_pack_capture(generation):
+    if generation is not None:
+        raise HostError("stable selected pack capture requires Linux file lease support")
+    yield
+
+
+def _select_pack_capture():
+    """Select the capture mechanism once for its owning host."""
+    if sys.platform.startswith("linux"):
+        try:
+            import fcntl
+        except ImportError:
+            pass
+        else:
+            return partial(_selected_pack_capture, lease_api=fcntl)
+    return _unavailable_pack_capture
+
+
+@contextmanager
+def _selected_pack_capture(generation, *, lease_api):
     """Fence byte acquisition; unsupported or contested sources fail closed.
 
     A second hash is not a mutation fence: an already-read file can be changed,
@@ -4707,12 +4727,6 @@ def _selected_pack_capture(generation):
     if generation is None:
         yield
         return
-    if not sys.platform.startswith("linux"):
-        raise HostError("stable selected pack capture requires Linux file leases")
-    try:
-        import fcntl
-    except ImportError as exc:
-        raise HostError("stable selected pack capture requires file lease support") from exc
     # Use a default-ignored signal on these private descriptors, without
     # installing a process-wide handler (captures also run on host threads).
     # Breaks are handled synchronously below: F_GETLEASE reports the pending
@@ -4733,14 +4747,14 @@ def _selected_pack_capture(generation):
                                info.st_mtime_ns, info.st_ctime_ns)
             if opened_identity != identity:
                 raise HostError("selected pack entry changed before capture")
-            fcntl.fcntl(descriptor, fcntl.F_SETSIG, signal.SIGURG)
-            fcntl.fcntl(descriptor, fcntl.F_SETLEASE, fcntl.F_RDLCK)
+            lease_api.fcntl(descriptor, lease_api.F_SETSIG, signal.SIGURG)
+            lease_api.fcntl(descriptor, lease_api.F_SETLEASE, lease_api.F_RDLCK)
         if _pack_capture_inventory(root) != inventory:
             raise HostError("selected pack changed before capture")
         yield
         if _pack_capture_inventory(root) != inventory:
             raise HostError("selected pack changed during capture")
-        if any(fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_RDLCK for fd in descriptors):
+        if any(lease_api.fcntl(fd, lease_api.F_GETLEASE) != lease_api.F_RDLCK for fd in descriptors):
             raise HostError("selected pack write attempted during capture")
     except OSError as exc:
         raise HostError("cannot establish stable selected pack capture") from exc
@@ -4773,6 +4787,8 @@ def _selected_pack_generation(
 
 
 _UNSET_PACK_GENERATION = object()
+# Standalone receipt callers have no host owner; bind their policy once too.
+_standalone_pack_capture = _select_pack_capture()
 
 
 def _run_pack_provenance(
@@ -4783,7 +4799,7 @@ def _run_pack_provenance(
     """Capture identity, PIN and observed digest from one stable selected generation."""
     if selected_generation is _UNSET_PACK_GENERATION:
         generation = _selected_pack_generation(record)
-        with _selected_pack_capture(generation):
+        with _standalone_pack_capture(generation):
             provenance = _run_pack_provenance(record, observed_digest, generation)
         return provenance
     generation = selected_generation
@@ -6338,7 +6354,9 @@ class GenericPackHost:
         boot_manifest_path: str | Path | None = None,
         boot_manifest_hash: str | None = None,
         execution_policy: ExecutionGuardPolicy | None = None,
+        pack_capture: Callable[[Any], Any] | None = None,
     ):
+        self._pack_capture = _select_pack_capture() if pack_capture is None else pack_capture
         configured_roots = [Path(root).expanduser().resolve() for root in pack_roots]
         # ASTRID_PACKS_PATH is an explicit discovery input, never an implicit
         # directory. Keep it in the same admitted root set so env-only packs
@@ -11153,7 +11171,7 @@ class GenericPackHost:
 
         try:
             selected_generation = _selected_pack_generation(record)
-            with _selected_pack_capture(selected_generation):
+            with self._pack_capture(selected_generation):
                 run_source_digest = _run_source_digest(record)
                 # Capture the selected identity, PIN and observed tree together
                 # before execution. Publish only after the fence validates.
