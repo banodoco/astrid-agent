@@ -84,6 +84,37 @@ def test_missing_key_raises_actionable_astrid_error(monkeypatch, tmp_path: Path)
     assert "shared astrid.env" in exc_info.value.recovery_command
 
 
+def test_action_worker_reads_only_declared_injected_secret(monkeypatch, tmp_path: Path) -> None:
+    # Both values are synthetic. A worker must ignore the credential file and
+    # consume only the value the host injected for this action.
+    secret_file = tmp_path / "fake-astrid.env"
+    secret_file.write_text("RUNPOD_API_KEY=fake-file-value\n", encoding="utf-8")
+    monkeypatch.setenv("ASTRID_ENV_FILE", str(secret_file))
+    monkeypatch.setenv("ASTRID_ACTION_ID", "runpod.provision")
+    monkeypatch.setenv("ASTRID_ACTION_ENV_ALLOWLIST", '["RUNPOD_API_KEY"]')
+    monkeypatch.setenv("RUNPOD_API_KEY", "fake-injected-value")
+
+    assert CredentialsScope.get("runpod") == "fake-injected-value"
+
+
+def test_action_worker_undeclared_secret_fails_without_file_fallback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    secret_file = tmp_path / "fake-astrid.env"
+    secret_file.write_text("OPENAI_API_KEY=fake-file-value\n", encoding="utf-8")
+    monkeypatch.setenv("ASTRID_ENV_FILE", str(secret_file))
+    monkeypatch.setenv("ASTRID_ACTION_ID", "h3_av.transform")
+    monkeypatch.setenv("ASTRID_ACTION_ENV_ALLOWLIST", "[]")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(AstridError) as exc_info:
+        CredentialsScope.get("openai")
+
+    assert exc_info.value.code == "undeclared_secret"
+    assert "h3_av.transform" in str(exc_info.value)
+    assert "actions.transform.secrets" in exc_info.value.recovery_command
+
+
 def test_unknown_provider_raises_astrid_error() -> None:
     with pytest.raises(AstridError) as exc_info:
         CredentialsScope.get("nonexistent")

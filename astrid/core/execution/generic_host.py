@@ -2014,6 +2014,12 @@ def _required_secret_names(record: "CapabilityRecord") -> tuple[str, ...]:
     process injection.  In particular, an ambient ``OPENAI_API_KEY`` cannot
     cross the boundary merely because the parent happens to have one.
     """
+    if record.definition.metadata.get("action_invocation"):
+        # Canonical action manifests are the authority for action-scoped
+        # secrets. Do not widen these declarations from the capability matrix
+        # or legacy metadata fields.
+        names = record.definition.metadata.get("declared_secrets") or ()
+        return tuple(dict.fromkeys(str(name) for name in names if str(name)))
     matrix_secret_names = tuple(
         str(name) for name in (record.matrix.get("required_env") or ())
         if str(name).upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD"))
@@ -8873,6 +8879,11 @@ class GenericPackHost:
             )
         }
         explicit = dict(explicit_env or {})
+        if record.definition.metadata.get("action_invocation"):
+            explicit["ASTRID_ACTION_ID"] = record.id
+            explicit["ASTRID_ACTION_ENV_ALLOWLIST"] = json.dumps(
+                list(declared), separators=(",", ":")
+            )
         explicit.pop("ASTRID_VIBECOMFY_EXECUTION_REQUEST_JSON", None)
         # A worker may deliberately execute a qualified, local VibeComfy
         # snapshot rather than the normal published dependency pin.  The

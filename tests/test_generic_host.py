@@ -282,11 +282,8 @@ def test_child_environment_carries_explicit_runtime_connection(tmp_path):
 
 
 def _write_credential_manifest(root: Path) -> None:
-    (root / "pack.yaml").write_text(
-        "schema_version: 1\nid: credential_test\nname: Credential Test\n"
-        "version: 1.0\ncontent:\n  executors: executors\n",
-        encoding="utf-8",
-    )
+    # This helper exercises the supported standalone folder executor path.
+    # Canonical pack actions use v3 declarations and are covered separately.
     executor_root = root / "executors" / "credential_echo"
     executor_root.mkdir(parents=True)
     (executor_root / "executor.yaml").write_text(
@@ -367,6 +364,28 @@ def test_manifest_credential_missing_from_all_sources_does_not_block_readiness(
     child_env, secrets = host._child_environment(record, tmp_path / "attempt")
     assert "FAL_KEY" not in child_env
     assert not secrets
+
+
+def test_runpod_action_secret_declaration_is_the_worker_injection_source(
+    tmp_path: Path,
+) -> None:
+    pack_root = Path(__file__).resolve().parents[1] / "astrid" / "packs" / "runpod"
+    host = GenericPackHost(
+        pack_roots=[pack_root],
+        credential_source={"RUNPOD_API_KEY": "fake-runpod-action-key"},
+    )
+    record = next(item for item in host.discover() if item.id == "runpod.provision")
+
+    assert generic_host._required_secret_names(record) == ("RUNPOD_API_KEY",)
+    child_env, secrets = host._child_environment(record, tmp_path / "attempt")
+    try:
+        assert child_env["RUNPOD_API_KEY"] == "fake-runpod-action-key"
+        assert child_env["ASTRID_ACTION_ID"] == "runpod.provision"
+        assert child_env["ASTRID_ACTION_ENV_ALLOWLIST"] == '["RUNPOD_API_KEY"]'
+        assert "OPENAI_API_KEY" not in child_env
+    finally:
+        child_env.clear()
+        secrets.clear()
 
 
 def test_input_materialization_rejects_traversal_names(tmp_path):
