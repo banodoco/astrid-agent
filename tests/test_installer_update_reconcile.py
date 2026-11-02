@@ -419,6 +419,17 @@ def test_h4_helper_serializes_held_busy_refusal_and_exits_nonzero(tmp_path, monk
     marker = read_json(root / "install.json")
     marker["update_job"].update(state="recovery-needed", launch_status="unknown")
     write_json(root / "install.json", marker)
+    class HeldAdapter:
+        def describe(self, job, command):
+            return _descriptor(job, command)
+
+        def is_registered(self, _descriptor, _command):
+            return True
+
+        def is_active(self, _descriptor):
+            return True
+
+    monkeypatch.setattr(update_job, "_platform_api", lambda: HeldAdapter())
     payload = {**request, "action": "accept", "operation_id": "b" * 32,
                "job_name": "astrid-update-" + "b" * 32}
     monkeypatch.setattr(update_job.sys, "stdin", io.StringIO(json.dumps(payload)))

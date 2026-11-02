@@ -18,6 +18,11 @@ from astrid_runtime.paths import RuntimePaths
 
 
 def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
+    # This fixture models the C1 tables, not a complete Runtime schema. Keep
+    # schema selection at its own seam so the test reaches the real fence.
+    monkeypatch.setattr('astrid.installer.core.inspect_schema',
+                        lambda _backend, version, _realm, **_kwargs:
+                        {'identity': {'version': 32 if version.root.name == 'old' else 33}, 'target': 33})
     root, data = tmp_path / 'program', tmp_path / 'data'
     value = Backend(root, tmp_path / 'install.log', tmp_path / 'uv')
     value.service.selection = tmp_path / 'selection.json'
