@@ -263,46 +263,6 @@ def test_close_unblocks_a_reader_waiting_on_a_full_queue(children):
     assert not reader._thread.is_alive()
 
 
-def test_wan_partial_frames_survive_observation_timeout_and_coalesced_frames(children):
-    from astrid.core.execution.generic_host import _ManagedWanChildAdapter
-
-    process, own = children("""import os, sys
-os.write(1, b'{"birth":"birth",')
-sys.stdin.buffer.readline()
-os.write(1, b'"kind":"ready"}\\n{"birth":"birth","kind":"result"}\\n')
-""")
-    adapter = _ManagedWanChildAdapter(spec={}, binding=SimpleNamespace(process_birth_id="birth"),
-                                     readiness_timeout=10, release_timeout=10,
-                                     track=lambda p: None, untrack=lambda p: None)
-    adapter.process = process
-    adapter._pipe_reader = own(PipeReader(process.stdout))
-    adapter._pipe_writer = own(PipeWriter(process.stdin))
-    with pytest.raises(TimeoutError, match="Wan child observation timed out"):
-        adapter._read(time.monotonic() + .2)
-    adapter._write({"continue": True}, time.monotonic() + 10)
-    assert adapter._read(time.monotonic() + 10) == {"birth": "birth", "kind": "ready"}
-    assert adapter._read(time.monotonic() + 10) == {"birth": "birth", "kind": "result"}
-
-
-def test_wan_fence_interrupts_a_silent_read(children):
-    from astrid.core.execution.generic_host import HostError, _ManagedWanChildAdapter
-
-    process, own = children("import sys; sys.stdin.buffer.read()")
-    adapter = _ManagedWanChildAdapter(spec={}, binding=SimpleNamespace(process_birth_id="birth"),
-                                     readiness_timeout=10, release_timeout=10,
-                                     track=lambda p: None, untrack=lambda p: None)
-    adapter.process = process
-    adapter._pipe_reader = own(PipeReader(process.stdout))
-    timer = threading.Timer(.1, lambda: adapter.fence(reason="test"))
-    timer.start()
-    try:
-        with pytest.raises(HostError, match="cancelled or fenced"):
-            adapter._read(time.monotonic() + 10)
-    finally:
-        timer.cancel()
-        timer.join()
-
-
 def test_remotion_parser_reads_fragmented_json_until_eof(children):
     from astrid.core.execution.remotion_host_session import _PipeReader, _read
 
@@ -407,25 +367,6 @@ def test_remotion_census_failure_retains_custody_but_joins_pipe_workers(children
         manager._close_original(already_exited=True)
     assert caught.value is failure and manager.uncertain is failure
     assert manager.process is process
-    assert not reader._thread.is_alive() and not writer._thread.is_alive()
-
-
-def test_wan_census_failure_retains_custody_but_joins_pipe_workers(children, monkeypatch):
-    from astrid.core.execution import generic_host as host
-
-    process, own = children("pass")
-    adapter = host._ManagedWanChildAdapter(spec={}, binding=SimpleNamespace(process_birth_id="birth"),
-                                          readiness_timeout=10, release_timeout=10,
-                                          track=lambda p: None, untrack=lambda p: None)
-    adapter.process = process
-    reader = adapter._pipe_reader = own(PipeReader(process.stdout))
-    writer = adapter._pipe_writer = own(PipeWriter(process.stdin))
-    assert process.wait(timeout=10) == 0
-    monkeypatch.setattr(host, "_release_owned_group", lambda process: None)
-    monkeypatch.setattr(host, "_process_snapshot", lambda: {})
-    with pytest.raises(host.HostError, match="release census unavailable"):
-        adapter.release(reason="test")
-    assert adapter.process is process
     assert not reader._thread.is_alive() and not writer._thread.is_alive()
 
 

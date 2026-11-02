@@ -54,14 +54,14 @@ def test_hold_expires_after_the_last_release_by_running_the_holders_stop():
     holds = WarmHolds(timer=timers, clock=lambda: 0.0)
     lease = holds.lease("engine", stop=stop, lock=lock)
     assert holds.status() == [] and timers.live() is None
-    holds.release(lease, holding="wan2gp.generate_video", on_idle="child process ended", idle_seconds=600)
-    assert holds.status() == [{"holding": "wan2gp.generate_video", "on_idle": "child process ended", "leases": 0,
+    holds.release(lease, holding="fixture.hold", on_idle="child process ended", idle_seconds=600)
+    assert holds.status() == [{"holding": "fixture.hold", "on_idle": "child process ended", "leases": 0,
                                "idle_seconds": 600.0, "expires_at": "1970-01-01T00:10:00+00:00"}]
     assert timers.live().seconds == 600 and stops == []
     timers.fire()
     assert stops == [True], "stop runs once, under the holder's own lock"
     assert holds.status() == []
-    holds.release(lease, holding="wan2gp.generate_video", idle_seconds=600)
+    holds.release(lease, holding="fixture.hold", idle_seconds=600)
     assert timers.live() is None, "a released lease cannot arm twice"
 
 
@@ -96,7 +96,7 @@ def test_concurrent_leases_arm_one_deadline_after_the_last_release():
 def test_a_task_that_leaves_nothing_warm_forgets_the_hold():
     timers, (lock, stops, stop) = Timers(), holder()
     holds = WarmHolds(timer=timers)
-    holds.release(holds.lease("engine", stop=stop, lock=lock), holding="wan2gp.generate_video", idle_seconds=600)
+    holds.release(holds.lease("engine", stop=stop, lock=lock), holding="fixture.hold", idle_seconds=600)
     armed = timers.live()
     # The next task replaced or released the session itself.
     holds.release(holds.lease("engine", stop=stop, lock=lock), holding=None, idle_seconds=600)
@@ -108,7 +108,7 @@ def test_a_task_that_leaves_nothing_warm_forgets_the_hold():
 def test_expiry_waiting_for_the_holder_lock_yields_to_a_task_that_arrives_first():
     timers, (lock, stops, stop) = Timers(), holder()
     holds = WarmHolds(timer=timers)
-    holds.release(holds.lease("engine", stop=stop, lock=lock), holding="wan2gp.generate_video", idle_seconds=600)
+    holds.release(holds.lease("engine", stop=stop, lock=lock), holding="fixture.hold", idle_seconds=600)
     expire = timers.live().callback
     with lock:  # the holder is busy: a task is inspecting its session
         expiry = threading.Thread(target=expire)
@@ -144,7 +144,7 @@ def test_a_lease_waits_for_an_expiry_whose_stop_is_already_running():
         progressed.set()
 
     lock = HolderLock()
-    holds.release(holds.lease("engine", stop=stop, lock=lock), holding="wan2gp.generate_video", idle_seconds=600)
+    holds.release(holds.lease("engine", stop=stop, lock=lock), holding="fixture.hold", idle_seconds=600)
     expiry = threading.Thread(target=timers.fire, daemon=True)
     expiry.start()
     stopping.wait()
@@ -185,147 +185,3 @@ def test_request_wins_then_the_one_knob_then_each_holders_default(monkeypatch):
         monkeypatch.setenv(ASTRID_WARM_IDLE_SECONDS, invalid)
         assert idle_seconds(600) == 600
 
-
-def test_idle_expiry_ends_the_warm_wan_child_through_its_session_release(tmp_path):
-    host = GenericPackHost(pack_roots=[tmp_path])
-    timers = Timers()
-    host.warm_holds = WarmHolds(timer=timers)
-    binding = SessionBinding(session_id=str(tmp_path), runtime_instance_id="runtime", process_birth_id="birth",
-                             endpoint="pipe:birth", source_digest="source", config_digest="config",
-                             execution_identity="wan-spec")
-    adapter = generic_host._ManagedWanChildAdapter(
-        spec={}, binding=binding, readiness_timeout=5.0, release_timeout=5.0,
-        track=host._track_process, untrack=host._untrack_process)
-    # A real child that exits on the adapter's close frame, as the Wan session does.
-    adapter.process = popen_owned_group([sys.executable, "-c", "import sys; sys.stdin.readline()"],
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    host._track_process(adapter.process)
-    reasons = []
-    release = adapter.release
-    adapter.release = lambda *, reason: (reasons.append(reason), release(reason=reason))[1]
-    host.managed_tool_session.open(
-        capability=CapabilityDescriptor("wan2gp.generate_video", warm_reuse_expected=True),
-        binding=binding, adapter=adapter)
-    try:
-        # A settled Wan task whose request asked for 42 s leaves the child warm.
-        hold = host._hold_session_slot()
-        host._requested_idle_seconds = 42
-        host._settle_session_hold(hold)
-        assert [(entry["holding"], entry["idle_seconds"]) for entry in host.warm_holds.status()] == [
-            ("wan2gp.generate_video", 42.0)]
-        # The next task reuses it and cancels the expiry; its end re-arms it.
-        stale = timers.live()
-        host._settle_session_hold(host._hold_session_slot())
-        assert stale.cancelled
-        stale.callback()
-        assert reasons == [] and adapter.process.poll() is None
-        timers.fire()
-        assert reasons == ["idle"]
-        assert adapter.process.returncode == 0, "idle release ends the child process"
-        assert not host.managed_tool_session.occupied and host.warm_holds.status() == []
-    finally:
-        if adapter.process.poll() is None:
-            adapter.process.kill()
-            adapter.process.wait()
-        host.managed_tool_session.close()
-
-
-@pytest.mark.parametrize("job_released", [True, False])
-def test_windows_wan_idle_release_uses_retained_job_evidence(tmp_path, monkeypatch, job_released):
-    host = GenericPackHost(pack_roots=[tmp_path])
-    timers = Timers()
-    host.warm_holds = WarmHolds(timer=timers)
-    notes = []
-    host._latch_cleanup_uncertainty = notes.append
-    binding = SessionBinding(session_id=str(tmp_path), runtime_instance_id="runtime", process_birth_id="birth",
-                             endpoint="pipe:birth", source_digest="source", config_digest="config")
-    adapter = generic_host._ManagedWanChildAdapter(
-        spec={}, binding=binding, readiness_timeout=1.0, release_timeout=1.0,
-        track=host._track_process, untrack=host._untrack_process)
-
-    class Child:
-        pid, returncode, stdin, stdout = 4242, None, None, None
-        _runtime_job = SimpleNamespace(handle=42)
-
-        def poll(self):
-            return self.returncode
-
-        def wait(self, *, timeout):
-            self.returncode = 0
-            return self.returncode
-
-    child = adapter.process = Child()
-    host._track_process(child)
-    frames, stopped = [], []
-    adapter._write = lambda frame, deadline: frames.append(frame)
-    monkeypatch.setattr(generic_host, "sys", SimpleNamespace(platform="win32"))
-    monkeypatch.setattr(process_group, "sys", SimpleNamespace(platform="win32"))
-
-    def stop_tree(process, *, grace):
-        assert process is child and process.poll() == 0
-        stopped.append(process)
-        if job_released:
-            process._runtime_job.handle = None
-
-    monkeypatch.setattr(process_group.platform, "stop_tree", stop_tree)
-    monkeypatch.setattr(generic_host, "_process_snapshot", lambda: pytest.fail("Windows release used a POSIX census"))
-    monkeypatch.setattr(process_group, "_process_snapshot", lambda: pytest.fail("Windows cleanup used a POSIX census"))
-    monkeypatch.setattr(generic_host.subprocess, "run", lambda *a, **k: pytest.fail("Windows release launched ps"))
-    host.managed_tool_session.open(
-        capability=CapabilityDescriptor("wan2gp.generate_video", warm_reuse_expected=True),
-        binding=binding, adapter=adapter)
-    host._settle_session_hold(host._hold_session_slot())
-    timers.fire()
-
-    assert frames == [{"birth": "birth", "op": "close"}] and stopped == [child]
-    assert child.returncode == 0
-    assert host.managed_tool_session.occupied is not job_released
-    assert (child in host._active_processes) is not job_released
-    assert bool(notes) is not job_released
-    if job_released:
-        assert host.warm_holds.status() == []
-    else:
-        assert "session failed to release after idle" in notes[0]
-
-
-def test_failed_idle_release_is_recorded_and_keeps_the_slot_occupied(tmp_path):
-    host = GenericPackHost(pack_roots=[tmp_path])
-    timers = Timers()
-    host.warm_holds = WarmHolds(timer=timers)
-    notes = []
-    host._latch_cleanup_uncertainty = notes.append
-    binding = SessionBinding(session_id=str(tmp_path), runtime_instance_id="runtime", process_birth_id="birth",
-                             endpoint="pipe:birth", source_digest="source", config_digest="config")
-    adapter = generic_host._ManagedWanChildAdapter(
-        spec={}, binding=binding, readiness_timeout=5.0, release_timeout=5.0,
-        track=host._track_process, untrack=host._untrack_process)
-    adapter.release = lambda *, reason: {"ok": False, "released": False, "reason": reason}
-    host.managed_tool_session.open(
-        capability=CapabilityDescriptor("wan2gp.generate_video", warm_reuse_expected=True),
-        binding=binding, adapter=adapter)
-    host._settle_session_hold(host._hold_session_slot())
-    timers.fire()
-    assert notes == [notes[0]] and "wan2gp.generate_video session failed to release after idle" in notes[0]
-    assert host.managed_tool_session.occupied, "an unverified release never forgets the child"
-
-
-def test_host_status_names_each_warm_hold_and_when_it_expires(tmp_path, monkeypatch):
-    monkeypatch.delenv(ASTRID_WARM_IDLE_SECONDS, raising=False)
-    host = GenericPackHost(pack_roots=[tmp_path])
-    host.evidence_status_path = tmp_path / "runtime" / EVIDENCE_STATUS_NAME
-    timers = Timers()
-    host.warm_holds = WarmHolds(timer=timers, clock=lambda: 0.0, on_change=host._publish_evidence_status)
-    binding = SessionBinding(session_id=str(tmp_path), runtime_instance_id="runtime", process_birth_id="birth",
-                             endpoint="pipe:birth", source_digest="source", config_digest="config")
-    adapter = generic_host._ManagedWanChildAdapter(
-        spec={}, binding=binding, readiness_timeout=5.0, release_timeout=5.0,
-        track=host._track_process, untrack=host._untrack_process)
-    host.managed_tool_session.open(
-        capability=CapabilityDescriptor("wan2gp.generate_video", warm_reuse_expected=True),
-        binding=binding, adapter=adapter)
-    host._settle_session_hold(host._hold_session_slot())
-    assert read_evidence_status(host.evidence_status_path)["warm_holds"] == [
-        {"holding": "wan2gp.generate_video", "on_idle": "child process ended", "leases": 0,
-         "idle_seconds": 600.0, "expires_at": "1970-01-01T00:10:00+00:00"}]
-    timers.fire()
-    assert read_evidence_status(host.evidence_status_path)["warm_holds"] == []

@@ -2587,28 +2587,6 @@ def test_local_parent_collision_rejected_across_public_registries(tmp_path, monk
 
 
 
-@pytest.mark.parametrize("census", ["released", "live-group", "unavailable", "failure"])
-def test_wan_release_darwin_uses_complete_native_census_without_ps(monkeypatch, census):
-    from types import SimpleNamespace
-    from astrid.core.execution import generic_host as gh
-    adapter = gh._ManagedWanChildAdapter(spec={}, binding=object(), readiness_timeout=1,
-                                        release_timeout=1, track=lambda p: None, untrack=lambda p: None)
-    adapter.process = SimpleNamespace(pid=4242, poll=lambda: 0, returncode=0, stdin=None, stdout=None)
-    monkeypatch.setattr(gh.sys, "platform", "darwin")
-    monkeypatch.setattr(gh, "_release_owned_group", lambda process: None)
-    def snapshot():
-        if census == "failure": raise OSError("native census unavailable")
-        if census == "unavailable": return {}
-        return {7: SimpleNamespace(pgid=4242 if census == "live-group" else 7)}
-    monkeypatch.setattr(gh, "_process_snapshot", snapshot)
-    monkeypatch.setattr(gh, "subprocess", SimpleNamespace(run=lambda *a, **k: pytest.fail("Darwin release must not launch ps")))
-    if census in {"unavailable", "failure"}:
-        with pytest.raises((HostError, OSError)): adapter.release(reason="test")
-    else:
-        result = adapter.release(reason="test")
-        assert result["released"] is (census == "released")
-
-
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 @pytest.mark.parametrize("phase", ["registry", "cleanup"])
 def test_native_engine_graph_listener_commands_keep_platform_timeout_and_parsing(tmp_path, monkeypatch, platform, phase):
