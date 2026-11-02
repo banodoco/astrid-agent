@@ -1,0 +1,8 @@
+Getting Astrid ready. The first time takes a few minutes.
+127.0.0.1 - - [02/Nov/2026 00:40:54] "GET /local-install-manifest.json HTTP/1.1" 200 -
+Using your workspace at /home/runner/work/_temp/t11-v05-t11-rt-r1/data.
+Installing Astrid.
+Starting Astrid at sign-in.
+No active systemd user supervisor was detected for Astrid Runtime. The installer's detached fallback survives terminal closure, but does not restart after a crash, logout cleanup, container shutdown, or reboot. Run the install line to start it again. For automatic recovery, run astrid-runtime run under your container or another service supervisor; see docs/setup/local-source-install.md#linux-without-systemd. If you already use an external supervisor, verify its restart policy.
+Open https://astrid.haus
+Add ~/.local/bin to your PATH to run astrid from anywhere: export PATH="$HOME/.local/bin:$PATH"

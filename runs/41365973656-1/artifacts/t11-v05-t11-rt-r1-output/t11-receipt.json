@@ -1,0 +1,72 @@
+{
+  "gap": "Durable example/render evidence is partial operational evidence only. Schema consumption and Composition execution remain unobserved; prototype cannot qualify.",
+  "observations": {
+    "app_manifest_sha256": "a63d9bdac6dfcb22e4f4516f2d92f4c880477076512b5115f0cd8f415f34a9ef",
+    "bootstrap_sha256": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+    "composition_execution": "unobserved",
+    "data_root_initially_empty": true,
+    "example_render": {
+      "checkout_imports": "none-observed-in-sys-path-or-module-origins",
+      "composition_execution": "unobserved",
+      "example": {
+        "accepted_revision_id": "authoring-parent-revision-e8a337c4874f6c11c57a4e17aef58bde6880ca93aebba442a6bc7e0d64319b34",
+        "commit_id": "txn-de4c080cbae94bf794ffca83dcade761",
+        "project_id": "ecfcd772d4f543c4bdba0a36c47fdcf3",
+        "project_slug": "t11-example-84ef1c07a220",
+        "readback_clip_id": "t11-title",
+        "readback_head_revision_id": "authoring-parent-revision-e8a337c4874f6c11c57a4e17aef58bde6880ca93aebba442a6bc7e0d64319b34",
+        "readback_text": "Installed Timeline example",
+        "result": "committed-and-read-back",
+        "timeline_id": "t11-84ef1c07a220"
+      },
+      "interpreter": "/home/runner/work/_temp/t11-v05-t11-rt-r1/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-linux-x86_64-gnu/bin/python3.11",
+      "module_origins": {
+        "astrid": "/home/runner/work/_temp/t11-v05-t11-rt-r1/program/versions/dd6b4819-1e6d899e-70d46135/py/lib/python3.11/site-packages/astrid/__init__.py",
+        "astrid.sdk.timeline.api": "/home/runner/work/_temp/t11-v05-t11-rt-r1/program/versions/dd6b4819-1e6d899e-70d46135/py/lib/python3.11/site-packages/astrid/sdk/timeline/api.py",
+        "runtime_protocol": "/home/runner/work/_temp/t11-v05-t11-rt-r1/program/versions/dd6b4819-1e6d899e-70d46135/py/lib/python3.11/site-packages/runtime_protocol/__init__.py"
+      },
+      "recorded_composition_archive": "recorded by installer harness static archive comparison",
+      "render": {
+        "independently_readable": true,
+        "managed_output_reference": "sha256:ba167d60a8c64a0839e2043ec91badfbe5210ae663c54726e27f75615990e3bb",
+        "output_path": "/home/runner/work/_temp/t11-v05-t11-rt-r1/work/t11-example-render.mp4",
+        "result": "completed",
+        "run_id": "e6bdc769ad4f49cb88ee209b3f334668",
+        "sha256": "ba167d60a8c64a0839e2043ec91badfbe5210ae663c54726e27f75615990e3bb",
+        "size_bytes": 101681,
+        "source_path": "/home/runner/work/_temp/t11-v05-t11-rt-r1/data/runtime/realms/0290b7be-0e5a-4ff0-8edb-5c8eb4f01559/presentations/renders/ba167d60a8c64a08-hype.mp4",
+        "task_id": "318092542039424ea8b4feeea15aa148"
+      },
+      "schema_consumption": "unobserved",
+      "status": "partial-not-qualified",
+      "sys_path": [
+        "/home/runner/work/_temp/t11-v05-t11-rt-r1/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-linux-x86_64-gnu/lib/python311.zip",
+        "/home/runner/work/_temp/t11-v05-t11-rt-r1/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-linux-x86_64-gnu/lib/python3.11",
+        "/home/runner/work/_temp/t11-v05-t11-rt-r1/home/.local/share/astrid/bootstrap/python/cpython-3.11.13-linux-x86_64-gnu/lib/python3.11/lib-dynload",
+        "/home/runner/work/_temp/t11-v05-t11-rt-r1/program/versions/dd6b4819-1e6d899e-70d46135/py/lib/python3.11/site-packages"
+      ],
+      "tuple": {
+        "agent_sha": "dd6b48192c720c5346e6f140184e313b2cf84f31",
+        "app_sha": "9d3ccda1e81383082258943207745086da2aabe4",
+        "runtime_sha": "1e6d899efa77a2d6ec247c38250f9748330bb587"
+      },
+      "verified_schema": "recorded by installer harness static tuple comparison",
+      "working_directory": "/home/runner/work/_temp/t11-v05-t11-rt-r1/work"
+    },
+    "example_render_exit_code": 0,
+    "installer_manifest_sha256": "627a6cc90d0fa4750c108808645516ea5f251308253b570be85e5e6896c6c307",
+    "profile_data_root_declaration_matches": true,
+    "recorded_composition_archive_sha256": "cdd89c78d18b4b437a03efd1fff081f1ce00ee448d644ef8360fc1937df60f0f",
+    "requested_shas": {
+      "agent": "dd6b48192c720c5346e6f140184e313b2cf84f31",
+      "app": "9d3ccda1e81383082258943207745086da2aabe4",
+      "runtime": "1e6d899efa77a2d6ec247c38250f9748330bb587"
+    },
+    "schema_consumption": "unobserved",
+    "service_declaration_sha256": "cbde2582054f2752a70bfdca69ba3b4d2985a69082099128781dbe97db47f007",
+    "source_profile_sha256": "f2e7186c3653853f41adab9c11ceb3167b3233d28d86f01ee2c842342eefcd70",
+    "verified_tuple_timeline_schema_sha256": "f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
+  },
+  "phase": "live-observation-unavailable",
+  "status": "not-qualified"
+}
