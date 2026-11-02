@@ -22,7 +22,14 @@ def _guard_state(bundle, ref, path):
     state = State(bundle)
     if any(':' in token for token in path):
         entity = state.entity(ref, optional=True)
-        return ABSENT.copy() if entity is None else value_at(entity, ref, path)
+        if entity is None:
+            return ABSENT.copy()
+        value = ABSENT.copy()
+        for index in range(len(path)):
+            value = value_at(entity, ref, path[:index + 1])
+            if value == ABSENT:
+                break
+        return value
     return state.get(ref, path)
 
 

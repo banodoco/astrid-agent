@@ -399,7 +399,8 @@ def test_stale_disjoint_rebases_and_same_clip_conflicts():
     assert len(realm.entries) == count
 
 
-def test_intervening_track_value_conflict_keeps_states_and_rederive_summary(monkeypatch):
+@pytest.mark.parametrize("user_removes", [False, True], ids=["user-value-present", "user-removal"])
+def test_intervening_track_value_conflict_keeps_states_and_rederive_summary(monkeypatch, user_removes):
     from types import SimpleNamespace
 
     from astrid.sdk.timeline import retry as retry_module
@@ -411,15 +412,15 @@ def test_intervening_track_value_conflict_keeps_states_and_rederive_summary(monk
     realm = DetachedRealm(document)
     base = detached(realm.head)
 
-    def label_patch(value):
+    def label_patch(value=None, *, remove=False):
         return {"schema_version": 1, "op": "doc.patch", "version": "1", "select": None,
-                "args": {"changes": [{"op": "set", "ref": "parent",
+                "args": {"changes": [{"op": "remove" if remove else "set", "ref": "parent",
                                        "path": ["config", "tracks", "id:picture", "label"],
                                        "before": {"state": "present", "value": "Original label"},
-                                       "value": value}]}}
+                                       **({} if remove else {"value": value})}]}}
 
     agent_command = label_patch("Agent label")
-    user_command = label_patch("User label")
+    user_command = label_patch("User label") if not user_removes else label_patch(remove=True)
     realm.call([user_command])
 
     context = realm.context([agent_command], base=base)
@@ -436,7 +437,9 @@ def test_intervening_track_value_conflict_keeps_states_and_rederive_summary(monk
     assert conflict["path"] == ["config", "tracks", "id:picture", "label"]
     assert conflict["base"] == {"state": "present", "value": "Original label"}
     assert conflict["ours"] == {"state": "present", "value": "Agent label"}
-    assert conflict["theirs"] == {"state": "present", "value": "User label"}
+    expected_user_state = ({"state": "absent"} if user_removes else
+                           {"state": "present", "value": "User label"})
+    assert conflict["theirs"] == expected_user_state
 
     record = {"id": "pc_user_conflict", "label": "Set track label",
               "failure": {"details": failure}}
@@ -445,8 +448,8 @@ def test_intervening_track_value_conflict_keeps_states_and_rederive_summary(monk
     monkeypatch.setattr(retry_module.clash, "friendly_target", lambda *args: "track picture label")
     summary = retry_module._summary_rederive(record, packet, SimpleNamespace())
     assert "the user (editor) changed track picture label" in summary
-    assert "User label" in summary
-    assert "preserve it" in summary
+    assert ("User label" in summary) == (not user_removes)
+    assert ("preserve it" in summary) if not user_removes else "Preserve the user value" in summary
     assert "re-derive only compatible work" in summary
 
 
