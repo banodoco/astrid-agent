@@ -1,0 +1,185 @@
+Collecting pytest==9.0.2
+  Downloading pytest-9.0.2-py3-none-any.whl.metadata (7.6 kB)
+Collecting pytest-timeout>=2.4
+  Downloading pytest_timeout-2.4.0-py3-none-any.whl.metadata (20 kB)
+Collecting setuptools==80.9.0
+  Downloading setuptools-80.9.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting wheel==0.46.3
+  Downloading wheel-0.46.3-py3-none-any.whl.metadata (2.4 kB)
+Collecting build
+  Downloading build-1.6.1-py3-none-any.whl.metadata (5.6 kB)
+Collecting pyyaml
+  Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+Collecting jsonschema
+  Downloading jsonschema-4.26.0-py3-none-any.whl.metadata (7.6 kB)
+Collecting filelock
+  Downloading filelock-4.2.6-py3-none-any.whl.metadata (2.0 kB)
+Collecting python-dotenv
+  Downloading python_dotenv-1.2.4-py3-none-any.whl.metadata (29 kB)
+Collecting uv
+  Downloading uv-0.13.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (11 kB)
+Collecting Pillow
+  Downloading pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (9.1 kB)
+Collecting iniconfig>=1.0.1 (from pytest==9.0.2)
+  Downloading iniconfig-2.3.1-py3-none-any.whl.metadata (2.8 kB)
+Collecting packaging>=22 (from pytest==9.0.2)
+  Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+Collecting pluggy<2,>=1.5 (from pytest==9.0.2)
+  Downloading pluggy-1.7.0-py3-none-any.whl.metadata (5.0 kB)
+Collecting pygments>=2.7.2 (from pytest==9.0.2)
+  Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting pyproject_hooks (from build)
+  Downloading pyproject_hooks-1.3.3-py3-none-any.whl.metadata (1.3 kB)
+Collecting attrs>=22.2.0 (from jsonschema)
+  Downloading attrs-26.1.0-py3-none-any.whl.metadata (8.8 kB)
+Collecting jsonschema-specifications>=2023.03.6 (from jsonschema)
+  Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting referencing>=0.28.4 (from jsonschema)
+  Downloading referencing-0.37.0-py3-none-any.whl.metadata (2.8 kB)
+Collecting rpds-py>=0.25.0 (from jsonschema)
+  Downloading rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
+Collecting typing-extensions>=4.4.0 (from referencing>=0.28.4->jsonschema)
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Downloading pytest-9.0.2-py3-none-any.whl (374 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 374.8/374.8 kB 9.2 MB/s eta 0:00:00
+Downloading setuptools-80.9.0-py3-none-any.whl (1.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 43.7 MB/s eta 0:00:00
+Downloading wheel-0.46.3-py3-none-any.whl (30 kB)
+Downloading pytest_timeout-2.4.0-py3-none-any.whl (14 kB)
+Downloading build-1.6.1-py3-none-any.whl (31 kB)
+Downloading pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 807.9/807.9 kB 115.5 MB/s eta 0:00:00
+Downloading jsonschema-4.26.0-py3-none-any.whl (90 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 90.6/90.6 kB 30.2 MB/s eta 0:00:00
+Downloading filelock-4.2.6-py3-none-any.whl (164 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 164.4/164.4 kB 42.6 MB/s eta 0:00:00
+Downloading python_dotenv-1.2.4-py3-none-any.whl (23 kB)
+Downloading uv-0.13.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (17.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 17.3/17.3 MB 144.3 MB/s eta 0:00:00
+Downloading pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (7.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.1/7.1 MB 158.3 MB/s eta 0:00:00
+Downloading attrs-26.1.0-py3-none-any.whl (67 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 67.5/67.5 kB 24.2 MB/s eta 0:00:00
+Downloading iniconfig-2.3.1-py3-none-any.whl (7.6 kB)
+Downloading jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+Downloading packaging-26.3-py3-none-any.whl (129 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 130.0/130.0 kB 46.3 MB/s eta 0:00:00
+Downloading pluggy-1.7.0-py3-none-any.whl (27 kB)
+Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 151.0 MB/s eta 0:00:00
+Downloading referencing-0.37.0-py3-none-any.whl (26 kB)
+Downloading rpds_py-2026.9.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (371 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 371.3/371.3 kB 92.9 MB/s eta 0:00:00
+Downloading pyproject_hooks-1.3.3-py3-none-any.whl (10 kB)
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 45.6/45.6 kB 16.3 MB/s eta 0:00:00
+Installing collected packages: uv, typing-extensions, setuptools, rpds-py, pyyaml, python-dotenv, pyproject_hooks, pygments, pluggy, Pillow, packaging, iniconfig, filelock, attrs, wheel, referencing, pytest, build, pytest-timeout, jsonschema-specifications, jsonschema
+Successfully installed Pillow-13.0.0 attrs-26.1.0 build-1.6.1 filelock-4.2.6 iniconfig-2.3.1 jsonschema-4.26.0 jsonschema-specifications-2025.9.1 packaging-26.3 pluggy-1.7.0 pygments-2.21.0 pyproject_hooks-1.3.3 pytest-9.0.2 pytest-timeout-2.4.0 python-dotenv-1.2.4 pyyaml-6.0.3 referencing-0.37.0 rpds-py-2026.9.1 setuptools-80.9.0 typing-extensions-4.16.0 uv-0.13.6 wheel-0.46.3
+Processing ./runtime
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Processing ./agent
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: astrid-runtime, astrid
+  Building wheel for astrid-runtime (pyproject.toml): started
+  Building wheel for astrid-runtime (pyproject.toml): finished with status 'done'
+  Created wheel for astrid-runtime: filename=astrid_runtime-0.1.0-py3-none-any.whl size=843130 sha256=2eb08d0c047c999735aa6ddcd970311242ad137a8e4c22fe32e170018c092ee3
+  Stored in directory: /tmp/pip-ephem-wheel-cache-jv_4ycr9/wheels/77/b9/92/8387f27cb8372eb38081ae345b2b73fd2c62c79df949d12e56
+  Building wheel for astrid (pyproject.toml): started
+  Building wheel for astrid (pyproject.toml): finished with status 'done'
+  Created wheel for astrid: filename=astrid-0.1.0-py3-none-any.whl size=58712087 sha256=41dc88e37d9fbb778cb863172955cc469d405f585734874636515c1200bd3adc
+  Stored in directory: /tmp/pip-ephem-wheel-cache-jv_4ycr9/wheels/7c/fc/96/a3803f02193b2c62bd3cfd0776721bdf7b23360db5a95c0eac
+Successfully built astrid-runtime astrid
+Installing collected packages: astrid-runtime, astrid
+Successfully installed astrid-0.1.0 astrid-runtime-0.1.0
+collection=0
+focused=1
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[start-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stop-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[switched]
+  DESELECTED tests/test_installer_update_recovery.py::test_repair_recovers_each_installer_boundary_to_old_identity_and_data[verified]
+  DESELECTED tests/test_installer_update_recovery.py::test_same_schema_direct_migration_recovery_preserves_post_switch_workspace
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[activated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[complete]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[migration-committed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[planned]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[restarted]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-realm-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_during_recovery_replays_same_retained_backup[restore-support-removed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[backed_up]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[backup-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[complete]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[migrated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[pointer-publish]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:activated]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:migration-committed]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:planned]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:restarted]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[runtime:stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stage-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[staged]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[start-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stop-return]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stopped]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[stopping]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[switched]
+  DESELECTED tests/test_installer_update_recovery.py::test_sigkill_each_installer_durable_step_then_three_successful_updates[verified]
+[omp] NO CI job runs this lane (manual: run it by hand with -m omp)
+  DESELECTED tests/test_verify_installed.py::test_broken_real_bridge_model_command_fails_verify
+=========================== short test summary info ============================
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_qualifies_noneditable_runtimes_for_both_versions - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[None] - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[True] - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[False] - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[0] - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_refuses_incapable_runtime_versions[2] - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_stopped_custody_accepts_runtime_without_stop_handshake - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_refuses_wrong_environment_and_unrelated_origin - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_refuses_unrelated_import_package_and_metadata_mismatch - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_qualifies_encoded_and_symlinked_checkout_paths - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_interpreter_refuses_source_path_imports_without_installed_package - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_running_incapable_runtime_refuses_exact_i1_without_writes - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_start_racing_stopped_preflight_refuses_exact_i1_before_manifest_write - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_app_update.py::test_selected_runtime_provenance_mismatch_refuses_before_handoff_probe - FileNotFoundError: [Errno 2] No such file or directory: 'uv'
+FAILED tests/test_installer_lifecycle.py::test_stop_treats_discovery_removed_during_read_as_stopped - astrid.installer.core.RuntimeOperationError: Runtime interruption refused: owner endpoint or process identity failed validation.
+FAILED tests/test_installer_release0_rollback.py::test_rollback_selects_and_starts_authentic_release0_runtime - subprocess.CalledProcessError: Command '['git', 'archive', '--format=tar', '3204bb00135bec8ee2d2d3fb21eed5abfceca649', 'astrid']' returned non-zero exit status 128.
+FAILED tests/test_installer_release0_rollback.py::test_pre_stop_interruption_recovers_and_starts_authentic_release0_runtime - subprocess.CalledProcessError: Command '['git', 'archive', '--format=tar', '3204bb00135bec8ee2d2d3fb21eed5abfceca649', 'astrid']' returned non-zero exit status 128.
+FAILED tests/test_installer_self_contained_launchers.py::test_service_and_foreground_exec_with_authentic_release0_package - subprocess.CalledProcessError: Command '['git', 'archive', '--format=tar', '3204bb00135bec8ee2d2d3fb21eed5abfceca649', 'astrid']' returned non-zero exit status 128.
+FAILED tests/test_installer_service_restart_policy.py::test_off_choice_stop_does_not_create_startup_registration[linux] - AssertionError: assert not True
+ +  where True = exists()
+ +    where exists = PosixPath('/home/runner/.config/systemd/user/astrid.service').exists
+ +      where PosixPath('/home/runner/.config/systemd/user/astrid.service') = <astrid.installer.service.Service object at 0x7fe890cee540>.path
+FAILED tests/test_installer_sources.py::test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate[True-ready] - assert 1 == 0
+FAILED tests/test_installer_sources.py::test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate[True-busy] - AssertionError: assert 'staged' == 'complete'
+  
+  - complete
+  + staged
+FAILED tests/test_installer_sources.py::test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate[True-rollback] - AssertionError: assert 'staged' == 'rolled_back'
+  
+  - rolled_back
+  + staged
+FAILED tests/test_installer_sources.py::test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate[False-ready] - assert 1 == 0
+FAILED tests/test_installer_sources.py::test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate[False-busy] - AssertionError: assert 'staged' == 'complete'
+  
+  - complete
+  + staged
+FAILED tests/test_installer_sources.py::test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate[False-rollback] - AssertionError: assert 'staged' == 'rolled_back'
+  
+  - rolled_back
+  + staged
+FAILED tests/test_installer_update_reconcile.py::test_h4_helper_serializes_held_busy_refusal_and_exits_nonzero - Failed: DID NOT RAISE <class 'SystemExit'>
+26 failed, 1563 passed, 11 skipped, 94 deselected in 245.53s (0:04:05)
