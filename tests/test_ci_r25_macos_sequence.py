@@ -100,3 +100,18 @@ def test_actual_npm_version_with_isolated_distinct_configs(tmp_path):
     result = subprocess.run(["npm", "--version"], env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip()
+
+
+def test_find_early_run_root_from_trace_without_trusting_other_paths(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(r25, "UID", os.getuid())
+    parent = tmp_path / "r25-option-b-runs"
+    parent.mkdir()
+    root = parent / "run.ABC123xy"
+    root.mkdir()
+    trace = f"+ run_root={root}\n+ test 40700 = 700\n"
+    assert r25.find_run_root(trace, tmp_path) == root
+    assert r25.find_run_root(trace + "+ run_root=/tmp/other\n", tmp_path) is None
+    root.rmdir()
+    root.symlink_to(tmp_path, target_is_directory=True)
+    assert r25.find_run_root(trace, tmp_path) is None

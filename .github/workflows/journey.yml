@@ -160,6 +160,24 @@ jobs:
                       "BUN_INSTALL_CACHE_DIR": str(cache / "bun")}
 
 
+          def find_run_root(text, home):
+              # The sequence installs its cleanup trap only after creating run_root.
+              # Bash tracing can recover that early root if a pre-trap check fails.
+              declared = re.findall(r"(?m)^R25_RUN_ROOT=(.+)$", text)
+              traced = re.findall(r"(?m)^\+ run_root=(.+)$", text)
+              candidates = set(declared + traced)
+              if len(candidates) != 1:
+                  return None
+              candidate = Path(candidates.pop())
+              parent = home / "r25-option-b-runs"
+              if (candidate.parent == parent and re.fullmatch(r"run\.[A-Za-z0-9]+", candidate.name)
+                      and not parent.is_symlink() and parent.is_dir() and parent.stat().st_uid == UID
+                      and not candidate.is_symlink() and candidate.is_dir() and candidate.stat().st_uid == UID
+                      and candidate.resolve().parent == parent.resolve()):
+                  return candidate
+              return None
+
+
           def execute():
               temp = Path(os.environ["RUNNER_TEMP"])
               output = temp / "r25-artifact"
@@ -188,7 +206,7 @@ jobs:
                       status["aborted_low_disk"] = True
                       raise RuntimeError("Disk fell below the abort threshold before the sequence")
                   with supervisor.open("ab") as log:
-                      child = subprocess.Popen(["bash", ".github/venue/r25-option-b-macos-sequence.sh"], cwd=clone, env=env,
+                      child = subprocess.Popen(["bash", "-x", ".github/venue/r25-option-b-macos-sequence.sh"], cwd=clone, env=env,
                                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                       while child.poll() is None:
                           if shutil.disk_usage(home).free < 3_000_000_000:
@@ -202,16 +220,11 @@ jobs:
                           time.sleep(5)
                       status["command_exit"] = child.returncode
                   text = supervisor.read_text(encoding="utf-8", errors="replace")
-                  matches = re.findall(r"(?m)^R25_RUN_ROOT=(.+)$", text)
-                  if len(matches) == 1:
-                      candidate = Path(matches[0])
-                      parent = home / "r25-option-b-runs"
-                      if (candidate.parent == parent and re.fullmatch(r"run\.[A-Za-z0-9]+", candidate.name)
-                              and not parent.is_symlink() and parent.stat().st_uid == UID
-                              and not candidate.is_symlink() and candidate.is_dir() and candidate.stat().st_uid == UID
-                              and candidate.resolve().parent == parent.resolve()):
-                          run_root = candidate
-                          status["run_root"] = "~/r25-option-b-runs/" + candidate.name
+                  run_root = find_run_root(text, home)
+                  if run_root is not None:
+                      status["run_root"] = "~/r25-option-b-runs/" + run_root.name
+                  if child.returncode and re.search(r"(?m)^\+ test 40700 = 700$", text):
+                      status["first_error"] = "Pinned sequence line 23 compares stat mode 40700 to 700"
                   status["status"] = "complete" if child.returncode == 0 else "failed"
               except Exception as exc:
                   status["reason"] = str(exc) if type(exc) is RuntimeError else "System or data error"
