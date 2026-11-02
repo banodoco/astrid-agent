@@ -19,17 +19,17 @@ from scripts import pinokio_linux_mode_actions as mode_actions
 def test_materializer_pins_current_tuple_producer_and_native_engine():
     assert materializer.PUBLISHED_CANDIDATE == provider.LIVE_CANDIDATE
     assert materializer.PUBLISHED_CANDIDATE == {
-        "app": "933c53a6fb1a11e5f8a01335d6252016d703beec",
+        "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
         "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
         "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
         "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
         "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
     }
-    assert provider.LIVE_PRODUCER_REF == "d6aa33bf125ffdabed9e397fb1aea319b8a9badb"
+    assert provider.LIVE_PRODUCER_REF == "13cb31104c8aae655d0ee04efdb9537aa111e340"
     assert materializer.PINOKIOD_REF == "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
     assert materializer.PTERM_REF == "5be43718701c448b43daf0ce51d8935f170065bb"
     assert materializer.TASK_DURATION_SECONDS == 300
-    assert mode_actions.MODE_PRODUCER_REF == "0d28295a6adfdb08fd3adf56f85bae07c68b0c6e"
+    assert mode_actions.MODE_PRODUCER_REF == "13cb31104c8aae655d0ee04efdb9537aa111e340"
 
 
 def test_pterm_and_documented_route_arguments_are_exact(tmp_path):
@@ -270,7 +270,7 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "scripts/ci_journey_r24_materializer.py" in raw
     assert "evidence/r24-live/provider-export" in raw
     assert "evidence/r24-live/hosted-binding.json" in raw
-    assert "d6aa33bf125ffdabed9e397fb1aea319b8a9badb" in raw
+    assert "13cb31104c8aae655d0ee04efdb9537aa111e340" in raw
     assert "r25-linux-mode-actions" in raw
     assert mode_actions.MODE_PRODUCER_REF in raw
     assert "REQUESTED_MODE" in raw

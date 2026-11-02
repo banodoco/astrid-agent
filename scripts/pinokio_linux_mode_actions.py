@@ -26,7 +26,7 @@ except ImportError:
 SCHEMA = "astrid.r25.linux-mode-actions-seam.v1"
 PROVIDER_SCHEMA = "astrid.r25.linux-mode-actions-request.v1"
 RESULT_SCHEMA = "astrid.r25.linux-mode-actions-result.v1"
-MODE_PRODUCER_REF = "0d28295a6adfdb08fd3adf56f85bae07c68b0c6e"
+MODE_PRODUCER_REF = "13cb31104c8aae655d0ee04efdb9537aa111e340"
 MODE_PRODUCER_FILES = {
     "pinokio/providers/r25-linux-mode-actions.py":
         "290ebcf703e3d2d662bc05a51d6f86a1268a1c1ad371e6d6dd49f14dd2ebdf26",

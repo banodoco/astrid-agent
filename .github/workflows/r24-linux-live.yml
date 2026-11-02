@@ -21,7 +21,7 @@ on:
         type: string
       mode_producer_ref:
         required: false
-        default: 0d28295a6adfdb08fd3adf56f85bae07c68b0c6e
+        default: 13cb31104c8aae655d0ee04efdb9537aa111e340
         type: string
   workflow_dispatch:
     inputs:
@@ -32,7 +32,7 @@ on:
       producer_ref:
         description: Immutable audited R-24 producer commit
         required: true
-        default: d6aa33bf125ffdabed9e397fb1aea319b8a9badb
+        default: 13cb31104c8aae655d0ee04efdb9537aa111e340
         type: string
       confirmation:
         description: Required literal R24_LIVE_CURRENT_TUPLE
@@ -50,7 +50,7 @@ on:
       mode_producer_ref:
         description: Immutable audited R-25 mode-action producer commit
         required: true
-        default: 0d28295a6adfdb08fd3adf56f85bae07c68b0c6e
+        default: 13cb31104c8aae655d0ee04efdb9537aa111e340
         type: string
 
 permissions:
@@ -67,10 +67,10 @@ jobs:
     env:
       R24_CHECKOUTS: ${{ github.workspace }}
       R24_REQUESTED_RUNNER_REF: ${{ github.event_name == 'push' && github.sha || inputs.runner_ref }}
-      R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && 'd6aa33bf125ffdabed9e397fb1aea319b8a9badb' || inputs.producer_ref }}
+      R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && '13cb31104c8aae655d0ee04efdb9537aa111e340' || inputs.producer_ref }}
       R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_CURRENT_TUPLE' || inputs.confirmation }}
       R25_REQUESTED_MODE: ${{ github.event_name == 'push' && 'r24-only' || inputs.mode }}
-      R25_REQUESTED_MODE_PRODUCER_REF: ${{ github.event_name == 'push' && '0d28295a6adfdb08fd3adf56f85bae07c68b0c6e' || inputs.mode_producer_ref }}
+      R25_REQUESTED_MODE_PRODUCER_REF: ${{ github.event_name == 'push' && '13cb31104c8aae655d0ee04efdb9537aa111e340' || inputs.mode_producer_ref }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Checkout immutable candidate runner
@@ -96,7 +96,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
-          ref: 933c53a6fb1a11e5f8a01335d6252016d703beec
+          ref: 79f7e5397c044c4c97dc7e97b20ad96f787e5247
           path: app
           fetch-depth: 1
           persist-credentials: false
