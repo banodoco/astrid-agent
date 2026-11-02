@@ -131,14 +131,144 @@ def test_install_candidate_persists_bounded_identity_inputs(tmp_path, monkeypatc
             manifest=manifest, home=tmp_path, env={}, evidence=evidence, receipt=receipt,
         )
     diagnostic = json.loads((evidence / "installed-identity.json").read_text())
-    assert diagnostic["current"]["text"] == "v1\n"
-    assert diagnostic["install_json"]["json"]["owner"] == "haus.astrid.runtime"
-    assert diagnostic["version_json"]["json"]["root"] == str(tmp_path / "wrong")
+    assert diagnostic["first_false_predicate"] == (
+        "declared root resolves")
+    assert diagnostic["current"]["valid_selection"] is True
+    assert diagnostic["current"]["sha256"] == hashlib.sha256(b"v1\n").hexdigest()
+    assert diagnostic["install_json"]["owner_matches"] is True
+    assert diagnostic["install_json"]["managed_by_matches"] is True
+    assert diagnostic["version_json"]["identity_matches"] is True
+    assert diagnostic["root"]["resolves"] is False
     assert diagnostic["installed_manifest"]["sha256"] == diagnostic["candidate_manifest"]["sha256"]
     assert receipt["installed_identity_diagnostic"]["sha256"] == hashlib.sha256(
         (evidence / "installed-identity.json").read_bytes()
     ).hexdigest()
 
+
+
+@pytest.mark.parametrize(
+    ("install", "current", "predicate"),
+    [
+        ({"owner": "wrong", "managed_by": "wrong"}, "bad selection",
+         "install.owner == haus.astrid.runtime"),
+        ({"owner": "haus.astrid.runtime", "managed_by": "wrong"}, "bad selection",
+         "install.managed_by == pinokio"),
+        ({"owner": "haus.astrid.runtime", "managed_by": "pinokio"}, "bad selection",
+         "current matches the selection format"),
+    ],
+)
+def test_identity_diagnostic_reports_first_failed_predicate(tmp_path, monkeypatch,
+                                                            install, current, predicate):
+    monkeypatch.setattr(materializer, "_run", lambda *args, **kwargs: None)
+    backend = tmp_path / "resource/app/astrid"
+    backend.mkdir(parents=True)
+    install["data_root"] = str(tmp_path)
+    (backend / "install.json").write_text(json.dumps(install))
+    (backend / "current").write_text(current)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    with pytest.raises(materializer.MaterializerError):
+        materializer._install_candidate(
+            node=tmp_path / "node", pterm=tmp_path / "pterm", resource=tmp_path / "resource",
+            manifest=tmp_path / "missing", home=tmp_path, env={}, evidence=evidence, receipt={},
+        )
+    diagnostic = json.loads((evidence / "installed-identity.json").read_text())
+    assert diagnostic["first_false_predicate"] == predicate
+
+
+def test_identity_diagnostic_redacts_values_and_bounds_input_and_output(tmp_path):
+    secret = "secret-token-should-never-appear"
+    backend = tmp_path / "backend"
+    version = backend / "versions" / secret
+    version.mkdir(parents=True)
+    (backend / "install.json").write_text(json.dumps({
+        "owner": secret, "managed_by": secret, "data_root": str(tmp_path / secret),
+        "credentials": secret, "other": secret,
+    }))
+    (backend / "current").write_text(secret)
+    (version / "version.json").write_text(json.dumps({
+        "root": str(tmp_path / secret), "python": str(tmp_path / secret),
+        "profile": str(tmp_path / secret), "identity": {"token": secret}, "env": {"TOKEN": secret},
+    }))
+    (version / "manifest.json").write_text(json.dumps({"token": secret}))
+    candidate = tmp_path / "candidate.json"
+    candidate.write_bytes(b"x" * (materializer._DIAGNOSTIC_LIMIT + 1))
+    diagnostic = materializer._installed_identity_diagnostic(backend, candidate, "known predicate")
+    encoded = json.dumps(diagnostic)
+    assert secret not in encoded
+    assert str(tmp_path) not in encoded
+    assert len(encoded) < 4096
+    assert diagnostic["candidate_manifest"]["bounded"] is False
+    assert "sha256" not in diagnostic["candidate_manifest"]
+    assert diagnostic["install_json"]["owner_matches"] is False
+    assert diagnostic["version_json"]["identity_matches"] is False
+    assert diagnostic["installed_manifest"]["sha256"] == hashlib.sha256(
+        (version / "manifest.json").read_bytes()).hexdigest()
+
+
+
+def test_successful_install_does_not_emit_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setattr(materializer, "_run", lambda *args, **kwargs: None)
+    expected = ({"python": "selected"}, tmp_path)
+    monkeypatch.setattr(materializer, "_installed", lambda *args: expected)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    receipt = {}
+    assert materializer._install_candidate(
+        node=tmp_path / "node", pterm=tmp_path / "pterm", resource=tmp_path / "resource",
+        manifest=tmp_path / "candidate", home=tmp_path, env={}, evidence=evidence, receipt=receipt,
+    ) == expected
+    assert not (evidence / "installed-identity.json").exists()
+    assert "installed_identity_diagnostic" not in receipt
+
+
+def test_identity_diagnostic_error_preserves_original_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(materializer, "_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(materializer, "_installed_identity_diagnostic",
+                        lambda *args: (_ for _ in ()).throw(OSError("secret")))
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    receipt = {}
+    with pytest.raises(materializer.MaterializerError, match="missing regular file"):
+        materializer._install_candidate(
+            node=tmp_path / "node", pterm=tmp_path / "pterm", resource=tmp_path / "resource",
+            manifest=tmp_path / "candidate", home=tmp_path, env={}, evidence=evidence, receipt=receipt,
+        )
+    assert receipt["installed_identity_diagnostic"] == {
+        "first_false_predicate": "install.json is a readable regular JSON file", "error": "OSError",
+    }
+
+def test_identity_diagnostic_does_not_read_selected_symlink(tmp_path):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "version.json").write_text('{"secret": "hidden"}')
+    (backend / "current").write_text("v1")
+    (backend / "versions").mkdir()
+    (backend / "versions/v1").symlink_to(outside, target_is_directory=True)
+    diagnostic = materializer._installed_identity_diagnostic(backend, tmp_path / "missing", "test")
+    assert diagnostic["version_root"]["is_symlink"] is True
+    assert "version_json" not in diagnostic
+
+
+def test_identity_diagnostic_captures_invalid_json_without_changing_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(materializer, "_run", lambda *args, **kwargs: None)
+    backend = tmp_path / "resource/app/astrid"
+    backend.mkdir(parents=True)
+    (backend / "install.json").write_text('{"token": "secret",')
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    with pytest.raises(json.JSONDecodeError):
+        materializer._install_candidate(
+            node=tmp_path / "node", pterm=tmp_path / "pterm", resource=tmp_path / "resource",
+            manifest=tmp_path / "missing", home=tmp_path, env={}, evidence=evidence, receipt={},
+        )
+    content = (evidence / "installed-identity.json").read_text()
+    assert "secret" not in content
+    diagnostic = json.loads(content)
+    assert diagnostic["first_false_predicate"] == "install.json is a readable regular JSON file"
+    assert diagnostic["install_json"]["parse_error"] is True
 
 def test_installed_mode_receipt_is_parsed_and_bound_without_deriving_from_route(tmp_path):
     resource = tmp_path / "resource"

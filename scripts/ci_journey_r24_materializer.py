@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -40,7 +41,9 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class MaterializerError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, predicate: str | None = None):
+        super().__init__(message)
+        self.predicate = predicate
 
 
 def _sha(path: Path) -> str:
@@ -283,21 +286,28 @@ def _install_candidate(*, node: Path, pterm: Path, resource: Path, manifest: Pat
          env=env, cwd=home, timeout=3600)
     try:
         return _installed(resource / "app/astrid", manifest)
-    except MaterializerError as exc:
+    except (MaterializerError, OSError, ValueError, TypeError, AttributeError) as exc:
         diagnostic_path = evidence / "installed-identity.json"
+        predicate = getattr(exc, "predicate", None) or "identity check could not be evaluated"
         try:
             _write(
                 diagnostic_path,
-                _installed_identity_diagnostic(resource / "app/astrid", manifest),
+                _installed_identity_diagnostic(
+                    resource / "app/astrid", manifest,
+                    predicate,
+                ),
             )
             receipt["installed_identity_diagnostic"] = {
                 "path": str(diagnostic_path),
                 "sha256": _sha(diagnostic_path),
             }
-        except (OSError, ValueError, TypeError) as diagnostic_exc:
+        except (OSError, ValueError, TypeError, RecursionError) as diagnostic_exc:
             receipt["installed_identity_diagnostic"] = {
+                "first_false_predicate": predicate,
                 "error": type(diagnostic_exc).__name__,
             }
+        if not isinstance(exc, MaterializerError):
+            raise
         raise MaterializerError(
             "pinokio-install transport completed without a valid installed candidate: "
             f"{exc}"
@@ -395,125 +405,195 @@ def build_config(*, checkouts: dict[str, Path], pterm: Path, pinokiod: Path,
     }
 
 
-def _diagnostic_file(path: Path, *, content: str | None = None) -> dict[str, Any]:
-    """Describe a bounded installer identity file without following symlinks."""
+# Only fixed fields and bounded bytes are examined. File and path values may
+# contain credentials, so the artifact contains no input strings or path names.
+_DIAGNOSTIC_LIMIT = 64 * 1024
+
+
+def _diagnostic_file(path: Path, *, parse: bool = False) -> tuple[dict[str, Any], Any]:
     observed: dict[str, Any] = {
-        "path": str(path),
         "is_symlink": path.is_symlink(),
         "is_file": path.is_file() and not path.is_symlink(),
     }
     if not observed["is_file"]:
-        return observed
-    size = path.stat().st_size
-    observed["size"] = size
-    if size > 1024 * 1024:
-        observed["bounded"] = False
-        return observed
-    observed.update(bounded=True, sha256=_sha(path))
-    raw = path.read_bytes()
-    if content == "json":
+        return observed, None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                observed["read_error"] = True
+                return observed, None
+            raw = stream.read(_DIAGNOSTIC_LIMIT + 1)
+        observed["size"] = info.st_size
+    except OSError:
+        observed["read_error"] = True
+        return observed, None
+    observed["bounded"] = len(raw) <= _DIAGNOSTIC_LIMIT
+    if not observed["bounded"]:
+        return observed, None
+    observed["sha256"] = hashlib.sha256(raw).hexdigest()
+    if parse:
         try:
-            observed["json"] = json.loads(raw)
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            observed["parse_error"] = type(exc).__name__
-    elif content == "text":
-        try:
-            observed["text"] = raw.decode("utf-8")
-        except UnicodeError as exc:
-            observed["parse_error"] = type(exc).__name__
-    return observed
+            return observed, json.loads(raw)
+        except (UnicodeError, ValueError, RecursionError):
+            observed["parse_error"] = True
+    return observed, raw if not parse else None
 
 
 def _diagnostic_path(path: Path) -> dict[str, Any]:
     observed: dict[str, Any] = {
-        "path": str(path),
         "is_absolute": path.is_absolute(),
         "is_symlink": path.is_symlink(),
         "is_file": path.is_file(),
         "is_dir": path.is_dir(),
     }
     try:
-        observed["resolved"] = str(path.resolve(strict=True))
-    except OSError as exc:
-        observed["resolve_error"] = type(exc).__name__
+        path.resolve(strict=True)
+        observed["resolves"] = True
+    except (OSError, ValueError, RuntimeError):
+        observed["resolves"] = False
     return observed
 
 
-def _installed_identity_diagnostic(backend: Path, candidate_manifest: Path) -> dict[str, Any]:
-    """Capture the exact post-install identity inputs used by ``_installed``."""
-    install_path = backend / "install.json"
-    current_path = backend / "current"
+def _installed_identity_diagnostic(
+    backend: Path, candidate_manifest: Path, predicate: str,
+) -> dict[str, Any]:
+    """Capture selected identity state without persisting arbitrary input values."""
+    install_file, install = _diagnostic_file(backend / "install.json", parse=True)
+    current_file, current_raw = _diagnostic_file(backend / "current")
+    candidate_file, _ = _diagnostic_file(candidate_manifest)
     result: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "first_false_predicate": predicate,
         "backend": _diagnostic_path(backend),
-        "install_json": _diagnostic_file(install_path, content="json"),
-        "current": _diagnostic_file(current_path, content="text"),
-        "candidate_manifest": _diagnostic_file(candidate_manifest, content="json"),
+        "install_json": install_file,
+        "current": current_file,
+        "candidate_manifest": candidate_file,
     }
-    current = result["current"].get("text", "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", current):
+    if isinstance(install, dict):
+        install_file["owner_matches"] = install.get("owner") == "haus.astrid.runtime"
+        install_file["managed_by_matches"] = install.get("managed_by") == "pinokio"
+        data_root = install.get("data_root")
+        if isinstance(data_root, str) and len(data_root) <= 4096:
+            result["data_root"] = _diagnostic_path(Path(data_root))
+    try:
+        current = current_raw.decode("utf-8").strip() if current_raw is not None else ""
+    except UnicodeError:
+        current = ""
+    current_file["valid_selection"] = bool(
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", current))
+    if not current_file["valid_selection"]:
         return result
     version_root = backend / "versions" / current
-    version_json = _diagnostic_file(version_root / "version.json", content="json")
-    result.update(
-        version_root=_diagnostic_path(version_root),
-        version_json=version_json,
-        installed_manifest=_diagnostic_file(version_root / "manifest.json", content="json"),
-    )
-    version = version_json.get("json")
+    result["version_root"] = _diagnostic_path(version_root)
+    # Do not follow an invalid selected version directory into arbitrary trees.
+    if (backend.is_symlink() or (backend / "versions").is_symlink()
+            or version_root.is_symlink() or not version_root.is_dir()):
+        return result
+    version_file, version = _diagnostic_file(version_root / "version.json", parse=True)
+    result["version_json"] = version_file
+    result["installed_manifest"], _ = _diagnostic_file(version_root / "manifest.json")
     if isinstance(version, dict):
-        result["declared_root"] = _diagnostic_path(Path(str(version.get("root", ""))))
-        result["python"] = _diagnostic_path(Path(str(version.get("python", ""))))
-        result["profile"] = _diagnostic_path(Path(str(version.get("profile", ""))))
-        result["identity"] = version.get("identity")
+        version_file["identity_matches"] = version.get("identity") == {
+            "release": 1, "managed_by": "pinokio"}
+        identity = version.get("identity")
+        if isinstance(identity, dict):
+            version_file["release_matches"] = identity.get("release") == 1
+            version_file["managed_by_matches"] = identity.get("managed_by") == "pinokio"
+        for key in ("root", "python", "profile"):
+            value = version.get(key)
+            if isinstance(value, str) and len(value) <= 4096:
+                selected_path = Path(value)
+                result[key] = _diagnostic_path(selected_path)
+                if key == "python":
+                    result["python_parent"] = _diagnostic_path(selected_path.parent)
+                try:
+                    resolved = selected_path.resolve(strict=True)
+                    selected_root = version_root.resolve(strict=True)
+                    result[key]["equals_version_root"] = resolved == selected_root
+                    result[key]["inside_version_root"] = selected_root in resolved.parents
+                except (OSError, ValueError, RuntimeError):
+                    pass
     return result
 
 
+def _identity_read(path: Path, label: str) -> Any:
+    try:
+        return _read(path)
+    except (MaterializerError, OSError, ValueError) as exc:
+        exc.predicate = label + " is a readable regular JSON file"
+        raise
+
+
 def _installed(backend: Path, candidate_manifest: Path) -> tuple[dict[str, Any], Path]:
-    install = _read(backend / "install.json")
+    install = _identity_read(backend / "install.json", "install.json")
     if (install.get("owner") != "haus.astrid.runtime"
             or install.get("managed_by") != "pinokio"):
-        raise MaterializerError("genuine Pinokio install marker unavailable")
+        predicate = ("install.owner == haus.astrid.runtime"
+                     if install.get("owner") != "haus.astrid.runtime"
+                     else "install.managed_by == pinokio")
+        raise MaterializerError("genuine Pinokio install marker unavailable", predicate=predicate)
     selected_data = Path(str(install.get("data_root", "")))
     if (not selected_data.is_absolute() or selected_data.is_symlink()
             or not selected_data.is_dir()):
-        raise MaterializerError("installed data root mismatch")
+        raise MaterializerError(
+            "installed data root mismatch",
+            predicate="data_root is absolute, nonsymlink, and a directory")
     data = selected_data.resolve(strict=True)
     current_path = backend / "current"
     if current_path.is_symlink() or not current_path.is_file():
-        raise MaterializerError("installed current selection mismatch")
-    current = current_path.read_text(encoding="utf-8").strip()
+        raise MaterializerError("installed current selection mismatch",
+                                predicate="current is a nonsymlink regular file")
+    try:
+        current = current_path.read_text(encoding="utf-8").strip()
+    except UnicodeError as exc:
+        exc.predicate = "current is valid UTF-8"
+        raise
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", current):
-        raise MaterializerError("installed current selection mismatch")
+        raise MaterializerError("installed current selection mismatch",
+                                predicate="current matches the selection format")
     version_path = backend / "versions" / current
     if version_path.is_symlink() or not version_path.is_dir():
-        raise MaterializerError("installed version directory mismatch")
+        raise MaterializerError("installed version directory mismatch",
+                                predicate="selected version is a nonsymlink directory")
     version_root = version_path.resolve(strict=True)
-    version = _read(version_root / "version.json")
+    version = _identity_read(version_root / "version.json", "selected version.json")
     python = Path(str(version.get("python", "")))
     profile = Path(str(version.get("profile", "")))
     declared_root = Path(str(version.get("root", "")))
     try:
         declared_root_resolved = declared_root.resolve(strict=True)
     except OSError as exc:
-        raise MaterializerError("installed version root mismatch") from exc
+        raise MaterializerError("installed version root mismatch",
+                                predicate="declared root resolves") from exc
     if not declared_root.is_absolute() or declared_root_resolved != version_root:
-        raise MaterializerError("installed version root mismatch")
+        raise MaterializerError("installed version root mismatch",
+                                predicate="declared root is absolute and equals selected version root")
     if version.get("identity") != {"release": 1, "managed_by": "pinokio"}:
-        raise MaterializerError("installed version identity mismatch")
+        raise MaterializerError("installed version identity mismatch",
+                                predicate="version.identity == {release: 1, managed_by: pinokio}")
     if not python.is_absolute() or not python.is_file():
-        raise MaterializerError("installed Python interpreter mismatch")
+        raise MaterializerError("installed Python interpreter mismatch",
+                                predicate="python is absolute and a file")
     if python.parent.is_symlink() or not python.parent.is_dir():
-        raise MaterializerError("installed Python parent mismatch")
+        raise MaterializerError("installed Python parent mismatch",
+                                predicate="python parent is a nonsymlink directory")
     if version_root not in python.parent.resolve(strict=True).parents:
-        raise MaterializerError("installed Python escapes version root")
+        raise MaterializerError("installed Python escapes version root",
+                                predicate="python parent resolves below selected version root")
     if profile.is_symlink() or not profile.is_absolute() or not profile.is_file():
-        raise MaterializerError("installed profile mismatch")
+        raise MaterializerError("installed profile mismatch",
+                                predicate="profile is absolute, nonsymlink, and a file")
     if version_root not in profile.resolve(strict=True).parents:
-        raise MaterializerError("installed profile escapes version root")
-    if _read(version_root / "manifest.json") != _read(candidate_manifest):
+        raise MaterializerError("installed profile escapes version root",
+                                predicate="profile resolves below selected version root")
+    if (_identity_read(version_root / "manifest.json", "selected manifest.json")
+            != _identity_read(candidate_manifest, "candidate manifest.json")):
         raise MaterializerError(
-            "installed candidate identity mismatch: manifest differs from candidate"
+            "installed candidate identity mismatch: manifest differs from candidate",
+            predicate="selected manifest equals candidate manifest"
         )
     # Keep the lexical venv interpreter path: on POSIX the genuine installer may
     # create it as a symlink, and resolving it can escape the venv semantics.
