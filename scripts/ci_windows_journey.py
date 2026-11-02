@@ -58,10 +58,8 @@ _PACK_HOST_SECRET_TEXT = re.compile(
 )
 _PACK_HOST_BEARER = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _PACK_HOST_URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
-_PACK_HOST_PRIVATE_KEY = re.compile(
-    r"-----BEGIN [^-\r\n]{0,80} PRIVATE KEY-----.*?-----END [^-\r\n]{0,80} PRIVATE KEY-----",
-    re.DOTALL,
-)
+_PACK_HOST_PRIVATE_KEY_BEGIN = re.compile(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
+_PACK_HOST_PRIVATE_KEY_END = re.compile(r"^-----END [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
 
 
 def _powershell_quote(value):
@@ -405,9 +403,32 @@ def health():
     return value
 
 
+def _redact_pack_host_private_key_blocks(value):
+    """Drop complete keys and a tail that starts inside an unbounded key."""
+    output = []
+    inside = False
+    safe_length = 0
+    for line in value.splitlines(keepends=True):
+        if _PACK_HOST_PRIVATE_KEY_BEGIN.match(line):
+            if not inside:
+                output.append("<redacted private key>\n")
+            inside = True
+        elif _PACK_HOST_PRIVATE_KEY_END.match(line):
+            if inside:
+                inside = False
+                safe_length = len(output)
+            else:
+                output = output[:safe_length]
+                output.append("<redacted truncated private key>\n")
+                safe_length = len(output)
+        elif not inside:
+            output.append(line)
+    return "".join(output)
+
+
 def _redact_pack_host_text(value):
     """Keep diagnostics useful without retaining credential material."""
-    value = _PACK_HOST_PRIVATE_KEY.sub("<redacted-private-key>", value)
+    value = _redact_pack_host_private_key_blocks(value)
     value = _PACK_HOST_URL_CREDENTIALS.sub(r"\1<redacted>@", value)
     value = _PACK_HOST_BEARER.sub("Bearer <redacted>", value)
     value = _PACK_HOST_SECRET_TEXT.sub(r"\1<redacted>", value)

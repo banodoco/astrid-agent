@@ -283,7 +283,8 @@ def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
     (logs / "service-pack-host.log").write_text(
         "x" * (journey.PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES + 10) +
-        "\napi_key=not-for-receipt\nAuthorization: Bearer also-not-for-receipt\n",
+        "\napi_key=not-for-receipt\nAuthorization: Bearer also-not-for-receipt\n"
+        "-----BEGIN PRIVATE KEY-----\nnot-for-receipt-key\n-----END PRIVATE KEY-----\n",
         encoding="utf-8",
     )
     # A directory must not be followed or silently treated as an absent log.
@@ -320,6 +321,10 @@ def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(
     assert "not-for-receipt" not in copied
     assert "api_key=<redacted>" in copied
     assert "Authorization: <redacted>" in copied
+    assert "<redacted private key>" in copied
+    assert journey._redact_pack_host_text("not-for-receipt\n-----END PRIVATE KEY-----\n") == (
+        "<redacted truncated private key>\n"
+    )
 
 
 def test_first_failed_host_poll_records_unavailable_health_and_absent_diagnostics(tmp_path, monkeypatch):
