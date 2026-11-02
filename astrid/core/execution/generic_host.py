@@ -11109,14 +11109,25 @@ class GenericPackHost:
                     else:
                         operation, args, kwargs = terminal["publication_call"]
                         try:
-                            response = self._handoff_settlement_call(operation, *args, **kwargs)
+                            # This owner may replay only its frozen request while
+                            # the ordinary handoff gate remains closed to new work.
+                            with self._handoff_condition:
+                                self._handoff_pending_settlements += 1
+                            try:
+                                response = operation(*args, **kwargs)
+                            finally:
+                                with self._handoff_condition:
+                                    self._handoff_pending_settlements -= 1
+                                    self._handoff_condition.notify_all()
                         except TerminalPublicationRejected as exc:
                             reject_publication(exc)
                         else:
-                            terminal.update(recorded=True, completion=response,
-                                            status=terminal.get("pending_status", "succeeded"),
-                                            settled=terminal.get("pending_status") == "succeeded",
-                                            settlement=response)
+                            with completion_lock:
+                                terminal.update(recorded=True, completion=response,
+                                                completion_state="acknowledged",
+                                                status=terminal.get("pending_status", "succeeded"),
+                                                settled=terminal.get("pending_status") == "succeeded",
+                                                settlement=response)
                 except Exception as exc:  # noqa: BLE001 - this owner must survive Runtime outages
                     terminal["reporting_error"] = exc
                 if not terminal.get("recorded"):
