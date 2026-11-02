@@ -1,0 +1,9 @@
+{
+  "native_job_id": "wan-native-job-parity-1",
+  "birth": "birth-parity-fixture",
+  "process_id": 4242,
+  "returncode": 0,
+  "generated_files": ["frame_000.mp4"],
+  "output_bytes_text": "one-frame-fake-mp4",
+  "inputs": {"prompt": "parity fixture frame", "model": "wan-2.2"}
+}
