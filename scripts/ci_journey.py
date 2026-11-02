@@ -417,6 +417,8 @@ def runner_identity() -> dict:
     label = os.environ.get("ASTRID_CI_EXPECTED_RUNNER") or "local"
     raw = {key: os.environ[key] for key in ("RUNNER_OS", "ImageOS", "ImageVersion", "RUNNER_ENVIRONMENT", "RUNNER_NAME")
            if os.environ.get(key)}
+    if label == "astrid-mac":
+        raw["door_port"] = os.environ.get("ASTRID_RUNTIME_DOOR_PORT", "")
     return {"runner_image": label,
             "runner_provenance": {"observed_os_family": sys.platform, **raw}}
 
@@ -429,6 +431,9 @@ def assert_runner_identity(identity: dict) -> None:
                 or provenance.get("RUNNER_ENVIRONMENT") != "self-hosted"
                 or not provenance.get("RUNNER_NAME")):
             raise RuntimeError("astrid-mac requires an observed macOS self-hosted runner")
+        raw_port = str(provenance.get("door_port", ""))
+        if not raw_port.isdecimal() or not 1024 <= int(raw_port) <= 65535 or int(raw_port) == 17340:
+            raise RuntimeError("astrid-mac requires a non-default unprivileged door port")
     elif label != "local":
         if label not in RUNNER_FAMILY:
             raise ValueError(f"Unknown controlled runner label: {label}")
@@ -1186,7 +1191,12 @@ def installed_cli(version: dict, argv: list[str], evidence: Path, name: str,
 
 
 def healthy(data: Path) -> dict:
-    request = urllib.request.Request(HEALTH_URL, headers={"Origin": "https://astrid.haus"})
+    url = HEALTH_URL
+    if os.environ.get("ASTRID_CI_EXPECTED_RUNNER") == "astrid-mac":
+        identity = runner_identity()
+        assert_runner_identity(identity)
+        url = f"http://127.0.0.1:{identity['runner_provenance']['door_port']}/api/runtime/v1/health"
+    request = urllib.request.Request(url, headers={"Origin": "https://astrid.haus"})
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
         health = json.load(response)
     discovery = read_json(data / "runtime" / "discovery.json")
@@ -1194,6 +1204,18 @@ def healthy(data: Path) -> dict:
             health["runtime_instance_id"] != discovery.get("runtime_instance_id")):
         raise RuntimeError("Live Runtime health does not match selected discovery")
     return discovery
+
+
+def verify_smoke_door_port(version: dict) -> str | None:
+    """Require each installed generation to retain the dedicated smoke port."""
+    if os.environ.get("ASTRID_CI_EXPECTED_RUNNER") != "astrid-mac":
+        return None
+    identity = runner_identity()
+    assert_runner_identity(identity)
+    port = identity["runner_provenance"]["door_port"]
+    if str((version.get("env") or {}).get("ASTRID_RUNTIME_DOOR_PORT", "")) != port:
+        raise RuntimeError("Installed version did not retain the isolated smoke door port")
+    return port
 
 
 def _runtime_owner_command(command: str) -> bool:
@@ -1216,16 +1238,24 @@ def runtime_processes(data: Path) -> list[int]:
                 _runtime_owner_command(str(row.get("CommandLine") or ""))]
     # The installed prelude can be long and can contain newlines. Ask ps for
     # the full command, then keep continuation lines with their process.
-    output = subprocess.check_output(["ps", "-ww", "-axo", "pid=,command="], text=True)
-    records: list[tuple[int, str]] = []
+    smoke = os.environ.get("ASTRID_CI_EXPECTED_RUNNER") == "astrid-mac"
+    if smoke:
+        assert_runner_identity(runner_identity())
+    fields = "uid=,pid=,command=" if smoke else "pid=,command="
+    output = subprocess.check_output(["ps", "-ww", "-axo", fields], text=True)
+    records: list[tuple[int | None, int, str]] = []
     for line in output.splitlines():
-        match = re.match(r"^\s*(\d+)\s+(.*)$", line)
+        match = re.match(r"^\s*(\d+)\s+(\d+)\s+(.*)$" if smoke else r"^\s*(\d+)\s+(.*)$", line)
         if match:
-            records.append((int(match.group(1)), match.group(2)))
+            if smoke:
+                records.append((int(match.group(1)), int(match.group(2)), match.group(3)))
+            else:
+                records.append((None, int(match.group(1)), match.group(2)))
         elif records:
-            pid, command = records[-1]
-            records[-1] = (pid, command + "\n" + line)
-    return [pid for pid, command in records if _runtime_owner_command(command)]
+            uid, pid, command = records[-1]
+            records[-1] = (uid, pid, command + "\n" + line)
+    return [pid for uid, pid, command in records
+            if (not smoke or uid == os.getuid()) and _runtime_owner_command(command)]
 
 
 def assert_one_runtime(data: Path) -> None:

@@ -542,6 +542,9 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
             # Release 0 predates identity-bearing version records; only its
             # frozen manifest can attest the old release identity.
             raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
+        old_port = journey.verify_smoke_door_port(old)
+        if old_port is not None:
+            result["self_hosted_door_ports"] = {"release0": old_port}
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
         journey.assert_one_runtime(data)
@@ -573,6 +576,9 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         version_path, selected_data, version = journey.installation(root, data)
         if selected_data != old_data or version_path == old_path:
             raise RuntimeError("Release-1 update did not retain data and activate a new version")
+        new_port = journey.verify_smoke_door_port(version)
+        if new_port is not None:
+            result["self_hosted_door_ports"]["release1"] = new_port
         selected = selected_candidate(manifest, version, old_tuple)
         if installed_release(version) != 1:
             raise RuntimeError("Release-1 update did not select release 1")

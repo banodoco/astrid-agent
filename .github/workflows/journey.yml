@@ -418,6 +418,21 @@ jobs:
           ln -sf "$python" "$bin_dir/python"
           ln -sf "$python" "$bin_dir/python3"
           printf '%s\n' "$bin_dir" >> "$GITHUB_PATH"
+      - name: Select an isolated self-hosted smoke door port
+        if: matrix.runner == 'astrid-mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, socket
+          with socket.socket() as sock:
+              sock.bind(("127.0.0.1", 0))
+              port = sock.getsockname()[1]
+          if port == 17340:
+              raise SystemExit("Refusing the default Astrid door port for self-hosted smoke")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              print(f"ASTRID_RUNTIME_DOOR_PORT={port}", file=env)
+          PY
       # The driver itself is pinned to the reviewed workflow source.  Candidate
       # Agent is checked out separately so the receipt proves both identities.
       - name: Check out reviewed Agent receipt harness

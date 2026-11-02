@@ -1348,6 +1348,7 @@ def test_self_hosted_identity_requires_real_macos_runner(monkeypatch):
     monkeypatch.setenv("RUNNER_OS", "macOS")
     monkeypatch.setenv("RUNNER_ENVIRONMENT", "self-hosted")
     monkeypatch.setenv("RUNNER_NAME", "hannah-mac")
+    monkeypatch.setenv("ASTRID_RUNTIME_DOOR_PORT", "49152")
     journey.assert_runner_identity(journey.runner_identity())
     monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
     with pytest.raises(RuntimeError, match="self-hosted"):
@@ -1371,3 +1372,62 @@ def test_self_hosted_bootstraps_tools_before_pwsh_without_changing_hosted_setup(
     assert "/opt/homebrew/opt/python@3.11/bin/python3.11" in python_step
     assert '"$bin_dir/python"' in python_step and '"$bin_dir/python3"' in python_step
     assert "- uses: actions/setup-python@v5\n        if: matrix.runner != 'astrid-mac'" in journey_job
+
+
+def _self_hosted_smoke_env(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    for key, value in {"ASTRID_CI_EXPECTED_RUNNER": "astrid-mac", "RUNNER_OS": "macOS",
+                       "RUNNER_ENVIRONMENT": "self-hosted", "RUNNER_NAME": "hannah-mac",
+                       "ASTRID_RUNTIME_DOOR_PORT": "49152"}.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_self_hosted_census_counts_only_runner_uid_and_ignores_other_user(monkeypatch, tmp_path):
+    _self_hosted_smoke_env(monkeypatch)
+    monkeypatch.setattr(journey.os, "getuid", lambda: 503)
+    def ps(argv, **kwargs):
+        assert argv == ["ps", "-ww", "-axo", "uid=,pid=,command="]
+        return ("501 10 python -m runtime_protocol start --root /other\n"
+                "503 11 python -m runtime_protocol start --root /ours\n"
+                "503 12 python unrelated\n")
+    monkeypatch.setattr(journey.subprocess, "check_output", ps)
+    assert journey.runtime_processes(tmp_path) == [11]
+    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 11})
+    journey.assert_one_runtime(tmp_path)
+    # Cleanup must still see a runner-owned process; it cannot accept a stale owner.
+    assert journey.runtime_processes(tmp_path) != []
+
+
+def test_self_hosted_raced_door_port_cannot_impersonate_owned_runtime(monkeypatch, tmp_path):
+    _self_hosted_smoke_env(monkeypatch)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "discovery.json").write_text(json.dumps({"runtime_instance_id": "ours"}))
+    seen = []
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, *args): return b'{"status":"ok","runtime_instance_id":"other"}'
+    class Opener:
+        def open(self, request, timeout):
+            seen.append(request.full_url)
+            return Response()
+    monkeypatch.setattr(journey.urllib.request, "build_opener", lambda *args: Opener())
+    with pytest.raises(RuntimeError, match="does not match selected discovery"):
+        journey.healthy(tmp_path)
+    assert seen == ["http://127.0.0.1:49152/api/runtime/v1/health"]
+
+
+def test_self_hosted_requires_nondefault_port(monkeypatch):
+    _self_hosted_smoke_env(monkeypatch)
+    for port in ("17340", "0", "65536", "nonsense"):
+        monkeypatch.setenv("ASTRID_RUNTIME_DOOR_PORT", port)
+        with pytest.raises(RuntimeError, match="door port"):
+            journey.assert_runner_identity(journey.runner_identity())
+
+
+def test_self_hosted_installed_generations_must_retain_smoke_port(monkeypatch):
+    _self_hosted_smoke_env(monkeypatch)
+    assert journey.verify_smoke_door_port({"env": {"ASTRID_RUNTIME_DOOR_PORT": "49152"}}) == "49152"
+    with pytest.raises(RuntimeError, match="did not retain"):
+        journey.verify_smoke_door_port({"env": {"ASTRID_RUNTIME_DOOR_PORT": "17340"}})

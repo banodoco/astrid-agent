@@ -237,13 +237,20 @@ def _release1_row_errors(candidate, contract, row, *, self_hosted_smoke=False):
         if (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != "macOS"
                 or provenance.get("RUNNER_ENVIRONMENT") != "self-hosted"
                 or provenance.get("observed_os_family") != "darwin"
-                or not provenance.get("RUNNER_NAME")):
+                or not provenance.get("RUNNER_NAME")
+                or not str(provenance.get("door_port", "")).isdecimal()
+                or not 1024 <= int(provenance["door_port"]) <= 65535
+                or int(provenance["door_port"]) == 17340):
             errors.append(f"{job_id}: self-hosted runner provenance is missing or mismatched")
     elif (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != expected_os
             or provenance.get("ImageOS") != expected_image
             or not isinstance(provenance.get("ImageVersion"), str)
             or not provenance["ImageVersion"].strip()):
         errors.append(f"{job_id}: hosted runner provenance does not match the required matrix")
+    if self_hosted_smoke and (not isinstance(provenance, dict) or
+            row.get("self_hosted_door_ports") != {"release0": provenance.get("door_port"),
+                                                   "release1": provenance.get("door_port")}):
+        errors.append(f"{job_id}: both releases must retain the isolated door port")
     os_build = row.get("os_build")
     if not isinstance(os_build, str) or not os_build.startswith(expected_os + "-"):
         errors.append(f"{job_id}: OS build does not match the required matrix")

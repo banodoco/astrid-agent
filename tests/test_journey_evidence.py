@@ -239,9 +239,13 @@ def test_self_hosted_smoke_passes_own_validator_but_never_hosted_gate(tmp_path):
     row = json.loads(path.read_text())
     row.update(runner_image="astrid-mac", evidence_class="self-hosted-lifecycle",
                runner_provenance={"RUNNER_OS": "macOS", "RUNNER_ENVIRONMENT": "self-hosted",
-                                  "RUNNER_NAME": "hannah-mac", "observed_os_family": "darwin"})
+                                  "RUNNER_NAME": "hannah-mac", "observed_os_family": "darwin", "door_port": "49152"})
+    row["self_hosted_door_ports"] = {"release0": "49152", "release1": "49152"}
     contract = next(item for item in gate.RELEASE1_MATRIX if item["job_id"] == "direct-macos")
     assert gate._release1_row_errors(candidate, contract, row, self_hosted_smoke=True) == []
+    row["self_hosted_door_ports"]["release1"] = "17340"
+    assert gate._release1_row_errors(candidate, contract, row, self_hosted_smoke=True)
+    row["self_hosted_door_ports"]["release1"] = "49152"
     assert gate._release1_row_errors(candidate, contract, row)
     path.write_text(json.dumps(row))
     assert gate.evaluate_release1_matrix(candidate, tmp_path)
