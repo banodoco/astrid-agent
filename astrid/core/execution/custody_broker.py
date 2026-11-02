@@ -593,6 +593,13 @@ def audit_token_details(words: Sequence[int]) -> dict[str, object]:
 
 
 def _peer_token(connection: socket.socket) -> dict[str, object]:
+    if sys.platform.startswith("linux"):
+        # Same Linux mechanism as Runtime (SO_PEERCRED + /proc observation, pidns and boot scoped).
+        from runtime_protocol import linux_process_binding
+        try:
+            return linux_process_binding.peer_token(connection)
+        except linux_process_binding.LinuxBindingError as exc:
+            raise CustodyError("linux peer identity is unavailable") from exc
     if sys.platform != "darwin":
         raise CustodyError("Darwin audit-token custody is unavailable")
     raw = connection.getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN, TOKEN_BYTES)
@@ -1567,6 +1574,9 @@ def default_process_identity(pid: int, *, timeout: float = 1.0) -> dict[str, obj
         raise CustodyError("process identity observation deadline expired")
     if sys.platform == "win32":
         return platform.process_identity(pid)
+    if sys.platform.startswith("linux"):
+        from runtime_protocol import platform as _runtime_platform
+        return _runtime_platform.process_identity(pid, timeout=timeout)
     if sys.platform == "darwin":
         rows = _darwin_process_records(pid)
         if not rows:
