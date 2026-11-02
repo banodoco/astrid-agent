@@ -724,9 +724,10 @@ def _pack_host_service_exit_observed(service):
 
 
 def _pack_host_definitively_failed(service):
-    # Runtime's supervisor uses this terminal state only after it has stopped
-    # retrying the service. A prior exit in a restarting state must retain its
-    # normal retry opportunity and is only observed, not turned into a stop.
+    # Keep the journey's fail-closed stop on the exact failed state. Frozen
+    # Runtime versions can expose failed during fast-failure backoff and then
+    # retry, so the retained reason/exit/restart evidence—not this label—must
+    # establish product retry finality.
     return isinstance(service, dict) and service.get("state") == "failed"
 
 
