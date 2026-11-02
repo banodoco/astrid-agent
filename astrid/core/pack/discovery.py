@@ -264,8 +264,16 @@ def discover_pack_metadata(
 
     discovered: list[DiscoveredPack] = []
     scanned_external_roots: set[Path] = set()
+    admitted_pack_roots: set[Path] = set()
 
     def _add(pack: PackDefinition, source_kind: str, *, source_record: Any | None = None) -> None:
+        # A host child can select bundled packs again through explicit roots.
+        # Preserve the first layer's ownership of each physical declaration;
+        # distinct pack roots must still reach registry collision checks.
+        root = pack.root.resolve()
+        if root in admitted_pack_roots:
+            return
+        admitted_pack_roots.add(root)
         metadata: dict[str, Any] = {}
         if source_record is not None:
             metadata = {
