@@ -1,11 +1,10 @@
 """Pure placement metadata validation; no recipe or provider lookup."""
-from dataclasses import FrozenInstanceError
 import json
+from dataclasses import FrozenInstanceError
 
 import pytest
 
 from astrid.core.generation.engine_contracts import PlacementDescriptor, UnsupportedPlacement
-
 
 VALID = {
     "schema": "astrid.generation-placement.v1",
@@ -93,3 +92,72 @@ def test_local_descriptor_rejects_unsupported_choice_with_stable_error(value):
     assert caught.value.code == "unsupported_placement"
     assert caught.value.retryable is False
     assert caught.value.recovery_handle is None
+
+
+def test_descriptor_public_identity_and_subclass_roundtrip():
+    import pickle
+
+    from astrid.core.generation import engine_contracts
+    from astrid.core.generation.backends import registry
+    from astrid.core.pack import permissions
+
+    assert registry.PlacementDescriptor is engine_contracts.PlacementDescriptor is PlacementDescriptor
+    assert permissions.PlacementDescriptor is PlacementDescriptor
+    from astrid.core.pack import _placement
+
+    assert _placement.EngineError is engine_contracts.EngineError
+    assert _placement.UnsupportedPlacement is UnsupportedPlacement
+    assert UnsupportedPlacement.__module__ == "astrid.core.generation.engine_contracts"
+    assert issubclass(UnsupportedPlacement, engine_contracts.EngineError)
+    assert PlacementDescriptor.__module__ == "astrid.core.generation.engine_contracts"
+    descriptor = PlacementDescriptor.from_dict(VALID)
+    assert type(pickle.loads(pickle.dumps(descriptor))) is PlacementDescriptor
+
+    class CustomPlacement(PlacementDescriptor):
+        pass
+
+    assert type(CustomPlacement.from_dict(VALID)) is CustomPlacement
+
+
+@pytest.mark.parametrize("placement", [
+    VALID,
+    {**VALID, "schema": "invalid"},
+    {**VALID, "supported": ["local", "local"]},
+    {**VALID, "supported": "local"},
+    {**VALID, "default": "remote"},
+    {**VALID, "engine": None},
+    {**VALID, "requires_endpoint": 1},
+    {**VALID, "extra": False},
+    None,
+])
+def test_pack_normalization_matches_descriptor_and_preserves_errors(placement):
+    from astrid.core.pack import PackValidationError
+    from astrid.core.pack.permissions import _normalize_generation_backends
+
+    backend = {"id": "probe", "module": "example", "class": "Adapter", "placement": placement}
+    try:
+        descriptor = PlacementDescriptor.from_dict(placement)
+    except ValueError as expected:
+        with pytest.raises(PackValidationError) as caught:
+            _normalize_generation_backends([backend], path="extensions.generation.backends")
+        assert str(caught.value) == f"extensions.generation.backends[0].placement: {expected}"
+        assert type(caught.value.__cause__) is ValueError
+        assert str(caught.value.__cause__) == str(expected)
+    else:
+        normalized = _normalize_generation_backends([backend], path="extensions.generation.backends")
+        assert normalized[0]["placement"] == descriptor.to_dict()
+
+
+@pytest.mark.parametrize("first", ["astrid.core.pack.permissions", "astrid.core.generation.engine_contracts"])
+def test_fresh_import_orders_share_descriptor(first):
+    import subprocess
+    import sys
+
+    script = f"""
+import importlib
+importlib.import_module({first!r})
+from astrid.core.pack.permissions import PlacementDescriptor as pack_descriptor
+from astrid.core.generation.engine_contracts import PlacementDescriptor as generation_descriptor
+assert pack_descriptor is generation_descriptor
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)

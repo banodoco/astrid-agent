@@ -69,7 +69,8 @@ elif sys.argv[3] != 'installed' or not sys.flags.isolated:
 specs = {}
 for name in ('astrid', 'astrid.core', 'astrid.core.rendering',
              'astrid.core.rendering._local_schema', 'astrid.core.timeline',
-             'astrid.core.timeline.banodoco_schema'):
+             'astrid.core.timeline.banodoco_schema',
+             'astrid.core.timeline._local_schema'):
     parent = name.rpartition('.')[0]
     search = specs[parent].submodule_search_locations if parent else sys.path
     spec = importlib.machinery.PathFinder.find_spec(name.rsplit('.', 1)[-1], search)
