@@ -11,6 +11,54 @@ from pathlib import Path
 from typing import Any
 
 
+def prepare_pack_host_shutdown(*, support_root: Path, source_checkout: Path,
+                               runtime_instance_id: str | None):
+    """Bind Runtime down to this owner's registered host, before any effects.
+
+    Canonical services are reaped by Runtime's supervisor. The SDK can also
+    launch a resident host; its existing registration/retirement owner handles
+    that process, under the same lock used by host startup.
+    """
+    from astrid.sdk import host_bootstrap as hosts
+    from runtime_protocol import platform
+
+    support_root = support_root.resolve()
+    state_path = support_root / "generic-host.json"
+
+    def read_state():
+        value = hosts._read_object(state_path)
+        if value is None and (state_path.exists() or state_path.is_symlink()):
+            raise hosts.PackHostBootstrapError("pack host registration is unreadable; shutdown unresolved")
+        return value
+
+    state = read_state()
+    if state is not None:
+        if (not runtime_instance_id or state.get("runtime_instance_id") != runtime_instance_id
+                or state.get("support_root") != str(support_root)
+                or state.get("source_checkout") != str(source_checkout.resolve())):
+            raise hosts.PackHostBootstrapError("pack host registration differs from the selected Runtime owner")
+        if hosts._registered_host_status(state) == "foreign":
+            raise hosts.PackHostBootstrapError("registered process is not this pack host; shutdown refused")
+
+    def stop():
+        with (support_root / "generic-host.lock").open("a+") as lock:
+            platform.owner_only(lock.fileno())
+            platform.lock_file(lock.fileno())
+            current = read_state()
+            # A supervised host can remove its own registration while Runtime
+            # drains it. An independent replacement must pass a fresh down.
+            if current is not None and current != state:
+                raise hosts.PackHostBootstrapError("pack host registration changed during Runtime shutdown")
+            if state is not None:
+                if hosts._registered_host_status(state) == "foreign":
+                    raise hosts.PackHostBootstrapError("registered process changed during Runtime shutdown")
+                hosts._retire_host_locked(state)
+                if hosts._registered_host_status(state) == "ours":
+                    raise hosts.PackHostBootstrapError("pack host exit remains unverified after Runtime shutdown")
+
+    return stop
+
+
 def service_declaration(
     *, source_checkout: Path, data_root: Path, python: str | None = None, bun: str | None = None,
     chat_cwd: Path | None = None,

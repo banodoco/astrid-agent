@@ -942,3 +942,45 @@ def test_process_census_catches_declared_failure_without_hiding_programming_erro
         host_bootstrap._host_birth_identity(4321)
     with pytest.raises(RuntimeError, match="invalid census implementation"):
         host_bootstrap._descendant_snapshot(4321)
+
+
+def test_runtime_shutdown_retires_the_registered_host_synchronously(harness):
+    from astrid.services import prepare_pack_host_shutdown
+    h = harness
+    process, _ = h.host()
+    h.register(process.pid)
+    state = h.marker()
+    stop = prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
+                                     runtime_instance_id=state["runtime_instance_id"])
+    stop()
+    assert process.poll() is not None
+    assert not (h.support / "generic-host.json").exists()
+    assert not (h.support / "generic-host.ready.json").exists()
+
+
+def test_runtime_shutdown_preserves_replacement_registration(harness):
+    from astrid.services import prepare_pack_host_shutdown
+    h = harness
+    process, _ = h.host()
+    h.register(process.pid)
+    state = h.marker()
+    stop = prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
+                                     runtime_instance_id=state["runtime_instance_id"])
+    replacement = {**state, "runtime_instance_id": "replacement-owner"}
+    (h.support / "generic-host.json").write_text(json.dumps(replacement))
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="registration changed"):
+        stop()
+    assert process.poll() is None and h.marker() == replacement
+
+
+@pytest.mark.parametrize("field,value", [("runtime_instance_id", "foreign-owner"), ("source_checkout", "foreign-source")])
+def test_runtime_shutdown_refuses_foreign_owner_before_effects(harness, field, value):
+    from astrid.services import prepare_pack_host_shutdown
+    h = harness
+    process, _ = h.host()
+    h.register(process.pid, **{field: value})
+    state = h.marker()
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="selected Runtime owner"):
+        prepare_pack_host_shutdown(support_root=h.support, source_checkout=h.source,
+                                   runtime_instance_id="instance-1")
+    assert process.poll() is None and h.marker() == state
