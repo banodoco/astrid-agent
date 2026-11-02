@@ -61,7 +61,8 @@ def _same_root_lifecycle(root, realm_root, realm_id):
     receipts = []
     def cli(*args):
         argv = [sys.executable, "-I", "-B", "-m", "astrid_runtime", *args,
-                "--profile", "astrid", "--data-root", str(data), "--source-manifest", str(manifest), "--json"]
+                "--profile", "astrid", "--data-root", str(data), "--source-manifest", str(manifest),
+                "--hosted-origin", "off", "--json"]
         result = subprocess.run(argv, env=environment, capture_output=True, text=True, timeout=90)
         payload = json.loads(result.stdout)
         receipts.append({"argv": argv, "exit": result.returncode, "result": payload})
@@ -75,23 +76,31 @@ def _same_root_lifecycle(root, realm_root, realm_id):
         marker = json.loads((support / "instance.lock").read_text())
         assert marker["realm_id"] == discovery["active_realm"] == realm_id
         assert marker["realm_root"] == discovery["realm_root"] == str(realm_root)
-        assert marker["data_root"] == str(data)
         for name in ("pid", "process_birth_id", "runtime_instance_id"):
             assert marker[name] == discovery[name]
         assert LocalRuntimeBoundary.process_birth_identity(marker["pid"]) == marker["process_birth_id"]
+        profile_path = support / "source-profiles" / "astrid.json"
+        profile = json.loads(profile_path.read_text())
+        for name, value in json.loads(manifest.read_text()).items():
+            assert profile[name] == value
+        health = LocalRuntimeBoundary._http_health_payload(discovery["endpoint"])
+        assert health["status"] == "ok" and health["runtime_instance_id"] == marker["runtime_instance_id"]
+        receipts.append({"snapshot": {"data_root": str(data), "manifest_sha256": digest,
+            "profile_sha256": _sha(profile_path.read_bytes()), "owner": marker, "discovery": discovery}})
+        (root / "runtime-lifecycle.json").write_text(json.dumps(receipts, indent=2))
         return marker
     cli("workspace", "attach", "--realm-root", str(realm_root), "--realm-id", realm_id,
         "--process-control", "sandbox")
     running = False
     try:
-        cli("up", "--hosted-origin", "off")
+        cli("up")
         running = True
         prior = snapshot()
         assert cli("down")["status"] == "stopped"
         running = False
         assert LocalRuntimeBoundary.process_birth_identity(prior["pid"]) != prior["process_birth_id"]
         assert not (data / "runtime" / "discovery.json").exists()
-        cli("up", "--hosted-origin", "off")
+        cli("up")
         running = True
         current = snapshot()
         assert current["runtime_instance_id"] != prior["runtime_instance_id"]
