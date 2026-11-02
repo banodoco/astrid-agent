@@ -1012,6 +1012,7 @@ jobs:
           path: agent
           persist-credentials: false
       - name: Check out frozen App candidate for aggregate validation
+        if: always() && needs.config.result == 'success'
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
@@ -1108,3 +1109,49 @@ jobs:
               json.dumps({slot: {"result": "skipped"} for slot in slots}), encoding="utf-8")
           PY
           python agent/scripts/check_failure_receipts.py --candidate "$RUNNER_TEMP/m4-6-hosted-candidate.json" --results m4-6-hosted-results --needs "$RUNNER_TEMP/m4-6-hosted-needs.json"
+      - name: Check out the workflow's obligation checker
+        if: always()
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ github.workflow_sha }}
+          path: obligation-agent
+          persist-credentials: false
+      - name: Download separately retained Release-1 receipts for visibility
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          pattern: journey-receipt-*
+          path: obligation-receipts/release1
+          merge-multiple: false
+      - name: Download separately retained M4-5 receipts for visibility
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          pattern: m4-5-receipt-*
+          path: obligation-receipts/release2
+          merge-multiple: false
+      - name: Download separately retained M4-6 outputs for visibility
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          pattern: m4-6-local-*
+          path: obligation-receipts/m4-6
+          merge-multiple: false
+      - name: Emit the fail-closed release-obligation report
+        if: always()
+        shell: bash
+        env:
+          CONFIG_RESULT: ${{ needs.config.result }}
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          set -u
+          mkdir -p obligation-receipts
+          args=(--report-end-state-obligations --results obligation-receipts)
+          if [ "$CONFIG_RESULT" = success ] && [ -n "$CANDIDATE" ] && [ -d app/.git ]; then
+            printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/obligation-candidate.json"
+            args+=(--candidate "$RUNNER_TEMP/obligation-candidate.json" --app-checkout app)
+          else
+            echo 'Frozen candidate/App binding is unavailable; every obligation remains not-run.'
+          fi
+          python obligation-agent/scripts/check_journey_evidence.py "${args[@]}"

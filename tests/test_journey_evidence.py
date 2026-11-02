@@ -231,3 +231,27 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert "candidate-agent" in workflow and "pinokio" in workflow
     assert '"leg":"release0-to-release1"' in workflow
     assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
+
+
+def test_hosted_gate_always_emits_the_fail_closed_obligation_report_without_flattening_receipts():
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
+    gate_text = workflow.split("  gate:\n", 1)[1]
+    report = gate_text.split("      - name: Emit the fail-closed release-obligation report\n", 1)[1]
+
+    assert report.startswith("        if: always()")
+    assert "--report-end-state-obligations --results obligation-receipts" in report
+    assert "python obligation-agent/scripts/check_journey_evidence.py" in report
+    assert "github.workflow_sha" in gate_text
+    assert "ref: ${{ needs.config.outputs.driver_agent_ref }}" in gate_text
+    assert gate_text.index("Reject skipped, cancelled, or failed matrix dependencies") < gate_text.index(
+        "Emit the fail-closed release-obligation report")
+    for pattern, path in (
+        ("journey-receipt-*", "obligation-receipts/release1"),
+        ("m4-5-receipt-*", "obligation-receipts/release2"),
+        ("m4-6-local-*", "obligation-receipts/m4-6"),
+    ):
+        start = gate_text.rindex(f"pattern: {pattern}")
+        block = gate_text[start:start + 300]
+        assert "if: always()" in gate_text[max(0, start - 180):start]
+        assert f"path: {path}" in block
+        assert "merge-multiple: false" in block

@@ -112,6 +112,34 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def hosted_receipt_paths(results):
+    """Return one final receipt per separately retained hosted-job artifact.
+
+    The lifecycle driver deliberately retains both pre- and post-cleanup
+    snapshots.  They are two observations of the same job, not two receipts
+    that an aggregate may flatten or count as independent proof.  GitHub's
+    artifact downloader preserves each artifact directory; prefer its final
+    ``after-cleanup`` receipt and fall back to ``before-cleanup`` only when a
+    job did not reach cleanup.  Receipts outside that named artifact shape
+    remain individual inputs, so independently retained duplicate artifacts
+    still fail closed in the callers below.
+    """
+    standalone = []
+    staged = {}
+    for path in sorted(Path(results).rglob("journey-result.json")):
+        phase = path.parent.name
+        artifact = path.parent.parent
+        if phase in {"before-cleanup", "after-cleanup"} and artifact.name.startswith("journey-receipt-"):
+            staged.setdefault(artifact, {}).setdefault(phase, []).append(path)
+        else:
+            standalone.append(path)
+    for phases in staged.values():
+        # Preserve every same-phase path: an unexpected duplicate is still
+        # reported by the aggregate identity checks rather than discarded.
+        standalone.extend(phases.get("after-cleanup") or phases.get("before-cleanup", ()))
+    return sorted(standalone)
+
+
 def validate_tuple(candidate, app, manifest):
     for key in ("app", "agent", "runtime", "pinokio"):
         if not isinstance(candidate.get(key), str) or not SHA.fullmatch(candidate[key]):
@@ -139,7 +167,7 @@ def validate_tuple(candidate, app, manifest):
 def evaluate(candidate, manifest, results, required, expected_runner, expected_shell, allow_override=False):
     errors = []
     by_name = {}
-    for path in Path(results).rglob("journey-result.json"):
+    for path in hosted_receipt_paths(results):
         try:
             row = read(path)
             name = row.get("scenario")
@@ -305,7 +333,7 @@ def evaluate_release1_matrix(candidate, results):
     errors = []
     expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
     found = {}
-    for path in Path(results).rglob("journey-result.json"):
+    for path in hosted_receipt_paths(results):
         try:
             row = read(path)
         except (OSError, ValueError) as exc:
@@ -393,7 +421,7 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
     expected = {row["job_id"]: row for row in M4_4A_BACKEND_MATRIX}
     found = {}
     paths = {}
-    for path in Path(results).rglob("journey-result.json"):
+    for path in hosted_receipt_paths(results):
         try:
             row = read(path)
         except (OSError, ValueError) as exc:
@@ -589,7 +617,7 @@ def evaluate_m4_5_matrix(results):
     expected = set(journey_release2.RELEASE2_SCENARIO_IDS)
     found = {}
     errors = []
-    for path in Path(results).rglob("journey-result.json"):
+    for path in hosted_receipt_paths(results):
         try:
             row = read(path)
         except (OSError, ValueError) as exc:
@@ -742,7 +770,7 @@ def _visibility_receipts(results):
         else:
             target.setdefault(key, []).append(entry)
 
-    for path in sorted(Path(results).rglob("journey-result.json")):
+    for path in hosted_receipt_paths(results):
         try:
             row = read(path)
         except (OSError, ValueError) as exc:
@@ -773,13 +801,26 @@ def evaluate_end_state_obligations(candidate, results):
     release1, m4_5, m4_6, errors = _visibility_receipts(results)
     release1_contracts = {row["job_id"]: row for row in RELEASE1_MATRIX}
     m4_6_contracts = {row["job_id"]: row for row in M4_6_MATRIX}
+    candidate_is_bound = isinstance(candidate, dict) and all(
+        isinstance(candidate.get(name), str) and SHA.fullmatch(candidate[name])
+        for name in ("app", "agent", "runtime", "pinokio")
+    )
     statuses = []
+
+    def row_errors_for(validator, *args):
+        try:
+            return validator(*args)
+        except (TypeError, AttributeError, KeyError, ValueError, OSError) as exc:
+            return [f"malformed receipt: {exc}"]
 
     for obligation in END_STATE_INVENTORY:
         identity = obligation["id"]
         kind = obligation["evidence_kind"]
         row_errors = []
-        if kind == "unsupported":
+        if not candidate_is_bound:
+            status = "not-run"
+            row_errors.append("frozen candidate/App manifest binding is unavailable")
+        elif kind == "unsupported":
             status = "not-run"
             row_errors.append("no supported authenticated evidence route")
         elif kind == "release1":
@@ -792,7 +833,7 @@ def evaluate_end_state_obligations(candidate, results):
                 status = "failed"
                 row_errors.append("duplicate Release-1 lifecycle receipts")
             else:
-                row_errors.extend(_release1_row_errors(candidate, release1_contracts[job_id], entries[0][0]))
+                row_errors.extend(row_errors_for(_release1_row_errors, candidate, release1_contracts[job_id], entries[0][0]))
                 status = "passed" if not row_errors else "failed"
         elif kind == "m4-5":
             entries = m4_5.get(identity, [])
@@ -803,7 +844,7 @@ def evaluate_end_state_obligations(candidate, results):
                 status = "failed"
                 row_errors.append("duplicate M4-5 lifecycle receipts")
             else:
-                row_errors.extend(_m4_5_row_errors(entries[0][0]))
+                row_errors.extend(row_errors_for(_m4_5_row_errors, entries[0][0]))
                 observed = entries[0][0].get("candidate")
                 if (not isinstance(observed, dict) or any(
                         observed.get(name) != candidate.get(name)
@@ -820,7 +861,7 @@ def evaluate_end_state_obligations(candidate, results):
                 status = "failed"
                 row_errors.append("duplicate M4-6 local receipts")
             else:
-                row_errors.extend(_m4_6_local_row_errors(
+                row_errors.extend(row_errors_for(_m4_6_local_row_errors,
                     candidate, m4_6_contracts[job_id], entries[0][0], entries[0][1]))
                 if row_errors:
                     status = "failed"
@@ -947,10 +988,16 @@ def main():
         if args.report_end_state_obligations and aggregate_modes:
             raise ValueError("end-state obligation reporting cannot be combined with an aggregate mode")
         if args.report_end_state_obligations:
-            if args.results is None or args.candidate is None or args.app_checkout is None:
-                raise ValueError("--results, --candidate and --app-checkout are required with --report-end-state-obligations")
-            candidate = read(args.candidate)
-            validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
+            if args.results is None:
+                raise ValueError("--results is required with --report-end-state-obligations")
+            candidate = None
+            if args.candidate is not None and args.app_checkout is not None:
+                try:
+                    bound_candidate = read(args.candidate)
+                    validate_tuple(bound_candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
+                    candidate = bound_candidate
+                except (OSError, ValueError, TypeError, AttributeError, subprocess.CalledProcessError) as exc:
+                    errors.append(f"candidate binding: {exc}")
             obligation_statuses, visibility_errors = evaluate_end_state_obligations(candidate, args.results)
             errors.extend(visibility_errors)
             errors.extend(
@@ -990,7 +1037,8 @@ def main():
             if args.allow_source_override:
                 raise ValueError("M4-5 aggregate never admits a source override")
             errors.extend(evaluate_m4_5_matrix(args.results))
-        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and not args.prepare_only:
+        elif (not args.report_end_state_obligations and not args.aggregate_m4_4b_local
+              and not args.aggregate_m4_6_local and not args.prepare_only):
             if args.cadence == "release-candidate":
                 raise ValueError("release-candidate evidence requires --aggregate-release1")
             if args.results is None or args.expected_runner is None or args.expected_shell is None:

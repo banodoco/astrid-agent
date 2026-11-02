@@ -122,6 +122,31 @@ def test_obligation_statuses_attribute_pass_failed_skipped_duplicate_and_wrong_t
     assert rows["fresh-install:pinokio-backend-macos"]["reasons"] == ("duplicate Release-1 lifecycle receipts",)
 
 
+def test_separate_hosted_artifact_directories_use_one_final_receipt_per_job(tmp_path):
+    """before/after snapshots share a job identity; separate artifacts do not."""
+    pinned = candidate()
+    for contract in RELEASE1_MATRIX:
+        artifact = tmp_path / f"journey-receipt-{contract['job_id']}"
+        before = release1_row(contract, pinned)
+        before.update(status="fail", final_cleanup=None)
+        after = release1_row(contract, pinned)
+        for phase, row in (("before-cleanup", before), ("after-cleanup", after)):
+            path = artifact / phase / "journey-result.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(row), encoding="utf-8")
+
+    assert len(gate.hosted_receipt_paths(tmp_path)) == len(RELEASE1_MATRIX)
+    assert not gate.evaluate_release1_matrix(pinned, tmp_path)
+    rows = by_id(gate.evaluate_end_state_obligations(pinned, tmp_path)[0])
+    assert rows["populated-r0-update:direct-linux"]["status"] == "passed"
+
+    duplicate = tmp_path / "journey-receipt-replayed-direct-linux" / "after-cleanup" / "journey-result.json"
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_text(json.dumps(release1_row(RELEASE1_MATRIX[1], pinned)), encoding="utf-8")
+    assert any("duplicate receipt for direct-linux" in error
+               for error in gate.evaluate_release1_matrix(pinned, tmp_path))
+
+
 def test_duplicate_json_is_rejected_not_promoted_to_a_pass(tmp_path):
     pinned = candidate()
     path = tmp_path / "forged" / "journey-result.json"
@@ -130,6 +155,19 @@ def test_duplicate_json_is_rejected_not_promoted_to_a_pass(tmp_path):
     statuses, errors = gate.evaluate_end_state_obligations(pinned, tmp_path)
     assert any("duplicate JSON field receipt_kind" in error for error in errors)
     assert all(row["status"] != "passed" for row in statuses)
+
+
+def test_malformed_nested_receipt_cannot_suppress_other_obligations(tmp_path):
+    pinned = candidate()
+    path = tmp_path / "journey-result.json"
+    path.write_text(json.dumps({"receipt_kind": "release1-installed-lifecycle",
+                                "job_id": "direct-linux", "sources": ["bad"]}), encoding="utf-8")
+    rows, errors = gate.evaluate_end_state_obligations(pinned, tmp_path)
+    assert not errors
+    assert len(rows) == 64
+    failed = by_id(rows)["populated-r0-update:direct-linux"]
+    assert failed["status"] == "failed"
+    assert any("malformed receipt" in reason for reason in failed["reasons"])
 
 
 def test_m4_6_malformed_or_local_evidence_is_never_a_pass(tmp_path):
@@ -184,4 +222,27 @@ def test_checker_cli_lists_the_closed_inventory_and_fails_not_run_rows(tmp_path,
     output = capsys.readouterr().out
     assert "## Journey evidence: FAIL" in output
     assert "## Release-obligation visibility" in output
+    assert output.count("\n- [not-run] ") == 64
+
+
+def test_checker_cli_reports_every_obligation_when_candidate_binding_is_unavailable(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(gate.sys, "argv", [
+        "check_journey_evidence.py", "--report-end-state-obligations", "--results", str(tmp_path / "results"),
+    ])
+    assert gate.main() == 1
+    output = capsys.readouterr().out
+    assert output.count("\n- [not-run] ") == 64
+    assert "frozen candidate/App manifest binding is unavailable" in output
+
+
+def test_checker_cli_reports_every_obligation_when_candidate_binding_is_invalid(tmp_path, monkeypatch, capsys):
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text('{"app": "invalid"}', encoding="utf-8")
+    monkeypatch.setattr(gate.sys, "argv", [
+        "check_journey_evidence.py", "--report-end-state-obligations", "--results", str(tmp_path),
+        "--candidate", str(candidate_path), "--app-checkout", str(tmp_path),
+    ])
+    assert gate.main() == 1
+    output = capsys.readouterr().out
+    assert "candidate binding: candidate app must be a full commit SHA" in output
     assert output.count("\n- [not-run] ") == 64
