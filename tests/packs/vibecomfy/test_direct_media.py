@@ -32,7 +32,6 @@ def test_direct_wan_capabilities_are_typed_and_profile_bound(profile: str) -> No
     assert t2i.model_identity == "wan-2.2-a14b-t2v"
     assert t2i.inputs["frames"] == 1
     assert t2i.workflow["nodes"]["latent"]["inputs"]["frames"] == 1
-    assert t2i.template_id != "wan2gp.generate_video"
     assert i2v.capability_id == "vibecomfy.wan_2_2_i2v"
     assert i2v.model_identity == "wan-2.2-a14b-i2v"
     assert i2v.workflow["nodes"]["image"]["inputs"]["image"] == "media://start"
@@ -273,10 +272,9 @@ def test_compilation_is_deterministic_and_rejects_native_wan_confusion() -> None
 
     assert first.to_dict() == second.to_dict()
     assert first.request_digest.startswith("sha256:")
-    assert first.capability_id != "wan2gp.generate_video"
 
     with pytest.raises(MediaCompileError, match="unsupported Vibe profile"):
-        compile_wan_2_2_t2i(request, profile="wan2gp")
+        compile_wan_2_2_t2i(request, profile="retired-profile")
 
 
 def test_executor_requires_profile_identity_and_does_not_fallback() -> None:

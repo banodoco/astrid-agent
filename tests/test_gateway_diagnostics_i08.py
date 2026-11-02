@@ -279,7 +279,7 @@ def test_doctor_live_budget_binds_exact_c06_ready_path(monkeypatch, tmp_path, no
     if nomination == "alias":
         alias = root / "alias.ready.json"; alias.symlink_to(ready); ready = alias
     if nomination == "missing": ready = root / "missing.ready.json"
-    hold = {"holding": "wan2gp.generate_video", "leases": 0, "idle_seconds": 600.0,
+    hold = {"holding": "fixture.hold", "leases": 0, "idle_seconds": 600.0,
             "expires_at": "2026-10-19T12:10:00+00:00"}
     write_evidence_status(root / EVIDENCE_STATUS_NAME, {**identity, "ready_file": str(ready),
         "charged_bytes": 23, "cap_bytes": 42, "live_attempts": 1, "warm_holds": [hold],

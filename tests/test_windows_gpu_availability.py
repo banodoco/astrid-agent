@@ -23,7 +23,7 @@ def windows_gpu(monkeypatch):
 
 @pytest.mark.parametrize("opted_in", [False, True])
 def test_registered_availability_warns_without_blocking_unqualified_gpu(tmp_path, monkeypatch, windows_gpu, opted_in):
-    for capability_id in ("wan2gp.generate_video", "vibecomfy.run", "vibecomfy.validate"):
+    for capability_id in ("vibecomfy.run", "vibecomfy.validate"):
         _write_manifest(tmp_path / capability_id, capability_id=capability_id)
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
@@ -31,7 +31,7 @@ def test_registered_availability_warns_without_blocking_unqualified_gpu(tmp_path
         monkeypatch.setenv(gpu.ALLOW_UNQUALIFIED_ENV, "1")
     host.register()
     registrations = {item["capability_id"]: item for item in runtime.registrations[-1][1]["capabilities"]}
-    for capability_id in ("wan2gp.generate_video", "vibecomfy.run"):
+    for capability_id in ("vibecomfy.run",):
         row = registrations[capability_id]
         assert row["status"] == "ready"
         assert row["unavailable_reason"].endswith("please tell us how it went (GPU model and driver from `nvidia-smi`).")
@@ -40,19 +40,16 @@ def test_registered_availability_warns_without_blocking_unqualified_gpu(tmp_path
     assert len(windows_gpu[1]) == 1
 
 
-def test_missing_gpu_warns_for_vibecomfy_but_still_blocks_wan2gp(tmp_path, monkeypatch, windows_gpu):
+def test_missing_gpu_warns_for_vibecomfy_without_blocking(tmp_path, monkeypatch, windows_gpu):
     windows_gpu[0].update(available=False, devices=[], reason="No NVIDIA GPU was detected.")
     monkeypatch.setenv(gpu.ALLOW_UNQUALIFIED_ENV, "1")
     _write_manifest(tmp_path / "comfy", capability_id="vibecomfy.run")
-    _write_manifest(tmp_path / "wan", capability_id="wan2gp.generate_video")
     runtime = FakeRuntime()
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
     host.register()
     rows = {item["capability_id"]: item for item in runtime.registrations[-1][1]["capabilities"]}
     assert rows["vibecomfy.run"]["status"] == "ready"
     assert rows["vibecomfy.run"]["unavailable_reason"] == "VibeComfy uses your own ComfyUI, so Astrid does not need to detect an NVIDIA GPU."
-    assert rows["wan2gp.generate_video"]["status"] == "unavailable"
-    assert rows["wan2gp.generate_video"]["unavailable_reason"] == "No NVIDIA GPU was detected."
 
 
 def test_unqualified_label_survives_other_readiness_failures(tmp_path, monkeypatch, windows_gpu):

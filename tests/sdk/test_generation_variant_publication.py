@@ -248,7 +248,6 @@ def test_specialized_publication_actions_opt_in_through_registered_metadata():
     )
 
     declarations = (
-        ("wan2gp.generate_video", "video", "generated_videos"),
         ("fal.h3_video", "video", "generated_videos"),
         ("vibecomfy.character_animation", "video", "animated_video"),
         ("vibecomfy.video_enhance", "video", "enhanced_video"),
@@ -272,7 +271,7 @@ def test_specialized_publication_actions_opt_in_through_registered_metadata():
         assert effect["payload"]["groups"][0]["selectors"][0]["output_port"] == output_port
 
     undeclared = get_capability(
-        "wan2gp.validate_settings", kind="executor", include_elements=False
+        "vibecomfy.validate", kind="executor", include_elements=False
     )
     assert "generation_publication" not in undeclared.definition.get("metadata", {})
     assert _generation_capability_modality(undeclared) is None
