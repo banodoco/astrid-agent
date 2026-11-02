@@ -70,7 +70,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "e77c77ded7d63ba73fe12f064ac4a9ccbb4bc5745bd6f2a903a9d4521e0d1ee2"
+    assert h3_entry.recipe.sha256 == "8b1f48bb33ad3101d6585bbb54f48b86a7ed807284c6a81f617bc41bb6cdb82c"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
@@ -273,3 +273,16 @@ def test_duplicate_requirements_source_paths_are_rejected(monkeypatch, tmp_path)
     _recipe_workspace(tmp_path, monkeypatch, duplicate)
     with pytest.raises(RecipeValidationError, match="duplicate requirements source path"):
         recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+
+
+def test_packaged_pin_refresh_composes_all_indexed_engines():
+    for entry in recipes.load_recipe_index().entries:
+        recipe = recipes.load_recipe(entry.engine, entry.platform)
+        assert recipes.load_pin_set(recipe.pins)
+    environment = json.loads(
+        (recipes._ROOT / "packs/vibecomfy/environment.windows-nvidia.json").read_text()
+    )
+    windows = recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+    assert recipes.load_pin_set(DataRef(**environment["pins"]))["vibecomfy"] == (
+        recipes.load_pin_set(windows.pins)["vibecomfy"]
+    )
