@@ -48,12 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     from .cli_inspect import _handle_inspect  # noqa: PLC0415
     from .cli_search import _handle_agent_index, _handle_search  # noqa: PLC0415
+    from .cli_manage import build_add_parser, build_remove_parser  # noqa: PLC0415
 
     parser = RecoverableArgumentParser(
         prog="python3 -m astrid.core.pack.cli",
         description="Manage and validate Astrid packs.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    build_add_parser(subparsers)
+    build_remove_parser(subparsers)
 
     validate_parser = subparsers.add_parser(
         "validate", aliases=["check"], help="Statically validate a pack directory."

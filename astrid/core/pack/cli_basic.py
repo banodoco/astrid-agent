@@ -25,6 +25,7 @@ from astrid.core.pack import (
     packs_root,
 )
 from astrid.core.pack.loader import scan_packs
+from astrid.core.pack.personal import resolve_personal_packs_root
 from astrid.core.pack.validate import (
     is_first_party_packs_root_candidate,
     validate_first_party_packs_root,
@@ -514,6 +515,9 @@ def _filtered_packs(
 ) -> list[PackDefinition]:
     show_hidden = bool(getattr(args, "show_hidden", False))
     roots = [packs_root()]
+    personal_root = resolve_personal_packs_root()
+    if personal_root is not None:
+        roots.append(personal_root)
     raw_roots = [
         *tuple(getattr(args, "pack_roots", None) or ()),
         *(item for item in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep) if item),
@@ -525,7 +529,10 @@ def _filtered_packs(
             root,
             include_hidden=show_hidden if include_hidden is None else include_hidden,
         ):
-            packs_by_id.setdefault(pack.id, pack)
+            existing = packs_by_id.get(pack.id)
+            if existing is None or ((pack.root / "PIN").is_file()
+                                    and not (existing.root / "PIN").is_file()):
+                packs_by_id[pack.id] = pack
     packs = list(packs_by_id.values())
     category = getattr(args, "category", None)
     status = getattr(args, "status", None)
@@ -751,7 +758,8 @@ def _format_list_row(row: dict[str, Any]) -> None:
     taxonomy = row.get("taxonomy", {})
     print(
         f"{row['id']}\t{row['name']}\t{row['version']}\t"
-        f"origin={taxonomy.get('origin', '')}\t"
+        f"origin={row.get('origin', taxonomy.get('origin', ''))}\t"
+        f"modified={'unknown' if row.get('modified') is None else str(row['modified']).lower()}\t"
         f"tier={taxonomy.get('install_tier', '')}\t"
         f"type={taxonomy.get('pack_type', '')}\t"
         f"stability={taxonomy.get('stability', '')}\t"
@@ -835,7 +843,13 @@ def _handle_new(args: argparse.Namespace) -> int:
 def _handle_list(args: argparse.Namespace) -> int:
     """Handler for ``packs list``."""
     packs = _filtered_packs(args)
-    rows = [_pack_payload(pack) for pack in packs]
+    from .cli_manage import origin_and_modified
+
+    rows = []
+    for pack in packs:
+        row = _pack_payload(pack)
+        row["origin"], row["modified"] = origin_and_modified(pack)
+        rows.append(row)
     if args.json:
         print(json.dumps(_with_grouped_payload(rows), indent=2, sort_keys=True))
         return 0
