@@ -168,6 +168,7 @@ jobs:
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
       matrix: ${{ steps.config.outputs.matrix }}
+      self_hosted_smoke: ${{ steps.config.outputs.self_hosted_smoke }}
     steps:
       - name: Check out reviewed Agent matrix contracts
         uses: actions/checkout@v4
@@ -336,8 +337,9 @@ jobs:
           macos_runner = os.environ.get("MACOS_RUNNER", "macos-15").strip() or "macos-15"
           if macos_runner not in {"macos-15", "astrid-mac"}:
               raise SystemExit("macos_runner must be macos-15 or astrid-mac")
-          if macos_runner == "astrid-mac" and not direct_only:
-              raise SystemExit("astrid-mac is permitted only with direct_only")
+          self_hosted_smoke = macos_runner == "astrid-mac"
+          if self_hosted_smoke and (not direct_only or m4_4b_enabled or m4_6_enabled or m4_5_enabled):
+              raise SystemExit("astrid-mac requires direct_only and no optional matrices")
           matrix = [
               {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-15", "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
@@ -349,14 +351,16 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if macos_runner == "astrid-mac":
+          if self_hosted_smoke:
+              matrix = [matrix[0]]
               matrix[0]["runner"] = macos_runner
-          if direct_only:
+          elif direct_only:
               matrix = [row for row in matrix if row["mode"] == "direct"]
           elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
+              for key, value in (("self_hosted_smoke", str(self_hosted_smoke).lower()),
+                                  ("candidate", candidate), ("driver_agent_ref", driver),
                                   ("old_launcher_ref", old_launcher),
                                   ("stopped_path_agent_ref", stopped_path),
                                   ("m4_4a_executor_configs", executor_configs),
@@ -1008,9 +1012,42 @@ jobs:
           path: ${{ runner.temp }}/m4-6-${{ matrix.job_id }}/output
           if-no-files-found: warn
 
+  self_hosted_smoke_gate:
+    name: Self-hosted macOS smoke (not release evidence)
+    if: always() && needs.config.result == 'success' && needs.config.outputs.self_hosted_smoke == 'true'
+    needs: [config, journey]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require successful smoke execution
+        env:
+          JOURNEY_RESULT: ${{ needs.journey.result }}
+        run: test "$JOURNEY_RESULT" = success
+      - name: Check out reviewed smoke validator
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.config.outputs.driver_agent_ref }}
+          path: agent
+          persist-credentials: false
+      - name: Download the self-hosted smoke receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: self-hosted-smoke-direct-macos
+          path: smoke-evidence
+      - name: Validate final smoke receipt
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        shell: bash
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          mapfile -t receipts < <(find smoke-evidence -path '*/after-cleanup/journey-result.json' -type f)
+          test "${#receipts[@]}" -eq 1
+          python agent/scripts/check_self_hosted_macos_smoke.py "$RUNNER_TEMP/candidate.json" "${receipts[0]}"
+
   gate:
     name: Journey evidence (exact tuple)
-    if: always()
+    if: always() && needs.config.outputs.self_hosted_smoke != 'true'
     needs: [config, journey, release2, m4_4b_local, failure_modes]
     runs-on: ubuntu-24.04
     timeout-minutes: 10

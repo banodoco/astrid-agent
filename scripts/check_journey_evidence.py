@@ -223,8 +223,8 @@ def _release1_row_errors(candidate, contract, row, *, self_hosted_smoke=False):
     if row.get("scenario") != contract.get("leg", "fresh-install"):
         errors.append(f"{job_id}: scenario does not match the required matrix leg")
     required_runner = "astrid-mac" if self_hosted_smoke else contract["runner"]
-    if self_hosted_smoke and job_id != "direct-macos":
-        errors.append(f"{job_id}: self-hosted smoke is only permitted for direct-macos")
+    if self_hosted_smoke and (job_id != "direct-macos" or row.get("job_id") != "direct-macos"):
+        errors.append(f"{job_id}: self-hosted smoke requires the direct-macos receipt")
     if row.get("runner_image") != required_runner:
         errors.append(f"{job_id}: runner does not match the required matrix")
     if self_hosted_smoke and row.get("evidence_class") != "self-hosted-lifecycle":

@@ -922,8 +922,13 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
 
     smoke = matrix("true", MACOS_RUNNER="astrid-mac")
-    assert next(row for row in smoke if row["job_id"] == "direct-macos")["runner"] == "astrid-mac"
+    assert len(smoke) == 1
+    assert smoke[0]["job_id"] == "direct-macos" and smoke[0]["runner"] == "astrid-mac"
+    assert config("true", MACOS_RUNNER="astrid-mac", M4_4B_ENABLED="true").returncode != 0
+    assert config("true", MACOS_RUNNER="astrid-mac", M4_6_ENABLED="true").returncode != 0
     assert config("false", MACOS_RUNNER="astrid-mac").returncode != 0
+    assert "needs.config.outputs.self_hosted_smoke != 'true'" in workflow
+    assert "name: Self-hosted macOS smoke (not release evidence)" in workflow
     assert config("true", MACOS_RUNNER='["self-hosted", "astrid-mac"]').returncode != 0
 
     backend_rows = matrix("false", M4_4A_BACKEND_ONLY="true")

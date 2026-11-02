@@ -245,5 +245,8 @@ def test_self_hosted_smoke_passes_own_validator_but_never_hosted_gate(tmp_path):
     assert gate._release1_row_errors(candidate, contract, row)
     path.write_text(json.dumps(row))
     assert gate.evaluate_release1_matrix(candidate, tmp_path)
+    row["job_id"] = "direct-linux"
+    assert gate._release1_row_errors(candidate, contract, row, self_hosted_smoke=True)
+    row["job_id"] = "direct-macos"
     row["runner_provenance"].pop("RUNNER_ENVIRONMENT")
     assert gate._release1_row_errors(candidate, contract, row, self_hosted_smoke=True)
