@@ -1,0 +1,314 @@
+{
+  "schema": "astrid.merge.r25-option-b-obligations-receipt.v1",
+  "task": "R-25-OPTION-B-OBLIGATIONS-R1",
+  "recorded_at_utc": "2026-11-02T20:15:00Z",
+  "status": "classification-complete-read-only",
+  "read_only": true,
+  "qualification": false,
+  "acceptance": false,
+  "handoff_claimed": false,
+  "workspace": "/home/user/merge/ws/M-PIN",
+  "task_folder": "/home/user/merge/ws/M-PIN/queue/running/R-25-OPTION-B-OBLIGATIONS-R1",
+  "source_tuple": {
+    "path": "/home/user/merge-docs/docs/merge-plan/CURRENT-TUPLE.json",
+    "sha256": "71a738081dba7f84bea0b882a975cd540b62684e8f6f1fa0d99f572e62908e50",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f"
+  },
+  "decisions": {
+    "option": "B",
+    "checkpoint": "R1-required",
+    "containment": "deferred-R1.x (decision 2026-11-02, option B)",
+    "continuous_history": "deferred-R1.x (decision 2026-11-02, option B)",
+    "source_refs": [
+      "/home/user/merge/ws/M-PIN/ORCHESTRATOR.md:3709-3738",
+      "/home/user/merge/ws/M-PIN/ORCHESTRATOR.md:3741-3753",
+      "/home/user/merge-docs/docs/merge-plan/DECISIONS.md:316-318"
+    ]
+  },
+  "obligation_scope": {
+    "pinokio_slots": [
+      "pinokio-backend-linux",
+      "pinokio-fully-local-linux",
+      "pinokio-backend-macos",
+      "pinokio-fully-local-macos",
+      "pinokio-backend-windows",
+      "pinokio-fully-local-windows"
+    ],
+    "checkpoint_ids": [
+      "fresh-install:pinokio-backend-linux",
+      "fresh-install:pinokio-fully-local-linux",
+      "fresh-install:pinokio-backend-macos",
+      "fresh-install:pinokio-fully-local-macos",
+      "fresh-install:pinokio-backend-windows",
+      "fresh-install:pinokio-fully-local-windows"
+    ],
+    "m4_6_ids": [
+      "interruption-recovery:pinokio-backend-linux",
+      "interruption-recovery:pinokio-fully-local-linux",
+      "interruption-recovery:pinokio-backend-macos",
+      "interruption-recovery:pinokio-fully-local-macos",
+      "interruption-recovery:pinokio-backend-windows",
+      "interruption-recovery:pinokio-fully-local-windows",
+      "rollback:pinokio-backend-linux",
+      "rollback:pinokio-fully-local-linux",
+      "rollback:pinokio-backend-macos",
+      "rollback:pinokio-fully-local-macos",
+      "rollback:pinokio-backend-windows",
+      "rollback:pinokio-fully-local-windows",
+      "keep_data_uninstall:pinokio-backend-linux",
+      "keep_data_uninstall:pinokio-fully-local-linux",
+      "keep_data_uninstall:pinokio-backend-macos",
+      "keep_data_uninstall:pinokio-fully-local-macos",
+      "keep_data_uninstall:pinokio-backend-windows",
+      "keep_data_uninstall:pinokio-fully-local-windows",
+      "stop_safety:pinokio-backend-linux",
+      "stop_safety:pinokio-fully-local-linux",
+      "stop_safety:pinokio-backend-macos",
+      "stop_safety:pinokio-fully-local-macos",
+      "stop_safety:pinokio-backend-windows",
+      "stop_safety:pinokio-fully-local-windows"
+    ],
+    "counts": {
+      "fresh_install_checkpoint_ids": 6,
+      "m4_6_ids": 24,
+      "total_pinokio_ids_classified": 30,
+      "literal_keep_data_uninstall_ids": 6
+    },
+    "not_invented": [
+      "No authorize_exact_removal:<slot> ID exists; exact-removal authorization is a deferred CONTAINMENT assertion of keep_data_uninstall:<slot>."
+    ]
+  },
+  "mapping": {
+    "fresh_install": {
+      "id_pattern": "fresh-install:<six Pinokio slot IDs>",
+      "checkpoint_assertions": [
+        "installed candidate",
+        "owned service",
+        "health",
+        "settled task",
+        "one Runtime",
+        "sentinel/data and cleanup end state",
+        "authenticated exact tuple and hosted receipt"
+      ],
+      "deferred_assertions": [],
+      "source": "published Agent scripts/journey_matrix.py:96-111"
+    },
+    "interruption-recovery": {
+      "checkpoint_assertions": [
+        "injected interruption and retained boundary snapshots",
+        "journal phase and operation ID",
+        "explicit same-operation recovery record",
+        "terminal state and identity at independent final boundary",
+        "semantic data invariant",
+        "independent initial/final censuses"
+      ],
+      "containment_deferred_assertions": [
+        "exact owned controller/service/Runtime/descendant incarnations through interruption/recovery",
+        "no unknown or replacement owner"
+      ],
+      "continuous_history_deferred_assertions": [
+        "gap-free event sequence and source loss information across interruption/recovery",
+        "no missed start/exit/replacement"
+      ],
+      "source": "published Agent scripts/journey_failure_modes.py:252-295; journey_matrix.py:130-139"
+    },
+    "rollback": {
+      "checkpoint_assertions": [
+        "failure phase and rollback result",
+        "candidate/R0 observed identity and health",
+        "journal terminal state",
+        "semantic data equality",
+        "independent final census and action-boundary snapshots"
+      ],
+      "containment_deferred_assertions": [
+        "exact candidate/R0 process and service ownership",
+        "exact rollback transition and no unowned/replacement process"
+      ],
+      "continuous_history_deferred_assertions": [
+        "no candidate start/write/activation between samples",
+        "lossless failure/rollback/cleanup history"
+      ],
+      "source": "published Agent scripts/journey_failure_modes.py:298-334; journey_matrix.py:148-160"
+    },
+    "keep_data_uninstall": {
+      "checkpoint_assertions": [
+        "requested keep-data mode",
+        "program root, selection, and native-service end states",
+        "data root, workspace/CAS, semantic data, and sentinel retained",
+        "observed zero Runtime at final boundary",
+        "independent initial/final censuses and action-boundary snapshots"
+      ],
+      "containment_deferred_assertions": [
+        "exact owned removal set",
+        "single-use exact-removal authorization",
+        "final absence attributable to the exact bound incarnation"
+      ],
+      "continuous_history_deferred_assertions": [
+        "no owned/replacement process or descendant between observations",
+        "no observer loss during removal/finalization",
+        "continuous cleanup history"
+      ],
+      "source": "published Agent scripts/journey_failure_modes.py:337-363; journey_matrix.py:148-160"
+    },
+    "stop_safety": {
+      "checkpoint_assertions": [
+        "separate refused and unknown outcomes with reasons",
+        "update/candidate-write/selection/journal/activation/data/retry invariants unchanged at boundaries",
+        "identity pair and semantic data",
+        "independent initial/final censuses and action-boundary snapshots"
+      ],
+      "containment_deferred_assertions": [
+        "exact controller/service/Runtime ownership for refused/unknown stop",
+        "exact protection of the bound transition"
+      ],
+      "continuous_history_deferred_assertions": [
+        "no unauthorized update/write/activation/retry or replacement between samples",
+        "lossless refusal/unknown history"
+      ],
+      "source": "published Agent scripts/journey_failure_modes.py:366-394; journey_matrix.py:148-160"
+    }
+  },
+  "evidence_references": {
+    "published_agent": {
+      "repository": "banodoco/astrid-agent",
+      "commit": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+      "working_checkout_observed_not_used": "b05ac03a5bcab278bccf99d85b49f4037b5dec10",
+      "source_sha256": {
+        "scripts/journey_matrix.py": "8edb29ec54a1befe4521ba0f8df5ef47d95bb86009eb8ac85b7c08c8e74b3023",
+        "scripts/journey_failure_modes.py": "3e0d02a7d2e068f6a6df566880c3d1f51a9b3104cc69ac1380cdd02b2bb57606",
+        "scripts/check_journey_evidence.py": "473e9572c2af6e0825e1b01076b16a85af6b4c72557c70eed62949f4940a9be7",
+        "scripts/failure_mode_executor.py": "a18b80e8b8e9a5b0109fae4ab987a92f43ac0fc0e1abbc0e4f33909de286f565",
+        "scripts/m4_6_process_observer.py": "a20cafdf4ca33a20167a85d37031ab3ba86e2274b57023d4680f230d8ff568bd",
+        "scripts/m4_6_pinokio_custody_provider.py": "05538e2ecd10774e7374db6ecf4df4f525bf7fffd5eaed25554a1eaf9fd322d4",
+        "scripts/m4_6_artifact_provenance.py": "31a59e9b1bb71efbe55e308bb370c28320f7ab17dd0732813f40154476dad0aa"
+      }
+    },
+    "r36_candidate": {
+      "repository": "banodoco/astrid-agent",
+      "commit": "3005252e047d5c969d999b952df8500ea0587b00",
+      "parent": "e41cd3bd57531f526e031950ed4f779e10410d6e",
+      "role": "available R-36 candidate; not qualification evidence and no Option B class split",
+      "source_sha256": {
+        "scripts/journey_matrix.py": "8edb29ec54a1befe4521ba0f8df5ef47d95bb86009eb8ac85b7c08c8e74b3023",
+        "scripts/check_journey_evidence.py": "473e9572c2af6e0825e1b01076b16a85af6b4c72557c70eed62949f4940a9be7",
+        "scripts/m4_6_artifact_provenance.py": "31a59e9b1bb71efbe55e308bb370c28320f7ab17dd0732813f40154476dad0aa",
+        "scripts/journey_failure_modes.py": "809c302ac79430848bcde5694ba162017630d97c9e0f256a1696bbf1314afcc8"
+      }
+    },
+    "r25_producer": {
+      "agent_commit": "a6b68d5b5478326a4db1971966d33a2cfe61d091",
+      "pinokio_commit": "95aafb5a029c3f53cb2268d8596909eab0deb3c4",
+      "report": "/home/user/merge/ws/M-PIN/queue/done/R-25-SNAPSHOT-COLLECTORS-R1/REPORT.md",
+      "report_sha256": "1991e92e25893e58c448804ebb234a775549e5653859471a9db285052398cad3",
+      "receipt": "/home/user/merge/ws/M-PIN/queue/done/R-25-SNAPSHOT-COLLECTORS-R1/canonical-receipt.json",
+      "receipt_sha256": "e6a197cf91ab14a4bcc5d4c2866e7a7b3e648044bff33195fa9c5f077185bfa0",
+      "qualification_claimed": false,
+      "m4_6_acceptance_claimed": false
+    },
+    "synthetic_specimen": {
+      "report": "/home/user/merge/ws/M-PIN/queue/done/R-25-SPECIMEN-R1/REPORT.md",
+      "report_sha256": "60f96007ea5ade7ce056649f7c48c490b5b57b4f21cf218f1a5c71b65e8ef02a",
+      "receipt": "/home/user/merge/ws/M-PIN/queue/done/R-25-SPECIMEN-R1/canonical-receipt.json",
+      "receipt_sha256": "246672555ca443c3ff9c858d1711ada1066e8e11ed67e46a6e051b7a6b222513",
+      "synthetic": true,
+      "execution_evidence": false
+    }
+  },
+  "source_files": {
+    "/home/user/merge/ws/M-PIN/ORCHESTRATOR.md": "761a0788077d8fb17247fc75627b8f3f9cef32fc45bd4549c9ff533baf950f73",
+    "/home/user/merge-docs/docs/merge-plan/DECISIONS.md": "3796e8fff5dc9b251c8ebe8e91ba3ed9b3abdb6daedcd82d5ccf1b7ffa4ec54b",
+    "/home/user/merge-docs/docs/merge-plan/CURRENT-TUPLE.json": "71a738081dba7f84bea0b882a975cd540b62684e8f6f1fa0d99f572e62908e50",
+    "/home/user/merge-docs/docs/merge-plan/handoff/inputs/M-QUAL-R-30-verifier-interface.md": "2f685c8aec21bef116f95645920717e4b12ef33c1ca820fe6185eb01ffea115d",
+    "/home/user/merge/ws/M-PIN/queue/done/R-25-CONTINUITY-OBLIGATIONS-R1/REPORT.md": "fe63f73e9c6c79eb7a9cef55dd53e846d697547b6cf59ea8710ccf4a5914f811",
+    "/home/user/merge/ws/M-PIN/queue/done/R-25-CONTINUITY-OBLIGATIONS-R1/canonical-receipt.json": "702809c5997084486e6673ff41e74fa7fff24c1303fc06d934ed9729ea8777a7",
+    "/home/user/merge/ws/M-PIN/queue/done/R-25-CONTINUITY-DELIVERY-R1/REPORT.md": "554af0d07c0383de718a3c4a31a2c8a1c19f55597d554a922b947299d7ee4529",
+    "/home/user/merge/ws/M-PIN/queue/done/R-25-CONTINUITY-DELIVERY-R1/canonical-receipt.json": "04589c2778245619f076819992a8d265f240b68660c69415f2c0cabde97c6989"
+  },
+  "commands": [
+    {
+      "command": "pwd; rg --files task and prior receipt folders",
+      "exit": 0,
+      "inner_exit": 0,
+      "purpose": "locate scoped inputs without mutation"
+    },
+    {
+      "command": "rg -n anchors in ORCHESTRATOR.md and DECISIONS.md; sed relevant source reports",
+      "exit": 0,
+      "inner_exit": 0,
+      "purpose": "read the 20:00/20:07 decisions and prior obligation/producer evidence"
+    },
+    {
+      "command": "git -C repos/astrid-agent rev-parse/status; git cat-file -t published Agent and R-36 candidate; git ls-tree relevant paths",
+      "exit": 0,
+      "inner_exit": 0,
+      "purpose": "bind source inspection to immutable Git objects"
+    },
+    {
+      "command": "git show ab43bad...:<published source>; nl -ba; sed relevant ranges",
+      "exit": 0,
+      "inner_exit": 0,
+      "purpose": "inspect exact matrix, scenario, checker, observer, provider, and executor definitions"
+    },
+    {
+      "command": "git show 3005252e... relevant files; git diff --stat/diff against published Agent",
+      "exit": 0,
+      "inner_exit": 0,
+      "purpose": "check available R-36 candidate for inventory/class changes"
+    },
+    {
+      "command": "sha256sum requested docs/reports/receipts; git show <published/candidate source> | sha256sum",
+      "exit": 0,
+      "inner_exit": 0,
+      "purpose": "record immutable source hashes"
+    },
+    {
+      "command": "jq -e '.agent==published Agent and .pinokio==published Pinokio' CURRENT-TUPLE.json",
+      "exit": 0,
+      "inner_exit": 0,
+      "purpose": "verify tuple identity"
+    },
+    {
+      "command": "git -C /home/user/merge/ws/M-PIN status --short -- queue/running/R-25-OPTION-B-OBLIGATIONS-R1",
+      "exit": 128,
+      "inner_exit": 128,
+      "purpose": "non-mutating workspace status probe",
+      "reason": "the workspace root is not a Git worktree in this task view"
+    },
+    {
+      "command": "git -C /home/user/merge/ws/M-PIN/queue/running/R-25-OPTION-B-OBLIGATIONS-R1 status --short",
+      "exit": 128,
+      "inner_exit": 128,
+      "purpose": "non-mutating task-local status probe",
+      "reason": "the task folder is not a Git worktree in this task view"
+    },
+    {
+      "command": "ls -l REPORT.md canonical-receipt.json; jq receipt summary",
+      "exit": 0,
+      "inner_exit": 0,
+      "purpose": "verify deliverables exist and summarize receipt"
+    }
+  ],
+  "recorded_producer_inner_exits": {
+    "snapshot_collector_focused_python": 0,
+    "snapshot_collector_py_compile": 0,
+    "snapshot_collector_pinokio_node_tests": 0,
+    "snapshot_collector_cross_repository_binding": 0,
+    "snapshot_collector_remote_audit": 0,
+    "specimen_node_tests": 0,
+    "specimen_git_diff_check": 0,
+    "specimen_jq_validation": 0
+  },
+  "limitations": [
+    "No tests, hosted jobs, native runs, or preparation were rerun.",
+    "No authentic six-slot M4-6 receipt or R-36 admission is present.",
+    "Snapshots, equal snapshots, PID/birth identity, hash chains, or ledgers do not prove containment or continuous history.",
+    "Process/service snapshots alone do not prove candidate filesystem writes or semantic data preservation; required action/filesystem joins remain open.",
+    "The R-36 candidate is a provenance/checker reference and does not contain the Option B inventory class split.",
+    "This receipt is a classification record only; qualification, acceptance, and handoff are false."
+  ],
+  "routing": "M-QUAL: apply the exact 30-ID Pinokio mapping in REPORT.md to the protected inventory/checker reconciliation; require all checkpoint assertions for R1 and list containment/continuous-history assertions as deferred-R1.x without passing them."
+}
