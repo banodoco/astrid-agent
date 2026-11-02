@@ -14383,6 +14383,16 @@ def _custody_fd_diag(point):
         _sys2.stderr.write("astrid.custody_fd_diag error " + type(exc).__name__ + "\n")
 
 
+def _parked_activation_error(exc, preparation):
+    """Name a host-control failure that closed the parked channel, chained to its cause."""
+    cause = getattr(preparation, "control_error", None)
+    if cause is None:
+        return exc
+    failure = HostError(f"{exc}; host control failed: {type(cause).__name__}: {cause}")
+    failure.__cause__ = cause
+    return failure
+
+
 def _await_worker_activation(
     descriptor: int,
     *,
@@ -14798,12 +14808,15 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
                 "require_receipt": target.get("kind") == "machine" or (preparation is not None and
                     (preparation._request or {}).get("profile", {}).get("execution_mode") == "host_only_cpu"),
             }
-            if args.activation_fd is not None:
-                activation = _await_worker_activation(args.activation_fd, **activation_args)
-            else:
-                activation = _await_worker_activation_socket(
-                    args.activation_socket, **activation_args
-                )
+            try:
+                if args.activation_fd is not None:
+                    activation = _await_worker_activation(args.activation_fd, **activation_args)
+                else:
+                    activation = _await_worker_activation_socket(
+                        args.activation_socket, **activation_args
+                    )
+            except HostError as exc:
+                raise _parked_activation_error(exc, preparation)
             if preparation is not None and (preparation.result is None or preparation._aborted):
                 raise HostError("local activation arrived before verified preparation")
             if preparation is not None:
