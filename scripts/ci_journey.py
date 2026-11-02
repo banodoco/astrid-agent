@@ -63,6 +63,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "install-bootstrap.log", "update-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
+    "preflight-scheduled-task.txt",
     "runtime-owner-processes.json",
     "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
@@ -511,9 +512,16 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
         else:
             unit_path.write_text("Task Scheduler definition unavailable\n", encoding="utf-8")
         if sys.platform in {"linux", "darwin"} and completed.returncode:
-            manager["error"] = f"manager command exited {completed.returncode}"
-            print(f"Journey manager-state capture ({phase}) failed: {manager['error']}: "
-                  f"{(completed.stderr or completed.stdout).strip()}", file=sys.stderr, flush=True)
+            missing_service = (sys.platform == "darwin" and phase == "after-cleanup"
+                               and completed.returncode == 113
+                               and completed.stderr.strip() ==
+                               f'Could not find service "haus.astrid.runtime" in domain for user gui: {os.getuid()}')
+            if missing_service:
+                manager["service_state"] = "absent"
+            else:
+                manager["error"] = f"manager command exited {completed.returncode}"
+                print(f"Journey manager-state capture ({phase}) failed: {manager['error']}: "
+                      f"{(completed.stderr or completed.stdout).strip()}", file=sys.stderr, flush=True)
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         print(f"Journey evidence capture ({phase}) failed: {message}", file=sys.stderr, flush=True)
@@ -565,7 +573,7 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
 
 def retain_named_evidence(evidence: Path, phase: str) -> None:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
-    destination = evidence.parent / "evidence-upload" / phase
+    destination = evidence.parent.parent / "evidence-upload" / phase
     try:
         destination.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
@@ -591,6 +599,25 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    # The existing hosted boundary accepts this legacy service-log filename
+    # pattern. Flatten the seed directories into it without truncating bytes.
+    # Numbering follows sorted relative paths so distinct invocations survive.
+    seed_dirs = sorted(path for path in evidence.glob("**/seed-diagnostics/*")
+                       if len(path.name) >= 4 and path.name.isascii() and path.name.isdecimal())
+    for index, directory in enumerate(seed_dirs, 1):
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        for kind in ("input", "command", "stdout", "stderr", "exit"):
+            suffix = "json" if kind in {"input", "command", "exit"} else "txt"
+            source = directory / f"{kind}.{suffix}"
+            if source.is_file() and not source.is_symlink():
+                target = destination / f"runtime-service-service-seed-{index:04d}-{kind}.log"
+                try:
+                    shutil.copyfile(source, target)
+                except Exception as exc:
+                    print(f"Journey seed evidence copy ({phase}) failed for {source}: "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
 
 def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:
     """Stage named diagnostics and bind their availability to the journey receipt."""
@@ -599,7 +626,7 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         capture_runtime_service_logs(evidence, run_root, phase)
         capture_manager_state(evidence, data, phase)
         retain_named_evidence(evidence, phase)
-        destination = evidence.parent / "evidence-upload" / phase
+        destination = evidence.parent.parent / "evidence-upload" / phase
         recorded = read_json(result_path) if result_path.is_file() else {}
         diagnostic = {}
         for key, name in (("install_log", "install.log"),
@@ -864,12 +891,13 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
                 if fresh or fields.get("FragmentPath") != expected:
                     raise RuntimeError("An Astrid user-manager unit outside this journey is loaded")
     elif sys.platform == "win32":
-        existing = windows.powershell(
-            "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction SilentlyContinue; "
-            "if ($t) { 'present'; $t.Actions | ForEach-Object { $_.Execute } }",
-            "preflight-scheduled-task.txt", show=False, timeout=30)
-        if existing.strip() and (fresh or not windows_task_owned(existing, root)):
-            raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
+        existing = windows.scheduled_task_diagnostics(leg=leg)
+        if existing["status"] == "present":
+            tasks = existing["tasks"]
+            owned = (len(tasks) == 1 and len(tasks[0]["executables"]) == 1
+                     and windows_task_owned("present\n" + tasks[0]["executables"][0], root))
+            if fresh or not owned:
+                raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
     if fresh and runtime_processes(data):
         raise RuntimeError("A Runtime owner is already running on this host")
 
@@ -919,6 +947,8 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
         _manager_probe(["launchctl", "print", f"gui/{os.getuid()}"], label="launchd GUI domain")
         manager = "launchd"
     elif sys.platform == "win32":
+        # Retain the query even if the subsequent manager prerequisite fails.
+        windows.scheduled_task_preflight(args.leg)
         # The command checks both the PowerShell service-manager module and its
         # scheduler surface; it does not manufacture or start a task.
         version = windows.powershell(
@@ -1020,12 +1050,50 @@ def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
 
 def run(argv: list[str | Path], log: Path, *, env: dict | None = None, timeout: int = 3600) -> str:
     log.parent.mkdir(parents=True, exist_ok=True)
+    parts = [str(part) for part in argv]
+    if (log.name == "seed.json" and len(parts) >= 4 and
+            Path(parts[2]).name == "journey_workspace.py" and parts[3] == "seed"):
+        return run_seed(parts, log, env=env, timeout=timeout)
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run([str(part) for part in argv], env=env, stdout=stream,
                                 stderr=subprocess.STDOUT, timeout=timeout, check=False)
     output = log.read_text(encoding="utf-8-sig", errors="replace")
     if result.returncode:
         raise RuntimeError(f"{log.name}: exit {result.returncode}; see {log}")
+    return output
+
+
+def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> str:
+    """Preserve the exact seed request, argv and separate byte streams per call."""
+    directory = log.parent / "seed-diagnostics"
+    directory.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while True:
+        invocation = directory / f"{index:04d}"
+        try:
+            invocation.mkdir()
+            break
+        except FileExistsError:
+            index += 1
+    request = Path(argv[argv.index("--request") + 1])
+    shutil.copyfile(request, invocation / "input.json")
+    write_json(invocation / "command.json", argv)
+    status = {"exit_code": None}
+    try:
+        with ((invocation / "stdout.txt").open("wb") as stdout,
+              (invocation / "stderr.txt").open("wb") as stderr):
+            result = subprocess.run(argv, env=env, stdout=stdout, stderr=stderr,
+                                    timeout=timeout, check=False)
+        status["exit_code"] = result.returncode
+    except Exception as exc:
+        status["error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        write_json(invocation / "exit.json", status)
+        shutil.copyfile(invocation / "stdout.txt", log)
+    output = log.read_text(encoding="utf-8-sig", errors="replace")
+    if result.returncode:
+        raise RuntimeError(f"{log.name}: exit {result.returncode}; see {invocation}")
     return output
 
 
@@ -1079,6 +1147,15 @@ def healthy(data: Path) -> dict:
     return discovery
 
 
+def _runtime_owner_command(command: str) -> bool:
+    # Installed services run the Runtime CLI through a Python -c prelude. Keep
+    # recognizing the older runtime_protocol form for other running owners.
+    return ("-m runtime_protocol start" in command or
+            (re.search(r"(?:^|\s)-c(?:\s|$)", command) is not None and
+             "from astrid_runtime.cli import main" in command and
+             re.search(r"main\(\s*\[\s*['\"]run['\"]", command) is not None))
+
+
 def runtime_processes(data: Path) -> list[int]:
     """Count every live Runtime owner process on this isolated journey host."""
     if sys.platform == "win32":
@@ -1087,14 +1164,19 @@ def runtime_processes(data: Path) -> list[int]:
             "runtime-owner-processes.json", show=False, timeout=30))
         rows = rows if isinstance(rows, list) else [rows]
         return [int(row["ProcessId"]) for row in rows if
-                "-m runtime_protocol start" in str(row.get("CommandLine") or "")]
-    output = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
-    found = []
+                _runtime_owner_command(str(row.get("CommandLine") or ""))]
+    # The installed prelude can be long and can contain newlines. Ask ps for
+    # the full command, then keep continuation lines with their process.
+    output = subprocess.check_output(["ps", "-ww", "-axo", "pid=,command="], text=True)
+    records: list[tuple[int, str]] = []
     for line in output.splitlines():
-        pid, _, command = line.strip().partition(" ")
-        if "-m runtime_protocol start" in command:
-            found.append(int(pid))
-    return found
+        match = re.match(r"^\s*(\d+)\s+(.*)$", line)
+        if match:
+            records.append((int(match.group(1)), match.group(2)))
+        elif records:
+            pid, command = records[-1]
+            records[-1] = (pid, command + "\n" + line)
+    return [pid for pid, command in records if _runtime_owner_command(command)]
 
 
 def assert_one_runtime(data: Path) -> None:

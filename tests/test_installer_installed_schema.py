@@ -29,8 +29,7 @@ from astrid.installer.service import LABEL
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = Path("astrid/core/timeline/schema/timeline-config.schema.json")
-PRODUCER = "1e6d899efa77a2d6ec247c38250f9748330bb587"
-LOCK_PRODUCER = "5453366458f7b4ee874c94d15ae7952e3e82d3c3"
+PRODUCER = "5453366458f7b4ee874c94d15ae7952e3e82d3c3"
 SCHEMA_SHA256 = "f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
 pytestmark = pytest.mark.linux_native
 
@@ -236,7 +235,7 @@ print(json.dumps({'origins': origins, 'schema': str(path),
 ''')
     assert value["schema"] == str(installed_schema)
     assert value["sha256"] == SCHEMA_SHA256
-    assert value["producer"] == LOCK_PRODUCER
+    assert value["producer"] == PRODUCER
     profile = core.read_json(version.profile)
     assert profile["source_checkout"] == str(state.product_root)
     assert profile["source_digest"] == value["digest"]
