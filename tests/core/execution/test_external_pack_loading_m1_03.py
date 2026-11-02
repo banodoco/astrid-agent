@@ -15,7 +15,7 @@ from astrid.core.pack.identity import pack_digest
 from tests.core.execution.test_generic_host_actions_v3 import FakeRuntime, pack as base_pack, task_for
 
 
-CORE_MODULE = "astrid.packs.generation"
+CORE_MODULE = "astrid.pack_api"
 
 
 @pytest.fixture(autouse=True)
@@ -72,16 +72,17 @@ def _external_pack(tmp_path, monkeypatch, *, kind="python", module="astrid.packs
     return root, runtime, GenericPackHost(pack_roots=[root], client=runtime)
 
 
-def _facts_source():
+def _facts_source(core_module=CORE_MODULE):
     return (
-        "import astrid.packs.generation as core\n"
+        f"import {core_module} as core\n"
         "from ..shared import helper as relative_helper\n"
         "from astrid.packs.unrelated.shared import helper as absolute_helper\n"
-        "import json, os, sys, runtime_protocol\n"
+        "import json, os, sys\n"
         "def facts():\n"
         "    return {'module': (__spec__.name if __spec__ is not None else __name__), 'file': __file__, 'value': absolute_helper.VALUE, "
         "'same_module': relative_helper is absolute_helper, 'core_name': core.__name__, "
-        "'core_path': list(core.__path__), 'runtime_file': runtime_protocol.__file__, "
+        "'core_path': list(getattr(core, '__path__', [])), 'core_file': getattr(core, '__file__', None), "
+        "'runtime_file': sys.modules['runtime_protocol'].__file__, "
         "'sys_path': sys.path, 'pythonpath': os.environ.get('PYTHONPATH', '')}\n"
     )
 
@@ -117,8 +118,8 @@ def _assert_facts(facts, root):
     assert Path(facts["file"]).resolve() == (root / "actions" / "emit.py").resolve()
     assert facts["value"] == "same-value" and facts["same_module"] is True
     assert facts["core_name"] == CORE_MODULE
-    core_root = (Path(__file__).resolve().parents[3] / "astrid" / "packs" / "generation").resolve()
-    assert core_root in [Path(path).resolve() for path in facts["core_path"]]
+    core_file = (Path(__file__).resolve().parents[3] / "astrid" / "pack_api.py").resolve()
+    assert Path(facts["core_file"]).resolve() == core_file
     assert str(root) not in facts["sys_path"] and str(root.parent) not in facts["sys_path"]
     assert str(root) not in facts["pythonpath"].split(os.pathsep)
     assert str(root.parent) not in facts["pythonpath"].split(os.pathsep)
@@ -150,6 +151,53 @@ def test_worker_uses_host_runtime_origin_without_ambient_pythonpath(tmp_path, mo
     assert str(ambient) not in facts["sys_path"]
     assert str(ambient) not in facts["pythonpath"].split(os.pathsep)
     assert not sentinel.exists()
+
+
+def test_raw_selected_loader_preserves_real_in_tree_pack_imports(tmp_path, monkeypatch):
+    """Exercise the loader separately from the host's public import checker.
+
+    Current foundations permit external actions to use the public core facade;
+    deep core-pack imports are checked by their own compatibility owner.
+    """
+    import subprocess
+    import runtime_protocol
+
+    root, _, _ = _external_pack(tmp_path, monkeypatch,
+        action_code=_facts_source("astrid.packs.generation"))
+    sibling = root.parent / "ambient"
+    (sibling / "shared").mkdir(parents=True)
+    sentinel = tmp_path / "unselected-imported"
+    (sibling / "shared" / "tripwire.py").write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).touch()\n", encoding="utf-8")
+    script = """
+import importlib, json, sys, runtime_protocol
+from pathlib import Path
+from astrid.core.pack.imports import install_pack_imports
+root = Path(sys.argv[1])
+prefix = install_pack_imports(root.name, root)
+print(json.dumps(importlib.import_module(prefix + '.actions.emit').facts()))
+try:
+    importlib.import_module('astrid.packs.ambient.shared.tripwire')
+except ModuleNotFoundError:
+    pass
+else:
+    raise AssertionError('unselected sibling imported')
+"""
+    repo_root = Path(__file__).resolve().parents[3]
+    runtime_root = Path(runtime_protocol.__file__).resolve().parent.parent
+    completed = subprocess.run([sys.executable, "-c", script, str(root)], cwd=tmp_path,
+        env={"HOME": str(tmp_path / "loader-home"),
+             "PYTHONPATH": os.pathsep.join((str(repo_root), str(runtime_root))),
+             "PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True, timeout=15)
+    assert completed.returncode == 0, completed.stderr
+    assert not sentinel.exists()
+    facts = json.loads(completed.stdout)
+    assert facts["module"] == "astrid.packs.unrelated.actions.emit"
+    assert Path(facts["file"]).resolve() == root / "actions" / "emit.py"
+    assert facts["same_module"] is True and facts["value"] == "same-value"
+    assert facts["core_name"] == "astrid.packs.generation"
+    assert (repo_root / "astrid" / "packs" / "generation").resolve() in [
+        Path(path).resolve() for path in facts["core_path"]]
 
 
 @pytest.mark.parametrize("route", ["module", "inline", "script", "package"])

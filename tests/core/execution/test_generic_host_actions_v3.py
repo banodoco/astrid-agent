@@ -823,8 +823,10 @@ def test_real_generic_host_worker_uses_utf8_mode_with_default_off_control(tmp_pa
 
 def test_python_action_receives_original_host_bridge_before_import(tmp_path):
     """Exercise the host's real FD/argv boundary, without fixture installation."""
-    code = """from astrid.sdk import _child_bridge
-import os
+    # Inspect the bootstrap's already installed module without making the
+    # action depend on an import outside the public SDK contract.
+    code = """import os, sys
+_child_bridge = sys.modules['astrid.sdk._child_bridge']
 assert _child_bridge._bridge is not None
 assert not os.get_inheritable(_child_bridge._bridge._channel.fileno())
 def run(value):
