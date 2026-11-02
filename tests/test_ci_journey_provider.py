@@ -176,11 +176,16 @@ def test_diagnostic_invocation_rejects_altered_source(tmp_path, monkeypatch):
 def success_fixture(tmp_path, monkeypatch):
     """Use synthetic sources and mocked process output, never live evidence."""
     provider, root, config, request, _ = diagnostic_fixture(tmp_path, monkeypatch)
-    monkeypatch.setattr(provider, "_SUCCESS_PRODUCER_FILES", provider._PRODUCER_FILES)
+    monkeypatch.setattr(provider, "LIVE_PRODUCER_FILES", provider._PRODUCER_FILES)
     monkeypatch.setattr(provider, "_PRODUCER_REF", provider._SUCCESS_PRODUCER_REF)
-    request["provider"]["ref"] = provider._SUCCESS_PRODUCER_REF
+    monkeypatch.setattr(provider, "LIVE_PRODUCER_REF", provider._SUCCESS_PRODUCER_REF)
+    request["provider"]["ref"] = provider.LIVE_PRODUCER_REF
+    config.update({"pinokiod": "/fixture/pinokiod", "scratch_root": "/fixture/scratch",
+                   "engine": {"pid": 123, "boot_id": "0" * 36, "start_ticks": "1",
+                              "pinokio_home": "/fixture/home", "port": 42000}})
+    request["config_sha256"] = __import__("hashlib").sha256(provider._canonical(config)).hexdigest()
     parsed = ProviderRequest.parse(encode(request))
-    source = next(iter(provider._SUCCESS_PRODUCER_FILES))
+    source = next(iter(provider.LIVE_PRODUCER_FILES))
     output = {"schema": RESULT_SCHEMA, "request_sha256": parsed.sha256,
               "observations": [{"kind": kind, "source": source,
                                 "evidence_sha256": str(i) * 64, "safe": True}
@@ -235,10 +240,40 @@ def test_success_invocation_rejects_failure_and_retains_stderr(tmp_path, monkeyp
 def test_success_invocation_rejects_unbound_inputs(tmp_path, monkeypatch, mutation):
     provider, root, config, request, _ = success_fixture(tmp_path, monkeypatch)
     if mutation == "ref": request["provider"]["ref"] = "f" * 40
-    elif mutation == "source": request["provider"]["sources"][next(iter(provider._SUCCESS_PRODUCER_FILES))] = "f" * 64
+    elif mutation == "source": request["provider"]["sources"][next(iter(provider.LIVE_PRODUCER_FILES))] = "f" * 64
     elif mutation == "config": config["node"] = "/other"
-    elif mutation == "changed_file": (root / next(iter(provider._SUCCESS_PRODUCER_FILES))).write_text("changed")
+    elif mutation == "changed_file": (root / next(iter(provider.LIVE_PRODUCER_FILES))).write_text("changed")
     parsed = ProviderRequest.parse(encode(request))
     if mutation == "forged_request": parsed = ProviderRequest(parsed.canonical, "f" * 64)
     with pytest.raises(ProviderContractError):
         provider.invoke_linux_provider(parsed, encode(config), str(root))
+
+
+def test_final_live_provider_pins_are_exact():
+    from scripts import ci_journey_provider as provider
+    assert provider.LIVE_PRODUCER_REF == "6bf95fd631864a5dbfa86df5ffc165493fffc41e"
+    assert provider.LIVE_PRODUCER_FILES == {
+        "pinokio/providers/r24-linux.py": "9428f7b1224fdad6c29b037904920d4c49b80f676454c859a180f1a98f832392",
+        "pinokio/providers/r24-action.cjs": "042f533200723898aba2f15f78edfe98bc3197f9b161f4391b706a38469ca0f3",
+        "pinokio/providers/r24-live-action.js": "0df87acefad6a365e97f7a846a7d6136e06d026840a10796f640396a7187ae78",
+        "pinokio/providers/r24-linux-binding.json": "11ec4932731b93bc0622f934a8974bcdcfb2350d932037e7a087a878f8c9834c",
+        "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
+    }
+
+
+def test_live_export_invocation_adds_only_fixed_export_argument(tmp_path, monkeypatch):
+    import subprocess
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    provider, root, config, request, output = success_fixture(tmp_path, monkeypatch)
+    parsed = ProviderRequest.parse(encode(request))
+    export = tmp_path / "export"
+    def run(argv, **kwargs):
+        assert Path(argv[-1]) == export
+        assert len(argv) == 7
+        return SimpleNamespace(returncode=0, stdout=encode(output).encode(), stderr=b"")
+    monkeypatch.setattr(subprocess, "run", run)
+    result = provider.invoke_linux_provider_export(parsed, encode(config), str(root), str(export))
+    assert result.returncode == 0
+    assert result.result == ProviderResult.parse(encode(output), parsed)

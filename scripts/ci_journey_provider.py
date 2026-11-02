@@ -1,4 +1,4 @@
-"""Provisional R-24 wire contract. Parsing is not evidence authentication.
+"""R-24 typed provider wire contract. Parsing is not evidence authentication.
 
 No provider is approved here, and this module does not authorize execution or
 hosted admission. A source-backed provider and independently authenticated
@@ -26,9 +26,12 @@ class ProviderContractError(ValueError):
 class ProviderInvocationError(ProviderContractError):
     """A failed invocation, retaining its separate untrusted diagnostics."""
 
-    def __init__(self, message: str, stderr: bytes):
+    def __init__(self, message: str, stderr: bytes, *, stdout: bytes = b"",
+                 returncode: int | None = None):
         super().__init__(message)
         self.stderr = stderr
+        self.stdout = stdout
+        self.returncode = returncode
 
 
 def _object(value: Any, fields: set[str], label: str) -> dict[str, Any]:
@@ -160,10 +163,24 @@ _PRODUCER_FILES = {
     "pinokio/providers/r24-linux-binding.json": "aa081980bb143ea67eac9e36ca567af8f54a3cdcf7c6593ee130ed81a4d86d87",
     "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
 }
-_SUCCESS_PRODUCER_REF = "008c2eeee9bcb123daad3071494360920848577d"
-_SUCCESS_PRODUCER_FILES = {**_PRODUCER_FILES,
-    "pinokio/providers/r24-linux.py": "8348e30a924afc39c7b4e8fc825f0d44b2771a34f439913514add005e1576234",
+# Final live-collector candidate.  It is an immutable producer input, not a
+# release pin or evidence authority.  The binding bytes at this ref still name
+# the earlier candidate tuple below; callers must compare that tuple with their
+# independently selected release before invocation.
+LIVE_PRODUCER_REF = "6bf95fd631864a5dbfa86df5ffc165493fffc41e"
+LIVE_PRODUCER_FILES = {
+    "pinokio/providers/r24-linux.py": "9428f7b1224fdad6c29b037904920d4c49b80f676454c859a180f1a98f832392",
+    "pinokio/providers/r24-action.cjs": "042f533200723898aba2f15f78edfe98bc3197f9b161f4391b706a38469ca0f3",
+    "pinokio/providers/r24-live-action.js": "0df87acefad6a365e97f7a846a7d6136e06d026840a10796f640396a7187ae78",
+    "pinokio/providers/r24-linux-binding.json": "11ec4932731b93bc0622f934a8974bcdcfb2350d932037e7a087a878f8c9834c",
+    "pinokio/providers/r24-schema.json": "6cd5dbc55a11f607f184c6e1ce281ea10633b01fb1a739df4b12673525d48421",
 }
+LIVE_INTERFACE_FILES = {
+    "pinokio/providers/R24-LINUX.md": "9989556ea36a9757bf7c7ae881a85a790e297e3505d198fe44fe589e8be9ab92",
+}
+# Preserve the internal names used by the R3 focused fixtures.
+_SUCCESS_PRODUCER_REF = LIVE_PRODUCER_REF
+_SUCCESS_PRODUCER_FILES = LIVE_PRODUCER_FILES
 _CANDIDATE = {
     "app": "5c95abb00525e1a77d00c32042b6453d9f14f4e7",
     "agent": "e425903f7a9fa5b82973281d15054c0716b46e2d",
@@ -184,7 +201,8 @@ class DiagnosticResult:
 
 
 def _invoke_linux(request: ProviderRequest, config_json: str | bytes,
-                  producer_root: str, producer_ref: str, producer_files: dict[str, str]):
+                  producer_root: str, producer_ref: str, producer_files: dict[str, str],
+                  *, live_config: bool = False, export_directory: str | None = None):
     """Validate immutable inputs and run one producer with separate streams."""
     import os
     from pathlib import Path
@@ -202,9 +220,15 @@ def _invoke_linux(request: ProviderRequest, config_json: str | bytes,
             data["provider"] != {"ref": producer_ref, "sources": producer_files}):
         raise ProviderContractError("producer or candidate binding mismatch")
     config = _decode(config_json)
-    _object(config, {"checkouts", "pterm", "node", "node_sha256",
-                     "pterm_entry_sha256", "unws_sha256"}, "config")
+    config_fields = {"checkouts", "pterm", "node", "node_sha256",
+                     "pterm_entry_sha256", "unws_sha256"}
+    if live_config:
+        config_fields |= {"pinokiod", "engine", "scratch_root"}
+    _object(config, config_fields, "config")
     _object(config["checkouts"], {"app", "agent", "runtime", "pinokio"}, "checkouts")
+    if live_config:
+        _object(config["engine"], {"pid", "boot_id", "start_ticks", "pinokio_home", "port"},
+                "engine")
     if hashlib.sha256(_canonical(config)).hexdigest() != data["config_sha256"]:
         raise ProviderContractError("config digest mismatch")
     if not isinstance(producer_root, str) or not os.path.isabs(producer_root):
@@ -230,16 +254,24 @@ def _invoke_linux(request: ProviderRequest, config_json: str | bytes,
             if (hashlib.sha256(path.read_bytes()).hexdigest() != digest or
                     hashlib.sha256(blob).hexdigest() != digest):
                 raise ProviderContractError("producer source digest mismatch")
-        with tempfile.TemporaryDirectory(prefix="r24-diagnostic-") as tmp:
+        if export_directory is not None:
+            if (not isinstance(export_directory, str) or not os.path.isabs(export_directory)
+                    or Path(export_directory).exists()):
+                raise ProviderContractError("absolute nonexistent export directory required")
+        with tempfile.TemporaryDirectory(prefix="r24-provider-") as tmp:
             request_path, config_path = Path(tmp) / "request.json", Path(tmp) / "config.json"
             request_path.write_bytes(request.canonical)
             config_path.write_bytes(_canonical(config))
-            proc = subprocess.run([sys.executable, "-I", "-B", str(root / "pinokio/providers/r24-linux.py"),
-                                   str(request_path), str(config_path)], stdout=subprocess.PIPE,
+            argv = [sys.executable, "-I", "-B", str(root / "pinokio/providers/r24-linux.py"),
+                    str(request_path), str(config_path)]
+            if export_directory is not None:
+                argv.append(export_directory)
+            proc = subprocess.run(argv, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, timeout=150, check=False)
         return proc
     except subprocess.TimeoutExpired as exc:
-        raise ProviderInvocationError("producer invocation timed out", exc.stderr or b"") from exc
+        raise ProviderInvocationError("producer invocation timed out", exc.stderr or b"",
+                                      stdout=exc.stdout or b"") from exc
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise ProviderContractError("producer invocation unavailable") from exc
 
@@ -268,22 +300,48 @@ class LinuxProviderOutput:
 
     result: ProviderResult
     stderr: bytes
+    stdout: bytes = b""
+    returncode: int = 0
 
 
 def invoke_linux_provider(request: ProviderRequest, config_json: str | bytes,
                           producer_root: str) -> LinuxProviderOutput:
-    """Invoke immutable R2 and parse one success result; do not authenticate it.
+    """Invoke the immutable live collector and parse one result; do not admit it.
 
     The controlled caller supplies a materialized configuration. On a nonzero
     exit or invalid stdout, ProviderInvocationError retains stderr separately.
     No supported driver route or evidence admission is enabled by this function.
     """
     proc = _invoke_linux(request, config_json, producer_root,
-                         _SUCCESS_PRODUCER_REF, _SUCCESS_PRODUCER_FILES)
+                         LIVE_PRODUCER_REF, LIVE_PRODUCER_FILES, live_config=True)
     if proc.returncode != 0:
-        raise ProviderInvocationError("producer failed or did not run", proc.stderr)
+        raise ProviderInvocationError("producer failed or did not run", proc.stderr,
+                                      stdout=proc.stdout, returncode=proc.returncode)
     try:
         result = ProviderResult.parse(proc.stdout, request)
     except ProviderContractError as exc:
-        raise ProviderInvocationError("invalid producer result", proc.stderr) from exc
-    return LinuxProviderOutput(result, proc.stderr)
+        raise ProviderInvocationError("invalid producer result", proc.stderr,
+                                      stdout=proc.stdout, returncode=proc.returncode) from exc
+    return LinuxProviderOutput(result, proc.stderr, proc.stdout, proc.returncode)
+
+
+def invoke_linux_provider_export(request: ProviderRequest, config_json: str | bytes,
+                                 producer_root: str, export_directory: str) -> LinuxProviderOutput:
+    """Invoke the same typed provider while requesting its fixed raw export.
+
+    The caller remains responsible for independently validating the export and
+    hosted custody.  This function only preserves the typed R3 subprocess and
+    stream boundary while adding the producer's immutable export argument.
+    """
+    proc = _invoke_linux(request, config_json, producer_root,
+                         LIVE_PRODUCER_REF, LIVE_PRODUCER_FILES, live_config=True,
+                         export_directory=export_directory)
+    if proc.returncode != 0:
+        raise ProviderInvocationError("producer failed or did not run", proc.stderr,
+                                      stdout=proc.stdout, returncode=proc.returncode)
+    try:
+        result = ProviderResult.parse(proc.stdout, request)
+    except ProviderContractError as exc:
+        raise ProviderInvocationError("invalid producer result", proc.stderr,
+                                      stdout=proc.stdout, returncode=proc.returncode) from exc
+    return LinuxProviderOutput(result, proc.stderr, proc.stdout, proc.returncode)
