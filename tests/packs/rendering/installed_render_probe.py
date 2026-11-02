@@ -59,7 +59,7 @@ code = facade.main(["--timeline", str(timeline), "--assets", str(assets), "--out
 if mode == "positive":
     assert code == 0 and output.read_bytes()[4:8] == b"ftyp"
     provenance = json.loads(Path(str(output) + ".provenance.json").read_text())
-    assert provenance["renderer"]["id"] == "rendering.remotion", provenance
+    assert provenance["segments_v2"][0]["renderer"]["id"] == "rendering.remotion", provenance
     props = json.loads((root / "rendered-props.json").read_text())
     assert props["timeline"]["clips"][0]["clipType"] == "am-snap-plate"
     assert "am-snap-plate" in (root / "remotion/src/effects.generated.ts").read_text()

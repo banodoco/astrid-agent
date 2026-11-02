@@ -135,11 +135,19 @@ def test_selected_edit_forces_second_capture_but_unselected_payloads_are_never_i
     )
     cards = [{"frame": 0, "image": "frames/0.png"}]
     assert provider.capture(cards, tmp_path / "first")["evidence_source"] == "fresh_capture"
+    # Mutate denied bytes through the saved filesystem edge. The cache must
+    # neither acquire those bytes nor lose the selected composition's entry.
+    for path in (unused_pack / "elements/effects/unused/geometry.json",
+                 env_pack / "elements/effects/env-unused/geometry.json",
+                 disabled_pack / "elements/effects/disabled/geometry.json",
+                 foreign / "pack.yaml", selected / "undeclared.bin"):
+        with real_open(path, "ab") as stream:
+            stream.write(b" ")
     assert provider.capture(cards, tmp_path / "warm")["evidence_source"] == "cache"
     target = selected / relative
     before = target.stat()
     data = target.read_bytes()
-    # Restore mtime and size: the source identity must still invalidate.
+    # Restore mtime; component/helper edits also retain their original size.
     target.write_bytes(data.replace(b"1", b"2", 1) if b"1" in data else data + b" ")
     os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert provider.capture(cards, tmp_path / "changed")["evidence_source"] == "fresh_capture"
