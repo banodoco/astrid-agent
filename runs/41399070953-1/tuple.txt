@@ -1,0 +1,9 @@
+agent 9674e1aee7107d6407d45de620ec8ee4f526cdba
+runtime 8d3e3af4ede6e3579ac673ae77794464f693bf1b
+app ae95eb455408b8c0e185bfded67798e2b307a6f6
+pinokio 2f085c5fc0cde192ac4a022065883c85dcccd0de
+workflow_repository banodoco/astrid-agent
+workflow_ref banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-UPD-LEGACY-PRED-ADMIT-R1-1
+workflow_sha a5ee7f2c6180fc10246fd7f3938b44eb1ce9773f
+run_id 41399070953
+run_attempt 1

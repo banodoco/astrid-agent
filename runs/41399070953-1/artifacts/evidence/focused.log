@@ -1,0 +1,7 @@
+........................................................................ [ 48%]
+........................................................................ [ 96%]
+.....                                                                    [100%]
+------------------- left out of this run by lane (1 entries) -------------------
+[omp] NO CI job runs this lane (manual: run it by hand with -m omp)
+  DESELECTED tests/test_verify_installed.py::test_broken_real_bridge_model_command_fails_verify
+149 passed, 1 deselected in 7.88s
