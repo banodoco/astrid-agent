@@ -11,11 +11,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from astrid.core.project.kernel_admission import admit_orchestrator_project_run
-from astrid.core.project.runtime import (
-    project_run_env,
-    reject_project_with_out,
-)
+from astrid.pack_api import admit_orchestrator_project_run
+from astrid.pack_api import project_run_env, reject_project_with_out
 
 
 def _project_slug_for_gate(argv: list[str]) -> str | None:

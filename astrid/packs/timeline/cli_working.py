@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli.domain_output import print_result
+from astrid.pack_api import print_result
 from astrid.packs.timeline.cli_common import (
     VerbError,
     clips_changed,
@@ -188,12 +188,8 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     from astrid.packs.timeline.cli_lint_header import print_broken_header
 
     print_broken_header("check")  # a check that could not load is named first, never silently absent
-    from astrid.core.timeline.cuts import (
-        bundle_fps,
-        find_cut,
-        occurrences_from_bundle,
-        picture_cuts,
-    )
+    from astrid.pack_api import bundle_fps, occurrences_from_bundle, picture_cuts
+    from astrid.core.timeline.cuts import find_cut
     from astrid.packs.rendering.actions.timeline_visualize.layers.base import check_help
     from astrid.packs.rendering.actions.timeline_visualize.motion import model
     from astrid.packs.rendering.actions.timeline_visualize.motion.conditions import run_checks

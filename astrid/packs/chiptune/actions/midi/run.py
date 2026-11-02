@@ -7,7 +7,7 @@ rendering live in ``astrid.packs.chiptune.actions._midi``.
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("chiptune.midi")
 
@@ -16,8 +16,8 @@ import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
-from astrid.core._shared.result_manifest import build_manifest, write_json_atomic, write_manifest
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import build_manifest, write_json_atomic, write_manifest
+from astrid.pack_api import AstridError
 from astrid.packs.chiptune.actions import _midi
 from astrid.packs.chiptune.actions import _synth as syn
 

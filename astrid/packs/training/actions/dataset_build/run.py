@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridValueError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import AstridValueError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('training.dataset_build')
 import argparse
@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AstridError
 
 from .acquisition import build_acquisition_request
 from .caption_validation import validate_accepted_captions

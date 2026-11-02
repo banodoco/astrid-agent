@@ -18,11 +18,11 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from astrid.core._shared.result_manifest import build_manifest
-from astrid.core._shared.result_manifest import write_manifest as write_result_manifest
-from astrid.core.contracts.errors import AstridError, render_astrid_error
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.pack_api import build_manifest
+from astrid.pack_api import write_manifest as write_result_manifest
+from astrid.pack_api import AstridError, render_astrid_error
+from astrid.pack_api import guard_canonical_entrypoint
+from astrid.pack_api import CredentialsScope
 
 guard_canonical_entrypoint("editorial.script_pipeline")
 

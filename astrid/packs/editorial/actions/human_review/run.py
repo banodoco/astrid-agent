@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError, render_astrid_error
-from astrid.core.execution.platform_helpers import owned_by_current_user
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridError, render_astrid_error
+from astrid.pack_api import owned_by_current_user
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('editorial.human_review')
 import argparse  # noqa: E402
@@ -32,13 +32,8 @@ from urllib.parse import parse_qs, unquote, urldefrag, urljoin, urlparse  # noqa
 from runtime_protocol import platform  # noqa: E402
 from runtime_protocol.dirfd import filesystem as os  # noqa: E402
 
-from astrid.core.experiments.state import (  # noqa: E402
-    StaleStateConflict,
-    apply_experiment_review_save,
-    is_experiment_review_save,
-    load_experiment_review_state,
-)
-from astrid.core.util.log_and_swallow import log_and_swallow  # noqa: E402
+from astrid.pack_api import StaleStateConflict, apply_experiment_review_save, is_experiment_review_save, load_experiment_review_state
+from astrid.pack_api import log_and_swallow  # noqa: E402
 
 try:  # The receiver fails closed for explicit schema bundles if unavailable.
     import jsonschema  # type: ignore
@@ -685,7 +680,7 @@ def _normalize_decision(value: Any) -> str:
 
 
 def _now_iso() -> str:
-    from astrid.core.util.time import utc_now_iso
+    from astrid.pack_api import utc_now_iso
 
     return utc_now_iso()
 
@@ -730,7 +725,7 @@ def _managed_receiver_path(out_path: Path) -> Path | None:
 
 def _publish_receiver_session(path: Path, url: str) -> tuple[Path, int, int, bytes]:
     """Atomically expose a private observation of this already-listening receiver."""
-    from astrid.core.execution.process_group import process_birth_identity
+    from astrid.pack_api import process_birth_identity
 
     parsed = urlparse(url)
     if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port
@@ -773,7 +768,7 @@ def _publish_receiver_session(path: Path, url: str) -> tuple[Path, int, int, byt
 
 def _retire_receiver_session(owner: tuple[Path, int, int, bytes]) -> None:
     """Called only after server shutdown; mismatch preserves the observation."""
-    from astrid.core.execution.process_group import process_birth_identity
+    from astrid.pack_api import process_birth_identity
 
     path, device, inode, payload = owner
     try:

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("typed_timeline.map")
 
@@ -13,8 +13,8 @@ import json
 import sys
 from pathlib import Path
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.pack.entrypoint import run_pack_main
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import run_pack_main
 from astrid.packs.typed_timeline.common import (
     confined_output_path,
     ensure_tone_wav,
@@ -41,8 +41,8 @@ def main(argv=None) -> int:
 
         # Project identity is supplied by kernel admission (environment) or an
         # explicit internal invocation.  This pack never guesses an owner.
-        from astrid.core.foundation.project_paths import resolve_projects_root
-        from astrid.core.project.guidance import selected_project
+        from astrid.pack_api import resolve_projects_root
+        from astrid.pack_api import selected_project
 
         projects_root = resolve_projects_root(None)
         project_id, _ = selected_project(args.project)
@@ -96,7 +96,7 @@ def main(argv=None) -> int:
 
         # write manifest
         manifest_path = out_dir / "manifest.json"
-        from astrid.core.util.time import utc_now_iso
+        from astrid.pack_api import utc_now_iso
 
         manifest = build_manifest(
             kind="typed_timeline.map",

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('understanding.visual_understand')
 import argparse
@@ -29,11 +29,11 @@ import jsonschema
 if TYPE_CHECKING:
     from PIL import Image, ImageFont
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import run_pack_main
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import AstridError
+from astrid.pack_api import run_pack_main
+from astrid.pack_api import CredentialsScope
 from astrid.packs.understanding.shared._common import emit_dry_run_preview
 
 API_URL = "https://api.openai.com/v1/responses"
@@ -120,7 +120,7 @@ def _pil():
     return Image, ImageDraw, ImageFont
 
 
-from astrid.core.contracts.die import pack_die
+from astrid.pack_api import pack_die
 
 
 def _die(message: str) -> None:

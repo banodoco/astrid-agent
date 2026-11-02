@@ -14,8 +14,8 @@ import random
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.core._shared.result_manifest import build_manifest
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import build_manifest
+from astrid.pack_api import AstridError
 from astrid.core.generation.backends import (
     BackendAdapter,
     GenerationBackendRegistry,

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
-from astrid.core._shared.jsonio import write_json_atomic
+from astrid.pack_api import write_json_atomic
 from astrid.packs.training.shared.interfaces import (
     ArtifactPullResult,
     ComputeHandle,

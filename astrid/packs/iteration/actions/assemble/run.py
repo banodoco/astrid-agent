@@ -8,7 +8,7 @@ never opens or mutates workspace timeline authority.
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('iteration.assemble')
 import argparse
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from astrid.core import modalities, timeline
-from astrid.core._shared.result_manifest import write_manifest
+from astrid.pack_api import write_manifest
 from astrid.core.foundation.paths import REPO_ROOT
 
 SCHEMA_VERSION = 1

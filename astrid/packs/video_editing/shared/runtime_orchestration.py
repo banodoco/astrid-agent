@@ -13,14 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from astrid.core.contracts.runtime_orchestration import (
-    CapabilityIdentity,
-    OrchestrationContractError,
-    RuntimeAdmission,
-    SCHEMA_VERSION,
-    STITCH_CAPABILITIES,
-    STITCH_FAMILY,
-)
+from astrid.pack_api import CapabilityIdentity, OrchestrationContractError, RuntimeAdmission, SCHEMA_VERSION, STITCH_CAPABILITIES, STITCH_FAMILY
 
 CHILD_KEY_PREFIX = "astrid.orchestration:v1"
 ROOT_FAMILY = "orchestration_roots"
@@ -413,7 +406,7 @@ def admit_runtime_stitch(
     # object ids must remain empty on the wire. The declared aggregation order is
     # carried in the stitch spec and resolved by the owning runtime.
     stitch_name = next(name for name, capability_id in STITCH_CAPABILITIES.items() if capability_id == handoff.stitch.capability_id)
-    from astrid.packs.rendering.shared.runtime_stitch import build_stitch_admission
+    from astrid.packs.rendering.api import build_stitch_admission
     return admit_runtime_task(client, build_stitch_admission(
         project=handoff.project, stitch_name=stitch_name,
         stitch_digest=handoff.stitch.capability_digest, root_task_id=root_task_id,
@@ -454,7 +447,7 @@ def publish_stitched_render(
         raise OrchestrationContractError("native assembly publication uses its captured commands and managed media")
     if render_capability_digest is None:
         raise OrchestrationContractError("render_capability_digest is required for Runtime-owned publication")
-    from astrid.packs.rendering.shared.runtime_stitch import publish_authoring_proposal
+    from astrid.packs.rendering.api import publish_authoring_proposal
     return publish_authoring_proposal(
         client,
         proposal=proposal,

@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AstridError
 from astrid.packs.understanding.actions.visual_understand.run import (
     OrderedImageEvidence,
     _parse_ordered_answers,

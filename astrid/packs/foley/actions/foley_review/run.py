@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('foley.foley_review')
 import argparse
@@ -15,7 +15,7 @@ from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest  # noqa: E402
+from astrid.pack_api import build_manifest, write_manifest  # noqa: E402
 
 PAGE_TEMPLATE = """<!doctype html>
 <html lang="en">

@@ -23,8 +23,8 @@ Rules honoured (see the architecture plan, Phase 4):
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("iteration.experiment_import")
 import argparse  # noqa: E402
@@ -39,19 +39,11 @@ import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any, Mapping  # noqa: E402
 
-from astrid.core._shared.result_manifest import write_manifest  # noqa: E402
-from astrid.core.experiments.capture import (  # noqa: E402
-    read_result_json,
-    sanitize_portable,
-    synthesize_discord_manifest,
-)
-from astrid.core.experiments.ids import derive_ulid  # noqa: E402
-from astrid.core.experiments.schema import (  # noqa: E402
-    ExperimentValidationError,
-    validate_experiment,
-    validate_import_report,
-)
-from astrid.core.foundation.hash import sha256_file  # noqa: E402
+from astrid.pack_api import write_manifest  # noqa: E402
+from astrid.pack_api import read_result_json, sanitize_portable, synthesize_discord_manifest
+from astrid.pack_api import derive_ulid  # noqa: E402
+from astrid.pack_api import ExperimentValidationError, validate_experiment, validate_import_report
+from astrid.pack_api import sha256_file  # noqa: E402
 
 _CASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -158,7 +150,7 @@ def _hardlink_media(src: Path, dst: Path) -> bool:
     if dst.is_file() and not dst.is_symlink() and not _same_inode(src, dst):
         try:
             if src.stat().st_size == dst.stat().st_size:
-                from astrid.core.experiments.media import hash_artifact
+                from astrid.pack_api import hash_artifact
                 if hash_artifact(src) == hash_artifact(dst):
                     return True
         except OSError:
@@ -191,7 +183,7 @@ def _hardlink_media(src: Path, dst: Path) -> bool:
         if _same_inode(src, tmp):
             _safe_unlink(tmp)
             return False
-        from astrid.core.experiments.media import hash_artifact
+        from astrid.pack_api import hash_artifact
         if hash_artifact(src) != hash_artifact(tmp):
             _safe_unlink(tmp)
             return False

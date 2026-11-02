@@ -25,13 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from astrid.core.execution.managed_tool_session import (
-    CapabilityDescriptor,
-    ManagedToolSession,
-    SessionBinding,
-    StaleAdmissionError,
-    UncertainCancellation,
-)
+from astrid.pack_api import CapabilityDescriptor, ManagedToolSession, SessionBinding, StaleAdmissionError, UncertainCancellation
 
 from .compiler import resident_key
 

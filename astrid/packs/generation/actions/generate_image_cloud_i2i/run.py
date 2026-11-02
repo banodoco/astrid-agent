@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 
 def main(argv: list[str] | None = None) -> int:

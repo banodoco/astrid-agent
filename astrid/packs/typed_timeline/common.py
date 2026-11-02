@@ -36,7 +36,7 @@ def resolve_mapping_path(
     if cand2.exists():
         return cand2
     if p.exists() and project:
-        from astrid.core.project.ownership import require_project_owned_artifact
+        from astrid.pack_api import require_project_owned_artifact
 
         return require_project_owned_artifact(project, "timeline/mapping", p, root=projects_root)
     raise ValueError(
@@ -82,7 +82,7 @@ def load_admitted_rows(
     if json_path is not None:
         if not project:
             raise ValueError("json_path requires an owning project")
-        from astrid.core.project.ownership import require_project_owned_artifact
+        from astrid.pack_api import require_project_owned_artifact
 
         admitted_path = require_project_owned_artifact(
             project,

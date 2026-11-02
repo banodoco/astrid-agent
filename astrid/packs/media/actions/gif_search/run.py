@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("media.gif_search")
 
@@ -19,9 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.cli_choices import StaticChoices
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import StaticChoices
+from astrid.pack_api import CredentialsScope
 
 GIPHY_SEARCH_BASE = "https://api.giphy.com/v1/{kind}/search"
 DEFAULT_LIMIT = 12

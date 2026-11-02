@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("discord_local.command")
 
@@ -19,10 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.result_manifest import write_json_atomic, write_manifest
-from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.hash import sha256_file
-from astrid.core.pack.entrypoint import run_pack_main
+from astrid.pack_api import write_json_atomic, write_manifest
+from astrid.pack_api import AstridError
+from astrid.pack_api import sha256_file
+from astrid.pack_api import run_pack_main
 
 
 # Used only to scrub internal paths from debug text. Runtime dependencies are

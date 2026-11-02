@@ -2,12 +2,8 @@
 from __future__ import annotations
 
 
-from astrid.core.execution.platform_helpers import owned_by_current_user
-from astrid.core.pack.entrypoint import (
-    canonical_runtime_entrypoint,
-    guard_canonical_entrypoint,
-    run_pack_main,
-)
+from astrid.pack_api import owned_by_current_user
+from astrid.pack_api import canonical_runtime_entrypoint, guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("video_editing.iteration_video")
 
@@ -22,7 +18,7 @@ from typing import Any, Mapping, Sequence
 from runtime_protocol.dirfd import filesystem as os
 
 from astrid import invoke
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
+from astrid.pack_api import build_manifest, write_manifest
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.packs.video_editing.shared.iteration_inputs import (
     MAX_DOCUMENT_BYTES,

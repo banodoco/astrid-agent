@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('video_editing.animate_image')
 import argparse
@@ -19,18 +19,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core.cli_choices import (
-    AstridArgumentError,
-    RecoverableArgumentParser,
-    add_choice_arg,
-)
-from astrid.core.util.http import default_client, fal_submit_and_poll
-from astrid.core.util.generation_helpers import (
-    DEFAULT_OUTPUT_MAX_BYTES,
-    download_output,
-    load_provider_key,
-    write_journal_atomic,
-)
+from astrid.pack_api import AstridArgumentError, RecoverableArgumentParser, add_choice_arg
+from astrid.pack_api import default_client, fal_submit_and_poll
+from astrid.pack_api import DEFAULT_OUTPUT_MAX_BYTES, download_output, load_provider_key, write_journal_atomic
 from astrid.packs.video_editing.shared.result_receipts import write_action_receipt
 
 FAL_EDIT_MODEL_ID = "openai/gpt-image-2/edit"
@@ -401,7 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ) from exc
     _validate_args(parser, args)
     if not args.skip_animate and not args.dry_run:
-        from astrid.core.generation.availability import require_action_available
+        from astrid.pack_api import require_action_available
         require_action_available("video_editing.animate_image")
 
     out_root = args.out.expanduser().resolve()
@@ -569,7 +560,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    from astrid.core.pack.entrypoint import run_pack_main
+    from astrid.pack_api import run_pack_main
 
     raise SystemExit(
         run_pack_main(

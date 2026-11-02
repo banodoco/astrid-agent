@@ -11,8 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core.contracts.errors import AstridError, render_astrid_error
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridError, render_astrid_error
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("vibecomfy.import")
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('training.training_run')
 import argparse
@@ -13,11 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core._shared.jsonio import write_json_atomic
-from astrid.core._shared.result_manifest import build_manifest
-from astrid.core.contracts.errors import AstridError, render_astrid_error
-from astrid.core.generation.availability import require_action_available
-from astrid.core.contracts.run_status import RunStatus
+from astrid.pack_api import write_json_atomic
+from astrid.pack_api import build_manifest
+from astrid.pack_api import AstridError, render_astrid_error
+from astrid.pack_api import require_action_available
+from astrid.pack_api import RunStatus
 from astrid.packs.training.shared.interfaces import ComputeHandle, RunPodHandle
 
 from .ai_toolkit import register as ai_toolkit_register

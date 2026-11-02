@@ -20,7 +20,8 @@ import math
 from fractions import Fraction
 from typing import Any, Mapping, Sequence
 
-from astrid.core.timeline.cuts import find_cut, occurrences_from_snapshot, picture_cuts
+from astrid.pack_api import picture_cuts
+from astrid.core.timeline.cuts import find_cut, occurrences_from_snapshot
 
 from . import model
 

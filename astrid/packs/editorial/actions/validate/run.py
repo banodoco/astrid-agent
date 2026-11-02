@@ -15,7 +15,7 @@ Exits non-zero when any non-skipped clip fails the similarity threshold.
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('editorial.validate')
 import argparse
@@ -26,10 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.audit import register_outputs
-from astrid.core.execution.executor.argv import executor_argv
-from astrid.core.timeline import load_timeline
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import register_outputs
+from astrid.pack_api import executor_argv
+from astrid.pack_api import load_timeline
 from astrid.packs.editorial.shared.hype.text_match import (
     segments_in_range,
     token_set_similarity,

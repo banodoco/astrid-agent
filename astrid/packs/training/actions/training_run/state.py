@@ -6,7 +6,7 @@ import copy
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core._shared.jsonio import read_json, write_json_atomic
+from astrid.pack_api import read_json, write_json_atomic
 
 LAST_RUN_FILENAME = "last_run.json"
 
@@ -31,7 +31,7 @@ class TrainingRunStateError(ValueError):
 
 
 def utc_now_iso() -> str:
-    from astrid.core.util.time import utc_now_iso as _utc_now_iso
+    from astrid.pack_api import utc_now_iso as _utc_now_iso
 
     return _utc_now_iso()
 

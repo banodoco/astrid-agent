@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.generation.availability import require_action_available
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridError
+from astrid.pack_api import require_action_available
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('video_editing.thumbnail_maker')
 import argparse
@@ -17,12 +17,12 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.foundation.hash import sha256_file
-from astrid.core.foundation.project_paths import project_dir
-from astrid.core.media import require_runtime_materialized_file
-from astrid.core.project.kernel_admission import admit_orchestrator_project_run
-from astrid.core.project.runtime import reject_project_with_out
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import sha256_file
+from astrid.pack_api import project_dir
+from astrid.pack_api import require_runtime_materialized_file
+from astrid.pack_api import admit_orchestrator_project_run
+from astrid.pack_api import reject_project_with_out
 from astrid.packs.video_editing.actions.thumbnail_maker.plan_template import (
     build_plan_v2,
     emit_plan_json,
@@ -449,7 +449,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         require_action_available("video_editing.thumbnail_maker")
     except AstridError as exc:
-        from astrid.core.contracts.errors import render_astrid_error
+        from astrid.pack_api import render_astrid_error
 
         return render_astrid_error(exc)
     step_commands = {

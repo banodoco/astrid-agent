@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from astrid.core.media import ffprobe_duration_seconds
+from astrid.pack_api import ffprobe_duration_seconds
 
 SEGMENT_MAP_VERSION = 1
 HOLDING_PHRASES = [

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('editorial.boundary_candidates')
 import argparse
@@ -13,13 +13,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.cli_choices import add_choice_arg
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import add_choice_arg
 
 VERSION = 1
 
 
-from astrid.core.contracts.die import pack_die as _die
+from astrid.pack_api import pack_die as _die
 
 
 def _fmt_time(seconds: float) -> str:

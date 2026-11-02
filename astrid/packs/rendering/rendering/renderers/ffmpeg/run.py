@@ -14,19 +14,12 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from astrid.core import timeline
-from astrid.core.foundation.atomic_io import write_json_atomic
+from astrid.pack_api import write_json_atomic
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.media import MediaProbe, MediaProbeError, ffprobe_metadata_strict
 from astrid.core.rendering.artifacts import validate_render_result
-from astrid.core.rendering.contracts import (
-    SCHEMA_VERSION,
-    AudioOwnership,
-    RenderProfile,
-    RenderRequest,
-    RenderResult,
-    SupportReport,
-    VideoArtifact,
-)
+from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import AudioOwnership, RenderProfile, RenderRequest, RenderResult, SupportReport, VideoArtifact
 from astrid.core.rendering.errors import (
     RendererException,
     make_renderer_error,

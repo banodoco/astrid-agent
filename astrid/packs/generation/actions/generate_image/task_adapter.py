@@ -359,7 +359,7 @@ class GenerateImageAdapter:
         # in-process equivalent of ASTRID_INTERNAL_INVOCATION=1. Importing
         # here (not at module import) keeps the adapter importable without
         # the generator's heavy dependency chain.
-        from astrid.core.pack.entrypoint import canonical_runtime_entrypoint
+        from astrid.pack_api import canonical_runtime_entrypoint
 
         with canonical_runtime_entrypoint(PACK_ID):
             from astrid.packs.generation.actions.generate_image.run import run_sdk

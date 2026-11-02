@@ -6,7 +6,8 @@ import json
 import sys
 from collections.abc import Mapping
 
-from astrid.core.cli.domain_output import DomainResult, print_result
+from astrid.pack_api import print_result
+from astrid.core.cli.domain_output import DomainResult
 from astrid.packs.timeline.cli_common import need_project
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from runtime_protocol import platform
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("generation.generate_image_codex")
 

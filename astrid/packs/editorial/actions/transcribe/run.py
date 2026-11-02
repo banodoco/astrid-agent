@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import sys
 
-from astrid.core.contracts.errors import AstridValueError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridValueError
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('editorial.transcribe')
 import argparse
@@ -20,12 +20,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.audit import AuditContext
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.hash import sha256_file
-from astrid.core.media import ffprobe_duration_seconds, require_runtime_materialized_file
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import AuditContext
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import AstridError
+from astrid.pack_api import sha256_file
+from astrid.pack_api import ffprobe_duration_seconds, require_runtime_materialized_file
 from astrid.packs.editorial.shared._common import load_api_key
 
 SILENCE_START_RE = re.compile(r"silence_start:\s*([0-9]+(?:\.[0-9]+)?)")
@@ -176,7 +176,7 @@ def prepare_chunks(audio_path: Path, cache_dir: Path, max_chunk_sec: float) -> t
 def require_hf_token(diarize_mode: str | None) -> str | None:
     if diarize_mode != "pyannote":
         return None
-    from astrid.core.util.credentials_scope import CredentialsScope
+    from astrid.pack_api import CredentialsScope
 
     try:
         return CredentialsScope.get_local("huggingface")

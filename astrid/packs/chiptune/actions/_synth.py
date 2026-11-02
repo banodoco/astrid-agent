@@ -22,7 +22,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AstridError
 
 SAMPLE_RATE = 48_000
 EDGE_S = 0.010

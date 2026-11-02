@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('moirae.moirae')
 import argparse
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from datetime import datetime, timezone
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
+from astrid.pack_api import build_manifest, write_manifest
 
 
 def build_parser() -> argparse.ArgumentParser:

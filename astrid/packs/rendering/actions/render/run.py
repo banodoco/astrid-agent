@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 
-from astrid.core.execution.platform_helpers import owned_by_current_user
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import owned_by_current_user
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("rendering.render")
 
@@ -26,9 +26,10 @@ from typing import Any, Mapping, Sequence
 from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core import timeline
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
+from astrid.pack_api import build_manifest, write_manifest
 from astrid.core.foundation.paths import REPO_ROOT
-from astrid.core.rendering.contracts import SCHEMA_VERSION, RenderRequest
+from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import RenderRequest
 from astrid.core.rendering.delivery_audio import METADATA_KEY as DELIVERY_AUDIO_KEY
 from astrid.core.rendering.delivery_audio import DeliveryAudioTarget
 from astrid.core.rendering.errors import RendererException

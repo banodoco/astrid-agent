@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.pack_api import AstridError
+from astrid.pack_api import CredentialsScope
 
 
 def load_api_key(env_file: Path | None) -> str:

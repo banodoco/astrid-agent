@@ -10,7 +10,7 @@ from typing import Any, Callable, Mapping
 import jsonschema
 from referencing import Registry, Resource
 
-from astrid.core._shared.jsonio import read_json, write_json_atomic
+from astrid.pack_api import read_json, write_json_atomic
 
 from .config import MISSING_SCHEMA_VERSION_SOURCE
 from ...shared.items import utc_now_iso

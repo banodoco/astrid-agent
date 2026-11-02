@@ -16,7 +16,7 @@ from pathlib import Path
 
 from runtime_protocol.platform import durable_replace
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
+from astrid.pack_api import build_manifest, write_manifest
 
 from ._audio_cache import _cached_audio, _store_audio_cache
 from .audio_analysis import AudioAnalysisError, analyze_audio, audio_analysis_identity

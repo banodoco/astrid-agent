@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 from astrid.packs.rendering.actions.timeline_transfer_common import (
     MAX_MANIFEST_INLINE_BYTES,
     decode_manifest,

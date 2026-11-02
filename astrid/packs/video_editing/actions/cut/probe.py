@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AstridError
 
 _FFPROBE_VERBOSE = False
 
@@ -95,6 +95,6 @@ def probe_asset(path: Path | str) -> dict[str, Any]:
 
 
 def probe_video_duration(video_path: Path) -> float:
-    from astrid.core.media import ffprobe_duration_seconds
+    from astrid.pack_api import ffprobe_duration_seconds
 
     return ffprobe_duration_seconds(video_path)

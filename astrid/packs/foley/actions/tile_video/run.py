@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('foley.tile_video')
 import argparse
@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core.contracts.die import pack_die
-from astrid.core.pack.entrypoint import run_pack_main
+from astrid.pack_api import pack_die
+from astrid.pack_api import run_pack_main
 
 
 def _die(message: str) -> None:

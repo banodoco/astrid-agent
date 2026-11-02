@@ -26,9 +26,9 @@ from tempfile import TemporaryDirectory, gettempdir
 from typing import Any, Callable, Mapping, Sequence
 
 from astrid.core import timeline
-from astrid.core.element.registry import load_default_registry
+from astrid.pack_api import load_default_registry
 from astrid.core.element.schema import ElementDefinition
-from astrid.core.foundation.atomic_io import write_json_atomic
+from astrid.pack_api import write_json_atomic
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.rendering import assets as _rendering_assets
 from astrid.core.rendering import remotion_runtime
@@ -37,16 +37,8 @@ from astrid.core.rendering.assets import (
     AssetMaterializer,
     InvocationAssetServer as InvocationAssetServer,
 )
-from astrid.core.rendering.contracts import (
-    SCHEMA_VERSION,
-    AudioOwnership,
-    FrameWindow,
-    RenderProfile,
-    RenderRequest,
-    RenderResult,
-    SupportReport,
-    VideoArtifact,
-)
+from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import AudioOwnership, FrameWindow, RenderProfile, RenderRequest, RenderResult, SupportReport, VideoArtifact
 from astrid.core.rendering.errors import (
     RendererException,
     make_renderer_error,

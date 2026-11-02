@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from astrid.core.timeline import MAX_VISUAL_HOLD_RATIO, MIN_OVERLAY_COVERAGE_SEC
+from astrid.pack_api import MAX_VISUAL_HOLD_RATIO, MIN_OVERLAY_COVERAGE_SEC
 from astrid.packs.editorial.actions.refine.src.reviewers import Reviewer
 from astrid.packs.editorial.shared.hype import enriched_arrangement
 

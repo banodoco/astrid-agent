@@ -19,7 +19,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AstridError
 from astrid.packs.chiptune.actions import _synth as syn
 
 MELODY_FLOOR = 55  # G3: below it a note is never the tune

@@ -22,7 +22,7 @@ from urllib.parse import quote
 from runtime_protocol.dirfd import filesystem as os
 
 import astrid.sdk as sdk
-from astrid.core._shared.jsonio import write_json_atomic
+from astrid.pack_api import write_json_atomic
 from astrid.core.foundation.paths import REPO_ROOT
 
 from .state import validate_review_state, write_review_state

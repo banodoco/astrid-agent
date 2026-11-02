@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('video_editing.vary_grid')
 import argparse
@@ -16,14 +16,9 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.util.http import default_client, fal_submit_and_poll
-from astrid.core.util.generation_helpers import (
-    DEFAULT_OUTPUT_MAX_BYTES,
-    download_output,
-    load_provider_key,
-    write_journal_atomic,
-)
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import default_client, fal_submit_and_poll
+from astrid.pack_api import DEFAULT_OUTPUT_MAX_BYTES, download_output, load_provider_key, write_journal_atomic
 from astrid.packs.video_editing.actions.logo_ideas.run import (
     DEFAULT_FIREWORKS_MODEL,
     FIREWORKS_CHAT_URL,

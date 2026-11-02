@@ -1,7 +1,7 @@
 """Bound command entrypoint for ``vibecomfy.video_enhance``."""
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("vibecomfy.video_enhance")
 

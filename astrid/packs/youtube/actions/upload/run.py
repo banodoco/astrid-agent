@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("youtube.upload")
 
@@ -11,7 +11,7 @@ import argparse
 import json
 from collections.abc import Iterable
 
-from astrid.core.pack.entrypoint import run_pack_main
+from astrid.pack_api import run_pack_main
 from .src.social_publish import PublishError, publish_youtube_video
 
 

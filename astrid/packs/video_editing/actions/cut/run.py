@@ -10,8 +10,8 @@
 
 from __future__ import annotations
 
-from astrid.core._shared.result_manifest import write_manifest
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import write_manifest
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('video_editing.cut')
 import argparse
@@ -20,24 +20,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from astrid.core.path_utils import has_url_scheme
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.hash import sha256_file
-from astrid.core.theme import load_theme
-from astrid.core.timeline import (
-    canonical_timeline_config,
-    is_all_generative_arrangement,
-    load_arrangement,
-    load_metadata,
-    load_pool,
-    load_registry,
-    save_metadata,
-    save_registry,
-    save_timeline,
-    validate_arrangement_duration_window,
-)
-from astrid.core.timeline import compile_arrangement_plan
+from astrid.pack_api import has_url_scheme
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import AstridError
+from astrid.pack_api import sha256_file
+from astrid.pack_api import load_theme
+from astrid.pack_api import canonical_timeline_config, is_all_generative_arrangement, load_arrangement, load_metadata, load_pool, load_registry, save_metadata, save_registry, save_timeline, validate_arrangement_duration_window
+from astrid.pack_api import compile_arrangement_plan
 
 from . import attempt_assets as _attempt_assets
 from . import probe

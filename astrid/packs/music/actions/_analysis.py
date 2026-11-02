@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AstridError
 
 RATE = 11025
 HOP = 256

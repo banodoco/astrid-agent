@@ -52,8 +52,8 @@ import argparse
 import json
 from typing import Any
 
-from astrid.core.cli.domain_output import print_result
-from astrid.core.cli.registration import CommandSpec, register_product_commands
+from astrid.pack_api import print_result
+from astrid.pack_api import CommandSpec, register_product_commands
 
 # Parser vocabularies are presentation-only.  Keep them here instead of
 # importing the retired kernel-writer repository merely to obtain constants:

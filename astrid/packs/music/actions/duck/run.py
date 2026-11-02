@@ -10,10 +10,10 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from astrid.core._shared.result_manifest import build_manifest, write_json_atomic, write_manifest
-from astrid.core.contracts.errors import AstridError
-from astrid.core.foundation.hash import sha256_file
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import build_manifest, write_json_atomic, write_manifest
+from astrid.pack_api import AstridError
+from astrid.pack_api import sha256_file
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 from astrid.packs.music.actions.duck.core import (
     Placement,
     duck_audio,

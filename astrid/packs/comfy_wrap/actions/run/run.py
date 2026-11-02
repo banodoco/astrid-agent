@@ -9,7 +9,7 @@ Astrid surface that wraps ComfyUI), and copies the result to ``--out``.
 from __future__ import annotations
 
 # ruff: noqa: E402
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("comfy_wrap.run")
 import argparse
@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from astrid.core.contracts.errors import AstridError
+from astrid.pack_api import AstridError
 
 logger = logging.getLogger(__name__)
 
