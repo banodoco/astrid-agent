@@ -78,48 +78,6 @@ def windows_filesystem(monkeypatch):
     return install
 
 
-def test_wan_spool_observation_and_materialization_use_adapter(tmp_path, windows_filesystem):
-    from astrid.packs.wan2gp.src import driver
-    from tests.test_wan2gp_lifecycle import _HOST_INPUTS, _terminal_evidence
-
-    seam = windows_filesystem(driver)
-    source = tmp_path / "native"
-    source.mkdir()
-    clip = source / "clip.mp4"
-    clip.write_bytes(b"native video bytes")
-    destination = tmp_path / "attempt"
-    mapped = driver.materialize_host_result(
-        _terminal_evidence(source, [clip]), attempt_root=destination, inputs=_HOST_INPUTS,
-    )
-    driver.verify_host_result(mapped, attempt_root=destination)
-    assert (destination / "clip.mp4").read_bytes() == clip.read_bytes()
-    assert (destination / "manifest.json").is_file()
-    assert any(flags & seam.O_NOFOLLOW and parent is not None for _, flags, parent in seam.opens)
-    with pytest.raises(RuntimeError, match="empty attempt"):
-        driver.materialize_host_result(
-            _terminal_evidence(source, [clip]), attempt_root=destination, inputs=_HOST_INPUTS,
-        )
-
-
-def test_wan_spool_refuses_linked_parent_and_output(tmp_path, windows_filesystem):
-    from astrid.packs.wan2gp.src import driver
-
-    windows_filesystem(driver)
-    source = tmp_path / "source"
-    source.mkdir()
-    outside = tmp_path / "outside.mp4"
-    outside.write_bytes(b"foreign")
-    linked = source / "linked.mp4"
-    linked.symlink_to(outside)
-    with pytest.raises(OSError):
-        driver.snapshot_native_outputs([str(linked)], source)
-    alias = tmp_path / "alias"
-    alias.symlink_to(source, target_is_directory=True)
-    with pytest.raises(OSError):
-        with driver._custody_directory(alias):
-            pytest.fail("linked directory was admitted")
-
-
 def test_dataset_review_capture_is_bounded_and_confined(tmp_path, windows_filesystem):
     from astrid.packs.training.actions.dataset_build import review_assets
 

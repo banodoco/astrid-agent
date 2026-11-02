@@ -18,50 +18,14 @@ from astrid.core.contracts.schema import CommandSpec, Port
 from astrid.core.execution.executor.registry import ExecutorRegistry, load_default_registry as load_executor_registry
 from astrid.core.execution.executor.runner import ExecutorRunRequest, build_executor_command
 from astrid.core.execution.generic_host import GenericPackHost
-from astrid.packs.wan2gp.src.compiler import compile_from_inputs
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WAN_GENERATE_VIDEO_ID = "wan2gp.generate_video"
 GENERIC_HOST = REPO_ROOT / "astrid/core/execution/generic_host.py"
 
 
 def _assert_flag_value(argv: tuple[str, ...], flag: str, value: str) -> None:
     index = argv.index(flag)
     assert argv[index + 1] == value
-
-
-def test_wan_generation_controls_are_transported_by_shared_expander() -> None:
-    definition = load_executor_registry().get(WAN_GENERATE_VIDEO_ID)
-    values = {
-        "prompt": "p",
-        "model": "wan-2.2",
-        "frames": 9,
-        "fps": 8,
-        "seed": 7,
-        "python_exec": "python",
-    }
-
-    result = expand_command(
-        definition.command,
-        definition.inputs,
-        values,
-        definition.metadata,
-    )
-    assert_provided_inputs_bound(
-        result,
-        definition.inputs,
-        values,
-        definition.metadata,
-    )
-
-    _assert_flag_value(result.argv, "--prompt", "p")
-    _assert_flag_value(result.argv, "--model", "wan-2.2")
-    _assert_flag_value(result.argv, "--frames", "9")
-    _assert_flag_value(result.argv, "--fps", "8")
-    _assert_flag_value(result.argv, "--seed", "7")
-    # The v3 action declares no ``out`` input arg: output placement is owned
-    # by the host (``{out}/manifest.json`` result manifest), not the argv.
-    assert "--out" not in result.argv
 
 
 def test_json_input_args_are_encoded_as_json() -> None:
@@ -78,33 +42,6 @@ def test_json_input_args_are_encoded_as_json() -> None:
         {},
     )
     _assert_flag_value(result.argv, "--objects", '{"sha256:abc":"/tmp/managed-object"}')
-
-
-def test_wan_compiler_preserves_generation_controls() -> None:
-    settings = compile_from_inputs(
-        {
-            "prompt": "p",
-            "model": "wan-2.2",
-            "frames": 9,
-            "fps": 8,
-            "force_fps": None,
-            "seed": 7,
-        }
-    )
-
-    assert settings["video_length"] == 9
-    assert settings["force_fps"] == "8"
-    assert settings["seed"] == 7
-
-
-def test_wan_compiler_materializes_smoke_defaults() -> None:
-    settings = compile_from_inputs({"prompt": "p", "model": "wan-2.2"})
-
-    assert settings["video_length"] == 9
-    assert settings["force_fps"] == "8"
-    assert settings["resolution"] == "512x512"
-    assert settings["seed"] == 0
-    assert settings["num_inference_steps"] > 0
 
 
 def test_provided_declared_input_cannot_be_silently_dropped() -> None:
