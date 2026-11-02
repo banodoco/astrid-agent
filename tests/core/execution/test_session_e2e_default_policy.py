@@ -22,7 +22,7 @@ import pytest
 import yaml
 
 from astrid.core.execution import session_channel as session_channel_module
-from astrid.core.execution.generic_host import GenericPackHost, HostError
+from astrid.core.execution.generic_host import GenericPackHost, HostError, ManagedToolProfile
 from astrid.core.execution.guards import DEFAULT_DEADLINE_SECONDS, ExecutionGuardPolicy
 from tests.test_generic_host import FakeRuntime as _CurrentFakeRuntime
 
@@ -100,6 +100,18 @@ def _test_pack(tmp_path):
     return root
 
 
+def _probe_compile(inputs):
+    """Test-only host compile for the probe tool: refuses inputs without a prompt."""
+    if not isinstance(inputs, dict) or not inputs.get("prompt"):
+        raise ValueError("prompt is required")
+    return {"prompt": str(inputs["prompt"]), "message": str(inputs.get("message", ""))}
+
+
+def _register_probe_profile(host, fake_invoke):
+    """Instance-level, test-only host registration. Packs can never reach this path."""
+    host._managed_tool_profiles[PACK_ID] = ManagedToolProfile(compile_settings=_probe_compile, invoke=fake_invoke)
+
+
 def _host(tmp_path, monkeypatch, *, policy):
     root = _test_pack(tmp_path)
     runtime = FakeRuntime()
@@ -116,6 +128,7 @@ def _host(tmp_path, monkeypatch, *, policy):
 
     # Host edge only: the real adapter calls this, nothing above it is replaced.
     monkeypatch.setattr(host, "invoke_wan_session", fake_invoke_wan_session)
+    _register_probe_profile(host, fake_invoke_wan_session)
     return host, runtime, calls
 
 
@@ -173,3 +186,26 @@ def test_declared_session_pack_runs_under_default_policy_with_full_deadline(tmp_
 
     # Channel closed after run_task returns.
     assert len(brokers) == 1 and brokers[0].closed is True
+
+
+def test_pack_declaring_an_unregistered_managed_tool_is_refused_before_the_channel(tmp_path, monkeypatch):
+    """Nothing a pack reaches can add a profile: an unknown managed tool is refused, even with others present."""
+    import astrid.core.execution.generic_host as gh
+
+    opened = []
+    real_channel = gh._HostSessionChannel
+
+    class _Recording(real_channel):
+        def __init__(self, *args, **kwargs):
+            opened.append(args)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(gh, "_HostSessionChannel", _Recording)
+    host, runtime, calls = _host(tmp_path, monkeypatch, policy=ExecutionGuardPolicy())
+    # Other profiles exist (wan2gp and the probe); the unknown tool must still be refused.
+    assert "wan2gp" in host._managed_tool_profiles and PACK_ID in host._managed_tool_profiles
+    host._managed_tool_profiles.pop(PACK_ID)
+    _task(runtime, "unknown-tool", {"message": "hi", "prompt": "a prompt"})
+    with pytest.raises(HostError, match="no registered host profile"):
+        host.run_task("unknown-tool", runtime.tasks["unknown-tool"])
+    assert opened == [] and calls == []
