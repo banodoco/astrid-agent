@@ -47,6 +47,7 @@ def service_declaration(
         "ASTRID_REMOTION_PROJECT_DIR",
         "ASTRID_TIMELINE_SCHEMA_PYTHONPATH",
         "ASTRID_CAPABILITY_MATRIX_PATH",
+        "ASTRID_INSTALL_UV",
     ):
         value = os.environ.get(key, "").strip()
         if value:

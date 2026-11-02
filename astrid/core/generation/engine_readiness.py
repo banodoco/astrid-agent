@@ -96,6 +96,7 @@ class ComfyProvenance:
         self.build = {"recipe": None, "source": None}
         self.object_info_sha256 = None
         self.observed_at = None
+        self._system_stats_source = None
         self._inventory = {}
         self._pack_classes = {}
         self.recorded_sources = {"comfyui": None}
@@ -205,6 +206,7 @@ class ComfyProvenance:
     def system_stats(self, payload):
         from datetime import datetime, timezone
 
+        self._system_stats_source = None
         system = payload.get("system", {}) if isinstance(payload, Mapping) else {}
         if not isinstance(system, Mapping):
             system = {}

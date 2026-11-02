@@ -65,6 +65,9 @@ def refresh(producer: Path) -> str:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(staged / consumer, destination)
         shutil.copyfile(candidate, LOCK_PATH)
+        packaged_lock = ROOT / "astrid" / "resources" / LOCK_PATH.name
+        if packaged_lock.parent.is_dir():
+            shutil.copyfile(candidate, packaged_lock)
     return f"refreshed Runtime artifacts from {commit[:12]}"
 
 

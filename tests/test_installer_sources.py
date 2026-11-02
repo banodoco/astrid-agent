@@ -134,6 +134,62 @@ def test_manifest_accepts_local_source_overrides_and_preserves_pins(tmp_path, na
                                   "vibecomfy": VIBECOMFY_ENGINE_REVISION}[name]
 
 
+def test_manifest_accepts_immutable_runpod_sibling_sources():
+    value = manifest()
+    value.update({
+        "lifecycle": {
+            "repo": "https://github.com/banodoco/runpod-lifecycle.git",
+            "sha": "96360a27a53c4608f780f7b370f747a2aa3c7ca8",
+            "version": "0.3.1.dev0",
+        },
+        "runpod": {
+            "repo": "https://github.com/runpod/runpod-python.git",
+            "sha": "0786b3d51855a66176fea1e7443b92e7ef2d01b5",
+            "version": "1.12.1.dev4",
+        },
+    })
+
+    assert tools.validate_manifest(value) is value
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda value: value.pop("runpod"),
+    lambda value: value["lifecycle"].update(sha="main"),
+    lambda value: value["runpod"].update(version="latest"),
+    lambda value: value["runpod"].update(repo="git@github.com:runpod/runpod-python.git"),
+    lambda value: value["runpod"].update(unreviewed=True),
+])
+def test_manifest_rejects_partial_or_ambiguous_runpod_sibling_sources(mutation):
+    value = manifest()
+    value.update({
+        "lifecycle": {"repo": "https://github.com/banodoco/runpod-lifecycle.git",
+                      "sha": "9" * 40, "version": "0.3.1.dev0"},
+        "runpod": {"repo": "https://github.com/runpod/runpod-python.git",
+                   "sha": "8" * 40, "version": "1.12.1.dev4"},
+    })
+    mutation(value)
+
+    with pytest.raises(ValueError, match="manifest|source"):
+        tools.validate_manifest(value)
+
+
+def test_full_clone_source_keeps_tags_and_checks_out_only_the_manifest_commit(repository, tmp_path):
+    repo, sha = repository
+    git(repo, "tag", "v1.0.0", sha)
+    git(repo, "branch", "feature", sha)
+    git(repo, "checkout", "--quiet", "--detach", sha)
+    destination = tmp_path / "cloned source"
+
+    result = tools.clone_source(str(repo), sha, destination)
+
+    assert result == destination
+    assert git(destination, "rev-parse", "HEAD") == sha
+    assert git(destination, "tag", "--list") == "v1.0.0"
+    assert git(destination, "branch", "--remotes", "--list", "origin/feature") == "origin/feature"
+    assert (destination / ".git").is_dir()
+    assert not (tmp_path / "cloned source.clone").exists()
+
+
 @pytest.mark.parametrize("sha", ["main", "a" * 7, "A" * 40, "a" * 39 + "/"])
 def test_source_override_still_requires_full_commit_sha(tmp_path, sha):
     value = manifest()

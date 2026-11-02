@@ -246,11 +246,18 @@ def test_registry_action_settles_real_json_custody_to_original_manifest_v2(route
     assert json.loads((route.destination / "manifest.json").read_bytes()) == manifest
     assert route.factory == route.closed == len(route.prompts) == 1
     assert route.polls == 3
-    media, envelope = manifest["outputs"]
+    media = next(row for row in manifest["outputs"] if row["role"] == "result")
+    envelope = next(row for row in manifest["outputs"] if row["output_port"] == "result_manifest")
+    evidence = [row for row in manifest["outputs"] if row["role"] == "auxiliary"]
+    assert len(evidence) == 2
+    assert {Path(row["path"]).name for row in evidence} == {
+        "evidence-source-source.json", "evidence-effective_settings-effective-settings.json"}
+    for row in evidence:
+        assert hashlib.sha256((route.destination / row["path"]).read_bytes()).hexdigest() == row["content_hash"].removeprefix("sha256:")
     assert media["output_port"] == "vibecomfy_run" and media["ordinal"] == 0 and media["role"] == "result"
     assert media["content_hash"] == "sha256:" + hashlib.sha256(route.output).hexdigest()
     assert (route.destination / media["path"]).read_bytes() == route.output
-    assert envelope["output_port"] == "result_manifest" and envelope["role"] == "auxiliary"
+    assert envelope["output_port"] == "result_manifest" and envelope["role"] == "manifest"
     assert hashlib.sha256((route.destination / envelope["path"]).read_bytes()).hexdigest() == envelope["content_hash"].removeprefix("sha256:")
     assert manifest["managed_generation_result"]["task_id"] == "task-http-only"
     assert manifest["managed_generation_result"]["attempt_id"] == "attempt-http-only"
@@ -270,13 +277,12 @@ def test_terminal_failure_or_uncertain_submit_never_replays(route, endpoint, net
     assert not [path for _, path, _ in network["exchanges"] if path == "/download-chunk"]
     assert route.factory == route.closed == 1
     if mode == "uncertain":
-        attempts = list(route.destination.parents[2].glob("runtime/out/runs/*/attempt.json"))
+        attempts = list((route.destination / ".vibecomfy-runtime/out/runs").glob("*/attempt.json"))
         assert len(attempts) == 1
         assert "acceptance unknown" in str(failure.value)
         assert failure.value.acceptance_known is False and failure.value.prompt_id is None
         assert Path(failure.value.receipt_path) == attempts[0]
-        # Concrete upstream limitation, left unchanged without a pin decision:
-        assert json.loads(attempts[0].read_text())["queue_acceptance"]["status"] == "rejected"
+        assert json.loads(attempts[0].read_text())["queue_acceptance"]["status"] == "unknown"
 
 
 def test_attachment_refuses_a_second_prompt_even_after_lost_reply(route, endpoint):

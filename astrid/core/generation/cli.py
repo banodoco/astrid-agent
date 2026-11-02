@@ -145,7 +145,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
             help="auto (default), managed, a loopback ComfyUI URL, or runpod.",
         )
         command.add_argument("--project", help="Project ID or slug; otherwise use the selected project.")
-        command.add_argument("--out", help="Output destination passed to the runtime.")
+        command.add_argument("--out", help="Caller-local output file or directory (default: ./outputs/<task-id>/).")
         command.add_argument("--dry-run", action="store_true", help="Show the generation plan without running it.")
         command.add_argument("--edit", "--image-ref", dest="image_ref", action=_Once, help="Reference image for an edit or image-to-video request.")
         command.add_argument("--width", action=_Once, type=int)
@@ -187,6 +187,13 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--json", action="store_true")
     _common_options(command)
+    command = sub.add_parser('align', help='Inspect locked managed assets; apply with explicit user_env consent.')
+    selection = command.add_mutually_exclusive_group()
+    selection.add_argument('--entry', action=_Once, metavar='ID')
+    selection.add_argument('--all', action='store_true')
+    command.add_argument('--apply', action='store_true')
+    command.add_argument('--consent', action='append', choices=('user_env',), default=[])
+    command.add_argument('--json', action='store_true')
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
     command.add_argument('--target', action=_Once, default='auto')
     command.add_argument('--engine', action=_Once, default='comfyui')
@@ -290,6 +297,9 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     else:
         with _open_client() as client:
             result = generate(client)
+            if not parsed.no_wait:
+                from .delivery import deliver_generation
+                result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
     if getattr(result, "ok", True) is False:
         from astrid.core.generation.preflight import generation_error
         raise generation_error(getattr(result, 'error', None) or ValueError('Workflow generation failed.'),
@@ -313,6 +323,9 @@ def _main(argv: list[str]) -> int:
     if parsed.modality == 'list':
         from astrid.core.generation.listing import main as list_main
         return list_main(argv)
+    if parsed.modality == 'align':
+        from astrid.core.generation.asset_alignment import main as align_main
+        return align_main(parsed)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
     if parsed.modality == 'launch':
@@ -411,11 +424,22 @@ def _main(argv: list[str]) -> int:
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
     try:
         generate = getattr(_generate_facade(), parsed.modality)
-        if parsed.dry_run or (description is not None and description["source"] == "action" and parsed.target != 'runpod'):
+        if parsed.dry_run:
             result = generate(**kwargs)
+        elif description is not None and description["source"] == "action" and parsed.target != 'runpod':
+            from astrid.sdk.generation import _action_client_scope
+            with _action_client_scope(_open_client) as current_client:
+                result = generate(**kwargs)
+                client = current_client()
+                if client is not None and not parsed.no_wait:
+                    from .delivery import deliver_generation
+                    result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
         else:
             with _open_client() as client:
                 result = generate(client=client, **kwargs)
+                if not parsed.no_wait:
+                    from .delivery import deliver_generation
+                    result = deliver_generation(result, client=client, out=parsed.out, project=parsed.project)
     except AstridSDKError as exc:
         # Preserve target/model problem codes and recovery guidance at the
         # gateway boundary instead of treating a typed SDK failure as a bug.

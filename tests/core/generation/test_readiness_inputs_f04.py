@@ -286,14 +286,18 @@ def test_release_routes_to_actual_owner_and_fails_closed_without_one():
     assert raised.value.to_envelope()['issues'][0]['code'] == 'missing_dependency'
 
 
-def test_catalog_uses_the_same_arbitrary_binding_path(authored, monkeypatch):
+def test_catalog_uses_the_same_arbitrary_binding_path(authored, monkeypatch, tmp_path):
+    from astrid.core.generation.engine_local_endpoint import record_engine_root
     from astrid.core.model_catalog.schema import BackendSpec, ModelEntry, ModeSpec
     from astrid.sdk.generation import _prepare_catalog_target_workflow
     workflow, _entry = authored
     candidate = ModelEntry(id='catalog-f04', modality='image', modes={
         't2i': ModeSpec(backends={'local': BackendSpec(template='image/f04')})})
-    monkeypatch.setattr(preflight, '_module_available', lambda name: True)
-    monkeypatch.setattr(preflight, '_comfyui_runtime_available', lambda: True)
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    record_engine_root('comfyui', str(tmp_path / 'engine'))
+    registered = preflight._registered_managed_engine()
+    assert registered['owner'] == 'astrid'
+    assert registered['endpoint'].startswith('http://127.0.0.1:')
     backend = SimpleNamespace(prepare_catalog_workflow=lambda *a, **k: (workflow.copy(), None, None))
     bound, plan, schema, assets = _prepare_catalog_target_workflow(
         registry=ModelRegistry([candidate]), candidate=candidate, mode='t2i', modality='image',

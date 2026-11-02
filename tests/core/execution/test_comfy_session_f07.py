@@ -1,6 +1,7 @@
 """CPU-only acceptance of the existing host's single Comfy session slot."""
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -139,7 +140,7 @@ def _comfy_host(tmp_path, monkeypatch, *, spawn_child=False):
         backends.append(backend)
         return backend
 
-    monkeypatch.setattr(vibecomfy.CheckoutServerAdapter, "from_host_session", classmethod(construct))
+    monkeypatch.setattr(vibecomfy.CheckoutServerAdapter, "open_host_session", classmethod(construct), raising=False)
     host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
     host.discover()
     host.warm_holds.close()
@@ -156,6 +157,13 @@ def _comfy_host(tmp_path, monkeypatch, *, spawn_child=False):
 
 def test_same_pid_reuse_and_stale_timer_after_owner_release(tmp_path, monkeypatch):
     host, runtime, timers, events, backends, run = _comfy_host(tmp_path, monkeypatch, spawn_child=True)
+    child_contexts = []
+    child_environment = host._child_environment
+    def capture_child(*args, **kwargs):
+        env, secrets = child_environment(*args, **kwargs)
+        child_contexts.append(json.loads(env["ASTRID_COMFY_INVOCATION"]))
+        return env, secrets
+    monkeypatch.setattr(host, "_child_environment", capture_child)
     try:
         run("first")
         backend = host.managed_tool_session.current_adapter.backend
@@ -163,6 +171,10 @@ def test_same_pid_reuse_and_stale_timer_after_owner_release(tmp_path, monkeypatc
         first_timer = timers.live()
         run("second")
         assert host.managed_tool_session.current_adapter.backend is backend
+        assert [context[0].invocation_id for context in backend.contexts] == [
+            "first:first-attempt:1", "second:second-attempt:1"]
+        assert [context["token_id"] for context in child_contexts] == [
+            context[0].token_id for context in backend.contexts]
         assert backend.child.pid == pid and backend.child.poll() is None
         assert first_timer.cancelled
         first_timer.callback()
@@ -347,3 +359,85 @@ def test_zero_idle_request_overrides_environment_and_expires(tmp_path, monkeypat
     finally:
         host.warm_holds.close()
         host.managed_tool_session.close()
+
+
+def test_default_hold_reuses_engine_then_unloads_and_reloads(tmp_path, monkeypatch):
+    """CPU stand-in tracks model residency; the host owns the real lease lifecycle."""
+    monkeypatch.delenv("ASTRID_WARM_IDLE_SECONDS", raising=False)
+    starts = []
+    construct = _FakeCheckout.__init__
+
+    def observed_construct(self, *args, **kwargs):
+        if kwargs["spawn_child"]:
+            starts.append(1)
+        construct(self, *args, **kwargs)
+
+    monkeypatch.setattr(_FakeCheckout, "__init__", observed_construct)
+    host, runtime, timers, events, backends, run = _comfy_host(tmp_path, monkeypatch, spawn_child=True)
+    now = [0.0]
+    host.warm_holds._clock = lambda: now[0]
+    model = {"loaded": False, "loads": 0, "unloads": 0}
+    command = host._run_command_definition
+
+    def generate(*args, **kwargs):
+        if not model["loaded"]:
+            model["loaded"] = True
+            model["loads"] += 1
+        return command(*args, **kwargs)
+
+    monkeypatch.setattr(host, "_run_command_definition", generate)
+    try:
+        assert run("first")["task"]["status"] == "completed"
+        backend = host.managed_tool_session.current_adapter.backend
+        pid = backend.child.pid
+        binding = host.managed_tool_session.current_binding
+        first_timer = timers.live()
+        assert first_timer.seconds == 1800 and model["loads"] == 1
+        assert host.warm_holds.status()[0]["expires_at"] == "1970-01-01T00:30:00+00:00"
+
+        # Model-unload control is the fixture's stand-in for the native adapter.
+        release = backend.release
+        def unload(*, reason):
+            model["loaded"] = False
+            model["unloads"] += 1
+            return release(reason=reason)
+        backend.release = unload
+        from astrid.core.generation import engine_runner
+        def unexpected_setup(*args, **kwargs):
+            pytest.fail("warm run attempted engine install, start, or health wait")
+        monkeypatch.setattr(engine_runner, "install_engine", unexpected_setup)
+        monkeypatch.setattr(engine_runner._Runner, "start", unexpected_setup)
+        monkeypatch.setattr(engine_runner._Runner, "check_health", unexpected_setup)
+        now[0] = 1799
+        assert run("second")["task"]["status"] == "completed"
+        assert host.managed_tool_session.current_adapter.backend is backend
+        assert host.managed_tool_session.current_binding == binding
+        assert backend.child.pid == pid and backend.child.poll() is None
+        assert len(starts) == 1
+        # The host constructs a candidate adapter but retains the original resident one.
+        assert events.count("construct") == 2 and len(backends) == 2
+        assert model == {"loaded": True, "loads": 1, "unloads": 0}
+        assert first_timer.cancelled and timers.live() is not first_timer
+        assert timers.live().seconds == 1800
+        assert host.warm_holds.status()[0]["expires_at"] == "1970-01-01T00:59:59+00:00"
+        first_timer.callback()
+        assert model["unloads"] == 0
+
+        now[0] = 3599
+        timers.fire()
+        assert events[-1] == "release:idle" and model["unloads"] == 1
+        assert not model["loaded"] and not host.managed_tool_session.occupied
+        assert backend.child.pid == pid and backend.child.poll() is None
+        assert run("third")["task"]["status"] == "completed"
+        assert model == {"loaded": True, "loads": 2, "unloads": 1}
+        assert host.managed_tool_session.current_binding == binding
+        assert len(backends) == 3 and backends[2].child is None and len(starts) == 1
+        assert timers.live().seconds == 1800
+        assert [row[0] for row in runtime.settlements] == ["first", "second", "third"]
+    finally:
+        host.warm_holds.close()
+        host.managed_tool_session.close()
+        for backend in backends:
+            if backend.child is not None and backend.child.poll() is None:
+                backend.child.terminate()
+                backend.child.wait(timeout=5)

@@ -126,3 +126,126 @@ def validate_m4_6_slot(slot_id: str) -> dict:
         if row["job_id"] == slot_id:
             return dict(row)
     raise ValueError(f"Unknown M4-6 failure-mode slot: {slot_id}")
+
+# RunPod is an executor for the same installed-product journey receipts.  Each
+# scenario names its own observable assertions and command exits.
+GPU_MATRIX: Final = tuple(
+    {"scenario_id": name, "runner": "runpod", "shell": "sh", "os": "linux",
+     "mode": mode, "checks": checks, "inner_exits": exits}
+    for name, mode, checks, exits in (
+        ("R1", "pod", ("install",), ("install",)),
+        ("R2", "pod", ("managed_install", "low_disk_refusal"), ("install", "low_disk_refusal")),
+        ("R3", "pod", ("readiness",), ("readiness",)),
+        ("R4", "pod", ("image_512", "image_1024", "task_record"), ("image_512", "image_1024")),
+        ("R5", "pod", ("workflow_artifact", "task_record"), ("workflow",)),
+        ("R6", "pod", ("missing_model", "repair", "rerun"), ("repair", "rerun")),
+        ("R7", "pod", ("cancelled", "pod_released", "no_orphans"), ("follow", "cancel", "release")),
+        ("R8", "pod", ("h3",), ("generate",)),
+        ("R9", "pod", ("smoke_2",), ("smoke_2",)),
+        ("R10", "pod", ("product_target", "sole_claimant", "foreign_pods_preserved"), ("generate",)),
+        ("PRIMARY", "attached", ("task_settled", "local_runtime", "file"), ("remote-target", "readiness", "generation")),
+        ("SECONDARY", "pod", ("task_settled", "file"), ("generation",)),
+    )
+)
+GPU_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in GPU_MATRIX)
+
+
+def emit_gpu_receipt(evidence_dir, scenario_id, *, variant=None):
+    """Translate recorded evidence only; missing observations remain null.
+
+    A future runner writes journey-capture.json using the documented receipt
+    fields. Historical row receipts are read without inferring release identity.
+    For rows-final.json the variant must identify one replay explicitly.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+
+    contract = next((r for r in GPU_MATRIX if r["scenario_id"] == scenario_id), None)
+    if contract is None:
+        raise ValueError(f"Unknown GPU scenario: {scenario_id}")
+    root = Path(evidence_dir)
+    def load(path):
+        def unique(pairs):
+            obj = {}
+            for key, value in pairs:
+                if key in obj:
+                    raise ValueError(f"duplicate JSON field {key} in {path}")
+                obj[key] = value
+            return obj
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique)
+
+    capture = root / "journey-capture.json"
+    row = load(capture) if capture.is_file() else {}
+    if not isinstance(row, dict):
+        raise ValueError("journey-capture.json must be an object")
+    if row and row.get("scenario") != scenario_id:
+        raise ValueError("capture scenario differs from requested scenario")
+    result = {key: row.get(key) for key in (
+        "schema_version", "receipt_kind", "scenario", "mode", "status", "runner_image",
+        "runner_provenance", "os_build", "shell", "source_override_test_mode", "final_cleanup",
+        "manifest_sha256", "candidate_checkouts", "sources", "installed_tuple", "import_origins",
+        "checks", "inner_exits")}
+    # Scenario is the requested inventory key, not an observation of execution.
+    result["scenario"] = scenario_id
+    primary = root / "primary-receipt.json"
+    replay = root / "rows-final.json"
+    legacy = None
+    if not row and primary.is_file() and scenario_id == "PRIMARY":
+        legacy = load(primary)
+        timings = legacy.get("timings", [])
+        labels = [item.get("label") for item in timings]
+        if len(set(labels)) != len(labels):
+            raise ValueError("duplicate PRIMARY timing label")
+        result["inner_exits"] = {t.get("label"): t.get("exit") for t in timings}
+        checks = {}
+        runtime = root / "verified-runtime-row.json"
+        if runtime.is_file():
+            task = load(runtime)
+            if task.get("id") == legacy.get("task_id") and task.get("status") == "completed":
+                checks["task_settled"] = "pass"
+        opened = root / "verified-artifact-open.json"
+        if opened.is_file():
+            artifact = load(opened)
+            data = artifact.get("data") or {}
+            path = Path(data.get("local_path", ""))
+            if (artifact.get("ok") is True and path.is_file()
+                    and path.resolve().is_relative_to(root.resolve())
+                    and hashlib.sha256(path.read_bytes()).hexdigest() == legacy.get("sha256")
+                    and data.get("content_identity") == "sha256:" + legacy.get("sha256", "")):
+                checks["file"] = "pass"
+        result["checks"] = checks
+    elif not row and replay.is_file() and scenario_id in {"R1", "R2", "R3"}:
+        rows = load(replay)
+        if variant is None or variant not in rows:
+            raise ValueError("rows-final.json requires an explicit replay variant")
+        matches = [r for r in rows[variant] if r.get("row") == scenario_id]
+        if len(matches) != 1:
+            raise ValueError("replay row is missing or duplicated")
+        item = matches[0]
+        # The index's receipt paths are relative to the task root (parent of out).
+        path = (root.parent / item["receipt"]).resolve()
+        if not path.is_relative_to(root.resolve()) or hashlib.sha256(path.read_bytes()).hexdigest() != item.get("receipt_sha256"):
+            raise ValueError("replay receipt path or digest mismatch")
+        legacy = load(path)
+        if legacy.get("row") != scenario_id:
+            raise ValueError("replay receipt row mismatch")
+    elif not row and scenario_id in {"R4", "R6"}:
+        files = sorted(root.glob("*receipt.json"))
+        if variant is not None:
+            files = [path for path in files if path.name == variant]
+        else:
+            files = [path for path in files if path.name.startswith(scenario_id)]
+        if len(files) == 1:
+            legacy = load(files[0])
+            if not str(legacy.get("row", "")).startswith(scenario_id):
+                raise ValueError("historical receipt row mismatch")
+        elif len(files) > 1:
+            raise ValueError("multiple historical row receipts; select a row evidence directory")
+    if legacy is not None and not row:
+        verdict = legacy.get("status", legacy.get("VERDICT"))
+        result["status"] = {"PASS": "pass", "FAIL": "fail"}.get(verdict)
+        result["manifest_sha256"] = legacy.get("manifest_sha256")
+        if scenario_id != "PRIMARY" and "exit_code" in legacy:
+            result["inner_exits"] = {"row": legacy["exit_code"]}
+    return result

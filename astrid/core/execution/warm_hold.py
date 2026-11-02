@@ -23,7 +23,7 @@ from typing import Any, Callable, Hashable, Mapping
 from astrid.core.env_vars import ASTRID_WARM_IDLE_SECONDS
 
 # A GPU/model holder keeps its weights this long after its last task.
-DEFAULT_IDLE_SECONDS = 600.0
+DEFAULT_IDLE_SECONDS = 1800
 
 
 def idle_seconds(default: float, *, requested: float | None = None,

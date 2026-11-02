@@ -48,7 +48,7 @@ ENGINE = "vibecomfy-h3"
 CLONE = Path(__file__).resolve().parents[3]
 RUNTIME_SOURCE = runtime_checkout()
 VIBECOMFY_SOURCE = vibecomfy_checkout()
-VIBECOMFY_REVISION = "2967033970cbb5884651c9565265778482d3b44e"
+VIBECOMFY_REVISION = "e2905d068d5851b9c32856d32b8251852a01d6dd"
 COMFY_VERSION = "0.36.0"
 SYNTHETIC_DRIVER = "580.95.05"
 SYNTHETIC_VRAM_MIB = 32607
@@ -391,7 +391,7 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     if recipe.engine == "comfyui":
         assert dict(receipt.source_commits) == {
             "comfyui": "423cbd20511becb1f16122ab518e92e58bfa03d9",
-            "vibecomfy": "2967033970cbb5884651c9565265778482d3b44e",
+            "vibecomfy": "e2905d068d5851b9c32856d32b8251852a01d6dd",
         }
     inventory = sorted(({"name": Path(m.destination).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
                          "subdir": str(Path(m.destination).parent)} for m in installation["lock"].models),

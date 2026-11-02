@@ -3497,6 +3497,43 @@ def _wait_for_kernel_task(
                 },
             }, False, attempt_id
 
+        # Runtime preserves unresolved attempt custody after lease expiry.
+        # Such a task will not become terminal merely by polling it longer.
+        # Use the same task read; never redispatch an accepted external job.
+        lease_expiry = task.get("lease_expires_at")
+        expired = False
+        if state in {"running", "provider_state_unknown"} and attempt_id and isinstance(lease_expiry, str):
+            try:
+                parsed_expiry = datetime.fromisoformat(lease_expiry.replace("Z", "+00:00"))
+                expired = parsed_expiry.tzinfo is not None and parsed_expiry <= datetime.now(timezone.utc)
+            except ValueError:
+                pass
+        if expired:
+            recovery_command = f"astrid tasks cancel {task_id}"
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "kernel_run_id": run_id,
+                "kernel_task_id": task_id,
+                "kernel_attempt_id": attempt_id,
+                "state": "reconciliation_required",
+                "task": task,
+                "error": {
+                    "code": "task_reconciliation_required",
+                    "message": (
+                        f"task {task_id}, attempt {attempt_id}: lease expired with unresolved custody; "
+                        f"reconciliation required. Recover with: {recovery_command}"
+                    ),
+                    "details": {
+                        "task_id": task_id,
+                        "attempt_id": attempt_id,
+                        "state": state,
+                        "lease_expires_at": lease_expiry,
+                        "recovery_command": recovery_command,
+                    },
+                },
+            }, False, attempt_id
+
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return {

@@ -332,7 +332,7 @@ def _module_available(module_name: str) -> bool:
 
 
 def _comfyui_runtime_available() -> bool:
-    """Return whether the managed ComfyUI runtime can be started locally."""
+    """Discover a legacy local ComfyUI in the current Python environment or PATH."""
 
     if _module_available("comfy.cmd.main"):
         return True
@@ -353,7 +353,7 @@ def _managed_install_fix() -> ReadinessFix | None:
         return None
     try:
         candidates = [row for row in load_recipe_index().entries
-                      if row.engine in {'vibecomfy-h3', 'vibecomfy'}
+                      if row.engine == 'comfyui'
                       and row.platform.startswith('linux-x86_64-')]
         if len(candidates) != 1:
             return None
@@ -377,12 +377,33 @@ def _managed_install_fix() -> ReadinessFix | None:
                         'guidance': f'{scope}; {size}'}}
 
 
+def _registered_managed_engine() -> dict[str, str] | None:
+    """The registered managed ComfyUI engine's owner and loopback endpoint, or None.
+
+    Deterministic: reads the recorded install root and the recipe's port only.
+    It does not probe health; the run-time verifier does that.
+    """
+    from .engine_contracts import EngineError
+    from .engine_local_endpoint import DEFAULT_PLATFORM, recorded_engine_root
+    from .engine_recipe import load_recipe
+
+    try:
+        root = recorded_engine_root("comfyui")
+    except EngineError:
+        return None
+    if root is None:
+        return None
+    recipe = load_recipe("comfyui", DEFAULT_PLATFORM)
+    return {"owner": "astrid", "endpoint": f"http://127.0.0.1:{recipe.start.port}", "root": root}
+
+
 def check_local_generation_readiness(
     entry: Any,
     mode: str,
     *,
     python_executable: str | None = None,
     require_managed_runtime: bool = True,
+    legacy_local: bool = True,
 ) -> LocalGenerationReadiness:
     """Check deterministic prerequisites for a selected local model path.
 
@@ -408,7 +429,7 @@ def check_local_generation_readiness(
             ),
         )
 
-    if not _module_available("vibecomfy"):
+    if legacy_local and not _module_available("vibecomfy"):
         return LocalGenerationReadiness(
             ready=False,
             reason=(
@@ -423,7 +444,11 @@ def check_local_generation_readiness(
             ),
         )
 
-    if require_managed_runtime and not _comfyui_runtime_available():
+    managed_ready = (
+        _registered_managed_engine() is not None if not legacy_local
+        else _comfyui_runtime_available()
+    )
+    if require_managed_runtime and not managed_ready:
         install = _managed_install_fix()
         attach = ['astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
         import shlex
@@ -434,8 +459,10 @@ def check_local_generation_readiness(
         return LocalGenerationReadiness(
             ready=False,
             reason=(
-                "local generation requires a ComfyUI runtime ('comfy.cmd.main' "
-                "or the 'comfyui' CLI); neither is installed or discoverable"
+                ("local generation requires a ComfyUI runtime; no managed engine is installed or registered"
+                 if not legacy_local else
+                 "legacy local generation requires a ComfyUI runtime ('comfy.cmd.main' "
+                 "or the 'comfyui' CLI); neither is installed or discoverable")
             ),
             recovery_command=guidance,
             fixes=(
@@ -472,6 +499,54 @@ def require_local_generation_readiness(
     )
 
 
+def _installed_managed_target():
+    """Bind an installed ComfyUI through its existing receipt/custody verifier."""
+    from .backends.comfy_target import ComfyTarget, ComfyTargetClient
+    from .engine_contracts import EngineError
+    from .engine_local_endpoint import local_engine_endpoint, recorded_engine_root
+    from .targets import TargetRecord
+
+    try:
+        root = recorded_engine_root('comfyui')
+        if root is None:
+            return None
+        installed = local_engine_endpoint('comfyui', root=root)
+    except EngineError as exc:
+        if exc.code == 'engine_not_installed':
+            # A deleted locked model can fail installed health before workflow
+            # compilation. Preserve the refusal, but name the actual asset fix.
+            from .asset_gaps import asset_readiness
+            from .asset_alignment import selected_target
+            from .model_downloader import _root_and_destination, _validate_model
+            try:
+                selected = selected_target()
+                missing = []
+                for model in selected.locked_models:
+                    relative, _url = _validate_model(model)
+                    _, path = _root_and_destination(str(selected.models_root), relative)
+                    if not path.exists():
+                        missing.append(model.destination)
+            except (EngineError, OSError, ValueError):
+                missing = []
+            if missing:
+                raise GenerationReadinessError(asset_readiness(None, models=missing,
+                    target={'root': str(selected.root), 'endpoint': selected.url, 'owner': 'astrid'})) from exc
+        fix = _managed_install_fix()
+        raise generation_error(
+            ValueError('The installed managed ComfyUI engine is not ready; repair its installation.'),
+            code='engine_not_found', details={'field': 'target', 'engine_code': exc.code},
+            fixes=(() if fix is None else (fix,)),
+        ) from exc
+    endpoint = installed.endpoint
+    facts = {'object_info_sha256': endpoint.health.object_info_sha256}
+    client = ComfyTargetClient(ComfyTarget(endpoint.url, 'managed', facts))
+    client.generation_target = TargetRecord(
+        owner='astrid', endpoint=endpoint.url, root=root, layout='git',
+        facts=facts, verified_at=endpoint.health.checked_at,
+    )
+    return client
+
+
 def _select_generation_target(target: str, *, repo=None):
     """Select and probe one Comfy target without changing machine config.
 
@@ -493,7 +568,7 @@ def _select_generation_target(target: str, *, repo=None):
         selection = resolve_target(target, repo=repo)
         record = selection.record
         if record is None or record.owner == "astrid":
-            return None
+            return _installed_managed_target()
         if record.endpoint is None:
             raise AstridError(
                 "Selected human ComfyUI target has no endpoint; launch it with explicit consent first",
@@ -502,6 +577,8 @@ def _select_generation_target(target: str, *, repo=None):
             )
         url = record.endpoint
         client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    except GenerationReadinessError:
+        raise
     except TargetConfigError as exc:
         raise AstridError(
             str(exc), code="COMFY_TARGET_INVALID", field="target",
@@ -533,13 +610,21 @@ def _select_generation_target(target: str, *, repo=None):
     return client
 
 
-def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None):
+def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None,
+                             entry_id: str | None = None):
     """Read/probe the bound target and expose the shared error envelope."""
     try:
         if target == 'runpod' and runpod_owner is not None:
             return call_runpod_owner(runpod_owner.validation_target)
         return _select_generation_target(target, repo=repo)
     except AstridError as exc:
+        if isinstance(exc, GenerationReadinessError) and entry_id and all(
+                issue['code'] in {'missing_model', 'missing_node_pack'} for issue in exc.readiness['issues']):
+            from .asset_gaps import asset_readiness
+            raise GenerationReadinessError(asset_readiness(entry_id,
+                nodes=[issue['details']['node'] for issue in exc.readiness['issues'] if issue['code'] == 'missing_node_pack'],
+                models=[issue['details']['model'] for issue in exc.readiness['issues'] if issue['code'] == 'missing_model'],
+                target=exc.readiness['target'])) from exc
         snapshot = exc.state_snapshot.get('target')
         selector = (snapshot or {}).get('endpoint') or target
         argv = ['astrid', 'generate', 'targets', '--target', selector]
@@ -548,11 +633,11 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
 
 
 def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> None:
-    """Reuse package prerequisites while leaving server ownership to its owner."""
+    """Require a selected engine without probing the Agent Python environment."""
     from astrid.core.contracts.errors import AstridError
 
     readiness = check_local_generation_readiness(
-        entry, mode, require_managed_runtime=client is None,
+        entry, mode, require_managed_runtime=client is None, legacy_local=False,
     )
     if not readiness.ready:
         error = AstridError(
