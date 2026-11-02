@@ -1029,6 +1029,20 @@ actions:
     - kind: implementation
       path: actions/character_animation/run.py
 resources:
+- kind: engine-recipe
+  path: recipe.linux-cu130.json
+- kind: engine-data
+  path: requirements.linux-cu130.lock
+- kind: documentation
+  path: docs/comfyui-lock-source.md
+- kind: engine-recipe
+  path: recipe.windows-cu130.json
+- kind: engine-data
+  path: pins.json
+- kind: engine-data
+  path: models.lock.json
+- kind: engine-data
+  path: environment.windows-nvidia.json
 - kind: implementation
   path: actions/__init__.py
 - kind: implementation

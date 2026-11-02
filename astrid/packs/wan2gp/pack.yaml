@@ -244,6 +244,14 @@ actions:
       runtime_file: actions/validate_settings/run.py
       runtime_module: astrid.packs.wan2gp.actions.validate_settings.run
 resources:
+  - kind: engine-recipe
+    path: recipe.windows-cu128.json
+  - kind: engine-data
+    path: pins.json
+  - kind: engine-data
+    path: models.lock.json
+  - kind: engine-data
+    path: environment.windows-nvidia.json
   - kind: documentation
     path: docs/SKILL.md
   - kind: support

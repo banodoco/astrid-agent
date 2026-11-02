@@ -9,7 +9,7 @@ from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlsplit
 
 from .engine_contracts import (
@@ -19,6 +19,10 @@ from .engine_contracts import (
     SourcePath, SourcePin, SourceSpec, StartSpec, UnsupportedPlatform,
     UnknownEngine, UnsafePathError, WheelSpec,
 )
+
+if TYPE_CHECKING:
+    from astrid.core.pack.canonical import BundledCatalog, ResourceHandle
+
 
 _ROOT = Path(__file__).resolve().parents[2]
 _INDEX_PATH = _ROOT / "packs" / "engine-index.json"
@@ -89,7 +93,16 @@ def _resolve_ref(raw: Any, where: str) -> DataRef:
     return DataRef(_relative(obj["path"], where + ".path"), _digest(obj["sha256"], where + ".sha256"))
 
 
-def _read_ref(ref: DataRef) -> tuple[Path, bytes]:
+def _check_ref_selection(ref: DataRef, allowed: Mapping[str, ResourceHandle] | None) -> None:
+    if allowed is not None:
+        if ref.path not in allowed:
+            raise RecipeValidationError(f"resource is not declared by the selected pack catalog: {ref.path}")
+        if ref.sha256 != allowed[ref.path].sha256:
+            raise IntegrityError(f"selected pack resource digest differs from declaration: {ref.path}")
+
+
+def _read_ref(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = None) -> tuple[Path, bytes]:
+    _check_ref_selection(ref, allowed)
     path = _ROOT / ref.path
     try:
         resolved = path.resolve(strict=True)
@@ -104,7 +117,7 @@ def _read_ref(ref: DataRef) -> tuple[Path, bytes]:
 
 
 def _parse_pins(raw: Any) -> dict[str, SourcePin]:
-    obj = _object(raw, {"schema", "sources"}, where="pins")
+    obj = _object(raw, {"schema", "sources"}, {"includes"}, where="pins")
     if obj["schema"] != "astrid.engine-pins.v1" or not isinstance(obj["sources"], dict):
         raise RecipeValidationError("pins schema must be astrid.engine-pins.v1 with a source map")
     result = {}
@@ -120,16 +133,66 @@ def _parse_pins(raw: Any) -> dict[str, SourcePin]:
     return result
 
 
-def load_pin_set(ref: DataRef) -> Mapping[str, SourcePin]:
-    """Load a hash-verified packaged pin set for compatibility adapters."""
+def _selected_resources(registry: BundledCatalog | None) -> Mapping[str, ResourceHandle] | None:
+    """Constrain refs to an explicitly admitted canonical catalog, without discovery."""
+    if registry is None:
+        return None
+    selected: dict[str, ResourceHandle] = {}
+    for entry in registry.ordered_entries:
+        try:
+            manifest_path = entry.manifest.resolved.relative_to(_ROOT).as_posix()
+        except ValueError as exc:
+            raise UnsafePathError("selected engine catalog must belong to this Astrid package") from exc
+        _read_ref(DataRef(manifest_path, entry.manifest.sha256))
+        for handle in entry.resources:
+            if not handle.resolved.is_relative_to(entry.root):
+                raise UnsafePathError(f"selected resource escapes its owner: {handle.path}")
+            try:
+                relative = handle.resolved.relative_to(_ROOT).as_posix()
+            except ValueError as exc:
+                raise UnsafePathError(f"selected resource is outside this Astrid package: {handle.path}") from exc
+            if relative in selected and selected[relative].sha256 != handle.sha256:
+                raise IntegrityError(f"conflicting selected resource digests: {relative}")
+            selected[relative] = handle
+    return MappingProxyType(selected)
+
+
+def _load_pins(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = None,
+               active: tuple[str, ...] = ()) -> tuple[dict[str, SourcePin], tuple[DataRef, ...]]:
+    if ref.path in active:
+        raise RecipeValidationError(f"cyclic pin set reference: {ref.path}")
+    _, payload = _read_ref(ref, allowed=allowed)
+    try:
+        raw = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RecipeValidationError(f"pins are invalid JSON: {ref.path}") from exc
+    parsed = _parse_pins(raw)
+    refs = [ref]
+    for item in _array(raw.get("includes", []), "pins.includes"):
+        included = _resolve_ref(item, "pins.includes")
+        imported, imported_refs = _load_pins(included, allowed=allowed, active=(*active, ref.path))
+        overlap = parsed.keys() & imported.keys()
+        if overlap:
+            raise RecipeValidationError("duplicate pin authority: " + ", ".join(sorted(overlap)))
+        parsed.update(imported)
+        refs.extend(imported_refs)
+    return parsed, tuple(refs)
+
+
+def load_pin_set(ref: DataRef, *, registry: BundledCatalog | None = None) -> Mapping[str, SourcePin]:
+    """Load only the explicitly hash-bound pin graph; never discover sibling pins."""
     if not isinstance(ref, DataRef):
         raise RecipeValidationError("load_pin_set requires a DataRef")
-    _, payload = _read_ref(ref)
-    try:
-        parsed = _parse_pins(json.loads(payload))
-    except json.JSONDecodeError as exc:
-        raise RecipeValidationError("pins are invalid JSON") from exc
+    parsed, _ = _load_pins(ref, allowed=_selected_resources(registry))
     return MappingProxyType(parsed)
+
+
+def pin_set_refs(ref: DataRef) -> tuple[DataRef, ...]:
+    """Verified transitive pin closure for the existing target helper identity."""
+    if not isinstance(ref, DataRef):
+        raise RecipeValidationError("pin_set_refs requires a DataRef")
+    _, refs = _load_pins(ref)
+    return refs
 
 
 def _placeholder_check(values: list[str], where: str) -> None:
@@ -143,12 +206,13 @@ def _placeholder_check(values: list[str], where: str) -> None:
             raise RecipeValidationError(f"malformed recipe placeholder in {where}")
 
 
-def _load_recipe(ref: DataRef, index_engine: str, index_platform: str) -> EngineRecipe:
-    _, payload = _read_ref(ref)
+def _load_recipe(ref: DataRef, index_engine: str, index_platform: str, *,
+                 allowed: Mapping[str, ResourceHandle] | None = None) -> EngineRecipe:
+    _, payload = _read_ref(ref, allowed=allowed)
     try:
         raw = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise RecipeValidationError("recipe is invalid JSON") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RecipeValidationError(f"recipe is invalid JSON: {ref.path}") from exc
     top = _object(raw, {"schema", "engine", "platform", "pins", "source_bindings", "environments", "primary_environment", "models_lock", "start", "health"}, where="recipe")
     if top["schema"] != "astrid.engine-recipe.v1": raise RecipeValidationError("unknown recipe schema")
     engine = _string(top["engine"], "recipe.engine")
@@ -157,9 +221,7 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str) -> Engine
     if platform not in _PLATFORMS: raise RecipeValidationError("recipe.platform is unsupported")
     if engine != index_engine or platform != index_platform: raise RecipeValidationError("recipe identity differs from index entry")
     pins_ref = _resolve_ref(top["pins"], "recipe.pins")
-    _, pins_raw = _read_ref(pins_ref)
-    try: pins = _parse_pins(json.loads(pins_raw))
-    except json.JSONDecodeError as exc: raise RecipeValidationError("pins are invalid JSON") from exc
+    pins, _ = _load_pins(pins_ref, allowed=allowed)
     bindings = _array(top["source_bindings"], "recipe.source_bindings")
     sources, names, source_paths = [], set(), set()
     for i, binding_raw in enumerate(bindings):
@@ -186,6 +248,8 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str) -> Engine
         mode = req["mode"]
         if mode not in {"packaged", "resolve-once"}: raise RecipeValidationError("unknown requirements mode")
         lock = _resolve_ref(req["packaged_lock"], where + ".packaged_lock") if req["packaged_lock"] is not None else None
+        if lock is not None:
+            _check_ref_selection(lock, allowed)
         inputs, input_keys = [], set()
         for j, item in enumerate(_array(req["input_paths"], where + ".input_paths")):
             row = _object(item, {"source", "path"}, where=f"{where}.input_paths[{j}]")
@@ -224,6 +288,7 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str) -> Engine
     primary = _string(top["primary_environment"], "primary_environment")
     if primary not in env_names: raise RecipeValidationError("primary_environment does not name an environment")
     models_ref = _resolve_ref(top["models_lock"], "recipe.models_lock")
+    _check_ref_selection(models_ref, allowed)
     start_raw = _object(top["start"], {"argv", "cwd", "env", "bind_host", "port"}, where="recipe.start")
     argv = tuple(_string(x, "start.argv") for x in _array(start_raw["argv"], "start.argv"))
     if not argv: raise RecipeValidationError("start.argv must not be empty")
@@ -259,11 +324,11 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str) -> Engine
     return EngineRecipe(top["schema"], engine, platform, pins_ref, tuple(sources), tuple(environments), primary, models_ref, StartSpec(argv, cwd, MappingProxyType(dict(start_env)), "127.0.0.1", port), health)
 
 
-def _load_index() -> RecipeIndex:
+def _index_rows() -> list[dict[str, Any]]:
     raw = _json(_INDEX_PATH)
     obj = _object(raw, {"schema", "entries"}, where="engine-index")
     if obj["schema"] != "astrid.engine-index.v1": raise RecipeValidationError("unknown recipe index schema")
-    entries, seen = [], set()
+    rows, seen = [], set()
     prior = None
     for i, item_raw in enumerate(_array(obj["entries"], "engine-index.entries")):
         item = _object(item_raw, {"engine", "platform", "recipe"}, where=f"engine-index.entries[{i}]")
@@ -273,33 +338,52 @@ def _load_index() -> RecipeIndex:
         if key in seen: raise RecipeValidationError("duplicate engine/platform index entry")
         if prior is not None and key < prior: raise RecipeValidationError("index entries must be deterministically sorted")
         seen.add(key); prior = key
-        entries.append(RecipeIndexEntry(engine, platform, _resolve_ref(item["recipe"], "index.recipe")))
-    return RecipeIndex(obj["schema"], tuple(entries))
+        rows.append(item)
+    return rows
 
 
-def load_recipe_index() -> RecipeIndex:
-    return _load_index()
+def _selected_row(item: Mapping[str, Any], allowed: Mapping[str, ResourceHandle] | None) -> bool:
+    if allowed is None:
+        return True
+    ref = item["recipe"]
+    path = ref.get("path") if isinstance(ref, dict) else None
+    return isinstance(path, str) and path in allowed and allowed[path].kind == "resource:engine-recipe"
 
 
-def load_recipe(engine: str, platform: str) -> EngineRecipe:
+def _load_index(*, allowed: Mapping[str, ResourceHandle] | None = None) -> RecipeIndex:
+    entries = tuple(
+        RecipeIndexEntry(item["engine"], item["platform"], _resolve_ref(item["recipe"], "index.recipe"))
+        for item in _index_rows() if _selected_row(item, allowed)
+    )
+    return RecipeIndex("astrid.engine-index.v1", entries)
+
+
+def load_recipe_index(*, registry: BundledCatalog | None = None) -> RecipeIndex:
+    """Project the shipped registry over explicitly selected canonical resources."""
+    return _load_index(allowed=_selected_resources(registry))
+
+
+def load_recipe(engine: str, platform: str, *, registry: BundledCatalog | None = None) -> EngineRecipe:
+    """Select once by registered identity, optionally confined to an admitted catalog.
+
+    The shipped index is metadata, not filesystem discovery. Only the selected
+    recipe and its explicit pin imports are opened. A supplied catalog cannot
+    fall back to a same-ID recipe in an unselected pack.
+    """
     if not isinstance(engine, str) or not _ENGINE.fullmatch(engine): raise UnknownEngine(engine)
-    index = _load_index()
-    matches = [entry for entry in index.entries if entry.engine == engine]
+    allowed = _selected_resources(registry)
+    matches = [item for item in _index_rows() if item["engine"] == engine and _selected_row(item, allowed)]
     if not matches:
-        # A pack-owned canonical pin set establishes a known engine even when
-        # CONTRACTS v1 has no PlatformKey for one of its existing recipes.
-        if (_ROOT / "packs" / engine / "pins.json").is_file():
-            raise UnsupportedPlatform(f"{engine} has no indexed recipe for {platform}")
-        raise UnknownEngine(engine)
-    if platform not in _PLATFORMS or not any(entry.platform == platform for entry in matches): raise UnsupportedPlatform(f"{engine} does not support {platform}")
-    entry = next(entry for entry in matches if entry.platform == platform)
-    return _load_recipe(entry.recipe, engine, platform)
+        raise UnknownEngine(f"engine is not registered in the selected catalog: {engine}")
+    if platform not in _PLATFORMS or not any(item["platform"] == platform for item in matches): raise UnsupportedPlatform(f"{engine} does not support {platform}")
+    entry = next(item for item in matches if item["platform"] == platform)
+    return _load_recipe(_resolve_ref(entry["recipe"], "index.recipe"), engine, platform, allowed=allowed)
 
 
-def _load_model_lock_ref(ref: DataRef) -> ModelLock:
-    _, payload = _read_ref(ref)
+def _load_model_lock_ref(ref: DataRef, *, allowed: Mapping[str, ResourceHandle] | None = None) -> ModelLock:
+    _, payload = _read_ref(ref, allowed=allowed)
     try: raw = json.loads(payload)
-    except json.JSONDecodeError as exc: raise ModelLockValidationError("model lock is invalid JSON") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise ModelLockValidationError(f"model lock is invalid JSON: {ref.path}") from exc
     top = _object(raw, {"schema", "models"}, where="model lock")
     if top["schema"] != "astrid.models-lock.v1": raise ModelLockValidationError("unknown model lock schema")
     models, names, destinations = [], set(), set()
@@ -328,23 +412,23 @@ def _load_model_lock_ref(ref: DataRef) -> ModelLock:
     return ModelLock(top["schema"], tuple(models))
 
 
-def load_model_lock(ref: DataRef) -> ModelLock:
+def load_model_lock(ref: DataRef, *, registry: BundledCatalog | None = None) -> ModelLock:
     if not isinstance(ref, DataRef): raise ModelLockValidationError("load_model_lock requires a DataRef")
     try:
-        return _load_model_lock_ref(ref)
+        return _load_model_lock_ref(ref, allowed=_selected_resources(registry))
     except (ModelLockValidationError, UnsafePathError):
         raise
     except RecipeValidationError as exc:
         raise ModelLockValidationError(str(exc)) from exc
 
 
-def load_recipe_model_lock(engine: str, platform: str) -> ModelLock:
-    recipe = load_recipe(engine, platform)
-    return load_model_lock(recipe.models_lock)
+def load_recipe_model_lock(engine: str, platform: str, *, registry: BundledCatalog | None = None) -> ModelLock:
+    recipe = load_recipe(engine, platform, registry=registry)
+    return load_model_lock(recipe.models_lock, registry=registry)
 
 
-def engine_source_revision(engine: str, platform: str, source: str) -> str:
-    recipe = load_recipe(engine, platform)
+def engine_source_revision(engine: str, platform: str, source: str, *, registry: BundledCatalog | None = None) -> str:
+    recipe = load_recipe(engine, platform, registry=registry)
     for item in recipe.sources:
         if item.name == source:
             return item.pin.revision
@@ -378,5 +462,5 @@ def recipe_digest(recipe: EngineRecipe) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-__all__ = ["load_recipe_index", "load_recipe", "load_model_lock", "load_recipe_model_lock", "load_pin_set",
+__all__ = ["load_recipe_index", "load_recipe", "load_model_lock", "load_recipe_model_lock", "load_pin_set", "pin_set_refs",
            "engine_source_revision", "serialize_recipe", "serialize_model_lock", "recipe_digest"]

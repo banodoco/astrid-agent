@@ -163,7 +163,7 @@ astrid = [
     "packs/**/requirements.txt",
     "packs/**/requirements.windows-nvidia.txt",
     "packs/runpod/requirements.linux-cu130.lock",
-    "packs/comfyui/requirements.linux-cu130.lock",
+    "packs/vibecomfy/requirements.linux-cu130.lock",
     "packs/**/rendering/**/*.md",
     "packs/**/AGENTS.md",
     "packs/**/README.md",

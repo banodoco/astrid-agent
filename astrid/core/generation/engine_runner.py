@@ -272,7 +272,7 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
     result["packs/engine-index.json"] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
     entry = next(e for e in recipes.load_recipe_index().entries
                  if (e.engine, e.platform) == (recipe.engine, recipe.platform))
-    refs = [entry.recipe, recipe.pins, recipe.models_lock]
+    refs = [entry.recipe, *recipes.pin_set_refs(recipe.pins), recipe.models_lock]
     refs += [e.requirements.packaged_lock for e in recipe.environments
              if e.requirements.packaged_lock is not None]
     for ref in refs:
