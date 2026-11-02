@@ -147,6 +147,36 @@ def test_separate_hosted_artifact_directories_use_one_final_receipt_per_job(tmp_
                for error in gate.evaluate_release1_matrix(pinned, tmp_path))
 
 
+def test_before_cleanup_only_snapshot_is_counted_once_and_fails_closed(tmp_path):
+    pinned = candidate()
+    for contract in RELEASE1_MATRIX:
+        before = release1_row(contract, pinned)
+        before.update(status="fail", final_cleanup=None)
+        path = (tmp_path / f"journey-receipt-{contract['job_id']}" / "before-cleanup"
+                / "journey-result.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(before), encoding="utf-8")
+
+    assert len(gate.hosted_receipt_paths(tmp_path)) == len(RELEASE1_MATRIX)
+    errors = gate.evaluate_release1_matrix(pinned, tmp_path)
+    assert any("direct-linux: status 'fail' is not pass" in error for error in errors)
+    assert any("direct-linux: final cleanup did not pass" in error for error in errors)
+    assert not any("direct-linux: missing receipt" in error for error in errors)
+
+
+def test_independent_retained_artifacts_for_one_job_fail_closed(tmp_path):
+    pinned = candidate()
+    write_release1_set(tmp_path, pinned)
+    duplicate = (tmp_path / "journey-receipt-independent-copy-direct-linux" / "after-cleanup"
+                 / "journey-result.json")
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_text(json.dumps(release1_row(RELEASE1_MATRIX[1], pinned)), encoding="utf-8")
+
+    assert len(gate.hosted_receipt_paths(tmp_path)) == len(RELEASE1_MATRIX) + 1
+    errors = gate.evaluate_release1_matrix(pinned, tmp_path)
+    assert any("duplicate receipt for direct-linux" in error for error in errors)
+
+
 def test_duplicate_json_is_rejected_not_promoted_to_a_pass(tmp_path):
     pinned = candidate()
     path = tmp_path / "forged" / "journey-result.json"
