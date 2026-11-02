@@ -515,12 +515,12 @@ def write_skip_log(step: Step, args: argparse.Namespace, message: str) -> None:
     print(message)
 
 def _notes_overlap_ratio(prev: list[dict[str, Any]], curr: list[dict[str, Any]]) -> float:
-    from astrid.packs.editorial.actions.editor_review.run import notes_overlap_ratio
+    from astrid.packs.editorial.api import notes_overlap_ratio
 
     return notes_overlap_ratio(prev, curr)
 
 def _plan_action(review: dict[str, Any]) -> str:
-    from astrid.packs.editorial.actions.editor_review.run import plan_next_action
+    from astrid.packs.editorial.api import plan_next_action
 
     return plan_next_action(review)
 
