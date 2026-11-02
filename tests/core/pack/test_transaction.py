@@ -820,9 +820,9 @@ def test_real_packs_update_command_and_rollback_restore_previous_generation(
     assert all(read_pin(path / "PIN")["commit"] == old_commit for path in rolled_back.paths.values())
 
 
-@pytest.mark.parametrize("configured_override", [None, "override"])
+@pytest.mark.parametrize("extra_count", [1, 2])
 def test_update_and_rollback_cli_default_to_configured_user_collection(
-        repo: Repository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_override: str | None) -> None:
+        repo: Repository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_count: int) -> None:
     from astrid.core.pack.cli import main as packs_cli_main
     from astrid.core.pack.loader import packs_root as bundled_packs_root
 
@@ -830,18 +830,15 @@ def test_update_and_rollback_cli_default_to_configured_user_collection(
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-    unrelated = tmp_path / "unrelated-packs"
-    unrelated.mkdir()
-    marker = unrelated / "do-not-touch"
-    marker.write_text("unrelated\n", encoding="utf-8")
-    if configured_override:
-        selected = tmp_path / configured_override
-        monkeypatch.setenv("ASTRID_PACKS_PATH", str(selected))
-    else:
-        selected = home / "Astrid" / "packs"
+    extras = [tmp_path / f"extra-packs-{index}" for index in range(extra_count)]
+    for index, extra in enumerate(extras):
+        extra.mkdir()
+        (extra / f"marker-{index}").write_text("discovery-only\n", encoding="utf-8")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", os.pathsep.join(map(str, extras)))
+    selected = home / "Astrid" / "packs"
     bundled = bundled_packs_root().resolve()
     bundled_before = tree_snapshot(bundled)
-    unrelated_before = tree_snapshot(unrelated)
+    extras_before = [tree_snapshot(extra) for extra in extras]
     original_commit = repo.commit
 
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
@@ -853,13 +850,12 @@ def test_update_and_rollback_cli_default_to_configured_user_collection(
                            "--pack", "alpha=packs/alpha", "--pack", "shared=packs/shared"]) == 0
     assert packs_cli_main(["rollback", "--pack", "alpha", "--pack", "shared"]) == 0
     assert all(read_pin(path / "PIN")["commit"] == original_commit for path in read_group(selected).paths.values())
-    assert marker.read_text(encoding="utf-8") == "unrelated\n"
+    assert [tree_snapshot(extra) for extra in extras] == extras_before
     assert tree_snapshot(bundled) == bundled_before
-    assert tree_snapshot(unrelated) == unrelated_before
 
 
 @pytest.mark.parametrize("configured_root", ["", "relative/packs"])
-def test_update_cli_refuses_disabled_or_invalid_configured_collection(
+def test_update_cli_uses_default_for_empty_path_and_refuses_relative_discovery_root(
         repo: Repository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_root: str) -> None:
     from astrid.core.pack.cli import main as packs_cli_main
     from astrid.core.pack.loader import packs_root as bundled_packs_root
@@ -868,11 +864,17 @@ def test_update_cli_refuses_disabled_or_invalid_configured_collection(
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("ASTRID_PACKS_PATH", configured_root)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
     bundled = bundled_packs_root().resolve()
     bundled_before = tree_snapshot(bundled)
-    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
-                           "--pack", "alpha=packs/alpha"]) == 2
-    assert not (home / "Astrid" / "packs").exists()
+    result = packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                             "--pack", "alpha=packs/alpha", "--pack", "shared=packs/shared"])
+    if configured_root:
+        assert result == 2
+        assert not (home / "Astrid" / "packs").exists()
+    else:
+        assert result == 0
+        assert set(read_group(home / "Astrid" / "packs").paths) == {"alpha", "shared"}
     assert tree_snapshot(bundled) == bundled_before
 
 
@@ -935,6 +937,7 @@ def test_real_cli_file_url_update_selects_dependency_added_by_verified_candidate
     dependency = external / "extdep"
     dependency.mkdir(parents=True)
     (dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    (dependency / "payload.txt").write_text("admitted-root\n", encoding="utf-8")
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
 
@@ -973,29 +976,344 @@ def test_real_cli_validates_retained_unrelated_external_dependency_for_update_an
     assert "retained" in read_group(packs_root).paths
 
 
-def test_real_cli_retained_pack_can_import_selected_core_pack_api(
+def test_real_cli_retained_pack_cannot_import_rogue_pack_api(
         repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from astrid.core.pack import loader
     from astrid.core.pack.cli import main as packs_cli_main
 
-    core_root = tmp_path / "core-packs"
-    core = core_root / "coredep"
-    core.mkdir(parents=True)
-    (core / "pack.yaml").write_text(manifest("coredep"), encoding="utf-8")
-    (core / "api.py").write_text("PUBLIC = True\n", encoding="utf-8")
-    monkeypatch.setattr(loader, "packs_root", lambda: core_root)
+    from astrid.core.pack.loader import packs_root as bundled_packs_root
+
+    core_root = bundled_packs_root().resolve()
+    assert (core_root / "foley" / "pack.yaml").is_file()
+    external = tmp_path / "external-packs"
+    rogue = external / "rogue"
+    rogue.mkdir(parents=True)
+    (rogue / "pack.yaml").write_text(manifest("rogue"), encoding="utf-8")
+    (rogue / "api.py").write_text("PUBLIC = True\n", encoding="utf-8")
     retained = packs_root / "retained"
     retained.mkdir(parents=True)
-    # The public core API is legal even without an external-style dependency
-    # edge; the separate core import-policy snapshot authorizes its API module.
+    (retained / "pack.yaml").write_text(manifest("retained", ("foley",)), encoding="utf-8")
+    (retained / "consumer.py").write_text("from astrid.packs.rogue.api import PUBLIC\n", encoding="utf-8")
+    monkeypatch.setenv("ASTRID_PACKS_PATH", str(external))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+
+    assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                           "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                           "--pack", "shared=packs/shared"]) == 2
+    assert read_group(packs_root).revision == 0
+
+
+def test_real_cli_retained_pack_can_import_selected_core_pack_api(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    # Use the real bundled, versioned pack API and an authorized public name.
+    retained = packs_root / "retained"
+    retained.mkdir(parents=True)
     (retained / "pack.yaml").write_text(manifest("retained"), encoding="utf-8")
-    (retained / "consumer.py").write_text("from astrid.packs.coredep.api import PUBLIC\n", encoding="utf-8")
+    (retained / "consumer.py").write_text(
+        "from astrid.pack_api import VERSION\n", encoding="utf-8")
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
 
     assert packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
                            "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
                            "--pack", "shared=packs/shared"]) == 0
     assert "retained" in read_group(packs_root).paths
+
+
+def test_selected_dependency_release_pin_requires_commit_and_installed_digest(
+        repo: Repository, packs_root: Path, tmp_path: Path) -> None:
+    from astrid.core.pack.transaction import install_group
+
+    retained = packs_root / "retained"
+    retained.mkdir(parents=True)
+    (retained / "pack.yaml").write_text(manifest("retained", ("extdep",)), encoding="utf-8")
+    (retained / "payload.txt").write_text("retained\n", encoding="utf-8")
+    external = tmp_path / "selected-external"
+    dependency = external / "extdep"
+    dependency.mkdir(parents=True)
+    (dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    (dependency / "payload.txt").write_text("selected dependency\n", encoding="utf-8")
+    installed_digest = pack_digest(dependency)
+    write_pin(dependency / "PIN", {
+        "version": 1, "source": "https://example.invalid/extdep.git", "commit": repo.commit,
+        "digest_rule": "pack-tree-v1", "digest": installed_digest, "origin": "user",
+    })
+    release_pins = {"extdep": {"commit": repo.commit, "digest": installed_digest}}
+    install_group(source=repo.bare, revision=repo.commit, packs=GROUP, packs_root=packs_root,
+                  python_packages={}, selected_roots=(external,), release_pins=release_pins)
+    live_before = tree_snapshot(packs_root)
+
+    with pytest.raises(PackInstallError) as failure:
+        install_group(source=repo.bare, revision=repo.next_revision(), packs=GROUP, packs_root=packs_root,
+                      python_packages={}, selected_roots=(external,),
+                      release_pins={"extdep": {"commit": repo.commit, "digest": "0" * 64}},
+                      intent="update")
+    assert failure.value.code == "default_pin_conflict"
+    assert tree_snapshot(packs_root) == live_before
+
+
+def test_inventory_mode_keeps_release_pinned_pack_edits_permitted() -> None:
+    from astrid.pack_validation import validate_pack
+
+    manifest_value = {
+        "schema_version": 3, "id": "demo", "pack_api": "1.0",
+        "dependencies": {"packs": []},
+    }
+    release_commit = "a" * 40
+    result = validate_pack(
+        mode="inventory", manifest=manifest_value,
+        candidate={"id": "demo", "canonical_root": "/packs/demo", "commit": release_commit,
+                   "installed_digest": "b" * 64},
+        selected={}, core_api=(1, 0),
+        release_pins={"demo": {"commit": release_commit, "digest": "c" * 64}},
+        python_packages={}, import_violations=(),
+    )
+    assert result["ok"] is True
+
+
+def test_declined_consent_does_not_run_builder_or_change_live_bytes(
+        repo: Repository, packs_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from astrid.core.pack import transaction
+
+    install(repo, packs_root)
+    live_before = tree_snapshot(packs_root)
+    builds: list[object] = []
+
+    def forbidden_build(request):
+        builds.append(request)
+        raise AssertionError("builder ran before consent")
+
+    monkeypatch.setattr(transaction, "build_pack_assets", forbidden_build)
+    with pytest.raises(PackInstallError) as failure:
+        install_group(source=repo.bare, revision=repo.next_revision(), packs=GROUP,
+                      packs_root=packs_root, python_packages={}, intent="update",
+                      consent=lambda _changes: False)
+    assert failure.value.code == "user_cancelled"
+    assert builds == []
+    assert tree_snapshot(packs_root) == live_before
+
+
+@pytest.mark.parametrize("dependency_kind", ["absolute", "traversal"])
+@pytest.mark.parametrize("operation", ["update", "rollback"])
+def test_dependency_paths_are_rejected_before_outside_tree_access(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        dependency_kind: str, operation: str) -> None:
+    from astrid.core.pack.transaction import rollback_group
+
+    outside = tmp_path / "outside-pack"
+    outside.mkdir()
+    (outside / "pack.yaml").write_text(manifest("outside_pack"), encoding="utf-8")
+    dependency = str(outside) if dependency_kind == "absolute" else "../outside-pack"
+    original_read_text = Path.read_text
+    original_open = Path.open
+
+    def guard(path: Path) -> None:
+        if path.resolve(strict=False).is_relative_to(outside.resolve()):
+            raise AssertionError("outside dependency tree was accessed")
+
+    def guarded_read_text(path: Path, *args, **kwargs):
+        guard(path)
+        return original_read_text(path, *args, **kwargs)
+
+    def guarded_open(path: Path, *args, **kwargs):
+        guard(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    if operation == "update":
+        (repo.work / "packs" / "alpha" / "pack.yaml").write_text(
+            manifest("alpha", (dependency,)), encoding="utf-8")
+        revision = repo.publish()
+        with pytest.raises(PackInstallError, match="dependency ID"):
+            install_group(source=repo.bare, revision=revision, packs=GROUP, packs_root=packs_root,
+                          python_packages={})
+    else:
+        install(repo, packs_root)
+        install(repo, packs_root)
+        active = read_group(packs_root).transaction_id
+        retired_alpha = packs_root.parent / ".astrid-retired" / active / "alpha"
+        (retired_alpha / "pack.yaml").write_text(manifest("alpha", (dependency,)), encoding="utf-8")
+        with pytest.raises(PackInstallError, match="dependency ID"):
+            rollback_group(packs_root=packs_root, pack_ids=("alpha", "shared"))
+
+
+@pytest.mark.parametrize("facts", [
+    ({"/outside": {"id": "/outside", "dependencies": {"packs": []}}}, {}),
+    ({"candidate": {"id": "candidate", "dependencies": {"packs": ["../outside"]}}}, {}),
+    ({"external": {"id": "external", "canonical_root": "/tmp/not-selected/external",
+                    "dependencies": {"packs": []}}}, {}),
+])
+def test_caller_supplied_dependency_facts_require_canonical_ids(facts) -> None:
+    from astrid.core.pack.transaction import _compose_resulting_facts
+
+    with pytest.raises(PackInstallError, match="canonical pack IDs|canonical dependency ID|admitted root"):
+        _compose_resulting_facts(facts[0], facts[1])
+
+
+@pytest.mark.parametrize("failure", ["duplicate", "incompatible_api", "incompatible_requirement", "pin_mismatch"])
+@pytest.mark.parametrize("operation", ["update", "rollback"])
+def test_external_selection_fails_closed_for_update_and_rollback(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        failure: str, operation: str) -> None:
+    from astrid.core.pack.cli import main as packs_cli_main
+
+    retained = packs_root / "retained"
+    retained.mkdir(parents=True)
+    (retained / "pack.yaml").write_text(manifest("retained", ("extdep",)), encoding="utf-8")
+    external_a, external_b = tmp_path / "external-a", tmp_path / "external-b"
+    dependency = external_a / "extdep"
+    dependency.mkdir(parents=True)
+    manifest_path = dependency / "pack.yaml"
+    manifest_path.write_text(manifest("extdep"), encoding="utf-8")
+    install(repo, packs_root, selected_roots=(external_a,))
+    install(repo, packs_root, selected_roots=(external_a,))
+    if failure == "duplicate":
+        duplicate = external_b / "extdep"
+        duplicate.mkdir(parents=True)
+        (duplicate / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+        roots = [external_a, external_b]
+    else:
+        if failure == "incompatible_api":
+            manifest_path.write_text(manifest("extdep").replace('pack_api: "1.0"', 'pack_api: "2.0"'),
+                                     encoding="utf-8")
+        elif failure == "incompatible_requirement":
+            manifest_path.write_text(manifest("extdep", python_requirements=("missing-r9-package>=99",)),
+                                     encoding="utf-8")
+        else:
+            write_pin(dependency / "PIN", {
+                "version": 1, "source": dependency.as_uri(), "commit": "a" * 40,
+                "digest_rule": "pack-tree-v1", "digest": "0" * 64, "origin": "user",
+            })
+        roots = [external_a]
+    monkeypatch.setenv("ASTRID_PACKS_PATH", os.pathsep.join(map(str, roots)))
+    before = read_group(packs_root)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    if operation == "update":
+        result = packs_cli_main(["update", "--source", str(repo.bare), "--revision", repo.commit,
+                                 "--packs-root", str(packs_root), "--pack", "alpha=packs/alpha",
+                                 "--pack", "shared=packs/shared"])
+    else:
+        result = packs_cli_main(["rollback", "--packs-root", str(packs_root),
+                                 "--pack", "alpha", "--pack", "shared"])
+    assert result == 2
+    after = read_group(packs_root)
+    assert after.revision == before.revision
+    assert after.transaction_id == before.transaction_id
+
+
+def test_external_root_change_after_composition_refuses_publish(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from astrid.core.pack import transaction
+
+    (repo.work / "packs" / "alpha" / "pack.yaml").write_text(
+        manifest("alpha", ("extdep",)), encoding="utf-8")
+    revision = repo.publish()
+    external = tmp_path / "external"
+    dependency = external / "extdep"
+    dependency.mkdir(parents=True)
+    manifest_path = dependency / "pack.yaml"
+    manifest_path.write_text(manifest("extdep"), encoding="utf-8")
+    replacement = tmp_path / "replacement"
+    replacement_dependency = replacement / "extdep"
+    replacement_dependency.mkdir(parents=True)
+    (replacement_dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    retired_root = tmp_path / "retired-external"
+    original = transaction._compose_resulting_facts
+    calls = 0
+    swap_done = threading.Event()
+
+    def swap_after_selection(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            def swap_root():
+                external.rename(retired_root)
+                replacement.rename(external)
+                swap_done.set()
+            writer = threading.Thread(target=swap_root)
+            writer.start()
+            writer.join(timeout=2)
+            assert not writer.is_alive()
+            assert swap_done.is_set()
+        return result
+
+    monkeypatch.setattr(transaction, "_compose_resulting_facts", swap_after_selection)
+    with pytest.raises(PackInstallError) as failure:
+        install_group(source=repo.bare, revision=revision, packs=GROUP, packs_root=packs_root,
+                      selected_roots=(external,), python_packages={})
+    assert calls == 1
+    assert "changed during this transaction" in str(failure.value)
+    assert read_group(packs_root).revision == 0
+
+
+@pytest.mark.parametrize("operation", ["update", "rollback"])
+def test_external_root_swap_at_exchange_rolls_back_complete_generation(
+        repo: Repository, packs_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        operation: str) -> None:
+    from astrid.core.pack import transaction
+
+    monkeypatch.setattr(transaction, "build_pack_assets", contract_builder)
+    builds = contract_builds()
+    repo.write_pack("alpha", "alpha-v1\n", dependencies=("extdep",))
+    first_revision = repo.publish()
+    external = tmp_path / "external"
+    dependency = external / "extdep"
+    dependency.mkdir(parents=True)
+    (dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    (dependency / "payload.txt").write_text("admitted-root\n", encoding="utf-8")
+    replacement = tmp_path / "replacement"
+    replacement_dependency = replacement / "extdep"
+    replacement_dependency.mkdir(parents=True)
+    (replacement_dependency / "pack.yaml").write_text(manifest("extdep"), encoding="utf-8")
+    (replacement_dependency / "payload.txt").write_text("raced-root\n", encoding="utf-8")
+    retired_external = tmp_path / "retired-external"
+    selected_roots = (external,)
+
+    install(repo, packs_root, revision=first_revision, selected_roots=selected_roots, builds=builds)
+    if operation == "rollback":
+        second_revision = repo.next_revision()
+        install(repo, packs_root, revision=second_revision, selected_roots=selected_roots, builds=builds)
+
+    before_bytes = tree_bytes(packs_root)
+    before = read_group(packs_root)
+    before_admissions = dict(before.admissions)
+    assert before_admissions
+    original_publish = transaction._publish
+    calls = 0
+
+    def swap_in_exchange_window(stage: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # This runs after the final pre-publication revalidation and before
+            # the atomic directory exchange itself.
+            external.rename(retired_external)
+            replacement.rename(external)
+        original_publish(stage, destination)
+
+    monkeypatch.setattr(transaction, "_publish", swap_in_exchange_window)
+    with pytest.raises(PackInstallError, match="changed during this transaction"):
+        if operation == "update":
+            install_group(source=repo.bare, revision=first_revision, packs=GROUP,
+                          packs_root=packs_root, python_packages={}, intent="update",
+                          selected_roots=selected_roots, builds=builds)
+        else:
+            transaction.rollback_group(packs_root=packs_root, pack_ids=tuple(GROUP),
+                                        selected_roots=selected_roots, python_packages={})
+
+    # First exchange was rejected and the second atomically restored the prior
+    # directory. The collection bytes, its commit/admission records, and the
+    # collection revision are exactly the values captured before the attempt.
+    assert calls == 2
+    assert tree_bytes(packs_root) == before_bytes
+    after = read_group(packs_root)
+    assert after.revision == before.revision
+    assert after.transaction_id == before.transaction_id
+    assert dict(after.admissions) == before_admissions
 
 
 def test_real_cli_composes_facts_while_generation_writer_is_held_out(
@@ -1011,9 +1329,9 @@ def test_real_cli_composes_facts_while_generation_writer_is_held_out(
     failure: list[BaseException] = []
     fired = False
 
-    def racing_compose(facts, paths):
+    def racing_compose(facts, paths, **kwargs):
         nonlocal fired
-        result = original_compose(facts, paths)
+        result = original_compose(facts, paths, **kwargs)
         if not fired:
             fired = True
             def racing_writer():

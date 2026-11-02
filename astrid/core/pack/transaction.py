@@ -43,6 +43,7 @@ from astrid.pack_imports import ImportContract, check_pack_imports
 from astrid.pack_validation import PackFacts, PinFacts, validate_pack
 
 _STATE = ".group.json"
+_BUNDLED_CORE_ROOT = Path(__file__).resolve().parents[2] / "packs"
 Refresh = Callable[..., Mapping[str, Any]]
 _HELD: ContextVar[dict[str, bool]] = ContextVar("pack_group_locks", default={})
 
@@ -253,7 +254,11 @@ def _facts(path: Path, *, destination: Path | None = None) -> tuple[dict[str, An
     }
 
 
-def _compose_resulting_facts(facts: Mapping[str, Mapping[str, Any]], paths: Mapping[str, Path]
+def _compose_resulting_facts(facts: Mapping[str, Mapping[str, Any]], paths: Mapping[str, Path], *,
+                             selected_roots: tuple[Path, ...] = (), core_root: Path | None = None,
+                             candidate_root: Path | None = None, candidate_ids: frozenset[str] = frozenset(),
+                             python_packages: Mapping[str, str] | None = None,
+                             release_pins: Mapping[str, PinFacts] | None = None
                              ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     """Complete dependency facts for every resulting pack under transaction custody.
 
@@ -261,40 +266,109 @@ def _compose_resulting_facts(facts: Mapping[str, Mapping[str, Any]], paths: Mapp
     read only missing dependency IDs from explicitly configured external roots
     and the bundled core root, recursively following those selected manifests.
     """
-    from .loader import packs_root
-
-    core_root = packs_root().resolve()
-    external_roots = [Path(value).expanduser().resolve()
-                      for value in os.environ.get("ASTRID_PACKS_PATH", "").split(os.pathsep) if value]
-    roots = list(dict.fromkeys((*external_roots, core_root)))
+    core_root = (core_root or _BUNDLED_CORE_ROOT).expanduser().resolve()
+    roots = list(dict.fromkeys((*[Path(root).expanduser().resolve() for root in selected_roots], core_root)))
     result = {key: dict(value) for key, value in facts.items()}
+    def valid_id(value: object) -> bool:
+        return isinstance(value, str) and bool(_ID.fullmatch(value))
+
+    def selected_identity(path: Path) -> tuple[int, int, int, int]:
+        root_info = path.parent.stat(follow_symlinks=False)
+        pack_info = path.stat(follow_symlinks=False)
+        return root_info.st_dev, root_info.st_ino, pack_info.st_dev, pack_info.st_ino
+
+    for key, item in result.items():
+        if not valid_id(key) or not isinstance(item, Mapping) or item.get("id", key) != key:
+            raise PackInstallError("invalid_manifest", "Selected dependency facts must use canonical pack IDs.")
+        declared = item.get("dependencies", {})
+        if not isinstance(declared, Mapping):
+            raise PackInstallError("invalid_manifest", f"Pack {key} has malformed dependency facts.")
+        deps = declared.get("packs", ())
+        if not isinstance(deps, (list, tuple)) or any(not valid_id(dep) for dep in deps):
+            raise PackInstallError("invalid_manifest", f"Pack {key} has a noncanonical dependency ID.")
     # Derive the selected collection portion from the held candidate paths so
     # a caller cannot accidentally omit a retained pack from policy validation.
     for pack_id, path in paths.items():
         if pack_id != "personal" and pack_id not in result:
             _manifest, result[pack_id] = _facts(path)
+            declared = result[pack_id].get("dependencies", {})
+            deps = declared.get("packs", ()) if isinstance(declared, Mapping) else ()
+            if not isinstance(declared, Mapping) or not isinstance(deps, (list, tuple)) or any(not valid_id(dep) for dep in deps):
+                raise PackInstallError("invalid_manifest", f"Pack {pack_id} has a noncanonical dependency ID.")
     pending: list[str] = []
     for item in result.values():
         dependencies = item.get("dependencies", {})
         declared = dependencies.get("packs", ()) if isinstance(dependencies, Mapping) else ()
         if isinstance(declared, (list, tuple)):
             pending.extend(dep for dep in declared if isinstance(dep, str) and dep)
+    external_facts: dict[str, tuple[Path, dict[str, Any], dict[str, Any]]] = {}
+    # Scan each explicitly selected root as a complete inventory. This makes
+    # collisions independent of lookup order and binds all selected facts to
+    # their physical roots before dependency resolution.
+    root_ids: dict[str, Path] = {}
+    for selected_root in roots:
+        if not selected_root.is_dir():
+            continue
+        for candidate in sorted(selected_root.iterdir()):
+            if (not valid_id(candidate.name) or candidate.is_symlink() or not candidate.is_dir()
+                    or (candidate / "pack.yaml").is_symlink() or not (candidate / "pack.yaml").is_file()):
+                continue
+            if not candidate.resolve().is_relative_to(selected_root):
+                raise PackInstallError("unsafe_path", f"Selected candidate {candidate.name} escapes its configured root.")
+            selected_fact = result.get(candidate.name)
+            if (selected_fact is not None and selected_fact.get("canonical_root")
+                    and Path(str(selected_fact["canonical_root"])).resolve() != candidate.resolve()):
+                raise PackInstallError("duplicate_id", f"Selected inventories contain duplicate pack ID {candidate.name}.")
+            previous = root_ids.get(candidate.name)
+            if previous is not None and previous.resolve() != candidate.resolve():
+                raise PackInstallError("duplicate_id", f"Selected roots contain duplicate pack ID {candidate.name}.")
+            root_ids[candidate.name] = candidate
+            selected_fact = result.get(candidate.name)
+            if selected_fact is not None and selected_fact.get("canonical_root") == str(candidate.resolve()):
+                current_manifest, current_fact = _facts(candidate)
+                if candidate.resolve().is_relative_to(core_root):
+                    current_fact["origin"] = "core"
+                if (current_fact != {key: selected_fact.get(key) for key in current_fact}
+                        or selected_fact.get("_selection_identity") != selected_identity(candidate)):
+                    raise PackInstallError("selected_snapshot_changed", f"Selected dependency {candidate.name} changed during this transaction; retry.")
+                if not candidate.resolve().is_relative_to(core_root):
+                    external_facts[candidate.name] = (candidate, current_manifest, current_fact)
+
+    for pack_id, item in result.items():
+        if pack_id in paths:
+            continue
+        if pack_id in candidate_ids:
+            expected_path = (candidate_root / pack_id).resolve() if candidate_root is not None else None
+            if not isinstance(item.get("canonical_root"), str) or Path(item["canonical_root"]).resolve() != expected_path:
+                raise PackInstallError("invalid_manifest", f"Staged facts for {pack_id} do not match the transaction candidate root.")
+            continue
+        candidate = root_ids.get(pack_id)
+        canonical_root = item.get("canonical_root")
+        if (candidate is None or not isinstance(canonical_root, str)
+                or Path(canonical_root).resolve() != candidate.resolve()):
+            raise PackInstallError("missing_dep", f"Selected facts for {pack_id} have no admitted root in this composition.")
+
     visited: set[str] = set(result)
     while pending:
         pack_id = pending.pop()
         if pack_id in visited:
             continue
         visited.add(pack_id)
-        path = next((candidate for selected_root in roots
-                     if (candidate := selected_root / pack_id).is_dir()
-                     and not candidate.is_symlink() and (candidate / "pack.yaml").is_file()), None)
+        path = root_ids.get(pack_id)
         if path is None:
             continue
         _manifest, item = _facts(path)
         resolved = path.resolve()
         if resolved.is_relative_to(core_root):
             item["origin"] = "core"
+        item["_selection_identity"] = selected_identity(path)
+        dependencies = item.get("dependencies", {})
+        declared = dependencies.get("packs", ()) if isinstance(dependencies, Mapping) else ()
+        if not isinstance(dependencies, Mapping) or not isinstance(declared, (list, tuple)) or any(not valid_id(dep) for dep in declared):
+            raise PackInstallError("invalid_manifest", f"Pack {pack_id} has a noncanonical dependency ID.")
         result[pack_id] = item
+        if not resolved.is_relative_to(core_root):
+            external_facts[pack_id] = (path, _manifest, item)
         dependencies = item.get("dependencies", {})
         declared = dependencies.get("packs", ()) if isinstance(dependencies, Mapping) else ()
         if isinstance(declared, (list, tuple)):
@@ -302,9 +376,82 @@ def _compose_resulting_facts(facts: Mapping[str, Mapping[str, Any]], paths: Mapp
 
     # Core public API names are a separate import-policy fact. Their presence
     # does not depend on the selected manifest's origin label.
+    admitted_core_ids = set()
+    for path in core_root.iterdir():
+        if (not valid_id(path.name) or not path.is_dir() or path.is_symlink()
+                or (path / "api.py").is_symlink() or not (path / "api.py").is_file()
+                or (path / "pack.yaml").is_symlink() or not (path / "pack.yaml").is_file()):
+            continue
+        try:
+            validate_canonical_pack(path, expected_pack_id=path.name)
+        except (OSError, ValueError):
+            continue
+        admitted_core_ids.add(path.name)
     core_apis = {path.name: f"astrid.packs.{path.name}.api" for path in core_root.iterdir()
-                 if path.is_dir() and not path.is_symlink() and (path / "api.py").is_file()}
+                 if path.name in admitted_core_ids and path.is_dir() and not path.is_symlink()
+                 and (path / "api.py").is_file()}
+
+    # Admit each selected external dependency through the same compatibility
+    # policy as host inventory, with the caller's frozen Python and pin facts.
+    if external_facts:
+        package_snapshot = dict(python_packages or {})
+        pin_snapshot = dict(release_pins or {})
+        contract = ImportContract(facade_exports=frozenset(pack_api.__all__),
+                                  facade_version=pack_api.VERSION, sdk_names=frozenset(sdk.__all__),
+                                  core_pack_apis=core_apis)
+        for pack_id, (path, manifest, item) in external_facts.items():
+            if item.get("installed_digest") and item.get("installed_digest") != item.get("observed_digest"):
+                raise PackInstallError("pin_mismatch", f"Selected dependency {pack_id} no longer matches its installed PIN.")
+            checked = validate_pack(mode="inventory", manifest=manifest, candidate=item, selected=result,
+                                    core_api=pack_api.VERSION, release_pins=pin_snapshot,
+                                    python_packages=package_snapshot,
+                                    import_violations=check_pack_imports(path, contract=contract, manifest=manifest))
+            if not checked["ok"]:
+                raise PackInstallError(checked["code"], checked["reason"], compatibility=checked)
     return result, core_apis
+
+
+def _verify_external_root_digests(facts: Mapping[str, Mapping[str, Any]],
+                                  paths: Mapping[str, Path]) -> None:
+    """Verify external roots still match the facts admitted for publication."""
+    for pack_id, item in facts.items():
+        if (pack_id in paths or item.get("origin") == "core"
+                or "_selection_identity" not in item):
+            continue
+        canonical_root = item.get("canonical_root")
+        expected_digest = item.get("observed_digest")
+        if not isinstance(canonical_root, str) or not isinstance(expected_digest, str):
+            raise PackInstallError("selected_snapshot_changed",
+                                   f"Selected dependency {pack_id} has no admitted external-root digest.")
+        try:
+            current_digest = pack_digest(Path(canonical_root))
+        except (OSError, ValueError) as exc:
+            raise PackInstallError("selected_snapshot_changed",
+                                   f"Selected dependency {pack_id} changed during this transaction; retry.") from exc
+        if current_digest != expected_digest:
+            raise PackInstallError("selected_snapshot_changed",
+                                   f"Selected dependency {pack_id} changed during this transaction; retry.")
+
+
+def _publish_and_verify_external_roots(candidate: Path, root: Path, facts: Mapping[str, Mapping[str, Any]],
+                                       paths: Mapping[str, Path], retired: Path, transaction_id: str,
+                                       revision: int) -> None:
+    """Publish, then restore the prior generation if an external root raced the exchange."""
+    _publish(candidate, root)
+    try:
+        _verify_external_root_digests(facts, paths)
+    except PackInstallError:
+        try:
+            # candidate now names the prior complete generation. Exchanging it
+            # back restores collection bytes and admission records atomically.
+            _publish(candidate, root)
+            _sync_directory(retired)
+            _sync_directory(root.parent)
+        except OSError as exc:
+            raise GroupCommitError(transaction_id, revision) from exc
+        except PackInstallError as exc:
+            raise GroupCommitError(transaction_id, revision) from exc
+        raise
 
 
 def _artifact_metadata(request: Mapping[str, Any], artifact: Mapping[str, Any],
@@ -516,6 +663,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                   origin: Literal["user", "default", "folder"] | None = None,
                   expected_digests: Mapping[str, str] | None = None,
                   selected: Mapping[str, PackFacts] | None = None,
+                  selected_roots: tuple[str | Path, ...] = (),
+                  core_root: str | Path | None = None,
                   release_pins: Mapping[str, PinFacts] | None = None,
                   import_contract: ImportContract | None = None,
                   builds: Mapping[str, Mapping[str, Any]] | None = None,
@@ -644,9 +793,17 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             # Candidate manifests are now verified/staged, and all retained
             # candidates are present. Compose the single policy snapshot while
             # exclusive collection custody is still held.
-            facts, core_apis = _compose_resulting_facts(facts, _paths(candidate))
-            contract = import_contract or ImportContract(
-                facade_exports=frozenset(pack_api.__all__), sdk_names=frozenset(sdk.__all__),
+            selected_roots = tuple(Path(value).expanduser().resolve() for value in selected_roots
+                                    if Path(value).expanduser().resolve() != root.resolve())
+            core_root = Path(core_root or _BUNDLED_CORE_ROOT).expanduser().resolve()
+            facts, core_apis = _compose_resulting_facts(facts, _paths(candidate), selected_roots=selected_roots,
+                                                       core_root=core_root, candidate_root=candidate,
+                                                       candidate_ids=frozenset(packs), python_packages=packages,
+                                                       release_pins=release_pins)
+            contract = ImportContract(
+                facade_exports=(import_contract.facade_exports if import_contract else frozenset(pack_api.__all__)),
+                facade_version=(import_contract.facade_version if import_contract else pack_api.VERSION),
+                sdk_names=(import_contract.sdk_names if import_contract else frozenset(sdk.__all__)),
                 core_pack_apis=core_apis)
             for pack_id, subpath in sorted(packs.items()):
                 install_pack(source=source, pack_id=pack_id, revision=commit, subpath=subpath, origin=origin,
@@ -665,6 +822,27 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     raise PackInstallError(checked["code"], checked["reason"], compatibility=checked)
             mark("validated")
             identities = {i: (pack_digest(candidate / i), read_pin(candidate / i / "PIN")) for i in packs}
+            # Consent covers the exact staged source and declarations before
+            # any builder can run. Build outputs are validated separately and
+            # remain bound to these source identities through publication.
+            if consent is not None:
+                changes = {
+                    "intent": intent,
+                    "source": source_text,
+                    "revision": commit,
+                    "packs": {
+                        pack_id: {
+                            "before": read_pin(root / pack_id / "PIN") if (root / pack_id / "PIN").is_file() else None,
+                            "after": dict(identities[pack_id][1]),
+                            "before_digest": pack_digest(root / pack_id) if (root / pack_id).is_dir() else None,
+                            "after_digest": identities[pack_id][0],
+                        }
+                        for pack_id in sorted(packs)
+                    },
+                    "removals": sorted(tombstones),
+                }
+                if consent(changes) is not True:
+                    raise PackInstallError("user_cancelled", "The pack update was not committed because consent was not given.")
             for pack_id in sorted(packs):
                 # install_pack may retain an identical source/PIN. Every named
                 # build still needs fresh outputs and this transaction's epoch;
@@ -700,24 +878,6 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     raise PackInstallError("pin_mismatch", "Build changed staged source/PIN; the installed group is unchanged.")
             # Recheck every output after the whole build phase: a later build
             # cannot alter an earlier pack's admitted bytes unnoticed.
-            if consent is not None:
-                changes = {
-                    "intent": intent,
-                    "source": source_text,
-                    "revision": commit,
-                    "packs": {
-                        pack_id: {
-                            "before": read_pin(root / pack_id / "PIN") if (root / pack_id / "PIN").is_file() else None,
-                            "after": dict(identities[pack_id][1]),
-                            "before_digest": pack_digest(root / pack_id) if (root / pack_id).is_dir() else None,
-                            "after_digest": identities[pack_id][0],
-                        }
-                        for pack_id in sorted(packs)
-                    },
-                    "removals": sorted(tombstones),
-                }
-                if consent(changes) is not True:
-                    raise PackInstallError("user_cancelled", "The pack update was not committed because consent was not given.")
             for request, result, admitted_revision in build_records:
                 _verify_artifacts(request, result, committed_revision=admitted_revision)
             # A newer inventory revision subsumes an unacknowledged one. Carry
@@ -742,7 +902,14 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 _verify_artifacts(request, result, committed_revision=admitted_revision)
             if _state(candidate) != state:
                 raise PackInstallError("invalid_state", "Prepared group record changed before publication; retry the transaction.")
-            _publish(candidate, root)
+            verified_facts, verified_apis = _compose_resulting_facts(
+                facts, _paths(candidate), selected_roots=selected_roots, core_root=core_root,
+                candidate_root=candidate, candidate_ids=frozenset(packs),
+                python_packages=packages, release_pins=release_pins)
+            if verified_facts != facts or verified_apis != core_apis:
+                raise PackInstallError("selected_snapshot_changed", "A selected dependency changed during this transaction; retry.")
+            _publish_and_verify_external_roots(candidate, root, facts, _paths(candidate), retired, tx,
+                                               state["revision"])
             published = True  # Sole terminal-transition owner for this attempt.
             mark("swapped")
             try:
@@ -781,6 +948,8 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                    transaction_id: str | None = None,
                    expected_pins: Mapping[str, Mapping[str, Any]] | None = None,
                    selected: Mapping[str, PackFacts] | None = None,
+                   selected_roots: tuple[str | Path, ...] = (),
+                   core_root: str | Path | None = None,
                    release_pins: Mapping[str, PinFacts] | None = None,
                    python_packages: Mapping[str, str] | None = None,
                    refresh: Refresh | None = None,
@@ -918,7 +1087,12 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     continue
                 manifest, item = _facts(path)
                 facts[pack_id] = item
-            facts, core_apis = _compose_resulting_facts(facts, _paths(candidate))
+            selected_roots = tuple(Path(value).expanduser().resolve() for value in selected_roots
+                                    if Path(value).expanduser().resolve() != root.resolve())
+            core_root = Path(core_root or _BUNDLED_CORE_ROOT).expanduser().resolve()
+            facts, core_apis = _compose_resulting_facts(facts, _paths(candidate), selected_roots=selected_roots,
+                                                       core_root=core_root, python_packages=packages,
+                                                       release_pins=pins)
             contract = ImportContract(
                 facade_exports=frozenset(pack_api.__all__), sdk_names=frozenset(sdk.__all__),
                 core_pack_apis=core_apis)
@@ -963,7 +1137,13 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             _retained_build_records(candidate, admissions, new_state["revision"])
             if _state(candidate) != new_state:
                 raise PackInstallError("invalid_state", "Prepared rollback record changed before publication; retry the transaction.")
-            _publish(candidate, root)
+            verified_facts, verified_apis = _compose_resulting_facts(
+                facts, _paths(candidate), selected_roots=selected_roots, core_root=core_root,
+                python_packages=packages, release_pins=pins)
+            if verified_facts != facts or verified_apis != core_apis:
+                raise PackInstallError("selected_snapshot_changed", "A selected dependency changed during rollback; retry.")
+            _publish_and_verify_external_roots(candidate, root, facts, _paths(candidate), retired, tx,
+                                               new_state["revision"])
             published = True
             _sync_directory(retired)
             _sync_directory(root.parent)
