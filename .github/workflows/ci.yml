@@ -116,6 +116,9 @@ jobs:
       ASTRID_CI_JOB: unit-shard-${{ matrix.os }}
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
       ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+      # This carrier is a workflow-only proof over this immutable M-AG tree.
+      AGENT_SOURCE_SHA: e68ae3ec0f7c8049a48fa3e0f07260678f3b2287
+      CARRIER_REF: refs/heads/lane/M-CI/AG-CI-SIDECAR-REMOVE-R1
     strategy:
       fail-fast: false
       matrix:
@@ -123,8 +126,47 @@ jobs:
         group: [1, 2, 3, 4, 5, 6, 7, 8]
 
     steps:
-      - name: Check out repository
+      - name: Check out carrier workflow
         uses: actions/checkout@v4
+        with:
+          # The binding step below must inspect the carrier's one parent.
+          fetch-depth: 2
+
+      - name: Bind carrier to exact M-AG source and check out source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "$CARRIER_REF"
+          carrier_sha="$(git rev-parse HEAD)"
+          test "$carrier_sha" = "$GITHUB_SHA"
+          set -- $(git show -s --format=%P "$carrier_sha")
+          test "$#" -eq 1
+          test "$1" = "$AGENT_SOURCE_SHA"
+          mapfile -t changed_paths < <(git diff --name-only "$AGENT_SOURCE_SHA" "$carrier_sha")
+          test "${#changed_paths[@]}" -gt 0
+          for path in "${changed_paths[@]}"; do
+            case "$path" in
+              .github/workflows/*) ;;
+              *)
+                echo "carrier changed forbidden path: $path" >&2
+                exit 1
+                ;;
+            esac
+          done
+          git checkout --detach "$AGENT_SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$AGENT_SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          mkdir -p test-results
+          {
+            printf 'carrier_sha=%s\n' "$carrier_sha"
+            printf 'carrier_ref=%s\n' "$GITHUB_REF"
+            printf 'source_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'carrier_parent=%s\n' "$1"
+            printf 'carrier_changed_paths=\n'
+            printf '%s\n' "${changed_paths[@]}"
+          } > test-results/carrier-source-identity.txt
+          printf 'carrier_source_binding=0\n' > test-results/inner-exits.txt
 
       - name: Read the pinned Runtime commit
         id: runtime-pin
@@ -159,12 +201,45 @@ jobs:
         with:
           node-version-file: .node-version
 
+      - name: Bind the fixed Node path required by the affected source test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_path="$(command -v node)"
+          test -x "$node_path"
+          sudo install -d -m 755 /home/user/work/toolchain/node-v20.19.4-linux-x64/bin
+          sudo ln -sfn "$node_path" /home/user/work/toolchain/node-v20.19.4-linux-x64/bin/node
+          test "$(/home/user/work/toolchain/node-v20.19.4-linux-x64/bin/node --version)" = "$(node --version)"
+
       - name: Install system media tools and a system font
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
         shell: bash
+
+      - name: Provision the pinned Remotion composition for source collection
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="$(node -e 'const p = require("./remotion/package.json"); const value = p.dependencies["@banodoco/timeline-composition"]; if (typeof value !== "string" || !value.startsWith("file:artifacts/") || !value.endsWith(".tgz")) throw new Error("timeline composition must use a local tarball pin"); process.stdout.write(`remotion/${value.slice("file:".length)}`)')"
+          sidecar="$artifact.sha256"
+          git ls-files --error-unmatch -- "$artifact" >/dev/null
+          if git ls-files --error-unmatch -- "$sidecar" >/dev/null 2>&1; then
+            echo "source candidate unexpectedly retains checksum sidecar: $sidecar" >&2
+            exit 1
+          fi
+          test -s "$artifact"
+          sha256sum "$artifact" > "$sidecar"
+          test -s "$sidecar"
+          npm ci --prefix remotion
+          test -d remotion/node_modules/@banodoco/timeline-composition
+          {
+            printf 'composition_artifact=%s\n' "$artifact"
+            printf 'composition_sha256=%s\n' "$(sha256sum "$artifact" | awk '{print $1}')"
+            printf 'generated_sidecar=%s\n' "$sidecar"
+          } >> test-results/carrier-source-identity.txt
+          printf 'composition_provisioning=0\n' >> test-results/inner-exits.txt
 
       - name: Install package with dev extras
         run: python -m pip install -e '.[dev]'
@@ -202,10 +277,86 @@ jobs:
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
 
+      - name: Collect affected composition modules
+        shell: bash
+        env:
+          SHARD_GROUP: ${{ matrix.group }}
+        run: |
+          set -euo pipefail
+          collection="test-results/affected-collection-${SHARD_GROUP}.txt"
+          set +e
+          python -m pytest --collect-only -q \
+            tests/integrations/test_d09_managed_scene_only.py \
+            tests/packs/rendering/test_composition_package.py 2>&1 | tee "$collection"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf 'affected_collection=%s\n' "$rc" >> test-results/inner-exits.txt
+          test "$rc" -eq 0
+          grep -Eq '^tests/integrations/test_d09_managed_scene_only\.py::' "$collection"
+          grep -Eq '^tests/packs/rendering/test_composition_package\.py::' "$collection"
+          if grep -Eqi '(^|[[:space:]])skipp?ed([[:space:]]|$)' "$collection"; then
+            echo "affected collection reported a skip" >&2
+            exit 1
+          fi
+
+      - name: Execute affected composition modules
+        if: ${{ matrix.group == 1 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="test-results/affected-modules.xml"
+          log="test-results/affected-modules.log"
+          set +e
+          ASTRID_REMOTION_PROJECT_DIR="$GITHUB_WORKSPACE/remotion" \
+          ASTRID_TIMELINE_SCHEMA_PYTHONPATH="$GITHUB_WORKSPACE/astrid/core/timeline/schema/timeline-config.schema.json" \
+          python -m pytest -q \
+            tests/integrations/test_d09_managed_scene_only.py \
+            tests/packs/rendering/test_composition_package.py \
+            --junitxml="$result" -rA 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf 'affected_execution=%s\n' "$rc" >> test-results/inner-exits.txt
+          test "$rc" -eq 0
+          python - "$result" <<'PY'
+          import json
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = root.findall(".//testcase")
+          skipped = root.findall(".//skipped")
+          summary = {"testcases": len(cases), "skipped": len(skipped)}
+          if not cases:
+              raise SystemExit("affected module execution emitted no test cases")
+          if skipped:
+              raise SystemExit("affected module execution emitted skipped test cases")
+          with open("test-results/affected-execution-summary.json", "w", encoding="utf-8") as output:
+              json.dump(summary, output, sort_keys=True)
+              output.write("\n")
+          PY
+
       - name: Unit tests (default lane shard)
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
-        run: python -m pytest -q --splits 8 --group ${{ matrix.group }} --durations-path tests/.test_durations --store-durations --clean-durations
+        shell: bash
+        env:
+          SHARD_GROUP: ${{ matrix.group }}
+        run: |
+          set -euo pipefail
+          result="test-results/unit-shard-${SHARD_GROUP}.xml"
+          log="test-results/unit-shard-${SHARD_GROUP}.log"
+          set +e
+          ASTRID_REMOTION_PROJECT_DIR="$GITHUB_WORKSPACE/remotion" \
+          ASTRID_TIMELINE_SCHEMA_PYTHONPATH="$GITHUB_WORKSPACE/astrid/core/timeline/schema/timeline-config.schema.json" \
+          python -m pytest -q --splits 8 --group "$SHARD_GROUP" --durations-path tests/.test_durations --store-durations --clean-durations --junitxml="$result" -rA 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf 'unit_pytest=%s\n' "$rc" >> test-results/inner-exits.txt
+          if test "$rc" -eq 0 && ! test -s "$result"; then
+            echo "unit pytest completed without JUnit evidence" >&2
+            exit 1
+          fi
+          exit "$rc"
 
       - name: Upload measured test durations
         if: always()
@@ -213,8 +364,16 @@ jobs:
         with:
           retention-days: 3
           name: test-durations-${{ matrix.group }}-${{ matrix.os }}
-          path: tests/.test_durations
-          include-hidden-files: true
+          path: |
+            tests/.test_durations
+            test-results/carrier-source-identity.txt
+            test-results/inner-exits.txt
+            test-results/affected-collection-${{ matrix.group }}.txt
+            test-results/affected-modules.xml
+            test-results/affected-modules.log
+            test-results/affected-execution-summary.json
+            test-results/unit-shard-${{ matrix.group }}.xml
+            test-results/unit-shard-${{ matrix.group }}.log
           if-no-files-found: error
 
       - name: Save pip cache on main or int branches (C-08)
