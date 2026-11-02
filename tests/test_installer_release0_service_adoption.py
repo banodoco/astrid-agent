@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import plistlib
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -17,6 +18,26 @@ from astrid.installer.service import LABEL, Service, command, render
 FIXTURES = Path(__file__).parent / "fixtures" / "release0" / "services"
 CHECKSUMS = Path(__file__).parent / "fixtures" / "release0" / "SHA256SUMS"
 WINDOWS_NS = {"task": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+
+# ProgramArguments projected verbatim from the macOS R0 service retained by
+# Actions 41488439826.  Paths are made portable below, but the service-env
+# location deliberately remains the R0 program root rather than the version.
+_CAPTURED_R0_MACOS_ROOT = "/Users/runner/work/_temp/astrid-r1-direct-macos/program"
+_CAPTURED_R0_MACOS_VERSION = _CAPTURED_R0_MACOS_ROOT + "/versions/3204bb00-6d53a190-72e35858"
+_CAPTURED_R0_MACOS_DATA = "/Users/runner/work/_temp/astrid-r1-direct-macos/data"
+_CAPTURED_R0_MACOS_ACTION = [
+    _CAPTURED_R0_MACOS_VERSION + "/py/bin/python",
+    "-X", "utf8", "-I", "-c",
+    "import json,os,sys\nfrom pathlib import Path\n"
+    f"path=Path({_CAPTURED_R0_MACOS_ROOT + '/service-env.json'!r})\n"
+    "settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}\n"
+    "if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):\n"
+    "    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')\n"
+    "os.environ.update(settings)\n"
+    "from astrid_runtime.cli import main\n"
+    "sys.exit(main(['run', '--profile', 'astrid', '--data-root', "
+    f"{_CAPTURED_R0_MACOS_DATA!r}, '--source-manifest', {_CAPTURED_R0_MACOS_VERSION + '/profile.json'!r}]))",
+]
 
 
 def _frozen(name: str) -> bytes:
@@ -82,6 +103,42 @@ def _posix_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str)
     manager.path.parent.mkdir(parents=True, exist_ok=True)
     manager.path.write_bytes(definition)
     return manager, version, data, definition, legacy_settings
+
+
+def _captured_r0_macos_definition(version: Version, data: Path) -> bytes:
+    """Make the captured R0 launchd action portable without changing its form."""
+    replacements = (
+        (_CAPTURED_R0_MACOS_VERSION, str(version.root)),
+        (_CAPTURED_R0_MACOS_ROOT, str(version.root.parent.parent)),
+        (_CAPTURED_R0_MACOS_DATA, str(data)),
+    )
+    action = []
+    for value in _CAPTURED_R0_MACOS_ACTION:
+        for old, new in replacements:
+            value = value.replace(old, new)
+        action.append(value)
+    assert f"path=Path({str(version.root.parent.parent / 'service-env.json')!r})" in action[-1]
+    assert str(version.root / "service-env.json") not in action[-1]
+    return plistlib.dumps({
+        "Label": LABEL,
+        "ProgramArguments": action,
+        "EnvironmentVariables": {
+            "ASTRID_HOST_EXECUTION_PROFILE": "installed",
+            "ASTRID_RUNTIME_DATA_ROOT": str(data),
+        },
+        "KeepAlive": True,
+        "RunAtLoad": True,
+    })
+
+
+def test_raw_captured_release0_macos_program_root_action_is_admitted(tmp_path, monkeypatch):
+    manager, version, data, _legacy, _legacy_settings = _posix_service(tmp_path, monkeypatch, "darwin")
+    captured = _captured_r0_macos_definition(version, data)
+    manager.path.write_bytes(captured)
+
+    manager.publish_launch_admission(version, data)
+
+    assert manager.path.read_bytes() != captured
 
 
 @pytest.mark.parametrize("system", ["darwin", "linux"])
