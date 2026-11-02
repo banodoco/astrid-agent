@@ -5,6 +5,7 @@ on:
     branches:
       - venue/M-PIN-R-24-PUSH-ROUTE-R1-E53B11D1
       - venue/M-PIN-R-PIN-LOCAL-BIND
+      - venue/M-PIN-R-PIN-IDENTITY-RUN
   workflow_call:
     inputs:
       runner_ref:
@@ -89,12 +90,12 @@ jobs:
       R24_REQUESTED_RUNNER_REF: ${{ github.event_name == 'push' && github.sha || inputs.runner_ref }}
       R24_REQUESTED_PRODUCER_REF: ${{ github.event_name == 'push' && '13cb31104c8aae655d0ee04efdb9537aa111e340' || inputs.producer_ref }}
       R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_CURRENT_TUPLE' || inputs.confirmation }}
-      # The dedicated push venue is the self-serve fully-local route.  A
+      # The dedicated push venues are self-serve fully-local routes.  A
       # workflow_dispatch remains available for the other bounded routes, but
       # the relay's dispatch request was not observable for this mode.
       R25_REQUESTED_MODE: ${{ github.event_name == 'push' && 'fully-local' || inputs.mode }}
       R25_REQUESTED_MODE_PRODUCER_REF: ${{ github.event_name == 'push' && '13cb31104c8aae655d0ee04efdb9537aa111e340' || inputs.mode_producer_ref }}
-      R24_REQUESTED_PINOKIO_REF: ${{ github.event_name == 'push' && '7955800419fc92b11e553d6f7acb7613090617e6' || inputs.pinokio_ref }}
+      R24_REQUESTED_PINOKIO_REF: ${{ github.event_name == 'push' && 'dbc837992be9cf2b489bd96b495add366261a575' || inputs.pinokio_ref }}
       R25_REQUESTED_INSTALL_ONLY: ${{ github.event_name == 'push' && 'true' || inputs.install_only }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:

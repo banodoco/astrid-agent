@@ -37,7 +37,7 @@ def test_provisional_pinokio_binding_is_exact_and_install_only():
         pinokio_ref=materializer.PROVISIONAL_PINOKIO_REF,
         mode="fully-local", install_only=True,
     )
-    assert candidate["pinokio"] == "7955800419fc92b11e553d6f7acb7613090617e6"
+    assert candidate["pinokio"] == "dbc837992be9cf2b489bd96b495add366261a575"
     assert candidate["app"] == materializer.PUBLISHED_CANDIDATE["app"]
     assert candidate["agent"] == materializer.PUBLISHED_CANDIDATE["agent"]
     assert candidate["runtime"] == materializer.PUBLISHED_CANDIDATE["runtime"]
@@ -53,7 +53,7 @@ def test_provisional_pinokio_binding_is_exact_and_install_only():
         )
     with pytest.raises(materializer.MaterializerError, match="allowlisted provisional"):
         materializer.provisional_candidate(
-            pinokio_ref="dbc837992be9cf2b489bd96b495add366261a575",
+            pinokio_ref="7955800419fc92b11e553d6f7acb7613090617e6",
             mode="fully-local", install_only=True,
         )
 
@@ -406,7 +406,8 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "r25-linux-mode-actions" in raw
     assert mode_actions.MODE_PRODUCER_REF in raw
     assert "REQUESTED_MODE" in raw
-    assert "7955800419fc92b11e553d6f7acb7613090617e6" in raw
+    assert "venue/M-PIN-R-PIN-IDENTITY-RUN" in raw
+    assert "dbc837992be9cf2b489bd96b495add366261a575" in raw
     assert "REQUESTED_PINOKIO_REF" in raw
     assert "REQUESTED_INSTALL_ONLY" in raw
     assert "runner_ref:" in registered
@@ -465,6 +466,20 @@ def test_push_admission_accepts_the_local_bind_venue_ref():
     )
     assert admitted["ref"] == ref
     assert admitted["workflow_ref"].endswith(f"@{ref}")
+
+
+def test_push_admission_accepts_the_identity_run_venue_ref():
+    ref = push_admission.IDENTITY_RUN_VENUE_REF
+    environment = _push_admission_environment(
+        GITHUB_REF=ref,
+        GITHUB_WORKFLOW_REF=f"{push_admission.REPOSITORY}/{push_admission.WORKFLOW_PATH}@{ref}",
+    )
+    admitted = push_admission.validate_admission(
+        environment, runner_ref="a" * 40,
+        producer_ref=push_admission.PRODUCER_REF,
+        confirmation=push_admission.CONFIRMATION,
+    )
+    assert admitted["ref"] == ref
 
 
 @pytest.mark.parametrize(
