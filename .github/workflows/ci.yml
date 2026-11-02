@@ -115,6 +115,7 @@ jobs:
       # The test run's skip registry (tests/lanes.py) reads this: a lane this job provides fails, not skips, when its dependency is missing.
       ASTRID_CI_JOB: unit-shard-${{ matrix.os }}
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
     strategy:
       fail-fast: false
       matrix:
@@ -171,6 +172,37 @@ jobs:
       - name: Install the pinned Runtime and client
         run: python scripts/ci_install_runtime.py
 
+      - name: Read the pinned VibeComfy revision
+        id: vibecomfy-pin
+        run: |
+          rev="$(python3 -c 'from astrid.core.generation.engine_recipe import engine_source_revision; print(engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy"))')"
+          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
+            exit 1
+          fi
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Check out VibeComfy at the pinned engine revision
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
+          path: vibecomfy-checkout
+          token: ${{ secrets.VIBECOMFY_READ_TOKEN }}
+
+      - name: Record VibeComfy checkout
+        shell: bash
+        env:
+          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
+        run: |
+          set -euo pipefail
+          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
+          test "$checked_out" = "$VIBECOMFY_REVISION"
+          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install VibeComfy
+        run: python -m pip install -e ./vibecomfy-checkout
+
       - name: Unit tests (default lane shard)
         # Read the committed baseline for selection; write only this shard's
         # measured tests so the eight artifacts can be merged without stale entries.
@@ -210,6 +242,7 @@ jobs:
       ASTRID_CI_JOB: darwin-native
       # A test in both the integration and a darwin lane starts real Runtime daemons from this checkout (tests/helpers/runtime.py).
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -258,6 +291,37 @@ jobs:
 
       - name: Install the Runtime and client from the checkout
         run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
+
+      - name: Read the pinned VibeComfy revision
+        id: vibecomfy-pin
+        run: |
+          rev="$(python3 -c 'from astrid.core.generation.engine_recipe import engine_source_revision; print(engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy"))')"
+          if [[ ! "$rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "VibeComfy engine recipe must resolve to a full lowercase 40-hex revision" >&2
+            exit 1
+          fi
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Check out VibeComfy at the pinned engine revision
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/VibeComfy
+          ref: ${{ steps.vibecomfy-pin.outputs.revision }}
+          path: vibecomfy-checkout
+          token: ${{ secrets.VIBECOMFY_READ_TOKEN }}
+
+      - name: Record VibeComfy checkout
+        shell: bash
+        env:
+          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
+        run: |
+          set -euo pipefail
+          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
+          test "$checked_out" = "$VIBECOMFY_REVISION"
+          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install VibeComfy
+        run: python -m pip install -e ./vibecomfy-checkout
 
       - name: Provision the Remotion browser
         run: npx remotion browser ensure
