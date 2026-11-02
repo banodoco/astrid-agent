@@ -1,0 +1,14 @@
+{
+  "agent.pack": "aa575256ad279236a27722c47dd19016f5d11489ff283ee28bdae6c5b333c676",
+  "capture.py": "b3899ff5eafab6c380c445e29080ad5754786cf44468a9de75742aae2c7a8409",
+  "driver.py": "2548fc3961993d9bb33c57bd502ef48755d1a90ddd9acf4dc0267d0cdd0935b2",
+  "harness.pack": "dc2d4f1792c108deaba31cbd2befdc35018331cbfc98eb73a83d98401c775975",
+  "install.sh": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+  "lifecycle.pack": "8ce3cc49049207cc1a35f3ee3446e355d08919f179b73be02efb22eb260ca848",
+  "release-install-manifest.json": "fe12781e4da60d441595c08f84cb8d0390d840ab7c71227b8c4eff791553795e",
+  "run.sh": "d8f094adeee5643e7b2bc7b95f6c693a05a5efc391da8d37dec93739e6c48a66",
+  "runpod.pack": "3219a8b0e9c776973bf246924af31ef2a4562cac765fb275b32fe9b87a1fe558",
+  "runtime.pack": "c668ced720f57dc8e1054ade170f97c997fb386c6a126d175220c123b8235e08",
+  "sources.json": "3e264a4cc4b76c80a1a3b9ea8b4e6184c0bbd1074c6f0d0e2be0a9fb07aa1cd8",
+  "vibecomfy.pack": "ef1680ec9cdd7f58e9a539519172745f62192d505c632a7ab26cd0474dcadaee"
+}

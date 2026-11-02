@@ -1,0 +1,8 @@
+{
+  "agent": "https://github.com/banodoco/astrid-agent.git",
+  "runtime": "https://github.com/banodoco/astrid-runtime.git",
+  "vibecomfy": "https://github.com/banodoco/vibecomfy.git",
+  "harness": "https://github.com/banodoco/astrid-agent.git",
+  "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
+  "runpod": "https://github.com/peteromallet/runpod-python.git"
+}

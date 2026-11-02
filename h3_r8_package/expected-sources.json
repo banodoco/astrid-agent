@@ -1,0 +1,44 @@
+{
+  "agent": {
+    "sha": "ad130b68268cbb71949d5988dca1b50795b5e3c3",
+    "tree": "8861d42c2e32cecb3f6abfc2e5681c56ee320693",
+    "objects": 3869,
+    "pack_sha256": "aa575256ad279236a27722c47dd19016f5d11489ff283ee28bdae6c5b333c676",
+    "pack_bytes": 41465046
+  },
+  "runtime": {
+    "sha": "67fad49ad202f18b5207fb70abcf344461b1a5cc",
+    "tree": "4829c0ea0275bbc4f60622c5de6e3a4690375e68",
+    "objects": 398,
+    "pack_sha256": "c668ced720f57dc8e1054ade170f97c997fb386c6a126d175220c123b8235e08",
+    "pack_bytes": 1768882
+  },
+  "vibecomfy": {
+    "sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6",
+    "tree": "749cd2ca1d994924b16bfcc19e0caacbf5697f3e",
+    "objects": 3883,
+    "pack_sha256": "ef1680ec9cdd7f58e9a539519172745f62192d505c632a7ab26cd0474dcadaee",
+    "pack_bytes": 82363135
+  },
+  "harness": {
+    "sha": "1aec95e158159949a9d71636e768c53b190902c3",
+    "tree": "36c8fa74282f55b82f2157e27c21c60e06c7b35b",
+    "objects": 23,
+    "pack_sha256": "dc2d4f1792c108deaba31cbd2befdc35018331cbfc98eb73a83d98401c775975",
+    "pack_bytes": 41111
+  },
+  "lifecycle": {
+    "sha": "96360a27a53c4608f780f7b370f747a2aa3c7ca8",
+    "tree": "24e3562181f0ad64003d5cef5403b15d16415be6",
+    "objects": 75,
+    "pack_sha256": "8ce3cc49049207cc1a35f3ee3446e355d08919f179b73be02efb22eb260ca848",
+    "pack_bytes": 514286
+  },
+  "runpod": {
+    "sha": "0786b3d51855a66176fea1e7443b92e7ef2d01b5",
+    "tree": "8e42fe3e9b2876b71270f2f6256bece8dc5dc651",
+    "objects": 305,
+    "pack_sha256": "3219a8b0e9c776973bf246924af31ef2a4562cac765fb275b32fe9b87a1fe558",
+    "pack_bytes": 643618
+  }
+}
