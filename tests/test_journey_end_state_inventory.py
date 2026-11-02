@@ -6,6 +6,7 @@ import subprocess
 from collections import Counter
 
 from scripts import check_journey_evidence as gate
+from scripts import pinokio_mode_lift
 from scripts.journey_matrix import (
     DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
     END_STATE_INVENTORY,
@@ -63,7 +64,40 @@ def write_release1_set(root, pinned):
     for contract in RELEASE1_MATRIX:
         path = root / contract["job_id"] / "journey-result.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(release1_row(contract, pinned)), encoding="utf-8")
+        row = release1_row(contract, pinned)
+        if contract["mode"] != "direct":
+            record = {
+                "schema": pinokio_mode_lift.RECORD_SCHEMA,
+                "action": "ready", "action_id": f"unit-{contract['job_id']}",
+                "action_sha256": "1" * 64, "slot_id": contract["job_id"], "tuple": dict(pinned),
+                "origin": {"run_id": 11, "run_attempt": 1, "producer_job_id": 22},
+                "pinokio_install_mode_receipt": dict(row["pinokio_install_mode_receipt"]),
+                "before": {"state": "before"}, "after": {"state": "after"},
+                "engine": {"inner_exit": {"code": 0}}, "status": "completed",
+            }
+            record_path = path.parent / "pinokio-filesystem-record.json"
+            record_path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+            context_path = path.parent / "pinokio-authenticated-context.json"
+            context_path.write_text(json.dumps({
+                "schema": pinokio_mode_lift.AUTHENTICATED_CONTEXT_SCHEMA,
+                "record": {"path": record_path.name,
+                           "sha256": hashlib.sha256(record_path.read_bytes()).hexdigest()},
+                "slot_id": contract["job_id"], "tuple": dict(pinned),
+                "origin": {
+                    "repository_id": 1, "repository_full_name": "banodoco/astrid-pinokio",
+                    "workflow_id": 2, "workflow_ref": "workflow@refs/heads/lane", "workflow_sha": "2" * 40,
+                    "run_id": 11, "run_attempt": 1, "head_sha": "3" * 40,
+                    "producer_job_id": 22, "producer_job_name": "r25-native-slot",
+                    "artifact_id": None,
+                    "artifact_name": f"r25-snapshots-{contract['job_id']}-unit",
+                },
+            }, sort_keys=True), encoding="utf-8")
+            pinokio_mode_lift.lift(
+                path.parent, row, record_path=record_path, authenticated_context_path=context_path,
+                candidate=pinned, expected_slot=contract["job_id"],
+                expected_mode=row["pinokio_install_mode_receipt"]["mode"],
+            )
+        path.write_text(json.dumps(row), encoding="utf-8")
         paths[contract["job_id"]] = path
     return paths
 

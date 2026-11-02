@@ -10,6 +10,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from . import pinokio_mode_lift
+except ImportError:
+    try:
+        import pinokio_mode_lift
+    except ModuleNotFoundError:
+        from scripts import pinokio_mode_lift
+
 if __package__:
     from .journey_matrix import (
         DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS,
@@ -229,7 +237,7 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
-def _release1_row_errors(candidate, contract, row):
+def _release1_row_errors(candidate, contract, row, receipt_root=None):
     """Validate one Release-1 row for both the aggregate and inventory view."""
     job_id = contract["job_id"]
     errors = []
@@ -253,6 +261,16 @@ def _release1_row_errors(candidate, contract, row):
             errors.append(
                 f"{job_id}: declared {contract['mode']} slot conflicts with "
                 f"installed receipt mode {installed_mode['mode']!r}"
+            )
+        if not isinstance(receipt_root, Path):
+            errors.append(f"{job_id}: Pinokio installed-mode binding receipt root is absent")
+        else:
+            errors.extend(
+                f"{job_id}: Pinokio installed-mode binding {error}"
+                for error in pinokio_mode_lift.validate_lift(
+                    row, receipt_root, candidate=candidate, expected_slot=job_id,
+                    expected_mode=expected_installed_mode,
+                )
             )
     if row.get("scenario") != contract.get("leg", "fresh-install"):
         errors.append(f"{job_id}: scenario does not match the required matrix leg")
@@ -339,6 +357,7 @@ def evaluate_release1_matrix(candidate, results):
     errors = []
     expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
     found = {}
+    paths = {}
     for path in Path(results).rglob("journey-result.json"):
         try:
             row = read(path)
@@ -352,12 +371,13 @@ def evaluate_release1_matrix(candidate, results):
             errors.append(f"{path}: duplicate receipt for {job_id}")
         else:
             found[job_id] = row
+            paths[job_id] = path.parent
     for job_id, contract in expected.items():
         row = found.get(job_id)
         if row is None:
             errors.append(f"{job_id}: missing receipt")
             continue
-        errors.extend(_release1_row_errors(candidate, contract, row))
+        errors.extend(_release1_row_errors(candidate, contract, row, paths[job_id]))
     return errors
 
 
@@ -890,7 +910,8 @@ def evaluate_end_state_obligations(candidate, results):
                 status = "failed"
                 row_errors.append("duplicate Release-1 lifecycle receipts")
             else:
-                row_errors.extend(_release1_row_errors(candidate, release1_contracts[job_id], entries[0][0]))
+                row_errors.extend(_release1_row_errors(
+                    candidate, release1_contracts[job_id], entries[0][0], entries[0][1].parent))
                 status = "passed" if not row_errors else "failed"
         elif kind == "m4-5":
             entries = m4_5.get(identity, [])
@@ -918,7 +939,8 @@ def evaluate_end_state_obligations(candidate, results):
                 status = "failed"
                 row_errors.append("duplicate Pinokio action-boundary snapshot receipts")
             else:
-                row_errors.extend(_release1_row_errors(candidate, release1_contracts[job_id], entries[0][0]))
+                row_errors.extend(_release1_row_errors(
+                    candidate, release1_contracts[job_id], entries[0][0], entries[0][1].parent))
                 row_errors.extend(_pinokio_snapshot_end_state_errors(entries[0][0], obligation))
                 status = "passed" if not row_errors else "failed"
         elif kind == "m4-6":

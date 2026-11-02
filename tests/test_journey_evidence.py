@@ -2,11 +2,65 @@
 import copy
 import importlib.util
 import json
+import hashlib
 from pathlib import Path
+
+from scripts import pinokio_mode_lift
 
 spec = importlib.util.spec_from_file_location('journey_evidence', Path(__file__).parents[1] / 'scripts/check_journey_evidence.py')
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
+
+
+def _write_mode_lift_sidecars(receipt_root, row, candidate):
+    """Synthetic unit fixture only; it never represents hosted evidence."""
+    slot_id = row["job_id"]
+    installed = row["pinokio_install_mode_receipt"]
+    record = {
+        "schema": pinokio_mode_lift.RECORD_SCHEMA,
+        "action": "ready",
+        "action_id": f"unit-{slot_id}",
+        "action_sha256": "1" * 64,
+        "slot_id": slot_id,
+        "tuple": dict(candidate),
+        "origin": {"run_id": 11, "run_attempt": 1, "producer_job_id": 22},
+        "pinokio_install_mode_receipt": dict(installed),
+        "before": {"filesystem": "before"},
+        "after": {"filesystem": "after"},
+        "engine": {"inner_exit": {"code": 0}},
+        "status": "completed",
+    }
+    record_path = receipt_root / "pinokio-filesystem-record.json"
+    record_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    record_digest = hashlib.sha256(record_path.read_bytes()).hexdigest()
+    origin = {
+        "repository_id": 1,
+        "repository_full_name": "banodoco/astrid-pinokio",
+        "workflow_id": 2,
+        "workflow_ref": "banodoco/astrid-pinokio/.github/workflows/r25.yml@refs/heads/lane",
+        "workflow_sha": "2" * 40,
+        "run_id": 11,
+        "run_attempt": 1,
+        "head_sha": "3" * 40,
+        "producer_job_id": 22,
+        "producer_job_name": "r25-native-slot",
+        "artifact_id": None,
+        "artifact_name": f"r25-snapshots-{slot_id}-unit",
+    }
+    context = {
+        "schema": pinokio_mode_lift.AUTHENTICATED_CONTEXT_SCHEMA,
+        "record": {"path": record_path.name, "sha256": record_digest},
+        "slot_id": slot_id,
+        "tuple": dict(candidate),
+        "origin": origin,
+    }
+    context_path = receipt_root / "pinokio-authenticated-context.json"
+    context_path.write_text(json.dumps(context, sort_keys=True) + "\n", encoding="utf-8")
+    pinokio_mode_lift.lift(
+        receipt_root, row, record_path=record_path, authenticated_context_path=context_path,
+        candidate=candidate, expected_slot=slot_id,
+        expected_mode=installed["mode"],
+    )
 
 
 def release1_receipts(tmp_path):
@@ -51,6 +105,8 @@ def release1_receipts(tmp_path):
             }
         receipt = tmp_path / contract["job_id"] / "journey-result.json"
         receipt.parent.mkdir(exist_ok=True)
+        if contract["mode"] != "direct":
+            _write_mode_lift_sidecars(receipt.parent, row, candidate)
         receipt.write_text(json.dumps(row), encoding="utf-8")
     return candidate
 
@@ -271,6 +327,58 @@ def test_pinokio_slots_reject_missing_malformed_and_unknown_installed_modes(tmp_
         receipt.write_text(json.dumps(row), encoding="utf-8")
         assert any(job_id in error and message in error
                    for error in gate.evaluate_release1_matrix(candidate, tmp_path)), message
+
+
+def test_pinokio_mode_lift_rejects_missing_mismatched_forged_and_ambiguous_bindings(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    receipt = tmp_path / "pinokio-backend-linux" / "journey-result.json"
+    row = json.loads(receipt.read_text(encoding="utf-8"))
+
+    row.pop("pinokio_install_mode_binding")
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    assert any("unambiguous Pinokio mode binding" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+    candidate = release1_receipts(tmp_path)
+    receipt = tmp_path / "pinokio-backend-linux" / "journey-result.json"
+    row = json.loads(receipt.read_text(encoding="utf-8"))
+    row["pinokio_install_mode_binding"]["slot_id"] = "pinokio-fully-local-linux"
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    assert any("mode binding slot differs" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+    candidate = release1_receipts(tmp_path)
+    root = tmp_path / "pinokio-backend-linux"
+    receipt = root / "journey-result.json"
+    row = json.loads(receipt.read_text(encoding="utf-8"))
+    record = root / "pinokio-filesystem-record.json"
+    forged = json.loads(record.read_text(encoding="utf-8"))
+    forged["pinokio_install_mode_receipt"]["mode"] = "local"
+    record.write_text(json.dumps(forged), encoding="utf-8")
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    assert any("record sidecar digest differs" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+    candidate = release1_receipts(tmp_path)
+    root = tmp_path / "pinokio-backend-linux"
+    receipt = root / "journey-result.json"
+    row = json.loads(receipt.read_text(encoding="utf-8"))
+    record = root / "pinokio-filesystem-record.json"
+    # Re-hash both joins so this is an ambiguity test, not merely a stale hash.
+    record.write_text(
+        '{"schema":"astrid.r25.pinokio-filesystem-record.v1",'
+        '"schema":"astrid.r25.pinokio-filesystem-record.v1"}\n', encoding="utf-8")
+    record_digest = hashlib.sha256(record.read_bytes()).hexdigest()
+    context = root / "pinokio-authenticated-context.json"
+    context_value = json.loads(context.read_text(encoding="utf-8"))
+    context_value["record"]["sha256"] = record_digest
+    context.write_text(json.dumps(context_value), encoding="utf-8")
+    row["pinokio_install_mode_binding"]["record"]["sha256"] = record_digest
+    row["pinokio_install_mode_binding"]["authenticated_context"]["sha256"] = hashlib.sha256(
+        context.read_bytes()).hexdigest()
+    receipt.write_text(json.dumps(row), encoding="utf-8")
+    assert any("duplicate field" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
 def test_release1_rejects_missing_malformed_and_unknown_slot_values(tmp_path):

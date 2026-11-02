@@ -15,6 +15,7 @@ import pytest
 
 from scripts import ci_journey as journey
 from scripts import journey_version_jumps as jumps
+from scripts import pinokio_mode_lift
 
 
 def app_checkout(tmp_path):
@@ -278,6 +279,62 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
                                     tmp_path / "evidence", SimpleNamespace(pid=123), "birth")
     assert result["mode"] == "pinokio-backend"
     assert result["status"] == "pass"
+
+
+def test_pinokio_mode_lift_requires_the_record_and_authenticated_context_together(tmp_path):
+    args = argparse.Namespace(
+        pinokio_mode_record=tmp_path / "record.json",
+        pinokio_mode_authenticated_context=None,
+        candidate=None,
+    )
+    with pytest.raises(ValueError, match="both the producer record and authenticated context"):
+        journey.lift_authenticated_pinokio_mode(
+            args, {"mode": "pinokio-backend", "job_id": "pinokio-backend-linux"}, tmp_path)
+
+
+def test_pinokio_mode_lift_copies_only_the_authenticated_producer_record(tmp_path):
+    candidate = {key: letter * 40 for key, letter in zip(
+        ("app", "agent", "runtime", "pinokio"), "abcd", strict=True)}
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    record_path = tmp_path / "pinokio-filesystem-record.json"
+    record = {
+        "schema": pinokio_mode_lift.RECORD_SCHEMA,
+        "action": "ready", "action_id": "r25-ready-11-1", "action_sha256": "1" * 64,
+        "slot_id": "pinokio-backend-linux", "tuple": candidate,
+        "origin": {"run_id": 11, "run_attempt": 1, "producer_job_id": 22},
+        "pinokio_install_mode_receipt": {"schema_version": 1, "mode": "backend"},
+        "before": {"state": "before"}, "after": {"state": "after"},
+        "engine": {"inner_exit": {"code": 0}}, "status": "completed",
+    }
+    record_path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    context_path = tmp_path / "pinokio-authenticated-context.json"
+    context_path.write_text(json.dumps({
+        "schema": pinokio_mode_lift.AUTHENTICATED_CONTEXT_SCHEMA,
+        "record": {"path": record_path.name,
+                   "sha256": hashlib.sha256(record_path.read_bytes()).hexdigest()},
+        "slot_id": "pinokio-backend-linux", "tuple": candidate,
+        "origin": {
+            "repository_id": 1, "repository_full_name": "banodoco/astrid-pinokio",
+            "workflow_id": 2, "workflow_ref": "workflow@refs/heads/lane", "workflow_sha": "2" * 40,
+            "run_id": 11, "run_attempt": 1, "head_sha": "3" * 40,
+            "producer_job_id": 22, "producer_job_name": "r25-native-slot",
+            "artifact_id": None, "artifact_name": "r25-snapshots-pinokio-backend-linux-11-1",
+        },
+    }, sort_keys=True), encoding="utf-8")
+    result = {"mode": "pinokio-backend", "job_id": "pinokio-backend-linux"}
+    args = argparse.Namespace(
+        pinokio_mode_record=record_path,
+        pinokio_mode_authenticated_context=context_path,
+        candidate=candidate_path,
+    )
+    journey.lift_authenticated_pinokio_mode(args, result, tmp_path)
+    assert result["pinokio_install_mode_receipt"] == record["pinokio_install_mode_receipt"]
+    binding = result["pinokio_install_mode_binding"]
+    assert binding["slot_id"] == record["slot_id"]
+    assert binding["origin"]["run_id"] == record["origin"]["run_id"]
+    assert pinokio_mode_lift.validate_lift(
+        result, tmp_path, candidate=candidate, expected_slot=result["job_id"], expected_mode="backend") == []
 
 
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():

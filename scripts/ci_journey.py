@@ -412,6 +412,38 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
     return receipt
 
 
+def lift_authenticated_pinokio_mode(args: argparse.Namespace, result: dict,
+                                    evidence: Path) -> None:
+    """Attach only an authenticated producer record; never derive mode from a slot."""
+    record = getattr(args, "pinokio_mode_record", None)
+    context = getattr(args, "pinokio_mode_authenticated_context", None)
+    if record is None and context is None:
+        # No finalizer context means no receipt.  The aggregate checker remains
+        # fail-closed rather than manufacturing a mode from ``args.mode``.
+        return
+    if record is None or context is None:
+        raise ValueError("Pinokio mode lift requires both the producer record and authenticated context")
+    candidate_path = getattr(args, "candidate", None)
+    if candidate_path is None:
+        raise ValueError("Pinokio mode lift requires the frozen four-ref candidate")
+    candidate = read_json(candidate_path)
+    if not isinstance(candidate, dict):
+        raise ValueError("Pinokio mode lift candidate must be an object")
+    expected_mode = {"pinokio-backend": "backend", "pinokio-fully-local": "local"}.get(
+        result.get("mode"))
+    job_id = result.get("job_id")
+    if expected_mode is None or not isinstance(job_id, str):
+        raise ValueError("Pinokio mode lift requires a declared Pinokio matrix slot")
+    try:
+        from . import pinokio_mode_lift
+    except ImportError:
+        import pinokio_mode_lift
+    pinokio_mode_lift.lift(
+        evidence, result, record_path=Path(record), authenticated_context_path=Path(context),
+        candidate=candidate, expected_slot=job_id, expected_mode=expected_mode,
+    )
+
+
 def runner_identity() -> dict:
     """Record the workflow's declared image and raw hosted-runner observations."""
     label = os.environ.get("ASTRID_CI_EXPECTED_RUNNER") or "local"
@@ -1359,6 +1391,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             result["historical_compatibility"] = backend_receipt["pinokio_backend"].get(
                 "historical_compatibility")
             result["status"] = backend_receipt["status"]
+            lift_authenticated_pinokio_mode(args, result, evidence)
             result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             return result
         if getattr(args, "job_id", None) and args.mode != "direct":
@@ -1820,6 +1853,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="required full candidate Agent SHA carrying the integrated stopped path")
     parser.add_argument("--pinokio-backend-config", type=Path,
                         help="explicit JSON inputs for the real M4-4a lifecycle executor")
+    parser.add_argument("--pinokio-mode-record", type=Path,
+                        help="retained Pinokio filesystem record for one authenticated matrix slot")
+    parser.add_argument("--pinokio-mode-authenticated-context", type=Path,
+                        help="trusted-finalizer context hash-binding --pinokio-mode-record")
     parser.add_argument("--release0-fixture", type=Path,
                         help="the checked-in frozen release-0 fixture directory for the direct 0-to-1 leg")
     parser.add_argument("--allow-release0-to-release1", action="store_true",
@@ -1872,6 +1909,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("Pinokio backend refs require a pinokio-backend job")
         if args.mode != "pinokio-backend" and args.pinokio_backend_config:
             parser.error("--pinokio-backend-config is only valid for pinokio-backend")
+        if ((args.pinokio_mode_record is None) != (args.pinokio_mode_authenticated_context is None)):
+            parser.error("Pinokio mode lift requires both --pinokio-mode-record and --pinokio-mode-authenticated-context")
     elif args.old_launcher_ref or args.stopped_path_agent_ref:
         parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
     if args.leg == "release0-to-release1":
