@@ -81,12 +81,14 @@ jobs:
           11443b0b5b34bd5b36725504fb083146192a759d
           959ce04fcf91351903c361d03e6b19eb0bbe8587
           efcb3264e854fc312faa0bc6e702a9034edc2e06
+          d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b
 
       - name: Verify Runtime sources before tests
         shell: bash
         env:
           RUNTIME_LOCK_SHA: ${{ steps.runtime-pin.outputs.commit }}
           HISTORICAL_RUNTIME_SHA: efcb3264e854fc312faa0bc6e702a9034edc2e06
+          CATALOG_RUNTIME_SHA: d9e2a71e87c827290a3ff58a94f6fb8b4bc11e0b
         run: |
           set -euo pipefail
           locked_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)"
@@ -95,11 +97,16 @@ jobs:
           test "$historical_runtime" = "$HISTORICAL_RUNTIME_SHA"
           historical_type="$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$HISTORICAL_RUNTIME_SHA")"
           test "$historical_type" = commit
+          catalog_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${CATALOG_RUNTIME_SHA}^{commit}")"
+          test "$catalog_runtime" = "$CATALOG_RUNTIME_SHA"
+          catalog_type="$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$CATALOG_RUNTIME_SHA")"
+          test "$catalog_type" = commit
           {
             echo "## Effective Runtime sources"
             echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
             echo "- Runtime lock source: $RUNTIME_LOCK_SHA (checkout HEAD: $locked_runtime)"
             echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
+            echo "- Runtime catalog source: $CATALOG_RUNTIME_SHA (resolved: $catalog_runtime; object: $catalog_type)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record checked-out refs
@@ -373,6 +380,23 @@ jobs:
 
       - name: Install the Remotion dependencies
         run: npm ci --prefix remotion
+
+      - name: Provision the installed Remotion registries
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/installed-venv/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+          from astrid.packs.rendering.rendering.renderers.remotion import run
+
+          run._regenerate_element_registries(
+              Path(os.environ["ASTRID_REMOTION_PROJECT_DIR"]), None
+          )
+          PY
+          test -s "$ASTRID_REMOTION_PROJECT_DIR/.astrid-registry-state.json"
+          test -s "$ASTRID_REMOTION_PROJECT_DIR/src/effects.generated.ts"
+          test -s "$ASTRID_REMOTION_PROJECT_DIR/src/animations.generated.ts"
+          test -s "$ASTRID_REMOTION_PROJECT_DIR/src/transitions.generated.ts"
 
       - name: Installed tests
         run: >-
