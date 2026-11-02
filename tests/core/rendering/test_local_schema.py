@@ -178,3 +178,151 @@ def test_role_aware_canonical_contract_is_shared_and_does_not_mutate_payload():
     jsonschema.validate(payload, schema)
     assert banodoco_schema.validate_timeline_config_for_container(payload) == before
     assert payload == before
+
+
+def _windows_acl_fixture(monkeypatch, *, owner=500, process_owner=500, trustees=(500, 18, 544),
+                         flags=(16, 16, 0), ace_type=0, null_dacl=False):
+    """Model the retained SDDL with native ACE buffers and Runtime's API seam."""
+    import ctypes
+    from types import SimpleNamespace
+
+    from runtime_protocol import windows_security as security
+
+    def sid(number):
+        # The capture's account SID uses domain subauthorities and RID 500.
+        parts = [21, 3077485881, 3661871218, 4154919024, number] if number in (500, 501) else (
+            [32, 544] if number == 544 else [number])
+        return bytes([1, len(parts)]) + (5).to_bytes(6, "big") + b"".join(
+            part.to_bytes(4, "little") for part in parts)
+
+    user = ctypes.create_string_buffer(sid(500))
+    token_owner = ctypes.create_string_buffer(sid(process_owner))
+    file_owner = ctypes.create_string_buffer(sid(owner))
+    acl = security._Acl()
+    acl.count = len(trustees)
+    aces = []
+    for trustee, flag in zip(trustees, flags, strict=True):
+        raw_sid = sid(trustee)
+        length = 8 + len(raw_sid)
+        aces.append(ctypes.create_string_buffer(bytes([ace_type, flag]) + length.to_bytes(2, "little")
+                                               + (0x1F01FF).to_bytes(4, "little") + raw_sid))
+    descriptor = ctypes.create_string_buffer(1)
+
+    def set_pointer(out, address):
+        ctypes.cast(out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.c_void_p(address)
+
+    def get_security(_handle, _kind, _flags, owner_out, _group, dacl_out, _sacl, descriptor_out):
+        set_pointer(owner_out, ctypes.addressof(file_owner))
+        set_pointer(dacl_out, 0 if null_dacl else ctypes.addressof(acl))
+        set_pointer(descriptor_out, ctypes.addressof(descriptor))
+        return 0
+
+    def get_ace(_dacl, index, out):
+        set_pointer(out, ctypes.addressof(aces[index]))
+        return 1
+
+    def sid_bytes(value):
+        header = ctypes.string_at(value, 8)
+        return ctypes.string_at(value, 8 + 4 * header[1])
+
+    def sid_text(value):
+        raw = sid_bytes(value)
+        return "S-1-5-" + "-".join(str(int.from_bytes(raw[i:i+4], "little"))
+                                    for i in range(8, len(raw), 4))
+
+    adv = SimpleNamespace(GetSecurityInfo=get_security, GetAce=get_ace,
+                          IsValidSid=lambda _sid: True, IsValidAcl=lambda _acl: True,
+                          GetLengthSid=lambda value: len(sid_bytes(value)),
+                          EqualSid=lambda a, b: sid_bytes(a) == sid_bytes(b),
+                          GetSecurityDescriptorControl=lambda _d, control, _r: 1)
+    kernel = SimpleNamespace(LocalFree=lambda _descriptor: None)
+    monkeypatch.setattr(security, "_api", lambda: (adv, kernel))
+    monkeypatch.setattr(security, "_user_sid", lambda: user)
+    monkeypatch.setattr(security, "_default_owner_sid", lambda: token_owner)
+    monkeypatch.setattr(security, "_sid_text", sid_text)
+    return security
+
+
+def test_windows_captured_acl_same_owner_is_admitted(monkeypatch):
+    # Source O:LAD:(A;ID;FA;;;LA)(A;ID;FA;;;SY)
+    # Destination O:LAD:(A;;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;LA)
+    _windows_acl_fixture(monkeypatch, trustees=(500, 18), flags=(16, 16))
+    assert _local_schema._windows_schema_handle_is_safe(1)
+    _windows_acl_fixture(monkeypatch, trustees=(544, 18, 500), flags=(0, 16, 16))
+    assert _local_schema._windows_schema_handle_is_safe(1)
+
+
+@pytest.mark.parametrize("changes", [
+    {"trustees": (500, 18, 501)},  # Foreign user with full control.
+    {"trustees": (500, 18, 545)},  # BUILTIN Users.
+    {"trustees": (500, 18, 11)},  # Authenticated Users.
+    {"owner": 501},
+    {"process_owner": 544},
+    {"ace_type": 1},
+    {"null_dacl": True},
+    {"trustees": (544, 18, 18)},  # No effective user ACE.
+])
+def test_windows_schema_rejects_unsafe_acl(monkeypatch, changes):
+    _windows_acl_fixture(monkeypatch, **changes)
+    assert not _local_schema._windows_schema_handle_is_safe(1)
+
+
+@pytest.mark.parametrize("bad", [None, "source", "destination"])
+def test_windows_installed_schema_checks_both_source_and_destination(tmp_path, monkeypatch, bad):
+    from types import SimpleNamespace
+
+    version = tmp_path / "version"
+    prefix = version / "py"
+    root = prefix / "Lib" / "site-packages"
+    for relative in (_local_schema.SCHEMA_RELATIVE_PATH, Path("runtime.lock.json"),
+                     *_local_schema.READER_INPUTS):
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((REPO_ROOT / relative).read_bytes())
+    source = version / "a" / _local_schema.SCHEMA_RELATIVE_PATH
+    source.parent.mkdir(parents=True)
+    source.write_bytes((REPO_ROOT / _local_schema.SCHEMA_RELATIVE_PATH).read_bytes())
+    destination = root / _local_schema.SCHEMA_RELATIVE_PATH
+    checked = []
+
+    def is_safe(path):
+        checked.append(path)
+        return path != {"source": source, "destination": destination}.get(bad)
+
+    monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix=str(prefix)))
+    monkeypatch.setattr(_local_schema, "_windows_schema_path_is_safe", is_safe)
+    if bad:
+        with pytest.raises(ValueError, match="owner/mode"):
+            _local_schema.verified_schema_path(root, str(destination))
+    else:
+        assert _local_schema.verified_schema_path(root, str(destination)) == destination
+        assert source in checked and destination in checked
+
+
+def test_windows_unpaired_source_keeps_strict_dacl(staged_schema, monkeypatch):
+    from types import SimpleNamespace
+
+    root, schema = staged_schema
+    monkeypatch.setattr(_local_schema, "sys", SimpleNamespace(platform="win32", prefix="/other"))
+    monkeypatch.setattr(_local_schema, "_windows_schema_path_is_safe", lambda _path: True)
+    monkeypatch.setattr(_local_schema, "owned_by_current_user", lambda *_a, **_k: False)
+    with pytest.raises(ValueError, match="owner/mode"):
+        _local_schema.verified_schema_path(root, str(schema))
+
+
+@pytest.mark.windows_native
+def test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign(tmp_path):
+    from runtime_protocol import windows_security as security
+
+    user = security._user_sid()
+    adv, _ = security._api()
+    same_owner = bool(adv.EqualSid(user, security._default_owner_sid()))
+    user_sid = security._sid_text(user)
+    path = tmp_path / "schema.json"
+    path.write_text("{}")
+    with security._handle(path, write_dac=True) as (handle, _info):
+        security._set_dacl(handle, f"O:{user_sid}D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BA)")
+    assert _local_schema._windows_schema_path_is_safe(path) == same_owner
+    with security._handle(path, write_dac=True) as (handle, _info):
+        security._set_dacl(handle, f"O:{user_sid}D:P(A;;FA;;;{user_sid})(A;;FA;;;SY)(A;;FA;;;BU)")
+    assert not _local_schema._windows_schema_path_is_safe(path)
