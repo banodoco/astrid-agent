@@ -166,13 +166,20 @@ jobs:
       - name: Check out VibeComfy at the pinned engine revision
         uses: actions/checkout@v4
         with:
-          repository: peteromallet/VibeComfy
+          repository: banodoco/VibeComfy
           ref: ${{ steps.vibecomfy-pin.outputs.revision }}
           path: vibecomfy-checkout
+          token: ${{ secrets.VIBECOMFY_READ_TOKEN }}
 
       - name: Record VibeComfy checkout
+        shell: bash
+        env:
+          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
         run: |
-          echo "- VibeComfy: $(git -C vibecomfy-checkout rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
+          test "$checked_out" = "$VIBECOMFY_REVISION"
+          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
@@ -277,13 +284,20 @@ jobs:
       - name: Check out VibeComfy at the pinned engine revision
         uses: actions/checkout@v4
         with:
-          repository: peteromallet/VibeComfy
+          repository: banodoco/VibeComfy
           ref: ${{ steps.vibecomfy-pin.outputs.revision }}
           path: vibecomfy-checkout
+          token: ${{ secrets.VIBECOMFY_READ_TOKEN }}
 
       - name: Record VibeComfy checkout
+        shell: bash
+        env:
+          VIBECOMFY_REVISION: ${{ steps.vibecomfy-pin.outputs.revision }}
         run: |
-          echo "- VibeComfy: $(git -C vibecomfy-checkout rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          checked_out="$(git -C "$ASTRID_VIBECOMFY_CHECKOUT" rev-parse HEAD)"
+          test "$checked_out" = "$VIBECOMFY_REVISION"
+          echo "- VibeComfy: $checked_out" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
