@@ -30,6 +30,7 @@ PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES = 65536
 PACK_HOST_DIAGNOSTIC_MARKER_BYTES = 65536
 PACK_HOST_DIAGNOSTIC_VALUE_BYTES = 2048
 PACK_HOST_DIAGNOSTIC_JSON_BUDGET = 8192
+NATIVE_RUNTIME_LOG_DIR_ENV = "ASTRID_CI_NATIVE_RUNTIME_LOG_DIR"
 PACK_HOST_DIAGNOSTIC_OBSERVATIONS = (
     "first-failed-poll",
     "first-service-exit",
@@ -505,11 +506,11 @@ def _read_pack_host_file(path, *, limit, tail):
     return {"status": "read", "bytes": size, "truncated": tail and size > limit}, content, size
 
 
-def _capture_pack_host_log(path, logical_name, observation):
+def _capture_pack_host_log(path, logical_name, observation, search_root):
     details, content, _size = _read_pack_host_file(
         path, limit=PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES, tail=True,
     )
-    record = {"source": logical_name, **details}
+    record = {"source": logical_name, "search_root": search_root, **details}
     if content is None:
         return record
     safe = _redact_pack_host_text(content.decode("utf-8", errors="replace")).encode("utf-8")
@@ -520,9 +521,13 @@ def _capture_pack_host_log(path, logical_name, observation):
     try:
         (EVIDENCE / evidence_name).write_bytes(safe)
     except OSError as exc:
-        return {"source": logical_name, "status": "error", "error": type(exc).__name__}
+        return {
+            "source": logical_name, "search_root": search_root,
+            "status": "error", "error": type(exc).__name__,
+        }
     return {
         "source": logical_name,
+        "search_root": search_root,
         "status": "captured",
         "evidence": evidence_name,
         "source_bytes": details["bytes"],
@@ -697,7 +702,21 @@ def capture_pack_host_readiness_diagnostics(observation, health_value, predicate
     if manifest.exists():
         return
     root = data_root()
-    logs = root / "logs"
+    data_logs = root / "logs"
+    native_logs_value = os.environ.get(NATIVE_RUNTIME_LOG_DIR_ENV)
+    native_logs = data_logs
+    native_logs_selected = False
+    if native_logs_value:
+        candidate = Path(native_logs_value)
+        if candidate.is_absolute():
+            native_logs = candidate
+            native_logs_selected = True
+    isolated_local = os.environ.get("LOCALAPPDATA")
+    service_logs = (
+        Path(isolated_local) / "Astrid Runtime" / "logs"
+        if native_logs_selected and isolated_local and Path(isolated_local).is_absolute()
+        else data_logs
+    )
     runtime = root / "runtime"
     capture = {
         "schema_version": 1,
@@ -706,9 +725,18 @@ def capture_pack_host_readiness_diagnostics(observation, health_value, predicate
         "health": _pack_host_health_observation(health_value),
         "service_action": _pack_host_service_action_observation(),
         "logs": [
-            _capture_pack_host_log(logs / "service-pack-host.log", "service-pack-host.log", observation),
-            _capture_pack_host_log(logs / "runtime-service.log", "runtime-service.log", observation),
-            _capture_pack_host_log(runtime / "generic-host.log", "generic-host.log", observation),
+            _capture_pack_host_log(
+                native_logs / "service-pack-host.log", "service-pack-host.log", observation,
+                "native-runtime-logs" if native_logs_selected else "data-root-logs",
+            ),
+            _capture_pack_host_log(
+                service_logs / "runtime-service.log", "runtime-service.log", observation,
+                "isolated-service-logs" if native_logs_selected else "data-root-logs",
+            ),
+            _capture_pack_host_log(
+                runtime / "generic-host.log", "generic-host.log", observation,
+                "runtime-support-root",
+            ),
         ],
         "markers": [
             _capture_pack_host_marker(runtime / "generic-host.ready.json", "generic-host.ready.json"),

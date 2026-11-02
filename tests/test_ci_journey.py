@@ -370,6 +370,24 @@ def test_tst_b1_isolated_roots_reject_aliases_and_preserve_existing_install(tmp_
     assert marker.read_text() == '{"owner":"real-install"}\n'
 
 
+def test_windows_isolation_preserves_native_runtime_log_root_for_diagnostics(tmp_path, monkeypatch):
+    native_local = tmp_path / "login-local"
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(native_local))
+    monkeypatch.delenv(journey.NATIVE_RUNTIME_LOG_DIR_ENV, raising=False)
+
+    with journey.isolated_environment(run_root, root, data):
+        assert os.environ["LOCALAPPDATA"] == str(run_root / "localappdata")
+        assert os.environ[journey.NATIVE_RUNTIME_LOG_DIR_ENV] == str(
+            native_local / "Astrid Runtime" / "logs"
+        )
+
+    assert os.environ["LOCALAPPDATA"] == str(native_local)
+    assert journey.NATIVE_RUNTIME_LOG_DIR_ENV not in os.environ
+
+
 def test_tst_b1_preflight_refuses_default_install_before_sentinel_or_bootstrap(tmp_path, monkeypatch):
     default = tmp_path / "real-default"
     default.mkdir()

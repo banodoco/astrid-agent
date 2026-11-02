@@ -350,7 +350,8 @@ def test_first_failed_host_poll_captures_redacted_bounded_readiness_diagnostics(
     assert captured["logs"][0]["truncated"] is True
     assert captured["logs"][0]["captured_bytes"] <= journey.PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES
     assert captured["logs"][1] == {
-        "source": "runtime-service.log", "status": "unsafe_type", "type": "directory",
+        "source": "runtime-service.log", "search_root": "data-root-logs",
+        "status": "unsafe_type", "type": "directory",
     }
     assert captured["logs"][2]["status"] == "captured"
     assert captured["markers"][0]["content"]["access_token"] == "<redacted>"
@@ -392,14 +393,64 @@ def test_first_failed_host_poll_records_unavailable_health_and_absent_diagnostic
         "status": "unavailable", "stage": "version", "error": "OSError",
     }
     assert captured["logs"] == [
-        {"source": "service-pack-host.log", "status": "missing"},
-        {"source": "runtime-service.log", "status": "missing"},
-        {"source": "generic-host.log", "status": "missing"},
+        {"source": "service-pack-host.log", "search_root": "data-root-logs", "status": "missing"},
+        {"source": "runtime-service.log", "search_root": "data-root-logs", "status": "missing"},
+        {"source": "generic-host.log", "search_root": "runtime-support-root", "status": "missing"},
     ]
     assert captured["markers"] == [
         {"source": "generic-host.ready.json", "status": "missing"},
         {"source": "generic-host.json", "status": "missing"},
     ]
+
+
+def test_failed_host_poll_uses_scheduler_native_child_log_root(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    data = tmp_path / "data"
+    native_logs = tmp_path / "login-local" / "Astrid Runtime" / "logs"
+    isolated_local = tmp_path / "isolated-local"
+    isolated_logs = isolated_local / "Astrid Runtime" / "logs"
+    wrong_logs = data / "logs"
+    for directory in (native_logs, isolated_logs, wrong_logs, data / "runtime"):
+        directory.mkdir(parents=True)
+    (native_logs / "service-pack-host.log").write_text(
+        "Traceback: current child first error\napi_key=not-for-receipt\n", encoding="utf-8",
+    )
+    (isolated_logs / "runtime-service.log").write_text(
+        "current task wrapper output\n", encoding="utf-8",
+    )
+    (wrong_logs / "service-pack-host.log").write_text(
+        "wrong data-root child log\n", encoding="utf-8",
+    )
+    (wrong_logs / "runtime-service.log").write_text(
+        "wrong data-root wrapper log\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "data_root", lambda: data)
+    monkeypatch.setenv(journey.NATIVE_RUNTIME_LOG_DIR_ENV, str(native_logs))
+    monkeypatch.setenv("LOCALAPPDATA", str(isolated_local))
+    monkeypatch.setattr(journey, "health", lambda: {
+        "status": "ok", "runtime_instance_id": "current", "services": [{
+            "name": "pack-host", "state": "failed", "last_exit": 1,
+            "restart_count": 2, "reason": "exited",
+        }],
+    })
+
+    with pytest.raises(RuntimeError, match="terminal failed state"):
+        journey.host_ready()
+
+    manifest = json.loads(
+        (evidence / "pack-host-readiness-definitive-failure.json").read_text(encoding="utf-8")
+    )
+    assert [(row["source"], row["search_root"], row["status"]) for row in manifest["logs"]] == [
+        ("service-pack-host.log", "native-runtime-logs", "captured"),
+        ("runtime-service.log", "isolated-service-logs", "captured"),
+        ("generic-host.log", "runtime-support-root", "missing"),
+    ]
+    child = (evidence / "pack-host-readiness-definitive-failure-service-pack-host.log").read_text()
+    wrapper = (evidence / "pack-host-readiness-definitive-failure-runtime-service.log").read_text()
+    assert child == "Traceback: current child first error\napi_key=<redacted>\n"
+    assert wrapper == "current task wrapper output\n"
+    assert "wrong data-root" not in child + wrapper
 
 
 def test_terminal_pack_host_failure_captures_service_exit_and_fails_fast(tmp_path, monkeypatch):

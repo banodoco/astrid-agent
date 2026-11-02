@@ -90,6 +90,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
 EVIDENCE_LOG_LIMIT = 1024 * 1024
 OWNER_CENSUS_MAX_RECORDS = 8
 OWNER_ASSERTION_SNAPSHOT = "runtime-owner-assertion.json"
+NATIVE_RUNTIME_LOG_DIR_ENV = "ASTRID_CI_NATIVE_RUNTIME_LOG_DIR"
 VIBECOMFY_PIN_PATH = "astrid/packs/vibecomfy/pins.json"
 
 
@@ -871,6 +872,16 @@ def isolated_environment(run_root: Path, root: Path, data: Path):
                "XDG_CONFIG_HOME": str(home / ".config"),
                "ASTRID_RUNTIME_DATA_ROOT": str(data),
                "ASTRID_CI_PROGRAM_ROOT": str(root), "ASTRID_CI_DATA_ROOT": str(data)}
+    if sys.platform == "win32":
+        # Task Scheduler builds the service process environment from the login
+        # session, not from these process-local isolation overrides. Preserve
+        # that native Runtime log root so failure diagnostics read the same
+        # service-pack-host.log that frozen R0 actually writes.
+        native_local = os.environ.get("LOCALAPPDATA")
+        if native_local:
+            changes[NATIVE_RUNTIME_LOG_DIR_ENV] = str(
+                Path(native_local) / "Astrid Runtime" / "logs"
+            )
     prior = {key: os.environ.get(key) for key in changes}
     os.environ.update(changes)
     try:
