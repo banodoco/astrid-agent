@@ -70,7 +70,9 @@ test "$original" = not-found
 
 dropin="/run/systemd/system/user@$uid.service.d"
 sudo mkdir -p "$dropin"
-printf '[Service]\nEnvironment="XDG_CONFIG_HOME=%s" "XDG_DATA_HOME=%s"\n' "$config" "$data" | sudo tee "$dropin/90-astrid-journey.conf" >/dev/null
+# An explicit unit search path survives the fresh-root cleanup between this
+# probe and the installer. The trailing colon retains systemd's default paths.
+printf '[Service]\nEnvironment="XDG_CONFIG_HOME=%s" "XDG_DATA_HOME=%s" "SYSTEMD_UNIT_PATH=%s:"\n' "$config" "$data" "$probe_dir" | sudo tee "$dropin/90-astrid-journey.conf" >/dev/null
 sudo systemctl daemon-reload
 timeout 30s sudo systemctl restart "user@$uid.service"
 for attempt in {1..20}; do

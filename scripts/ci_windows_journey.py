@@ -82,7 +82,7 @@ SCHEDULED_TASK_QUERY = (
     "{ } else { throw } }"
 )
 SCHEDULED_TASK_ORIGIN = (
-    "$c=Get-Command Get-ScheduledTask -ErrorAction Stop; "
+    "$c=Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue; "
     "[pscustomobject]@{PSVersion=$PSVersionTable.PSVersion.ToString(); "
     "PSEdition=$PSVersionTable.PSEdition; CommandType=[string]$c.CommandType; "
     "Source=$c.Source; ModuleName=$c.ModuleName; ModulePath=$c.Module.Path} | ConvertTo-Json -Compress"
@@ -94,22 +94,35 @@ def scheduled_task_preflight(name="preflight-scheduled-task.txt", *, timeout=30)
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
     prefix = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); "
-    records = {}
-    for label, code in (("origin", SCHEDULED_TASK_ORIGIN), ("query", SCHEDULED_TASK_QUERY)):
-        argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", prefix + code]
-        record = {"argv": argv, "stdout": "", "stderr": "", "exit_code": None}
-        records[label] = record
+    records = {label: {"argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", prefix + code],
+                       "stdout": "", "stderr": "", "exit_code": None, "error": "not run"}
+               for label, code in (("origin", SCHEDULED_TASK_ORIGIN), ("query", SCHEDULED_TASK_QUERY))}
+
+    def checkpoint():
+        destination = EVIDENCE / name
+        temporary = destination.with_name(destination.name + ".tmp")
+        temporary.write_text(json.dumps(records, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+        temporary.replace(destination)
+
+    checkpoint()
+    for label, record in records.items():
+        argv = record["argv"]
         try:
             result = subprocess.run(argv, env=env, capture_output=True, encoding="utf-8",
                                     errors="replace", timeout=timeout, check=False)
             record.update(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
+            record.pop("error")
         except subprocess.TimeoutExpired as exc:
             def decoded(value):
                 return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
             record.update(stdout=decoded(exc.stdout), stderr=decoded(exc.stderr), error="timeout")
-        except OSError as exc:
+        except Exception as exc:
             record["error"] = f"{type(exc).__name__}: {exc}"
-    (EVIDENCE / name).write_text(json.dumps(records, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        finally:
+            if label == "query":
+                record["classification"] = ("error" if record["exit_code"] != 0 else
+                                            "present" if record["stdout"].strip() else "not-found")
+            checkpoint()
     for label, record in records.items():
         if record["exit_code"] != 0:
             raise RuntimeError(f"{name}: {label} exit {record['exit_code']}" +

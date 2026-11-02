@@ -633,7 +633,7 @@ def test_windows_preflight_records_query_streams_origin_and_exit(tmp_path, monke
         windows.scheduled_task_preflight()
     record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
     assert record["query"] == {"argv": calls[1][0], "stdout": "partial query output",
-                               "stderr": "query module error", "exit_code": 1}
+                               "stderr": "query module error", "exit_code": 1, "classification": "error"}
     assert windows.SCHEDULED_TASK_QUERY in record["query"]["argv"][-1]
     assert "PSVersion" in record["origin"]["stdout"] and "ModulePath" in record["origin"]["stdout"]
     assert all(not any(key.casefold() == "psmodulepath" for key in call[1]["env"]) for call in calls)
@@ -649,6 +649,8 @@ def test_windows_preflight_absence_and_foreign_owner_rejection(tmp_path, monkeyp
     monkeypatch.setattr(windows.subprocess, "run", lambda *a, **kw: SimpleNamespace(
         returncode=0, stdout="", stderr=""))
     assert windows.scheduled_task_preflight() == ""
+    record = json.loads((windows.EVIDENCE / "preflight-scheduled-task.txt").read_text())
+    assert record["query"]["classification"] == "not-found"
     monkeypatch.setattr(journey.sys, "platform", "win32")
     monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "empty" / "astrid")
     monkeypatch.setattr(journey, "runtime_processes", lambda *a: [])
@@ -680,8 +682,30 @@ if [[ "$*" == *FragmentPath* ]]; then printf '%s\\n' "$EXPECTED_FRAGMENT"; fi
     assert not run_root.exists()
     assert f"--user start {probe}" in commands.read_text()
     assert 'Environment="XDG_CONFIG_HOME=%s" "XDG_DATA_HOME=%s"' in script
+    assert '"SYSTEMD_UNIT_PATH=%s:"' in script
     assert 'sudo systemctl restart "user@$uid.service"' in script
     assert 'test "$original" = not-found' in script
     env["EXPECTED_FRAGMENT"] = str(tmp_path / "foreign.service")
     failure = subprocess.run(["bash", "-Eeuo", "pipefail", "-c", function], env=env, capture_output=True, text=True)
     assert failure.returncode != 0
+
+
+def test_windows_preflight_checkpoints_launch_and_unexpected_errors(tmp_path, monkeypatch):
+    from scripts import ci_windows_journey as windows
+    monkeypatch.setattr(windows, "EVIDENCE", tmp_path)
+    calls = []
+    def fail(argv, **kwargs):
+        # The complete command is already durable even if process launch fails.
+        saved = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+        calls.append(saved)
+        if len(calls) == 1:
+            raise OSError("powershell unavailable")
+        raise ValueError("unexpected capture failure")
+    monkeypatch.setattr(windows.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="origin exit None"):
+        windows.scheduled_task_preflight()
+    record = json.loads((tmp_path / "preflight-scheduled-task.txt").read_text())
+    assert calls[0]["query"]["argv"][-1].endswith(windows.SCHEDULED_TASK_QUERY)
+    assert "powershell unavailable" in calls[1]["origin"]["error"]
+    assert record["query"]["classification"] == "error"
+    assert "unexpected capture failure" in record["query"]["error"]
