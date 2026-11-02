@@ -9798,6 +9798,7 @@ class GenericPackHost:
         admission: Mapping[str, Any] | None = None,
         child_env: Mapping[str, str] | None = None,
         require_network_startup: bool = False,
+        run_channel: socket.socket | None = None,
         network_broker_required: bool = False,
         storage_estimate: Mapping[str, int] | None = None,
         child_bridge: Any | None = None,
@@ -9909,6 +9910,11 @@ class GenericPackHost:
                 remotion_lease = self._renderer_task_lease(env, attempt_path)
                 inherited_fds = (remotion_lease.inherited_fd(),)
                 payload["remotion_host_fd"] = remotion_lease.inherited_fd()
+            if run_channel is not None:
+                # Per-run session channel: pass only the child fd number. The
+                # admitted token and the host-side handle never enter the payload.
+                payload["run_channel_fd"] = run_channel.fileno()
+                inherited_fds += (run_channel.fileno(),)
             request_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             if child_bridge is not None:
                 bridge_fd = child_bridge.inherited_fd()
