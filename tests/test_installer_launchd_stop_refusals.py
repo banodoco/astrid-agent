@@ -120,10 +120,11 @@ def _trusted_bootstrap_venv(backend, version):
     for entry in (bootstrap, bootstrap / "python", target.parent.parent, target.parent):
         entry.chmod(0o700)
     target.chmod(0o700)
-    version.python.unlink()
+    version.python.parent.mkdir(parents=True, exist_ok=True)
+    version.python.unlink(missing_ok=True)
     version.python.symlink_to(target)
     config = version.root / "py" / "pyvenv.cfg"
-    config.write_text(f"home = {target.parent}\n", encoding="utf-8")
+    config.write_text(f"home = {target.parent}\nversion_info = 3.11.13\n", encoding="utf-8")
     config.chmod(0o600)
     return target, config, bootstrap
 
