@@ -253,6 +253,60 @@ def _facts(path: Path, *, destination: Path | None = None) -> tuple[dict[str, An
     }
 
 
+def _compose_resulting_facts(facts: Mapping[str, Mapping[str, Any]], paths: Mapping[str, Path]
+                             ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Complete dependency facts for every resulting pack under transaction custody.
+
+    ``facts`` already contains every candidate in the resulting collection. We
+    read only missing dependency IDs from explicitly configured external roots
+    and the bundled core root, recursively following those selected manifests.
+    """
+    from .loader import packs_root
+
+    core_root = packs_root().resolve()
+    external_roots = [Path(value).expanduser().resolve()
+                      for value in os.environ.get("ASTRID_PACKS_PATH", "").split(os.pathsep) if value]
+    roots = list(dict.fromkeys((*external_roots, core_root)))
+    result = {key: dict(value) for key, value in facts.items()}
+    # Derive the selected collection portion from the held candidate paths so
+    # a caller cannot accidentally omit a retained pack from policy validation.
+    for pack_id, path in paths.items():
+        if pack_id != "personal" and pack_id not in result:
+            _manifest, result[pack_id] = _facts(path)
+    pending: list[str] = []
+    for item in result.values():
+        dependencies = item.get("dependencies", {})
+        declared = dependencies.get("packs", ()) if isinstance(dependencies, Mapping) else ()
+        if isinstance(declared, (list, tuple)):
+            pending.extend(dep for dep in declared if isinstance(dep, str) and dep)
+    visited: set[str] = set(result)
+    while pending:
+        pack_id = pending.pop()
+        if pack_id in visited:
+            continue
+        visited.add(pack_id)
+        path = next((candidate for selected_root in roots
+                     if (candidate := selected_root / pack_id).is_dir()
+                     and not candidate.is_symlink() and (candidate / "pack.yaml").is_file()), None)
+        if path is None:
+            continue
+        _manifest, item = _facts(path)
+        resolved = path.resolve()
+        if resolved.is_relative_to(core_root):
+            item["origin"] = "core"
+        result[pack_id] = item
+        dependencies = item.get("dependencies", {})
+        declared = dependencies.get("packs", ()) if isinstance(dependencies, Mapping) else ()
+        if isinstance(declared, (list, tuple)):
+            pending.extend(dep for dep in declared if isinstance(dep, str) and dep and dep not in visited)
+
+    # Core public API names are a separate import-policy fact. Their presence
+    # does not depend on the selected manifest's origin label.
+    core_apis = {path.name: f"astrid.packs.{path.name}.api" for path in core_root.iterdir()
+                 if path.is_dir() and not path.is_symlink() and (path / "api.py").is_file()}
+    return result, core_apis
+
+
 def _artifact_metadata(request: Mapping[str, Any], artifact: Mapping[str, Any],
                        committed_revision: int) -> dict[str, bytes]:
     """Encode the frozen browser records owned by this group publication."""
@@ -540,7 +594,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                     shutil.rmtree(target)
             admissions = {i: a for i, a in old["admissions"].items() if i not in remove and i not in packs}
             build_records = _retained_build_records(candidate, admissions, old["revision"])
-            facts = dict(host_selected)
+            facts: dict[str, dict[str, Any]] = dict(host_selected)
             for pack_id, path in _paths(candidate).items():
                 if pack_id not in packs:
                     manifest, item = _facts(path)
@@ -576,9 +630,13 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 # against source/PIN/release pins before any build or publication.
                 item.update(origin=origin, commit=commit, installed_digest=item["observed_digest"] if revision else None)
                 facts[pack_id] = item
+            # Candidate manifests are now verified/staged, and all retained
+            # candidates are present. Compose the single policy snapshot while
+            # exclusive collection custody is still held.
+            facts, core_apis = _compose_resulting_facts(facts, _paths(candidate))
             contract = import_contract or ImportContract(
                 facade_exports=frozenset(pack_api.__all__), sdk_names=frozenset(sdk.__all__),
-                core_pack_apis={i: f"astrid.packs.{i}.api" for i, f in facts.items() if f.get("origin") == "core"})
+                core_pack_apis=core_apis)
             for pack_id, subpath in sorted(packs.items()):
                 install_pack(source=source, pack_id=pack_id, revision=commit, subpath=subpath, origin=origin,
                              expected_digest=expected_digests.get(pack_id), packs_root=candidate,
@@ -845,9 +903,10 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
                     continue
                 manifest, item = _facts(path)
                 facts[pack_id] = item
+            facts, core_apis = _compose_resulting_facts(facts, _paths(candidate))
             contract = ImportContract(
                 facade_exports=frozenset(pack_api.__all__), sdk_names=frozenset(sdk.__all__),
-                core_pack_apis={i: f"astrid.packs.{i}.api" for i, f in facts.items() if f.get("origin") == "core"})
+                core_pack_apis=core_apis)
             for pack_id, path in _paths(candidate).items():
                 if pack_id == "personal":
                     continue
