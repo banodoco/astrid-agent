@@ -249,6 +249,8 @@ def build(*, model=UNET_NAME, steps=8, seed=DEFAULT_SEED, prompt=DEFAULT_PROMPT_
             _outputs=('width', 'height'),
             generated_height=resolutionselector.out('HEIGHT'),
             generated_width=resolutionselector.out('WIDTH'),
+            source_height=minimaxh3cropto32.out('height'),
+            source_width=minimaxh3cropto32.out('width'),
             start_mode=minimaxh3avstartmodeparam.out('start_mode'),
         )
 
@@ -418,6 +420,7 @@ def build(*, model=UNET_NAME, steps=8, seed=DEFAULT_SEED, prompt=DEFAULT_PROMPT_
             indexing='1-based',
             crop='disabled',
             conditioning=minimaxh3referencetovideo_8.out('positive'),
+            keyframe_image_1=loadimage_3.out('IMAGE'),
             latent=minimaxh3referencetovideo_8.out('LATENT'),
             vae=vaeloader.out('VAE'),
             _mode=4,
@@ -440,7 +443,7 @@ def build(*, model=UNET_NAME, steps=8, seed=DEFAULT_SEED, prompt=DEFAULT_PROMPT_
         )
 
         basicguider_8 = BasicGuider(
-            conditioning=minimaxh3referencetovideo_8.out('positive'),
+            conditioning=minimaxh3customkeyframes.out('conditioning'),
             model=minimaxh3sigmashift.out('MODEL'),
             _mode=4,
         )
