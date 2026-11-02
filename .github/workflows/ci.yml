@@ -7,6 +7,18 @@ on:
   push:
     branches: [main, release-1, "int/**"]
   workflow_dispatch:
+    inputs:
+      agent_sha:
+        description: Immutable full Agent commit to test
+        required: true
+        type: string
+      selector:
+        description: Exact Windows schema ACL selectors
+        required: true
+        type: string
+        default: >-
+          tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls
+          tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -55,6 +67,124 @@ jobs:
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
           key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+
+  windows-schema-acl-carrier:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Windows schema ACL carrier
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # The focused selectors are registered to this existing Windows lane.
+      ASTRID_CI_JOB: windows-native-and-installer
+    steps:
+      - name: Check out the dispatched Agent commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.agent_sha }}
+          fetch-depth: 1
+
+      - name: Assert immutable Agent checkout and selector
+        id: request
+        shell: pwsh
+        env:
+          AGENT_SHA: ${{ inputs.agent_sha }}
+          SELECTOR: ${{ inputs.selector }}
+        run: |
+          $expectedSelector = 'tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign'
+          if ($env:AGENT_SHA -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'agent_sha must be a lowercase full 40-hex commit'
+          }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -cne $env:AGENT_SHA) {
+            throw "checked-out Agent SHA $actual does not equal requested $env:AGENT_SHA"
+          }
+          if ($env:SELECTOR -cne $expectedSelector) {
+            throw 'selector does not equal the exact Windows schema ACL selector pair'
+          }
+          "agent_sha=$actual" >> $env:GITHUB_OUTPUT
+          "selector=$env:SELECTOR" >> $env:GITHUB_OUTPUT
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package with dev extras
+        run: python -m pip install -e '.[dev]'
+
+      - name: Install the pinned Runtime and client
+        run: python scripts/ci_install_runtime.py
+
+      - name: Run exact Windows schema ACL selectors
+        id: pytest
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          python -m pytest -q -p no:cacheprovider --junitxml=windows-schema-acl.xml tests/core/rendering/test_local_schema.py::test_windows_native_schema_path_acl_controls tests/core/rendering/test_local_schema.py::test_windows_native_schema_dacl_allows_privileged_and_rejects_foreign 2>&1 | Tee-Object -FilePath windows-schema-acl.log
+          $pytestExit = $LASTEXITCODE
+          "pytest_exit=$pytestExit" >> $env:GITHUB_OUTPUT
+          exit $pytestExit
+
+      - name: Record Windows schema ACL receipt
+        if: always()
+        shell: pwsh
+        env:
+          AGENT_SHA: ${{ steps.request.outputs.agent_sha }}
+          SELECTOR: ${{ steps.request.outputs.selector }}
+          PYTEST_EXIT: ${{ steps.pytest.outputs.pytest_exit }}
+        run: |
+          $nodes = @()
+          $skipped = -1
+          $failed = -1
+          if (Test-Path windows-schema-acl.xml) {
+            [xml]$junit = Get-Content windows-schema-acl.xml
+            $nodes = @($junit.SelectNodes('//testcase'))
+            $skipped = @($junit.SelectNodes('//testcase/skipped')).Count
+            $failures = @($junit.SelectNodes('//testcase/failure'))
+            $errors = @($junit.SelectNodes('//testcase/error'))
+            $failed = $failures.Count + $errors.Count
+          }
+          $nodes | ForEach-Object { "$($_.classname)::$($_.name)" } | Set-Content windows-schema-acl-nodes.txt
+          @(
+            "selector=$env:SELECTOR"
+            "checked_out_agent_sha=$env:AGENT_SHA"
+            "pytest_exit=$env:PYTEST_EXIT"
+            "collected_nodes=$($nodes.Count)"
+            "skipped_nodes=$skipped"
+            "failed_nodes=$failed"
+          ) | Set-Content windows-schema-acl-summary.txt
+          Get-FileHash windows-schema-acl.log, windows-schema-acl.xml, windows-schema-acl-summary.txt, windows-schema-acl-nodes.txt -Algorithm SHA256 -ErrorAction SilentlyContinue | ForEach-Object {
+            "$($_.Hash.ToLower())  $($_.Path)" | Add-Content windows-schema-acl-summary.txt
+          }
+
+      - name: Upload Windows schema ACL evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-schema-acl-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          path: |
+            windows-schema-acl.log
+            windows-schema-acl.xml
+            windows-schema-acl-summary.txt
+            windows-schema-acl-nodes.txt
+          if-no-files-found: warn
+
+      - name: Propagate pytest and skip result
+        if: always()
+        shell: pwsh
+        env:
+          PYTEST_EXIT: ${{ steps.pytest.outputs.pytest_exit }}
+        run: |
+          if ($env:PYTEST_EXIT -notmatch '^\d+$') {
+            throw 'pytest did not produce an exit code'
+          }
+          $summary = Get-Content windows-schema-acl-summary.txt
+          $skipped = [int](($summary | Where-Object { $_ -like 'skipped_nodes=*' }) -replace '^skipped_nodes=', '')
+          if ($skipped -ne 0) {
+            throw "requested selectors skipped $skipped node(s)"
+          }
+          exit [int]$env:PYTEST_EXIT
 
   checks:
     name: fast checks
