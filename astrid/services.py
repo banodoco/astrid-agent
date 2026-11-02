@@ -51,13 +51,15 @@ def prepare_pack_host_shutdown(*, support_root: Path, source_checkout: Path,
             )
         kernel_host = platform.process_identity(int(state["pid"]))
         if (kernel_host is None or not kernel_host.get("birth_id")
+                or platform.process_birth_matches(kernel_host["birth_id"], kernel_host["birth_id"]) is not True
                 or hosts._registered_host_status(state) != "ours"):
             raise hosts.PackHostBootstrapError("pack host kernel identity changed before Runtime shutdown")
 
     def verify_exit():
         if kernel_host is not None:
             observed = platform.process_identity(int(kernel_host["pid"]))
-            if observed is not None and observed.get("birth_id") == kernel_host["birth_id"]:
+            if (observed is not None
+                    and platform.process_birth_matches(kernel_host["birth_id"], observed.get("birth_id", "")) is not False):
                 raise hosts.PackHostBootstrapError("pack host exit remains unverified after Runtime shutdown")
 
     def stop():
