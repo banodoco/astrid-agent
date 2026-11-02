@@ -818,6 +818,92 @@ def test_windows_release0_failure_retains_raw_bootstrap_and_exit_through_cleanup
         assert (run_root / entry["path"]).read_bytes() == raw
 
 
+@pytest.mark.parametrize("name", ["release0-bootstrap.log", "install-bootstrap.log", "update-bootstrap.log"])
+def test_windows_bootstrap_command_records_and_conditionally_repairs_module_path(monkeypatch, name):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    parts = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", r"C:\journey\install.ps1", "--manifest", r"C:\journey\manifest.json"]
+
+    command = journey._windows_bootstrap_command(parts, Path(name))
+
+    assert command[:5] == parts[:5]
+    assert command[5] == "-Command"
+    assert "JOURNEY_POWERSHELL_BOOTSTRAP_ENV=" in command[6]
+    assert "ps_edition = $PSVersionTable.PSEdition" in command[6]
+    assert "ps_module_path_before = Get-JourneyBoundedValue $journeyModulePathBefore" in command[6]
+    assert "pwsh_path_contamination = $journeyContaminated" in command[6]
+    assert "ASTRID_JOURNEY_PSMODULEPATH_BEFORE" in command[6]
+    assert "Remove-Item Env:ASTRID_JOURNEY_PSMODULEPATH_BEFORE" in command[6]
+    assert "$limit = 4096" in command[6]
+    assert "& 'C:\\journey\\install.ps1' '--manifest' 'C:\\journey\\manifest.json'" in command[6]
+
+
+def test_windows_bootstrap_environment_resets_only_observed_pwsh_contamination(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    parts = ["powershell.exe", "-NoProfile", "-File", "install.ps1"]
+    inherited = {"PSModulePath": r"C:\Program Files\PowerShell\7\Modules;C:\Users\A\Documents\PowerShell\Modules",
+                 "ProgramFiles": r"C:\Program Files", "SystemRoot": r"C:\Windows", "KEEP_ME": "yes"}
+
+    environment = journey._windows_bootstrap_environment(parts, Path("release0-bootstrap.log"), inherited)
+
+    assert environment["PSModulePath"] == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                                             r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+    assert environment["ASTRID_JOURNEY_PSMODULEPATH_BEFORE"] == inherited["PSModulePath"]
+    assert environment["ASTRID_JOURNEY_PSMODULEPATH_REMEDIATION"] == "windows-powershell-defaults"
+    assert environment["KEEP_ME"] == "yes"
+    assert inherited["PSModulePath"].endswith(r"PowerShell\Modules")
+
+
+def test_windows_bootstrap_environment_leaves_non_pwsh_module_path_alone(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    parts = ["powershell.exe", "-NoProfile", "-File", "install.ps1"]
+    inherited = {"PSModulePath": r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules",
+                 "ProgramFiles": r"C:\Program Files", "SystemRoot": r"C:\Windows"}
+
+    environment = journey._windows_bootstrap_environment(parts, Path("install-bootstrap.log"), inherited)
+
+    assert environment["PSModulePath"] == inherited["PSModulePath"]
+    assert environment["ASTRID_JOURNEY_PSMODULEPATH_BEFORE"] == inherited["PSModulePath"]
+    assert environment["ASTRID_JOURNEY_PSMODULEPATH_REMEDIATION"] == "not-required"
+
+
+def test_windows_release0_run_launches_native_module_path_with_diagnostic(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    inherited = {"PSModulePath": r"C:\Program Files\PowerShell\7\Modules",
+                 "ProgramFiles": r"C:\Program Files", "SystemRoot": r"C:\Windows"}
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    journey.run(["powershell.exe", "-NoProfile", "-File", r"C:\journey\install.ps1"],
+                tmp_path / "release0" / "release0-bootstrap.log", env=inherited)
+
+    assert captured["argv"][2] == "-Command"
+    assert "JOURNEY_POWERSHELL_BOOTSTRAP_ENV=" in captured["argv"][3]
+    assert captured["env"]["PSModulePath"] == (r"C:\Program Files\WindowsPowerShell\Modules;"
+                                                   r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
+    assert captured["env"]["ASTRID_JOURNEY_PSMODULEPATH_BEFORE"] == inherited["PSModulePath"]
+    assert inherited["PSModulePath"] == r"C:\Program Files\PowerShell\7\Modules"
+
+
+def test_windows_bootstrap_command_leaves_non_bootstrap_launches_unchanged(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    parts = ["powershell.exe", "-NoProfile", "-Command", "Get-Date"]
+
+    assert journey._windows_bootstrap_command(parts, Path("start.log")) == parts
+
+
+def test_windows_bootstrap_command_leaves_non_windows_launches_unchanged(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    parts = ["powershell.exe", "-NoProfile", "-File", "install.ps1"]
+
+    assert journey._windows_bootstrap_command(parts, Path("release0-bootstrap.log")) == parts
+
+
 def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
