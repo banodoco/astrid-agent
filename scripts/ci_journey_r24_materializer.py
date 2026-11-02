@@ -21,9 +21,11 @@ from urllib.parse import urlsplit
 
 try:
     from . import ci_journey_provider as provider
+    from . import pinokio_linux_mode_actions as mode_actions
     from .ci_journey_r24 import PUBLISHED_CANDIDATE
 except ImportError:
     import ci_journey_provider as provider
+    import pinokio_linux_mode_actions as mode_actions
     from ci_journey_r24 import PUBLISHED_CANDIDATE
 
 
@@ -92,15 +94,25 @@ def pterm_argv(node: Path, pterm: Path, script: str) -> list[str]:
 
 
 def route_argv(runner: Path, run_root: Path, candidate: Path, config: Path,
-               producer_root: Path, checkouts: dict[str, Path]) -> list[str]:
-    return [sys.executable, "-B", str(runner / "scripts/ci_journey.py"),
-            "--shared-executor", "r24-live",
+               producer_root: Path, checkouts: dict[str, Path], *,
+               mode: str = "r24-only",
+               mode_producer_root: Path | None = None) -> list[str]:
+    route = "r24-live" if mode == "r24-only" else "r25-linux-mode-actions"
+    argv = [sys.executable, "-B", str(runner / "scripts/ci_journey.py"),
+            "--shared-executor", route,
             "--run-root", str(run_root), "--candidate", str(candidate),
             "--config", str(config), "--producer-checkout", str(producer_root),
             "--app-checkout", str(checkouts["app"]),
             "--agent-checkout", str(checkouts["agent"]),
             "--runtime-checkout", str(checkouts["runtime"]),
             "--pinokio-checkout", str(checkouts["pinokio"])]
+    if mode != "r24-only":
+        if mode != "backend" or mode_producer_root is None:
+            raise MaterializerError("only the bounded backend mode has a hosted materializer")
+        argv.extend(["--mode", mode,
+                     "--mode-producer-checkout", str(mode_producer_root),
+                     "--output", str(run_root / "evidence/r25-linux-mode-actions")])
+    return argv
 
 
 def _run(argv: list[str], *, log: Path, receipt: dict[str, Any], label: str,
@@ -558,9 +570,11 @@ def execute(args: argparse.Namespace) -> int:
     evidence = run_root / "evidence/materializer"
     evidence.mkdir(parents=True)
     receipt_path = evidence / "r24-materializer.json"
+    selected_mode = getattr(args, "mode", "r24-only")
     receipt: dict[str, Any] = {
         "schema": "astrid.r24.materializer.v1", "status": "running",
         "stage": "preflight", "first_stop": None, "commands": [],
+        "mode": selected_mode,
         "candidate": PUBLISHED_CANDIDATE,
         "provider_ref": provider.LIVE_PRODUCER_REF,
         "hosted": {key: os.environ.get(key) for key in
@@ -590,6 +604,16 @@ def execute(args: argparse.Namespace) -> int:
         if args.producer_ref != provider.LIVE_PRODUCER_REF:
             raise MaterializerError("producer ref differs from audited live producer")
         producer_root = validate_checkout(args.producer, args.producer_ref)
+        mode_producer_root = None
+        if selected_mode not in {"r24-only", "backend"}:
+            raise MaterializerError("only r24-only and backend modes are materialized here")
+        if selected_mode == "backend":
+            if (getattr(args, "mode_producer", None) is None
+                    or getattr(args, "mode_producer_ref", None)
+                    != mode_actions.MODE_PRODUCER_REF):
+                raise MaterializerError("mode producer ref differs from audited R-25 producer")
+            mode_producer_root = validate_checkout(
+                args.mode_producer, args.mode_producer_ref)
         checkouts = {
             name: validate_checkout(getattr(args, name), PUBLISHED_CANDIDATE[name])
             for name in ("app", "agent", "runtime", "pinokio")
@@ -597,7 +621,10 @@ def execute(args: argparse.Namespace) -> int:
         pterm = validate_checkout(args.pterm, PTERM_REF, tracked_only=True)
         pinokiod = validate_checkout(args.pinokiod, PINOKIOD_REF)
         roots = {runner, producer_root, pterm, pinokiod, *checkouts.values()}
-        if len(roots) != 8:
+        if mode_producer_root is not None:
+            roots.add(mode_producer_root)
+        expected_roots = 9 if mode_producer_root is not None else 8
+        if len(roots) != expected_roots:
             raise MaterializerError("all source checkouts must be distinct")
         manifest = checkouts["app"] / "public/install-manifest.json"
         if _sha(manifest) != PUBLISHED_CANDIDATE["manifest_sha256"]:
@@ -709,10 +736,26 @@ def execute(args: argparse.Namespace) -> int:
             checkouts=checkouts, pterm=pterm, pinokiod=pinokiod, node=node,
             daemon_pid=daemon.pid, home=home, scratch=scratch))
         _run(route_argv(runner, run_root, candidate_file, config_file,
-                        producer_root, checkouts),
+                        producer_root, checkouts, mode=selected_mode,
+                        mode_producer_root=mode_producer_root),
              log=evidence / "r24-live-route.log", receipt=receipt,
              label="documented-r24-live-route", env=dict(os.environ), timeout=300)
         provider_receipt = _read(run_root / "evidence/r24-live/r24-invocation.json")
+        if selected_mode == "backend":
+            mode_record_path = (run_root /
+                                "evidence/r25-linux-mode-actions/mode-action-seam.json")
+            mode_record = _read(mode_record_path)
+            if (mode_record.get("schema") != mode_actions.SCHEMA
+                    or mode_record.get("slot_id") != mode_actions.MODES["backend"]
+                    or mode_record.get("boundary", {}).get("m4_6_receipt") is not False):
+                raise MaterializerError("bounded backend mode-action record differs")
+            receipt["mode_action_observation"] = {
+                "path": str(mode_record_path),
+                "sha256": _sha(mode_record_path),
+                "slot_id": mode_record["slot_id"],
+                "qualification": "not-evaluated",
+                "m4_6_receipt": False,
+            }
         task_running = _read(running_file)
         busy_observation = _read(
             run_root / "evidence/r24-live/provider-export/observation-busy.json")
@@ -801,6 +844,9 @@ def parser() -> argparse.ArgumentParser:
         value.add_argument("--" + name, type=Path, required=True)
     value.add_argument("--runner-ref", required=True)
     value.add_argument("--producer-ref", required=True)
+    value.add_argument("--mode", choices=("r24-only", "backend"), default="r24-only")
+    value.add_argument("--mode-producer", type=Path)
+    value.add_argument("--mode-producer-ref")
     value.add_argument("--confirmation", required=True)
     return value
 
@@ -809,6 +855,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if not HEX40.fullmatch(args.runner_ref) or not HEX40.fullmatch(args.producer_ref):
         raise MaterializerError("full runner and producer commit SHAs required")
+    if args.mode == "backend" and (not isinstance(args.mode_producer_ref, str)
+                                    or not HEX40.fullmatch(args.mode_producer_ref)):
+        raise MaterializerError("full mode producer commit SHA required")
     return execute(args)
 
 

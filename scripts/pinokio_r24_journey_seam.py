@@ -16,8 +16,12 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import ci_journey_r24 as r24
-from . import ci_journey_provider as provider
+try:
+    from . import ci_journey_r24 as r24
+    from . import ci_journey_provider as provider
+except ImportError:
+    import ci_journey_r24 as r24
+    import ci_journey_provider as provider
 
 SCHEMA = "astrid.r25.pinokio-r24-seam.v1"
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
