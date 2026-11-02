@@ -392,75 +392,6 @@ def retry_refresh(*, packs_root: str | Path, refresh: Refresh) -> bool:
         return _refresh(root, state, refresh)
 
 
-def rollback_group(*, packs_root: str | Path, transaction_id: str,
-                   refresh: Refresh | None = None) -> GroupResult:
-    """Atomically restore the complete generation retired by a group commit.
-
-    The restored inventory is published as a new revision, so revision numbers
-    remain monotonic and refresh consumers see the rollback as a normal change.
-    The generation being rolled back remains retained under the rollback id.
-    """
-    if (not isinstance(transaction_id, str) or len(transaction_id) != 32
-            or any(c not in "0123456789abcdef" for c in transaction_id)):
-        raise PackInstallError("invalid_request", "Use the full transaction id to roll back the latest group commit.")
-    root = _root(packs_root)
-    with group_read_lock(root, exclusive=True):
-        current = _state(root)
-        if current["transaction_id"] != transaction_id:
-            raise PackInstallError("stale_rollback", "Only the current group commit can be rolled back.")
-        retired = _directory(root.parent / ".astrid-retired")
-        previous = _directory(retired / transaction_id)
-        previous_state = _state(previous)
-        if previous_state["revision"] == 0 or previous_state["transaction_id"] == transaction_id:
-            raise PackInstallError("uncommitted_generation", "This group commit has no previous committed generation.")
-
-        rollback_id = uuid4().hex
-        candidate = retired / rollback_id
-        candidate.mkdir(mode=0o700)
-        identity = (candidate.stat().st_dev, candidate.stat().st_ino)
-        published = False
-        try:
-            _tree(previous)
-            shutil.copytree(previous, candidate, dirs_exist_ok=True)
-            candidate.chmod(0o700)
-            (candidate / ".install.lock").unlink(missing_ok=True)
-            before_ids = set(_paths(root))
-            restored_ids = set(_paths(candidate))
-            changed_ids = tuple(sorted(before_ids | restored_ids))
-            new_state = {
-                "version": 1,
-                "revision": current["revision"] + 1,
-                "transaction_id": rollback_id,
-                "removals": previous_state["removals"],
-                "admissions": previous_state["admissions"],
-                "refresh": {"transaction_id": rollback_id,
-                            "revision": current["revision"] + 1,
-                            "changed_ids": list(changed_ids)},
-            }
-            _write_state(candidate, new_state)
-            _sync_tree(candidate)
-            _sync_directory(retired)
-            _publish(candidate, root)
-            published |= True
-            try:
-                _sync_directory(retired)
-                _sync_directory(root.parent)
-            except OSError as exc:
-                raise GroupCommitError(rollback_id, new_state["revision"]) from exc
-            pending = _refresh(root, new_state, refresh)
-            return GroupResult(rollback_id, new_state["revision"], changed_ids,
-                               _paths(root), pending, candidate)
-        finally:
-            if not published:
-                try:
-                    live = root.stat()
-                    published = (live.st_dev, live.st_ino) == identity
-                except OSError:
-                    pass
-            if not published:
-                shutil.rmtree(candidate, ignore_errors=True)
-
-
 def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: str | Path,
                   python_packages: Mapping[str, str], revision: str | None = None,
                   origin: Literal["user", "default", "folder"] | None = None,
@@ -471,6 +402,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                   builds: Mapping[str, Mapping[str, Any]] | None = None,
                   toolchain: Mapping[str, Any] | None = None, remove: tuple[str, ...] = (),
                   intent: Literal["explicit", "defaults", "update", "rollback"] = "explicit",
+                  reconcile_defaults: bool = False,
                   refresh: Refresh | None = None,
                   consent: Callable[[Mapping[str, Any]], bool] | None = None,
                   boundary: Callable[[str], None] | None = None) -> GroupResult:
@@ -500,8 +432,8 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
     builds = json.loads(_json(dict(builds or {})))
     toolchain = json.loads(_json(dict(toolchain or {})))
     expected_digests = dict(expected_digests or {})
-    if origin == "default" and (not isinstance(revision, str) or not _SHA.fullmatch(revision)
-                                 or any(i not in expected_digests for i in packs)):
+    if origin == "default" and packs and (not isinstance(revision, str) or not _SHA.fullmatch(revision)
+                                            or any(i not in expected_digests for i in packs)):
         raise PackInstallError("invalid_pin", "Default groups require a full commit SHA and each expected digest.")
     release_pins = {i: dict(v) for i, v in (release_pins or {}).items()}
     host_selected = {i: dict(v) for i, v in (selected or {}).items()}
@@ -511,7 +443,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
     with group_read_lock(root, exclusive=True):
         root.mkdir(exist_ok=True)
         old = _state(root)
-        tombstones = set(old["removals"]) | set(remove)
+        tombstones = set(old["removals"]) | (set(remove) if not reconcile_defaults else set())
         if intent in {"defaults", "update", "rollback"}:
             packs = {i: p for i, p in packs.items() if i not in tombstones}
         if intent == "explicit":
@@ -534,6 +466,16 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
             # The primitive only writes unpublished candidates; a live group
             # commit record forbids standalone mutations that bypass admissions.
             (candidate / _STATE).unlink(missing_ok=True)
+            if reconcile_defaults:
+                if origin != "default":
+                    raise PackInstallError("invalid_request", "Only release defaults may reconcile the default list.")
+                desired_ids = set(packs)
+                for existing_id, existing_path in _paths(candidate).items():
+                    if existing_id in desired_ids:
+                        continue
+                    pin_path = existing_path / "PIN"
+                    if pin_path.is_file() and read_pin(pin_path).get("origin") == "default":
+                        remove = tuple(sorted(set(remove) | {existing_id}))
             for pack_id in remove:
                 target = candidate / pack_id
                 if target.exists():
@@ -698,7 +640,7 @@ def install_group(*, source: str | Path, packs: Mapping[str, str], packs_root: s
                 pass  # Housekeeping cannot mask a publication/durability result.
 
 
-def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[str],
+def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[str] | None = None,
                    transaction_id: str | None = None,
                    expected_pins: Mapping[str, Mapping[str, Any]] | None = None,
                    refresh: Refresh | None = None,
@@ -712,9 +654,6 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
     artifact-manifest files under ``.build``.
     """
     root = _root(packs_root)
-    ids = tuple(sorted(set(pack_ids)))
-    if not ids or any(not isinstance(i, str) or not _ID.fullmatch(i) for i in ids):
-        raise PackInstallError("invalid_request", "Select one or more valid pack IDs to roll back.")
     expected_pins = {key: dict(value) for key, value in (expected_pins or {}).items()}
     with group_read_lock(root, exclusive=True):
         state = _state(root)
@@ -727,6 +666,19 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             raise PackInstallError("uncommitted_generation", "The active generation has no prior committed generation to restore.")
         current_paths = _paths(root)
         prior_paths = _paths(prior)
+        if pack_ids is None:
+            selected = set()
+            for pack_id, path in {**prior_paths, **current_paths}.items():
+                try:
+                    if read_pin(path / "PIN").get("origin") == "default":
+                        selected.add(pack_id)
+                except (OSError, ValueError):
+                    continue
+            ids = tuple(sorted(selected))
+        else:
+            ids = tuple(sorted(set(pack_ids)))
+        if not ids or any(not isinstance(i, str) or not _ID.fullmatch(i) for i in ids):
+            raise PackInstallError("invalid_request", "Select one or more valid pack IDs to roll back.")
         tombstones = set(state["removals"]) | set(prior_state["removals"])
         before = {}
         for pack_id in ids:
@@ -761,6 +713,10 @@ def rollback_group(*, packs_root: str | Path, pack_ids: tuple[str, ...] | list[s
             admissions = dict(state["admissions"])
             for pack_id in ids:
                 target = candidate / pack_id
+                current_pin = before[pack_id]["current"]
+                prior_pin = before[pack_id]["restore"]
+                if current_pin and current_pin.get("origin") == "personal":
+                    continue
                 if target.exists():
                     shutil.rmtree(target)
                 admissions.pop(pack_id, None)
