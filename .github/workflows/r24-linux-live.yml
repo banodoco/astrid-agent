@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - venue/M-PIN-R-24-PUSH-ROUTE-R1-E53B11D1
+      - venue/M-PIN-R-PIN-LOCAL-BIND
   workflow_call:
     inputs:
       runner_ref:
@@ -23,6 +24,14 @@ on:
         required: false
         default: 13cb31104c8aae655d0ee04efdb9537aa111e340
         type: string
+      pinokio_ref:
+        required: false
+        default: 3a6a98ae251ca126505245286e2d3e760f4348e9
+        type: string
+      install_only:
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       runner_ref:
@@ -53,6 +62,16 @@ on:
         required: true
         default: 13cb31104c8aae655d0ee04efdb9537aa111e340
         type: string
+      pinokio_ref:
+        description: Published Pinokio SHA, or the allowlisted provisional diagnostic SHA
+        required: true
+        default: 3a6a98ae251ca126505245286e2d3e760f4348e9
+        type: string
+      install_only:
+        description: Stop after strict fully-local install identity verification
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -75,6 +94,8 @@ jobs:
       # the relay's dispatch request was not observable for this mode.
       R25_REQUESTED_MODE: ${{ github.event_name == 'push' && 'fully-local' || inputs.mode }}
       R25_REQUESTED_MODE_PRODUCER_REF: ${{ github.event_name == 'push' && '13cb31104c8aae655d0ee04efdb9537aa111e340' || inputs.mode_producer_ref }}
+      R24_REQUESTED_PINOKIO_REF: ${{ github.event_name == 'push' && 'dbc837992be9cf2b489bd96b495add366261a575' || inputs.pinokio_ref }}
+      R25_REQUESTED_INSTALL_ONLY: ${{ github.event_name == 'push' && 'true' || inputs.install_only }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Checkout immutable candidate runner
@@ -124,7 +145,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-pinokio
-          ref: 3a6a98ae251ca126505245286e2d3e760f4348e9
+          ref: ${{ env.R24_REQUESTED_PINOKIO_REF }}
           path: pinokio
           fetch-depth: 1
           persist-credentials: false
@@ -181,6 +202,8 @@ jobs:
           REQUESTED_CONFIRMATION: ${{ env.R24_REQUESTED_CONFIRMATION }}
           REQUESTED_MODE: ${{ env.R25_REQUESTED_MODE }}
           REQUESTED_MODE_PRODUCER_REF: ${{ env.R25_REQUESTED_MODE_PRODUCER_REF }}
+          REQUESTED_PINOKIO_REF: ${{ env.R24_REQUESTED_PINOKIO_REF }}
+          REQUESTED_INSTALL_ONLY: ${{ env.R25_REQUESTED_INSTALL_ONLY }}
         run: |
           set +e
           materializer_args=(
@@ -197,7 +220,11 @@ jobs:
             --run-root "$RUNNER_TEMP/r24-live-run"
             --confirmation "$REQUESTED_CONFIRMATION"
             --mode "$REQUESTED_MODE"
+            --pinokio-ref "$REQUESTED_PINOKIO_REF"
           )
+          if [ "$REQUESTED_INSTALL_ONLY" = true ]; then
+            materializer_args+=(--install-only)
+          fi
           if [ "$REQUESTED_MODE" = backend ] || [ "$REQUESTED_MODE" = fully-local ]; then
             materializer_args+=(
               --mode-producer "$R24_CHECKOUTS/mode-producer"

@@ -32,6 +32,27 @@ def test_materializer_pins_current_tuple_producer_and_native_engine():
     assert mode_actions.MODE_PRODUCER_REF == "13cb31104c8aae655d0ee04efdb9537aa111e340"
 
 
+def test_provisional_pinokio_binding_is_exact_and_install_only():
+    candidate = materializer.provisional_candidate(
+        pinokio_ref=materializer.PROVISIONAL_PINOKIO_REF,
+        mode="fully-local", install_only=True,
+    )
+    assert candidate["pinokio"] == "dbc837992be9cf2b489bd96b495add366261a575"
+    assert candidate["app"] == materializer.PUBLISHED_CANDIDATE["app"]
+    assert candidate["agent"] == materializer.PUBLISHED_CANDIDATE["agent"]
+    assert candidate["runtime"] == materializer.PUBLISHED_CANDIDATE["runtime"]
+    assert candidate["manifest_sha256"] == materializer.PUBLISHED_CANDIDATE["manifest_sha256"]
+    with pytest.raises(materializer.MaterializerError, match="allowlisted provisional"):
+        materializer.provisional_candidate(
+            pinokio_ref=materializer.PROVISIONAL_PINOKIO_REF,
+            mode="fully-local", install_only=False,
+        )
+    with pytest.raises(materializer.MaterializerError, match="allowlisted provisional"):
+        materializer.provisional_candidate(
+            pinokio_ref="b" * 40, mode="fully-local", install_only=True,
+        )
+
+
 def test_pterm_and_documented_route_arguments_are_exact(tmp_path):
     node = tmp_path / "node"
     pterm = tmp_path / "pterm"
@@ -366,6 +387,7 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "workflow_dispatch:" in raw
     assert "push:" in raw
     assert "venue/M-PIN-R-24-PUSH-ROUTE-R1-E53B11D1" in raw
+    assert "venue/M-PIN-R-PIN-LOCAL-BIND" in raw
     assert "ubuntu-24.04" in raw
     assert "scripts/ci_journey_r24_push_admission.py" in raw
     assert "scripts/ci_journey_r24_materializer.py" in raw
@@ -376,6 +398,9 @@ def test_workflow_has_registered_reusable_route_and_separate_exact_artifacts():
     assert "r25-linux-mode-actions" in raw
     assert mode_actions.MODE_PRODUCER_REF in raw
     assert "REQUESTED_MODE" in raw
+    assert "dbc837992be9cf2b489bd96b495add366261a575" in raw
+    assert "REQUESTED_PINOKIO_REF" in raw
+    assert "REQUESTED_INSTALL_ONLY" in raw
     assert "runner_ref:" in registered
     assert "producer_ref:" in registered
     assert "confirmation:" in registered

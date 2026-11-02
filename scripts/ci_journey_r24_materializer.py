@@ -31,6 +31,9 @@ except ImportError:
 
 PINOKIOD_REF = "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
 PTERM_REF = "5be43718701c448b43daf0ce51d8935f170065bb"
+# This is a provisional product fix, not a published tuple pin.  It is
+# accepted only by the bounded install-only diagnostic below.
+PROVISIONAL_PINOKIO_REF = "dbc837992be9cf2b489bd96b495add366261a575"
 CONFIRMATION = "R24_LIVE_CURRENT_TUPLE"
 PORT = 42000
 TASK_DURATION_SECONDS = 300
@@ -198,14 +201,32 @@ def _finish_launch(process: subprocess.Popen[bytes] | None, stream: Any,
     )
 
 
+def provisional_candidate(*, pinokio_ref: str, mode: str,
+                          install_only: bool) -> dict[str, str]:
+    """Resolve the only non-published candidate admitted by this diagnostic."""
+    if not HEX40.fullmatch(pinokio_ref):
+        raise MaterializerError(
+            "pinokio candidate ref must be a lowercase immutable 40-character SHA")
+    published_ref = PUBLISHED_CANDIDATE["pinokio"]
+    if pinokio_ref != published_ref and (
+            pinokio_ref != PROVISIONAL_PINOKIO_REF
+            or mode != "fully-local" or not install_only):
+        raise MaterializerError(
+            "only the allowlisted provisional Pinokio SHA may be used by the install-only fully-local diagnostic")
+    candidate = dict(PUBLISHED_CANDIDATE)
+    candidate["pinokio"] = pinokio_ref
+    return candidate
+
+
 def materialize(resource: Path, pinokio: Path, producer_root: Path,
-                scratch: Path, receipt: dict[str, Any]) -> None:
+                scratch: Path, receipt: dict[str, Any],
+                candidate: dict[str, str]) -> None:
     if resource.exists() or resource.is_symlink():
         raise MaterializerError("materialized resource path already exists")
     resource.mkdir(parents=True)
     archive = scratch / "candidate-pinokio.tar"
     _run(["git", "-C", str(pinokio), "archive", "--format=tar",
-          "--output", str(archive), PUBLISHED_CANDIDATE["pinokio"]],
+          "--output", str(archive), candidate["pinokio"]],
          log=scratch / "git-archive.log", receipt=receipt, label="materialize-archive")
     _run(["tar", "-xf", str(archive), "-C", str(resource)],
          log=scratch / "tar-extract.log", receipt=receipt, label="materialize-extract")
@@ -222,7 +243,7 @@ def materialize(resource: Path, pinokio: Path, producer_root: Path,
     environment = resource / "_ENVIRONMENT"
     raw = environment.read_text(encoding="utf-8")
     changed, count = re.subn(r"(?m)^ASTRID_APP_REF=.*$",
-                             f"ASTRID_APP_REF={PUBLISHED_CANDIDATE['app']}", raw)
+                             f"ASTRID_APP_REF={candidate['app']}", raw)
     if count != 1:
         raise MaterializerError("candidate App ref setting unavailable")
     environment.write_text(changed, encoding="utf-8")
@@ -704,11 +725,22 @@ def execute(args: argparse.Namespace) -> int:
     evidence.mkdir(parents=True)
     receipt_path = evidence / "r24-materializer.json"
     selected_mode = getattr(args, "mode", "r24-only")
+    requested_pinokio_ref = getattr(args, "pinokio_ref", PUBLISHED_CANDIDATE["pinokio"])
+    install_only = bool(getattr(args, "install_only", False))
+    candidate = provisional_candidate(pinokio_ref=requested_pinokio_ref,
+                                      mode=selected_mode,
+                                      install_only=install_only)
     receipt: dict[str, Any] = {
         "schema": "astrid.r24.materializer.v1", "status": "running",
         "stage": "preflight", "first_stop": None, "commands": [],
         "mode": selected_mode,
-        "candidate": PUBLISHED_CANDIDATE,
+        "candidate": candidate,
+        "published_candidate": PUBLISHED_CANDIDATE,
+        "candidate_binding": {
+            "kind": "provisional-install-only" if install_only else "published",
+            "pinokio_ref": requested_pinokio_ref,
+            "qualification": "not-evaluated",
+        },
         "provider_ref": provider.LIVE_PRODUCER_REF,
         "hosted": {key: os.environ.get(key) for key in
                    ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
@@ -748,7 +780,7 @@ def execute(args: argparse.Namespace) -> int:
             mode_producer_root = validate_checkout(
                 args.mode_producer, args.mode_producer_ref)
         checkouts = {
-            name: validate_checkout(getattr(args, name), PUBLISHED_CANDIDATE[name])
+            name: validate_checkout(getattr(args, name), candidate[name])
             for name in ("app", "agent", "runtime", "pinokio")
         }
         pterm = validate_checkout(args.pterm, PTERM_REF, tracked_only=True)
@@ -760,7 +792,7 @@ def execute(args: argparse.Namespace) -> int:
         if len(roots) != expected_roots:
             raise MaterializerError("all source checkouts must be distinct")
         manifest = checkouts["app"] / "public/install-manifest.json"
-        if _sha(manifest) != PUBLISHED_CANDIDATE["manifest_sha256"]:
+        if _sha(manifest) != candidate["manifest_sha256"]:
             raise MaterializerError("published manifest digest mismatch")
         selected_node = shutil.which("node")
         if selected_node is None:
@@ -781,7 +813,7 @@ def execute(args: argparse.Namespace) -> int:
         resource = home / "api/astrid"
         receipt["stage"] = "materialize-candidate"
         _write(receipt_path, receipt)
-        materialize(resource, checkouts["pinokio"], producer_root, scratch, receipt)
+        materialize(resource, checkouts["pinokio"], producer_root, scratch, receipt, candidate)
 
         receipt["stage"] = "start-pinokiod"
         _write(receipt_path, receipt)
@@ -813,9 +845,15 @@ def execute(args: argparse.Namespace) -> int:
             "source": "installed-app/install-mode.json",
             "sha256": _sha(mode_path),
             "slot_id": mode_actions.MODES.get(selected_mode, "r24-only"),
-            "candidate": PUBLISHED_CANDIDATE,
+            "candidate": candidate,
         }
         _write(receipt_path, receipt)
+        if install_only:
+            receipt.update(status="captured-untrusted", stage="debug-install-complete",
+                           provider_invoked=False,
+                           limitation="install identity only; no provider, mode action, or qualification")
+            _write(receipt_path, receipt)
+            return 0
         backend = resource / "app/astrid"
         owner = {"schema_version": 1, "run_id": uuid.uuid4().hex,
                  "root": str(backend.resolve()), "data_root": str(data)}
@@ -993,6 +1031,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--runner-ref", required=True)
     value.add_argument("--producer-ref", required=True)
     value.add_argument("--mode", choices=("r24-only", "backend", "fully-local"), default="r24-only")
+    value.add_argument("--pinokio-ref", default=PUBLISHED_CANDIDATE["pinokio"])
+    value.add_argument("--install-only", action="store_true")
     value.add_argument("--mode-producer", type=Path)
     value.add_argument("--mode-producer-ref")
     value.add_argument("--confirmation", required=True)
