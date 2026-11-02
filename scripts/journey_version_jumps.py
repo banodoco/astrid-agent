@@ -266,12 +266,22 @@ def _warm_observed_value(record: dict, key: str):
 
 
 def _warm_identity_classification(first: dict, second: dict, probe: dict, health: dict,
-                                  manager: dict) -> str:
+                                  manager: dict, scope: dict) -> str:
     """Classify only the observation; it never changes owner-admission policy."""
     first_identity, second_identity = first.get("parsed", {}), second.get("parsed", {})
     required = (first.get("status") == "observed" and second.get("status") == "observed"
                 and probe.get("status") == "observed" and health.get("status") == "observed"
-                and manager.get("status") == "observed")
+                and manager.get("status") == "observed" and scope.get("status") == "observed"
+                and all(value.get("status") == "observed" for value in first_identity.values()
+                        if isinstance(value, dict))
+                and all(value.get("status") == "observed" for value in second_identity.values()
+                        if isinstance(value, dict))
+                and all(value.get("status") == "observed" for value in manager.get("fields", {}).values()
+                        if isinstance(value, dict))
+                and all(value.get("status") == "observed" for value in (
+                    health["runtime_instance_id"], health["status_value"], health["protocol"],
+                    health["schema_digest"], scope["boot_id"], scope["pid_namespace_inode"],
+                )))
     if not required:
         return "observation-unavailable"
     if first.get("sha256") != second.get("sha256") or first_identity != second_identity:
@@ -280,15 +290,26 @@ def _warm_identity_classification(first: dict, second: dict, probe: dict, health
     instance = _warm_observed_value(first_identity, "runtime_instance_id")
     health_instance = _warm_observed_value(health, "runtime_instance_id")
     manager_pid = _warm_observed_value(manager.get("fields", {}), "MainPID")
-    if health_instance != instance or manager_pid != str(pid):
+    if health_instance != instance or _warm_observed_value(health, "status_value") != "ok" or manager_pid != str(pid):
         return "owner-or-manager-mismatch"
     actual = probe.get("result", {}).get("value")
     expected_birth = _warm_observed_value(first_identity, "process_birth_id")
     actual_birth = actual.get("birth_id") if isinstance(actual, dict) else None
+    if not isinstance(actual, dict) or actual.get("pid") != pid or not isinstance(actual_birth, str):
+        return "observation-unavailable"
     if actual_birth == expected_birth:
         return "stable-owner-exact-identity"
-    if isinstance(expected_birth, str) and isinstance(actual_birth, str) and actual_birth.startswith(expected_birth + ";"):
-        return "stable-owner-scoped-identity-divergence"
+    if isinstance(expected_birth, str) and actual_birth.startswith(expected_birth + ";"):
+        suffix = actual_birth[len(expected_birth) + 1:].split(";")
+        parts = {}
+        for item in suffix:
+            name, separator, value = item.partition(":")
+            if not separator or name not in {"boot", "pidns"} or not value or name in parts:
+                return "owner-identity-difference"
+            parts[name] = value
+        if (parts.get("boot") == _warm_observed_value(scope, "boot_id") and
+                parts.get("pidns") == str(_warm_observed_value(scope, "pid_namespace_inode"))):
+            return "stable-owner-scoped-identity-divergence"
     return "owner-identity-difference"
 
 
@@ -325,7 +346,7 @@ def warm_release0_identity_observation(args, data: Path) -> dict:
         observation["discovery_b"] = second
         observation["classification"] = _warm_identity_classification(
             first, second, observation["candidate_runtime_process_identity"], observation["health"],
-            observation["systemd"],
+            observation["systemd"], observation["linux_scope"],
         )
     except Exception as exc:  # Keep unexpected collector faults visible but non-mutating.
         observation["collector_exit"] = 1

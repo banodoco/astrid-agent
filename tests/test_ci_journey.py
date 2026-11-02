@@ -1201,6 +1201,9 @@ def test_linux_warm_identity_observation_binds_candidate_runtime_and_stable_read
     discovery = data / "runtime" / "discovery.json"
     discovery.parent.mkdir(parents=True)
     pid = os.getpid()
+    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    pid_namespace = Path(f"/proc/{pid}/ns/pid").stat().st_ino
+    candidate_birth = f"proc-start-ticks:1234;boot:{boot_id};pidns:{pid_namespace}"
     discovery.write_text(json.dumps({
         "pid": pid, "process_birth_id": "proc-start-ticks:1234",
         "runtime_instance_id": "release0-instance", "door_endpoint": "http://127.0.0.1:17340",
@@ -1217,7 +1220,7 @@ def test_linux_warm_identity_observation_binds_candidate_runtime_and_stable_read
                 returncode=0,
                 stdout=json.dumps({"status": "observed", "value": {
                     "pid": pid,
-                    "birth_id": "proc-start-ticks:1234;boot:current;pidns:1",
+                    "birth_id": candidate_birth,
                 }}),
                 stderr="",
             )
@@ -1262,7 +1265,7 @@ def test_linux_warm_identity_observation_binds_candidate_runtime_and_stable_read
         "timeout_seconds": jumps.WARM_IDENTITY_PROBE_TIMEOUT_SECONDS,
         "stdout_sha256": observation["candidate_runtime_process_identity"]["stdout_sha256"],
         "result": {"status": "observed", "value": {
-            "pid": pid, "birth_id": "proc-start-ticks:1234;boot:current;pidns:1",
+            "pid": pid, "birth_id": candidate_birth,
         }},
     }
     assert observation["health"]["runtime_instance_id"]["value"] == "release0-instance"
