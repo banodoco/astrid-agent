@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from astrid.core.pack import PackValidationError, discover_packs, load_pack_manifest
+from astrid.core.pack import discover_packs, load_pack_manifest, loader
 from astrid.core.pack.canonical import validate_canonical_pack
 from astrid.core.pack.discovery import (
     DiscoveredPack,
@@ -29,7 +29,8 @@ def write_pack(parent: Path, pack_id: str = "demo", *, version: int = 3,
         path.write_text(text, encoding="utf-8")
     manifest = {"schema_version": version, "id": pack_id, "name": "Demo", "version": "1.0.0",
                 **({"capabilities": ["testing"]} if version == 2 else
-                   {"documents": {"note": {"format_version": 1, "schema": {"type": "object"}}}}),
+                   {"pack_api": "1.0",
+                    "documents": {"note": {"format_version": 1, "schema": {"type": "object"}}}}),
                 **sections}
     (root / "pack.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     return root
@@ -83,12 +84,19 @@ def test_v3_loader_populates_exact_canonical_declarations_without_import(tmp_pat
 
 
 @pytest.mark.parametrize("version", [2, 3])
-def test_v2_and_v3_discover_one_declared_skill(tmp_path: Path, version: int) -> None:
+def test_v2_and_v3_discover_one_declared_skill(tmp_path: Path, monkeypatch, version: int) -> None:
     path = "skill/SKILL.md" if version == 2 else "docs/SKILL.md"
     root = write_pack(tmp_path, version=version, files={path: SKILL},
                       documentation={"kind": "skill", "path": path})
-    pack, = discover_packs(tmp_path)
-    assert pack.schema_version == str(version)
+    if version == 2:
+        inventory(monkeypatch)
+        row, = discover_canonical_pack_metadata(extra_pack_roots=(str(tmp_path),))
+        assert row.entry.definition.schema_version == version
+        assert row.entry.definition.to_dict()["documentation"] == {"kind": "skill", "path": path}
+        pack = load_pack_manifest(root / "pack.yaml")
+    else:
+        pack, = discover_packs(tmp_path)
+    assert str(pack.schema_version) == str(version)
     assert pack.documentation == {"kind": "skill", "path": path}
     discovered = DiscoveredPack(pack, "source", 0)
     assert discovered.documentation_path == root / path
@@ -111,11 +119,12 @@ def test_documentation_dispositions_never_infer_skills(tmp_path: Path, pointer, 
 
 
 def test_layer_priority_and_managed_identity_are_preserved(tmp_path: Path, monkeypatch) -> None:
-    source = write_pack(tmp_path / "source", version=2)
+    source = write_pack(tmp_path / "source")
+    source_local = write_pack(tmp_path / "source", "local")
     project = tmp_path / "project"
-    local = write_pack(project / "astrid/packs", "local")
+    write_pack(project / "astrid/packs", "local")
     managed = write_pack(tmp_path / "managed")
-    extra = write_pack(tmp_path / "extra", version=2)
+    extra = write_pack(tmp_path / "extra")
     env = write_pack(tmp_path / "env")
     inventory(monkeypatch, managed)
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(env))
@@ -123,18 +132,18 @@ def test_layer_priority_and_managed_identity_are_preserved(tmp_path: Path, monke
         return discover_packs(source.parent if root is None else root)
     rows = discover_pack_metadata(project_root=project, discover_packs_fn=scan,
                                   extra_pack_roots=(str(managed), str(extra)))
-    assert [r.source_kind for r in rows] == ["source", "local", "managed", "extra", "env"]
-    assert [r.pack_dir for r in rows] == [source, local, managed, extra, env]
+    assert [r.source_kind for r in rows] == ["source", "source", "managed", "extra", "env"]
+    assert [r.pack_dir for r in rows] == [source, source_local, managed, extra, env]
     assert [r.priority_index for r in rows] == list(range(5))
     assert rows[2].source_revision == "a" * 40
     assert rows[2].source_manifest_sha256 == "b" * 64
     assert rows[2].source_tree_sha256 == "c" * 64
     assert rows[2].source_inventory_identity == "fixture-inventory"
     canonical = discover_canonical_pack_metadata(project_root=project, extra_pack_roots=(str(managed), str(extra)))
-    assert [r.source_kind for r in canonical] == ["local", "managed", "extra", "env"]
-    assert [r.pack_dir for r in canonical] == [local, managed, extra, env]
-    assert [r.priority_index for r in canonical] == list(range(4))
-    assert canonical[1].source_inventory_identity == "fixture-inventory"
+    assert [r.source_kind for r in canonical] == ["managed", "extra", "env"]
+    assert [r.pack_dir for r in canonical] == [managed, extra, env]
+    assert [r.priority_index for r in canonical] == list(range(3))
+    assert canonical[0].source_inventory_identity == "fixture-inventory"
 
 
 @pytest.mark.parametrize("api", [discover_pack_metadata, discover_canonical_pack_metadata])
@@ -158,12 +167,12 @@ def test_external_broken_hidden_and_duplicate_roots_are_isolated(tmp_path: Path,
         kwargs["discover_packs_fn"] = lambda *args: ()
     rows = api(**kwargs)
     assert [(r.id, r.source_kind, r.priority_index) for r in rows] == [
-        ("good_v2", "extra", 0), ("good_v3", "extra", 1)]
-    assert [r.pack_dir for r in rows] == [good_v2, good_v3]
+        ("good_v2", "extra", 0), ("good_v3", "extra", 1), ("local", "extra", 2)]
+    assert [r.pack_dir for r in rows] == [good_v2, good_v3, extras / "local"]
     assert "broken" in caplog.text and "managed_broken" in caplog.text
 
 
-def test_broken_source_remains_strict_and_core_shell_is_not_a_pack(tmp_path: Path) -> None:
+def test_broken_source_is_quarantined_and_core_shell_is_not_a_pack(tmp_path: Path) -> None:
     core = tmp_path / "_core/docs"
     core.mkdir(parents=True)
     (core / "SKILL.md").write_text(SKILL)
@@ -171,5 +180,8 @@ def test_broken_source_remains_strict_and_core_shell_is_not_a_pack(tmp_path: Pat
     assert (core / "SKILL.md").read_text() == SKILL
     broken = write_pack(tmp_path, "broken")
     (broken / "pack.yaml").write_text("schema_version: 999\n")
-    with pytest.raises(PackValidationError, match="schema_version"):
-        discover_pack_metadata(project_root=tmp_path, discover_packs_fn=lambda *args: discover_packs(tmp_path))
+    scan = loader.scan_packs(tmp_path, strict=True)
+    assert scan.packs == ()
+    assert [(row.pack_id, row.manifest_path) for row in scan.quarantined] == [
+        ("broken", broken / "pack.yaml")
+    ]

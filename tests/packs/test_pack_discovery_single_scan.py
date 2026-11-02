@@ -9,8 +9,9 @@ from unittest import mock
 
 import pytest
 
+import astrid.core.pack.discovery as pack_discovery
 from astrid.core.pack import PackValidationError, discover_packs, loader, source_setup
-from astrid.core.pack.discovery import discover_pack_metadata
+from astrid.core.pack.discovery import discover_pack_metadata, pack_discovery_scope
 from astrid.core.rendering import registry
 
 
@@ -232,6 +233,47 @@ def test_discovery_observes_edits_on_every_call(tmp_path: Path, monkeypatch: pyt
         assert scans.call_count == 2
     assert before[0].pack.description == "before"
     assert after[0].pack.description == "after"
+
+
+def test_discovery_cache_hashes_only_selected_roots_and_invalidates_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source/astrid/packs"
+    _write_pack(source, "bundled")
+    project = tmp_path / "project"
+    unselected_project_packs = project / "astrid/packs"
+    unselected_project_packs.mkdir(parents=True)
+    project_bytes = unselected_project_packs / "unselected.py"
+    project_bytes.write_text("initial", encoding="utf-8")
+    extra_root = tmp_path / "extra"
+    selected = _write_pack(extra_root, "selected")
+    monkeypatch.setattr(loader, "packs_root", lambda: source)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+        identity="empty-inventory", sources=(),
+    ))
+    fingerprint = pack_discovery._tree_fingerprint
+
+    with mock.patch(
+        "astrid.core.pack.discovery._tree_fingerprint", wraps=fingerprint,
+    ) as fingerprint_calls, mock.patch.object(
+        loader, "scan_packs", wraps=loader.scan_packs,
+    ) as scans, pack_discovery_scope():
+        first = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+        project_bytes.write_text("changed but still unselected", encoding="utf-8")
+        unchanged = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+        assert unchanged == first
+        assert scans.call_count == 1
+
+        manifest_path = selected / "pack.yaml"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["description"] = "selected root changed"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        invalidated = discover_pack_metadata(project_root=project, extra_pack_roots=(str(extra_root),))
+
+        assert scans.call_count == 2
+        assert next(row for row in invalidated if row.id == "selected").pack.description == "selected root changed"
+        hashed_roots = {Path(call.args[0]).resolve() for call in fingerprint_calls.call_args_list}
+        assert unselected_project_packs.resolve() not in hashed_roots
 
 
 def test_production_support_caller_uses_single_scan_without_a_backend_process(tmp_path: Path) -> None:

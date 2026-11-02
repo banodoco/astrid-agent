@@ -14,12 +14,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.pack import (
     discover_packs,
     load_pack_manifest,
+    loader,
     pack_manifest_path,
 )
 from astrid.core.pack.discovery import (
@@ -173,6 +175,30 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
         self.assertEqual([dp.id for dp in discovered], ["alpha", "local", "beta"])
         self.assertTrue(all(dp.source_kind == "source" for dp in discovered))
         self.assertEqual([dp.priority_index for dp in discovered], [0, 1, 2])
+
+    def test_checkout_hides_legacy_local_but_selected_external_local_is_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            extra_root = Path(tmp) / "extra"
+            extra_local = _make_pack(extra_root, "local")
+            with mock.patch(
+                "astrid.core.pack.source_setup.active_source_inventory",
+                return_value=SimpleNamespace(sources=(), identity="empty-inventory"),
+            ):
+                discovered = discover_pack_metadata(
+                    project_root=REPO_ROOT,
+                    extra_pack_roots=(str(extra_root),),
+                )
+
+            locals_ = [row for row in discovered if row.id == "local"]
+            self.assertEqual(
+                [(row.source_kind, row.pack_dir) for row in locals_],
+                [("extra", extra_local.root)],
+            )
+            legacy_local = loader.packs_root().resolve() / "local"
+            self.assertNotIn(
+                ("source", legacy_local),
+                [(row.source_kind, row.pack_dir.resolve()) for row in discovered],
+            )
 
     def test_project_local_pack_is_not_loaded_as_a_special_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

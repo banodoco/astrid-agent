@@ -6,7 +6,7 @@ status: active
 domain: media
 stability: stable
 support: project
-visibility: visible
+visibility: hidden
 permissions:
 - id: project_files
   reason: Provides render-time visual element definitions consumed by the rendering

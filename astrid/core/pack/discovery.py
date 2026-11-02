@@ -109,8 +109,10 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
         return None
     project_root = Path(project_root).resolve()
     raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
-    roots = [loader.packs_root(), project_root / "astrid" / "packs",
-             Path(__file__).with_name("schemas")]
+    # The project's former ``astrid/packs`` tree is not a discovery input.
+    # Only the bundled source root and explicitly selected external roots
+    # participate in admission and therefore in cache identity.
+    roots = [loader.packs_root(), Path(__file__).with_name("schemas")]
     roots.extend(source.pack_root for source in managed_inventory.sources)
     for raw_root in (*extra_pack_roots, *filter(None, raw_env.split(os.pathsep))):
         root = Path(raw_root).expanduser()
