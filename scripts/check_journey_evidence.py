@@ -446,6 +446,46 @@ def evaluate_release1_matrix(candidate, results):
     return errors
 
 
+def evaluate_self_hosted_macos_receipt(candidate, receipt_path, trusted_context_path):
+    """Admit only the separately authenticated hannah-mac direct-macOS receipt.
+
+    The ordinary Release-1 aggregate intentionally does not call this function:
+    its nine GitHub-hosted contracts remain unchanged.  A trusted aggregate may
+    evaluate this dedicated profile and then account for it as the approved
+    self-hosted direct-macOS venue.
+    """
+    receipt_path = Path(receipt_path)
+    trusted_context_path = Path(trusted_context_path)
+    if receipt_path.resolve() == trusted_context_path.resolve():
+        return ["self-hosted macOS: trusted context cannot be supplied by the receipt artifact"]
+    try:
+        receipt = read(receipt_path)
+    except (OSError, ValueError) as exc:
+        return [f"self-hosted macOS: receipt is unreadable: {exc}"]
+    try:
+        trusted_context = read(trusted_context_path)
+    except (OSError, ValueError) as exc:
+        return [f"self-hosted macOS: trusted Actions context is unreadable: {exc}"]
+
+    errors = self_hosted_macos_identity_errors(
+        candidate, receipt, trusted_context, digest(receipt_path)
+    )
+    contract = next(row for row in RELEASE1_MATRIX if row["job_id"] == "direct-macos")
+    if receipt.get("job_id") != contract["job_id"]:
+        errors.append("self-hosted macOS: receipt job is not direct-macos")
+
+    # Reuse every lifecycle predicate after rejecting hosted relabelling above.
+    # The synthetic hosted provenance exists only inside this local validation
+    # copy: runner authentication is exclusively the trusted API context.
+    lifecycle = dict(receipt)
+    lifecycle["runner_image"] = contract["runner"]
+    lifecycle["runner_provenance"] = {
+        "RUNNER_OS": "macOS", "ImageOS": "macos15", "ImageVersion": "trusted-self-hosted-profile",
+    }
+    errors.extend(_release1_row_errors(candidate, contract, lifecycle))
+    return errors
+
+
 def _sidecar_path(receipt: Path, item: object) -> tuple[Path | None, str | None]:
     if not isinstance(item, dict):
         return None, None
@@ -1044,6 +1084,12 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact nine Release-1 job receipts under --results")
+    parser.add_argument("--aggregate-self-hosted-macos", action="store_true",
+                        help="require one separately API-authenticated hannah-mac direct-macOS receipt")
+    parser.add_argument("--self-hosted-macos-receipt", type=Path,
+                        help="downloaded direct-macOS journey-result.json, never the trusted context")
+    parser.add_argument("--trusted-context", type=Path,
+                        help="trusted aggregate's GitHub Actions API context for --aggregate-self-hosted-macos")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
                         help="require all three hosted Pinokio backend M4-4a receipts")
     parser.add_argument("--aggregate-m4-5", action="store_true",
@@ -1059,8 +1105,9 @@ def main():
     args = parser.parse_args()
     errors = []
     try:
-        aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
-                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu))
+        aggregate_modes = sum((args.aggregate_release1, args.aggregate_self_hosted_macos,
+                               args.aggregate_m4_4a, args.aggregate_m4_5, args.aggregate_m4_4b_local,
+                               args.aggregate_m4_6_local, args.aggregate_gpu))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
         if args.report_end_state_obligations and aggregate_modes:
@@ -1093,6 +1140,18 @@ def main():
             if args.results is None or args.allow_source_override or args.required or args.prepare_only:
                 raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
             errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))
+        elif args.aggregate_self_hosted_macos:
+            if (args.self_hosted_macos_receipt is None or args.trusted_context is None
+                    or args.results is not None or args.expected_runner is not None
+                    or args.expected_shell is not None or args.required or args.allow_source_override
+                    or args.prepare_only):
+                raise ValueError(
+                    "self-hosted macOS aggregate requires only --candidate, --app-checkout, "
+                    "--self-hosted-macos-receipt and --trusted-context"
+                )
+            errors.extend(evaluate_self_hosted_macos_receipt(
+                candidate, args.self_hosted_macos_receipt, args.trusted_context
+            ))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
@@ -1109,7 +1168,8 @@ def main():
             if args.allow_source_override:
                 raise ValueError("M4-5 aggregate never admits a source override")
             errors.extend(evaluate_m4_5_matrix(args.results))
-        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and not args.prepare_only:
+        elif (not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local
+              and not args.aggregate_self_hosted_macos and not args.prepare_only):
             if args.cadence == "release-candidate":
                 raise ValueError("release-candidate evidence requires --aggregate-release1")
             if args.results is None or args.expected_runner is None or args.expected_shell is None:
