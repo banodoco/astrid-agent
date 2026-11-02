@@ -471,7 +471,10 @@ def _validation_errors(pack_root: Path, schema_errors: list[str]) -> list[str]:
     errors = list(schema_errors)
     if is_first_party_packs_root_candidate(pack_root.resolve()):
         return errors
-    compatibility_scan = scan_packs(pack_root.parent, strict=False, include_hidden=True)
+    from astrid.core.pack.loader import _default_pack_roots, scan_pack_roots
+
+    compatibility_scan = scan_pack_roots(
+        (*_default_pack_roots(), pack_root.parent), include_hidden=True)
     incompatible = next(
         (record for record in compatibility_scan.quarantined if record.pack_dir.resolve() == pack_root.resolve()),
         None,
