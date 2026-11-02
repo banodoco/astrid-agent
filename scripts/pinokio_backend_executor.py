@@ -289,9 +289,10 @@ def _validate_action(raw: Mapping[str, Any], label: str, expected_ref: str, expe
     shape = [(step.get("kind"), step.get("bootstrap_action")) for step in steps]
     if label == "actions.first" and shape != [("git-shell", None), ("shell", "update-app")]:
         raise ValidationError("actions.first is not the immutable H1 backend action array")
-    if label == "actions.retry" and shape != [
-        ("custom", "preflightStop"), ("git-shell", None), ("shell", "install"),
-    ]:
+    if label == "actions.retry" and (
+        steps[0] != {"kind": "custom", "name": "preflightStop"}
+        or shape != [("custom", None), ("git-shell", None), ("shell", "install")]
+    ):
         raise ValidationError("actions.retry is not the candidate backend action array")
     refusal_codes = raw.get("refusal_exit_codes", [42])
     if not isinstance(refusal_codes, list) or not all(isinstance(code, int) for code in refusal_codes):

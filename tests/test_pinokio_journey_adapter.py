@@ -187,11 +187,11 @@ def test_published_immutable_identities():
     assert adapter.TUPLE == {
         "runtime": "1e6d899efa77a2d6ec247c38250f9748330bb587",
         "agent": "dd6b48192c720c5346e6f140184e313b2cf84f31",
-        "app": "99144531aedab3ac8042b5d06f72bd5aaecf523f",
+        "app": "ae95eb455408b8c0e185bfded67798e2b307a6f6",
         "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
     }
-    assert adapter.CONFIG_SHA256 == "37c2c7f06712eb8e7fad9c9a0ca7371a301ee4ee7da5995d326e1f42ee9b87f4"
-    assert adapter.BINDING_SHA256 == "1f075dc352b2ac8fce4c3ed3a2820be9c35cfbc218222295517f796ece01c9b5"
+    assert adapter.CONFIG_SHA256 == "300635b79bcb1b68344b8ebe3002a7921498c80505cbcef1ad60c8f610919ae2"
+    assert adapter.BINDING_SHA256 == "7b57e05a12be55000029e261ec45a05345522f81c884e5e21fed5d322bce8b58"
     assert adapter.APP_MANIFEST_SHA256 == "15ea3a2e0a4067773b727635e4eaa4b894eceb10f73aaa88cd29896a2364bd77"
 
 

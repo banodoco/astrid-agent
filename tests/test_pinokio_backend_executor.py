@@ -175,7 +175,7 @@ def _config(tmp_path: Path, *, first_mode: str = "first-refuse", evidence_class:
                        "steps": [{"kind": "git-shell"}, {"kind": "shell", "bootstrap_action": "update-app"}]},
             "retry": {"kind": "pinokio-action", "command": _command(script, root, state, "retry"),
                       "provenance": {"ref": pinokio_ref, "sha256": pinokio_hashes["pinokio/update.js"]},
-                      "steps": [{"kind": "custom", "bootstrap_action": "preflightStop"},
+                      "steps": [{"kind": "custom", "name": "preflightStop"},
                                 {"kind": "git-shell"},
                                 {"kind": "shell", "bootstrap_action": "install"}]},
         },
@@ -294,3 +294,21 @@ def test_cli_requires_explicit_output_and_help_is_available(tmp_path: Path):
     )
     assert run_result.returncode == 0, run_result.stderr
     assert (tmp_path / "cli-receipt/journey-result.json").is_file()
+
+
+def test_retry_action_accepts_only_exact_builder_custom_step(tmp_path):
+    from scripts.pinokio_backend_executor import _validate_action
+
+    config = _config(tmp_path)
+    action = config["actions"]["retry"]
+    ref = action["provenance"]["ref"]
+    digest = action["provenance"]["sha256"]
+    _validate_action(action, "actions.retry", ref, digest)
+    for custom in (
+        {"kind": "custom", "bootstrap_action": "preflightStop"},
+        {"kind": "custom", "name": "other"},
+        {"kind": "custom", "name": "preflightStop", "extra": True},
+    ):
+        action["steps"][0] = custom
+        with pytest.raises(ValidationError, match="candidate backend action array"):
+            _validate_action(action, "actions.retry", ref, digest)
