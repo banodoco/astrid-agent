@@ -699,6 +699,47 @@ def test_selected_ledger_uses_only_the_actual_matrix_snapshot(monkeypatch, tmp_p
     unselected.write_text('changed unselected bytes')
     assert load_capability_ledger(matrix, pack_roots=(pack,)) == ledger
 
+
+def test_description_uses_one_real_availability_snapshot_per_render(monkeypatch, tmp_path):
+    from copy import deepcopy
+    from astrid.core.generation import availability, entries
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    root = tmp_path / 'selected'
+    pack = _write_pack(root, 'description_snapshot', availability=_policy(False, 'old policy'))
+    data = _manifest('description_snapshot', availability=_policy(False, 'old policy'))
+    data['actions']['generate_image']['metadata']['generation_entry']['modes'] = ['t2i', 'edit']
+    manifest = pack / 'pack.yaml'
+    manifest.write_text(yaml.safe_dump(data, sort_keys=False), encoding='utf-8')
+    monkeypatch.setenv('ASTRID_PACKS_PATH', str(root))
+    monkeypatch.setenv('ASTRID_HOME', str(tmp_path / 'astrid-home'))
+    original_declaration = availability.availability_declaration
+    reads = []
+
+    def observed_declaration(*, selected_packs=None):
+        snapshot = original_declaration(selected_packs=selected_packs)
+        reads.append(snapshot)
+        if len(reads) == 1:
+            changed = deepcopy(data)
+            changed['extensions']['astrid']['generation_availability']['actions'][
+                'description_snapshot.generate_image'
+            ] = _policy(True, 'new policy')
+            manifest.write_text(yaml.safe_dump(changed, sort_keys=False), encoding='utf-8')
+        return snapshot
+
+    monkeypatch.setattr(availability, 'availability_declaration', observed_declaration)
+    # Use the real action discovery and a real empty model registry. The wrapper
+    # observes, but does not synthesize or replace, the availability declaration.
+    first = entries.describe_entry('description_snapshot.image', registry=ModelRegistry([]), _native=True)
+    assert len(reads) == 1
+    assert {row['availability'] for row in first['mode_descriptions'].values()} == {'unavailable'}
+    assert {row['reason'] for row in first['mode_descriptions'].values()} == {'old policy'}
+
+    second = entries.describe_entry('description_snapshot.image', registry=ModelRegistry([]), _native=True)
+    assert len(reads) == 2
+    assert {row['availability'] for row in second['mode_descriptions'].values()} == {'available'}
+
+
 def test_default_parent_inventory_skips_legacy_folder_orchestrator_policy(tmp_path, monkeypatch):
     from copy import deepcopy
     from astrid.core.execution.capability_ledger import _executor_inventory
