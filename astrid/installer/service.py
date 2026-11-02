@@ -568,6 +568,9 @@ class Service:
             original, _mode = self._launchd_recovery_bytes(recovery_snapshot, data)
             if identity["plist"] != original:
                 raise ValueError("The LaunchAgent plist no longer matches the retained R0 definition.")
+            action = plistlib.loads(original).get("ProgramArguments")
+            if tuple(action) != identity["arguments"]:
+                raise ValueError("The loaded launchd action no longer matches the retained R0 definition.")
         self._launchd_live_pid_is_bound(
             identity, observation, owner_pid=owner_pid, owner_birth_id=owner_birth_id,
         )
@@ -602,8 +605,12 @@ class Service:
         self.verify_launchd_absent_after_bootout()
         if os.path.lexists(self.path):
             current, _stat = self._launchd_plist_identity(data)
+            # A failed update may have published its admitted candidate plist
+            # before the rollback.  There is no loaded job now, and this
+            # validates that replacement as an owned action before atomically
+            # restoring the digest-bound R0 bytes.
             if current != raw:
-                raise ValueError("The R0 LaunchAgent plist changed after bootout; refusing to restore it.")
+                _atomic_write_bytes(self.path, raw, mode=mode)
         else:
             parent_stat = self.path.parent.stat()
             if (not stat.S_ISDIR(parent_stat.st_mode)

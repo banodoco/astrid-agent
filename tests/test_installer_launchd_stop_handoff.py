@@ -19,18 +19,22 @@ from tests.test_installer_lifecycle import _installer_runtime, _publish_owner
 
 
 class _LaunchdControllerExit(BaseException):
-    """Model controller death after C1 exit and before launchd bootout."""
+    """Model controller death after launchd bootout and before C1 exit."""
 
 
 def _version(backend, name: str, release: int) -> core.Version:
     folder = backend.root / "versions" / name
     folder.mkdir(parents=True)
-    version = core.Version(folder, Path(sys.executable), folder / "profile.json", {}, release)
+    python = folder / "py" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\"\n", encoding="utf-8")
+    python.chmod(0o700)
+    version = core.Version(folder, python, folder / "profile.json", {}, release)
     core.write_json(folder / "version.json", version.document())
     return version
 
 
-def _launchd_harness(backend, data, old, boundary, events):
+def _launchd_harness(backend, data, old, boundary, events, monkeypatch):
     """Model launchd's loaded view and print/bootout boundary, not C1 or callers."""
     service = backend.service
     service.system = "darwin"
@@ -40,10 +44,14 @@ def _launchd_harness(backend, data, old, boundary, events):
     service.stop = type(service).stop.__get__(service, type(service))
     service.recorded = type(service).recorded.__get__(service, type(service))
     target = f"gui/{platform.current_user()}/{LABEL}"
-    loaded = {"version": old, "running": True}
+    loaded = {"version": old, "running": True, "bootstrap_bytes": []}
     print_observations = []
     bootouts = []
-    crash_after_exit = {"enabled": False}
+    crash_after_bootout = {"enabled": False}
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {
+        "pid": pid, "uid": platform.current_user(), "birth_id": "birth-1",
+    })
+    monkeypatch.setattr(platform, "process_executable", lambda _pid: str(old.python))
 
     def print_output():
         selected = loaded["version"]
@@ -70,17 +78,18 @@ def _launchd_harness(backend, data, old, boundary, events):
             value = print_output()
             print_observations.append(value)
             events.append("launchctl-print-running" if boundary.live else "launchctl-print-stopped")
-            if crash_after_exit["enabled"] and not boundary.live:
-                crash_after_exit["enabled"] = False
-                raise _LaunchdControllerExit("controller exited before bootout")
             return value
         if argv[:2] == ["launchctl", "bootout"]:
             assert argv[2] == target
-            assert not boundary.live, "bootout must follow Runtime C1 process exit"
+            if loaded["version"] == old:
+                assert boundary.live, "R0 bootout must precede Runtime C1 process exit"
             assert loaded["version"] is not None
             bootouts.append(tuple(argv))
             events.append("launchctl-bootout")
             loaded["version"] = None
+            if crash_after_bootout["enabled"]:
+                crash_after_bootout["enabled"] = False
+                raise _LaunchdControllerExit("controller died after bootout")
             return ""
         if argv[:2] == ["launchctl", "bootstrap"]:
             assert argv[2] == f"gui/{platform.current_user()}"
@@ -88,7 +97,14 @@ def _launchd_harness(backend, data, old, boundary, events):
             assert plist_path == service.path
             # The registered plist is the canonical action for the newly
             # selected version. Production render/command remain in use.
-            action = plistlib.loads(plist_path.read_bytes())["ProgramArguments"]
+            raw = plist_path.read_bytes()
+            loaded["bootstrap_bytes"].append(raw)
+            action = plistlib.loads(raw)["ProgramArguments"]
+            if action == loaded.get("r0_action"):
+                loaded["version"] = old
+                loaded["running"] = False
+                events.append("launchctl-bootstrap")
+                return ""
             versions = [core.Version.load(core.read_json(path / "version.json"))
                         for path in (backend.root / "versions").glob("*")
                         if (path / "version.json").is_file()]
@@ -118,7 +134,19 @@ def _launchd_harness(backend, data, old, boundary, events):
     core.write_json(service.selection, {
         "owner": LABEL, "program_root": str(backend.root), "data_root": str(data),
     })
-    return loaded, print_observations, bootouts, target, crash_after_exit
+    return loaded, print_observations, bootouts, target, crash_after_bootout
+
+
+def _r0_program_root_plist(service, old, data):
+    """Replace the fixture with the reviewed R0 program-root definition."""
+    from tests.test_installer_service_env import _legacy_posix_action
+
+    document = plistlib.loads(service.path.read_bytes())
+    action = _legacy_posix_action(old, data, service.env_file)
+    document.update({"ProgramArguments": action, "KeepAlive": True, "RunAtLoad": True})
+    raw = plistlib.dumps(document, sort_keys=True)
+    service.path.write_bytes(raw)
+    return raw, action
 
 
 def _real_c1_stop(data, boundary, events):
@@ -139,8 +167,8 @@ def _real_c1_stop(data, boundary, events):
     boundary.stop_owner = exit_under_c1
 
 
-def _assert_exact_loaded_identity(output, service, version, data, target, *, running):
-    argv = command(version, data, log=service.log, env_file=service.env_file)
+def _assert_exact_loaded_identity(output, service, version, data, target, *, running, action=None):
+    argv = action or command(version, data, log=service.log, env_file=service.env_file)
     assert f"{target} = {{" in output
     assert f"path = {service.path}" in output
     assert f"program = {argv[0]}" in output
@@ -166,7 +194,7 @@ def test_shared_update_bootouts_exact_loaded_job_after_real_c1_and_completes(
     events = []
     _real_c1_stop(data, boundary, events)
     loaded, observations, bootouts, target, _crash = _launchd_harness(
-        backend, data, old, boundary, events,
+        backend, data, old, boundary, events, monkeypatch,
     )
 
     if nested_coalition_states:
@@ -189,15 +217,11 @@ def test_shared_update_bootouts_exact_loaded_job_after_real_c1_and_completes(
 
     core.Installer(backend.root, data, backend, say=lambda _line: None).run("update", {})
 
-    assert events.index("c1-stop-owner") < events.index("launchctl-bootout")
+    assert events.index("launchctl-bootout") < events.index("c1-stop-owner")
     assert bootouts == [("launchctl", "bootout", target)]
     assert observations and "pid = 777" in observations[0]
     _assert_exact_loaded_identity(observations[0], backend.service, old, data, target, running=True)
-    _assert_exact_loaded_identity(
-        next(output for output in observations[1:] if "state = not running" in output),
-        backend.service, old, data, target, running=False,
-    )
-    assert any("state = not running" in output and "pid =" not in output for output in observations[1:])
+    assert all("state = running" in output and "pid = 777" in output for output in observations)
     assert core.current(backend.root) == candidate
     assert core.read_json(backend.root / "update-transaction.json")["step"] == "complete"
     assert loaded["version"] == candidate
@@ -215,18 +239,21 @@ def test_fresh_recovery_bootouts_stopped_job_once_and_is_repeatable(tmp_path, mo
     events = []
     _real_c1_stop(data, boundary, events)
     loaded, observations, bootouts, target, crash = _launchd_harness(
-        backend, data, old, boundary, events,
+        backend, data, old, boundary, events, monkeypatch,
     )
+    original_r0_plist, original_r0_action = _r0_program_root_plist(backend.service, old, data)
+    loaded["action"] = original_r0_action
+    loaded["r0_action"] = original_r0_action
     installer = core.Installer(backend.root, data, backend, say=lambda _line: None)
     crash["enabled"] = True
-    with pytest.raises(_LaunchdControllerExit, match="before bootout"):
+    with pytest.raises(_LaunchdControllerExit, match="after bootout"):
         installer.run("update", {})
     assert core.read_json(backend.root / "update-transaction.json")["step"] == "stopping"
-    assert not bootouts
+    assert bootouts == [("launchctl", "bootout", target)]
 
-    # Recovery uses a new Backend/Service after C1 exited and the controller
-    # died before bootout. The process exit and removed publications came from
-    # the first real C1 stop above.
+    # Recovery uses a new Backend/Service after the validated R0 bootout and
+    # before C1. It must still run C1, keep the job absent, and then bootstrap
+    # the original definition.
     fresh = Backend(
         backend.root, tmp_path / "install.log", tmp_path / "uv",
     )
@@ -255,15 +282,14 @@ def test_fresh_recovery_bootouts_stopped_job_once_and_is_repeatable(tmp_path, mo
     assert terminal["step"] == "rolled_back"
     assert core.current(backend.root) == old
     assert bootouts == [("launchctl", "bootout", target)]
+    assert loaded["bootstrap_bytes"] == [original_r0_plist]
+    assert backend.service.path.read_bytes() == original_r0_plist
     recovery_events = events[start:]
-    assert recovery_events[0] == "launchctl-print-stopped"
-    assert recovery_events.index("launchctl-print-stopped") < recovery_events.index("fresh-c1-down-enter")
-    assert events.index("fresh-c1-down-enter") < events.index("launchctl-bootout")
-    assert events.index("launchctl-bootout") < events.index("fresh-c1-down-return")
+    assert recovery_events[0] == "fresh-c1-down-enter"
+    assert "launchctl-bootout" not in recovery_events
+    assert recovery_events.index("fresh-c1-down-enter") < recovery_events.index("fresh-c1-down-return")
     assert observations and "state = running" in observations[0] and "pid = 777" in observations[0]
-    assert all("state = not running" in output and "pid =" not in output
-               for output in observations[1:])
-    _assert_exact_loaded_identity(observations[-1], backend.service, old, data, target, running=False)
+    assert all("state = running" in output and "pid = 777" in output for output in observations)
 
     before = list(bootouts)
     core.Installer(backend.root, data, fresh, say=lambda _line: None)._recover_update()
@@ -319,20 +345,25 @@ def test_downstream_update_failure_runs_real_c1_rollback_and_keeps_old_selected(
     backend.verify = verify
     events = []
     _real_c1_stop(data, boundary, events)
-    _loaded, observations, bootouts, target, _crash = _launchd_harness(
-        backend, data, old, boundary, events,
+    loaded, observations, bootouts, target, _crash = _launchd_harness(
+        backend, data, old, boundary, events, monkeypatch,
     )
+    original_r0_plist, original_r0_action = _r0_program_root_plist(backend.service, old, data)
+    loaded["action"] = original_r0_action
+    loaded["r0_action"] = original_r0_action
 
     with pytest.raises((RuntimeError, core.VerificationError), match="update failed downstream"):
         core.Installer(backend.root, data, backend, say=lambda _line: None).run("update", {})
 
-    assert events.index("c1-stop-owner") < events.index("launchctl-bootout")
+    assert events.index("launchctl-bootout") < events.index("c1-stop-owner")
     assert bootouts == [("launchctl", "bootout", target)] * (2 if failure_point == "candidate_verify" else 1)
     assert observations and "pid = 777" in observations[0]
-    _assert_exact_loaded_identity(observations[0], backend.service, old, data, target, running=True)
-    assert any("state = not running" in output and "pid =" not in output for output in observations[1:])
+    _assert_exact_loaded_identity(observations[0], backend.service, old, data, target,
+                                  running=True, action=original_r0_action)
     assert core.current(backend.root) == old
-    assert _loaded["version"] == old
+    assert loaded["version"] == old
+    assert loaded["bootstrap_bytes"][-1] == original_r0_plist
+    assert backend.service.path.read_bytes() == original_r0_plist
     assert core.read_json(backend.root / "update-transaction.json")["step"] == "rolled_back"
 
 @pytest.mark.parametrize("bound", [False, True])
@@ -347,7 +378,7 @@ def test_cached_retained_action_survives_canonical_plist_publication(
     events = []
     _real_c1_stop(data, boundary, events)
     loaded, observations, bootouts, target, _crash = _launchd_harness(
-        backend, data, old, boundary, events)
+        backend, data, old, boundary, events, monkeypatch)
     operation = "a" * 32 if bound else None
     if operation:
         core.write_json(backend.root / "update-transaction.json", {"operation_id": operation})
@@ -372,4 +403,4 @@ def test_cached_retained_action_survives_canonical_plist_publication(
     assert observations and loaded["action"][-1] in observations[0]
     assert boundary.stop_calls == 1
     assert bootouts == [("launchctl", "bootout", target)]
-    assert events.index("c1-stop-owner") < events.index("launchctl-bootout")
+    assert events.index("launchctl-bootout") < events.index("c1-stop-owner")

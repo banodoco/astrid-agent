@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import plistlib
 from pathlib import Path
 
 import pytest
@@ -15,16 +16,19 @@ from tests.test_installer_lifecycle import _installer_runtime, _publish_owner
 def _owned_version(backend, name="old", release=17):
     folder = backend.root / "versions" / name
     folder.mkdir(parents=True)
-    version = Version(folder, Path(sys.executable), folder / "profile.json", {}, release)
+    python = folder / "py" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    version = Version(folder, python, folder / "profile.json", {}, release)
     version.profile.write_text("{}", encoding="utf-8")
     write_json(folder / "version.json", version.document())
     return version
 
 
 def _print_output(backend, data, version, *, state="running", pid=777, path=None,
-                  program=None, loaded_version=None):
-    argv = command(loaded_version or version, data, log=backend.service.log,
-                   env_file=backend.service.env_file)
+                  program=None, loaded_version=None, loaded_action=None):
+    argv = list(loaded_action or command(loaded_version or version, data, log=backend.service.log,
+                                         env_file=backend.service.env_file))
     plist_path = str(path if path is not None else backend.service.path)
     executable = str(program if program is not None else argv[0])
     argv[0] = executable
@@ -65,11 +69,18 @@ def _prepared(tmp_path, monkeypatch):
     selected = {"owner": LABEL, "program_root": str(backend.root), "data_root": str(data)}
     write_json(backend.service.selection, selected)
     backend.service.recorded = lambda: read_json(backend.service.selection)
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {
+        "pid": pid, "uid": platform.current_user(), "birth_id": "birth-1",
+    })
+    monkeypatch.setattr(platform, "process_executable", lambda _pid: str(version.python))
     outputs = []
     queries = []
 
     def launchctl(argv):
         queries.append(list(argv))
+        if argv[1:2] == ["bootout"]:
+            bootouts.append(list(argv))
+            return ""
         response = outputs.pop(0) if outputs else _print_output(
             backend, data, version, state="not running", pid=None,
         )
@@ -85,6 +96,19 @@ def _prepared(tmp_path, monkeypatch):
     return backend, data, paths, boundary, version, outputs, queries, bootouts, manager_stops, signals
 
 
+def _r0_program_root_plist(backend, data, version):
+    """Put the reviewed frozen R0 program-root service action in the fixture."""
+    from tests.test_installer_service_env import _legacy_posix_action
+
+    document = plistlib.loads(backend.service.path.read_bytes())
+    document["ProgramArguments"] = _legacy_posix_action(version, data, backend.service.env_file)
+    document["KeepAlive"] = True
+    document["RunAtLoad"] = True
+    value = plistlib.dumps(document)
+    backend.service.path.write_bytes(value)
+    return value
+
+
 def _preserved_selection_workspace(backend, data, paths):
     journal = backend.root / "update-transaction.json"
     current = backend.root / "current"
@@ -98,9 +122,10 @@ def _preserved_selection_workspace(backend, data, paths):
 
 
 def _observe(backend, data, version, outputs, *, state="not running", pid=None,
-             path=None, program=None, loaded_version=None):
+             path=None, program=None, loaded_version=None, loaded_action=None):
     outputs.append(_print_output(backend, data, version, state=state, pid=pid,
-                                 path=path, program=program, loaded_version=loaded_version))
+                                 path=path, program=program, loaded_version=loaded_version,
+                                 loaded_action=loaded_action))
 
 
 def _corrupt_observation(backend, data, version, *, state, pid, corruption):
@@ -220,8 +245,10 @@ def test_valid_launchctl_observation_single_corruption_refuses(tmp_path, monkeyp
     with pytest.raises(RuntimeOperationError):
         backend.stop(version, data)
 
-    assert boundary.stop_calls == (0 if phase == "initial" else 1)
-    assert signals == ([] if phase == "initial" else [777])
+    # Both observations precede bootout now. A malformed second observation
+    # cannot be deferred to C1, where frozen R0 KeepAlive could race it.
+    assert boundary.stop_calls == 0
+    assert signals == []
     assert _preserved_selection_workspace(backend, data, paths) == before
     assert not any(argv[1:2] == ["bootout"] for argv in queries)
 
@@ -308,14 +335,23 @@ def test_launchd_post_exit_refusal_preserves_selection_and_never_boots_out(
     with pytest.raises(RuntimeOperationError):
         backend.stop(version, data)
 
-    assert boundary.stop_calls == 1
-    assert signals == [777]
+    before_c1 = {
+        "changed_loaded_identity", "changed_action", "changed_path", "replacement_pid_after_exit",
+        "unknown_state", "malformed_state", "query_error",
+    }
+    assert boundary.stop_calls == (0 if case in before_c1 else 1)
+    assert signals == ([] if case in before_c1 else [777])
     assert backend.service.selection.read_bytes() == selection_before
     assert _preserved_selection_workspace(backend, data, paths) == preserved_before
     if case == "changed_publication":
         assert read_json(paths.discovery_path) == publication_expected
         assert read_json(paths.instance_lock_path) == publication_expected
-    assert not any(argv[1:2] == ["bootout"] for argv in queries)
+    if case in before_c1 or case == "initially_unloaded_then_loaded":
+        assert not any(argv[1:2] == ["bootout"] for argv in queries)
+    else:
+        # A post-bootout refusal may not use the replacement as a second stop
+        # target or issue another bootout.
+        assert [argv[1] for argv in queries].count("bootout") == 1
     # The only C1 stop was the selected owner PID captured in the discovery
     # publication; launchd replacement PIDs must never be signaled.
 
@@ -333,11 +369,97 @@ def test_stopped_state_requires_explicit_clean_observation(tmp_path, monkeypatch
     with pytest.raises(RuntimeOperationError):
         backend.stop(version, data)
 
-    assert boundary.stop_calls == 1
-    assert signals == [777]
+    assert boundary.stop_calls == 0
+    assert signals == []
     assert backend.service.selection.read_bytes() == selection_before
     assert _preserved_selection_workspace(backend, data, paths) == preserved_before
     assert not any(argv[1:2] == ["bootout"] for argv in queries)
+
+
+def test_validated_r0_keepalive_boots_out_before_c1_and_then_requires_absence(tmp_path, monkeypatch):
+    backend, data, _paths, boundary, version, outputs, queries, _bootouts, manager_stops, signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    original = _r0_program_root_plist(backend, data, version)
+    action = plistlib.loads(original)["ProgramArguments"]
+    transaction = {
+        "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+        "step": "staged", "data_root": str(data), "old": version.document(),
+    }
+    write_json(backend.root / "update-transaction.json", transaction)
+    backend._update_transaction = (transaction, False)
+    backend.publish_launch_admission(version, data)
+    snapshot = transaction["launchd_r0_plist"]
+    assert backend.service.path.read_bytes() == original
+    assert snapshot["sha256"]
+    _observe(backend, data, version, outputs, state="running", pid=777, loaded_action=action)
+    _observe(backend, data, version, outputs, state="running", pid=777, loaded_action=action)
+    outputs.append(subprocess.CalledProcessError(
+        113, ["launchctl", "print"], output="Could not find service",
+    ))
+
+    backend.stop(version, data)
+
+    bootout = next(index for index, argv in enumerate(queries) if argv[1:2] == ["bootout"])
+    assert bootout < len(queries) - 1
+    assert boundary.stop_calls == 1
+    assert signals == [777]
+    assert manager_stops == ["stop"]
+    assert snapshot["bootout_intent"] is True
+    assert backend.service.path.read_bytes() == original
+
+
+@pytest.mark.parametrize("mismatch", ["label", "plist_path", "arguments", "executable", "uid"])
+def test_r0_prebootout_admission_refuses_each_owner_mismatch(tmp_path, monkeypatch, mismatch):
+    backend, data, paths, boundary, version, outputs, queries, _bootouts, _stops, signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    if mismatch == "label":
+        document = plistlib.loads(backend.service.path.read_bytes())
+        document["Label"] = "com.example.foreign"
+        backend.service.path.write_bytes(plistlib.dumps(document))
+    elif mismatch == "arguments":
+        document = plistlib.loads(backend.service.path.read_bytes())
+        document["ProgramArguments"] = [*document["ProgramArguments"], "--foreign"]
+        backend.service.path.write_bytes(plistlib.dumps(document))
+    elif mismatch == "plist_path":
+        _observe(backend, data, version, outputs, state="running", pid=777,
+                 path=backend.service.path.with_name("foreign.plist"))
+    elif mismatch == "executable":
+        monkeypatch.setattr(platform, "process_executable", lambda _pid: str(tmp_path / "foreign-python"))
+        _observe(backend, data, version, outputs, state="running", pid=777)
+    else:
+        monkeypatch.setattr(platform, "process_identity", lambda pid: {
+            "pid": pid, "uid": platform.current_user() + 1, "birth_id": "birth-1",
+        })
+        _observe(backend, data, version, outputs, state="running", pid=777)
+    before = _preserved_selection_workspace(backend, data, paths)
+
+    with pytest.raises(RuntimeOperationError):
+        backend.stop(version, data)
+
+    assert boundary.stop_calls == 0
+    assert signals == []
+    assert not any(argv[1:2] == ["bootout"] for argv in queries)
+    assert _preserved_selection_workspace(backend, data, paths) == before
+
+
+def test_r0_post_bootout_reappearance_refuses_the_replacement_pid(tmp_path, monkeypatch):
+    backend, data, paths, boundary, version, outputs, queries, _bootouts, _stops, signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    _observe(backend, data, version, outputs, state="running", pid=777)
+    _observe(backend, data, version, outputs, state="running", pid=777)
+    _observe(backend, data, version, outputs, state="running", pid=888)
+    before = _preserved_selection_workspace(backend, data, paths)
+
+    with pytest.raises(RuntimeOperationError, match="appeared after the R0 bootout"):
+        backend.stop(version, data)
+
+    assert boundary.stop_calls == 1
+    assert signals == [777]
+    assert [argv[1] for argv in queries].count("bootout") == 1
+    assert _preserved_selection_workspace(backend, data, paths) == before
 
 
 def test_exact_owned_stopped_job_reaches_one_bootout_after_c1(tmp_path, monkeypatch):
@@ -345,8 +467,10 @@ def test_exact_owned_stopped_job_reaches_one_bootout_after_c1(tmp_path, monkeypa
         tmp_path, monkeypatch,
     )
     _observe(backend, data, version, outputs, state="running", pid=777)
-    _observe(backend, data, version, outputs)
-    _observe(backend, data, version, outputs)
+    _observe(backend, data, version, outputs, state="running", pid=777)
+    outputs.append(subprocess.CalledProcessError(
+        113, ["launchctl", "print"], output="Could not find service",
+    ))
 
     backend.stop(version, data)
 
@@ -392,19 +516,17 @@ def test_already_unloaded_launchd_job_is_idempotent_after_c1_exit(tmp_path, monk
         tmp_path, monkeypatch,
     )
     _observe(backend, data, version, outputs, state="running", pid=777)
+    _observe(backend, data, version, outputs, state="running", pid=777)
     outputs.append(subprocess.CalledProcessError(
         113, ["launchctl", "print"], output="Could not find service",
     ))
-    outputs.append(subprocess.CalledProcessError(
-        113, ["launchctl", "print"], output="Could not find service",
-    ))
-    # Runtime's C1 callback sees that launchd already unloaded this selected label.
+    # The validated job is gone before Runtime's C1 callback runs.
     backend.stop(version, data)
 
     assert boundary.stop_calls == 1
     assert signals == [777]
     assert manager_stops == ["stop"]
-    assert not any(argv[1:2] == ["bootout"] for argv in queries)
+    assert [argv[1] for argv in queries].count("bootout") == 1
 
 
 @pytest.mark.parametrize("appears", [False, True])
@@ -415,7 +537,7 @@ def test_absent_plist_still_rechecks_loaded_job_at_c1_bootout_boundary(tmp_path,
     paths.discovery_path.unlink()
     paths.instance_lock_path.unlink()
     backend.service.path.unlink()
-    for _ in range(2 if appears else 3):
+    for _ in range(1 if appears else 2):
         outputs.append(subprocess.CalledProcessError(
             113, ["launchctl", "print"], output="Could not find service"))
     if appears:
@@ -425,6 +547,6 @@ def test_absent_plist_still_rechecks_loaded_job_at_c1_bootout_boundary(tmp_path,
     else:
         backend.stop(version, data)
 
-    assert len(queries) == 3
+    assert len(queries) == 2
     assert all(argv[:2] == ["launchctl", "print"] for argv in queries)
     assert signals == []

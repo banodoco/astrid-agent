@@ -780,7 +780,26 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             launchd_booted_out = False
             if self.managed_by != "pinokio":
                 if self.service.system == "darwin":
-                    launchd_snapshot = self._launchd_recovery_snapshot(data, active_only=True)
+                    # C1's busy/owner admission is read-only. It must precede
+                    # bootout so a refused update never strips KeepAlive from a
+                    # Runtime that is still entitled to remain running.
+                    self.preflight_stop(data)
+                    # The retained plist belongs only to the original R0
+                    # selection.  A later candidate stop (including rollback
+                    # after candidate verification) is its own, freshly
+                    # admitted job; treating it as an R0 reappearance would
+                    # make that safe rollback impossible.
+                    active = self._active_update_transaction()
+                    if active is not None and version is not None:
+                        try:
+                            retained_old = Version.load(active[0]["old"])
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise ValueError("The update has an invalid retained R0 version.") from exc
+                        is_retained_r0 = retained_old.document() == version.document()
+                    else:
+                        is_retained_r0 = False
+                    launchd_snapshot = (self._launchd_recovery_snapshot(data, active_only=True)
+                                        if is_retained_r0 else None)
                     if launchd_snapshot is not None and type(launchd_snapshot.get("bootout_intent", False)) is not bool:
                         raise ValueError("The retained R0 LaunchAgent bootout state is invalid.")
                     launchd_booted_out = bool((launchd_snapshot or {}).get("bootout_intent", False))
@@ -795,7 +814,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                         # An update needs an exact durable R0 definition before
                         # changing launchd. Direct stop/uninstall has no rollback
                         # phase and may use the reviewed action admission alone.
-                        if self._active_update_transaction() is not None and launchd_snapshot is None:
+                        if is_retained_r0 and launchd_snapshot is None:
                             raise ValueError("The update has no retained R0 LaunchAgent definition; refusing bootout.")
                         if launchd_snapshot is not None:
                             self._mark_launchd_bootout_intent(data, launchd_snapshot)
