@@ -105,8 +105,11 @@ def test_release0_offline_workspace_blocks_repetition_reacquisition(
 
     state = {"enabled": True, "running": True, "workspace_opened": False}
     calls = []
+    boundaries = []
     monkeypatch.setattr(shared_journey.sys, "platform", "win32")
-    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence")
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "EVIDENCE", tmp_path / "evidence" / "release0-api-seed")
+    monkeypatch.setattr(journey, "_capture_release0_seed_boundary", boundaries.append)
 
     def ownership(*unused):
         assert state["running"]
@@ -151,14 +154,95 @@ def test_release0_offline_workspace_blocks_repetition_reacquisition(
     monkeypatch.setattr(jumps, "workspace", workspace)
     def call():
         return jumps.direct_workspace(
-            tmp_path / "program", {}, tmp_path / "data", tmp_path / "evidence", "seed", {})
+            tmp_path / "program", {}, tmp_path / "data",
+            tmp_path / "evidence" / "release0-api-seed", "seed", {})
     if helper_fails:
         with pytest.raises(ValueError, match="simulated helper failure"):
             call()
     else:
         assert call() == {"seeded": True}
     assert calls == ["seed-stop-service.log", "seed-start-service.log"]
+    # The after boundary is reached from direct_workspace's finally block, so
+    # it is retained even when the offline seed helper raises.
+    assert boundaries == ["before-seed", "after-seed"]
     assert state == {"enabled": True, "running": True, "workspace_opened": True}
+
+
+def test_release0_seed_boundary_capture_records_task_and_run_owned_owners(tmp_path, monkeypatch):
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1" / "release0-api-seed"
+    events = []
+    observations = [
+        {
+            "schema_version": 1,
+            "receipt_kind": "windows-release0-seed-boundary",
+            "task": {"status": "present", "enabled": {"status": "observed", "value": False},
+                     "running": {"status": "observed", "value": False}},
+            "runtime_owner_census": {"status": "observed", "owner_record_limit": 8,
+                                      "owners": [{"pid": 71, "parent_pid": 7,
+                                                  "creation_time": {"status": "observed", "value": "before"},
+                                                  "command_identity": {"status": "observed", "sha256": "a" * 64}}]},
+        },
+        {
+            "schema_version": 1,
+            "receipt_kind": "windows-release0-seed-boundary",
+            "task": {"status": "present", "enabled": {"status": "observed", "value": False},
+                     "running": {"status": "observed", "value": True}},
+            "runtime_owner_census": {"status": "observed", "owner_record_limit": 8,
+                                      "owners": [{"pid": 72, "parent_pid": 71,
+                                                  "creation_time": {"status": "observed", "value": "after"},
+                                                  "command_identity": {"status": "observed", "sha256": "b" * 64}}]},
+        },
+    ]
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setenv("ASTRID_CI_PROGRAM_ROOT", r"C:\\journey\\program")
+    monkeypatch.setenv("ASTRID_CI_DATA_ROOT", r"C:\\journey\\data")
+    monkeypatch.setattr(journey, "run", lambda _argv, name, **_kwargs: events.append(name) or "")
+
+    def capture(argv, **kwargs):
+        events.append("capture")
+        assert argv[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
+        assert "Get-ScheduledTask -TaskName 'Astrid Runtime'" in argv[-1]
+        assert "Get-ScheduledTaskInfo" in argv[-1] and "Get-CimInstance Win32_Process" in argv[-1]
+        assert "Stop-ScheduledTask" not in argv[-1] and "Start-ScheduledTask" not in argv[-1]
+        assert "PSModulePath" not in {key for key in kwargs["env"] if key.casefold() == "psmodulepath"}
+        return subprocess.CompletedProcess(argv, 0, json.dumps(observations.pop(0)).encode(), b"")
+
+    monkeypatch.setattr(journey.subprocess, "run", capture)
+    journey.powershell(journey.OFFLINE_WORKSPACE_STOP, "seed-stop-service.log", show=False, timeout=30)
+    # Model the failing seed path: direct_workspace still invokes the protected
+    # restart command from finally, which captures the failure boundary first.
+    journey.powershell(journey.OFFLINE_WORKSPACE_START, "seed-start-service.log", show=False, timeout=30)
+
+    assert events == ["seed-stop-service.log", "capture", "capture", "seed-start-service.log"]
+    before = json.loads((evidence.parent / "runtime-service-service-seed-boundary-before-seed.log").read_text())
+    after = json.loads((evidence.parent / "runtime-service-service-seed-boundary-after-seed.log").read_text())
+    assert before["capture"] == {"status": "captured", "exit_code": 0}
+    assert before["task"]["enabled"]["value"] is False
+    assert before["runtime_owner_census"]["owners"][0]["pid"] == 71
+    assert after["task"]["running"]["value"] is True
+    assert after["runtime_owner_census"]["owners"][0]["command_identity"]["sha256"] == "b" * 64
+
+
+def test_release0_seed_boundary_capture_failure_does_not_change_seed_commands(tmp_path, monkeypatch):
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1" / "release0-api-seed"
+    commands = []
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "EVIDENCE", evidence)
+    monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "program")
+    monkeypatch.setattr(journey, "data_root", lambda: tmp_path / "data")
+    monkeypatch.setattr(journey, "run", lambda _argv, name, **_kwargs: commands.append(name) or "")
+    monkeypatch.setattr(journey.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(
+        subprocess.TimeoutExpired(args[0], 30)))
+
+    journey.powershell(journey.OFFLINE_WORKSPACE_STOP, "seed-stop-service.log", show=False, timeout=30)
+    journey.powershell(journey.OFFLINE_WORKSPACE_START, "seed-start-service.log", show=False, timeout=30)
+
+    assert commands == ["seed-stop-service.log", "seed-start-service.log"]
+    for boundary in ("before-seed", "after-seed"):
+        record = json.loads((evidence.parent / f"runtime-service-service-seed-boundary-{boundary}.log").read_text())
+        assert record["capture"]["status"] == "capture-failed"
+        assert "TimeoutExpired" in record["capture"]["reason"]
 
 
 @pytest.fixture
