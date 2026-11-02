@@ -164,7 +164,7 @@ def test_registration_preserves_settings_and_records_selection(tmp_path, monkeyp
     manager.register(version, tmp_path / "data")
     manager.register(version, tmp_path / "data")
     assert manager.env_file.read_bytes() == before
-    assert str(manager.env_file) in manager.path.read_text()
+    assert not manager.path.exists()  # No unit is written without systemd.
     assert read_json(manager.selection)["program_root"] == str(root)
     assert read_json(manager.selection)["service_settings"] == {"ASTRID_WARM_IDLE_SECONDS": "17"}
     assert read_json(manager.selection)["identity"] == {"release": 12, "managed_by": None}

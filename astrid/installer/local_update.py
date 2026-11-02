@@ -357,8 +357,10 @@ def _verify_selected_identity(backend: Backend, version: Version, data: Path,
     except Exception as exc:
         raise ValueError(f"The selected Runtime identity could not be read: {exc}") from exc
     health = status.get("health") if isinstance(status, dict) else None
-    if (not isinstance(health, dict) or health.get("release") != version.release
-            or health.get("managed_by") != backend.managed_by):
+    identity = health.get("identity") if isinstance(health, dict) else None
+    if (not isinstance(identity, dict) or set(identity) != {"release", "managed_by"}
+            or type(identity.get("release")) is not int or identity["release"] != version.release
+            or identity["managed_by"] != backend.managed_by):
         raise ValueError("The ready Runtime identity does not match the selected release and manager.")
 
 

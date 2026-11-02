@@ -612,7 +612,7 @@ class Installer:
             self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
             self.backend.register(old, self.data)
-            self.outcomes["startup"] = "registered; readiness not confirmed"
+            self.outcomes["startup"] = "configured; readiness not confirmed"
             install_launcher(self.root)
             self.backend.start(old, self.data)
             self.backend.verify(old, self.data, realm["realm_id"])
@@ -655,9 +655,9 @@ class Installer:
                 switch(self.root, candidate)
 
             def activate(candidate: Version, data: Path, selected_realm: dict) -> None:
-                self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
+                self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid.")
                 self.backend.register(candidate, data)
-                self.outcomes["startup"] = "registered; readiness not confirmed"
+                self.outcomes["startup"] = "configured; readiness not confirmed"
                 if self.managed_by != "pinokio":
                     self.backend.start(candidate, data)
                     self.backend.verify(candidate, data, selected_realm["realm_id"])
@@ -709,9 +709,9 @@ class Installer:
             else:
                 realm = self.backend.create(candidate_version, self.data)
             switch(self.root, candidate_version)
-            self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
+            self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid.")
             self.backend.register(candidate_version, self.data)
-            self.outcomes["startup"] = "registered; readiness not confirmed"
+            self.outcomes["startup"] = "configured; readiness not confirmed"
             install_launcher(self.root)
             if self.managed_by != "pinokio":
                 self.backend.start(candidate_version, self.data)

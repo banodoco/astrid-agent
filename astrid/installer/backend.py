@@ -1126,6 +1126,16 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         """Upgrade legacy version and selection records without service changes."""
         choices = getattr(self.service, "choices", None)
         fields = {"choices": choices} if choices is not None else None
+        if fields is not None and not self.service.recorded():
+            # Never publish a choices-only selection: recorded() must be able
+            # to authenticate it before startup registration. Fresh installs
+            # and healthy legacy repair already have an owned install marker.
+            marker = read_json(self.root / "install.json")
+            if marker.get("owner") == LABEL and marker.get("data_root"):
+                data = absolute(marker["data_root"])
+                fields.update(owner=LABEL, program_root=str(self.root), data_root=str(data))
+            else:
+                fields = None  # Registration will publish the complete receipt.
         persist_install_identity(version, self.root, selection=self.service.selection,
                                  fields=fields)
 

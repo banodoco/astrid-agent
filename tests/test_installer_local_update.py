@@ -16,6 +16,31 @@ from astrid.installer.core import RuntimeOperationError, Version, current, switc
 from astrid.installer.tools import DEFAULT_OMP_SOURCE
 
 
+@pytest.mark.parametrize("health,valid", [
+    ({"identity": {"release": 1, "managed_by": None}}, True),
+    ({"identity": {"release": True, "managed_by": None}}, False),
+    ({"identity": {"release": 2, "managed_by": None}}, False),
+    ({"identity": {"release": 1, "managed_by": "pinokio"}}, False),
+    ({"identity": {"release": 1, "managed_by": None, "unexpected": True}}, False),
+    ({"release": 1, "managed_by": None}, False),
+    (None, False),
+])
+def test_local_activation_validates_canonical_runtime_identity(tmp_path, monkeypatch, health, valid):
+    from astrid.installer.backend import Backend
+
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    version = Version(root / "versions/one", Path(sys.executable), root / "profile.json", {}, 1)
+    write_json(version.root / "manifest.json", _manifest(1, "a" * 40, "b" * 40))
+    backend = Backend(root, tmp_path / "log", tmp_path / "uv")
+    # Model only the Runtime subprocess response, with the real Backend parser.
+    monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: json.dumps({"health": health}))
+    if valid:
+        local._verify_selected_identity(backend, version, data)
+    else:
+        with pytest.raises(ValueError, match="identity does not match"):
+            local._verify_selected_identity(backend, version, data)
+
+
 def _manifest(release, agent_sha, runtime_sha):
     return {
         "schema_version": 1, "release": release,
@@ -94,7 +119,7 @@ def _installed(tmp_path, monkeypatch, *, busy=False, candidate_failure=False):
         stop=stop, register=lambda version, _data: events.append("register:" + version.root.name),
         start=start, verify=verify,
         runtime=lambda version, _data, *_args, **_kwargs: {
-            "health": {"release": version.release, "managed_by": version.managed_by},
+            "health": {"identity": {"release": version.release, "managed_by": version.managed_by}},
         },
         stage=lambda *_args: events.append("stage") or candidate,
         validate_candidate=lambda *_args: events.append("validate-candidate"),
