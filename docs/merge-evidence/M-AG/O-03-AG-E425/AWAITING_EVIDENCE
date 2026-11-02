@@ -1,0 +1,1 @@
+AWAITING_EVIDENCE: exact-head Actions CI for lane/M-AG/AG-CI-LIFECYCLE-PIN-R1 @ 89750ad807ecf119114e1962cc40222ae8a8b848; requested in STATUS ACTIONS line. Receipt: target pin already present at base; no code diff. Do not accept/handoff until hosted evidence and CI disposition.
