@@ -29,7 +29,8 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
         return []
     task_modes = {'text_to_image': 't2i', 'text_to_image_single_frame': 't2i', 'image_to_image': 'i2i', 'image_edit': 'edit',
                   'text_to_video': 't2v', 'image_to_video': 'i2v', 'first_last_frame': 'flf',
-                  'first_last_frame_video': 'flf', 'text_to_audio_song': 'music',
+                  'first_last_frame_video': 'flf', 'text_to_audio_song': 'music', 'music': 'music',
+                  'video_to_audio_foley': 'sfx', 'tts': 'tts',
                   'text_to_speech_custom_voice': 'tts', 'text_to_speech_voice_clone': 'tts',
                   'text_to_speech_voice_design': 'tts'}
     from vibecomfy.entries import LOADER_ROLES
