@@ -13,6 +13,8 @@ from vibecomfy.workflow_bundle import _semantic_edges, emit_bundle, load_bundle
 
 PAIR = (Path(__file__).resolve().parents[3] / "astrid/packs/h3_av/workflows"
         / "native_h3_continuation_refs/workflow.py")
+REF2V_LORA = "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
+FL2V_LORA = "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
 
 
 def test_declared_edges_match_constructor_output() -> None:
@@ -60,6 +62,8 @@ def test_start_modes_preserve_canvas_edges_through_canonical_roundtrip(
         if node.class_type in {"MiniMaxH3AVExtensionController", "MiniMaxH3AVStartModeParam"}:
             node.inputs["start"] = start
     api = workflow.compile("api")
+    assert api["935"]["inputs"]["lora_name"] == REF2V_LORA
+    assert api["935"]["inputs"]["lora_name"] != FL2V_LORA
     canvas = api["972"]["inputs"]
     assert canvas["source_width"] == ["100", 1]
     assert canvas["source_height"] == ["100", 2]
@@ -77,3 +81,24 @@ def test_start_modes_preserve_canvas_edges_through_canonical_roundtrip(
     assert published.semantic_digest == reopened.semantic_digest == workflow.semantic_digest()
     assert published.ui_digest == reopened.ui_digest == bundle.ui_digest
     assert reopened.workflow.compile("api") == api
+
+
+def test_ref2va_uses_ref2v_lora_in_source_and_canonical_pair(tmp_path: Path) -> None:
+    bundle = load_bundle(PAIR, trust=Provenance.USER_CONFIRMED)
+    api = bundle.workflow.compile("api")
+    assert api["935"]["class_type"] == "LoraLoaderModelOnly"
+    assert api["935"]["inputs"]["lora_name"] == REF2V_LORA
+    assert api["935"]["inputs"]["lora_name"] != FL2V_LORA
+
+    source = json.loads(PAIR.with_name("source.json").read_text())
+    lora = next(node for node in source["nodes"] if node["id"] == 935)
+    assert lora["widgets_values_named"]["lora_name"] == REF2V_LORA
+    assert lora["widgets_values"][0] == REF2V_LORA
+
+    destination = tmp_path / "workflow.py"
+    shutil.copyfile(PAIR.with_suffix(".vibe.json"), destination.with_suffix(".vibe.json"))
+    emitted = emit_bundle(bundle.workflow, destination, provenance=Provenance.AGENT_AUTHORED)
+    reopened = load_bundle(destination, trust=Provenance.USER_CONFIRMED)
+    assert emitted.workflow.compile("api")["935"]["inputs"]["lora_name"] == REF2V_LORA
+    assert reopened.workflow.compile("api")["935"]["inputs"]["lora_name"] == REF2V_LORA
+    assert emitted.semantic_digest == reopened.semantic_digest == bundle.semantic_digest
