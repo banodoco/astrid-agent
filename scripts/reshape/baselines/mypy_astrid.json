@@ -5,7 +5,7 @@
     "scripts/reshape"
   ],
   "command": [
-    "/home/user/merge/ws/M-AG/queue/running/I-AG-07-R2/venv/bin/python",
+    "/home/user/merge/ws/M-AG/queue/running/I-AG-07-R3/venv/bin/python",
     "-m",
     "mypy",
     "astrid",
@@ -15,7 +15,7 @@
     "--no-pretty",
     "--show-error-codes"
   ],
-  "finding_count": 2268,
+  "finding_count": 2267,
   "code_counts": {
     "arg-type": 492,
     "assignment": 200,
@@ -32,7 +32,7 @@
     "method-assign": 2,
     "misc": 44,
     "name-defined": 17,
-    "no-redef": 21,
+    "no-redef": 20,
     "operator": 39,
     "override": 11,
     "return": 4,
