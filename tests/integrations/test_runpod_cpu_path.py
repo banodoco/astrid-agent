@@ -19,7 +19,6 @@ import threading
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -364,6 +363,7 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         "bundle": "workflow.py", "needs": [], "binds": {}, "defaults": {}}))
 
     daemon = real_runtime()
+    realm_id = daemon.service.realm["id"]
     owner = WorkspaceClient(daemon.endpoint, daemon.token)
     client = AstridClient(remote=RemoteAstridClient(owner))
     project = client.projects.create(name="CPU RunPod", slug="cpu-runpod", idempotency_key="project")
@@ -439,4 +439,4 @@ def test_cpu_runpod_http_journey(tmp_path, monkeypatch, real_runtime, tuple_sour
         assert not worker.is_alive()
         host.shutdown()
         daemon.stop()
-    _same_root_lifecycle(tmp_path, tmp_path / "realm", daemon.service.realm["id"])
+    _same_root_lifecycle(tmp_path, tmp_path / "realm", realm_id)
