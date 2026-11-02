@@ -380,6 +380,12 @@ def discover_pack_metadata(
     scanned_external_roots: set[Path] = set()
 
     def _add(pack: PackDefinition, source_kind: str, *, source_record: Any | None = None) -> None:
+        if pack.id == "personal":
+            from astrid.core.pack.personal import resolve_personal_packs_root
+
+            personal_root = resolve_personal_packs_root()
+            if personal_root is not None and pack.root.resolve() == personal_root.resolve():
+                source_kind = "personal"
         metadata: dict[str, Any] = {}
         if source_record is not None:
             metadata = {
