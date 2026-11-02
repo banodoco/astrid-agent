@@ -5056,9 +5056,30 @@ class RuntimeProtocolClient:
         fence: int | None = None,
         lease_id: str | None = None,
     ):
+        def preserve_failure(resource):
+            def field(name):
+                return resource.get(name) if isinstance(resource, Mapping) else getattr(resource, name, None)
+            state = field("state") or field("status")
+            result = field("result")
+            error = result.get("error") if isinstance(result, Mapping) else None
+            # Runtime can return an existing failed task. It also retains its
+            # failure result if failure races the version-fenced cancel write.
+            if state == "failed" or (state == "cancelled" and error):
+                detail = error if isinstance(error, Mapping) else {}
+                raise AstridError(detail.get("message") or "Runtime task failed during cancellation",
+                                  code=detail.get("code") or "executor_failed",
+                                  field=detail.get("field"), fix=detail.get("fix") or
+                                  "Inspect the Runtime task failure before retrying")
+
         if attempt_id is None or fence is None:
-            return self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
+            result = self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
+            preserve_failure(result)
+            return result
         task = self._lifecycle_client().get_task(task_id)
+        preserve_failure(task)
+        state = task.get("state", task.get("status")) if isinstance(task, Mapping) else getattr(task, "state", None)
+        if state == "cancelled":
+            return task
         current_attempt = (
             task.get("attempt_id")
             if isinstance(task, Mapping)
@@ -5069,11 +5090,13 @@ class RuntimeProtocolClient:
         version = task.get("version") if isinstance(task, Mapping) else getattr(task, "version", None)
         if isinstance(version, bool) or not isinstance(version, int):
             raise HostError("runtime cancellation target has no version fence")
-        return self._lifecycle_client().cancel_task(
+        result = self._lifecycle_client().cancel_task(
             task_id,
             expected_version=version,
             idempotency_key=f"cancel-{task_id}-{attempt_id}-{int(fence)}",
         )
+        preserve_failure(result)
+        return result
 
     def get_object(self, digest: str) -> bytes:
         response = self.generated.get_object(digest)
@@ -9325,6 +9348,7 @@ class GenericPackHost:
         terminal["write_attempted"] = True
         minimal = _minimal or terminal.get("minimal", False)
         forced_at_start = terminal.get("forced")
+        status_at_start = terminal.get("status")
         if not minimal:
             # Terminal evidence must exist before optional manifest validation
             # or output harvesting can block or throw inside failure handling.
@@ -9459,6 +9483,7 @@ class GenericPackHost:
             # A slow harvest may have started before the observer's timeout.
             # Recheck at publication, without holding this lock over harvesting.
             if (terminal.get("receipt_final") or terminal.get("forced") != forced_at_start
+                    or terminal.get("status") != status_at_start
                     or (terminal.get("forced") and not minimal)):
                 return
             root.mkdir(parents=True, exist_ok=True)
@@ -9623,8 +9648,9 @@ class GenericPackHost:
                 # failure mutation; a broken read cannot suppress that write.
                 if task_snapshot()["status"] != "cancelled":
                     raise
-                terminal.update(recorded=True, status="cancelled", forced="cancelled", minimal=True,
-                                error=AstridError("execution cancelled", code="cancelled"))
+                # A remote cancellation rejects our write; it does not erase
+                # the local failure or deadline that required that write.
+                terminal["recorded"] = True
 
         def read_progress():
             root = terminal.get("root")
@@ -9719,12 +9745,16 @@ class GenericPackHost:
             if code == "lease_lost" and terminal["lease_diagnostic"].get("category") == "observing":
                 record_lease_diagnostic("lease_loss_unclassified")
             with completion_lock:
-                if terminal.get("recorded") or terminal.get("forced"):
+                deadline_after_cancel = (code == "timeout" and terminal.get("forced") == "cancelled"
+                                         and terminal.get("status") == "cancelled")
+                if (terminal.get("recorded") or terminal.get("forced")) and not deadline_after_cancel:
                     return
                 error = AstridError("execution deadline exceeded" if code == "timeout" else
                                     "execution lease lost" if code == "lease_lost" else "execution cancelled", code=code)
                 terminal.update(forced=code, error=error, status="timeout" if code == "timeout" else
                                 "cancelled" if code == "cancelled" else "failed", minimal=True)
+                if deadline_after_cancel:
+                    terminal["receipt_final"] = False
                 abort.set()
             try:
                 if code == "cancelled":
@@ -9736,7 +9766,11 @@ class GenericPackHost:
                 else:
                     ensure_failure(error)
             except BaseException as reporting_error:
-                terminal["reporting_error"] = reporting_error
+                with completion_lock:
+                    terminal["reporting_error"] = reporting_error
+                    if (code == "cancelled" and terminal.get("forced") == "cancelled"
+                            and terminal.get("status") == "cancelled"):
+                        terminal.update(status="failed", error=reporting_error, receipt_final=False)
             finally:
                 if terminal.get("root") is not None:
                     self._write_task_result(terminal)
@@ -9901,6 +9935,9 @@ class GenericPackHost:
                     _publish_busy(busy_path, -1)
                 if owns_attempt:
                     self._handoff_leave_attempt(thread_id)
+                if (sys.exc_info()[1] is None and terminal.get("forced") == "cancelled"
+                        and terminal.get("reporting_error") is not None):
+                    raise terminal["reporting_error"]
 
     def _run_task_impl(
         self,
@@ -10257,9 +10294,13 @@ class GenericPackHost:
                     raise HostError("deadline cancellation could not be verified") from status_exc
                 if state not in {"cancelled", "failed"}:
                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
-                deadline_failed = state == "failed"
+                # Cancellation may have won the remote transition, but the
+                # local execution still exceeded its deadline.
+                deadline_failed = True
 
         def handle_guard_abort() -> None:
+            if _terminal.get("forced") == "cancelled" and _terminal.get("reporting_error") is not None:
+                raise _terminal["reporting_error"]
             if _terminal.get("forced") == "lease_lost":
                 raise HostError("execution lease lost")
             if _terminal.get("forced") == "timeout":
@@ -10277,6 +10318,7 @@ class GenericPackHost:
                 )
                 raise HostError(_evidence_cap_message(evidence_failure_message))
             if deadline_exceeded:
+                _terminal["force_abort"]("timeout")
                 terminalize_deadline()
             elif callable(getattr(self.client, "cancel", None)):
                 completion_call(self.client.cancel, task_id, attempt_id=attempt_id,
@@ -11090,6 +11132,11 @@ class GenericPackHost:
             # Keep the lease pump alive through harvesting, upload, and
             # settlement; only stop it once the claimed attempt is terminal.
             cleanup_errors: list[str] = []
+            failure = sys.exc_info()[1]
+            if (_terminal.get("forced") == "cancelled" and failure is not None
+                    and not isinstance(failure, HostCancelled)):
+                with _terminal["completion_lock"]:
+                    _terminal.update(status="failed", error=failure, receipt_final=False)
             if not _terminal.get("forced"):
                 _terminal.update(
                     status="succeeded" if settled else "timeout" if deadline_exceeded or deadline_failed
