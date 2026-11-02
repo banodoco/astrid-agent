@@ -1094,6 +1094,29 @@ def test_windows_diagnostics_workflow_retains_launch_and_original_command():
     assert "if: always()" in upload and "journey-manager-${{ matrix.job_id }}" in upload
 
 
+def test_macos_failure_capture_retains_legacy_runtime_owner_log_separately(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
+    log_dir.mkdir(parents=True)
+    (log_dir / "install.log").write_text("install output\n", encoding="utf-8")
+    (log_dir / "runtime.log").write_text("runtime diagnostic\n", encoding="utf-8")
+    (log_dir / "runtime-service.log").write_text("release-0 owner failure\n", encoding="utf-8")
+    (log_dir / "service-pack-host.log").write_text("pack host output\n", encoding="utf-8")
+    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+
+    expected = {
+        "install.log": "install output\n",
+        "runtime-service-runtime.log": "runtime diagnostic\n",
+        "runtime-service-service-owner.log": "release-0 owner failure\n",
+        "runtime-service-service-pack-host.log": "pack host output\n",
+    }
+    assert {name: (evidence / name).read_text(encoding="utf-8") for name in expected} == expected
+
+
 @pytest.mark.parametrize("module_source, expected", [
     ("raise ImportError('import sentinel')\n", "ImportError: import sentinel"),
     ("def scheduled_task_diagnostics(*, leg):\n    print('preflight leg:', leg, flush=True)\n    print('partial stdout', flush=True)\n    raise RuntimeError('preflight sentinel')\n", "RuntimeError: preflight sentinel"),

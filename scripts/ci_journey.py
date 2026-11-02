@@ -554,12 +554,21 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
     else:
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
-    paths = [log_dir / "install.log", log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    paths = [
+        log_dir / "install.log",
+        log_dir / "runtime.log",
+        # Release 0 writes the native manager owner's combined stream here.
+        # Keep it distinct from Runtime's own runtime.log and from profile
+        # service logs while using the workflow's existing named-log namespace.
+        log_dir / "runtime-service.log",
+        *sorted(log_dir.glob("service-*.log")),
+    ]
     for source in paths:
         if source.is_symlink() or not source.is_file():
             continue
         name = ("install.log" if source.name == "install.log" else
                 "runtime-service-runtime.log" if source.name == "runtime.log" else
+                "runtime-service-service-owner.log" if source.name == "runtime-service.log" else
                 f"runtime-service-{source.name}")
         target = evidence / name
         try:
