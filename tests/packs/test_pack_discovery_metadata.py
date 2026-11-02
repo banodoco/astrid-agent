@@ -2,7 +2,7 @@
 
 These exercise the shared ``astrid.core.pack.discovery`` module that the
 executor, orchestrator, and element registries now delegate to. The focus is
-the source / local / explicit-extra / environment walk, identical ordering
+the source / managed / explicit-extra / environment walk, identical ordering
 across registry consumers, and that skills
 discovery can consume the same metadata.
 """
@@ -18,7 +18,6 @@ from unittest import mock
 
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.pack import (
-    PackValidationError,
     discover_packs,
     load_pack_manifest,
     pack_manifest_path,
@@ -27,6 +26,7 @@ from astrid.core.pack.discovery import (
     ASTRID_PACKS_PATH_ENV,
     SOURCE_KINDS,
     DiscoveredPack,
+    discover_canonical_pack_metadata,
     discover_pack_metadata,
     discover_packs_ordered,
 )
@@ -36,8 +36,8 @@ def write_pack(root: Path, pack_id: str, *, folder: str | None = None) -> Path:
     pack_root = root / (folder or pack_id)
     pack_root.mkdir(parents=True)
     (pack_root / "pack.yaml").write_text(
-        f"schema_version: 2\nid: {pack_id}\nname: {pack_id.title()} Pack\n"
-        "version: 1.0.0\ncapabilities: [testing]\n",
+        f"schema_version: 3\nid: {pack_id}\nname: {pack_id.title()} Pack\n"
+        "version: 1.0.0\npack_api: \"1.0\"\nrendering: {}\n",
         encoding="utf-8",
     )
     return pack_root
@@ -90,7 +90,7 @@ def _make_pack(root: Path, pack_id: str, *, folder: str | None = None):
 
 
 class PackDiscoveryMetadataTest(unittest.TestCase):
-    def test_local_layer_requires_an_authored_manifest(self) -> None:
+    def test_project_local_directory_is_not_a_discovery_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp) / "repo"
             packs_root = repo_root / "astrid" / "packs"
@@ -128,7 +128,7 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
             self.assertFalse((local_pack / "pack.yaml").is_file())
             self.assertEqual([dp.id for dp in discovered], [])
 
-    def test_existing_invalid_local_pack_manifest_is_not_overwritten(self) -> None:
+    def test_project_local_manifest_is_not_read_or_changed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp) / "repo"
             packs_root = repo_root / "astrid" / "packs"
@@ -138,8 +138,8 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
             (element_root / "element.yaml").write_text("id: stamp\n", encoding="utf-8")
             local_manifest = local_pack / "pack.yaml"
             local_manifest.write_text(
-                "schema_version: 2\nid: not_local\nname: Broken\nversion: 1.0.0\n"
-                "capabilities: [testing]\n",
+                "schema_version: 3\nid: not_local\nname: Broken\nversion: 1.0.0\n"
+                "pack_api: \"1.0\"\nrendering: {}\n",
                 encoding="utf-8",
             )
 
@@ -150,15 +150,15 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
                     return discover_packs(packs_root)
                 return ()
 
-            with self.assertRaisesRegex(PackValidationError, "must match folder name"):
-                discover_pack_metadata(
-                    project_root=repo_root,
-                    discover_packs_fn=scan,
-                )
+            discovered = discover_pack_metadata(
+                project_root=repo_root,
+                discover_packs_fn=scan,
+            )
 
+            self.assertEqual(discovered, ())
             self.assertIn("id: not_local", local_manifest.read_text(encoding="utf-8"))
 
-    def test_source_layer_excludes_local_and_indexes_in_order(self) -> None:
+    def test_source_layer_treats_local_as_an_ordinary_source_pack(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             alpha = _make_pack(root, "alpha")
@@ -170,11 +170,11 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
 
             discovered = discover_pack_metadata(discover_packs_fn=scan)
 
-        self.assertEqual([dp.id for dp in discovered], ["alpha", "beta"])
+        self.assertEqual([dp.id for dp in discovered], ["alpha", "local", "beta"])
         self.assertTrue(all(dp.source_kind == "source" for dp in discovered))
-        self.assertEqual([dp.priority_index for dp in discovered], [0, 1])
+        self.assertEqual([dp.priority_index for dp in discovered], [0, 1, 2])
 
-    def test_local_layer_only_keeps_local_pack(self) -> None:
+    def test_project_local_pack_is_not_loaded_as_a_special_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "src"
             src.mkdir()
@@ -200,11 +200,20 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
                 discover_packs_fn=scan,
             )
 
-        # source first, then only the `local` pack from the project layer.
-        self.assertEqual([dp.id for dp in discovered], ["alpha", "local"])
-        self.assertEqual([dp.source_kind for dp in discovered], ["source", "local"])
+        # A project-local directory is not implicitly admitted by discovery.
+        self.assertEqual([dp.id for dp in discovered], ["alpha"])
+        self.assertEqual([dp.source_kind for dp in discovered], ["source"])
 
-    def test_extra_roots_layer_excludes_local(self) -> None:
+    def test_canonical_discovery_does_not_admit_project_local_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "project"
+            _make_pack(project_root / "astrid" / "packs", "local")
+
+            discovered = discover_canonical_pack_metadata(project_root=project_root)
+
+        self.assertEqual(discovered, ())
+
+    def test_extra_roots_layer_treats_local_as_an_ordinary_pack(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             extra_dir = Path(tmp) / "extra"
             extra_dir.mkdir()
@@ -228,11 +237,11 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
                 extra_pack_roots=(str(extra_dir),),
             )
 
-        self.assertEqual([dp.id for dp in discovered], ["alpha", "gamma"])
-        self.assertEqual([dp.source_kind for dp in discovered], ["source", "extra"])
+        self.assertEqual([dp.id for dp in discovered], ["alpha", "gamma", "local"])
+        self.assertEqual([dp.source_kind for dp in discovered], ["source", "extra", "extra"])
 
     def test_source_kinds_include_env_in_priority_order(self) -> None:
-        self.assertEqual(SOURCE_KINDS, ("source", "local", "managed", "extra", "env"))
+        self.assertEqual(SOURCE_KINDS, ("source", "managed", "extra", "env"))
 
     def test_env_layer_uses_pathsep_and_skips_empty_or_missing_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -258,8 +267,8 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
                     discover_packs_fn=scan,
                 )
 
-        self.assertEqual([dp.id for dp in discovered], ["alpha", "gamma"])
-        self.assertEqual([dp.source_kind for dp in discovered], ["source", "env"])
+        self.assertEqual([dp.id for dp in discovered], ["alpha", "gamma", "local"])
+        self.assertEqual([dp.source_kind for dp in discovered], ["source", "env", "env"])
 
     def test_same_canonical_external_root_is_scanned_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,9 +302,9 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
             packs_root = Path(tmp) / "packs"
             pack_root = write_pack(packs_root, "builtin")
             with (pack_root / "pack.yaml").open("a", encoding="utf-8") as manifest:
-                manifest.write("documentation:\n  kind: skill\n  path: skill/SKILL.md\n")
-            (pack_root / "skill").mkdir()
-            (pack_root / "skill" / "SKILL.md").write_text("---\nname: builtin\n---\n", encoding="utf-8")
+                manifest.write("documentation:\n  kind: skill\n  path: docs/SKILL.md\n")
+            (pack_root / "docs").mkdir()
+            (pack_root / "docs" / "SKILL.md").write_text("---\nname: builtin\n---\n", encoding="utf-8")
             executor_root = write_executor(pack_root, "sample_executor", "builtin.sample_executor")
             orchestrator_root = write_orchestrator(pack_root, "sample_orchestrator", "builtin.sample_orchestrator")
             for nested in (executor_root, orchestrator_root):
@@ -305,7 +314,7 @@ class PackDiscoveryMetadataTest(unittest.TestCase):
             discovered = DiscoveredPack(pack=packs[0], source_kind="source", priority_index=0)
 
             skill_roots = discovered.skill_roots()
-            declared_root = (pack_root / "skill").resolve()
+            declared_root = (pack_root / "docs").resolve()
 
         # Nested component guides are never exported as extra skills.
         self.assertEqual(tuple(p.resolve() for p in skill_roots), (declared_root,))

@@ -119,6 +119,7 @@ astrid = [
     "packs/**/tests/*",
     "packs/**/golden/*",
     "packs/**/build/*",
+    "packs/local/**",
 ]
 
 [tool.setuptools.package-data]
@@ -172,31 +173,12 @@ astrid = [
     # Runtime mask resources used by the packaged LanPaint compiler.
     "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_full_frame.png",
     "packs/h3_av/workflows/lanpaint_h3_av_generalized/mask_preserve.png",
-    # The accepted V3 local pack declares these seven ignored release assets
-    # beneath its rendering root; keep the allow-list narrow and explicit.
-    "packs/local/rendering/elements/effects/frame-overlay/assets/frame.png",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-0.png",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-1.png",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-2.png",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-3.png",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-4.png",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-5.png",
     # Additional resources are declared by the V3 pack manifests/elements;
     # keep these exact directories/files narrow so no unrelated media enters
     # the wheel.
     "packs/astrid_motion/preview/render.mjs",
     "packs/blender/server/blender-render-api.service",
     "packs/rendering/actions/timeline_visualize/motion/element_motion.mjs",
-    "packs/local/rendering/elements/effects/end-codex-transform/assets/*.png",
-    "packs/local/rendering/elements/effects/end-codex-transform/assets/plate.mp4",
-    "packs/local/rendering/elements/effects/end-mid-combined/assets/*.png",
-    "packs/local/rendering/elements/effects/end-minimax-animate/assets/*.png",
-    "packs/local/rendering/elements/effects/end-minimax-animate/assets/plate.mp4",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-*-canonical-mink.png",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-6.png",
-    "packs/local/rendering/elements/effects/end-spanning-layer/assets/card-7.png",
-    "packs/local/rendering/elements/effects/ending-carousel/assets/*.png",
-    "packs/local/rendering/elements/effects/ending-carousel/assets/plate.mp4",
     "packs/text_analysis/fixtures/*.txt",
     "packs/**/*.html",
     "packs/**/*.css",

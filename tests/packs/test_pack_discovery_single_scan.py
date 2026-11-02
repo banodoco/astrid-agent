@@ -18,21 +18,28 @@ def _write_pack(parent: Path, pack_id: str, *, duplicate: bool = False, **fields
     root = parent / pack_id
     root.mkdir(parents=True)
     names = ["a.yaml", "b.yaml"] if duplicate else ["a.yaml"]
+    rendering_root = root / "rendering"
+    rendering_root.mkdir()
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "id": pack_id,
         "name": pack_id,
         "version": "1.0.0",
-        "extensions": {"rendering": {"renderers": names}},
+        "pack_api": "1.0",
+        "documentation": {"kind": "none", "reason": "Test fixture."},
+        "rendering": {
+            f"renderer_{index}": {"type": "renderer", "path": f"rendering/{name}"}
+            for index, name in enumerate(names)
+        },
         "aliases": [{"kind": "renderer", "alias": f"{pack_id}.alias",
-                     "canonical_id": f"{pack_id}.renderer"}],
+                     "canonical_id": f"{pack_id}.renderer_0"}],
         **fields,
     }
     (root / "pack.yaml").write_text(json.dumps(manifest), encoding="utf-8")
-    for name in names:
-        (root / name).write_text(json.dumps({
+    for index, name in enumerate(names):
+        (rendering_root / name).write_text(json.dumps({
             "schema_version": 1,
-            "id": f"{pack_id}.renderer",
+            "id": f"{pack_id}.renderer_{index}",
             "name": name,
             "version": "1.0.0",
             "protocol_version": 1,
@@ -80,7 +87,7 @@ def test_same_authority_reuses_full_scan_only_with_builtin_scanner(
             project_root=project, extra_pack_roots=extra_roots,
             discover_packs_fn=_two_call_scanner,
         )
-        assert scans.call_count == 2
+        assert scans.call_count == 1
     with mock.patch.object(loader, "scan_packs", wraps=loader.scan_packs) as scans:
         actual = discover_pack_metadata(
             project_root=project, extra_pack_roots=extra_roots,
@@ -90,7 +97,7 @@ def test_same_authority_reuses_full_scan_only_with_builtin_scanner(
     # Dataclass equality includes every PackDefinition field, aliases and source hashes.
     assert actual == expected
     assert [(row.id, row.source_kind, row.priority_index) for row in actual] == [
-        ("alpha", "source", 0), ("zeta", "source", 1), ("local", "local", 2),
+        ("alpha", "source", 0), ("local", "source", 1), ("zeta", "source", 2),
         ("alpha", "managed", 3), ("alpha", "extra", 4), ("alpha", "env", 5),
     ]
 
@@ -101,39 +108,37 @@ def test_same_authority_reuses_full_scan_only_with_builtin_scanner(
         assert actual_registry.candidates() == expected_registry.candidates()
         assert actual_registry.list() == expected_registry.list()
     renderers = actual_registries[0]
-    assert len(renderers.candidates("alpha.renderer")) == 5
-    assert [c.source_kind for c in renderers.candidates("alpha.renderer")] == [
-        "source", "source", "managed", "extra", "env",
+    assert len(renderers.candidates("alpha.renderer_0")) == 4
+    assert [c.source_kind for c in renderers.candidates("alpha.renderer_0")] == [
+        "source", "managed", "extra", "env",
     ]
-    assert [c.execution_eligible for c in renderers.candidates("alpha.renderer")] == [
-        True, True, True, True, False,
+    assert [c.execution_eligible for c in renderers.candidates("alpha.renderer_0")] == [
+        True, True, True, False,
     ]
     for alias in ("alpha.alias", "local.alias", "zeta.alias"):
         assert renderers.resolve_evidence(alias) == expected_registries[0].resolve_evidence(alias)
     assert renderers.get("alpha.alias").manifest.name == "a.yaml"
 
 
-def test_different_roots_keep_project_scan_and_do_not_leak_source_local(
+def test_different_roots_keep_source_packs_without_project_local_injection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "installed/astrid/packs"
     _write_pack(source, "alpha")
-    _write_pack(source, "local", description="source local must not leak")
+    _write_pack(source, "local", description="ordinary source pack")
     project = tmp_path / "project"
     project_packs = project / "astrid/packs"
-    local = _write_pack(project_packs, "local", description="project local")
+    _write_pack(project_packs, "local", description="project local")
     _write_pack(project_packs, "stray")
     monkeypatch.setattr(loader, "packs_root", lambda: source)
     with mock.patch.object(loader, "scan_packs", wraps=loader.scan_packs) as scans:
         rows = discover_pack_metadata(project_root=project)
-        assert scans.call_args_list == [mock.call(None, include_hidden=False, strict=True),
-                                       mock.call(project_packs, include_hidden=False, strict=True)]
-    assert [(r.id, r.source_kind) for r in rows] == [("alpha", "source"), ("local", "local")]
-    assert rows[1].pack.root == local
+        assert scans.call_args_list == [mock.call(None, include_hidden=False, strict=True)]
+    assert [(r.id, r.source_kind) for r in rows] == [("alpha", "source"), ("local", "source")]
+    assert rows[1].pack.root == source / "local"
     assert rows == discover_pack_metadata(project_root=project, discover_packs_fn=_two_call_scanner)
     (project_packs / "stray/pack.yaml").write_text("schema_version: 999\n", encoding="utf-8")
-    with pytest.raises(PackValidationError):
-        discover_pack_metadata(project_root=project)
+    assert discover_pack_metadata(project_root=project) == rows
 
 
 def test_injected_scanner_keeps_argument_specific_authority_even_with_equal_roots(
@@ -146,10 +151,12 @@ def test_injected_scanner_keeps_argument_specific_authority_even_with_equal_root
     alpha_root = _write_pack(packs, "alpha")
     alpha = loader.load_pack_manifest(alpha_root / "pack.yaml")
     monkeypatch.setattr(loader, "packs_root", lambda: packs)
-    scanner = mock.Mock(side_effect=[(alpha, local), ()])
+    scanner = mock.Mock(return_value=(alpha, local))
     rows = discover_pack_metadata(project_root=project, discover_packs_fn=scanner)
-    assert scanner.call_args_list == [mock.call(), mock.call(packs)]
-    assert [r.id for r in rows] == ["alpha"]
+    assert scanner.call_args_list == [mock.call()]
+    assert [(r.id, r.source_kind) for r in rows] == [
+        ("alpha", "source"), ("local", "source"),
+    ]
 
 
 @pytest.mark.parametrize("local_kind", ["absent", "manifestless", "hidden"])
@@ -180,7 +187,9 @@ def test_scan_reuse_preserves_strict_manifest_and_path_guards(
     if invalid in {"source", "local", "hidden"}:
         root = local if invalid == "local" else broken
         (root / "pack.yaml").write_text(
-            "schema_version: 999\nvisibility: hidden\n", encoding="utf-8",
+            "schema_version: 3\nid: invalid id\nname: Broken\nversion: 1.0.0\n"
+            "pack_api: \"1.0\"\nrendering: {}\n",
+            encoding="utf-8",
         )
     elif invalid == "alternate":
         (local / "pack.yml").write_text("{}\n", encoding="utf-8")
@@ -206,7 +215,7 @@ def test_managed_identity_guard_is_unchanged(tmp_path: Path, monkeypatch: pytest
     ))
     rows = discover_pack_metadata(project_root=tmp_path)
     assert rows == discover_pack_metadata(project_root=tmp_path, discover_packs_fn=_two_call_scanner)
-    assert [(r.id, r.source_kind) for r in rows] == [("local", "local")]
+    assert [(r.id, r.source_kind) for r in rows] == [("local", "source")]
 
 
 def test_discovery_observes_edits_on_every_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
