@@ -35,7 +35,7 @@ EXPORT_NAMES = frozenset({
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _BOOT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
-_LOCAL_ENDPOINT = re.compile(r"http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}\Z")
+_LOCAL_ENDPOINT = re.compile(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}\Z")
 
 
 class JourneyProviderError(ValueError):
