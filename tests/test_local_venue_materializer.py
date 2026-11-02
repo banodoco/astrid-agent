@@ -122,6 +122,21 @@ def test_local_venue_propagates_uv_system_certificates_only():
     assert ambient["UV_SYSTEM_CERTS"] == "false"
 
 
+def test_materialized_install_action_gets_explicit_trust_overlay(tmp_path):
+    resource = tmp_path / "api" / "astrid"
+    action = resource / "pinokio" / "install.js"
+    action.parent.mkdir(parents=True)
+    action.write_text(
+        "module.exports = async () => ({ run: ["
+        "app.shellStep(app.bootstrapScript('install'))"
+        "] });\n",
+        encoding="utf-8",
+    )
+    selected = local_venue._patch_materialized_install_action(resource)
+    assert selected == action
+    assert "UV_SYSTEM_CERTS: 'true'" in action.read_text(encoding="utf-8")
+
+
 def test_managed_home_setup_refuses_a_zero_exit_without_conda(tmp_path, monkeypatch):
     roots = _provision_roots(tmp_path)
     monkeypatch.setattr(local_venue, "_run_bounded", lambda *args, **kwargs: None)

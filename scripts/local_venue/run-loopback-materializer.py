@@ -22,6 +22,11 @@ SETUP_TIMEOUT_SECONDS = 2400
 MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
 FAILURE_MARKER = b"ASTRID_PINOKIO_FAILURE"
 UV_SYSTEM_CERTS_VALUE = "true"
+INSTALL_ACTION_CALL = "app.shellStep(app.bootstrapScript('install'))"
+INSTALL_ACTION_CALL_WITH_TRUST = (
+    "app.shellStep(app.bootstrapScript('install'), "
+    "{ env: { UV_SYSTEM_CERTS: 'true' } })"
+)
 MaterializerError = RuntimeError
 
 
@@ -63,6 +68,19 @@ def _local_venue_environment(env: dict[str, str]) -> dict[str, str]:
     selected = dict(env)
     selected["UV_SYSTEM_CERTS"] = UV_SYSTEM_CERTS_VALUE
     return selected
+
+
+def _patch_materialized_install_action(resource: Path) -> Path:
+    """Add the trust setting through Pinokio's explicit local shell env seam."""
+    action = resource / "pinokio/install.js"
+    raw = action.read_text(encoding="utf-8")
+    if raw.count(INSTALL_ACTION_CALL) != 1:
+        raise MaterializerError("pinned install action shape is not the audited local seam")
+    action.write_text(
+        raw.replace(INSTALL_ACTION_CALL, INSTALL_ACTION_CALL_WITH_TRUST),
+        encoding="utf-8",
+    )
+    return action
 
 
 def _stop_process_group(process: subprocess.Popen[bytes], timeout: int = 10) -> None:
@@ -368,6 +386,14 @@ def _write_config(*, run_root: Path, runner: Path, pinokiod: Path,
             "path": str(provision),
             "sha256": _sha(provision),
         }
+    action = run_root / "pinokio-home/api/astrid/pinokio/install.js"
+    if action.is_file() and not action.is_symlink():
+        config["local_install_action_overlay"] = {
+            "path": str(action),
+            "sha256": _sha(action),
+            "environment": {"UV_SYSTEM_CERTS": UV_SYSTEM_CERTS_VALUE},
+            "tls_verification": "enabled",
+        }
     target = run_root / "evidence/materializer/local-venue-bind.json"
     _write_json(target, config)
 
@@ -403,6 +429,7 @@ def main(argv: list[str]) -> int:
     node = Path(selected_node).resolve(strict=True)
     original_engine_environment = materializer._engine_environment
     original_install_candidate = materializer._install_candidate
+    original_materialize = materializer.materialize
     provision_calls = 0
 
     def provisioned_engine_environment(home: Path, runner_home: Path) -> dict[str, str]:
@@ -448,7 +475,16 @@ def main(argv: list[str]) -> int:
     materializer._engine_environment = provisioned_engine_environment
     materializer._install_candidate = bounded_install_candidate
     materializer._require_port_free = _require_loopback_port_free
-    result = materializer.main(argv)
+    def patched_materialize(*args: Any, **kwargs: Any) -> Any:
+        result = original_materialize(*args, **kwargs)
+        _patch_materialized_install_action(args[0] if args else kwargs["resource"])
+        return result
+
+    materializer.materialize = patched_materialize
+    try:
+        result = materializer.main(argv)
+    finally:
+        materializer.materialize = original_materialize
     _write_config(
         run_root=run_root,
         runner=runner,
