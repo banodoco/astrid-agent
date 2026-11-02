@@ -956,6 +956,8 @@ class GenerationFacade:
             generation_error, readiness_envelope, compare_versions,
         )
 
+        if model == 'hunyuan-video-foley' and target == 'runpod':
+            _refuse_runpod_foley()
         is_remote_target = target == 'runpod'
         if is_remote_target:
             _runpod_paid_controls(controls)
