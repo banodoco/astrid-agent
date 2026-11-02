@@ -88,6 +88,23 @@ def test_authentic_r0_capture_manager_state_records_native_service_pid(tmp_path,
     assert observed["service_pid"] == 4242
 
 
+def test_authentic_r0_capture_accepts_a_bounded_post_seed_windows_snapshot(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    (data / "logs").mkdir(parents=True)
+    (data / "runtime").mkdir()
+    (data / "logs" / "service-pack-host.log").write_text("token=do-not-publish\n", encoding="utf-8")
+    monkeypatch.setattr(journey.windows, "EVIDENCE", tmp_path / "evidence")
+    monkeypatch.setattr(journey.windows, "data_root", lambda: data)
+
+    journey.windows.capture_pack_host_readiness_diagnostics("post-seed-state", {
+        "status": "ok", "runtime_instance_id": "instance", "services": [{"name": "pack-host", "state": "starting"}],
+    })
+
+    manifest = journey.read_json(tmp_path / "evidence" / "pack-host-readiness-post-seed-state.json")
+    assert manifest["observation"] == "post-seed-state"
+    assert "do-not-publish" not in (tmp_path / "evidence" / "pack-host-readiness-post-seed-state-service-pack-host.log").read_text(encoding="utf-8")
+
+
 def test_authentic_r0_capture_executes_r0_seed_only_and_marks_receipt_ineligible(tmp_path, monkeypatch):
     run_root = tmp_path / "run"
     root, data, evidence = run_root / "program", run_root / "data", run_root / "evidence"

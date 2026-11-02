@@ -857,6 +857,30 @@ try {
     return value
 
 
+def _capture_windows_post_seed_pack_host(phase_root: Path) -> dict:
+    """Retain the missing Windows discriminator without turning capture into an update journey."""
+    prior_evidence = windows.EVIDENCE
+    try:
+        request = urllib.request.Request(HEALTH_URL, headers={"Origin": "https://astrid.haus"})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
+            health_value = json.load(response)
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        health_value = None
+        error = type(exc).__name__
+    else:
+        error = None
+    try:
+        windows.EVIDENCE = phase_root
+        windows.capture_pack_host_readiness_diagnostics("post-seed-state", health_value)
+        manifest = phase_root / "pack-host-readiness-post-seed-state.json"
+        return {"status": "captured" if manifest.is_file() else "unavailable",
+                "artifact": manifest.name, "health_fetch_error": error}
+    except Exception as exc:
+        return {"status": "error", "error": type(exc).__name__, "health_fetch_error": error}
+    finally:
+        windows.EVIDENCE = prior_evidence
+
+
 def capture_authentic_r0_observation(output: Path, *, phase: str, run_root: Path,
                                      root: Path, data: Path, version: dict | None) -> dict:
     """Produce a bounded, non-secret observation of a live or cleaned R0 installation."""
@@ -900,6 +924,8 @@ def capture_authentic_r0_observation(output: Path, *, phase: str, run_root: Path
         fields["discovery"] = {"status": "absent"}
     fields["service_manager"] = _capture_manager_state_sanitized(
         phase_root / "manager-state.json", run_root, root, data)
+    if sys.platform == "win32" and phase == "post-seed":
+        fields["pack_host_post_seed"] = _capture_windows_post_seed_pack_host(phase_root)
     if sys.platform == "win32":
         fields["service_definition"] = _capture_windows_service_definition(phase_root / "service-definition.txt")
     else:

@@ -592,7 +592,7 @@ def _pack_host_health_observation(value):
 
 def capture_pack_host_readiness_diagnostics(observation, health_value):
     """Capture one bounded readiness snapshot without following untrusted paths."""
-    if observation not in PACK_HOST_DIAGNOSTIC_OBSERVATIONS:
+    if observation not in {*PACK_HOST_DIAGNOSTIC_OBSERVATIONS, "post-seed-state"}:
         raise ValueError(f"Unknown pack-host diagnostic observation: {observation}")
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     manifest = EVIDENCE / f"pack-host-readiness-{observation}.json"
