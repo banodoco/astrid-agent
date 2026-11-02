@@ -19,3 +19,8 @@ Use a new output path, outside the evidence trees. The comparator must not write
 ## Manifest command annotations (054)
 
 In `capture-manifest.json`, each case `command` is an argv token vector (not shell text). `argv_provenance` is exactly `argv source-derived` or `argv installed-verified`; `additional_argv` lists supplementary argv vectors for P1 help surfaces. A source-derived vector establishes only parser/entrypoint syntax from the pinned source and never proves fixtures, fault controls, qualification or capture. `command_gap` and `fixture_binding` remain independent disposition fields. Path values may use only `${INSTALL_PREFIX}` and `${DATA}`. Every case remains `uncaptured`; this manifest is not a capture index.
+
+
+## Case/fault matrix annotations (059)
+
+Each manifest case has one `case_matrix` object with `case_id`, `case_argv_source`, `case_inputs`, `execution_status`, `blocked_reason`, `scenario`, `control`, `fault_injection`, `expected_receipt_artifact`, `expected_evidence`, `refusal_partial_output_oracle`, `missing_source_facts`, and `source_refs`. These fields are preparation instructions and source-backed expectations, not observed behavior. `fixture_binding` remains the authority for approved identity/A-only disposition. `missing_source_facts` blocks execution where the exact fixture, hook, schema or invocation is not established. Evidence path names are operator collection names unless a cited source identifies a product-emitted filename. No matrix entry changes `state: uncaptured` or establishes qualification.

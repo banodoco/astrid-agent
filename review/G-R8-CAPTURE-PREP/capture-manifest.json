@@ -186,6 +186,59 @@
         "result_interpretation": "help should exit 0 by argparse semantics; must be observed on installed r10c",
         "fault_control": "none for these help probes; P1 refusal control is in map",
         "limitation": "executable is a placeholder and installed route has not been observed; not a runnable command or capture"
+      },
+      "case_matrix": {
+        "case_id": "P1-retired-placement-control",
+        "scenario": "Public CLI refusal for a retired placement control; the case supplements root and four verb help vectors.",
+        "control": "Run the source-derived h3 plan route with an otherwise valid request and retired --placement runpod. Preserve parser stdout, stderr, exit and migration guidance. The four help vectors remain separate controls.",
+        "fault_injection": "Add the retired --placement runpod tokens to the h3 plan argv. Exact injection argv is recorded below; fixture values remain owner-supplied under ${DATA}.",
+        "fault_argv": [
+          "${INSTALL_PREFIX}/py/bin/python",
+          "-I",
+          "-B",
+          "-m",
+          "astrid",
+          "h3",
+          "plan",
+          "--spec",
+          "${DATA}/P1/request.json",
+          "--placement",
+          "runpod",
+          "--out",
+          "${DATA}/P1/plan"
+        ],
+        "expected_receipt_artifact": "Root/plan/run/compose/edit help transcripts and the refusal stdout/stderr/exit envelope; no generated task or media receipt is expected.",
+        "refusal_partial_output_oracle": "The retired control is refused with migration guidance; no task, lease, provider/GPU acquisition, plan artifact, or publication. Exact wording/exit code is not established in the supplied G0 snapshot.",
+        "expected_evidence": [
+          "P1/help-root stdout+stderr+exit",
+          "P1/help-plan stdout+stderr+exit",
+          "P1/help-run stdout+stderr+exit",
+          "P1/help-compose stdout+stderr+exit",
+          "P1/help-edit stdout+stderr+exit",
+          "P1/retired-placement stdout+stderr+exit",
+          "P1/acquisition-audit.json"
+        ],
+        "missing_source_facts": [
+          "approved per-scenario request fixture bytes/digest",
+          "installed parser output and exact refusal wording/exit code",
+          "SDK call construction/signature behavior and complete option-value matrix",
+          "explicit observation hook for zero acquisitions"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P1",
+          "reference/G0.md capture packet item 2",
+          "reference/M2-06-H3-TEST-PLAN.md P1"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P1/request.json",
+            "role": "spec",
+            "identity_status": "Source-derived placeholder only; approved case bytes/digest are absent."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
       }
     },
     {
@@ -258,7 +311,48 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P2-rich-preview-no-acquisition",
+        "scenario": "Rich plan preview over one approved request/asset-map case, with dry-run acquisition invariants.",
+        "control": "Use the row command for the rich plan; compare its versioned preview with static SDK dry-run for the identical request. Count task admission, lease, provider submission and GPU boundary calls.",
+        "fault_injection": "Instrument the task/lease/provider boundaries with test-owned counters that fail if called during preview; no Runtime fake. The source names lease and submit as forbidden calls but provides no installed observation hook.",
+        "expected_receipt_artifact": "Versioned plan JSON, static dry-run JSON, and acquisition-audit.json with zero task/lease/provider/GPU calls.",
+        "refusal_partial_output_oracle": "Preview succeeds or returns a versioned blocked diagnostic for its input; it never acquires resources. A refusal retains its diagnostic and has zero-acquisition evidence; exact codes/fields depend on the missing approved request and installed schema.",
+        "expected_evidence": [
+          "${DATA}/P2/plan (preview JSON)",
+          "${DATA}/P2/request.json and asset-map.json byte inventory",
+          "P2/static-dry-run.json",
+          "P2/acquisition-audit.json",
+          "P2/absence.json"
+        ],
+        "missing_source_facts": [
+          "approved request and asset-map bytes/digests for a named preview branch",
+          "SDK dry-run invocation/call schema",
+          "compatible installed boundary and zero-acquisition observation hook",
+          "branch-specific expected versioned preview values"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P2",
+          "reference/G0.md capture packet item 3",
+          "reference/M2-06-H3-TEST-PLAN.md P2"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P2/request.json",
+            "role": "spec",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P2/asset-map.json",
+            "role": "asset-map",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -333,7 +427,49 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P3-frozen-bundle-member-tamper",
+        "scenario": "Frozen request/input-bundle preflight rejects a changed member before acquisition.",
+        "control": "Prepare the request and member inventory, hash the member, then alter only a test-owned bundle copy after inventory creation and invoke the real prepare boundary.",
+        "fault_injection": "Post-inventory member-byte mutation in an isolated case copy; retain original recorded hash/size and record both original and changed digest/size. Do not modify shared fixture bytes.",
+        "expected_receipt_artifact": "Preparation/preflight refusal envelope, input/member inventory, changed-byte digests, and acquisition-audit.json; no prepared success receipt or staged output.",
+        "refusal_partial_output_oracle": "Hash/size mismatch or equivalent source-defined validation refusal occurs before lease/acquisition. No partial prepared bundle, task, lease, provider call, or published artifact. Exact error code is not in source.",
+        "expected_evidence": [
+          "${DATA}/P3/request.json",
+          "${DATA}/P3/input-bundle member inventory",
+          "${DATA}/P3/preparation (failure output if emitted)",
+          "P3/preflight-error.json",
+          "P3/acquisition-audit.json",
+          "P3/absence.json"
+        ],
+        "missing_source_facts": [
+          "approved request/member bytes and expected digest/size",
+          "real installed preflight extraction entry and test-owned mutation hook",
+          "precise supported error code and emitted-output behavior",
+          "compatibility of either approved workspace identity with this case"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P3",
+          "reference/G0.md capture packet item 4",
+          "reference/M2-06-H3-TEST-PLAN.md P3"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P3/request.json",
+            "role": "request",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P3/input-bundle",
+            "role": "input-bundle",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -410,7 +546,55 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P4-audio-only-engine-response-refusal",
+        "scenario": "Real-boundary output validation rejects an engine response containing audio only, with no muxed AV or video role.",
+        "control": "Run the transform action on frozen inputs with a test engine/network-edge response containing one audio artifact and explicit role metadata; keep task/host/SDK/bridge/custody real.",
+        "fault_injection": "At the engine/network edge return audio-only output, omitting video and muxed AV. Preserve raw response, role map and retrieval/provenance; the exact edge adapter/schema is not supplied.",
+        "expected_receipt_artifact": "Raw engine response and role/provenance records plus refusal envelope; no final verified media, delivery manifest, or final receipt.",
+        "refusal_partial_output_oracle": "Reject audio-only output with a diagnostic and no arbitrary output selection; no final publication. G0 does not define exact diagnostic code, partial raw spool policy, or engine response control API.",
+        "expected_evidence": [
+          "${DATA}/P4/request.json and asset-map.json",
+          "${DATA}/P4/worker-qualification.json identity/digest",
+          "P4/engine-response.json",
+          "P4/roles.json",
+          "P4/retrieval.json",
+          "P4/refusal.json",
+          "P4/publication-absence.json"
+        ],
+        "missing_source_facts": [
+          "approved request/model/graph and qualification fixture bytes/digests",
+          "test engine response schema and edge injection hook",
+          "installed real-boundary output-validation observation",
+          "exact refusal diagnostic and raw spool retention policy"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P4",
+          "reference/G0.md capture packet item 4",
+          "reference/M2-06-H3-TEST-PLAN.md P4"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P4/request.json",
+            "role": "request",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P4/asset-map.json",
+            "role": "asset-map",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P4/worker-qualification.json",
+            "role": "worker-qualification",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -495,7 +679,68 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P5-final-spool-tamper-before-verify",
+        "scenario": "Final verification detects changed spool bytes before managed publication.",
+        "control": "Compose from the frozen source/input bundle and generated media; change bytes in the isolated output spool after its initial digest and before final verification/return.",
+        "fault_injection": "Tamper only the case-owned final spool between compose and verify, retaining pre/post hashes and sizes; use the real verifier and publication boundary.",
+        "expected_receipt_artifact": "Composition record, candidate media digest, probe/frame/FPS/duration/sample/mask/protected-audio witnesses, tamper refusal envelope and publication audit.",
+        "refusal_partial_output_oracle": "Final rehash/tamper check fails closed; no final managed publication or success receipt. Exact hook and whether an intermediate candidate remains are not source-established; inventory that state explicitly.",
+        "expected_evidence": [
+          "${DATA}/P5/preparation.json",
+          "${DATA}/P5/input-bundle",
+          "${DATA}/P5/generated",
+          "${DATA}/P5/source",
+          "${DATA}/P5/preservation-evidence.json",
+          "P5/composition.json",
+          "P5/probe.json",
+          "P5/witnesses.json",
+          "P5/tamper-hashes.json",
+          "P5/publication-audit.json"
+        ],
+        "missing_source_facts": [
+          "approved source/generated media/mask and tool digests",
+          "installed compose-to-verify call boundary and case-owned spool tamper hook",
+          "precise refusal envelope and intermediate spool retention behavior",
+          "scenario mapping for continuation/replacement/splice/topology cases"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P5",
+          "reference/G0.md capture packet item 5",
+          "reference/M2-06-H3-TEST-PLAN.md P5"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P5/preparation.json",
+            "role": "preparation",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P5/input-bundle",
+            "role": "input-bundle",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P5/generated",
+            "role": "generated",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P5/source",
+            "role": "source",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P5/preservation-evidence.json",
+            "role": "preservation-evidence",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -571,7 +816,50 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P6-second-file-export-staging-failure",
+        "scenario": "Managed multi-file export remains all-or-nothing when staging the second file fails.",
+        "control": "Use a verified final media/receipt pair and run managed compile/export with a case-owned destination; inspect destination and transaction state before/after.",
+        "fault_injection": "Fail the test-owned staging/write operation for the second file after the first file has staged. Keep the failure at the filesystem/process edge; do not alter product composition roots.",
+        "expected_receipt_artifact": "Delivery manifest/rows and export transaction/failure envelope; final-receipt.json only if the source operation actually emits it.",
+        "refusal_partial_output_oracle": "Export reports failure and leaves no partial final destination/publication; no intermediate product is advertised. G0 does not identify a second-file hook or exact rollback envelope.",
+        "expected_evidence": [
+          "${DATA}/P6/preparation.json",
+          "${DATA}/P6/input-bundle",
+          "P6/delivery-manifest.json",
+          "P6/delivery-rows.json",
+          "P6/export-before.json",
+          "P6/export-after.json",
+          "P6/export-error.json",
+          "P6/absence.json"
+        ],
+        "missing_source_facts": [
+          "approved verified multi-file media and final receipt identities/digests",
+          "installed managed export invocation and second-file staging fault hook",
+          "exact transaction rollback/output contract and receipt emission path"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P6",
+          "reference/G0.md capture packet item 6",
+          "reference/M2-06-H3-TEST-PLAN.md P6"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P6/preparation.json",
+            "role": "preparation",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P6/input-bundle",
+            "role": "input-bundle",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -653,7 +941,67 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P7-unsupported-final-receipt-version",
+        "scenario": "Receipt/status reader refuses a test-owned final receipt with a version outside its supported catalogue.",
+        "control": "Copy a source-compatible final receipt, change only the schema version to an unsupported value, and invoke the actual installed receipt/status reader.",
+        "fault_injection": "Alter version field on a test-owned receipt copy; preserve original bytes/digest and changed bytes/digest. Do not invent a receipt signature or claim it is product emitted.",
+        "expected_receipt_artifact": "Input final-receipt.json, reader status/readback and explicit unsupported-version error envelope; no fabricated child/CAS witness.",
+        "refusal_partial_output_oracle": "Reader rejects unsupported version explicitly and does not fabricate child/CAS evidence or report successful readback. Exact supported-version set, diagnostic and entrypoint are not established.",
+        "expected_evidence": [
+          "${DATA}/P7/preparation.json",
+          "${DATA}/P7/input-bundle",
+          "${DATA}/P7/composition.json",
+          "${DATA}/P7/candidate.mp4",
+          "${DATA}/P7/source.mp4",
+          "P7/final-receipt-original.json",
+          "P7/final-receipt-mutated.json",
+          "P7/status.json",
+          "P7/readback-error.json"
+        ],
+        "missing_source_facts": [
+          "approved compatible receipt bytes and version catalogue",
+          "installed reader invocation and status schema",
+          "source-approved unsupported-version refusal envelope",
+          "case identity and fixture compatibility"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P7",
+          "reference/G0.md capture packet item 6",
+          "reference/M2-06-H3-TEST-PLAN.md P7"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P7/preparation.json",
+            "role": "preparation",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P7/input-bundle",
+            "role": "input-bundle",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P7/composition.json",
+            "role": "composition",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P7/candidate.mp4",
+            "role": "candidate",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P7/source.mp4",
+            "role": "source",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -728,7 +1076,50 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P8-running-cancel-withheld-stop-ack",
+        "scenario": "Cancellation of a running accepted prompt whose stop confirmation is withheld remains honestly unconfirmed.",
+        "control": "Start from retained accepted task/attempt/prompt identity; issue one cancel while the prompt is running and record queue deletion/scoped interrupt, status and teardown timeline.",
+        "fault_injection": "Suppress only the engine stop ACK at the engine/network boundary after cancel; keep task/host/runtime/custody real. The acknowledgement control/scheduler is not identified in source.",
+        "expected_receipt_artifact": "Cancel request/result, accepted prompt identity, raw engine transcript, status timeline and teardown evidence; no terminal cancelled receipt unless observed confirmation supports it.",
+        "refusal_partial_output_oracle": "Status remains unknown/unconfirmed rather than claiming cancellation; interruption is scoped to the accepted prompt and teardown state is retained. Exact status enum and ACK control are missing.",
+        "expected_evidence": [
+          "${DATA}/P8/request.json and asset-map.json",
+          "P8/prompt.json",
+          "P8/cancel-request.json",
+          "P8/engine-transcript.json",
+          "P8/status-timeline.json",
+          "P8/teardown.json",
+          "P8/absence.json"
+        ],
+        "missing_source_facts": [
+          "approved accepted-prompt/task fixture and IDs",
+          "installed cancellation/status interface and queued/running scheduler",
+          "test-owned stop-ACK suppression hook",
+          "exact unconfirmed status vocabulary and receipt schema"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P8",
+          "reference/G0.md capture packet item 7",
+          "reference/M2-06-H3-TEST-PLAN.md P8"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P8/request.json",
+            "role": "request",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P8/asset-map.json",
+            "role": "asset-map",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -807,7 +1198,50 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P9-lost-response-follow-no-replay",
+        "scenario": "After engine submission the admission response is lost; same-task follow/reattach must not submit again.",
+        "control": "Run one frozen task through a counted engine boundary, drop the response after submission, then invoke same-task follow/recovery and compare durable task/attempt/submission identities.",
+        "fault_injection": "Lose the post-submit response at the engine/network edge after recording one accepted submission. Do not kill or replace the host; crash/new-attempt is a separate unproven scenario.",
+        "expected_receipt_artifact": "Admission/ACK uncertainty timeline, task and attempt records, submission counter, follow/recovery receipt and raw transcript.",
+        "refusal_partial_output_oracle": "Unknown ACK stays unknown until recovered; follow does not replay, submission count remains one, and no second attempt is implied. Exact response-loss hook and status/receipt shape are missing.",
+        "expected_evidence": [
+          "${DATA}/P9/request.json and asset-map.json",
+          "P9/admission-response.json",
+          "P9/engine-ack.json",
+          "P9/task-timeline.json",
+          "P9/attempts.json",
+          "P9/submission-count.json",
+          "P9/recovery-receipt.json"
+        ],
+        "missing_source_facts": [
+          "approved request/task/attempt/accepted-prompt fixture",
+          "installed follow/reattach operation and durable submission counter",
+          "post-submit response-loss control hook",
+          "exact unknown-ACK and recovery receipt schemas; host crash/new-attempt control"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P9",
+          "reference/G0.md capture packet items 7 and 8",
+          "reference/M2-06-H3-TEST-PLAN.md P9"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P9/request.json",
+            "role": "request",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P9/asset-map.json",
+            "role": "asset-map",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -887,7 +1321,52 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P10-holder-specific-lease-expiry",
+        "scenario": "Expiring holder A does not release holder B lease; retain K-owned binding/journal/custody evidence.",
+        "control": "Use two explicitly identified holders in a controlled K lifecycle; expire A while B remains within lease and inspect journal/reconciliation and endpoint binding before/after.",
+        "fault_injection": "Advance the test-owned lease clock for holder A only; do not call a provider. Current row argv is the local transform route and does not itself establish the K lease lifecycle invocation.",
+        "expected_receipt_artifact": "Tuple/qualification/claim, endpoint-binding receipt, holder-specific lease timeline, journal, RunPod-read audit and terminal custody record.",
+        "refusal_partial_output_oracle": "A expires and is reconciled without releasing B; endpoint is bound once before engine call, local operations show zero RunPod reads, no Runtime binding write. These are required invariants, not observed behavior.",
+        "expected_evidence": [
+          "${DATA}/P10/request.json and asset-map.json",
+          "P10/tuple.json",
+          "P10/qualification.json",
+          "P10/claim.json",
+          "P10/endpoint-binding.json",
+          "P10/runpod-read-audit.json",
+          "P10/lease-timeline.json",
+          "P10/journal.json",
+          "P10/custody-terminal.json"
+        ],
+        "missing_source_facts": [
+          "accepted K A5/A6/B1/B2 and custody proof/tuple",
+          "approved compatible lifecycle/readiness inputs (workspace identities remain distinct)",
+          "K lifecycle command and holder/clock injection API",
+          "claim/lease/endpoint receipt schemas and test evidence for no Runtime binding write"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P10",
+          "reference/G0.md capture packet item 8",
+          "reference/M2-06-H3-TEST-PLAN.md P10"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P10/request.json",
+            "role": "request",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P10/asset-map.json",
+            "role": "asset-map",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -961,7 +1440,45 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P11-invalid-source-av-preflight",
+        "scenario": "Invalid source AV request produces a public H3_SOURCE_AV_* error envelope before acquisition.",
+        "control": "Submit one case-owned invalid source-AV request through the public plan/preflight path; preserve request, stderr/stdout, exit and pre-acquisition audit.",
+        "fault_injection": "Use an owner-approved malformed source-AV fixture; exact malformed bytes and applicable code are absent, so no payload or code is invented here.",
+        "expected_receipt_artifact": "Public error envelope with source AV diagnostic domain/code/field/fix, exit result and zero-acquisition evidence; no successful plan/admission receipt.",
+        "refusal_partial_output_oracle": "Error retains the applicable H3_SOURCE_AV_* code and domain/field/fix and happens before lease/acquisition. Exact code, field, fix, invalid bytes and exit are not sourced.",
+        "expected_evidence": [
+          "${DATA}/P11/invalid-request.json",
+          "P11/argv.json",
+          "P11/stdout.bin",
+          "P11/stderr.bin",
+          "P11/error-envelope.json",
+          "P11/acquisition-audit.json",
+          "P11/absence.json"
+        ],
+        "missing_source_facts": [
+          "owner-approved invalid source AV bytes/digest and exact expected code/field/fix",
+          "installed public error/status entrypoint and envelope schema",
+          "acquisition observation hook and expected exit code",
+          "full retired-code inventory and redaction policy"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P11",
+          "reference/G0.md capture packet items 2 and 3",
+          "reference/M2-06-H3-TEST-PLAN.md P11"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P11/invalid-request.json",
+            "role": "spec",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     },
     {
       "checks": [
@@ -1040,7 +1557,50 @@
       "command_format": "argv tokens; path values use ${INSTALL_PREFIX} and ${DATA} only",
       "argv_provenance": "argv source-derived",
       "argv_source": "H task 58 validated Agent candidate d56961c7179aaa4d18bdff6eaed79004a39d9269, tree 852c01bc81a68cc91e19355a080050a73eef528c; read-only parser/entrypoint inspection",
-      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture."
+      "argv_review_limit": "Argument syntax/entrypoint only. Scenario fixture identity, control hook, and behavior remain governed by fixture_binding and command_gap; argv is not qualification or a capture.",
+      "case_matrix": {
+        "case_id": "P12-stitch-required-dependency-failure",
+        "scenario": "A required stitch dependency fails before scheduling; shared machinery reports blocked/failure truthfully.",
+        "control": "Use a source-approved shared workflow and dependency graph, fail one required dependency before stitch scheduling, then retain dependency and stitch status through the real shared caller.",
+        "fault_injection": "Return a controlled dependency failure at the process/network edge; do not fake shared product composition or infer success from missing output. The dependency-control interface is not supplied.",
+        "expected_receipt_artifact": "Workflow/validate/import receipt where applicable, dependency transcript, editorial/stitch status and final status; no fabricated successful stitch receipt.",
+        "refusal_partial_output_oracle": "Stitch is blocked or fails with retained dependency status and no success receipt. Exact status vocabulary, scheduling hook, input workflow and supported receipt are not established.",
+        "expected_evidence": [
+          "${DATA}/P12/request.json and asset-map.json",
+          "P12/workflow.json",
+          "P12/validate.json",
+          "P12/import-receipt.json",
+          "P12/dependency-transcript.json",
+          "P12/stitch.json",
+          "P12/status.json"
+        ],
+        "missing_source_facts": [
+          "approved workflow/child/import receipt fixtures and digests",
+          "installed stitch/shared-child command and dependency scheduling hook",
+          "exact status and receipt schema for dependency failure",
+          "live target identity for validate/import coverage"
+        ],
+        "source_refs": [
+          "reference/G0-COVERAGE.md P12",
+          "reference/G0.md capture packet item 9",
+          "reference/M2-06-H3-TEST-PLAN.md P12"
+        ],
+        "case_inputs": [
+          {
+            "path": "${DATA}/P12/request.json",
+            "role": "request",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          },
+          {
+            "path": "${DATA}/P12/asset-map.json",
+            "role": "asset-map",
+            "identity_status": "Source-derived input path only; approved case bytes/digest and compatibility are not established; row remains A-only/no-baseline."
+          }
+        ],
+        "case_argv_source": "cases[].command (argv token vector); P1 additional_argv are help controls; fault_argv, when present, is the row fault vector.",
+        "execution_status": "blocked",
+        "blocked_reason": "No per-scenario approved baseline fixture is identified, and at least one exact case input, execution/control hook, or expected envelope remains unresolved; see missing_source_facts."
+      }
     }
   ],
   "command_fault_map": "COMMAND-FAULT-MAP.md",
@@ -1084,13 +1644,12 @@
     }
   ],
   "global_gaps": [
-    "All 12 complete row commands remain null: installed r10c interface and scenario-specific controls have not been evidenced.",
-    "No complete compatible baseline exists; scenarios without an identified baseline fixture are A-only (no baseline).",
-    "Fixture approvals establish only the exact named digests, not available bytes, case associations, live readiness, or additional media identities.",
-    "All raw paths are proposed collection names; 0 real R8 captures or tuple qualification are established.",
-    "P10 readiness/admission is a gate before P4; lease lifecycle coverage may span later phases."
+    "No per-scenario approved baseline fixture is identified for P1-P12; each row is A-only/no-baseline. fixture_authority contains approved historical identities but does not associate them with a row or establish byte availability/compatibility.",
+    "Source-derived argv establishes syntax only. Fault schedules requiring engine, Runtime, K, receipt-reader, scheduler, or export controls remain blocked until the specific hook/API and approved fixture are identified.",
+    "No row has installed verification, qualification, execution, or capture evidence. Product-emitted receipts/diagnostics are unobserved; listed expected evidence includes operator collection paths where the source does not define product output names.",
+    "Historical public workspace ce8a88a9e40965710bca31c9107bc3e61e0246b00137d63873e266bff4482d51 and NEW-IDENTITY workspace adapter f93d3129afd114a05c1542f468ed22db2f8ed6872b7deda9d703fe4a5aa1237c remain distinct; neither is silently substituted or treated as a per-case fixture."
   ],
-  "packet_revision": "054 argv source-derived (H task 58 candidate source; uncaptured)",
+  "packet_revision": "059 case/fault matrices over 054 argv source derivation (uncaptured; A-only where no baseline)",
   "schema": "r8-g0-capture-manifest/v1",
   "state_rule": "All families and scenarios are uncaptured. Transition only after real immutable raw evidence, exact installed tuple and invocation, nonzero executed/collected count, and reviewed source-to-case/artifact mapping. Record actual exit codes, including expected zero.",
   "status": "BLOCKED: no complete installed-r10c scenario command established; all rows uncaptured",
