@@ -437,3 +437,118 @@ def test_tst_b1_counts_all_runtime_owners_to_reject_duplicates(tmp_path, monkeyp
         "103 python -m astrid_runtime up\n"
     ))
     assert journey.runtime_processes(data) == [101, 102]
+
+
+def test_failure_retains_install_and_manager_before_cleanup_and_preserves_primary(tmp_path, monkeypatch, capsys):
+    run_root = tmp_path / "journey"
+    root, data = run_root / "program", run_root / "data"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="fresh-install", shell="sh", retain_for_next_leg=False)
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    real_run = journey.subprocess.run
+    manager_state = ["active"]
+    def fake_run(argv, *args, **kwargs):
+        if argv[0] == "systemctl":
+            return SimpleNamespace(returncode=0, stdout=f"ActiveState={manager_state[0]}\n", stderr="")
+        return real_run(argv, *args, **kwargs)
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    log = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs" / "install.log"
+    def failed_journey(*unused):
+        root.mkdir()
+        (root / "current").write_text("v1")
+        log.parent.mkdir(parents=True)
+        log.write_text("real installer detail\n")
+        evidence = run_root / "evidence" / "fresh-install"
+        journey.write_json(evidence / "journey-result.json", {"status": "fail", "error": "ValueError: primary"})
+        (evidence / "unrelated-secret.txt").write_text("exclude")
+        raise ValueError("primary")
+    monkeypatch.setattr(journey, "_execute_owned", failed_journey)
+    monkeypatch.setattr(journey, "installation", lambda *unused: (None, data, {"python": "python"}))
+    def failed_cleanup(*unused, **kwargs):
+        log.unlink()
+        manager_state[0] = "inactive"
+        raise RuntimeError("cleanup")
+    monkeypatch.setattr(journey, "installed_cli", failed_cleanup)
+    with pytest.raises(ValueError, match="primary"):
+        journey.execute(args)
+    output = capsys.readouterr().err
+    assert output.index("Journey failed: ValueError: primary") < output.index("Journey cleanup failed: RuntimeError: cleanup")
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    assert receipt["error"] == "ValueError: primary"
+    assert receipt["cleanup_error"] == "RuntimeError: cleanup"
+    assert receipt["final_cleanup"] == "fail"
+    before = receipt["failure_diagnostics"]["before-cleanup"]
+    assert before["install_log"]["status"] == "captured"
+    assert (run_root / before["install_log"]["path"]).read_text() == "real installer detail\n"
+    assert before["service_manager"]["status"] == "captured"
+    assert before["service_manager"]["observation_status"] == "observed"
+    assert journey.read_json(run_root / before["service_manager"]["path"])["stdout"] == "ActiveState=active\n"
+    assert not (run_root / "evidence" / "evidence-upload" / "before-cleanup" / "unrelated-secret.txt").exists()
+
+
+def test_failure_diagnostics_records_unavailable_install_and_manager_error(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+                              leg="fresh-install", shell="sh")
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: (_ for _ in ()).throw(ValueError("preflight")))
+    monkeypatch.setattr(journey.subprocess, "run", lambda *unused, **kwargs: SimpleNamespace(
+        returncode=1, stdout="", stderr="manager unavailable"))
+    with pytest.raises(ValueError, match="preflight"):
+        journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    before = receipt["failure_diagnostics"]["before-cleanup"]
+    assert before["install_log"] == {"status": "unavailable", "path": None}
+    assert before["service_manager"]["observation_status"] == "error"
+    assert before["service_manager"]["error"] == "manager command exited 1"
+    assert journey.read_json(run_root / before["service_manager"]["path"])["stderr"] == "manager unavailable"
+
+
+def test_cleanup_failure_after_success_still_fails_and_records_diagnostics(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+                              leg="fresh-install", shell="sh", retain_for_next_leg=False)
+    monkeypatch.setattr(journey, "assert_host_available", lambda leg, *unused: None if leg != "cleanup" else
+                        (_ for _ in ()).throw(RuntimeError("cleanup only")))
+    def successful_journey(*unused):
+        journey.write_json(run_root / "evidence" / "fresh-install" / "journey-result.json", {"status": "pass"})
+        return {"status": "pass"}
+    monkeypatch.setattr(journey, "_execute_owned", successful_journey)
+    with pytest.raises(RuntimeError, match="cleanup only"):
+        journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert receipt["cleanup_error"] == "RuntimeError: cleanup only"
+    assert "before-cleanup" in receipt["failure_diagnostics"]
+
+
+def test_sentinel_cleanup_failure_does_not_replace_lifecycle_error(tmp_path, monkeypatch, capsys):
+    process = SimpleNamespace(pid=123, poll=lambda: None,
+                              terminate=lambda: (_ for _ in ()).throw(RuntimeError("sentinel cleanup")))
+    monkeypatch.setattr(journey.subprocess, "Popen", lambda *unused, **kwargs: process)
+    monkeypatch.setattr(journey, "process_birth", lambda *unused: "birth")
+    monkeypatch.setattr(journey, "sentinel_alive", lambda *unused: True)
+    evidence = tmp_path / "evidence" / "fresh-install"
+    journey.write_json(evidence / "journey-result.json", {"status": "fail", "error": "ValueError: primary"})
+    with pytest.raises(ValueError, match="primary"):
+        with journey.sentinel_process(tmp_path, evidence):
+            raise ValueError("primary")
+    assert "Journey sentinel cleanup failed: RuntimeError: sentinel cleanup" in capsys.readouterr().err
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["error"] == "ValueError: primary"
+    assert receipt["sentinel_cleanup_error"] == "RuntimeError: sentinel cleanup"
+
+
+def test_sentinel_setup_failure_records_failure_diagnostics(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+                              leg="fresh-install", shell="sh")
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "process_birth", lambda *unused: None)
+    with pytest.raises(RuntimeError, match="sentinel process birth"):
+        journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert "sentinel process birth" in receipt["error"]
+    assert "before-cleanup" in receipt["failure_diagnostics"]
