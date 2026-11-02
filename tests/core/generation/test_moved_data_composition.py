@@ -568,6 +568,56 @@ def test_real_selected_host_shares_one_ledger_snapshot(monkeypatch, tmp_path):
     assert len(matrix_reads) == 1
 
 
+def test_selected_local_parent_keeps_its_own_inventory_and_admission(monkeypatch, tmp_path):
+    from copy import deepcopy
+    from astrid.core.execution.capability_ledger import load_capability_ledger, capability_execution_admission
+    from astrid.core.execution.executor.registry import ExecutorRegistry
+    from astrid.core.execution.executor.actions import action_executor_definition
+    from astrid.core.pack import load_pack_manifest
+
+    pack = _write_pack(tmp_path / 'selected', PACK_ID)
+    data = _manifest(PACK_ID)
+    child = data['actions']['generate_image']
+    child['metadata']['output_result_manifest'] = True
+    parent = deepcopy(child)
+    parent['metadata'] = {'local_orchestrator': True, 'output_result_manifest': True}
+    parent['graph'] = {'child_actions': [ACTION_ID]}
+    data['actions']['parent'] = parent
+    parent_id = f'{PACK_ID}.parent'
+    (pack / 'pack.yaml').write_text(yaml.safe_dump(data), encoding='utf-8')
+    matrix = tmp_path / 'project/config/astrid-beta-capabilities.json'
+    matrix.parent.mkdir(parents=True)
+    matrix.write_text(json.dumps({'schema_version': 1, 'capabilities': [
+        {'id': identifier, 'disposition': 'optional', 'evidence_reason': 'selected fixture'}
+        for identifier in (ACTION_ID, parent_id)
+    ]}))
+    models = matrix.parent.parent / 'astrid/core/model_catalog/models.yaml'
+    models.parent.mkdir(parents=True)
+    models.write_text('models: []\n')
+    _write_fixture_census(matrix.parent, [ACTION_ID, parent_id])
+    monkeypatch.delenv('ASTRID_PACKS_PATH', raising=False)
+    monkeypatch.setenv('ASTRID_HOME', str(tmp_path / 'empty-home'))
+    ledger = load_capability_ledger(matrix, pack_roots=(pack,))
+    installed = {row['id']: row for row in ledger['sources']['executor_inventory']
+                 if row['discovery_status'] == 'discovered'}
+    assert set(installed) == {ACTION_ID, parent_id}
+    assert installed[ACTION_ID]['kind'] == 'executor'
+    assert installed[parent_id]['kind'] == 'orchestrator'
+    assert installed[parent_id]['source'] == str(pack / 'pack.yaml')
+    assert installed[parent_id]['result_contract'] == 'manifest'
+    assert capability_execution_admission(ledger, parent_id)['executable'] is True
+    assert capability_execution_admission(ledger, parent_id)['requires_runtime_readiness'] is True
+
+    # An explicitly selected executor registry grants only its own definitions;
+    # sharing the owner's manifest cannot add an unselected parent to that input.
+    definition = load_pack_manifest(pack / 'pack.yaml')
+    selected = ExecutorRegistry()
+    selected.register(action_executor_definition(definition, 'generate_image', definition.actions['generate_image']))
+    executor_only = load_capability_ledger(matrix, executor_registry=selected)
+    assert parent_id not in {row['id'] for row in executor_only['sources']['executor_inventory']}
+    assert capability_execution_admission(executor_only, parent_id)['executable'] is False
+
+
 def test_public_unsupported_selection_refuses_before_runtime(monkeypatch, tmp_path, capsys):
     from astrid import console
     from astrid.core.generation import cli

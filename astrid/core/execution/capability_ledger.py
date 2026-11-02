@@ -324,14 +324,26 @@ def _aliases(repo_root: Path, *, excluded: frozenset[str] = frozenset(), selecte
     return rows
 
 
-def _executor_inventory(repo_root: Path, *, executor_registry: Any = None, selected_packs: tuple[Any, ...] | None = None, historical_matrix: tuple[Path, list[Any]] | None = None) -> list[dict[str, Any]]:
+def _executor_inventory(repo_root: Path, *, executor_registry: Any = None, orchestrator_registry: Any = None, selected_packs: tuple[Any, ...] | None = None, historical_matrix: tuple[Path, list[Any]] | None = None) -> list[dict[str, Any]]:
+    """Reconcile runnable definitions under the historical inventory key.
+
+    Local parents remain distinct from executors in their real registries, but
+    both need selected-source/result policy before host readiness can admit them.
+    An explicitly supplied executor registry never expands into ambient parents.
+    """
     from astrid.core.execution.executor.registry import load_default_registry
     from astrid.core.pack import load_pack_manifest
 
     rows: list[dict[str, Any]] = []
     parsed_packs = {pack.id: pack for pack in selected_packs or ()}
     registry = executor_registry if executor_registry is not None else load_default_registry(project_root=repo_root)
-    for definition in registry.list():
+    if executor_registry is None and orchestrator_registry is None:
+        from astrid.core.execution.orchestrator.registry import load_default_registry as load_parents
+        orchestrator_registry = load_parents(project_root=repo_root, executor_registry=registry)
+    definitions = [(definition, "executor") for definition in registry.list()]
+    if orchestrator_registry is not None:
+        definitions.extend((definition, "orchestrator") for definition in orchestrator_registry.list())
+    for definition, capability_kind in definitions:
         capability_id = definition.id
         pack_id = capability_id.split(".", 1)[0]
         pack_root = definition.metadata.get("pack_root")
@@ -368,6 +380,7 @@ def _executor_inventory(repo_root: Path, *, executor_registry: Any = None, selec
             raise CapabilityLedgerError(f"{manifest}: missing output-result policy for {capability_id}")
         rows.append({
             "id": str(capability_id),
+            "kind": capability_kind,
             "result_contract": result_contract,
             "disposition": "historical",
             "reason": reason,
@@ -459,7 +472,7 @@ def _historical_projection(row: Mapping[str, Any]) -> bool:
     )
 
 
-def _census_sets(repo_root: Path, *, executor_registry: Any = None, selected_packs: tuple[Any, ...] | None = None, historical_matrix: tuple[Path, list[Any]] | None = None) -> dict[str, Any]:
+def _census_sets(repo_root: Path, *, executor_registry: Any = None, orchestrator_registry: Any = None, selected_packs: tuple[Any, ...] | None = None, historical_matrix: tuple[Path, list[Any]] | None = None) -> dict[str, Any]:
     """Collect the admitted census identifiers and the quarantined subset of each.
 
     Shared by :func:`_reconcile_sources` (check) and :func:`write_census_lock`
@@ -481,7 +494,7 @@ def _census_sets(repo_root: Path, *, executor_registry: Any = None, selected_pac
     historical_labels.extend(dict(row) for row in _HISTORICAL_SOURCE_LABELS)
     historical_labels.sort(key=lambda row: (row["pack"], row["label"]))
     aliases = _aliases(repo_root, excluded=excluded, selected_packs=selected_packs)
-    executors = _executor_inventory(repo_root, executor_registry=executor_registry, selected_packs=selected_packs, historical_matrix=historical_matrix)
+    executors = _executor_inventory(repo_root, executor_registry=executor_registry, orchestrator_registry=orchestrator_registry, selected_packs=selected_packs, historical_matrix=historical_matrix)
     quarantined_rows = [
         {"pack": pack, "label": label}
         for pack, declared in sorted(quarantined_by_pack.items())
@@ -513,11 +526,11 @@ def _census_sets(repo_root: Path, *, executor_registry: Any = None, selected_pac
 
 def _reconcile_sources(
     repo_root: Path, capabilities: list[Mapping[str, Any]], *,
-    executor_registry: Any = None, selected_packs: tuple[Any, ...] | None = None,
+    executor_registry: Any = None, orchestrator_registry: Any = None, selected_packs: tuple[Any, ...] | None = None,
     external_contracts: Mapping[str, Any] | None = None, matrix_source: Path | None = None,
 ) -> dict[str, Any]:
     census = _census_sets(
-        repo_root, executor_registry=executor_registry, selected_packs=selected_packs,
+        repo_root, executor_registry=executor_registry, orchestrator_registry=orchestrator_registry, selected_packs=selected_packs,
         historical_matrix=(matrix_source or repo_root / "config" / "astrid-beta-capabilities.json", capabilities),
     )
     labels = census["labels"]
@@ -627,9 +640,11 @@ def load_capability_ledger(matrix_path: str | Path, *, executor_registry: Any = 
     if executor_registry is not None and pack_roots is not None:
         raise ValueError("provide executor_registry or pack_roots, not both")
     selected_packs = None
+    orchestrator_registry = None
     if pack_roots is not None:
         from astrid.core.execution.executor.registry import ExecutorRegistry
-        from astrid.core.execution.executor.actions import action_executor_definition, action_is_local_orchestrator
+        from astrid.core.execution.executor.actions import action_executor_definition, action_is_local_orchestrator, action_orchestrator_definition
+        from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
         from astrid.core.pack.loader import scan_pack_roots
 
         roots = tuple(Path(root).expanduser().resolve() for root in pack_roots)
@@ -641,11 +656,15 @@ def load_capability_ledger(matrix_path: str | Path, *, executor_registry: Any = 
         # are the complete executor declarations; legacy executor.yaml files
         # beneath an admitted root are not additional selected inputs.
         executor_registry = ExecutorRegistry()
+        orchestrator_registry = OrchestratorRegistry(executor_registry=executor_registry)
         for pack in selected_packs:
             for local_id, action in pack.actions.items():
-                if not action_is_local_orchestrator(action):
+                if action_is_local_orchestrator(action):
+                    orchestrator_registry.register(action_orchestrator_definition(pack, local_id, action))
+                else:
                     executor_registry.register(action_executor_definition(pack, local_id, action))
         executor_registry.validate_all()
+        orchestrator_registry.validate_all(executor_registry=executor_registry)
     path = Path(matrix_path).expanduser().resolve()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -656,7 +675,7 @@ def load_capability_ledger(matrix_path: str | Path, *, executor_registry: Any = 
     _validate_matrix_capabilities(payload["capabilities"])
     result = dict(payload)
     repo_root = path.parent.parent if selected_packs is not None or executor_registry is not None else _repo_root_for_matrix(path)
-    result["sources"] = _reconcile_sources(repo_root, payload["capabilities"], executor_registry=executor_registry, selected_packs=selected_packs, external_contracts=payload.get("external_contracts", {}), matrix_source=path) if repo_root else {"counts": {}, "coverage": {}}
+    result["sources"] = _reconcile_sources(repo_root, payload["capabilities"], executor_registry=executor_registry, orchestrator_registry=orchestrator_registry, selected_packs=selected_packs, external_contracts=payload.get("external_contracts", {}), matrix_source=path) if repo_root else {"counts": {}, "coverage": {}}
     return result
 
 
