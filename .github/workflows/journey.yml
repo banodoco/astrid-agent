@@ -437,6 +437,208 @@ jobs:
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
+      - name: Establish Linux user service manager
+        if: matrix.job_id == 'direct-linux'
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          # Hosted direct Linux row only. Keep diagnostics outside the driver's fresh root.
+          set -Eeuo pipefail
+          diag="$RUNNER_TEMP/journey-manager-direct-linux"
+          mkdir -p "$diag"
+          exec > >(tee "$diag/prerequisite.log") 2>&1
+          uid=$(id -u)
+          export XDG_RUNTIME_DIR="/run/user/$uid"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          run_root="$RUNNER_TEMP/astrid-r1-direct-linux"
+          config="$run_root/home/.config"
+          data="$run_root/home/.local/share"
+          probe="journey-manager-path-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.service"
+          probe_dir="$config/systemd/user"
+          probe_created=0
+
+          diagnose() {
+            local rc=$?
+            trap - EXIT
+            if (( probe_created )); then
+              rm -f "$probe_dir/$probe"
+              systemctl --user daemon-reload || true
+              rmdir "$probe_dir" "$config/systemd" "$config" "$run_root/home" "$run_root" || true
+            fi
+            echo "setup_exit=$rc"
+            timeout 10s loginctl show-user "$uid" -p Name -p Linger -p State -p RuntimePath || true
+            timeout 10s sudo systemctl --no-pager --full status "user@$uid.service" | head -60 || true
+            timeout 10s systemctl --user show -p Version -p UnitPath -p NFailedUnits || true
+            timeout 10s systemctl --user show-environment || true
+            exit "$rc"
+          }
+          trap diagnose EXIT
+
+          probe_isolated_unit() {
+            # Prove discovery from the exact future installation directory, not merely the bus.
+            mkdir -p "$probe_dir"
+            probe_created=1
+            printf '[Unit]\nDescription=Journey unit search path probe\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n' > "$probe_dir/$probe"
+            timeout 10s systemctl --user daemon-reload
+            fragment=$(timeout 10s systemctl --user show "$probe" --property=FragmentPath --value)
+            test "$fragment" = "$probe_dir/$probe"
+            timeout 30s systemctl --user start "$probe"
+            rm "$probe_dir/$probe"
+            timeout 10s systemctl --user daemon-reload
+            rmdir "$probe_dir" "$config/systemd" "$config" "$run_root/home" "$run_root"
+            probe_created=0
+          }
+
+          # The runtime drop-in is interpreted by systemd, so restrict it to the ordinary
+          # GitHub runner temp path alphabet rather than accepting systemd specifiers.
+          [[ "$run_root" =~ ^/[a-zA-Z0-9_./-]+$ ]]
+          test ! -e "$run_root"
+          echo "uid=$uid runtime=$XDG_RUNTIME_DIR isolated_config=$config isolated_data=$data"
+          timeout 20s sudo loginctl enable-linger "$uid"
+          timeout 30s sudo systemctl start "user@$uid.service"
+          for attempt in {1..20}; do
+            if [[ -d "$XDG_RUNTIME_DIR" && -S "$XDG_RUNTIME_DIR/bus" ]] && \
+               timeout 3s systemctl --user show-environment >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          test "$(stat -c %u "$XDG_RUNTIME_DIR")" = "$uid"
+          test -S "$XDG_RUNTIME_DIR/bus"
+          timeout 10s systemctl --user show-environment >/dev/null
+          # Check the original manager before restarting it with a different search path.
+          test ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/astrid.service"
+          original=$(timeout 10s systemctl --user show astrid.service --property=LoadState --value || true)
+          test "$original" = not-found
+
+          dropin="/run/systemd/system/user@$uid.service.d"
+          sudo mkdir -p "$dropin"
+          # An explicit unit search path survives the fresh-root cleanup between this
+          # probe and the installer. The trailing colon retains systemd's default paths.
+          printf '[Service]\nEnvironment="XDG_CONFIG_HOME=%s" "XDG_DATA_HOME=%s" "SYSTEMD_UNIT_PATH=%s:"\n' "$config" "$data" "$probe_dir" | sudo tee "$dropin/90-astrid-journey.conf" >/dev/null
+          sudo systemctl daemon-reload
+          timeout 30s sudo systemctl restart "user@$uid.service"
+          for attempt in {1..20}; do
+            if timeout 3s systemctl --user show-environment >/dev/null; then break; fi
+            sleep 1
+          done
+          probe_isolated_unit
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          echo 'Native systemd user manager discovered and started the isolated-path probe.'
+      - name: Establish Windows Task Scheduler readiness
+        if: matrix.job_id == 'direct-windows'
+        shell: powershell
+        timeout-minutes: 3
+        run: |
+          # Hosted direct Windows row only. This must run in Windows PowerShell 5.1,
+          # like the driver's scheduled-task preflight.
+          $ErrorActionPreference = 'Stop'
+          $diag = Join-Path $env:RUNNER_TEMP 'journey-manager-direct-windows'
+          New-Item -ItemType Directory -Force -Path $diag | Out-Null
+          Start-Transcript -Path (Join-Path $diag 'prerequisite.log') | Out-Null
+          $taskName = 'Astrid-Journey-Manager-Probe-' + [guid]::NewGuid().ToString('N')
+          $registered = $false
+          $result = 1
+          try {
+              $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+              Write-Output "Identity: $identity"
+              $service = Get-Service -Name Schedule -ErrorAction Stop
+              Write-Output "Task Scheduler initial status: $($service.Status)"
+              if ($service.Status -ne 'Running') { Start-Service -Name Schedule -ErrorAction Stop }
+              $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+              Write-Output "Task Scheduler status: $((Get-Service -Name Schedule).Status)"
+
+              $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument '/c exit 0'
+              $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive
+              Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
+              $registered = $true
+              $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+              if ($task.TaskName -ne $taskName) { throw 'Scheduled-task query returned an unexpected task.' }
+              Write-Output 'Temporary task registration and query succeeded.'
+
+              $result = 0
+          } catch {
+              Write-Output ("Prerequisite failure: " + ($_ | Out-String))
+          } finally {
+              if ($registered) {
+                  try {
+                      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+                      Write-Output 'Temporary task removed.'
+                  } catch {
+                      Write-Output ("Temporary task cleanup failed: " + ($_ | Out-String))
+                      $result = 1
+                  }
+              }
+              Write-Output "setup_exit=$result"
+              Stop-Transcript | Out-Null
+          }
+          exit $result
+      - name: Capture Windows scheduled-task query diagnostics
+        if: always() && matrix.job_id == 'direct-windows'
+        shell: powershell
+        env:
+          JOURNEY_LEG: ${{ matrix.leg }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'journey-manager-direct-windows'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $stdout = Join-Path $evidence 'preflight-python-stdout.txt'
+          $stderr = Join-Path $evidence 'preflight-python-stderr.txt'
+          $status = Join-Path $evidence 'preflight-launch.json'
+          $original = 'python -c "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ[''RUNNER_TEMP'']) / ''journey-manager-direct-windows''; w.scheduled_task_preflight()"'
+          $code = "from pathlib import Path; import os; from scripts import ci_windows_journey as w; w.EVIDENCE = Path(os.environ['RUNNER_TEMP']) / 'journey-manager-direct-windows'; w.scheduled_task_diagnostics(leg=os.environ['JOURNEY_LEG'])"
+          # Start-Process passes this argument string to CreateProcess on Windows.
+          $arguments = '-u -c "' + $code + '"'
+          $record = [ordered]@{
+            original_command = $original; executable = 'python'; arguments = $arguments
+            stdout = $stdout; stderr = $stderr; exit_code = $null; exception = $null
+            origin = [ordered]@{
+              PSVersion = $PSVersionTable.PSVersion.ToString(); PSEdition = $PSVersionTable.PSEdition
+              CommandType = $null; Source = $null; ModuleName = $null; ModulePath = $null
+            }
+            origin_exception = $null
+          }
+          function Save-PreflightLaunch {
+            [IO.File]::WriteAllText($status, ($record | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+          }
+          [IO.File]::WriteAllText($stdout, '')
+          [IO.File]::WriteAllText($stderr, '')
+          Save-PreflightLaunch
+          try {
+            $command = Get-Command Get-ScheduledTask -ErrorAction Stop
+            $record.origin.CommandType = [string]$command.CommandType
+            $record.origin.Source = $command.Source
+            $record.origin.ModuleName = $command.ModuleName
+            $record.origin.ModulePath = $command.Module.Path
+          } catch {
+            $record.origin_exception = ($_ | Format-List * -Force | Out-String) + "`n" + $_.Exception.ToString()
+          }
+          Save-PreflightLaunch
+          $env:PYTHONPATH = "$pwd/agent"
+          try {
+            $record.executable = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+            Save-PreflightLaunch
+            $process = Start-Process -FilePath $record.executable -ArgumentList $arguments -Wait -PassThru `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+            $record.exit_code = $process.ExitCode
+          } catch {
+            $record.exception = ($_ | Format-List * -Force | Out-String) + "`n" + $_.Exception.ToString()
+          } finally {
+            Save-PreflightLaunch
+          }
+          Write-Output "Windows preflight Python stdout:"
+          Get-Content -LiteralPath $stdout | ForEach-Object { Write-Output $_ }
+          Write-Output "Windows preflight Python stderr:"
+          Get-Content -LiteralPath $stderr | ForEach-Object { Write-Output $_ }
+          if ($null -ne $record.exception -or $record.exit_code -ne 0) { exit 1 }
+      - name: Retain hosted service-manager prerequisite diagnostics
+        if: always() && (matrix.job_id == 'direct-linux' || matrix.job_id == 'direct-windows')
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: journey-manager-${{ matrix.job_id }}
+          path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
+          if-no-files-found: warn
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
@@ -484,6 +686,7 @@ jobs:
             'install-bootstrap.log', 'update-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
+            'preflight-scheduled-task.txt',
             'runtime-owner-processes.json', 'runtime-service-runtime.log',
             'manager-state-before-cleanup.json', 'manager-state-after-cleanup.json',
             'manager-state-before-cleanup.log', 'manager-state-after-cleanup.log',
