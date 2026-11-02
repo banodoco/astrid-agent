@@ -48,9 +48,9 @@ def test_early_failure_reports_missing_exits(tmp_path):
 def test_workflow_embeds_exact_tested_sequence_orchestrator():
     root = Path(__file__).parents[1]
     workflow = (root / ".github/workflows/journey.yml").read_text()
-    embedded = workflow.split("          /opt/homebrew/opt/python@3.11/bin/python3.11 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0]
+    embedded = workflow.split('          "$RUNNER_TOOL_CACHE/Python/3.11.18/arm64/bin/python3.11" - <<\'PY\'\n', 1)[1].split("\n          PY\n", 1)[0]
     assert textwrap.dedent(embedded).strip() == (root / "scripts/ci_r25_macos_sequence.py").read_text().strip()
-    assert r25.PIN == "f0f51d6761f0409dba74e24c051f17b8c021b641"
+    assert r25.PIN == "856980b6388ab4d57578b87c659364e3ef82a118"
     assert "actions/upload-artifact@v4" in workflow and "if: always()" in workflow
 
 
@@ -115,3 +115,13 @@ def test_find_early_run_root_from_trace_without_trusting_other_paths(tmp_path, m
     root.rmdir()
     root.symlink_to(tmp_path, target_is_directory=True)
     assert r25.find_run_root(trace, tmp_path) is None
+
+
+def test_r4_requires_dry_preflight_and_runner_owned_tools():
+    source = (Path(__file__).parents[1] / "scripts/ci_r25_macos_sequence.py").read_text()
+    assert "6d9afca52867b7b039958784ca754ed71286f1916ffaf903618a8fdd34c51f3c" in source
+    assert "8b89801f527a85e3f7de539512c9dde08673ac99db6458cc7cc627e05d707054" in source
+    assert '"R25_PREFLIGHT_ONLY": "1"' in source
+    assert source.index('"R25_PREFLIGHT_ONLY": "1"') < source.index('subprocess.Popen(')
+    assert 'dry_dir.rmdir()' in source
+    assert 'actions-runner/_work/_tool/Python/3.11.18/arm64' in source

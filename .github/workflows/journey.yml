@@ -1,4 +1,4 @@
-name: R-25 macOS binding R3 (manual only)
+name: R-25 macOS preflight R4 (manual only)
 on:
   workflow_dispatch:
 permissions:
@@ -12,7 +12,7 @@ jobs:
         shell: bash
         working-directory: /
         run: |
-          /opt/homebrew/opt/python@3.11/bin/python3.11 - <<'PY'
+          "$RUNNER_TOOL_CACHE/Python/3.11.18/arm64/bin/python3.11" - <<'PY'
           #!/usr/bin/env python3
           """Run the explicitly pinned R25 sequence and stage redacted evidence."""
           import hashlib
@@ -25,14 +25,15 @@ jobs:
           import subprocess
           import sys
           import time
+          import tempfile
           from pathlib import Path
-
+          
           UID = 503
-          PIN = "f0f51d6761f0409dba74e24c051f17b8c021b641"
-          SEQUENCE_SHA256 = "a5b196da7647e9ae8a02374f2bd6dc19597d511e56978e5a208581276e0b4a3d"
+          PIN = "856980b6388ab4d57578b87c659364e3ef82a118"
+          SEQUENCE_SHA256 = "6d9afca52867b7b039958784ca754ed71286f1916ffaf903618a8fdd34c51f3c"
           SLOTS = ("pinokio-backend-macos", "pinokio-fully-local-macos")
-
-
+          
+          
           def redact(text, home):
               text = text.replace(str(home), "<RUNNER_HOME>")
               text = re.sub(r"/Users/[^/\s\"']+", "<REDACTED_HOME>", text)
@@ -42,8 +43,8 @@ jobs:
               text = re.sub(r'(?i)(["\'](?:token|api[_-]?key|secret|password)["\']\s*:\s*["\'])[^"\']*', r'\1<REDACTED>', text)
               text = re.sub(r"(?i)(\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_?KEY)[A-Z0-9_]*\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)", r"\1<REDACTED>", text)
               return text
-
-
+          
+          
           def stage_file(source, destination, home):
               if not source.is_file() or source.is_symlink():
                   return False
@@ -53,8 +54,8 @@ jobs:
               destination.parent.mkdir(parents=True, exist_ok=True)
               destination.write_text(redact(data, home), encoding="utf-8")
               return True
-
-
+          
+          
           def stage_evidence(run_root, output, home, supervisor, status):
               output.mkdir(mode=0o700, parents=True, exist_ok=True)
               stage_file(supervisor, output / "supervisor.log", home)
@@ -103,8 +104,8 @@ jobs:
                       entries.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(output).as_posix()}")
               (output / "SHA256SUMS").write_text("\n".join(entries) + "\n", encoding="utf-8")
               return status
-
-
+          
+          
           def command(args, env, *, cwd=None, log=None):
               result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=300, check=False)
               if result.returncode:
@@ -114,8 +115,8 @@ jobs:
                           stream.write(result.stdout[-100000:] + result.stderr[-100000:])
                   raise RuntimeError("Required preflight or source checkout command failed")
               return result.stdout.strip()
-
-
+          
+          
           def preflight(home, temp, env):
               if os.getuid() != UID or os.environ.get("RUNNER_NAME") != "hannah-mac":
                   raise RuntimeError("Wrong runner identity")
@@ -135,9 +136,15 @@ jobs:
               port = subprocess.run(["lsof", "-nP", "-iTCP:42000"], env=env, capture_output=True, text=True, timeout=20, check=False)
               if port.returncode != 1 or port.stdout.strip() or port.stderr.strip():
                   raise RuntimeError("Port 42000 is occupied or cannot be checked")
-              return command(["brew", "--prefix", "python@3.11"], env) + "/bin/python3.11"
-
-
+              pyroot = home / "actions-runner/_work/_tool/Python/3.11.18/arm64"
+              python = pyroot / "bin/python3.11"
+              if pyroot.is_symlink() or not pyroot.is_dir() or pyroot.stat().st_uid != UID or not python.is_file():
+                  raise RuntimeError("Runner-owned staged Python is unavailable")
+              version = command([str(python), "-I", "-c", "import platform; print(platform.python_version())"], env)
+              if version != "3.11.18": raise RuntimeError("Runner-owned Python version differs")
+              return str(python)
+          
+          
           def build_env(home, temp, search_path):
               config = temp / "r25-git-config"
               config.mkdir(mode=0o700)
@@ -158,8 +165,8 @@ jobs:
                       "PIP_CONFIG_FILE": "/dev/null", "NPM_CONFIG_CACHE": str(cache / "npm"),
                       "PIP_CACHE_DIR": str(cache / "pip"), "UV_CACHE_DIR": str(cache / "uv"),
                       "BUN_INSTALL_CACHE_DIR": str(cache / "bun")}
-
-
+          
+          
           def find_run_root(text, home):
               # The sequence installs its cleanup trap only after creating run_root.
               # Bash tracing can recover that early root if a pre-trap check fails.
@@ -176,24 +183,35 @@ jobs:
                       and candidate.resolve().parent == parent.resolve()):
                   return candidate
               return None
-
-
+          
+          
           def execute():
               temp = Path(os.environ["RUNNER_TEMP"])
               output = temp / "r25-artifact"
               output.mkdir(mode=0o700, exist_ok=False)
               supervisor = temp / "r25-supervisor.log"
               home = Path(pwd.getpwuid(UID).pw_dir)
-              env = build_env(home, temp, os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"))
+              env = build_env(home, temp, "/usr/bin:/bin:/usr/sbin:/sbin")
               run_root = None
-              status = {"status": "failed", "command_exit": "not-run", "aborted_low_disk": False}
+              status = {"status": "failed", "command_exit": "not-run", "dry_preflight_exit": "not-run", "aborted_low_disk": False}
               supervisor.touch(mode=0o600)
               try:
+                  if os.getuid() != UID or os.environ.get("RUNNER_NAME") != "hannah-mac" or temp != home / "actions-runner/_work/_temp" or temp != temp.resolve():
+                      raise RuntimeError("Unexpected runner identity or temp location")
+                  node_archive = temp / "node-v20.19.4-darwin-arm64.tar.gz"
+                  command(["/usr/bin/curl", "-q", "--proto", "=https", "--proto-redir", "=https", "-fsSL", "--retry", "3", "--output", str(node_archive), "https://nodejs.org/dist/v20.19.4/node-v20.19.4-darwin-arm64.tar.gz"], env)
+                  if hashlib.sha256(node_archive.read_bytes()).hexdigest() != "8b89801f527a85e3f7de539512c9dde08673ac99db6458cc7cc627e05d707054":
+                      raise RuntimeError("Node archive checksum differs")
+                  command(["/usr/bin/tar", "-xzf", str(node_archive), "-C", str(temp)], env)
+                  node_dir = temp / "node-v20.19.4-darwin-arm64"
+                  if node_dir.is_symlink() or not node_dir.is_dir() or node_dir.stat().st_uid != UID:
+                      raise RuntimeError("Runner-owned Node staging directory is invalid")
+                  env["PATH"] = str(node_dir / "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin"
                   python = preflight(home, temp, env)
                   clone = temp / "astrid-pinokio-r25"
                   if clone.exists() or clone.is_symlink(): raise RuntimeError("Source checkout already exists")
                   command(["git", "clone", "https://github.com/banodoco/astrid-pinokio.git", str(clone)], env, cwd=temp, log=supervisor)
-                  command(["git", "fetch", "origin", PIN], env, cwd=clone, log=supervisor)
+                  command(["git", "fetch", "origin", "refs/heads/lane/M-PIN/R-25-MAC-PREFLIGHT-R4"], env, cwd=clone, log=supervisor)
                   command(["git", "checkout", "--detach", "FETCH_HEAD"], env, cwd=clone, log=supervisor)
                   if command(["git", "rev-parse", "HEAD"], env, cwd=clone) != PIN:
                       raise RuntimeError("Sequence source commit differs")
@@ -202,6 +220,19 @@ jobs:
                       raise RuntimeError("Sequence source checksum differs")
                   env["PYTHON_BIN"] = python
                   env["PYTHON"] = python
+                  dry_dir = Path(tempfile.mkdtemp(prefix="r25-preflight.", dir=home))
+                  try:
+                      dry = subprocess.run(["bash", str(sequence), str(dry_dir)], cwd=clone,
+                                           env={**env, "R25_PREFLIGHT_ONLY": "1"},
+                                           capture_output=True, text=True, timeout=60, check=False)
+                      status["dry_preflight_exit"] = dry.returncode
+                      with supervisor.open("a", encoding="utf-8") as log:
+                          log.write("Dry preflight exit: " + str(dry.returncode) + "\n" + dry.stdout[-100000:] + dry.stderr[-100000:])
+                  finally:
+                      # Only remove an empty directory owned by this run.
+                      dry_dir.rmdir()
+                  if dry.returncode != 0:
+                      raise RuntimeError("Pinned dry preflight failed")
                   if shutil.disk_usage(home).free < 3_000_000_000:
                       status["aborted_low_disk"] = True
                       raise RuntimeError("Disk fell below the abort threshold before the sequence")
@@ -224,7 +255,7 @@ jobs:
                   if run_root is not None:
                       status["run_root"] = "~/r25-option-b-runs/" + run_root.name
                   if child.returncode and re.search(r"(?m)^\+ test 40700 = 700$", text):
-                      status["first_error"] = "Pinned sequence line 23 compares stat mode 40700 to 700"
+                      status["first_error"] = "Pinned sequence failed before reporting its run root"
                   status["status"] = "complete" if child.returncode == 0 else "failed"
               except Exception as exc:
                   status["reason"] = str(exc) if type(exc) is RuntimeError else "System or data error"
@@ -233,8 +264,8 @@ jobs:
               print(json.dumps(status, sort_keys=True))
               if status["status"] == "complete" and status["cleanup_exit"] == "0":
                   (temp / "r25-success").write_text("ok\n")
-
-
+          
+          
           if __name__ == "__main__":
               execute()
           PY
@@ -242,7 +273,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: r25-macos-binding-r3-redacted
+          name: r25-macos-preflight-r4-redacted
           path: ${{ runner.temp }}/r25-artifact
           if-no-files-found: error
           retention-days: 30

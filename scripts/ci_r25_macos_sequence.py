@@ -10,11 +10,12 @@ import signal
 import subprocess
 import sys
 import time
+import tempfile
 from pathlib import Path
 
 UID = 503
-PIN = "f0f51d6761f0409dba74e24c051f17b8c021b641"
-SEQUENCE_SHA256 = "a5b196da7647e9ae8a02374f2bd6dc19597d511e56978e5a208581276e0b4a3d"
+PIN = "856980b6388ab4d57578b87c659364e3ef82a118"
+SEQUENCE_SHA256 = "6d9afca52867b7b039958784ca754ed71286f1916ffaf903618a8fdd34c51f3c"
 SLOTS = ("pinokio-backend-macos", "pinokio-fully-local-macos")
 
 
@@ -120,7 +121,13 @@ def preflight(home, temp, env):
     port = subprocess.run(["lsof", "-nP", "-iTCP:42000"], env=env, capture_output=True, text=True, timeout=20, check=False)
     if port.returncode != 1 or port.stdout.strip() or port.stderr.strip():
         raise RuntimeError("Port 42000 is occupied or cannot be checked")
-    return command(["brew", "--prefix", "python@3.11"], env) + "/bin/python3.11"
+    pyroot = home / "actions-runner/_work/_tool/Python/3.11.18/arm64"
+    python = pyroot / "bin/python3.11"
+    if pyroot.is_symlink() or not pyroot.is_dir() or pyroot.stat().st_uid != UID or not python.is_file():
+        raise RuntimeError("Runner-owned staged Python is unavailable")
+    version = command([str(python), "-I", "-c", "import platform; print(platform.python_version())"], env)
+    if version != "3.11.18": raise RuntimeError("Runner-owned Python version differs")
+    return str(python)
 
 
 def build_env(home, temp, search_path):
@@ -169,16 +176,27 @@ def execute():
     output.mkdir(mode=0o700, exist_ok=False)
     supervisor = temp / "r25-supervisor.log"
     home = Path(pwd.getpwuid(UID).pw_dir)
-    env = build_env(home, temp, os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"))
+    env = build_env(home, temp, "/usr/bin:/bin:/usr/sbin:/sbin")
     run_root = None
-    status = {"status": "failed", "command_exit": "not-run", "aborted_low_disk": False}
+    status = {"status": "failed", "command_exit": "not-run", "dry_preflight_exit": "not-run", "aborted_low_disk": False}
     supervisor.touch(mode=0o600)
     try:
+        if os.getuid() != UID or os.environ.get("RUNNER_NAME") != "hannah-mac" or temp != home / "actions-runner/_work/_temp" or temp != temp.resolve():
+            raise RuntimeError("Unexpected runner identity or temp location")
+        node_archive = temp / "node-v20.19.4-darwin-arm64.tar.gz"
+        command(["/usr/bin/curl", "-q", "--proto", "=https", "--proto-redir", "=https", "-fsSL", "--retry", "3", "--output", str(node_archive), "https://nodejs.org/dist/v20.19.4/node-v20.19.4-darwin-arm64.tar.gz"], env)
+        if hashlib.sha256(node_archive.read_bytes()).hexdigest() != "8b89801f527a85e3f7de539512c9dde08673ac99db6458cc7cc627e05d707054":
+            raise RuntimeError("Node archive checksum differs")
+        command(["/usr/bin/tar", "-xzf", str(node_archive), "-C", str(temp)], env)
+        node_dir = temp / "node-v20.19.4-darwin-arm64"
+        if node_dir.is_symlink() or not node_dir.is_dir() or node_dir.stat().st_uid != UID:
+            raise RuntimeError("Runner-owned Node staging directory is invalid")
+        env["PATH"] = str(node_dir / "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin"
         python = preflight(home, temp, env)
         clone = temp / "astrid-pinokio-r25"
         if clone.exists() or clone.is_symlink(): raise RuntimeError("Source checkout already exists")
         command(["git", "clone", "https://github.com/banodoco/astrid-pinokio.git", str(clone)], env, cwd=temp, log=supervisor)
-        command(["git", "fetch", "origin", PIN], env, cwd=clone, log=supervisor)
+        command(["git", "fetch", "origin", "refs/heads/lane/M-PIN/R-25-MAC-PREFLIGHT-R4"], env, cwd=clone, log=supervisor)
         command(["git", "checkout", "--detach", "FETCH_HEAD"], env, cwd=clone, log=supervisor)
         if command(["git", "rev-parse", "HEAD"], env, cwd=clone) != PIN:
             raise RuntimeError("Sequence source commit differs")
@@ -187,6 +205,19 @@ def execute():
             raise RuntimeError("Sequence source checksum differs")
         env["PYTHON_BIN"] = python
         env["PYTHON"] = python
+        dry_dir = Path(tempfile.mkdtemp(prefix="r25-preflight.", dir=home))
+        try:
+            dry = subprocess.run(["bash", str(sequence), str(dry_dir)], cwd=clone,
+                                 env={**env, "R25_PREFLIGHT_ONLY": "1"},
+                                 capture_output=True, text=True, timeout=60, check=False)
+            status["dry_preflight_exit"] = dry.returncode
+            with supervisor.open("a", encoding="utf-8") as log:
+                log.write("Dry preflight exit: " + str(dry.returncode) + "\n" + dry.stdout[-100000:] + dry.stderr[-100000:])
+        finally:
+            # Only remove an empty directory owned by this run.
+            dry_dir.rmdir()
+        if dry.returncode != 0:
+            raise RuntimeError("Pinned dry preflight failed")
         if shutil.disk_usage(home).free < 3_000_000_000:
             status["aborted_low_disk"] = True
             raise RuntimeError("Disk fell below the abort threshold before the sequence")
@@ -209,7 +240,7 @@ def execute():
         if run_root is not None:
             status["run_root"] = "~/r25-option-b-runs/" + run_root.name
         if child.returncode and re.search(r"(?m)^\+ test 40700 = 700$", text):
-            status["first_error"] = "Pinned sequence line 23 compares stat mode 40700 to 700"
+            status["first_error"] = "Pinned sequence failed before reporting its run root"
         status["status"] = "complete" if child.returncode == 0 else "failed"
     except Exception as exc:
         status["reason"] = str(exc) if type(exc) is RuntimeError else "System or data error"
