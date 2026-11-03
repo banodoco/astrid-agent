@@ -318,6 +318,300 @@ def test_user_editing_retry_probes_once_and_remains_pending_until_release(monkey
     assert len(probes) == 2
 
 
+@pytest.fixture
+def saved_user_editing(editing_case, monkeypatch):
+    """A real HTTP refusal and its durable flight, observed at the wire edge."""
+    from astrid.sdk.timeline.sync import CommitRefused
+
+    _, client, project, timeline = editing_case
+    timeline.session.user_editing_timeout = 0.25
+    timeline.session.user_editing_interval = 0.005
+    generated = client._remote._transport._generated
+    raw_request = generated._request
+    path = timeline.session.outbox.path
+    posts, evaluations = [], []
+
+    def observe(method, request_path, *, body=None, headers=None, **kwargs):
+        if (method == "POST" and request_path == timeline.session.path
+                and not json.loads(body).get("dry_run") and json.loads(body).get("source") == {"via": "python"}):
+            posts.append((body, headers["Idempotency-Key"], json.loads(path.read_bytes())["flight"]))
+        return raw_request(method, request_path, body=body, headers=headers, **kwargs)
+
+    monkeypatch.setattr(generated, "_request", observe)
+
+    def lease(sequence, *, release=False):
+        _, _, payload = raw_request(
+            "DELETE" if release else "PUT", timeline.session.path.removesuffix("commit") + "editing",
+            body=json.dumps({"tab_session_id": "retry-flight-tab", "sequence": sequence}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        return generated._json(payload)["data"]
+
+    def edit(t):
+        evaluations.append(True)
+        t.bundle["parent"]["custom"] = {"agent": "café saved flight"}
+
+    def save(origin="function", key="original-wire-key"):
+        commands = timeline.commit(edit, label="Saved flight", reads=[], dry_run=True)["data"]["commands"]
+        assert lease(1)["active"]
+        with pytest.raises(CommitRefused) as caught:
+            timeline.commit(edit if origin == "function" else commands, label="Saved flight", key=key, reads=[])
+        pending_id = caught.value.pending_id
+        record = timeline.pending_show(pending_id)
+        assert record["failure"]["details"]["reason"] == "user_editing"
+        assert record["flight"]["body"].encode() == posts[0][0]
+        assert record["flight"]["key"] == posts[0][1]
+        assert json.loads(path.read_bytes())["flight"] is None
+        return caught.value, record
+
+    return SimpleNamespace(timeline=timeline, client=client, project=project, path=path,
+                           generated=generated, raw_request=raw_request, posts=posts,
+                           evaluations=evaluations, edit=edit, lease=lease, save=save)
+
+
+@pytest.mark.parametrize("origin", ["list", "function"])
+@pytest.mark.parametrize("key", ["original-wire-key", None], ids=["explicit", "generated"])
+def test_user_editing_pending_commit_resumes_exact_wire_flight(saved_user_editing, origin, key):
+    case = saved_user_editing
+    error, record = case.save(origin, key)
+    flight = record["flight"]
+    body = json.loads(flight["body"])
+    evaluations = len(case.evaluations)
+    # Save a disjoint user field through the real Runtime while the lease lives.
+    config = case.timeline.bundle["parent"]["config"]
+    before = {"state": "present", "value": config["title"]} if "title" in config else {"state": "absent"}
+    user_body = {key: body[key] for key in ("api_version", "project_id", "timeline_id",
+                                          "base_revision_id", "base_publication_id")}
+    user_body.update(source={"via": "app"}, dry_run=False, label="User save", merge="fields", reads=[],
+                     commands=[{"schema_version": 1, "op": "doc.patch", "version": "1", "select": None,
+                                "args": {"changes": [{"op": "set", "ref": "parent", "path": ["config", "title"],
+                                                       "before": before, "value": "User saved title"}]}}])
+    user = case.client.timelines.commit(case.project, "film", user_body, idempotency_key="user-save")
+    assert user.ok, user.as_dict()
+    assert case.lease(2, release=True)["active"] is False
+
+    from astrid.sdk.timeline import Timeline
+
+    reopened = Timeline.open(case.project, "film", client=case.client, outbox_path=case.path)
+    # Passing the original function must still review the captured flight.
+    review = reopened.retry(error, fn=case.edit if origin == "function" else None)
+    assert review["status"] == "preview"
+    before_commit = len(case.posts)
+    accepted = reopened.commit(review)
+    assert accepted["status"] == "merged"
+    assert accepted["data"]["accepted_revision_id"]
+    assert accepted["receipt"]["idempotency_key"] == flight["key"]
+    assert len(case.evaluations) == evaluations
+    assert len(case.posts) == before_commit + 1
+    assert all(raw == flight["body"].encode() and wire_key == flight["key"]
+               and active["fence"] == flight["fence"] for raw, wire_key, active in case.posts)
+    assert case.posts[-1][2]["pending_identity"] == retry_module._part_identity(record)
+    assert case.posts[-1][2]["pending_path"] == str(case.path)
+    assert accepted["data"]["base_revision_id"] == body["base_revision_id"]
+    assert accepted["data"]["base_publication_id"] == body["base_publication_id"]
+    payload = accepted["data"]["canonical_document"]["parent_revision"]["payload"]
+    assert payload["config"]["title"] == "User saved title"
+    assert payload["custom"] == {"agent": "café saved flight"}
+    state = json.loads(case.path.read_bytes())
+    assert state["flight"] is None and state["pending"] == []
+    assert state["pending_changes"][record["id"]]["state"] == "landed"
+    assert state["pending_changes"][record["id"]]["receipts"] == [accepted["receipt"]["receipt_id"]]
+    # Recommitting a settled preview cannot produce another publication.
+    count = len(case.posts)
+    assert reopened.commit(review)["status"] == "landed"
+    assert len(case.posts) == count
+
+
+def test_user_editing_pending_resume_cancellation_retains_original_flight(saved_user_editing, monkeypatch):
+    from threading import Event
+
+    case = saved_user_editing
+    _, record = case.save()
+    review = case.timeline.retry(record["id"])
+    cancel, completed = Event(), Event()
+    observed = case.generated._request
+
+    def cancel_refused_post(method, path, **kwargs):
+        try:
+            return observed(method, path, **kwargs)
+        finally:
+            if method == "POST" and path == case.timeline.session.path and not json.loads(kwargs["body"]).get("dry_run"):
+                cancel.set()
+                completed.set()
+
+    case.timeline.session.cancel_event = cancel
+    monkeypatch.setattr(case.generated, "_request", cancel_refused_post)
+    with pytest.raises(InterruptedError):
+        case.timeline.commit(review)
+    assert completed.wait(5)
+    state = json.loads(case.path.read_bytes())
+    for field in ("body", "key", "fence"):
+        assert state["flight"][field] == record["flight"][field]
+    assert state["pending_changes"][record["id"]] == record
+    monkeypatch.setattr(case.generated, "_request", observed)
+    case.timeline.session.cancel_event = None
+    case.lease(2, release=True)
+    accepted = case.timeline.commit(review)
+    assert accepted["receipt"]["idempotency_key"] == record["flight"]["key"]
+    assert case.timeline.pending_show(record["id"])["state"] == "landed"
+
+
+def test_user_editing_pending_repeated_refusal_keeps_wire_identity(saved_user_editing):
+    from astrid.sdk.timeline.sync import CommitRefused
+
+    case = saved_user_editing
+    _, record = case.save()
+    review = case.timeline.retry(record["id"])
+    evaluations = len(case.evaluations)
+    with pytest.raises(CommitRefused) as caught:
+        case.timeline.commit(review)
+    assert caught.value.pending_id == record["id"]
+    updated = case.timeline.pending_show(record["id"])
+    assert updated["attempts"] == record["attempts"] + 1
+    assert updated["state"] == "pending"
+    assert updated["failure"]["details"]["reason"] == "user_editing"
+    assert len(json.loads(case.path.read_bytes())["pending_changes"]) == 1
+    with pytest.raises(ValueError, match="changed after this retry preview"):
+        case.timeline.commit(review)
+    case.lease(2, release=True)
+    accepted = case.timeline.commit(case.timeline.retry(record["id"]))
+    assert accepted["receipt"]["idempotency_key"] == record["flight"]["key"]
+    assert len(case.evaluations) == evaluations
+    assert all(raw == record["flight"]["body"].encode() and key == record["flight"]["key"]
+               and active["fence"] == record["flight"]["fence"] for raw, key, active in case.posts)
+
+
+def test_user_editing_pending_late_ack_leaves_newer_flight_untouched(saved_user_editing, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.sync import CommitOutcomeUnknown
+    from astrid_runtime_client import ApiError
+
+    case = saved_user_editing
+    _, record = case.save()
+    case.lease(2, release=True)
+    review = case.timeline.retry(record["id"])
+    ready, release = Event(), Event()
+    observed = case.generated._request
+    held = []
+
+    def delay_first_ack(method, path, **kwargs):
+        result = observed(method, path, **kwargs)
+        if method == "POST" and path == case.timeline.session.path and not json.loads(kwargs["body"]).get("dry_run"):
+            if kwargs["headers"]["Idempotency-Key"] == record["flight"]["key"] and not held:
+                held.append(True)
+                ready.set()
+                assert release.wait(10)
+            elif kwargs["headers"]["Idempotency-Key"] == "newer-flight":
+                raise ApiError(503, "not_ready", "lost newer acknowledgement")
+        return result
+
+    monkeypatch.setattr(case.generated, "_request", delay_first_ack)
+    case.timeline.session.user_editing_timeout = 5
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        late = pool.submit(case.timeline.commit, review)
+        try:
+            assert ready.wait(5)
+            duplicate = Timeline.open(case.project, "film", client=case.client, outbox_path=case.path)
+            accepted = duplicate.commit(review)
+            assert accepted["receipt"]["idempotency_key"] == record["flight"]["key"]
+            with pytest.raises(CommitOutcomeUnknown):
+                duplicate.commit(lambda t: t.bundle["parent"]["custom"].update(newer=True),
+                                 label="Newer edit", key="newer-flight")
+            newer = json.loads(case.path.read_bytes())
+            assert newer["flight"]["key"] == "newer-flight"
+            assert newer["flight"]["fence"] != record["flight"]["fence"]
+        finally:
+            release.set()
+        assert late.result(timeout=5)["receipt"] == accepted["receipt"]
+    assert json.loads(case.path.read_bytes()) == newer
+
+
+def test_user_editing_pending_resume_rejects_newer_queued_work(saved_user_editing):
+    from astrid.sdk.timeline._common import TimelineEditError
+
+    case = saved_user_editing
+    _, record = case.save()
+    review = case.timeline.retry(record["id"])
+    later = case.timeline.commit(
+        lambda t: t.bundle["parent"].update(custom={"later": True}), label="Later", dry_run=True)
+    case.timeline.session.queue_many(later["data"]["commands"])
+    before = case.path.read_bytes()
+    posts = len(case.posts)
+    with pytest.raises((ValueError, TimelineEditError), match="original in-flight request"):
+        case.timeline.commit(review)
+    assert case.path.read_bytes() == before
+    assert len(case.posts) == posts
+
+
+def test_user_editing_pending_conflict_requires_rederive_without_rerunning_function(saved_user_editing):
+    import copy
+
+    case = saved_user_editing
+    error, record = case.save()
+    saved_flight = copy.deepcopy(record["flight"])
+    saved_record = copy.deepcopy(record)
+    body = json.loads(record["flight"]["body"])
+    user_body = {key: body[key] for key in ("api_version", "project_id", "timeline_id",
+                                          "base_revision_id", "base_publication_id", "commands")}
+    user_body["commands"][0]["args"]["changes"][0]["value"] = {"user": "keep this value"}
+    user_body.update(source={"via": "app"}, dry_run=False, label="Conflicting user save", merge="fields", reads=[])
+    saved = case.client.timelines.commit(case.project, "film", user_body, idempotency_key="user-conflict")
+    assert saved.ok, saved.as_dict()
+    case.lease(2, release=True)
+    posts = len(case.posts)
+    evaluations = len(case.evaluations)
+    result = case.timeline.retry(error)
+    assert result["status"] == "re_derive"
+    assert "keep this value" in result["summary"]
+    assert "custom" in result["summary"]
+    assert "preserve it" in result["summary"].lower()
+    assert "re-derive only compatible work" in result["summary"].lower()
+    assert "dry_run=True" in result["next"]
+    assert 'pending=' in result["next"]
+    assert "tl.retry(" not in result["next"]
+    assert result["data"]["conflicts"]
+    assert len(case.evaluations) == evaluations
+    assert len(case.posts) == posts
+    after = case.timeline.pending_show(record["id"])
+    assert after["state"] == "pending"
+    assert after["flight"] == saved_flight
+    assert after["flight"]["body"] == saved_record["flight"]["body"]
+    assert after["flight"]["key"] == saved_record["flight"]["key"]
+    assert after["failure"] == saved_record["failure"]
+    current = type(case.timeline).open(case.project, "film", client=case.client,
+                                       outbox_path=case.path.parent / "user-readback.json")
+    assert current.bundle["parent"]["custom"] == {"user": "keep this value"}
+
+
+@pytest.mark.parametrize("field", ["body", "fence"])
+def test_user_editing_pending_resume_rejects_invalid_saved_flight(saved_user_editing, field):
+    from astrid.sdk.timeline.outbox import request_bytes
+
+    case = saved_user_editing
+    _, record = case.save()
+    with case.timeline.session.outbox.locked():
+        state = case.timeline.session._state()
+        saved_flight = state["pending_changes"][record["id"]]["flight"]
+        if field == "body":
+            body = json.loads(saved_flight["body"])
+            body["label"] = "Unreviewed wire label"
+            saved_flight["body"] = request_bytes(body).decode()
+        else:
+            saved_flight.pop("fence")
+        case.timeline.session.outbox.write(state)
+    case.lease(2, release=True)
+    review = case.timeline.retry(record["id"])
+    before = case.path.read_bytes()
+    posts = len(case.posts)
+    with pytest.raises(ValueError, match="(matches its pending part|no fenced flight)"):
+        case.timeline.commit(review)
+    assert case.path.read_bytes() == before
+    assert len(case.posts) == posts
+
+
 def test_rederive_for_app_conflict_names_user_value_and_preservation(monkeypatch):
     record = _record()
     record["id"] = "pc_user_conflict"
@@ -331,8 +625,8 @@ def test_rederive_for_app_conflict_names_user_value_and_preservation(monkeypatch
     summary = retry_module._summary_rederive(record, packet, SimpleNamespace())
     assert "the user (editor) changed clip a label" in summary
     assert "User label" in summary
-    assert "preserve it" in summary
-    assert "re-derive only compatible work" in summary
+    assert "preserve it" in summary.lower()
+    assert "re-derive only compatible work" in summary.lower()
 
 
 def test_commit_preview_submits_identical_base_and_closes_pending(monkeypatch, tmp_path):
@@ -887,6 +1181,8 @@ def test_saved_function_reads_turn_stale_retry_preview_into_rederive(monkeypatch
     assert result["data"]["captured_list_requires_approval"] is True
     assert "not replayed" in result["summary"]
     assert "original function" in result["next"]
+    assert "dry_run=True" in result["next"]
+    assert "pending='pc_saved'" in result["next"]
     assert timeline.session.submissions == []
 
 

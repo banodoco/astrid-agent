@@ -103,6 +103,19 @@ def test_packet_names_touching_receipt():
     assert packet['next'] == "tl.retry('pc_saved')"
 
 
+def test_packet_reads_current_value_from_verified_head_when_conflict_omits_theirs():
+    realm = DetachedRealm()
+    base = copy.deepcopy(realm.head)
+    realm.call([realm.move('parent/clip:clip-a', 6.006)])
+    conflict = {'kind': 'value_conflict', 'ref': 'parent/clip:clip-a', 'path': ['at'],
+                'base': {'state': 'present', 'value': 1}, 'ours': {'state': 'present', 'value': 4}}
+
+    packet = explain(PacketSession(realm), _pending(base, realm.head, conflict))
+
+    assert packet['conflicts'] == [conflict]
+    assert packet['current_values'] == [{'state': 'present', 'value': 6.006}]
+
+
 def test_packet_without_history_still_has_summary():
     realm = DetachedRealm()
     base = copy.deepcopy(realm.head)
