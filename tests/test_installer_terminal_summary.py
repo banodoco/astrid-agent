@@ -34,13 +34,8 @@ def test_prompt_declines_without_choices():
 def test_prompt_customizes_each_supported_choice():
     output = io.StringIO()
     choices, declined = cli._prompt_choices(
-        input_fn=iter(["c", "", "n", "", ""]).__next__, output=output)
-    assert choices == {
-        "autostart": RECOMMENDED_CHOICES["autostart"],
-        "command": False,
-        "skills": RECOMMENDED_CHOICES["skills"],
-        "skill_copies": RECOMMENDED_CHOICES["skill_copies"],
-    }
+        input_fn=iter(["c", "", "", "", ""]).__next__, output=output)
+    assert choices == {name: RECOMMENDED_CHOICES[name] for name in RECOMMENDED_CHOICES}
     assert declined is False
     assert output.getvalue().count("? [") == 5
     assert output.getvalue().endswith("Use copies for skills? [y/N]\n")
