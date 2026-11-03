@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import inspect
 import json
 import os
@@ -412,9 +413,39 @@ class Service:
         else:
             self.path = root / "task.xml"
 
+    def _admission_probe(self, name: str, value):
+        # Only caller-supplied fixed names and boolean results enter the record.
+        capture = getattr(self, "_mac_admission_capture", None)
+        if capture is not None:
+            try:
+                if len(capture["checks"]) < 4096:
+                    capture["checks"].append([name, bool(value)])
+                else:
+                    capture["truncated"] = True
+            except Exception:
+                pass
+        return value
+
+    def _admission_stat(self, phase: str, value: os.stat_result) -> None:
+        capture = getattr(self, "_mac_admission_capture", None)
+        if capture is not None:
+            try:
+                capture["stats"].append({"phase": phase, **{key: getattr(value, key) for key in
+                    ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns")}})
+            except Exception:
+                pass
+
+    def _admission_bytes(self, phase: str, value: bytes) -> None:
+        capture = getattr(self, "_mac_admission_capture", None)
+        if capture is not None:
+            try:
+                capture["digests"].append({"phase": phase, "sha256": hashlib.sha256(value).hexdigest()})
+            except Exception:
+                pass
+
     def recorded(self) -> dict:
         record = read_json(self.selection)
-        if record and record.get("owner") != LABEL:
+        if record and self._admission_probe("record_owner_mismatch", record.get("owner") != LABEL):
             raise ValueError("The service record belongs to another installer.")
         return record
 
@@ -635,26 +666,32 @@ class Service:
             return ([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}]
                     if windows else argv)
 
+        self._admission_probe("transaction_read_started", True)
         transaction = read_json(self.root / "update-transaction.json")
+        self._admission_probe("transaction_read_completed", True)
         for folder in (self.root / "versions").iterdir():
-            if folder.is_symlink() or not (folder / "version.json").is_file():
+            self._admission_probe("retained_folder_started", True)
+            if self._admission_probe("retained_folder_symlink", folder.is_symlink()) or not self._admission_probe("retained_version_file", (folder / "version.json").is_file()):
                 continue
+            self._admission_probe("retained_load_started", True)
             retained = Version.load(read_json(folder / "version.json"))
-            if retained.root != absolute(folder):
+            self._admission_probe("retained_load_completed", True)
+            if self._admission_probe("retained_root_mismatch", retained.root != absolute(folder)):
                 raise ValueError("The retained service version is outside this installation.")
             # R0 registered the sidecar at the program root.  A retained
             # release-0 fixture also covers the version-sidecar form.  Admit
             # either only when every generated argument still binds it to this
             # retained version, this program root, and this data root; later
             # register() replaces the action with the current admission gate.
-            for release0_env_file in (self.env_file, retained.root / "service-env.json"):
+            for release0_index, release0_env_file in enumerate((self.env_file, retained.root / "service-env.json")):
                 release0 = _release0_service_command(
                     retained, data, windows=windows, log=self.log,
                     env_file=release0_env_file,
                 )
-                if action == encode(release0):
+                if self._admission_probe(("r0_program_root_match", "r0_version_root_match")[release0_index], action == encode(release0)):
                     return True
             for env_file in (None, self.env_file):
+                self._admission_probe("historical_candidate_started", True)
                 prior = command(retained, data, windows=windows, log=self.log, env_file=env_file)
                 # This is the exact historical wrapper suffix, obtained from
                 # the sole command builder rather than a second argv builder.
@@ -663,39 +700,43 @@ class Service:
                 # Historical dictionaries preserve insertion order in the
                 # action text, whereas version.json sorts their keys. Compare
                 # their values without granting arbitrary Python execution.
-                if script is not None:
+                if self._admission_probe("historical_script_available", script is not None):
                     lines = script.splitlines()
-                    if len(lines) >= 3 and lines[2].startswith("os.environ.update(") and lines[2].endswith(")"):
+                    if self._admission_probe("historical_environment_header", len(lines) >= 3 and lines[2].startswith("os.environ.update(") and lines[2].endswith(")")):
                         try:
                             historical_env = ast.literal_eval(lines[2][len("os.environ.update("):-1])
                         except (ValueError, SyntaxError):
+                            self._admission_probe("historical_environment_parse_failed", True)
                             continue
-                        if historical_env != retained.env:
+                        self._admission_probe("historical_environment_parse_completed", True)
+                        if self._admission_probe("historical_environment_mismatch", historical_env != retained.env):
                             continue
                         environment = lines[2]
                 header = "import json,os,sys\nfrom pathlib import Path\n" + environment + "\n"
                 legacy = header + "os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)\n" + suffix
-                if action in (encode([*prior[:-1], legacy]), encode(prior)):
+                if self._admission_probe("historical_or_prior_match", action in (encode([*prior[:-1], legacy]), encode(prior))):
                     return True
                 if not windows and env_file is None:
                     arguments = ["run", "--profile", "astrid", "--data-root", str(data),
                                  "--source-manifest", str(retained.profile)]
-                    if action == [str(retained.python), "-X", "utf8", "-I", "-m", "astrid_runtime", *arguments]:
+                    if self._admission_probe("module_action_match", action == [str(retained.python), "-X", "utf8", "-I", "-m", "astrid_runtime", *arguments]):
                         return True
                 # A retained in-flight bound action must still match its exact
                 # replay journal, version and code before it can be migrated.
                 replay_id = transaction.get("operation_id")
-                if isinstance(replay_id, str) and re.fullmatch(r"[0-9a-f]{32}", replay_id):
+                if self._admission_probe("replay_id_valid", isinstance(replay_id, str) and bool(re.fullmatch(r"[0-9a-f]{32}", replay_id))):
                     historical_version = repr(retained.document())
                     if script is not None:
                         for line in script.splitlines():
                             if line.startswith("_astrid_version="):
                                 literal = line[len("_astrid_version="):]
                                 try:
-                                    if ast.literal_eval(literal) != retained.document():
+                                    if self._admission_probe("replay_version_mismatch", ast.literal_eval(literal) != retained.document()):
                                         continue
                                 except (ValueError, SyntaxError):
+                                    self._admission_probe("replay_version_parse_failed", True)
                                     continue
+                                self._admission_probe("replay_version_parse_completed", True)
                                 historical_version = literal
                     binding = (
                         f"_astrid_operation_id={replay_id!r}\n"
@@ -716,27 +757,103 @@ class Service:
                         "else: os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)\n"
                     )
                     legacy = header + binding + suffix
-                    if action == encode([*prior[:-1], legacy]):
+                    if self._admission_probe("replay_action_match", action == encode([*prior[:-1], legacy])):
                         return True
         return False
 
     def _publish_posix_launch_admission(self, version: Version, data: Path) -> None:
-        if not self.path.exists() and not self.path.is_symlink():
+        # Diagnostic only: a fresh private directory is explicitly supplied by
+        # the journey. Fail closed for capture, never for admission. No paths,
+        # plist fields, environment values or exception messages are recorded.
+        capture = None
+        directory = None
+        capture_dir = os.environ.get("ASTRID_MAC_ADMISSION_CAPTURE_DIR") if self.system == "darwin" else None
+        if capture_dir:
+            try:
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                directory = os.open(capture_dir, flags)
+                info = os.fstat(directory)
+                if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                    os.close(directory)
+                    directory = None
+                else:
+                    capture = {"format": "astrid-macos-admission-diagnostic/v1", "checks": [],
+                               "stats": [], "digests": [], "truncated": False,
+                               "current_uid": os.getuid(), "effective_uid": os.geteuid(),
+                               "source_sha256": None, "outcome": "entered", "exception_category": None}
+                    try:
+                        capture["source_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+                    except Exception:
+                        pass
+            except Exception:
+                if directory is not None:
+                    try:
+                        os.close(directory)
+                    except OSError:
+                        pass
+                    directory = None
+        self._mac_admission_capture = capture
+        try:
+            self._publish_posix_launch_admission_inner(version, data)
+        except BaseException as exc:
+            if capture is not None:
+                capture["outcome"] = "raised"
+                capture["exception_category"] = ("os_error" if isinstance(exc, OSError) else
+                                                 "value_error" if isinstance(exc, ValueError) else
+                                                 "type_error" if isinstance(exc, TypeError) else "other")
+            raise
+        else:
+            if capture is not None:
+                capture["outcome"] = "returned"
+        finally:
+            self._mac_admission_capture = None
+            if directory is not None:
+                try:
+                    name = "admission-" + os.urandom(16).hex() + ".json"
+                    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+                    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        json.dump(capture, stream, separators=(",", ":"))
+                        stream.write("\n")
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        os.close(directory)
+                    except OSError:
+                        pass
+
+    def _publish_posix_launch_admission_inner(self, version: Version, data: Path) -> None:
+        if not self._admission_probe("service_exists", self.path.exists()) and not self._admission_probe("service_symlink", self.path.is_symlink()):
             return  # Autostart off stays off.
         message = f"The Astrid service {self.path} has an unknown or changed action/owner. Re-run the install line to repair it."
+        self._admission_probe("selection_read_started", True)
         selection = self.recorded()
+        self._admission_probe("selection_read_completed", True)
+        self._admission_probe("publication_lstat_started", True)
         observed_stat = self.path.lstat()
-        if (not stat.S_ISREG(observed_stat.st_mode) or not owned_by_current_user(self.path, observed_stat)
-                or selection.get("owner") != LABEL or selection.get("program_root") != str(self.root)
-                or selection.get("data_root") != str(data)):
+        self._admission_stat("publication", observed_stat)
+        if (not self._admission_probe("service_regular", stat.S_ISREG(observed_stat.st_mode))
+                or not self._admission_probe("service_owned", owned_by_current_user(self.path, observed_stat))
+                or self._admission_probe("selection_owner_mismatch", selection.get("owner") != LABEL)
+                or self._admission_probe("selection_program_mismatch", selection.get("program_root") != str(self.root))
+                or self._admission_probe("selection_data_mismatch", selection.get("data_root") != str(data))):
             raise ValueError(message)
+        self._admission_probe("publication_read_started", True)
         observed = self.path.read_bytes()
+        self._admission_bytes("publication", observed)
 
         def confirm_unchanged():
+            self._admission_probe("recheck_lstat_started", True)
             latest = self.path.lstat()
-            if (any(getattr(latest, key) != getattr(observed_stat, key) for key in
+            self._admission_stat("recheck", latest)
+            def same_bytes():
+                self._admission_probe("recheck_read_started", True)
+                latest_bytes = self.path.read_bytes()
+                self._admission_bytes("recheck", latest_bytes)
+                return self._admission_probe("recheck_bytes_mismatch", latest_bytes != observed)
+            if (any(self._admission_probe("recheck_" + key + "_mismatch", getattr(latest, key) != getattr(observed_stat, key)) for key in
                     ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns"))
-                    or self.path.read_bytes() != observed):
+                    or same_bytes()):
                 raise ValueError(message)
 
         def flush_current():
@@ -750,18 +867,24 @@ class Service:
         canonical = command(version, data, env_file=self.env_file)
         try:
             if self.system == "darwin":
+                self._admission_probe("plist_parse_started", True)
                 document = plistlib.loads(observed)
-                if document.get("Label") != LABEL:
+                self._admission_probe("plist_parse_completed", True)
+                if self._admission_probe("plist_label_mismatch", document.get("Label") != LABEL):
                     raise ValueError(message)
+                self._admission_probe("action_lookup_started", True)
                 action = document["ProgramArguments"]
+                self._admission_probe("action_lookup_completed", True)
+                self._admission_probe("action_is_list", isinstance(action, list))
                 environment = document.get("EnvironmentVariables", {})
-                if not isinstance(environment, dict):
+                if not self._admission_probe("environment_is_dict", isinstance(environment, dict)):
                     raise ValueError(message)
-                if action == canonical and "ASTRID_INSTALLER_OPERATION_ID" not in environment:
+                if self._admission_probe("canonical_action_match", action == canonical) and self._admission_probe("operation_id_absent", "ASTRID_INSTALLER_OPERATION_ID" not in environment):
                     flush_current()
                     return
-                script = action[-1] if isinstance(action, list) and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
-                if not self._known_launch_action(action, data, windows=False, script=script):
+                script = action[-1] if self._admission_probe("action_script_form", isinstance(action, list) and action[1:5] == ["-X", "utf8", "-I", "-c"]) else None
+                self._admission_probe("known_action_started", True)
+                if not self._admission_probe("known_action_match", self._known_launch_action(action, data, windows=False, script=script)):
                     raise ValueError(message)
                 document["ProgramArguments"] = canonical
                 environment.pop("ASTRID_INSTALLER_OPERATION_ID", None)
