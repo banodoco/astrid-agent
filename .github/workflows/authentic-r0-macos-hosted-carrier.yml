@@ -1,0 +1,86 @@
+name: Authentic post-R0 macOS hosted carrier (diagnostic only)
+
+# This task-owned carrier is push-triggered because the reviewed manual
+# authentic-r0-capture.yml is not registered on the default branch.  It runs
+# only on this task lane and retains the exact frozen capture inputs below.
+on:
+  push:
+    branches:
+      - lane/M-QUAL/R-05-MAC-HOSTED-CAPTURE-CARRIER-R1
+
+permissions:
+  contents: read
+
+jobs:
+  capture-macos:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: 332b478afb459b0f9290fb5f73aefbd8169d7fd4
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: 3204bb00135bec8ee2d2d3fb21eed5abfceca649
+          path: release0-agent
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 6d53a19070faf63fc15ae1f81417722edc2c8a5f
+          path: release0-runtime
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Capture frozen R0 only
+        shell: bash
+        env:
+          ASTRID_CI_EXPECTED_RUNNER: macos-15
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/authentic-r0-capture-macos"
+          python -u driver/scripts/ci_journey.py --shared-executor authentic-r0-capture \
+            --run-root "$root" --root "$root/program" --data-root "$root/data" --shell sh \
+            --fixture "$GITHUB_WORKSPACE/driver/tests/fixtures/release0" \
+            --release0-agent-checkout "$GITHUB_WORKSPACE/release0-agent" \
+            --release0-runtime-checkout "$GITHUB_WORKSPACE/release0-runtime"
+      - name: Record immutable carrier and capture inputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/authentic-r0-capture-macos/capture-upload"
+          mkdir -p "$root"
+          {
+            echo "capture_driver_required=332b478afb459b0f9290fb5f73aefbd8169d7fd4"
+            echo "driver_agent=$(git -C driver rev-parse HEAD)"
+            echo "release0_agent_required=3204bb00135bec8ee2d2d3fb21eed5abfceca649"
+            echo "release0_agent=$(git -C release0-agent rev-parse HEAD)"
+            echo "release0_runtime_required=6d53a19070faf63fc15ae1f81417722edc2c8a5f"
+            echo "release0_runtime=$(git -C release0-runtime rev-parse HEAD)"
+            echo "carrier_workflow_sha=${{ github.workflow_sha }}"
+            echo "carrier_ref=${{ github.ref }}"
+            echo "carrier_head_sha=${{ github.sha }}"
+            echo "repository=${{ github.repository }}"
+            echo "event_name=${{ github.event_name }}"
+            echo "run_id=${{ github.run_id }} attempt=${{ github.run_attempt }}"
+            echo "run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "runner_name=${{ runner.name }}"
+            echo "runner_os=${{ runner.os }}"
+            echo "runner_arch=${{ runner.arch }}"
+          } > "$root/workflow-identity.txt"
+          shasum -a 256 "$root"/* > "$root/SHA256SUMS" 2>/dev/null || true
+      - name: Retain capture-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentic-r0-capture-macos
+          path: ${{ runner.temp }}/authentic-r0-capture-macos/capture-upload
+          retention-days: 30
+          if-no-files-found: warn
+          compression-level: 0
