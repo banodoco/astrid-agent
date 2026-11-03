@@ -20,9 +20,6 @@ import sys
 import threading
 from pathlib import Path
 
-from .birth_identity import birth_ids_match
-
-
 def _receive(stream):
     line = stream.readline(65537)
     if not line or len(line) > 65536:
@@ -37,6 +34,11 @@ def _send(stream, value):
 
 def _same_process_identity(expected, observed):
     """Compare the immutable process incarnation rather than mutable topology."""
+    # The isolated file-entry custodian only serves locks and must not require
+    # package-relative imports under ``python -I custody.py``. The foreground
+    # parent still performs this identity comparison from the installed package.
+    from .birth_identity import birth_ids_match
+
     return (isinstance(expected, dict) and isinstance(observed, dict)
             and expected.get("pid") == observed.get("pid")
             and expected.get("uid") == observed.get("uid")
