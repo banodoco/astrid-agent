@@ -1,0 +1,8 @@
+manager_stop=0
+disable_linger=0
+runtime_dir_stop=0
+remove_override=0
+remove_override_dir=0
+daemon_reload=0
+userdel=0
+scratch_remove=0

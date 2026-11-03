@@ -1,0 +1,3 @@
+user_collector=1
+nondelegated_collector=0
+admission=1

@@ -1,0 +1,102 @@
+{
+  "admission_exit": 1,
+  "authority": false,
+  "controls": {
+    "pinokio_non_delegated_launch_cgroup": {
+      "state": "observed",
+      "value": {
+        "expectation": "Delegate=no system service launch; refuse delegation proof if unavailable",
+        "launch_cgroup": "/system.slice/c3-nondelegated-41616314137-1.service",
+        "mkdir_child": {
+          "errno": 13,
+          "error": "PermissionError",
+          "message": "[Errno 13] Permission denied: '/sys/fs/cgroup/system.slice/c3-nondelegated-41616314137-1.service/c3-probe-2903'",
+          "state": "unknown",
+          "trace": "Traceback (most recent call last):\n  File \"/var/tmp/c3-ag1-41616314137-1-lobFAC/probe.py\", line 28, in attempt\n    return {'state': 'observed', 'value': fn()}\n                                          ^^^^\n  File \"/var/tmp/c3-ag1-41616314137-1-lobFAC/probe.py\", line 222, in make_child\n    os.mkdir(child)\nPermissionError: [Errno 13] Permission denied: '/sys/fs/cgroup/system.slice/c3-nondelegated-41616314137-1.service/c3-probe-2903'\n"
+        },
+        "ownership": [
+          {
+            "mode": "0o644",
+            "path": "/system.slice/c3-nondelegated-41616314137-1.service",
+            "uid": 0,
+            "writable": false
+          },
+          {
+            "mode": "0o644",
+            "path": "/system.slice",
+            "uid": 0,
+            "writable": false
+          },
+          {
+            "mode": "0o644",
+            "path": "/",
+            "uid": 0,
+            "writable": false
+          }
+        ],
+        "unit_properties": {
+          "argv": [
+            "systemctl",
+            "show",
+            "c3-nondelegated-41616314137-1.service",
+            "-p",
+            "Delegate",
+            "-p",
+            "ControlGroup",
+            "-p",
+            "User"
+          ],
+          "exit": 0,
+          "stderr": "",
+          "stdout": "ControlGroup=/system.slice/c3-nondelegated-41616314137-1.service\nDelegate=no\nUser=sc41616314137x1\n"
+        },
+        "write_same": {
+          "state": "observed",
+          "value": {
+            "argv": [
+              "/usr/bin/python3",
+              "-c",
+              "import json,os,sys\np=sys.argv[1]\ntry:\n f=os.open(p,os.O_WRONLY); os.write(f,(str(os.getpid())+\"\\n\").encode()); os.close(f); r={\"errno\":0}\nexcept OSError as e: r={\"errno\":e.errno,\"error\":str(e)}\nprint(json.dumps(r))\n",
+              "/sys/fs/cgroup/system.slice/c3-nondelegated-41616314137-1.service/cgroup.procs"
+            ],
+            "exit": 0,
+            "stderr": "",
+            "stdout": "{\"errno\": 13, \"error\": \"[Errno 13] Permission denied: '/sys/fs/cgroup/system.slice/c3-nondelegated-41616314137-1.service/cgroup.procs'\"}\n"
+          }
+        }
+      }
+    },
+    "preflight": {
+      "state": "observed",
+      "value": {
+        "cgroup": "/system.slice/c3-nondelegated-41616314137-1.service",
+        "euid": 1002,
+        "systemd": {
+          "argv": [
+            "systemctl",
+            "--version"
+          ],
+          "exit": 0,
+          "stderr": "",
+          "stdout": "systemd 255 (255.4-1ubuntu8.18)\n+PAM +AUDIT +SELINUX +APPARMOR +IMA +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK -XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified\n"
+        },
+        "uid": 1002,
+        "uid_map": "         0          0 4294967295\n"
+      }
+    }
+  },
+  "diagnostic_exit": 0,
+  "errors": [],
+  "euid": 1002,
+  "mode": "nondelegated",
+  "pid": 2903,
+  "schema": "r18-c3-ag1-native-v1",
+  "uid": 1002,
+  "uname": [
+    "Linux",
+    "runnervm48cm3",
+    "7.0.0-1017-azure",
+    "#17~24.04.1-Ubuntu SMP PREEMPT Thu Sep 24 18:46:57 UTC 2026",
+    "x86_64"
+  ]
+}

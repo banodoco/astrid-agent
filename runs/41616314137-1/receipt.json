@@ -1,0 +1,132 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "bash agent/diagnostics/r18-c3-ag1/venue.sh",
+  "effective_tuple": {
+    "agent": "2b0c426d5d5b459b083fd41b92cdb71bd41e15ca",
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+  },
+  "event": "push",
+  "inner_exit_code": 1,
+  "inventory": [
+    {
+      "bytes": 1257,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/SHA256SUMS",
+      "sha256": "93c9ffc5f2f4d6b9dfe7bdd248023af7a4d3aa1cd4dd50af5abc50717e80ffd2"
+    },
+    {
+      "bytes": 54,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/case-exits.txt",
+      "sha256": "28efef1f67e29d607c5e521382b0a93af972f9588f39edc192fd78dc85c346ea"
+    },
+    {
+      "bytes": 134,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/cleanup.txt",
+      "sha256": "6e3df30b6af3979db1f9b0e34b19e137a39b348b7a521852f280ed5e9b5e9c6b"
+    },
+    {
+      "bytes": 252,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/commands.txt",
+      "sha256": "deb4fa80f50e31d36ad10b9accb0e1214a328102506d6a6c3be6bc7466128865"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/inner-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 318,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/input-hashes.txt",
+      "sha256": "f9246cfddfa689e40adf73f93b2801e9ea4d20f67f113f6283c1895caf1c4462"
+    },
+    {
+      "bytes": 128,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/kernel.txt",
+      "sha256": "a64b6d81308dc728b286592ae78f6594e185e6db8c474be3c8886f7694f38bb7"
+    },
+    {
+      "bytes": 125,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/manager-identity.txt",
+      "sha256": "c2d31db9567d457c36acebbe0db57296b02493984577f207755716e5ddca3064"
+    },
+    {
+      "bytes": 224,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/nondelegated-driver.log",
+      "sha256": "2fc592d33574368c7568d4b8dcf348f354cbb451448937773f837680754f6f9c"
+    },
+    {
+      "bytes": 3854,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/nondelegated-result.json",
+      "sha256": "a37d6c5d466cc8b49c2bada837138655f995221bf97823d8ce4a3fd9de50e092"
+    },
+    {
+      "bytes": 63,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/packages.txt",
+      "sha256": "4ee1e233c07da678b71c723c53e9e528e02845aca7c9f49ac04521bf3e43b5a7"
+    },
+    {
+      "bytes": 32,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/systemd-version.txt",
+      "sha256": "4036683cfe4ad68f3801974b85c83e03442e6975bdf80115266c33148db3e6ab"
+    },
+    {
+      "bytes": 190,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/tuple.txt",
+      "sha256": "418b76f6f4a041266bda4ee46796476eb5548c3149debcfc8f4718df1a350a27"
+    },
+    {
+      "bytes": 9,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/uid.txt",
+      "sha256": "b23a85f6868472a83f9e1ab83b72e903b81bdf397e21b1a5cbde44a54c3056db"
+    },
+    {
+      "bytes": 0,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/user-driver.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 19563,
+      "path": "artifacts/suite-artifacts/r18-c3-ag1/user-result.json",
+      "sha256": "0a5b5bb9e8b3f074863affec8be72961bb9569a0dbde70178a9df702913495fd"
+    },
+    {
+      "bytes": 0,
+      "path": "command.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 357,
+      "path": "requested-inputs.json",
+      "sha256": "e67f0c9e4578d3cd59a570084ec960363437b5e7ef2953d6bffe6c3f5e4a62d1"
+    },
+    {
+      "bytes": 433,
+      "path": "tuple.txt",
+      "sha256": "6927a6ca171331d8cff182756554f481f43f0c9ee5c1529e1593f07d4fa219bf"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "2b0c426d5d5b459b083fd41b92cdb71bd41e15ca",
+    "app_ref": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "artifact_paths": "suite-artifacts/**",
+    "command": "bash agent/diagnostics/r18-c3-ag1/venue.sh",
+    "pinokio_ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+    "runtime_ref": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "slot": "6"
+  },
+  "run_attempt": "1",
+  "run_id": "41616314137",
+  "source_head": "0c9f9e127e099877bbe53283883c4570cd5ac61a",
+  "source_ref": "refs/heads/venue/M-R1FIX-R18-C3-AG1-NATIVE-1",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-R18-C3-AG1-NATIVE-1",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "0c9f9e127e099877bbe53283883c4570cd5ac61a"
+}

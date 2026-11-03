@@ -1,0 +1,2 @@
+sudo -u USER env USER_ENV systemd-run --user --scope --quiet --unit=c3-collector-*.scope python3 PROOF_ROOT/probe.py user
+sudo systemd-run --wait --pipe --collect --uid=USER --property=Delegate=no [environment] python3 PROOF_ROOT/probe.py nondelegated

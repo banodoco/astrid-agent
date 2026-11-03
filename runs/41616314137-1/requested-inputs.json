@@ -1,0 +1,9 @@
+{
+  "agent_ref": "2b0c426d5d5b459b083fd41b92cdb71bd41e15ca",
+  "app_ref": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+  "artifact_paths": "suite-artifacts/**",
+  "command": "bash agent/diagnostics/r18-c3-ag1/venue.sh",
+  "pinokio_ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+  "runtime_ref": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+  "slot": "6"
+}

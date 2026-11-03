@@ -1,0 +1,567 @@
+{
+  "admission_exit": 1,
+  "authority": false,
+  "cleanup": {
+    "scope_stop": {
+      "argv": [
+        "systemctl",
+        "--user",
+        "stop",
+        "c3-escape-2885.scope"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout": ""
+    }
+  },
+  "controls": {
+    "cgroup_procs_ownership_chain": {
+      "state": "observed",
+      "value": {
+        "ancestors": [
+          {
+            "access_write": true,
+            "gid": 1002,
+            "mode": "0o644",
+            "path": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+            "uid": 1002
+          },
+          {
+            "access_write": true,
+            "gid": 1002,
+            "mode": "0o644",
+            "path": "/user.slice/user-1002.slice/user@1002.service/app.slice",
+            "uid": 1002
+          },
+          {
+            "access_write": true,
+            "gid": 1002,
+            "mode": "0o644",
+            "path": "/user.slice/user-1002.slice/user@1002.service",
+            "uid": 1002
+          },
+          {
+            "access_write": false,
+            "gid": 0,
+            "mode": "0o644",
+            "path": "/user.slice/user-1002.slice",
+            "uid": 0
+          },
+          {
+            "access_write": false,
+            "gid": 0,
+            "mode": "0o644",
+            "path": "/user.slice",
+            "uid": 0
+          },
+          {
+            "access_write": false,
+            "gid": 0,
+            "mode": "0o644",
+            "path": "/",
+            "uid": 0
+          }
+        ],
+        "boundary": "/user.slice/user-1002.slice/user@1002.service",
+        "current": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+        "mountinfo": [
+          "37 31 0:31 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:8 - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot"
+        ]
+      }
+    },
+    "dead_pidfd_replacement": {
+      "state": "observed",
+      "value": {
+        "raw": {
+          "first_pid": 2897,
+          "new_pid": 2898,
+          "new_readable": false,
+          "old_dead_readable": true,
+          "old_pid_after_death": -1,
+          "old_socket_requery": {
+            "pid": -1,
+            "readable": true
+          },
+          "requery_error": null,
+          "second_pid": 2898
+        },
+        "verdict": {
+          "detail": null,
+          "state": "observed"
+        }
+      }
+    },
+    "foreign_manager_negative": {
+      "errno": 13,
+      "error": "PermissionError",
+      "message": "[Errno 13] Permission denied",
+      "state": "unknown",
+      "trace": "Traceback (most recent call last):\n  File \"/var/tmp/c3-ag1-41616314137-1-lobFAC/probe.py\", line 28, in attempt\n    return {'state': 'observed', 'value': fn()}\n                                          ^^^^\n  File \"/var/tmp/c3-ag1-41616314137-1-lobFAC/probe.py\", line 185, in foreign_manager_control\n    sock.settimeout(5); sock.connect('/run/systemd/private')\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nPermissionError: [Errno 13] Permission denied\n"
+    },
+    "inherited_listener_negative": {
+      "state": "observed",
+      "value": {
+        "actual_handler_pid": 2900,
+        "disposition": "socket peer PID alone does not prove handler provenance",
+        "listener_and_handler_differ": true,
+        "listener_pid": 2899,
+        "pidfd_live_before_response": true,
+        "pidfd_pid": 2899,
+        "socket_peercred": [
+          2899,
+          1002,
+          1002
+        ]
+      }
+    },
+    "manager_auth_pidfd": {
+      "state": "observed",
+      "value": {
+        "after": {
+          "pidfd_pid": 2857,
+          "readable": false
+        },
+        "before": {
+          "peercred": [
+            2857,
+            1002,
+            1002
+          ],
+          "pidfd_pid": 2857,
+          "readable": false
+        },
+        "manager_auth_disposition": "unknown",
+        "mismatched_mainpid_negative_rejected": true,
+        "pidfd_bracket_numeric_match": true,
+        "source_authentication": "unknown: system bus handler/source and proc image/namespace need independent proof",
+        "system_bus_peer_pid_is_1": true,
+        "system_query_after": {
+          "MainPID": 2857,
+          "authority": false,
+          "peer": {
+            "credentials": [
+              1,
+              0,
+              0
+            ],
+            "pid_namespace_ioctl": {
+              "errno": 13,
+              "error": "PermissionError",
+              "state": "unknown"
+            },
+            "proc": {
+              "boot_id": {
+                "state": "known",
+                "value": "56e5b14f-6d28-460c-b67b-32492abf4e34"
+              },
+              "exe": {
+                "errno": 13,
+                "error": "PermissionError",
+                "state": "unknown"
+              },
+              "pid": 1,
+              "pidns_inode": {
+                "errno": 13,
+                "error": "PermissionError",
+                "state": "unknown"
+              },
+              "start_ticks": {
+                "state": "known",
+                "value": 37
+              },
+              "uid": {
+                "state": "known",
+                "value": 0
+              },
+              "userns_inode": {
+                "errno": 13,
+                "error": "PermissionError",
+                "state": "unknown"
+              }
+            },
+            "socket_pidfd": {
+              "pid": 1,
+              "readable": false,
+              "state": "observed"
+            },
+            "user_namespace_ioctl": {
+              "errno": 13,
+              "error": "PermissionError",
+              "state": "unknown"
+            }
+          }
+        },
+        "system_query_before": {
+          "MainPID": 2857,
+          "authority": false,
+          "peer": {
+            "credentials": [
+              1,
+              0,
+              0
+            ],
+            "pid_namespace_ioctl": {
+              "errno": 13,
+              "error": "PermissionError",
+              "state": "unknown"
+            },
+            "proc": {
+              "boot_id": {
+                "state": "known",
+                "value": "56e5b14f-6d28-460c-b67b-32492abf4e34"
+              },
+              "exe": {
+                "errno": 13,
+                "error": "PermissionError",
+                "state": "unknown"
+              },
+              "pid": 1,
+              "pidns_inode": {
+                "errno": 13,
+                "error": "PermissionError",
+                "state": "unknown"
+              },
+              "start_ticks": {
+                "state": "known",
+                "value": 37
+              },
+              "uid": {
+                "state": "known",
+                "value": 0
+              },
+              "userns_inode": {
+                "errno": 13,
+                "error": "PermissionError",
+                "state": "unknown"
+              }
+            },
+            "socket_pidfd": {
+              "pid": 1,
+              "readable": false,
+              "state": "observed"
+            },
+            "user_namespace_ioctl": {
+              "errno": 13,
+              "error": "PermissionError",
+              "state": "unknown"
+            }
+          }
+        }
+      }
+    },
+    "movement_both_apis": {
+      "state": "observed",
+      "value": {
+        "outside_clone3": {
+          "state": "observed",
+          "value": {
+            "child_wait_status": null,
+            "errno": 13,
+            "errno_name": "EACCES",
+            "flags": "0x200000000",
+            "return": -1,
+            "syscall": 435,
+            "target": "/user.slice/user-1002.slice"
+          }
+        },
+        "outside_write": {
+          "state": "observed",
+          "value": {
+            "argv": [
+              "/usr/bin/python3",
+              "-c",
+              "import json,os,sys\np=sys.argv[1]\ntry:\n f=os.open(p,os.O_WRONLY); os.write(f,(str(os.getpid())+\"\\n\").encode()); os.close(f); r={\"errno\":0}\nexcept OSError as e: r={\"errno\":e.errno,\"error\":str(e)}\nprint(json.dumps(r))\n",
+              "/sys/fs/cgroup/user.slice/user-1002.slice/cgroup.procs"
+            ],
+            "exit": 0,
+            "stderr": "",
+            "stdout": "{\"errno\": 13, \"error\": \"[Errno 13] Permission denied: '/sys/fs/cgroup/user.slice/user-1002.slice/cgroup.procs'\"}\n"
+          }
+        },
+        "preconditions": {
+          "boundary": "/user.slice/user-1002.slice/user@1002.service",
+          "destination": "/user.slice/user-1002.slice",
+          "destination_outside_boundary": true,
+          "inside_boundary": true,
+          "source": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+          "source_exists": true,
+          "target_exists": true
+        },
+        "same_cgroup_clone3_positive": {
+          "state": "observed",
+          "value": {
+            "child_wait_status": 0,
+            "errno": 0,
+            "errno_name": null,
+            "flags": "0x200000000",
+            "return": 2890,
+            "syscall": 435,
+            "target": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope"
+          }
+        },
+        "same_cgroup_write_positive": {
+          "state": "observed",
+          "value": {
+            "argv": [
+              "/usr/bin/python3",
+              "-c",
+              "import json,os,sys\np=sys.argv[1]\ntry:\n f=os.open(p,os.O_WRONLY); os.write(f,(str(os.getpid())+\"\\n\").encode()); os.close(f); r={\"errno\":0}\nexcept OSError as e: r={\"errno\":e.errno,\"error\":str(e)}\nprint(json.dumps(r))\n",
+              "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope/cgroup.procs"
+            ],
+            "exit": 0,
+            "stderr": "",
+            "stdout": "{\"errno\": 0}\n"
+          }
+        }
+      }
+    },
+    "preflight": {
+      "state": "observed",
+      "value": {
+        "cgroup": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+        "euid": 1002,
+        "systemd": {
+          "argv": [
+            "systemctl",
+            "--version"
+          ],
+          "exit": 0,
+          "stderr": "",
+          "stdout": "systemd 255 (255.4-1ubuntu8.18)\n+PAM +AUDIT +SELINUX +APPARMOR +IMA +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK -XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified\n"
+        },
+        "uid": 1002,
+        "uid_map": "         0          0 4294967295\n"
+      }
+    },
+    "scope_escape_census": {
+      "state": "observed",
+      "value": {
+        "argv": [
+          "systemd-run",
+          "--user",
+          "--scope",
+          "--quiet",
+          "--unit=c3-escape-2885.scope",
+          "/bin/sleep",
+          "90"
+        ],
+        "census": {
+          "dirs": [
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-escape-2885.scope",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/dbus.socket",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/init.scope"
+          ],
+          "disposition": "incomplete_census",
+          "errors": [
+            {
+              "errno": 13,
+              "operation": "member_identity",
+              "pid": 2857,
+              "type": "PermissionError"
+            },
+            {
+              "errno": 13,
+              "operation": "member_identity",
+              "pid": 2858,
+              "type": "PermissionError"
+            }
+          ],
+          "members": [
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+              "exe": "/usr/bin/python3.12",
+              "pid": 2885,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+              "status_uid": "Uid:\t1002\t1002\t1002\t1002"
+            },
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-escape-2885.scope",
+              "exe": "/usr/bin/sleep",
+              "pid": 2892,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/app.slice/c3-escape-2885.scope",
+              "status_uid": "Uid:\t1002\t1002\t1002\t1002"
+            },
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/init.scope",
+              "error": {
+                "errno": 13,
+                "type": "PermissionError"
+              },
+              "pid": 2857,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/init.scope"
+            },
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/init.scope",
+              "error": {
+                "errno": 13,
+                "type": "PermissionError"
+              },
+              "pid": 2858,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/init.scope"
+            }
+          ],
+          "root": "/user.slice/user-1002.slice/user@1002.service"
+        },
+        "found_pids": [
+          2892
+        ],
+        "launch_cgroup": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+        "launcher_exit": null,
+        "scope": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-escape-2885.scope",
+        "scope_inside_user_boundary": true,
+        "scope_outside_launch_subtree": true,
+        "scope_pids": [
+          2892
+        ],
+        "show": {
+          "argv": [
+            "systemctl",
+            "--user",
+            "show",
+            "c3-escape-2885.scope",
+            "-p",
+            "ControlGroup",
+            "--value"
+          ],
+          "exit": 0,
+          "stderr": "",
+          "stdout": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-escape-2885.scope\n"
+        }
+      }
+    },
+    "unreadable_member_census": {
+      "state": "observed",
+      "value": {
+        "child_pid": 2896,
+        "full_census": {
+          "dirs": [
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/dbus.socket",
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/init.scope"
+          ],
+          "disposition": "incomplete_census",
+          "errors": [
+            {
+              "errno": 13,
+              "operation": "member_identity",
+              "pid": 2896,
+              "type": "PermissionError"
+            },
+            {
+              "errno": 13,
+              "operation": "member_identity",
+              "pid": 2857,
+              "type": "PermissionError"
+            },
+            {
+              "errno": 13,
+              "operation": "member_identity",
+              "pid": 2858,
+              "type": "PermissionError"
+            }
+          ],
+          "members": [
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+              "exe": "/usr/bin/python3.12",
+              "pid": 2885,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+              "status_uid": "Uid:\t1002\t1002\t1002\t1002"
+            },
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+              "error": {
+                "errno": 13,
+                "type": "PermissionError"
+              },
+              "pid": 2896,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope"
+            },
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/init.scope",
+              "error": {
+                "errno": 13,
+                "type": "PermissionError"
+              },
+              "pid": 2857,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/init.scope"
+            },
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/init.scope",
+              "error": {
+                "errno": 13,
+                "type": "PermissionError"
+              },
+              "pid": 2858,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/init.scope"
+            }
+          ],
+          "root": "/user.slice/user-1002.slice/user@1002.service"
+        },
+        "leaf_census": {
+          "dirs": [
+            "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope"
+          ],
+          "disposition": "incomplete_census",
+          "errors": [
+            {
+              "errno": 13,
+              "operation": "member_identity",
+              "pid": 2896,
+              "type": "PermissionError"
+            }
+          ],
+          "members": [
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+              "exe": "/usr/bin/python3.12",
+              "pid": 2885,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+              "status_uid": "Uid:\t1002\t1002\t1002\t1002"
+            },
+            {
+              "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+              "error": {
+                "errno": 13,
+                "type": "PermissionError"
+              },
+              "pid": 2896,
+              "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope"
+            }
+          ],
+          "root": "/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope"
+        },
+        "prctl_return": "0",
+        "target_member": {
+          "cgroup": "/sys/fs/cgroup/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope",
+          "error": {
+            "errno": 13,
+            "type": "PermissionError"
+          },
+          "pid": 2896,
+          "proc_cgroup": "0::/user.slice/user-1002.slice/user@1002.service/app.slice/c3-collector-41616314137.scope"
+        },
+        "target_observed_unreadable": true
+      }
+    }
+  },
+  "diagnostic_exit": 1,
+  "errors": [],
+  "euid": 1002,
+  "mode": "user",
+  "pid": 2885,
+  "schema": "r18-c3-ag1-native-v1",
+  "uid": 1002,
+  "uname": [
+    "Linux",
+    "runnervm48cm3",
+    "7.0.0-1017-azure",
+    "#17~24.04.1-Ubuntu SMP PREEMPT Thu Sep 24 18:46:57 UTC 2026",
+    "x86_64"
+  ]
+}

@@ -1,0 +1,7 @@
+Running as unit: c3-nondelegated-41616314137-1.service
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 69ms
+CPU time consumed: 66ms
+Memory peak: 15.4M
+Memory swap peak: 0B

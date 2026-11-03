@@ -1,0 +1,3 @@
+bb151f158cf517f59c9068ef51d9847df0d3270c1b7bafc98104ca52757b855e  agent/diagnostics/r18-c3-ag1/venue.sh
+cb29df1da7686b9e71f88df1d09e3cc8aa2ccd2ff900e511ab15bb27bc7cefd7  agent/diagnostics/r18-c3-ag1/probe.py
+4c2bd12070330e3921284e4997f0531c3898072fd5d0d2be31e51e2cf626d377  agent/diagnostics/r18-c3-ag1/auth_helper.py
