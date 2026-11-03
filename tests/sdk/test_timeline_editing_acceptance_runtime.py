@@ -11,10 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers.runtime import runtime_checkout
+from tests.helpers.runtime import runtime_checkout, vendored_runtime_commit
 
 RUNTIME_CHECKOUT = str(runtime_checkout())
-RUNTIME_COMMIT = "9ef808711a5207f5be74dc5f267af6fdd7bc9550"
+# The conformance expectation follows the Agent's published Runtime pin.
+RUNTIME_COMMIT = vendored_runtime_commit()
 
 
 @pytest.fixture
@@ -24,6 +25,7 @@ def editing_case(tmp_path, monkeypatch, real_runtime):
 
     monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
     runtime = use_runtime()
+    assert vendored_runtime_commit() == RUNTIME_COMMIT
     actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
     assert actual == RUNTIME_COMMIT
     from runtime_protocol import timeline_commit_store
