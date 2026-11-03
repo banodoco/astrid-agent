@@ -9,6 +9,7 @@ import platform
 import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 if __package__:
@@ -978,6 +979,137 @@ def evaluate_m4_4b_local_smoke(results):
     return errors
 
 
+# GitHub's artifact metadata identifies a run but not the producing job or
+# attempt.  This index is diagnostic only until a platform origin attestation
+# supplies that missing edge; it must never be passed off as an authenticated
+# external_checkpoint_join to journey_predicates.check_m4_6.
+M4_6_ORIGIN_NEEDS = (
+    "M4-6 artifact-to-job/attempt/slot platform attestation is unavailable; "
+    "API metadata and artifact names do not establish origin"
+)
+
+
+def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
+                       harness_sha, run, jobs, artifact, archive):
+    """Validate independent API observations and return a non-admitted index.
+
+    Expected identities and candidate are selected by the checker operator, not
+    from an artifact. The caller obtains the observations directly from GitHub.
+    This function alone is a structural test seam, not an authority boundary.
+    """
+    if __package__:
+        from .journey_failure_modes import candidate_errors
+    else:
+        try:
+            from journey_failure_modes import candidate_errors
+        except ModuleNotFoundError:
+            from scripts.journey_failure_modes import candidate_errors
+    if not isinstance(candidate, dict) or candidate_errors(candidate):
+        raise ValueError("invalid frozen M4-6 candidate")
+    contract = next((row for row in M4_6_MATRIX
+                     if row["job_id"] == slot_id and row["mode"] == "direct"), None)
+    if contract is None:
+        raise ValueError("selected slot is not a direct checkpoint")
+    if not all(_positive_integer(n) for n in (run_id, attempt, job_id, artifact_id)):
+        raise ValueError("run, attempt, job and artifact IDs must be positive integers")
+    if not isinstance(harness_sha, str) or not SHA.fullmatch(harness_sha):
+        raise ValueError("a frozen harness commit SHA is required")
+    repository = run.get("repository") if isinstance(run, dict) else None
+    if not isinstance(run, dict) or (not _positive_integer(run.get("id"))
+            or not _positive_integer(run.get("run_attempt")) or run.get("id") != run_id
+            or run.get("run_attempt") != attempt or run.get("head_sha") != harness_sha
+            or not isinstance(repository, dict) or repository.get("full_name") != "banodoco/astrid-agent"
+            or str(run.get("path", "")).split("@", 1)[0] != ".github/workflows/journey.yml"
+            or not _positive_integer(run.get("workflow_id"))):
+        raise ValueError("API run, attempt, repository, workflow or harness differs")
+    if not isinstance(jobs, list):
+        raise ValueError("attempt-scoped API jobs are missing")
+    selected = [job for job in jobs if isinstance(job, dict) and job.get("id") == job_id]
+    if len(selected) != 1:
+        raise ValueError("selected job is absent or duplicated in the API attempt")
+    job = selected[0]
+    labels = job.get("labels")
+    if (not _positive_integer(job.get("id")) or not _positive_integer(job.get("run_id"))
+            or not _positive_integer(job.get("run_attempt"))
+            or job.get("run_id") != run_id or job.get("run_attempt") != attempt
+            or job.get("status") != "completed" or job.get("conclusion") != "success"
+            or not isinstance(job.get("name"), str) or not job["name"]
+            or not isinstance(job.get("runner_name"), str) or not job["runner_name"]
+            or not isinstance(labels, list) or contract["runner"] not in labels):
+        raise ValueError("API job identity, conclusion or runner differs")
+    artifact_run = artifact.get("workflow_run") if isinstance(artifact, dict) else None
+    if not isinstance(artifact, dict) or (not _positive_integer(artifact.get("id"))
+            or artifact.get("id") != artifact_id
+            or artifact.get("name") != f"m4-6-{slot_id}" or artifact.get("expired") is not False
+            or not isinstance(artifact_run, dict) or not _positive_integer(artifact_run.get("id"))
+            or artifact_run.get("id") != run_id):
+        raise ValueError("API artifact identity or run differs")
+    archive_hash = hashlib.sha256(archive).hexdigest()
+    if artifact.get("digest") != "sha256:" + archive_hash:
+        raise ValueError("API artifact digest differs from downloaded archive")
+    return {
+        "slot_id": slot_id, "candidate": candidate,
+        "checkpoint_obligation_class": "direct-r1-checkpoint",
+        "repository": "banodoco/astrid-agent", "workflow": ".github/workflows/journey.yml",
+        "workflow_id": run["workflow_id"], "run_id": run_id, "run_attempt": attempt,
+        "job_id": job_id, "job_name": job["name"], "runner_name": job["runner_name"],
+        "runner_labels": labels, "runner_os": RUNNER_PROVENANCE[contract["runner"]][0],
+        "artifact_id": artifact_id, "artifact_name": artifact["name"],
+        "artifact_sha256": archive_hash, "harness_sha": harness_sha,
+        "admitted": False, "reason": M4_6_ORIGIN_NEEDS,
+    }
+
+
+def collect_m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
+                                harness_sha, token):
+    """Fetch current API metadata and immutable artifact bytes, then veto admission."""
+    if not token:
+        raise ValueError("GH_TOKEN or GITHUB_TOKEN is required")
+    root = "https://api.github.com/repos/banodoco/astrid-agent/actions"
+
+    class SafeRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if not newurl.startswith("https://"):
+                raise ValueError("artifact redirect must use HTTPS")
+            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if redirected is not None and not newurl.startswith("https://api.github.com/"):
+                redirected.remove_header("Authorization")
+            return redirected
+
+    opener = urllib.request.build_opener(SafeRedirect())
+
+    def fetch(path, *, binary=False):
+        request = urllib.request.Request(root + path, headers={
+            "Accept": "application/vnd.github+json", "Authorization": "Bearer " + token,
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        with opener.open(request, timeout=30) as response:
+            data = response.read(64 * 1024 * 1024 + 1)
+        if len(data) > 64 * 1024 * 1024:
+            raise ValueError("API response exceeds 64 MiB")
+        return data if binary else json.loads(data)
+
+    run = fetch(f"/runs/{run_id}")
+    # The attempt-scoped jobs response may be paginated.
+    jobs = []
+    page = 1
+    while True:
+        payload = fetch(f"/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page={page}")
+        rows = payload.get("jobs") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("malformed API jobs response")
+        jobs.extend(rows)
+        if len(rows) < 100:
+            break
+        page += 1
+        if page > 100:
+            raise ValueError("too many API job pages")
+    artifact = fetch(f"/artifacts/{artifact_id}")
+    archive = fetch(f"/artifacts/{artifact_id}/zip", binary=True)
+    return m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
+                              harness_sha, run, jobs, artifact, archive)
+
+
 def _m4_6_local_row_errors(candidate, contract, row, path):
     """Validate one local M4-6 receipt; it is never hosted end-state proof."""
     try:
@@ -1381,7 +1513,28 @@ def main():
                         help="require all RunPod GPU journey receipts")
     parser.add_argument("--report-end-state-obligations", action="store_true",
                         help="list every END-STATE obligation using the existing receipt predicates")
+    parser.add_argument("--m4-6-api-index", action="store_true",
+                        help="collect a diagnostic Actions index; always veto admission")
+    parser.add_argument("--slot-id")
+    parser.add_argument("--run-id", type=int)
+    parser.add_argument("--run-attempt", type=int)
+    parser.add_argument("--job-id", type=int)
+    parser.add_argument("--artifact-id", type=int)
+    parser.add_argument("--harness-sha")
     args = parser.parse_args()
+    if args.m4_6_api_index:
+        try:
+            if not args.candidate:
+                raise ValueError("--candidate is required")
+            index = collect_m4_6_actions_index(
+                read(args.candidate), args.slot_id, args.run_id, args.run_attempt,
+                args.job_id, args.artifact_id, args.harness_sha,
+                os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN"))
+            print(json.dumps(index, indent=2, sort_keys=True))
+            print("FAIL: " + M4_6_ORIGIN_NEEDS, file=sys.stderr)
+        except (OSError, ValueError, TypeError) as exc:
+            print("FAIL: " + str(exc), file=sys.stderr)
+        return 1
     errors = []
     try:
         aggregate_modes = sum((args.aggregate_release1, args.aggregate_self_hosted_macos,
