@@ -612,6 +612,10 @@ class Service:
         """
         if self.system != "darwin":
             raise ValueError("A launchd upgrade stop requires macOS.")
+        record = self.recorded()
+        if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                or record.get("data_root") != str(data) or record.get("foreground")):
+            raise ValueError("The selected service does not match this managed installation.")
         identity = self.validate_stop_target(version, data, owner_pid=owner_pid)
         if identity is None:
             raise ValueError("The selected launchd job is not loaded; upgrade refused.")
@@ -639,6 +643,10 @@ class Service:
         target = f"gui/{platform.current_user()}/{LABEL}"
         if identity.get("target") != target or identity.get("path") != str(self.path):
             raise ValueError("The saved launchd upgrade target is invalid.")
+        record = self.recorded()
+        if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                or record.get("data_root") != state["data"] or record.get("foreground")):
+            raise ValueError("The launchd install selection changed; recovery refused.")
         return identity
 
     def stop_launchd_for_upgrade(self, state: dict) -> None:

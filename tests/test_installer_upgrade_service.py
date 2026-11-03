@@ -103,11 +103,12 @@ def test_unobservable_platform_refuses_before_mutation(tmp_path, system):
 
 @pytest.fixture
 def launchd(tmp_path, monkeypatch):
+    import os
     from astrid.installer import service
     from astrid.installer.core import write_json
     from astrid.installer.service import command
 
-    monkeypatch.setattr(service.platform, "current_user", lambda: 501)
+    monkeypatch.setattr(service.platform, "current_user", lambda: os.getuid())
     data, calls = tmp_path / "data", []
     manager = Service(tmp_path / "program", tmp_path / "log", None, home=tmp_path, system="darwin")
     folder = manager.root / "versions" / "old"
@@ -117,7 +118,7 @@ def launchd(tmp_path, monkeypatch):
     write_json(manager.selection, {"owner": LABEL, "program_root": str(manager.root), "data_root": str(data)})
     manager.path.parent.mkdir(parents=True)
     manager.path.write_text(render("darwin", version, data, manager.log, env_file=manager.env_file))
-    target = f"gui/501/{LABEL}"
+    target = f"gui/{os.getuid()}/{LABEL}"
     argv = command(version, data, log=manager.log, env_file=manager.env_file)
     job = {"pid": 123, "override": "enabled", "action": argv, "loaded": True}
 
