@@ -1,0 +1,17 @@
+{
+  "authority": false,
+  "cases": {},
+  "controls": {},
+  "end_ns": 1793684570690960728,
+  "euid": 1002,
+  "exit": 1,
+  "manager_bus_status": {
+    "exit": 1,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "schema": "systemd-typed-observation-v1",
+  "setup_error_type": "AssertionError",
+  "start_ns": 1793684570668598370,
+  "uid": 1002,
+  "wire": []
+}
