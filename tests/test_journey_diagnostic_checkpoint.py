@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from contextlib import nullcontext
 import sys
 from pathlib import Path
 
@@ -112,7 +113,15 @@ def _retained_preseed_state(tmp_path, monkeypatch):
 def test_windows_permission_site_preserves_failure_and_distinguishes_operations(tmp_path, monkeypatch, failure):
     args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
     args.diagnostic_state.unlink()
-    args.job_id = "direct-windows"
+    args.job_id = None
+    args.diagnostic_start_at = None
+    args.retain_for_next_leg = True
+    monkeypatch.setattr(journey, "run_scope", lambda *unused, **kwargs: (args.run_root, root, data, evidence))
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "assert_runner_identity", lambda *unused: None)
+    monkeypatch.setattr(journey, "isolated_environment", lambda *unused: nullcontext())
+    monkeypatch.setattr(journey, "sentinel_process", lambda *unused: nullcontext((argparse.Namespace(pid=42), "birth")))
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
     monkeypatch.setattr(journey, "git_source", lambda unused: {"sha": "5" * 40})
     monkeypatch.setattr(journey, "sentinel_observation", lambda *unused: {"alive": True})
     monkeypatch.setattr(jumps, "bootstrap_release0", lambda *unused: None)
@@ -150,7 +159,7 @@ def test_windows_permission_site_preserves_failure_and_distinguishes_operations(
     with monkeypatch.context() as native:
         native.setattr(jumps.sys, "platform", "win32")
         with pytest.raises(PermissionError) as caught:
-            jumps.execute_release0_to_release1(args, root, data, evidence, argparse.Namespace(pid=42), "birth")
+            journey.execute(args)
     assert caught.value is original
     receipt = journey.read_json(evidence / "journey-result.json")
     assert receipt["status"] == "fail"
@@ -189,6 +198,44 @@ def test_permission_site_bounds_deep_traceback_without_messages_or_source():
     assert len(site["frames"]) == 24 and site["frames_omitted"] > 0
     assert "private-" not in json.dumps(site)
     assert len(json.dumps(site)) < 16384
+
+
+def test_windows_permission_in_lifecycle_receipt_finally_is_captured_by_outer_driver(tmp_path, monkeypatch):
+    # A PermissionError in a lifecycle finally block bypasses its body's except.
+    # Keep that competing operation distinguishable at the real outer boundary.
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    args = argparse.Namespace(run_root=run_root, root=root, data_root=data,
+                              leg="release0-to-release1", shell="powershell.exe", mode="direct",
+                              retain_for_next_leg=True)
+    original = PermissionError(13, "private-finally-token")
+
+    def lifecycle(*unused):
+        try:
+            journey.write_json(evidence / "journey-result.json", {"status": "not-run"})
+        finally:
+            raise original
+
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "assert_runner_identity", lambda *unused: None)
+    monkeypatch.setattr(journey, "isolated_environment", lambda *unused: nullcontext())
+    monkeypatch.setattr(journey, "sentinel_process", lambda *unused: nullcontext((argparse.Namespace(pid=42), "birth")))
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "_execute_owned", lifecycle)
+    with monkeypatch.context() as native:
+        native.setattr(journey.sys, "platform", "win32")
+        with pytest.raises(PermissionError) as caught:
+            journey.execute(args)
+    assert caught.value is original
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["status"] == "fail"
+    site = receipt["permission_failure_site"]
+    assert [frame["function"] for frame in site["frames"]] == ["execute", "lifecycle"]
+    assert site["hash_target_role"] is None
+    assert "private-" not in json.dumps(site)
+    staged = run_root / "evidence-upload" / "before-cleanup" / "journey-result.json"
+    assert journey.read_json(staged)["permission_failure_site"] == site
 
 
 def test_diagnostic_checkpoint_accepts_only_unchanged_preseed_realm_and_keeps_custody_checks(

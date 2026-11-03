@@ -2244,6 +2244,16 @@ def execute(args: argparse.Namespace) -> dict:
                         result_path = evidence / "journey-result.json"
                         recorded = read_json(result_path) if result_path.is_file() else {}
                         recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+                        if (sys.platform == "win32" and args.leg == "release0-to-release1"
+                                and isinstance(exc, PermissionError)):
+                            try:
+                                if __package__:
+                                    from . import journey_version_jumps
+                                else:
+                                    import journey_version_jumps
+                                recorded["permission_failure_site"] = journey_version_jumps._permission_failure_site(exc)
+                            except Exception:
+                                recorded["permission_failure_site"] = {"status": "unavailable"}
                         write_json(result_path, recorded)
                     except Exception as receipt_error:
                         print(f"Journey failure receipt failed: {type(receipt_error).__name__}: {receipt_error}",

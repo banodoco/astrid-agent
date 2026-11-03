@@ -668,12 +668,6 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["status"] = "pass"
     except Exception as exc:
         result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
-        if sys.platform == "win32" and isinstance(exc, PermissionError):
-            try:
-                result["permission_failure_site"] = _permission_failure_site(exc)
-            except Exception:
-                # Evidence collection cannot replace the original failure.
-                result["permission_failure_site"] = {"status": "unavailable"}
         raise
     finally:
         journey.write_json(result_path, result)
