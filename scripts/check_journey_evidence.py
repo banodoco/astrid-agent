@@ -2,12 +2,15 @@
 """Fail closed on missing or mismatched installed-product journey evidence."""
 import argparse
 import hashlib
+import io
 import json
 import os
 import platform
 import re
 import subprocess
 import sys
+import stat
+import zipfile
 from pathlib import Path
 
 if __package__:
@@ -644,6 +647,144 @@ def evaluate_m4_4b_local_smoke(results):
         if (row.get("platform") or {}).get("linux_receipt") is not False:
             errors.append(f"{path}: local M4-4b receipt cannot claim linux_receipt")
     return errors
+
+
+# A structural diagnostic only. Caller-provided API records are not authenticated.
+# The protected workflow and Pinokio source profiles have not been frozen.
+_M4_6_NATIVE_FILES = frozenset({
+    "journey-failure-result.json",
+    "evidence/interruption_recovery.json",
+    "evidence/failed_candidate_rollback.json",
+    "evidence/keep_data_uninstall.json",
+    "evidence/stop_safety.json",
+})
+
+
+def _m4_6_native_bundle(archive, candidate, contract):
+    """Check bounded ZIP and existing failure receipt joins, never establish origin."""
+    if not isinstance(archive, bytes) or len(archive) > 64 * 1024 * 1024:
+        raise ValueError("invalid or oversized archive")
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as z:
+            entries = z.infolist()
+            names = [i.filename for i in entries]
+            if (len(entries) != len(_M4_6_NATIVE_FILES) or len(set(names)) != len(names)
+                    or set(names) != _M4_6_NATIVE_FILES
+                    or any(i.is_dir() or (i.external_attr >> 16 and
+                           stat.S_IFMT(i.external_attr >> 16) not in (0, stat.S_IFREG))
+                           or i.flag_bits & 1 for i in entries)
+                    or sum(i.file_size for i in entries) > 64 * 1024 * 1024):
+                raise ValueError("archive file set is unsafe or incomplete")
+            raw = {i.filename: z.read(i) for i in entries}
+    except (zipfile.BadZipFile, RuntimeError, OSError, EOFError, NotImplementedError) as exc:
+        raise ValueError("malformed archive") from exc
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON field")
+            result[key] = value
+        return result
+
+    try:
+        files = {path: json.loads(data, object_pairs_hook=unique,
+                                  parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+                 for path, data in raw.items()}
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise ValueError("malformed archive JSON") from exc
+    receipt = files["journey-failure-result.json"]
+    if not isinstance(receipt, dict) or any(not isinstance(v, dict) for v in files.values()):
+        raise ValueError("archive JSON objects required")
+    if any(receipt.get(k) != v for k, v in (("slot_id", contract["job_id"]),
+            ("mode", contract["mode"]), ("os", contract["os"]),
+            ("runner_image", contract["runner"]), ("shell", contract["shell"]))):
+        raise ValueError("receipt slot, mode, OS or runner differs")
+    checkouts = receipt.get("candidate_checkouts")
+    if (not isinstance(checkouts, dict) or receipt.get("manifest_sha256") != candidate["manifest_sha256"]
+            or any(not isinstance(checkouts.get(k), dict) or checkouts[k].get("sha") != candidate[k]
+                   for k in ("app", "agent", "runtime", "pinokio"))):
+        raise ValueError("receipt candidate differs")
+    rows = receipt.get("evidence_files")
+    if not isinstance(rows, list) or len(rows) != 4 or any(not isinstance(r, dict) for r in rows):
+        raise ValueError("receipt evidence references are incomplete")
+    paths = [r.get("path") for r in rows]
+    if any(not isinstance(p, str) for p in paths) or len(set(paths)) != 4 or set(paths) != _M4_6_NATIVE_FILES - {"journey-failure-result.json"}:
+        raise ValueError("receipt evidence references differ")
+    if any(r.get("sha256") != hashlib.sha256(raw[r["path"]]).hexdigest() for r in rows):
+        raise ValueError("receipt evidence digest differs")
+    scenarios = receipt.get("scenarios")
+    uninstall = scenarios.get("keep_data_uninstall") if isinstance(scenarios, dict) else None
+    if not isinstance(uninstall, dict) or type(uninstall.get("exit_code")) is not int or uninstall["exit_code"] != 0:
+        raise ValueError("keep-data uninstall inner exit missing or nonzero")
+    return {path: hashlib.sha256(data).hexdigest() for path, data in raw.items()}
+
+
+def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, check_run_id,
+                       artifact_id, harness_sha, head_sha, workflow_sha, run, jobs,
+                       check_run, artifact, artifacts, archive, *, workflow, workflow_ref):
+    """Validate available construction inputs; return only a non-admitting diagnostic.
+
+    This in-memory seam cannot authenticate its arguments, inspect a protected
+    uploader, or validate the missing Pinokio checkpoint/source profiles.
+    """
+    try:
+        from .journey_failure_modes import candidate_errors
+    except ImportError:
+        from scripts.journey_failure_modes import candidate_errors
+    if not isinstance(candidate, dict) or set(candidate) != {"app", "agent", "runtime", "pinokio", "manifest_sha256"} or candidate_errors(candidate):
+        raise ValueError("invalid selected candidate")
+    contract = next((r for r in M4_6_MATRIX if r["job_id"] == slot_id and r["mode"] in ("pinokio-backend", "pinokio-fully-local")), None)
+    if contract is None:
+        raise ValueError("unknown Pinokio slot")
+    if any(type(v) is not int or v <= 0 for v in (run_id, attempt, job_id, check_run_id, artifact_id)):
+        raise ValueError("IDs and attempt must be positive integers")
+    if any(not isinstance(v, str) or not SHA.fullmatch(v) for v in (harness_sha, head_sha, workflow_sha)):
+        raise ValueError("selected SHAs must be full commits")
+    if workflow_ref != workflow_sha or not isinstance(workflow, bytes) or not workflow:
+        raise ValueError("workflow bytes must be pinned")
+    if not isinstance(run, dict) or type(run.get("id")) is not int or type(run.get("run_attempt")) is not int or (run.get("id"), run.get("run_attempt"), run.get("head_sha")) != (run_id, attempt, head_sha) or not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != "banodoco/astrid-agent" or str(run.get("path", "")).split("@", 1)[0] != ".github/workflows/journey.yml" or type(run.get("workflow_id")) is not int or run["workflow_id"] <= 0:
+        raise ValueError("run identity differs")
+    if not isinstance(jobs, list):
+        raise ValueError("attempt jobs missing")
+    selected = [j for j in jobs if isinstance(j, dict) and j.get("name") == f"m4-6-native-{slot_id}"]
+    if len(selected) != 1:
+        raise ValueError("slot job missing or duplicated")
+    job = selected[0]
+    labels = job.get("labels")
+    if (type(job.get("id")) is not int or type(job.get("run_id")) is not int
+            or job.get("id") != job_id or job.get("run_id") != run_id
+            or ("run_attempt" in job and (type(job["run_attempt"]) is not int or job["run_attempt"] != attempt))
+            or job.get("status") != "completed" or job.get("conclusion") != "success"
+            or not isinstance(job.get("runner_name"), str) or not job["runner_name"]
+            or not isinstance(labels, list) or any(not isinstance(v, str) for v in labels)
+            or contract["runner"] not in labels
+            or any(v in RUNNER_PROVENANCE and v != contract["runner"] for v in labels)
+            or job.get("check_run_url") != f"https://api.github.com/repos/banodoco/astrid-agent/check-runs/{check_run_id}"):
+        raise ValueError("job identity, result, runner or check-run link differs")
+    if (not isinstance(check_run, dict) or type(check_run.get("id")) is not int or check_run.get("id") != check_run_id
+            or check_run.get("head_sha") != head_sha or check_run.get("name") != job["name"]
+            or check_run.get("status") != "completed" or check_run.get("conclusion") != "success"):
+        raise ValueError("check-run identity or result differs")
+    name = f"m4-6-native-{run_id}-{attempt}-{slot_id}"
+    if (not isinstance(artifact, dict) or type(artifact.get("id")) is not int or artifact.get("id") != artifact_id or artifact.get("name") != name
+            or artifact.get("expired") is not False or not isinstance(artifact.get("workflow_run"), dict) or artifact["workflow_run"].get("id") != run_id
+            or type(artifact.get("size_in_bytes")) is not int or artifact["size_in_bytes"] <= 0
+            or not isinstance(archive, bytes) or artifact["size_in_bytes"] != len(archive)
+            or artifact.get("digest") != "sha256:" + hashlib.sha256(archive).hexdigest()):
+        raise ValueError("artifact identity, size or digest differs")
+    if not isinstance(artifacts, list):
+        raise ValueError("run artifacts missing")
+    matches = [a for a in artifacts if isinstance(a, dict) and a.get("name") == name]
+    if len(matches) != 1 or any(matches[0].get(k) != artifact.get(k) for k in ("id", "name", "size_in_bytes", "digest", "expired", "workflow_run")):
+        raise ValueError("artifact absent, duplicated or inconsistent")
+    hashes = _m4_6_native_bundle(archive, candidate, contract)
+    return {"slot_id": slot_id, "run_id": run_id, "run_attempt": attempt, "job_id": job_id,
+            "check_run_id": check_run_id, "artifact_id": artifact_id, "artifact_name": name,
+            "head_sha": head_sha, "harness_sha": harness_sha, "workflow_sha": workflow_sha,
+            "workflow_sha256": hashlib.sha256(workflow).hexdigest(),
+            "archive_sha256": hashlib.sha256(archive).hexdigest(), "file_sha256": hashes,
+            "admitted": False, "reason": "unauthenticated diagnostic; protected workflow and native source profiles unverified"}
 
 
 def _m4_6_local_row_errors(candidate, contract, row, path):
