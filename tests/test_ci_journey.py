@@ -686,6 +686,33 @@ def test_tst_b1_census_finds_installed_python_c_owner_and_foreign_duplicate(
         journey.assert_one_runtime(tmp_path)
 
 
+def test_windows_owner_failure_retains_first_census(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey.windows, "EVIDENCE", tmp_path)
+    monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})
+    rows = [{"ProcessId": 4124, "ParentProcessId": 11,
+             "CreationDate": "2026-11-03T23:00:00Z",
+             "CommandLine": "python -m runtime_protocol start"}]
+
+    def powershell(code, name, **kwargs):
+        assert "ProcessId,ParentProcessId,CreationDate,CommandLine" in code
+        output = json.dumps(rows)
+        (tmp_path / name).write_text(output, encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(journey.windows, "powershell", powershell)
+    with pytest.raises(RuntimeError, match=r"found \[4124\]"):
+        journey.assert_one_runtime(tmp_path)
+    first = json.loads((tmp_path / "runtime-owner-processes.json").read_text())
+    rows[0]["ParentProcessId"] = 22
+    with pytest.raises(RuntimeError):
+        journey.assert_one_runtime(tmp_path)
+    assert json.loads((tmp_path / "runtime-owner-processes.json").read_text()) == first
+    assert first[0]["ParentProcessId"] == 11
+    assert first[0]["CreationDate"] == "2026-11-03T23:00:00Z"
+    assert first[0]["CommandLine"] == "python -m runtime_protocol start"
+
+
 @pytest.mark.parametrize("owners", [[], [4124], [4123, 4124], [4123, 4123]])
 def test_tst_b1_rejects_missing_foreign_or_duplicate_runtime_owner(tmp_path, monkeypatch, owners):
     monkeypatch.setattr(journey, "healthy", lambda data: {"pid": 4123})

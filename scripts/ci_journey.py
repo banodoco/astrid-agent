@@ -1205,8 +1205,8 @@ def runtime_processes(data: Path) -> list[int]:
     """Count every live Runtime owner process on this isolated journey host."""
     if sys.platform == "win32":
         rows = json.loads(windows.powershell(
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
-            "runtime-owner-processes.json", show=False, timeout=30))
+            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress",
+            "runtime-owner-processes-latest.json", show=False, timeout=30))
         rows = rows if isinstance(rows, list) else [rows]
         return [int(row["ProcessId"]) for row in rows if
                 _runtime_owner_command(str(row.get("CommandLine") or ""))]
@@ -1228,6 +1228,16 @@ def assert_one_runtime(data: Path) -> None:
     discovery = healthy(data)
     owners = runtime_processes(data)
     if owners != [int(discovery["pid"])]:
+        if sys.platform == "win32":
+            # Keep the census that caused the first failure even if a diagnostic
+            # continues and later checks or cleanup take another census.
+            source = windows.EVIDENCE / "runtime-owner-processes-latest.json"
+            target = windows.EVIDENCE / "runtime-owner-processes.json"
+            try:
+                if not target.exists():
+                    shutil.copyfile(source, target)
+            except OSError as exc:
+                print(f"Runtime owner census retention failed: {exc}", file=sys.stderr, flush=True)
         raise RuntimeError(f"Expected exactly the selected Runtime owner {discovery['pid']}, found {owners}")
 
 
