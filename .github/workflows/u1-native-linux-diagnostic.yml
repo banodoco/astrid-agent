@@ -1,0 +1,44 @@
+name: U1 Linux host observation diagnostic
+on:
+  push:
+    branches: [lane/M-QUAL/R-36-PIN-U1-NATIVE-LINUX-R1]
+permissions:
+  contents: read
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Observe disposable non-admin principal
+        shell: bash
+        env:
+          U1_HEAD: ${{ github.sha }}
+        run: |
+          set -u
+          mkdir -p "$RUNNER_TEMP/u1-native"
+          git rev-parse HEAD > "$RUNNER_TEMP/u1-native/checkout-head.txt"
+          id > "$RUNNER_TEMP/u1-native/runner-id.txt"
+          uname -a > "$RUNNER_TEMP/u1-native/kernel.txt"
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin u1native
+          setup_exit=$?
+          printf '%s\n' "$setup_exit" > "$RUNNER_TEMP/u1-native/setup-exit.txt"
+          if [ "$setup_exit" -ne 0 ]; then exit "$setup_exit"; fi
+          uid=$(id -u u1native)
+          gid=$(id -g u1native)
+          sudo --preserve-env=U1_HEAD python3 -m scripts.ci_journey_u1_native "$uid" "$gid" > "$RUNNER_TEMP/u1-native/observation.json" 2> "$RUNNER_TEMP/u1-native/stderr.txt"
+          inner_exit=$?
+          printf '%s\n' "$inner_exit" > "$RUNNER_TEMP/u1-native/inner-exit.txt"
+          sudo userdel u1native
+          cleanup_exit=$?
+          printf '%s\n' "$cleanup_exit" > "$RUNNER_TEMP/u1-native/cleanup-exit.txt"
+          if [ "$inner_exit" -ne 0 ]; then exit "$inner_exit"; fi
+          exit "$cleanup_exit"
+      - name: Retain diagnostic, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: u1-native-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/u1-native/
+          if-no-files-found: error
+          retention-days: 7
