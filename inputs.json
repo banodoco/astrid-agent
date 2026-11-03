@@ -1,0 +1,9 @@
+{
+  "agent_ref": "004646e6fb4cf08fc1b05c7d0097bfa0a7273a81",
+  "runtime_ref": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+  "app_ref": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+  "pinokio_ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+  "command": "mkdir -p proof\npython3 --version > proof/environment.txt\npython3 -m venv .venv\n.venv/bin/python -m pip install pytest==9.0.2 pytest-timeout pyyaml jsonschema setuptools -e runtime -e runtime/packages/python\n.venv/bin/python -m pip freeze >> proof/environment.txt\nexport PATH=\"$PWD/.venv/bin:$PATH\"\nexport PYTHONPATH=\"$PWD/agent:$PWD/runtime:$PWD/runtime/packages/python\"\nexport ASTRID_RUNTIME_CHECKOUT=\"$PWD/runtime\"\ncd agent\npython -m pytest -q --tb=short --junitxml=../proof/pytest.xml tests/test_installer_busy_fence.py tests/test_installer_launchd_cache_window.py tests/test_installer_launchd_stop_handoff.py",
+  "artifact_paths": "proof/**",
+  "slot": "6"
+}
