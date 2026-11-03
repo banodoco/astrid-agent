@@ -646,6 +646,69 @@ def test_tst_b1_bootstrap_propagates_run_owned_roots_on_each_os(tmp_path, monkey
 
 
 @pytest.mark.posix_native
+@pytest.mark.skipif(os.name != "posix", reason="exercises the POSIX frozen bootstrap")
+@pytest.mark.parametrize("present", [True, False], ids=["present", "absent"])
+def test_release0_bootstrap_build_environment_reaches_uv(tmp_path, monkeypatch, present):
+    """Exercise the real isolation, subprocess and frozen script without installing."""
+    names = ("PATH", "CARGO_HOME", "OPENSSL_DIR", "OPENSSL_STATIC", "UV_BUILD_CONSTRAINT")
+    values = dict(zip(names, ("/usr/bin:/bin", "/build/cargo", "/build/openssl", "1",
+                              "/build/constraints.txt")))
+    for name in names:
+        if present:
+            monkeypatch.setenv(name, values[name])
+        else:
+            monkeypatch.delenv(name, raising=False)
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    capture = tmp_path / "uv-env.json"
+    monkeypatch.setenv("JOURNEY_TEST_UV_CAPTURE", str(capture))
+    original_run = journey.subprocess.run
+    bootstrap_envs, bootstrap_exits = [], []
+
+    def observe_run(argv, **kwargs):
+        if len(argv) > 1 and str(argv[1]).endswith("/served/install"):
+            bootstrap_envs.append(dict(kwargs["env"]))
+            result = original_run(argv, **kwargs)
+            bootstrap_exits.append(result.returncode)
+            return result
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(journey.subprocess, "run", observe_run)
+    with journey.isolated_environment(run_root, root, data):
+        uv = run_root / "home/.local/share/astrid/bootstrap/uv"
+        uv.parent.mkdir(parents=True)
+        uv.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "if sys.argv[1:] == ['--version']:\n"
+            "    print('uv 0.11.32')\n"
+            "    raise SystemExit(0)\n"
+            f"names = {names!r}\n"
+            "with open(os.environ['JOURNEY_TEST_UV_CAPTURE'], 'w') as f:\n"
+            "    json.dump({'env': {k: os.environ.get(k) for k in names}, "
+            "'home': os.environ['HOME'], 'argv': sys.argv[1:], 'exit': 37}, f)\n"
+            "raise SystemExit(37)\n", encoding="utf-8")
+        uv.chmod(0o755)
+        fixture = journey.ROOT / "tests/fixtures/release0"
+        with pytest.raises(RuntimeError, match=r"release0-bootstrap.log: exit 1"):
+            jumps.bootstrap_release0(fixture, fixture / "served/install-manifest.json", "/bin/sh",
+                                     tmp_path / "evidence", root, data)
+    assert bootstrap_exits == [1]
+    assert {name: bootstrap_envs[0].get(name) for name in names} == (
+        values if present else dict.fromkeys(names))
+    observed = json.loads(capture.read_text(encoding="utf-8"))
+    assert observed["home"] == str(run_root / "home")
+    assert observed["argv"] == ["python", "install", "3.11.13", "--no-bin"]
+    assert observed["exit"] == 37
+    for name in names[1:]:
+        assert observed["env"][name] == (values[name] if present else None)
+    if present:
+        assert observed["env"]["PATH"] == values["PATH"]
+    print(f"case={'present' if present else 'absent'} shell_exit={bootstrap_exits[0]} "
+          f"stub_uv_exit={observed['exit']} uv_PATH={observed['env']['PATH']!r}")
+
+
+@pytest.mark.posix_native
 def test_tst_b1_sentinel_survives_then_is_reaped_by_own_context(tmp_path):
     with pytest.raises(RuntimeError, match="stop journey"):
         with journey.sentinel_process(tmp_path) as (process, birth):
