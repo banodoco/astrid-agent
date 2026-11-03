@@ -2,9 +2,7 @@ $ErrorActionPreference = 'Stop'
 $evidence = Join-Path $env:RUNNER_TEMP 'p19-evidence'
 $root = "C:\p19-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 $user = 'p19standard'
-$task = "p19-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 $created = $false
-$registered = $false
 $exitCode = 1
 Start-Transcript -Path (Join-Path $evidence 'host-transcript.txt')
 try {
@@ -12,7 +10,14 @@ try {
     whoami /all
     if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) { throw "Refusing existing account $user" }
     New-Item -ItemType Directory -Path $root | Out-Null
-    New-LocalUser -Name $user -NoPassword -Description 'Temporary P19 census account' | Out-Null
+    # The secret exists only in this process and the local account database; it is
+    # never passed on a command line or written to the evidence directory.
+    $bytes = New-Object byte[] 32
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    $secret = ConvertTo-SecureString ([Convert]::ToBase64String($bytes) + 'aA1!') -AsPlainText -Force
+    [Array]::Clear($bytes, 0, $bytes.Length)
+    New-LocalUser -Name $user -Password $secret -Description 'Temporary P19 census account' | Out-Null
     $created = $true
     $account = "$env:COMPUTERNAME\$user"
     $userSid = (Get-LocalUser -Name $user).SID.Value
@@ -36,29 +41,32 @@ try {
     $git = (Get-Command git.exe -ErrorAction Stop).Source
     @{python=$python; git=$git; account_sid=$userSid; source=$source; root=$root; probe_sha256=$probeHash} |
         ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $root 'config.json')
-    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$root\child.ps1`" -Root `"$root`""
-    $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType S4U -RunLevel Limited
-    Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
-    $registered = $true
-    Start-ScheduledTask -TaskName $task
-    $deadline = (Get-Date).AddSeconds(180)
-    while (-not (Test-Path (Join-Path $root 'finished.txt')) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-    Get-ScheduledTaskInfo -TaskName $task | Format-List *
-    if (-not (Test-Path (Join-Path $root 'finished.txt'))) { throw 'Standard-user task did not produce finished.txt within 180 seconds; inspect task result and partial evidence' }
+    $credential = New-Object System.Management.Automation.PSCredential($account, $secret)
+    $child = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $root 'child.ps1') + '"'), '-Root', ('"' + $root + '"')) `
+        -Credential $credential -WorkingDirectory $root -PassThru `
+        -RedirectStandardOutput (Join-Path $root 'child-stdout.txt') -RedirectStandardError (Join-Path $root 'child-stderr.txt')
+    if (-not $child.WaitForExit(180000)) {
+        & taskkill.exe /PID $child.Id /T /F
+        throw 'Standard-user process timed out after 180 seconds; inspect partial evidence'
+    }
+    $child.Refresh()
+    Write-Output "child_process_exit=$($child.ExitCode)"
+    if (-not (Test-Path (Join-Path $root 'finished.txt'))) { throw 'Standard-user process did not produce finished.txt' }
     $exitCode = [int](Get-Content (Join-Path $root 'finished.txt') -Raw).Trim()
     Write-Output "inner_exit=$exitCode"
+    if ($child.ExitCode -ne $exitCode) { throw "Child process exit $($child.ExitCode) differs from recorded inner exit $exitCode" }
 } catch {
     Write-Output "VENUE_FAILURE: $($_ | Out-String)"
     $exitCode = 1
 } finally {
-    if ($registered) {
-        Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+    try {
+        if (Test-Path $root) {
+            Get-ChildItem -Force $root | Where-Object { $_.Name -ne 'source' } | Copy-Item -Destination $evidence -Recurse -Force
+        }
+    } finally {
+        if ($created) { Remove-LocalUser -Name $user -ErrorAction Continue }
+        Stop-Transcript
     }
-    if (Test-Path $root) {
-        Get-ChildItem -Force $root | Where-Object { $_.Name -ne 'source' } | Copy-Item -Destination $evidence -Recurse -Force
-    }
-    if ($created) { Remove-LocalUser -Name $user -ErrorAction Continue }
-    Stop-Transcript
 }
 exit $exitCode

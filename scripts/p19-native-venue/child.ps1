@@ -7,10 +7,37 @@ try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     Write-Output "identity=$($identity.Name) sid=$($identity.User.Value) admin=$($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
-    whoami /all
+    # Read the mandatory integrity label directly; do not depend on localized
+    # whoami output or infer integrity from administrator membership.
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+public static class P19Integrity {
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool GetTokenInformation(IntPtr token, int type, IntPtr info, int length, out int needed);
+    public static string Sid(IntPtr token) {
+        int size;
+        GetTokenInformation(token, 25, IntPtr.Zero, 0, out size);
+        if (size <= 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        IntPtr buffer = Marshal.AllocHGlobal(size);
+        try {
+            if (!GetTokenInformation(token, 25, buffer, size, out size))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return new SecurityIdentifier(Marshal.ReadIntPtr(buffer)).Value;
+        } finally { Marshal.FreeHGlobal(buffer); }
+    }
+}
+'@
+    $integrity = [P19Integrity]::Sid($identity.Token)
+    Write-Output "integrity_sid=$integrity"
+    whoami /all | Tee-Object -FilePath (Join-Path $Root 'child-whoami.txt')
+    if ($LASTEXITCODE -ne 0) { throw "whoami exit $LASTEXITCODE" }
     [Environment]::OSVersion.VersionString
-    if ($identity.User.Value -ne $config.account_sid) { throw 'Unexpected scheduled-task identity' }
-    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Scheduled-task token is elevated' }
+    if ($identity.User.Value -ne $config.account_sid) { throw 'Unexpected child identity' }
+    if ($integrity -ne 'S-1-16-8192') { throw "Unexpected integrity SID $integrity; medium required" }
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Child token is elevated' }
     $env:GIT_CONFIG_COUNT = '1'
     $env:GIT_CONFIG_KEY_0 = 'safe.directory'
     $env:GIT_CONFIG_VALUE_0 = $config.source.Replace('\','/')
