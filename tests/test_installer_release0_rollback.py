@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from astrid.installer.core import (
     switch,
     write_json,
 )
+from astrid.installer.custody import stopped_custody
 from astrid.installer.service import activation_lock_held
 from tests.test_installer_self_contained_launchers import (
     LEGACY_VERSION,
@@ -74,6 +76,7 @@ def _runtime_environment(tmp_path: Path) -> dict[str, str]:
         "HOME": str(tmp_path / "home"),
         "XDG_DATA_HOME": str(tmp_path / "xdg-data"),
     })
+    environment.pop("ASTRID_INSTALL_CUSTODY", None)
     return environment
 
 
@@ -91,6 +94,32 @@ def _start_release0_runtime(root: Path, marker: Path, environment: dict[str, str
     assert call["argv"][-2:] == ["--hosted-origin", "off"]
     assert call["release"] == "0"
     assert call["managed_by"] == "pinokio"
+
+
+def _activate_release0(root: Path, data: Path, version: Version, marker: Path,
+                       environment: dict[str, str], custody) -> None:
+    assert current(root) == version
+    assert activation_lock_held(root, version)
+    journal = json.loads((root / "update-transaction.json").read_text(encoding="utf-8"))
+    assert journal["step"] == "rollback_selected"
+
+    # Ordinary Start remains refused even while the updater holds its lock.
+    refused = subprocess.run(
+        [str(root / "run"), "--hosted-origin", "off"],
+        check=False, capture_output=True, text=True, env=environment, timeout=30,
+    )
+    assert refused.returncode != 0
+    assert "Choose Update to finish" in refused.stderr
+    assert not marker.exists()
+
+    custody.check()
+    ticket = custody.arm(version, data)
+    assert ticket["binding"]["version"] == version.document()
+    assert ticket["binding"]["data"] == str(data)
+    assert ticket["binding"]["operation_id"] == journal["operation_id"]
+    assert ticket["binding"]["step"] == "rollback_selected"
+    _start_release0_runtime(root, marker, {**environment, "ASTRID_INSTALL_CUSTODY": json.dumps(ticket)})
+    custody.check()
 
 
 def _journal(root: Path, data: Path, old: Version, candidate: Version, step: str) -> dict:
@@ -134,22 +163,23 @@ def test_rollback_selects_and_starts_authentic_release0_runtime(tmp_path: Path) 
         switch(root, version)
 
     def activate_old(version: Version, _data: Path, _realm: dict) -> None:
-        assert current(root) == version
-        assert activation_lock_held(root, version)
-        _start_release0_runtime(root, marker, _runtime_environment(tmp_path))
+        _activate_release0(root, _data, version, marker, _runtime_environment(tmp_path), custody)
 
     # Pinokio recovery owns this lock until the selected old Runtime starts.
     with locked(root / ".app-update.lock"):
-        recover_transaction(
-            root,
-            data,
-            SimpleNamespace(),
-            stop=lambda version, _data: stopped.append(version),
-            switch_old=select_old,
-            activate_old=activate_old,
-            restore_workspace=False,
-            say=lambda _message: None,
-        )
+        backend = SimpleNamespace(service=SimpleNamespace(home=tmp_path / "home", system=sys.platform))
+        with stopped_custody(root, backend) as custody:
+            assert custody is not None
+            recover_transaction(
+                root,
+                data,
+                backend,
+                stop=lambda version, _data: stopped.append(version),
+                switch_old=select_old,
+                activate_old=activate_old,
+                restore_workspace=False,
+                say=lambda _message: None,
+            )
 
     recovered = json.loads((root / "update-transaction.json").read_text(encoding="utf-8"))
     assert stopped == [candidate]
@@ -229,23 +259,24 @@ def test_pre_stop_interruption_recovers_and_starts_authentic_release0_runtime(
         assert current(root) == version
 
     def activate_old(version: Version, _data: Path, _realm: dict) -> None:
-        assert current(root) == version
-        assert activation_lock_held(root, version)
-        _start_release0_runtime(root, marker, _runtime_environment(tmp_path))
+        _activate_release0(root, _data, version, marker, _runtime_environment(tmp_path), custody)
 
     # A restarted Pinokio recovery reacquires its own operation lock before
     # rolling back and activating the retained release-0 Runtime.
     with locked(root / ".app-update.lock"):
-        recover_transaction(
-            root,
-            data,
-            backend,
-            stop=lambda version, _data: stopped.append(version),
-            switch_old=select_old,
-            activate_old=activate_old,
-            restore_workspace=False,
-            say=lambda _message: None,
-        )
+        backend.service = SimpleNamespace(home=tmp_path / "home", system=sys.platform)
+        with stopped_custody(root, backend) as custody:
+            assert custody is not None
+            recover_transaction(
+                root,
+                data,
+                backend,
+                stop=lambda version, _data: stopped.append(version),
+                switch_old=select_old,
+                activate_old=activate_old,
+                restore_workspace=False,
+                say=lambda _message: None,
+            )
 
     recovered = json.loads((root / "update-transaction.json").read_text(encoding="utf-8"))
     assert stopped == [old]
