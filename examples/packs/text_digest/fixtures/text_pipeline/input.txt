@@ -1,5 +1,0 @@
-Hello world. This is a small text file used as a test fixture
-for the text_digest.text_pipeline orchestrator.
-
-It has a few short lines of text.
-The pipeline reads this file, summarizes it, and produces a verdict.

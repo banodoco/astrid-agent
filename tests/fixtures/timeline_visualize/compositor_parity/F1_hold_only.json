@@ -1,6 +1,0 @@
-{
-  "theme": "banodoco-default",
-  "theme_overrides": {"visual": {"canvas": {"fps": 30}}},
-  "tracks": [{"id": "v1", "kind": "visual", "label": "V1"}],
-  "clips": [{"id": "c1", "at": 0, "hold": 3.5, "track": "v1"}]
-}

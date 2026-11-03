@@ -1,1 +1,0 @@
-The quick brown fox jumps over the lazy dog. This is a sample text for testing the Astrid orchestrator pipeline.

@@ -1,6 +1,0 @@
-docs/plans/astrid-naming/
-tools/astrid-rename/
-src/migrations/astridRenameBrowserMigration.ts # F-WINDOW: remove 30 days after deployment; record the exact date at deploy
-src/migrations/astridRenameBrowserMigration.test.ts # F-WINDOW: remove 30 days after deployment; record the exact date at deploy
-tests/fixtures/timeline_visualize/desert_slice/
-.megaplan/plans/m7-dogfood-and-hardening-20260820-0835/

@@ -1,7 +1,0 @@
-{
-  "schema_version": 1,
-  "kind": "h3_av_lanpaint_source",
-  "builder": "MiniMax_H3_AV_EncodeDecode_Inpaint",
-  "source": "vibecomfy/comfy-inspection/MiniMax_H3_AV_EncodeDecode_Inpaint.py",
-  "graph_id": "MiniMax_H3_AV_EncodeDecode_Inpaint"
-}

@@ -1,1 +1,0 @@
-"""Iteration assembly action."""

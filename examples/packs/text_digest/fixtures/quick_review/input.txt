@@ -1,1 +1,0 @@
-The quick brown fox jumps over the lazy dog. This is a small sample text file used for testing the quick_review orchestrator. It has a few lines to demonstrate the pipeline works end to end.

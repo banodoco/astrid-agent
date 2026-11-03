@@ -1,1 +1,0 @@
-"""Rendering-core test package."""

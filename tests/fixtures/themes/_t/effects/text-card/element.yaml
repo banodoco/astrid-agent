@@ -1,8 +1,0 @@
-{
-  "id": "text-card",
-  "kind": "effect",
-  "metadata": {"label": "Fixture Text Card"},
-  "schema": {"type": "object", "additionalProperties": false, "properties": {}},
-  "defaults": {},
-  "dependencies": {"js_packages": [], "python_requirements": []}
-}

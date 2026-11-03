@@ -1,8 +1,0 @@
-{
-  "id": "test-stamp",
-  "kind": "effect",
-  "metadata": {"label": "Test Stamp"},
-  "schema": {"type": "object", "additionalProperties": false, "properties": {}},
-  "defaults": {},
-  "dependencies": {"js_packages": [], "python_requirements": []}
-}

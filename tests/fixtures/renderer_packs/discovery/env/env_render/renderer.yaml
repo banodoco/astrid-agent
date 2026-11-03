@@ -1,8 +1,0 @@
-schema_version: 1
-id: env_render.renderer
-name: Environment Fixture Renderer
-version: 1.0.0
-protocol_version: 1
-command: [python3, backend_should_not_import.py]
-operations: [render]
-required_permissions: [subprocess]

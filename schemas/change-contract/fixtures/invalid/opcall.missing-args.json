@@ -1,9 +1,0 @@
-{
-  "$provenance": "invalid on purpose: args is required",
-  "instance": {
-    "op": "timeline.opacity",
-    "select": "clip=a-rocket",
-    "version": null,
-    "resolved": []
-  }
-}

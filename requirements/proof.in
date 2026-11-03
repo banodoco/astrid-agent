@@ -1,7 +1,0 @@
-# Explicit dependencies for the source and installed packaged-factorability
-# proof. Runtime dependencies are included because the fixed kernel lane
-# imports the installed Astrid package; pytest is deliberately provisioned in
-# the same lock so the proof never relies on a host or user-site runner.
--r runtime.lock
-pytest==9.0.2
-pytest-timeout>=2.4

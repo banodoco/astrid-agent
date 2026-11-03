@@ -1,5 +1,0 @@
-The Astrid engine orchestrates media pipelines by composing executors into
-task-mode plans. Each step is either a code step (runs a subprocess), an
-attested step (waits for agent or actor approval), or a nested step (delegates
-to a child plan). The gate advances the cursor one step at a time, checking
-produces after each step completes.

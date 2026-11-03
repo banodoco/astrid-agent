@@ -1,6 +1,0 @@
-id: look.entrance.card-slide-up-refused
-source: new
-intent: slide-up is an exit only; asking for it as an entrance is refused and changes nothing.
-fixture: tiny
-expect: refused
-cli: edit --clip c2.card --entrance slide-up 18f

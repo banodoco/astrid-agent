@@ -1,5 +1,0 @@
-{
-  "request_id": "test-req-id-img2img",
-  "status_url": "https://queue.fal.run/fal-ai/flux/dev/image-to-image/requests/test-req-id-img2img/status",
-  "response_url": "https://queue.fal.run/fal-ai/flux/dev/image-to-image/requests/test-req-id-img2img"
-}

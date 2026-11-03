@@ -1,1 +1,0 @@
-Astrid is an agentic video orchestration platform. It lets you define pipelines as code using a Python DSL. Orchestrators coordinate executors, attested steps invite human or agent review, and nested plans enable composability. This fixture exercises the smart_summarize pipeline end-to-end.

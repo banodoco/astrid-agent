@@ -1,6 +1,0 @@
-banodoco-workspace # community workspace repository
-@banodoco/timeline- # community package scope
-banodoco_social # community package
-banodoco_schema # community schema module
-banodoco_timeline_schema # community schema module
-banodoco-timeline-schema # community timeline schema distribution

@@ -1,4 +1,0 @@
-[lineage] astrid_logo_v3 . run #4 . 01ARZ3NDEKTSV4RRFFQ69G5FX0
-[variants] 1 unresolved variant group; review outputs and record any keeper as non-binding lineage selection.
-
-python3 -m astrid.packs.builtin.orchestrators.iteration_video.run inspect 01ARZ3NDEKTSV4RRFFQ69G5FX0 --no-content

@@ -1,5 +1,0 @@
-{
-  "request_id": "test-req-id-flux-schnell",
-  "status_url": "https://queue.fal.run/fal-ai/flux/schnell/requests/test-req-id-flux-schnell/status",
-  "response_url": "https://queue.fal.run/fal-ai/flux/schnell/requests/test-req-id-flux-schnell"
-}

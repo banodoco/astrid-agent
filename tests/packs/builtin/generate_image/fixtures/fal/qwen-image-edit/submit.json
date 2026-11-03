@@ -1,5 +1,0 @@
-{
-  "request_id": "test-req-id-qwen-edit",
-  "status_url": "https://queue.fal.run/fal-ai/qwen-image-edit/requests/test-req-id-qwen-edit/status",
-  "response_url": "https://queue.fal.run/fal-ai/qwen-image-edit/requests/test-req-id-qwen-edit"
-}

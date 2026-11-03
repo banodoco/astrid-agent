@@ -1,6 +1,0 @@
-node_modules/
-.cache/
-stills/*
-!stills/t00_640x360.png
-!stills/t30_640x360.png
-!stills/t54_640x360.png

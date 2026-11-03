@@ -1,1 +1,0 @@
-non-standard JSON constant NaN|non-finite timing.*NaN

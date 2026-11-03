@@ -1,5 +1,0 @@
-This is a sample input text file.
-It contains a few lines of text
-for the orchestrator to analyze and summarize.
-
-The quick brown fox jumps over the lazy dog.
