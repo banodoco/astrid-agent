@@ -12,6 +12,15 @@ finish() {
     sudo cp "$run/result.json" "$out/result.json"
     sudo chown "$(id -u):$(id -g)" "$out/result.json"
   fi
+  if [[ -n $run ]]; then
+    # These exports belong exclusively to the disposable, controlled fixture.
+    for export_file in "$run"/export-*.txt; do
+      if sudo test -f "$export_file"; then
+        sudo cp "$export_file" "$out/$(basename "$export_file")"
+        sudo chown "$(id -u):$(id -g)" "$out/$(basename "$export_file")"
+      fi
+    done
+  fi
   if [[ $created = 1 && -n $uid_owned ]]; then
     sudo systemctl stop "user@$uid_owned.service" >/dev/null 2>&1; printf 'manager_stop=%s\n' "$?" >> "$out/cleanup.txt"
     sudo loginctl disable-linger "$name" >/dev/null 2>&1; printf 'disable_linger=%s\n' "$?" >> "$out/cleanup.txt"

@@ -119,7 +119,10 @@ class Peer:
         try:
             check(label + '.decode_dump', rc)
             data = C.string_at(buffer, size.value)
-            result['calls'][-1].update({'decoded_bytes': len(data), 'decoded_sha256': hashlib.sha256(data).hexdigest()})
+            name = 'export-' + label + '.txt'
+            (ROOT / name).write_bytes(data)
+            result['calls'][-1].update({'decoded_bytes': len(data), 'decoded_sha256': hashlib.sha256(data).hexdigest(),
+                                        'artifact': name})
         finally:
             libc.free(buffer)
     def string_property(self, label, path, interface, prop):
@@ -172,7 +175,10 @@ def main():
                     peer.export(label + '.unit.GetAll', path, UNIT_IFACE)
                     peer.export(label + '.service.GetAll', path, SERVICE)
                     return {'Description': peer.string_property(label + '.Description', path, UNIT_IFACE, 'Description'),
-                            'Environment': peer.strv_property(label + '.Environment', path, SERVICE, 'Environment')}
+                            'Environment': peer.strv_property(label + '.Environment', path, SERVICE, 'Environment'),
+                            'User': peer.string_property(label + '.User', path, SERVICE, 'User'),
+                            'Group': peer.string_property(label + '.Group', path, SERVICE, 'Group'),
+                            'WorkingDirectory': peer.string_property(label + '.WorkingDirectory', path, SERVICE, 'WorkingDirectory')}
                 versions = [snapshot('before')]
                 drop.mkdir()
                 (drop / 'override.conf').write_text('[Unit]\nDescription=Identity discriminator after\n[Service]\nEnvironment=ASTRID_IDENTITY_PROBE=after\n')
