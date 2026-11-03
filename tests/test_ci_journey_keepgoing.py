@@ -154,3 +154,31 @@ def test_failed_downstream_verification_after_bypass_is_suspect(tmp_path, monkey
     assert 'REAL failures: release0-verify' in text
     assert 'SUSPECT failures: release1-verify-update (suspect:release0-verify)' in text
     assert '-.->' in text
+
+
+def test_fresh_install_continues_independent_checks_after_verify_failure(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'none')
+    args.leg = 'fresh-install'
+    monkeypatch.setattr(journey, 'wait_ready', lambda *a, **kw: None)
+    monkeypatch.setattr(journey, 'installation', lambda *a: (tmp_path / 'v1', tmp_path / 'data', {'release': 1}))
+    def fail_verify(*a, **kw):
+        raise RuntimeError('fresh verify failed')
+    monkeypatch.setattr(journey, 'verify', fail_verify)
+    monkeypatch.setattr(jumps, 'task_after_update', lambda *a: calls.append('task'))
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release1-verify-install']['first_error'] == 'RuntimeError: fresh verify failed'
+    assert rows['release1-task']['result'] == 'pass' and 'task' in calls
+    assert rows['one-runtime']['result'] == 'pass' and rows['sentinel']['result'] == 'pass'
+    assert report['qualification']['eligible'] is False and report['status'] == 'fail'
+
+
+def test_fresh_install_failure_blocks_dependent_stages(tmp_path, monkeypatch):
+    args, evidence, calls = setup_diagnostic(tmp_path, monkeypatch, 'update')
+    args.leg = 'fresh-install'
+    report = keepgoing.execute(args, tmp_path / 'program', tmp_path / 'data', evidence, SimpleNamespace(pid=1), 'birth')
+    rows = {row['stage']: row for row in report['stages']}
+    assert rows['release1-install']['result'] == 'fail'
+    assert rows['release1-start']['result'] == 'not-run'
+    assert rows['release1-task']['result'] == 'not-run'
+    assert rows['sentinel']['result'] == 'pass'
