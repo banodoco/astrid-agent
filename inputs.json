@@ -1,0 +1,9 @@
+{
+  "agent_ref": "a9a395395fa7af32dbcb9d918365c08ac4606272",
+  "runtime_ref": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+  "app_ref": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+  "pinokio_ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",
+  "command": "bash agent/diagnostics/systemd-native-proof/venue.sh",
+  "artifact_paths": "suite-artifacts/**",
+  "slot": "6"
+}
