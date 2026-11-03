@@ -1,10 +1,30 @@
 """The Agent journal must not roll back across a Runtime upgrade."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.installer import core
+from runtime_protocol import platform
+
+
+def test_published_runtime_refuses_installer_owned_lifetime_mutex(tmp_path, monkeypatch):
+    from astrid_runtime import operator_upgrade, paths, update
+
+    selection, lock = tmp_path / "selection.json", tmp_path / "installer.lock"
+    selection.touch()
+    monkeypatch.setattr(paths, "_install_record_path", lambda _home: selection)
+    monkeypatch.setattr(update, "_installer_lock_path", lambda _selection: lock)
+    descriptor = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        platform.lock_file(descriptor, blocking=False)
+        with pytest.raises(operator_upgrade.OperatorUpgradeError, match="another installer owns"):
+            with operator_upgrade._installer_mutex(SimpleNamespace(home=tmp_path, runtime_support=tmp_path)):
+                pytest.fail("a second owner acquired the installer mutex")
+    finally:
+        platform.unlock_file(descriptor)
+        os.close(descriptor)
 
 
 @pytest.mark.parametrize("failure", [None, "upgrade", "switch", "activate"])
