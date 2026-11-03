@@ -325,9 +325,10 @@ def main(argv: list[str] | None = None) -> int:
                     download("https://astrid.haus/install-manifest.json", manifest_path)
                 manifest = validate_manifest(read_json(manifest_path))
                 if args.update_app:
-                    update_app(root, backend, manifest)
+                    outcomes = update_app(root, backend, manifest)
                 else:
-                    update_pinokio(root, backend, manifest, force=args.update)
+                    outcomes = update_pinokio(root, backend, manifest, force=args.update)
+                _print_run_summary(backend.service.choices, mode=mode, outcomes=outcomes)
                 return 0
         lock_path = installer_lock_path(Path.home(), sys.platform)
         platform.private_directory(lock_path.parent)

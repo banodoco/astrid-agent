@@ -1122,9 +1122,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                                            "realm_id": realm["realm_id"],
                                            "realm_root": realm["realm_root"], "chat_settings": settings})
 
-    def persist_identity(self, version: Version) -> None:
+    def persist_identity(self, version: Version, *, persist_choices: bool = True) -> None:
         """Upgrade legacy version and selection records without service changes."""
-        choices = getattr(self.service, "choices", None)
+        choices = getattr(self.service, "choices", None) if persist_choices else None
         fields = {"choices": choices} if choices is not None else None
         if fields is not None and not self.service.recorded():
             # Never publish a choices-only selection: recorded() must be able
@@ -1281,6 +1281,14 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
                 "--skills", "on" if skills_on else "off",
                 "--skill-copies", "on" if copies_on else "off"]
+        return self._run_skills(version, argv)
+
+    def remove_skills(self, version: Version) -> dict:
+        """Clean proven owned targets without changing the saved install policy."""
+        script = "import json; from astrid.skills import disable_owned; print(json.dumps(disable_owned()))"
+        return self._run_skills(version, [version.python, "-X", "utf8", "-I", "-c", script], action="cleanup")
+
+    def _run_skills(self, version: Version, argv: list, *, action: str = "sync") -> dict:
         failed = False
         try:
             output = self.run(argv, extra_env=version.env, timeout=60)
@@ -1299,7 +1307,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 if isinstance(path, str)
             })
             conflicts = [*report.get("conflicts", []), *report.get("ambiguous", [])]
-            outcome = "Astrid skills sync completed successfully.\n"
+            outcome = f"Astrid skills {action} completed successfully.\n"
             for conflict in conflicts:
                 if isinstance(conflict, dict):
                     outcome += f"Preserved skill target {conflict.get('path', '(unknown path)')}: {conflict.get('reason', 'ownership is ambiguous')}.\n"
@@ -1310,13 +1318,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             )
             if isinstance(output, bytes):
                 output = output.decode("utf-8", errors="replace")
-            outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
+            outcome = str(output) + f"\nAstrid skills {action} failed ({type(exc).__name__}).\n"
             destinations = []
             removed = []
             conflicts = []
         except (ValueError, TypeError, AttributeError) as exc:
             failed = True
-            outcome = f"Astrid skills sync returned an unreadable result ({type(exc).__name__}).\n"
+            outcome = f"Astrid skills {action} returned an unreadable result ({type(exc).__name__}).\n"
             destinations = []
             removed = []
             conflicts = []
@@ -1324,7 +1332,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             platform.owner_only(stream.fileno())
             stream.write(outcome)
         if failed:
-            self.say("Couldn't add Astrid's skill to your agents; see the log.")
+            self.say("Couldn't clean up Astrid's skills; see the log." if action == "cleanup" else
+                     "Couldn't add Astrid's skill to your agents; see the log.")
         result = {"ok": not failed, "destinations": destinations}
         if removed:
             result["removed"] = removed

@@ -577,6 +577,23 @@ class Installer:
             self.backend.preflight_remove(self.root, self.data, delete_data=delete_data)
             self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
+            if old is not None:
+                try:
+                    result = self.backend.remove_skills(old)
+                except Exception as exc:  # noqa: BLE001 - retain sources for a cleanup retry
+                    self.say("Couldn't clean up Astrid's skills; program files were kept. See the log.")
+                    raise RuntimeError("Astrid skill cleanup failed; program files were kept.") from exc
+                self.outcomes["skills"] = result
+                for path in result.get("removed", []):
+                    self.say(f"Astrid skill target removed: {path}")
+                for conflict in result.get("conflicts", []):
+                    self.say(f"Skill target preserved: {conflict.get('path', '(unknown path)')} "
+                             f"({conflict.get('reason', 'ownership is ambiguous')}).")
+                if not result.get("ok"):
+                    self.say("Couldn't clean up Astrid's skills; program files were kept. See the log.")
+                    raise RuntimeError("Astrid skill cleanup failed; program files were kept. See the log.")
+            else:
+                self.say("No selected interpreter is available for skill cleanup; skill targets were kept.")
             self.backend.unregister()
             residue = self.backend.remove(self.root, self.data, delete_data=delete_data)
             self.say("Astrid was uninstalled." if not residue else "Astrid was unregistered; some files remain.")
