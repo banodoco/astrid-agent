@@ -288,16 +288,34 @@ def composed_model_root_binding(receipt: Any, root: str, *, engine: str,
             inventory[key] = row
     if entry_id is not None:
         from .asset_alignment import catalog_manifests
+        from .entries import find_entry
+        from astrid.core.model_catalog.registry import ModelRegistry
+
+        entry = find_entry(entry_id)
+        if entry is not None:
+            # Selection can use receipt custody even when a ready workflow's
+            # declarations cannot provision bytes. User entries never supply
+            # inventory authority, including when their IDs shadow pinned IDs.
+            required_models = (declared_model_specs(entry.get('model_assets', []), require_complete=False)
+                               if entry.get('source') == 'ready-template' else ())
+        else:
+            try:
+                ModelRegistry.load_default().get(entry_id)
+            except KeyError:
+                # An unsaved workflow has no discoverable entry. Its models
+                # still have to pass the same receipt/exact-root custody gate.
+                required_models = ()
+            else:
+                required_models = tuple(model for manifest in catalog_manifests(entry_id)
+                                        for mode in manifest['modes'] for model in mode['models'])
         missing = []
-        for manifest in catalog_manifests(entry_id):
-            for mode in manifest['modes']:
-                for model in mode['models']:
-                    relative, _url = _validate_model(model)
-                    _, path = _root_and_destination(str(binding.path), relative)
-                    if not path.exists():
-                        missing.append(model.destination)
-                    elif not _matches(path, model, deadline=deadline):
-                        raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}')
+        for model in required_models:
+            relative, _url = _validate_model(model)
+            _, path = _root_and_destination(str(binding.path), relative)
+            if not path.exists():
+                missing.append(model.destination)
+            elif not _matches(path, model, deadline=deadline):
+                raise IntegrityError(f'declared entry asset failed size/SHA verification: {model.destination}')
         if missing:
             raise EntryAssetsNotReady(entry_id, sorted(set(missing)))
     document = binding.as_dict()
