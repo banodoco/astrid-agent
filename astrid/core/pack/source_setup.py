@@ -13,8 +13,10 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable, Mapping
@@ -400,7 +402,63 @@ def _record_from_mapping(value: Mapping[str, Any]) -> InstalledSource:
     )
 
 
-def active_sources(*, state_path: str | Path | None = None, verify: bool = True) -> tuple[InstalledSource, ...]:
+def _verify_selected_checkout(source: InstalledSource, paths: Iterable[str]) -> None:
+    """Verify explicit file bytes against the pinned Git tree, without status.
+
+    A checkout-wide status/digest can read unselected working-tree files. Git
+    tree entries supply the immutable expected blob identities without opening
+    those files. The retained tree_sha256 remains the provisioning receipt;
+    it is not relabelled as a digest of this smaller runtime selection.
+    """
+    declaration = SourceDeclaration(
+        source.pack_id, source.repository, source.revision, source.pack_subpath,
+    )
+    checkout = next_parent_checkout(source.pack_root, declaration)
+    if checkout.is_symlink() or not checkout.is_dir() or source.pack_root.is_symlink():
+        raise SourceSetupError(f"managed source checkout is unavailable: {checkout}")
+    if _run_git("", "-C", str(checkout), "rev-parse", "HEAD") != source.revision:
+        raise SourceSetupError(f"managed source revision mismatch for {source.pack_id!r}")
+    names = ["pack.yaml", *sorted(set(paths) - {"pack.yaml"})]
+    prefix = "" if source.pack_subpath == "." else source.pack_subpath + "/"
+    for name in names:
+        if (not name or name.startswith("/") or "\\" in name
+                or any(part in {"", ".", ".."} for part in name.split("/"))):
+            raise SourceSetupError(f"invalid selected managed path {name!r}")
+    entries = _run_git(
+        "", "-C", str(checkout), "ls-tree", "--full-tree", "-z",
+        source.revision, "--", *(prefix + name for name in names),
+    )
+    expected = {}
+    for entry in entries.split("\0"):
+        if entry:
+            metadata, name = entry.split("\t", 1)
+            expected[name] = metadata.split()
+    for name in names:
+        path = source.pack_root / name
+        if any(part.is_symlink() for part in (path, *path.parents)):
+            raise SourceSetupError(f"selected managed path contains a symlink: {path}")
+        item = expected.get(prefix + name)
+        if item is None or item[1] != "blob" or item[0] not in {"100644", "100755"}:
+            raise SourceSetupError(f"selected managed file is not in the pinned tree: {path}")
+        try:
+            mode = path.stat().st_mode
+            if not stat.S_ISREG(mode) or bool(mode & 0o111) != (item[0] == "100755"):
+                raise SourceSetupError(f"selected managed file type/mode mismatch: {path}")
+            data = path.read_bytes()
+        except OSError as exc:
+            raise SourceSetupError(f"selected managed file is unavailable: {path}") from exc
+        algorithm = "sha1" if len(source.revision) == 40 else "sha256"
+        actual = hashlib.new(algorithm, b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+        if actual != item[2]:
+            raise SourceSetupError(f"managed source checkout is dirty: selected managed file digest mismatch: {path}")
+        if name == "pack.yaml" and hashlib.sha256(data).hexdigest() != source.manifest_sha256:
+            raise SourceSetupError(f"managed source manifest digest mismatch for {source.pack_id!r}")
+
+
+def active_sources(
+    *, state_path: str | Path | None = None, verify: bool = True,
+    selected_paths: Mapping[Path, Iterable[str]] | None = None,
+) -> tuple[InstalledSource, ...]:
     """Return the active managed roots, read-only and in stable id order."""
     state = load_source_state(state_path)
     disabled = {str(item) for item in state.get("disabled", [])}
@@ -411,21 +469,52 @@ def active_sources(*, state_path: str | Path | None = None, verify: bool = True)
         source = _record_from_mapping(raw)
         if source.pack_id != pack_id:
             raise SourceSetupError(f"source state key does not match pack id {pack_id!r}")
-        if verify:
+        if verify and selected_paths is not None:
+            if source.pack_root in selected_paths:
+                _verify_selected_checkout(source, selected_paths[source.pack_root])
+        elif verify:
             declaration = SourceDeclaration(
                 source.pack_id, source.repository, source.revision,
                 source.pack_subpath, source.manifest_sha256, source.tree_sha256,
             )
             source = _validate_checkout(next_parent_checkout(source.pack_root, declaration), declaration)
         result.append(source)
+    if verify and selected_paths is not None:
+        unknown = set(selected_paths) - {source.pack_root for source in result}
+        if unknown:
+            raise SourceSetupError(f"selected managed roots are no longer active: {sorted(map(str, unknown))}")
     return tuple(result)
 
 
+# Keep the historical no-argument inventory seam for registry/host callers.
+# The explicit selection is scoped to this lookup, including nested consumers.
+_inventory_selection: ContextVar[Mapping[Path, Iterable[str]] | None] = ContextVar(
+    "managed_source_inventory_selection", default=None,
+)
+
+
+def _selected_source_inventory(paths: Mapping[Path, Iterable[str]]) -> ManagedSourceInventory:
+    token = _inventory_selection.set(paths)
+    try:
+        return active_source_inventory()
+    finally:
+        _inventory_selection.reset(token)
+
+
 def active_source_inventory(
-    *, state_path: str | Path | None = None, verify: bool = True
+    *, state_path: str | Path | None = None, verify: bool = True,
+    selected_paths: Mapping[Path, Iterable[str]] | None = None,
 ) -> ManagedSourceInventory:
-    """Resolve the selected managed roots once for discovery/host callers."""
-    sources = active_sources(state_path=state_path, verify=verify)
+    """Resolve managed roots, retaining whole-checkout verification by default.
+
+    ``selected_paths`` opts into verification of only the named roots/files.
+    An empty mapping observes inventory records without acquiring checkout
+    bytes; discovery then verifies manifests/descriptors and admitted resources
+    in dependency order. Unnamed roots and undeclared files are never opened.
+    """
+    if selected_paths is None:
+        selected_paths = _inventory_selection.get()
+    sources = active_sources(state_path=state_path, verify=verify, selected_paths=selected_paths)
     return ManagedSourceInventory(sources, source_inventory_identity(sources))
 
 

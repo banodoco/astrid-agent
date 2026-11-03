@@ -7,7 +7,7 @@ from importlib import metadata as importlib_metadata
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -21,6 +21,7 @@ from astrid.core.pack.canonical import (
     CanonicalPackValidationError,
     LEGACY_MANIFEST_NAMES,
     canonical_manifest_path,
+    read_normalize_validate,
     validate_canonical_pack,
 )
 from astrid.core.pack.permissions import (
@@ -30,7 +31,7 @@ from astrid.core.pack.permissions import (
 from astrid import pack_api
 from astrid.pack_api import VERSION as PACK_API_VERSION
 from astrid.pack_imports import ImportContract, check_pack_imports
-from astrid.pack_validation import validate_pack as validate_pack_compatibility
+from astrid.pack_validation import _has_cycle, validate_pack as validate_pack_compatibility
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ def scan_packs(
     strict: bool = True,
     required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
     _validate: bool = True,
+    source_records: dict[str, Any] | None = None,
 ) -> PackScan:
     """Scan a pack root without importing pack code.
 
@@ -119,13 +121,15 @@ def scan_packs(
     modes.
     """
     if root is None:
-        from astrid.core.pack.source_setup import active_source_inventory
-        inventory = active_source_inventory()
+        from astrid.core.pack.source_setup import _selected_source_inventory
+        inventory = _selected_source_inventory({})
         sources = inventory.sources if inventory is not None else ()
         roots = (*_default_pack_roots(), *(source.pack_root for source in sources))
         return scan_pack_roots(roots, include_hidden=include_hidden, strict=strict,
                                required_pack_ids=required_pack_ids, _validate=_validate,
                                source_records={source.pack_id: source for source in sources})
+    source_records = source_records or {}
+    expected = {record.pack_root.resolve(): pack_id for pack_id, record in source_records.items()}
     source_root = Path(root)
     if not source_root.is_dir():
         return PackScan((), ())
@@ -142,7 +146,7 @@ def scan_packs(
             manifest_path = pack_manifest_path(child)
             if manifest_path is None:
                 continue
-            pack = load_pack_manifest(manifest_path)
+            pack = load_pack_metadata(manifest_path, expected_pack_id=expected.get(child.resolve()))
         except Exception as exc:  # noqa: BLE001 - optional scan boundary
             legacy_version = _legacy_schema_refusal(manifest_path or (child / "pack.yaml"))
             if legacy_version is not None and not _fail_closed(child.name, required_pack_ids):
@@ -179,8 +183,12 @@ def scan_packs(
         seen[pack.id] = manifest_path
         packs.append(pack)
     if _validate:
-        packs, compatibility_quarantine = _isolate_incompatible_packs(packs, required_pack_ids=required_pack_ids)
-        quarantined.extend(compatibility_quarantine)
+        admitted = admit_pack_candidates(
+            packs, strict=strict, include_hidden=include_hidden,
+            required_pack_ids=required_pack_ids, source_records=source_records,
+        )
+        packs = list(admitted.packs)
+        quarantined.extend(admitted.quarantined)
     return PackScan(tuple(packs), tuple(quarantined))
 
 
@@ -192,19 +200,149 @@ def scan_pack_roots(
 ) -> PackScan:
     """Collect and collision-check all roots before resolving dependencies."""
     if source_records is None:
-        from astrid.core.pack.source_setup import active_source_inventory
-        inventory = active_source_inventory()
+        from astrid.core.pack.source_setup import _selected_source_inventory
+        inventory = _selected_source_inventory({})
         source_records = {source.pack_id: source for source in inventory.sources} if inventory else {}
     scans = [scan_packs(path, include_hidden=include_hidden, strict=strict,
-                        required_pack_ids=required_pack_ids, _validate=False)
+                        required_pack_ids=required_pack_ids, _validate=False,
+                        source_records=source_records)
              for path in dict.fromkeys(Path(root).expanduser().resolve() for root in roots)]
     packs = list({pack.root.resolve(): pack for scan in scans for pack in scan.packs}.values())
     quarantined = [record for scan in scans for record in scan.quarantined]
     if _validate:
-        packs, rejected = _isolate_incompatible_packs(
-            packs, required_pack_ids=required_pack_ids, source_records=source_records)
-        quarantined.extend(rejected)
+        admitted = admit_pack_candidates(
+            packs, strict=strict, include_hidden=include_hidden,
+            required_pack_ids=required_pack_ids, source_records=source_records,
+        )
+        packs = list(admitted.packs)
+        quarantined.extend(admitted.quarantined)
     return PackScan(tuple(packs), tuple(quarantined))
+
+def admit_pack_candidates(
+    packs: list[PackDefinition], *, strict: bool = False,
+    include_hidden: bool = False,
+    required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
+    available_packs: tuple[PackDefinition, ...] = (),
+    read_only: bool = False,
+    source_records: dict[str, Any] | None = None,
+    before_load: Callable[[PackDefinition, bool], None] | None = None,
+) -> PackScan:
+    """Shared descriptor/compatibility closure before resource acquisition.
+
+    Metadata and compatibility select candidates without reading payloads.
+    Managed custody failures propagate before descriptor/full payload access.
+    A failed dependency removes pending dependents before they acquire bytes.
+    ``read_only`` preserves canonical-reader/injected-scanner compatibility;
+    executable discovery always retains v3/API/import/pin policy.
+    """
+    source_records = source_records or {}
+    expected_pack_ids = {record.pack_root.resolve(): pack_id
+                         for pack_id, record in source_records.items()}
+    packs = [pack for pack in packs if include_hidden or pack.visibility != "hidden"]
+    contract = _import_contract([*available_packs, *packs])
+    if before_load is None:
+        def before_load(pack, descriptors_only):
+            record = source_records.get(pack.id)
+            if record is not None and record.pack_root.resolve() == pack.root.resolve():
+                from astrid.core.pack.discovery import _verify_managed_pack
+                _verify_managed_pack(pack.root, pack.id, descriptors_only=descriptors_only)
+    quarantined: list[QuarantinedPack] = []
+
+    def isolate(candidates):
+        active, rejected = _isolate_incompatible_packs(
+            [*available_packs, *candidates], required_pack_ids=required_pack_ids,
+            source_records=source_records, read_only=read_only,
+        )
+        roots = {pack.root for pack in candidates}
+        return [pack for pack in active if pack.root in roots], rejected
+
+    packs, compatibility_quarantine = isolate(packs)
+    quarantined.extend(compatibility_quarantine)
+
+    def reject(pack: PackDefinition, exc: Exception) -> None:
+        if strict or _fail_closed(pack.root.name, required_pack_ids):
+            if isinstance(exc, PackValidationError):
+                raise exc
+            raise PackValidationError(f"{pack.root}: {exc}") from exc
+        record = QuarantinedPack(pack.id, pack.root, pack.manifest_path, str(exc))
+        quarantined.append(record)
+        _quarantine_warning(record)
+
+    # Descriptor identity is canonical admission, but it must be settled for
+    # every survivor before acquiring unrelated resource payloads. A failed
+    # dependency can then remove its dependents through the shared validator.
+    ready: list[PackDefinition] = []
+    for pack in packs:
+        if before_load is not None:
+            before_load(pack, True)
+        try:
+            ready.append(load_pack_metadata(
+                pack.manifest_path, validate_descriptors=True,
+                expected_pack_id=expected_pack_ids.get(pack.root),
+            ))
+        except Exception as exc:  # noqa: BLE001 - optional scan boundary
+            reject(pack, exc)
+    packs, descriptor_quarantine = isolate(ready)
+    quarantined.extend(descriptor_quarantine)
+
+    # Dependencies acquire resources first, so a subsequent I/O failure also
+    # quarantines pending dependents before their payloads are touched. The
+    # validator above owns cycle checks and bundled-pack exemptions; fallback
+    # ordering preserves those exemptions rather than adding a new validator.
+    pending = list(packs)
+    admitted: dict[Path, PackDefinition] = {}
+    while pending:
+        pending_ids = {pack.id for pack in pending}
+        pack = next((
+            candidate for candidate in pending
+            if not pending_ids.intersection(candidate.dependencies.get("packs", ()))
+        ), pending[0])
+        pending.remove(pack)
+        if before_load is not None:
+            before_load(pack, False)
+        try:
+            if not read_only and not pack.root.resolve().is_relative_to(packs_root().resolve()):
+                violations = check_pack_imports(pack.root, contract=contract, manifest=pack.to_dict())
+                if violations:
+                    raise PackValidationError(
+                        "Pack imports code outside its declared public API contract. "
+                        + " ".join(violation.fix for violation in violations)
+                    )
+            full_pack = load_pack_manifest(
+                pack.manifest_path, expected_pack_id=expected_pack_ids.get(pack.root),
+            )
+        except Exception as exc:  # noqa: BLE001 - optional scan boundary
+            reject(pack, exc)
+        else:
+            if full_pack.visibility != "hidden" or include_hidden:
+                admitted[pack.root] = full_pack
+                continue
+        active, failed_dependency_quarantine = isolate([
+            *admitted.values(), *pending,
+        ])
+        quarantined.extend(failed_dependency_quarantine)
+        active_ids = {candidate.id for candidate in active}
+        pending = [candidate for candidate in pending if candidate.id in active_ids]
+        admitted = {key: value for key, value in admitted.items() if value.id in active_ids}
+    # Preserve scanner order (and discovery priority), not acquisition order.
+    ordered, final_quarantine = isolate([
+        admitted[pack.root] for pack in packs if pack.root in admitted
+    ])
+    quarantined.extend(final_quarantine)
+    return PackScan(tuple(ordered), tuple(quarantined))
+
+def _import_contract(packs: list[PackDefinition]) -> ImportContract:
+    from astrid import sdk
+
+    bundled_root = packs_root().resolve()
+    return ImportContract(
+        facade_exports=frozenset(pack_api.__all__), facade_version=PACK_API_VERSION,
+        sdk_names=frozenset(sdk.__all__),
+        core_pack_apis={pack.id: f"astrid.packs.{pack.id}.api" for pack in packs
+                        if pack.root.resolve().is_relative_to(bundled_root)
+                        and (pack.root / "api.py").is_file()},
+    )
+
 
 def _legacy_schema_refusal(manifest_path: Path | None) -> int | None:
     if manifest_path is None:
@@ -226,18 +364,19 @@ def _isolate_incompatible_packs(
     *,
     required_pack_ids: frozenset[str] = REQUIRED_PACK_IDS,
     source_records: dict[str, Any] | None = None,
+    read_only: bool = False,
 ) -> tuple[list[PackDefinition], list[QuarantinedPack]]:
     """Apply the shared pure compatibility validator to external pack inventory."""
     seen: dict[str, Path] = {}
     for pack in packs:
         root = pack.root.resolve()
-        if pack.id in seen and seen[pack.id] != root:
+        if not read_only and pack.id in seen and seen[pack.id] != root:
             raise PackValidationError(f"duplicate pack id {pack.id!r}: {seen[pack.id]} and {root}")
         seen[pack.id] = root
     executable: list[PackDefinition] = []
     quarantined: list[QuarantinedPack] = []
     for pack in packs:
-        if pack.schema_version != "3":
+        if pack.schema_version != "3" and not read_only:
             record = QuarantinedPack(
                 pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
                 error="Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.",
@@ -254,7 +393,7 @@ def _isolate_incompatible_packs(
     external_ids = {pack.id for pack in external}
     if not external:
         return packs, quarantined
-    python_packages = {
+    python_packages = {} if read_only else {
         dist.metadata.get("Name", "").lower().replace("_", "-").replace(".", "-"): dist.version
         for dist in importlib_metadata.distributions()
         if dist.metadata.get("Name")
@@ -264,14 +403,6 @@ def _isolate_incompatible_packs(
     from astrid.core.pack.source_setup import declarations_from_json
     release_pins = {item.pack_id: {"commit": item.revision, "digest": item.tree_sha256 or ""}
                     for item in declarations_from_json()}
-    from astrid import sdk
-    contract = ImportContract(
-        facade_exports=frozenset(pack_api.__all__), facade_version=PACK_API_VERSION,
-        sdk_names=frozenset(sdk.__all__),
-        core_pack_apis={pack.id: f"astrid.packs.{pack.id}.api" for pack in packs
-                        if pack.root.resolve().is_relative_to(bundled_root)
-                        and (pack.root / "api.py").is_file()},
-    )
     source_records = source_records or {}
     active = packs
     while True:
@@ -291,16 +422,47 @@ def _isolate_incompatible_packs(
         for pack in active:
             if pack.id not in external_ids:
                 continue
+            if read_only:
+                # Preserve the public canonical reader and injected scanner
+                # policies. These rows are descriptive, not execution grants;
+                # canonical path/descriptor/resource admission still applies.
+                dependencies = list(pack.dependencies.get("packs", ()))
+                if any(dependency not in selected for dependency in dependencies):
+                    reason = "A declared pack dependency is unavailable. Install the dependency pack."
+                elif _has_cycle(pack.id, dependencies, selected):
+                    reason = "Pack dependencies contain a cycle. Remove a dependency edge."
+                else:
+                    continue
+                rejected[pack.id] = QuarantinedPack(
+                    pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
+                    error=reason,
+                )
+                continue
             manifest = pack.to_dict()
             manifest["schema_version"] = int(pack.schema_version)
+            record = source_records.get(pack.id)
+            candidate = selected[pack.id]
+            peers = selected
+            if record is not None and record.pack_root.resolve() == pack.root.resolve():
+                # Canonical admission already checked this revision-addressed
+                # root against its declared id. Omit the basename check and
+                # self-collision from the pure compatibility projection; all
+                # API, requirement and release-pin checks still run below.
+                candidate = {key: value for key, value in candidate.items()
+                             if key != "canonical_root"}
+                peers = {key: value for key, value in selected.items() if key != pack.id}
             result = validate_pack_compatibility(
-                mode="inventory", manifest=manifest, candidate=selected[pack.id],
-                selected=selected, core_api=PACK_API_VERSION, release_pins=release_pins,
-                python_packages=python_packages,
-                import_violations=check_pack_imports(pack.root, contract=contract, manifest=manifest),
+                mode="inventory", manifest=manifest, candidate=candidate,
+                selected=peers, core_api=PACK_API_VERSION, release_pins=release_pins,
+                python_packages=python_packages, import_violations=(),
             )
-            if not result["ok"]:
+            if record is not None and _has_cycle(pack.id, list(pack.dependencies.get("packs", ())), selected):
+                reason = "Pack dependencies contain a cycle. Remove a dependency edge."
+            elif result["ok"]:
+                continue
+            else:
                 reason = f"{result['reason']} {result['fix']}"
+            if reason:
                 rejected[pack.id] = QuarantinedPack(
                     pack_id=pack.id, pack_dir=pack.root, manifest_path=pack.manifest_path,
                     error=" ".join(reason.split()),
@@ -391,6 +553,8 @@ def pack_quarantine_section() -> dict[str, Any]:
 
 def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None) -> PackDefinition:
     """Load one admitted v2/v3 pack through the canonical parser."""
+    # Projection validation (including taxonomy) must precede resource reads.
+    load_pack_metadata(path, expected_pack_id=expected_pack_id)
     manifest_path = Path(path).expanduser().resolve()
     if manifest_path.name != "pack.yaml" or not manifest_path.is_file():
         raise PackValidationError(
@@ -402,6 +566,32 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
         )
     except CanonicalPackValidationError as exc:
         raise PackValidationError(str(exc)) from exc
+    return _pack_definition(entry, manifest_path)
+
+
+def load_pack_metadata(
+    path: str | Path, *, expected_pack_id: str | None = None,
+    validate_descriptors: bool = False,
+) -> PackDefinition:
+    """Preflight canonical metadata and paths without unrelated payload reads.
+
+    This projection is only for selection. Call ``load_pack_manifest`` before
+    publishing an executable pack; it owns full canonical resource validation.
+    ``validate_descriptors=True`` reads descriptor bytes for identity checks.
+    """
+    manifest_path = Path(path).expanduser()
+    try:
+        entry = read_normalize_validate(
+            manifest_path, source="local", resolve_resources=False,
+            expected_pack_id=expected_pack_id,
+            validate_descriptors=validate_descriptors,
+        )
+    except CanonicalPackValidationError as exc:
+        raise PackValidationError(str(exc)) from exc
+    return _pack_definition(entry, manifest_path.resolve())
+
+
+def _pack_definition(entry, manifest_path: Path) -> PackDefinition:
     definition = entry.definition
     data = definition.to_dict()
     taxonomy = pack_taxonomy_from_manifest(data, status=definition.status)
@@ -420,10 +610,7 @@ def load_pack_manifest(path: str | Path, *, expected_pack_id: str | None = None)
         schema_version=str(definition.schema_version),
         aliases=tuple(dict(alias) for alias in data["aliases"]),
         permissions=_normalize_pack_permissions(data["permissions"]),
-        extensions=_optional_pack_extensions(
-            data.get("extensions", {}), path="pack.extensions", pack_id=definition.id,
-            actions=dict(data.get("actions", {})),
-        ),
+        extensions=_optional_pack_extensions(data.get("extensions", {}), path="pack.extensions"),
         actions=dict(data.get("actions", {})),
         ui=dict(data.get("ui", {})),
         rendering=dict(data.get("rendering", {})),

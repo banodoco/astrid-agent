@@ -22,7 +22,7 @@ import stat
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -41,6 +41,7 @@ from astrid.core.pack.canonical import (
     CanonicalPackValidationError,
     ExternalPackSource,
     read_normalize_validate,
+    unsafe_pack_paths,
 )
 from astrid.core.pack.loader import discover_packs as _default_discover_packs
 
@@ -53,6 +54,8 @@ ASTRID_PACKS_PATH_ENV = "ASTRID_PACKS_PATH"
 
 # Opt-in, request-local reuse for generation input resolution. Other discovery
 # callers continue to scan normally. Never retain an inventory across requests.
+_DEFAULT_PROJECT_ROOT = REPO_ROOT
+
 _discovery_cache: ContextVar[dict | None] = ContextVar("pack_discovery_cache", default=None)
 
 
@@ -66,23 +69,35 @@ def pack_discovery_scope():
         _discovery_cache.reset(token)
 
 
-def _tree_fingerprint(root: Path) -> str:
-    """Read contents, names and file kinds, including untracked resources.
+def _tree_fingerprint(
+    root: Path, *, pack_root: bool = False, pack_collection: bool = True,
+    source_root: bool = False, expected_pack_id: str | None = None,
+    selected_roots: frozenset[Path] = frozenset(),
+) -> str:
+    """Fingerprint admitted declarations and narrowly defined admission inputs.
 
-    A stat-only key misses same-size edits with restored timestamps. Tracking
-    the entire tree also covers added manifests, alternate manifests, deleted
-    resources and new symlinks that canonical admission must reject.
+    Candidate manifests stay in the key so changes to admission, visibility,
+    or alternate-manifest presence invalidate discovery. Only canonical
+    resource handles of returned packs grant access to payload bytes. Declared
+    path metadata observes repair/rejection transitions. The canonical whole-
+    tree symlink rule contributes unsafe paths, never undeclared file bytes.
     """
+    from astrid.core.pack import loader
+    from astrid.core.pack.canonical import LEGACY_MANIFEST_NAMES
+
     digest = hashlib.sha256()
 
     def add(value: bytes) -> None:
         digest.update(len(value).to_bytes(8, "big"))
         digest.update(value)
 
-    def visit(path: Path) -> None:
+    def visit(
+        path: Path, *, content: bool = True, track_changes: bool = False, recurse: bool = True,
+    ) -> None:
         add(os.fsencode(path.relative_to(root)))
         try:
-            mode = path.lstat().st_mode
+            state = path.lstat()
+            mode = state.st_mode
         except FileNotFoundError:
             add(b"missing")
             return
@@ -90,19 +105,125 @@ def _tree_fingerprint(root: Path) -> str:
         if stat.S_ISLNK(mode):
             add(os.fsencode(os.readlink(path)))
         elif stat.S_ISDIR(mode):
+            if not recurse:
+                return
             for child in sorted(path.iterdir()):
-                visit(child)
-        elif stat.S_ISREG(mode):
+                if content and child.is_dir() and (child.name.startswith(".") or child.name == "__pycache__"):
+                    continue
+                visit(child, content=content, track_changes=track_changes)
+        elif stat.S_ISREG(mode) and content:
             with path.open("rb") as stream:
                 add(hashlib.file_digest(stream, "sha256").digest())
-        else:
+        elif stat.S_ISREG(mode) and track_changes:
+            # Full admission can reject descriptor contents. Until selected,
+            # observe edits through filesystem metadata, never their bytes.
+            add(str((state.st_ino, state.st_size, state.st_mtime_ns, state.st_ctime_ns)).encode())
+        elif not stat.S_ISREG(mode):
             raise OSError(f"cannot fingerprint non-regular pack resource: {path}")
 
-    visit(root)
+    def selected_pack(path: Path) -> CanonicalPackEntry | None:
+        # Keep every scanner-recognized manifest name in the cache identity.
+        # In particular, pack.yml appearing after a successful scan must
+        # invalidate the cache so pack_manifest_path can enforce refusal.
+        visit(path, content=False, recurse=False)
+        manifest = path / "pack.yaml"
+        visit(manifest, recurse=False)
+        for legacy_name in LEGACY_MANIFEST_NAMES:
+            # Canonical refusal depends on alternate presence, not its bytes.
+            visit(path / legacy_name, content=False, recurse=False)
+        try:
+            manifest_path = loader.pack_manifest_path(path)
+            if manifest_path is None:
+                return None
+            # Admission's whole-tree symlink rule is a safety input, not
+            # authority to hash ordinary undeclared descendants.
+            for unsafe in unsafe_pack_paths(path):
+                visit(unsafe, content=False, recurse=False)
+            entry = read_normalize_validate(
+                manifest_path, source="local", resolve_resources=False,
+                validate_resource_paths=False, expected_pack_id=expected_pack_id,
+            )
+            excluded = entry.definition.visibility == "hidden" or (
+                source_root and entry.definition.schema_version != 3
+            )
+            for declared in entry.admission_input_paths():
+                visit(declared, content=False, track_changes=not excluded, recurse=False)
+        except Exception:  # Match scanner admission; its caller owns refusal/isolation.
+            return None
+        if excluded:
+            return None
+        return entry
+
+    def payload(entry: CanonicalPackEntry) -> None:
+        if expected_pack_id is not None:
+            _verify_managed_pack(entry.root, expected_pack_id)
+        for handle in entry.resource_metadata():
+            visit(handle.resolved, content=handle.file_kind == "file", recurse=False)
+
+    def selected_collection(path: Path, *, source: bool) -> None:
+        for child in sorted(path.iterdir()):
+            if child.name.startswith(".") or child.name == "__pycache__":
+                continue
+            if child.is_symlink():
+                # The strict source scanner examines directory symlinks. Keep
+                # their lexical identity without following a target payload;
+                # scanner refusal, rather than the cache, owns the outcome.
+                if source:
+                    visit(child, content=False)
+                    # is_dir and manifest lookup are the only target state
+                    # consulted by the scanner before refusing a pack link.
+                    # Observe that metadata without traversing target content.
+                    add(str(child.is_dir()).encode())
+                    for name in ("pack.yaml", *sorted(LEGACY_MANIFEST_NAMES)):
+                        visit(child / name, content=False, recurse=False)
+                continue
+            if not child.is_dir():
+                continue
+            entry = selected_pack(child)
+            if entry is not None and entry.root in selected_roots:
+                payload(entry)
+
+    if pack_root:
+        entry = selected_pack(root)
+        if entry is not None and entry.root in selected_roots:
+            payload(entry)
+    elif pack_collection:
+        add(os.fsencode(root.relative_to(root)))
+        if root.is_dir():
+            selected_collection(root, source=source_root)
+        else:
+            visit(root, content=False, recurse=False)
+    else:
+        visit(root)
     return digest.hexdigest()
 
 
-def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan):
+def _verify_managed_pack(root: Path, pack_id: str, *, descriptors_only: bool = False) -> None:
+    from astrid.core.pack.source_setup import _selected_source_inventory
+
+    _selected_source_inventory({root: ()})
+    entry = read_normalize_validate(
+        root / "pack.yaml", source=ExternalPackSource.MANAGED,
+        expected_pack_id=pack_id, resolve_resources=False,
+    )
+    paths = (
+        tuple(item["path"] for item in entry.definition.rendering.values())
+        if descriptors_only else
+        tuple(handle.path for handle in entry.resource_metadata() if handle.file_kind == "file")
+    )
+    _selected_source_inventory({root: paths})
+
+
+def _selection_key(project_root, extra_pack_roots, managed_inventory):
+    return (
+        "selected-roots", str(Path(project_root).resolve()), tuple(extra_pack_roots),
+        os.environ.get(ASTRID_PACKS_PATH_ENV, ""), managed_inventory.identity,
+    )
+
+
+def _discovery_fingerprint(
+    project_root, extra_pack_roots, managed_inventory, scan, *, selected_roots=None,
+):
     from astrid.core.pack import loader
 
     # Preserve registry-specific scanner seams; their arbitrary inputs cannot
@@ -110,17 +231,47 @@ def _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, sc
     if scan is not loader.discover_packs:
         return None
     project_root = Path(project_root).resolve()
+    if selected_roots is None:
+        cache = _discovery_cache.get()
+        selection = (cache or {}).get(
+            _selection_key(project_root, extra_pack_roots, managed_inventory),
+        )
+        metadata = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan,
+            selected_roots=frozenset(),
+        )
+        if selection is None or selection[0] != metadata:
+            # Previous selection grants no payload access after an observed
+            # edit. Re-admit first, including descriptor content validation.
+            return metadata
+        selected_roots = selection[1]
     raw_env = os.environ.get(ASTRID_PACKS_PATH_ENV, "")
-    roots = [loader.packs_root(), Path.home() / "Astrid" / "packs", project_root / "astrid" / "packs",
-             Path(__file__).with_name("schemas")]
-    roots.extend(source.pack_root for source in managed_inventory.sources)
+    # Preserve the project local layer and default home root on this base.
+    # Local eligibility depends on all scanner-recognized manifest names.
+    roots = [
+        (loader.packs_root(), True, False, True, None),
+        (project_root / "astrid/packs/local", False, True, False, None),
+        (Path.home() / "Astrid/packs", True, False, False, None),
+        (Path(__file__).with_name("schemas"), False, False, False, None),
+    ]
+    roots.extend((source.pack_root, False, True, False, source.pack_id) for source in managed_inventory.sources)
     for raw_root in (*extra_pack_roots, *filter(None, raw_env.split(os.pathsep))):
         root = Path(raw_root).expanduser()
-        roots.append(root if root.is_absolute() else project_root / root)
+        resolved = root if root.is_absolute() else project_root / root
+        roots.append((resolved, not (resolved / "pack.yaml").is_file(), (resolved / "pack.yaml").is_file(), False, None))
     try:
-        trees = tuple((str(root), str(root.resolve()), _tree_fingerprint(root.resolve()))
-                      for root in dict.fromkeys(roots))
-    except OSError:
+        trees = tuple(
+            (
+                str(root), str(root.resolve()),
+                _tree_fingerprint(
+                    root.resolve(), pack_root=is_pack, pack_collection=is_collection,
+                    source_root=is_source, expected_pack_id=expected_pack_id,
+                    selected_roots=selected_roots,
+                ),
+            )
+            for root, is_collection, is_pack, is_source, expected_pack_id in dict.fromkeys(roots)
+        )
+    except (OSError, CanonicalPackValidationError):
         return None  # Unreadable/racing inputs use ordinary admission and its errors.
     return (str(project_root), tuple(extra_pack_roots), raw_env, managed_inventory.identity, trees)
 
@@ -135,18 +286,27 @@ def reuse_pack_projection(projection: Callable[[], Any]) -> Any:
     cache = _discovery_cache.get()
     if cache is None:
         return projection()
-    from astrid.core.pack.source_setup import active_source_inventory
+    from astrid.core.pack.source_setup import _selected_source_inventory
 
-    def fingerprint():
-        return _discovery_fingerprint(REPO_ROOT, (), active_source_inventory(), discover_packs)
+    def fingerprint(*, metadata_only=False):
+        return _discovery_fingerprint(
+            _DEFAULT_PROJECT_ROOT, (), _selected_source_inventory({}), discover_packs,
+            selected_roots=frozenset() if metadata_only else None,
+        )
 
     before = fingerprint()
     key = (projection, before)
     if before is not None and key in cache:
         return deepcopy(cache[key])
+    metadata_before = fingerprint(metadata_only=True)
     result = projection()
-    if before is not None and before == fingerprint():
-        cache[key] = deepcopy(result)
+    after = fingerprint()
+    if (after is not None and metadata_before is not None
+            and metadata_before == fingerprint(metadata_only=True)
+            and after == fingerprint()):
+        # Cold discovery publishes its selected payload key during projection.
+        # Store under that final key after observing unchanged admission inputs.
+        cache[(projection, after)] = deepcopy(result)
     return result
 
 
@@ -232,7 +392,7 @@ class CanonicalDiscoveredPack:
 
 def discover_canonical_pack_metadata(
     *,
-    project_root: str | Path = REPO_ROOT,
+    project_root: str | Path = _DEFAULT_PROJECT_ROOT,
     extra_pack_roots: tuple[str, ...] = (),
 ) -> tuple[CanonicalDiscoveredPack, ...]:
     """Discover admitted v2/v3 packs through local/managed/extra/env.
@@ -240,97 +400,27 @@ def discover_canonical_pack_metadata(
     Source packs belong to the bundled canonical catalog. External failures
     are isolated per pack, matching :func:`discover_pack_metadata`.
     """
-    project_root = Path(project_root).expanduser().resolve()
     discovered: list[CanonicalDiscoveredPack] = []
-    seen: set[tuple[str, str]] = set()
-    scanned: set[Path] = set()
-
-    try:
-        from astrid.core.pack.source_setup import active_source_inventory
-
-        managed_inventory = active_source_inventory()
-    except ImportError:
-        managed_inventory = None
-    def add(path: Path, source: ExternalPackSource, *, source_record: Any | None = None) -> None:
-        entry = read_normalize_validate(
-            path,
-            source=source,
-            expected_pack_id=source_record.pack_id if source_record is not None else None,
-        )
-        if entry.definition.visibility == "hidden":
-            return
-        key = (source.value, entry.id)
-        if key in seen:
-            raise CanonicalPackValidationError(
-                f"duplicate canonical pack ID {entry.id!r} in {source.value}"
-            )
-        seen.add(key)
-        discovered.append(
-            CanonicalDiscoveredPack(
-                entry,
-                source.value,
-                len(discovered),
-                source_revision=source_record.revision if source_record is not None else None,
-                source_manifest_sha256=source_record.manifest_sha256 if source_record is not None else None,
-                source_tree_sha256=source_record.tree_sha256 if source_record is not None else None,
-                source_inventory_identity=managed_inventory.identity
-                if source_record is not None and managed_inventory is not None
-                else None,
-            )
-        )
-
-    def scan(raw_root: str | Path, source: ExternalPackSource) -> None:
-        root = Path(raw_root).expanduser()
-        if not root.is_absolute():
-            root = project_root / root
-        root = root.resolve()
-        if root in scanned or not root.is_dir():
-            return
-        scanned.add(root)
+    for row in discover_pack_metadata(
+        project_root=project_root, extra_pack_roots=extra_pack_roots, _canonical_only=True,
+    ):
+        if row.source_kind == "source":
+            continue
         try:
-            children = (
-                (root,) if (root / "pack.yaml").is_file()
-                else sorted(root.iterdir(), key=lambda p: p.name)
+            entry = read_normalize_validate(
+                row.pack.manifest_path, source=row.source_kind,
+                expected_pack_id=row.id if row.source_kind == MANAGED_SOURCE_KIND else None,
             )
-        except OSError as exc:
-            logging.getLogger(__name__).warning(
-                "skipping unreadable %s root %s: %s", source.value, root, exc
-            )
-            return
-        for child in children:
-            manifest = child / "pack.yaml"
-            try:
-                if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
-                    continue
-                if child.name in {"local", "__pycache__"}:
-                    continue
-                if manifest.is_file():
-                    add(manifest, source)
-            except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
-                logging.getLogger(__name__).warning(
-                    "skipping %s pack %s: manifest failed to load: %s", source.value, manifest, exc
-                )
-
-    local = project_root / "astrid" / "packs" / "local" / "pack.yaml"
-    if local.is_file():
-        add(local, ExternalPackSource.LOCAL)
-    if managed_inventory is not None:
-        for source in managed_inventory.sources:
-            root = source.pack_root.resolve()
-            if root in scanned:
-                continue
-            scanned.add(root)
-            try:
-                add(root / "pack.yaml", ExternalPackSource.MANAGED, source_record=source)
-            except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
-                logging.getLogger(__name__).warning(
-                    "skipping managed pack %s: manifest failed to load: %s", root, exc
-                )
-    for root in extra_pack_roots:
-        scan(root, ExternalPackSource.EXTRA)
-    for root in os.environ.get(ASTRID_PACKS_PATH_ENV, "").split(os.pathsep):
-        if root:
-            scan(root, ExternalPackSource.ENV)
+        except Exception as exc:  # noqa: BLE001 - external roots are fault-tolerant
+            logging.getLogger(__name__).warning("skipping %s pack %s: %s", row.source_kind, row.pack_dir, exc)
+            continue
+        discovered.append(CanonicalDiscoveredPack(
+            entry, row.source_kind, len(discovered),
+            source_revision=row.source_revision,
+            source_manifest_sha256=row.source_manifest_sha256,
+            source_tree_sha256=row.source_tree_sha256,
+            source_inventory_identity=row.source_inventory_identity,
+        ))
     return tuple(discovered)
 
 
@@ -340,9 +430,10 @@ def discover_canonical_packs_ordered(**kwargs: Any) -> tuple[CanonicalPackEntry,
 
 def discover_pack_metadata(
     *,
-    project_root: str | Path = REPO_ROOT,
+    project_root: str | Path = _DEFAULT_PROJECT_ROOT,
     extra_pack_roots: tuple[str, ...] = (),
     discover_packs_fn: DiscoverPacksFn | None = None,
+    _canonical_only: bool = False,
 ) -> tuple[DiscoveredPack, ...]:
     """Return discovered packs in layered priority order.
 
@@ -391,20 +482,24 @@ def discover_pack_metadata(
     _LOGGER = logging.getLogger(__name__)
 
     try:
-        from astrid.core.pack.source_setup import active_source_inventory
+        from astrid.core.pack.source_setup import _selected_source_inventory
 
-        managed_inventory = active_source_inventory()
+        managed_inventory = _selected_source_inventory({})
     except ImportError:
         managed_inventory = None
 
-    cache = _discovery_cache.get()
+    cache = None if _canonical_only else _discovery_cache.get()
     fingerprint = None
+    metadata_fingerprint = None
     if cache is not None and managed_inventory is not None:
-        # active_source_inventory verifies revision, cleanliness, manifest and
-        # tree digests even when an admitted inventory can be reused below.
+        # Only unchanged admission metadata authorizes cached payload reads.
         fingerprint = _discovery_fingerprint(project_root, extra_pack_roots, managed_inventory, scan)
         if fingerprint is not None and fingerprint in cache:
             return deepcopy(cache[fingerprint])
+        metadata_fingerprint = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan,
+            selected_roots=frozenset(),
+        )
 
     managed_by_root = {
         source.pack_root.resolve(): source
@@ -424,7 +519,7 @@ def discover_pack_metadata(
         skips only its own pack (with a warning), so valid neighbors in the
         same root survive. Only an unreadable root is skipped wholesale.
         """
-        from astrid.core.pack import load_pack_manifest, pack_manifest_path
+        from astrid.core.pack import pack_manifest_path
 
         resolved = _resolve_pack_root(raw_root)
         # An SDK caller may pass a root explicitly while the same canonical
@@ -475,7 +570,7 @@ def discover_pack_metadata(
             if manifest_path is None:
                 continue
             try:
-                pack = load_pack_manifest(
+                pack = loader.load_pack_metadata(
                     manifest_path,
                     expected_pack_id=managed_by_root[resolved].pack_id
                     if source_kind == MANAGED_SOURCE_KIND and resolved in managed_by_root
@@ -509,7 +604,8 @@ def discover_pack_metadata(
 
     # Collect every layer before compatibility checks, so dependencies may
     # resolve across roots. Preserve the injectable scanner seam for callers.
-    source_packs = (loader.scan_packs(loader.packs_root(), strict=False, _validate=False).packs
+    source_packs = (() if _canonical_only else
+                    loader.scan_packs(loader.packs_root(), strict=False, _validate=False).packs
                     if scan is _default_discover_packs else scan())
     for pack in source_packs:
         if pack.id == "local":
@@ -545,29 +641,68 @@ def discover_pack_metadata(
                 continue
             _scan_external_root(env_root, "env")
 
-    if scan is _default_discover_packs:
-        records = {item.pack.id: managed_by_root[item.pack.root.resolve()]
-                   for item in discovered if item.pack.root.resolve() in managed_by_root}
-        admitted, _ = loader._isolate_incompatible_packs(
-            [item.pack for item in discovered], source_records=records)
-        admitted_roots = {pack.root.resolve() for pack in admitted}
+    if _canonical_only:
+        selected_ids = {item.id for item in discovered}
+        missing_dependencies = {dependency for item in discovered
+                                for dependency in item.pack.dependencies.get("packs", ())
+                                if dependency not in selected_ids}
+        if missing_dependencies:
+            source_packs = loader.scan_packs(
+                loader.packs_root(), strict=False, _validate=False,
+            ).packs
+            for pack in source_packs:
+                if pack.id in missing_dependencies:
+                    _add(pack, "source")
+
+    records = {source.pack_id: source for source in managed_by_root.values()}
+    # All layers participate in one closure before any payload acquisition.
+    if scan is _default_discover_packs and not _canonical_only:
+        admitted = loader.admit_pack_candidates(
+            [item.pack for item in discovered], source_records=records,
+        )
+        admitted_by_root = {pack.root.resolve(): pack for pack in admitted.packs}
+        admitted_roots = set(admitted_by_root)
         unique_roots: set[Path] = set()
-        discovered = [item for item in discovered
+        discovered = [replace(item, pack=admitted_by_root[item.pack.root.resolve()]) for item in discovered
                       if item.pack.root.resolve() in admitted_roots
                       and not (item.pack.root.resolve() in unique_roots
                                or unique_roots.add(item.pack.root.resolve()))]
+    else:
+        external_kinds = {MANAGED_SOURCE_KIND, "extra", "env"}
+        if _canonical_only:
+            external_kinds.add("local")
+        external = [item for item in discovered if item.source_kind in external_kinds]
+        available = tuple(item.pack for item in discovered if item not in external)
+        admitted = loader.admit_pack_candidates(
+            [item.pack for item in external], source_records=records,
+            available_packs=available, read_only=True,
+        )
+        admitted_roots = {pack.root for pack in admitted.packs}
+        admitted_by_root = {pack.root: pack for pack in admitted.packs}
+        discovered = [replace(item, pack=admitted_by_root[item.pack.root])
+                      if item in external else item for item in discovered
+                      if item not in external or item.pack.root in admitted_roots]
     result = tuple(discovered)
-    if fingerprint is not None and fingerprint == _discovery_fingerprint(
-        project_root, extra_pack_roots, managed_inventory, scan
+    if metadata_fingerprint is not None and metadata_fingerprint == _discovery_fingerprint(
+        project_root, extra_pack_roots, managed_inventory, scan, selected_roots=frozenset(),
     ):
-        # Do not publish a snapshot if its inputs changed during admission.
-        cache[fingerprint] = deepcopy(result)
+        selected_roots = frozenset(row.pack.root for row in result)
+        selected_fingerprint = _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan, selected_roots=selected_roots,
+        )
+        if selected_fingerprint is not None and selected_fingerprint == _discovery_fingerprint(
+            project_root, extra_pack_roots, managed_inventory, scan, selected_roots=selected_roots,
+        ):
+            cache[_selection_key(project_root, extra_pack_roots, managed_inventory)] = (
+                metadata_fingerprint, selected_roots,
+            )
+            cache[selected_fingerprint] = deepcopy(result)
     return result
 
 
 def discover_packs_ordered(
     *,
-    project_root: str | Path = REPO_ROOT,
+    project_root: str | Path = _DEFAULT_PROJECT_ROOT,
     extra_pack_roots: tuple[str, ...] = (),
     discover_packs_fn: DiscoverPacksFn | None = None,
 ) -> tuple[Any, ...]:
