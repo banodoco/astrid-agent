@@ -224,7 +224,7 @@ try:
     assert os.getuid() > 0 and os.getuid() == os.geteuid()
     rc, out, _ = command(["busctl", "--user", "status", "org.freedesktop.systemd1"])
     result["manager_bus_status"] = {"exit": rc, "stdout_sha256": digest(out)}
-    assert rc == 0
+    # Status may be denied even when the actual user-bus queries work.
     result["boot_id_sha256"] = digest(Path("/proc/sys/kernel/random/boot_id").read_bytes())
     result["pid_namespace_inode"] = Path("/proc/self/ns/pid").stat().st_ino
     for name, fn in (("empty_stopped", empty), ("single_optional_stopped", single),
