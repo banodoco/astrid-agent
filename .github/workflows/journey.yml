@@ -681,6 +681,7 @@ jobs:
         shell: pwsh
         run: |
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
+          # Source capture remains excluded until validated bytes are bound to upload.
           $allowedNames = @(
             'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
@@ -696,21 +697,38 @@ jobs:
           # Reserve 1 KiB per file for the stored ZIP entry and central directory.
           $estimatedArtifactBytes = 0L
           $receiptCount = 0
+          # Check every existing ancestor before enumeration. Never recurse into a link.
+          $ancestor = [IO.Path]::GetFullPath($evidenceRoot)
+          while ($ancestor) {
+            if (Test-Path -LiteralPath $ancestor) {
+              $item = Get-Item -LiteralPath $ancestor -Force
+              if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Evidence ancestry contains a reparse point'
+              }
+              if (-not $item.PSIsContainer) { throw 'Evidence ancestry is not a directory' }
+            }
+            $parent = [IO.Directory]::GetParent($ancestor)
+            $ancestor = if ($null -eq $parent) { $null } else { $parent.FullName }
+          }
           if (Test-Path -LiteralPath $evidenceRoot) {
-            foreach ($file in Get-ChildItem -LiteralPath $evidenceRoot -File -Recurse -Force) {
-              $relative = [IO.Path]::GetRelativePath($evidenceRoot, $file.FullName).Replace('\', '/')
-              if ($relative -notmatch '^(before-cleanup|after-cleanup)/([^/]+)$') {
-                throw "Unexpected staged evidence path: $relative"
+            foreach ($phase in Get-ChildItem -LiteralPath $evidenceRoot -Force) {
+              if (-not $phase.PSIsContainer -or
+                  ($phase.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                  $phase.Name -cnotin @('before-cleanup', 'after-cleanup')) {
+                throw 'Unexpected staged evidence path or reparse point'
               }
-              $name = $Matches[2]
-              if ($name -notin $allowedNames -and $name -notmatch '^runtime-service-service-.+\.log$') {
-                throw "Unexpected staged evidence filename: $relative"
+              foreach ($file in Get-ChildItem -LiteralPath $phase.FullName -Force) {
+                $relative = "$($phase.Name)/$($file.Name)"
+                if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                  throw "Staged evidence must be a regular file: $relative"
+                }
+                $name = $file.Name
+                if ($name -cnotin $allowedNames -and $name -cnotmatch '^runtime-service-service-.+\.log$') {
+                  throw "Unexpected staged evidence filename: $relative"
+                }
+                if ($name -ceq 'journey-result.json') { $receiptCount++ }
+                $estimatedArtifactBytes += [long]$file.Length + 1024
               }
-              if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "Staged evidence must be a regular file: $relative"
-              }
-              if ($name -eq 'journey-result.json') { $receiptCount++ }
-              $estimatedArtifactBytes += [long]$file.Length + 1024
             }
           }
           if ($receiptCount -eq 0) {

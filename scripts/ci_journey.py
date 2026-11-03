@@ -15,10 +15,12 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -72,6 +74,82 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "macos-bootstrap-source.json",
 })
 EVIDENCE_LOG_LIMIT = 1024 * 1024
+SOURCE_RECORD_LIMIT = 256
+SOURCE_RECORD_NAME = "macos-bootstrap-source.json"
+
+
+def _source_record(data: bytes) -> bool:
+    """Accept only canonical, path-free source observations."""
+    if len(data) > SOURCE_RECORD_LIMIT:
+        return False
+    if data == b'{"status":"unavailable"}\n':
+        return True
+    match = re.fullmatch(
+        rb'{"status":"observed","candidate_sha256":"([0-9a-f]{64})",'
+        rb'"installed_sha256":"([0-9a-f]{64})","matches":(true|false)}\n', data)
+    return bool(match and (match[1] == match[2]) == (match[3] == b"true"))
+
+
+def _safe_directory(path: Path, *, create: bool = False) -> int:
+    """Open every component without following links; unavailable platforms fail closed."""
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("safe directory handles unavailable")
+    path = Path(os.path.abspath(path))
+    fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            if create:
+                try:
+                    os.mkdir(component, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _safe_source_read(directory: Path) -> bytes:
+    fd = _safe_directory(directory)
+    try:
+        source = os.open(SOURCE_RECORD_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        try:
+            if not stat.S_ISREG(os.fstat(source).st_mode):
+                raise ValueError("source record is not regular")
+            with os.fdopen(source, "rb") as stream:
+                source = -1
+                data = stream.read(SOURCE_RECORD_LIMIT + 1)
+        finally:
+            if source != -1:
+                os.close(source)
+        if not _source_record(data):
+            raise ValueError("invalid source record")
+        return data
+    finally:
+        os.close(fd)
+
+
+def _safe_source_write(directory: Path, data: bytes) -> None:
+    if not _source_record(data):
+        raise ValueError("invalid source record")
+    fd = _safe_directory(directory, create=True)
+    name = ".source-" + uuid.uuid4().hex
+    try:
+        target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        try:
+            with os.fdopen(target, "wb") as stream:
+                stream.write(data)
+            os.replace(name, SOURCE_RECORD_NAME, src_dir_fd=fd, dst_dir_fd=fd)
+        finally:
+            try:
+                os.unlink(name, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(fd)
 
 
 def journey_os_label() -> str:
@@ -576,15 +654,35 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent.parent / "evidence-upload" / phase
     try:
-        destination.mkdir(parents=True, exist_ok=True)
+        # POSIX directory handles reject symlinked ancestors before any copy.
+        # On Windows, lstat also detects junctions and other reparse points.
+        if os.name == "posix":
+            os.close(_safe_directory(evidence))
+            os.close(_safe_directory(destination, create=True))
+        else:
+            for path in (evidence, destination):
+                for part in reversed((path.absolute(), *path.absolute().parents)):
+                    if not part.exists() and not part.is_symlink():
+                        part.mkdir()
+                    info = part.lstat()
+                    if (stat.S_ISLNK(info.st_mode) or
+                            getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or
+                            not stat.S_ISDIR(info.st_mode)):
+                        raise OSError("unsafe evidence ancestry")
     except Exception as exc:
-        print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
+        print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}",
               file=sys.stderr, flush=True)
         return
     for source in sorted(evidence.iterdir(), key=lambda path: path.name):
         name = source.name
         if (name not in JOURNEY_EVIDENCE_NAMES and
                 not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
+            continue
+        if name == SOURCE_RECORD_NAME:
+            try:
+                _safe_source_write(destination, _safe_source_read(evidence))
+            except (OSError, ValueError):
+                print("Journey source evidence staging unavailable", file=sys.stderr, flush=True)
             continue
         if not source.is_file() or source.is_symlink():
             continue
@@ -607,6 +705,14 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                        if len(path.name) >= 4 and path.name.isascii() and path.name.isdecimal())
     for index, directory in enumerate(seed_dirs, 1):
         if directory.is_symlink() or not directory.is_dir():
+            continue
+        try:
+            if os.name == "posix":
+                os.close(_safe_directory(directory))
+            elif any(getattr(part.lstat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                     for part in (directory, *directory.parents)):
+                continue
+        except OSError:
             continue
         for kind in ("input", "command", "stdout", "stderr", "exit"):
             suffix = "json" if kind in {"input", "command", "exit"} else "txt"
@@ -1142,33 +1248,49 @@ def run_seed(argv: list[str], log: Path, *, env: dict | None, timeout: int) -> s
 
 
 def capture_macos_bootstrap_source(manifest_path: Path, agent_checkout: Path, evidence: Path) -> None:
-    """Observe the bootstrap venv after update; never change the update result.
-
-    The install script creates this venv beside the selected manifest and uses
-    its Python with -I. This later import is not an in-process admission trace.
-    """
-    output = {"status": "unavailable", "observation": "post-bootstrap isolated import"}
+    """Record a bounded post-bootstrap import observation; never affect the journey."""
+    data = b'{"status":"unavailable"}\n'
     try:
         expected = agent_checkout / "astrid" / "installer" / "service.py"
-        output["candidate_source_sha256"] = hashlib.sha256(expected.read_bytes()).hexdigest()
+        with expected.open("rb") as stream:
+            candidate = hashlib.file_digest(stream, "sha256").hexdigest()
         python = manifest_path.parent / "bootstrap-venv" / "bin" / "python"
-        code = ("import hashlib,json,pathlib,astrid.installer.service as s; "
-                "p=pathlib.Path(s.__file__).resolve(); "
-                "print(json.dumps({'import_path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}))")
-        completed = subprocess.run([str(python), "-I", "-c", code], capture_output=True,
-                                   text=True, timeout=30, check=False)
-        output["import_exit"] = completed.returncode
-        if completed.returncode == 0:
-            observed = json.loads(completed.stdout)
-            output.update(status="observed", import_path=observed["import_path"],
-                          installed_source_sha256=observed["sha256"],
-                          matches_candidate=observed["sha256"] == output["candidate_source_sha256"])
-    except Exception as exc:
-        output["error_type"] = type(exc).__name__
+        code = ("import hashlib,astrid.installer.service as s; "
+                "print(hashlib.sha256(open(s.__file__,'rb').read()).hexdigest())")
+        # A bounded reader kills a flooding child; stderr is never retained.
+        proc = subprocess.Popen([str(python), "-I", "-c", code], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        chunks: list[bytes] = []
+        def read_output() -> None:
+            assert proc.stdout is not None
+            chunks.append(proc.stdout.read(66))
+            if len(chunks[0]) > 65:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        reader.join(timeout=1)
+        if reader.is_alive():
+            raise ValueError("source reader did not terminate")
+        raw = chunks[0] if chunks else b""
+        if proc.returncode == 0 and re.fullmatch(rb"[0-9a-f]{64}\n", raw):
+            observed = raw[:-1].decode("ascii")
+            same = "true" if candidate == observed else "false"
+            data = (f'{{"status":"observed","candidate_sha256":"{candidate}",'
+                    f'"installed_sha256":"{observed}","matches":{same}}}\n').encode("ascii")
+    except Exception:
+        pass
     try:
-        write_json(evidence / "macos-bootstrap-source.json", output)
-    except Exception as exc:
-        print(f"Journey source capture failed: {type(exc).__name__}", file=sys.stderr, flush=True)
+        _safe_source_write(evidence, data)
+    except Exception:
+        print("Journey source capture unavailable", file=sys.stderr, flush=True)
 
 
 def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,

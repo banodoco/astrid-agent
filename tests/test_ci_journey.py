@@ -1332,29 +1332,73 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     assert state["running"]
 
 
-def test_macos_bootstrap_source_capture_records_observed_and_expected_hash(tmp_path, monkeypatch):
+def _source_capture_fixture(tmp_path, body):
     source = tmp_path / "candidate/astrid/installer/service.py"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"candidate source\n")
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    calls = []
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        return SimpleNamespace(returncode=0, stdout=json.dumps({
-            "import_path": "/bootstrap/site-packages/astrid/installer/service.py", "sha256": digest}))
-    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    python = tmp_path / "app/public/bootstrap-venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/usr/bin/python3\n" + body, encoding="utf-8")
+    python.chmod(0o755)
     journey.capture_macos_bootstrap_source(tmp_path / "app/public/install-manifest.json",
-                                           tmp_path / "candidate", tmp_path / "evidence")
-    result = journey.read_json(tmp_path / "evidence/macos-bootstrap-source.json")
-    assert calls[0][0] == str(tmp_path / "app/public/bootstrap-venv/bin/python")
-    assert calls[0][1:3] == ["-I", "-c"]
-    assert result["status"] == "observed" and result["matches_candidate"] is True
-    assert result["installed_source_sha256"] == digest
+                                           tmp_path / "candidate", tmp_path / "run/evidence/leg")
+    return source, tmp_path / "run/evidence/leg/macos-bootstrap-source.json"
+
+
+def test_macos_bootstrap_source_capture_records_observed_and_expected_hash(tmp_path):
+    digest = hashlib.sha256(b"candidate source\n").hexdigest()
+    _, record = _source_capture_fixture(tmp_path, f"print('{digest}')\n")
+    result = journey.read_json(record)
+    assert result == {"status": "observed", "candidate_sha256": digest,
+                      "installed_sha256": digest, "matches": True}
+    journey.retain_named_evidence(record.parent, "before-cleanup")
+    assert (tmp_path / "run/evidence-upload/before-cleanup/macos-bootstrap-source.json").read_bytes() == record.read_bytes()
     assert "macos-bootstrap-source.json" in journey.JOURNEY_EVIDENCE_NAMES
+
+
+@pytest.mark.parametrize("body", [
+    "print('/private/marker')\n",
+    "print('a' * 1000000)\n",
+    "print('A' * 64)\n",
+    "import sys; print('a' * 64); sys.exit(1)\n",
+    "import sys; print('private marker', file=sys.stderr); print('a' * 63)\n",
+])
+def test_macos_bootstrap_source_capture_rejects_bad_output(tmp_path, body):
+    _, record = _source_capture_fixture(tmp_path, body)
+    assert record.read_bytes() == b'{"status":"unavailable"}\n'
 
 
 def test_macos_bootstrap_source_capture_missing_is_nonfatal(tmp_path):
     journey.capture_macos_bootstrap_source(tmp_path / "manifest.json", tmp_path / "missing", tmp_path / "evidence")
-    result = journey.read_json(tmp_path / "evidence/macos-bootstrap-source.json")
-    assert result["status"] == "unavailable"
-    assert result["error_type"] == "FileNotFoundError"
+    assert (tmp_path / "evidence/macos-bootstrap-source.json").read_bytes() == b'{"status":"unavailable"}\n'
+
+
+def test_source_staging_rejects_bad_records_and_unsafe_ancestry(tmp_path):
+    evidence = tmp_path / "run/evidence/leg"
+    evidence.mkdir(parents=True)
+    source = evidence / journey.SOURCE_RECORD_NAME
+    staged = tmp_path / "run/evidence-upload/before-cleanup" / source.name
+    for contents in (b"private marker", b"a" * 257,
+                     b'{"status":"unavailable","path":"private"}\n'):
+        source.write_bytes(contents)
+        journey.retain_named_evidence(evidence, "before-cleanup")
+        assert not staged.exists()
+    source.unlink()
+    outside = tmp_path / "outside"
+    outside.write_bytes(b'{"status":"unavailable"}\n')
+    source.symlink_to(outside)
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    assert not staged.exists()
+    source.unlink()
+    source.write_bytes(b'{"status":"unavailable"}\n')
+    phase = staged.parent
+    phase.rmdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    phase.symlink_to(target, target_is_directory=True)
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    assert not (target / source.name).exists()
+    alias = tmp_path / "alias"
+    alias.symlink_to(evidence, target_is_directory=True)
+    with pytest.raises(OSError):
+        journey._safe_source_read(alias)
