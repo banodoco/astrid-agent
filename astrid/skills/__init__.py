@@ -131,8 +131,8 @@ def _locked_operation(fn):
     return wrapped
 
 
-def _units(pack_ids, skill_names, all_skills, *, uninstalling=False, developer=False):
-    available = list_skills()
+def _units(pack_ids, skill_names, all_skills, *, uninstalling=False, developer=False, available=None):
+    available = list_skills() if available is None else available
     if developer:
         if pack_ids is not None or skill_names or all_skills:
             raise ValueError("--developer selects the developer skills; do not combine it with a pack, --skill or --all-skills")
@@ -182,13 +182,20 @@ def _ownership_sources(adapter, descriptors, current_state, state_path):
     marker = view_root / ".astrid-managed-packs"
     if not view_root.is_symlink() and marker.is_file() and not marker.is_symlink():
         declared.add(view_root.resolve())
+        packs_root = view_root / "packs"
         for pack_id in marker.read_text(encoding="utf-8").splitlines():
             # Marker entries are pack IDs, never paths supplied to traversal.
             if pack_id and Path(pack_id).name == pack_id and pack_id not in {".", ".."}:
-                declared.add((view_root / "packs" / pack_id).resolve())
+                pack_dir = packs_root / pack_id
+                if not packs_root.is_symlink() and not pack_dir.is_symlink():
+                    declared.add(pack_dir.resolve())
         for d in descriptors:
-            if d.skill and (view_root / "packs" / d.pack_id).resolve() in declared:
-                declared.add((view_root / "packs" / d.pack_id / d.skill).resolve())
+            pack_dir = packs_root / d.pack_id
+            extra_dir = pack_dir / d.skill if d.skill else None
+            if (extra_dir is not None and not extra_dir.is_symlink()
+                    and not packs_root.is_symlink() and not pack_dir.is_symlink()
+                    and pack_dir.resolve() in declared):
+                declared.add(extra_dir.resolve())
     for target in sources:
         sources[target].update(declared)
     for record in records.values():
@@ -196,7 +203,7 @@ def _ownership_sources(adapter, descriptors, current_state, state_path):
             continue
         target = Path(record["target"]).expanduser()
         evidence = sources.setdefault(target, set(declared))
-        if isinstance(record.get("source"), str):
+        if isinstance(record.get("source"), str) and Path(record["source"]).is_absolute():
             evidence.add(Path(record["source"]))
     return sources, declared
 
@@ -260,7 +267,7 @@ def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> d
                 shutil.rmtree(view_root)
             harness_report["removed"].append(str(view_root))
         if harness == "codex" and adapter.agents_md.is_file():
-            text = adapter.agents_md.read_bytes().decode("utf-8")
+            text = adapter.agents_md.read_bytes().decode("utf-8", errors="surrogateescape")
             if adapter._merge_block(text, "") != text:
                 if not dry_run:
                     adapter._rewrite_agents_md([], remove=True)
@@ -289,7 +296,9 @@ def install(
     developer: bool = False,
 ) -> dict:
     mechanism = mechanism or "symlink"
-    descriptors = _units(pack_ids, tuple(skill_names), all_skills, developer=developer)
+    available = list_skills()
+    descriptors = _units(pack_ids, tuple(skill_names), all_skills, developer=developer, available=available)
+    known_units = available + discovery.list_extras(available)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
     extras_for_digest = discovery.list_extras([d for d in descriptors if d.skill is None])
@@ -298,7 +307,7 @@ def install(
     for harness_name, adapter in targets.items():
         selected_mechanism = mechanism if harness_name == "hermes" or mechanism != "external-dir" else "symlink"
         kwargs: dict = {"force": force, "mechanism": selected_mechanism,
-                        "owned_sources": _ownership_sources(adapter, list_skills() + discovery.list_extras(list_skills()),
+                        "owned_sources": _ownership_sources(adapter, known_units,
                                                             current_state, state_path)[0]}
         if harness_name == "codex":
             kwargs["all_after_descriptors"] = list(_codex_after_set(current_state, descriptors, install=True))
@@ -361,14 +370,16 @@ def uninstall(
     all_skills: bool = False,
     developer: bool = False,
 ) -> dict:
-    descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True, developer=developer)
+    available = list_skills()
+    descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True, developer=developer, available=available)
+    known_units = available + discovery.list_extras(available)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
 
     report: dict = {"actions": []}
     for harness_name, adapter in targets.items():
         kwargs: dict = {"owned_sources": _ownership_sources(
-            adapter, list_skills() + discovery.list_extras(list_skills()), current_state, state_path)[0]}
+            adapter, known_units, current_state, state_path)[0]}
         if harness_name == "codex":
             kwargs["all_after_descriptors"] = list(_codex_after_set(current_state, descriptors, install=False))
         if dry_run:
@@ -579,6 +590,8 @@ def sync(
         )}
         for unit in all_units:
             if unit.pack_id not in composed_ids:
+                continue
+            if not dry_run and adapter.target_for(unit) in conflicts_by_target:
                 continue
             entry = _inventory(current_state, harness_name, unit)
             digest = discovery.unit_digest(unit, extras)
@@ -840,6 +853,7 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
                         descriptor.pack_id,
                         target=str(fs_record.target),
                         mechanism=fs_record.mechanism,
+                        source=str(descriptor.skill_dir.resolve()),
                     )
                     state_changed = True
                     report["healed"].append(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,11 +108,9 @@ class HarnessAdapter:
 
 
 def is_ours(link_name: str) -> bool:
-    """Return True when *link_name* is a skill entry this layer manages.
+    """Select names in the skill namespace, without claiming ownership.
 
-    "Ours" is the gateway ``astrid`` link and any ``astrid-<pack>`` per-pack
-    link. Foreign entries (e.g. a global ``image-generation`` skill) are never
-    matched, so the prune/refresh logic can refuse to touch them.
+    Replacement/removal still requires evidence about the current entry.
     """
     return link_name == "astrid" or link_name.startswith("astrid-")
 
@@ -162,7 +161,9 @@ def is_managed_copy(target: Path, source: Path | None = None) -> bool:
         marker = json.loads((target / _COPY_MARKER).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    if not isinstance(marker, dict) or not isinstance(marker.get("digest"), str):
+    if (not isinstance(marker, dict) or not isinstance(marker.get("digest"), str)
+            or not isinstance(marker.get("source"), str) or not Path(marker["source"]).is_absolute()
+            or (target / _COPY_MARKER).is_symlink()):
         return False
     if _directory_digest(target, exclude_marker=True) != marker["digest"]:
         return False
@@ -220,16 +221,18 @@ def _resolved(path: Path) -> Path | None:
 def require_owned_target(target: Path, sources: Iterable[Path] = ()) -> None:
     """Refuse replacement/removal without evidence about the current entry.
 
+    Sources are canonical paths held by records or selected declarations; do
+    not resolve them again through a subsequently retargeted source symlink.
     A record of the destination alone is insufficient after retargeting. An
     intact copy marker proves its bytes even if its source has since changed.
     """
     if target.is_symlink():
         linked = _resolved(target)
-        if linked is not None and any(linked == _resolved(source) for source in sources):
+        if linked is not None and any(linked == Path(os.path.abspath(source)) for source in sources):
             return
         raise AstridError(f"Foreign skill link preserved (target not confirmed Astrid-owned): {target}")
     if edited_managed_copy(target):
-        raise AstridError(f"Edited Astrid managed copy preserved: {target}")
+        raise AstridError(f"edited Astrid managed copy preserved: {target}")
     if is_managed_copy(target):
         return
     if target.exists():
@@ -311,4 +314,5 @@ __all__ = [
     "ours_link_to_pack_id",
     "prune_orphan_skill_links",
     "remove_symlink",
+    "require_owned_target",
 ]

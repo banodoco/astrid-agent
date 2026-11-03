@@ -25,6 +25,7 @@ from .base import (
     ensure_symlink,
     managed_target_matches,
     remove_symlink,
+    require_owned_target,
     target_mechanism,
 )
 
@@ -68,6 +69,13 @@ class HermesAdapter(HarnessAdapter):
             return steps
         for descriptor in descriptors:
             target = self.target_for(descriptor)
+            try:
+                require_owned_target(target, (descriptor.skill_dir.resolve(),
+                    *opts.get("owned_sources", {}).get(target, ())))
+            except AstridError as exc:
+                steps.append(PlannedStep(str(exc), target=target,
+                    extras={"changed": False, "conflict": str(exc)}))
+                continue
             if action == "install":
                 steps.append(PlannedStep(description=f"install {target} from {descriptor.skill_dir}", target=target))
             else:
@@ -107,7 +115,7 @@ class HermesAdapter(HarnessAdapter):
                 )
             else:
                 try:
-                    changed = remove_symlink(target, sources=(descriptor.skill_dir,
+                    changed = remove_symlink(target, sources=(descriptor.skill_dir.resolve(),
                         *opts.get("owned_sources", {}).get(target, ())))
                 except AstridError as exc:
                     steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
@@ -139,8 +147,7 @@ class HermesAdapter(HarnessAdapter):
         target = self.target_for(descriptor)
         if managed_target_matches(target, descriptor.skill_dir):
             mechanism = target_mechanism(target)
-            return InstallRecord(pack_id=descriptor.pack_id, target=target, mechanism=mechanism,
-                        owned_sources=opts.get("owned_sources", {}).get(target, ()))
+            return InstallRecord(pack_id=descriptor.pack_id, target=target, mechanism=mechanism)
         # external-dir mechanism: packs dir registered in config.yaml
         if self.config_path.exists():
             cfg = self._load_config()

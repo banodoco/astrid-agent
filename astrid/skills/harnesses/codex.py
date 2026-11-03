@@ -26,6 +26,7 @@ from .base import (
     ensure_symlink,
     managed_target_matches,
     remove_symlink,
+    require_owned_target,
     target_mechanism,
 )
 
@@ -56,6 +57,13 @@ class CodexAdapter(HarnessAdapter):
         steps: list[PlannedStep] = []
         for descriptor in descriptors:
             target = self.target_for(descriptor)
+            try:
+                require_owned_target(target, (descriptor.skill_dir.resolve(),
+                    *opts.get("owned_sources", {}).get(target, ())))
+            except AstridError as exc:
+                steps.append(PlannedStep(str(exc), target=target,
+                    extras={"changed": False, "conflict": str(exc)}))
+                continue
             if action == "install":
                 steps.append(PlannedStep(description=f"install {target} from {descriptor.skill_dir}", target=target))
             else:
@@ -86,7 +94,7 @@ class CodexAdapter(HarnessAdapter):
                 )
             else:
                 try:
-                    changed = remove_symlink(target, sources=(descriptor.skill_dir,
+                    changed = remove_symlink(target, sources=(descriptor.skill_dir.resolve(),
                         *opts.get("owned_sources", {}).get(target, ())))
                 except AstridError as exc:
                     if action == "uninstall":
@@ -137,12 +145,12 @@ class CodexAdapter(HarnessAdapter):
 
     def _rewrite_agents_md(self, descriptors: list[SkillDescriptor], *, remove: bool = False) -> bool:
         block = "" if remove else self._render_block(descriptors)
-        existing = self.agents_md.read_bytes().decode("utf-8") if self.agents_md.exists() else ""
+        existing = self.agents_md.read_bytes().decode("utf-8", errors="surrogateescape") if self.agents_md.exists() else ""
         updated = self._merge_block(existing, block)
         if updated == existing:
             return False
         self.agents_md.parent.mkdir(parents=True, exist_ok=True)
-        self.agents_md.write_bytes(updated.encode("utf-8"))
+        self.agents_md.write_bytes(updated.encode("utf-8", errors="surrogateescape"))
         return True
 
     def _render_block(self, descriptors: list[SkillDescriptor]) -> str:

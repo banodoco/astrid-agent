@@ -15,6 +15,7 @@ from .base import (
     ensure_symlink,
     managed_target_matches,
     remove_symlink,
+    require_owned_target,
 )
 
 
@@ -38,6 +39,13 @@ class ClaudeAdapter(HarnessAdapter):
         steps: list[PlannedStep] = []
         for descriptor in descriptors:
             target = self.target_for(descriptor)
+            try:
+                require_owned_target(target, (descriptor.skill_dir.resolve(),
+                    *opts.get("owned_sources", {}).get(target, ())))
+            except AstridError as exc:
+                steps.append(PlannedStep(str(exc), target=target,
+                    extras={"changed": False, "conflict": str(exc)}))
+                continue
             if action == "install":
                 steps.append(
                     PlannedStep(
@@ -70,7 +78,7 @@ class ClaudeAdapter(HarnessAdapter):
                 )
             else:
                 try:
-                    changed = remove_symlink(target, sources=(descriptor.skill_dir,
+                    changed = remove_symlink(target, sources=(descriptor.skill_dir.resolve(),
                         *opts.get("owned_sources", {}).get(target, ())))
                 except AstridError as exc:
                     steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))

@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+import pytest
 import yaml
 
 from astrid import skills
@@ -874,7 +875,6 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
 
 
 # R1-X1: exercise the real adapters and public compositions at each boundary.
-import pytest
 
 _ADAPTER_TYPES = (ClaudeAdapter, CodexAdapter, HermesAdapter)
 
@@ -893,6 +893,8 @@ def test_replacement_and_uninstall_preserve_foreign_links(tmp_path, adapter_type
     target.parent.mkdir(parents=True)
     target.symlink_to(foreign)
     for action in ("install", "uninstall"):
+        planned = adapter.plan(action, [descriptor], mechanism=mechanism, force=True)
+        assert any(step.target == target and step.extras.get("conflict") for step in planned)
         steps = adapter.apply(action, [descriptor], mechanism=mechanism, force=True)
         assert any(step.target == target and step.extras.get("conflict") for step in steps)
         assert target.is_symlink() and target.readlink() == foreign
@@ -912,7 +914,7 @@ def test_adapter_uninstall_reports_copy_outcome(tmp_path, adapter_type, edited):
     removal = next(step for step in steps if step.target == target)
     if edited:
         assert removal.extras.get("conflict")
-        assert "Edited" in removal.description
+        assert "edited" in removal.description
         assert (target / "SKILL.md").read_bytes() == b"my edited copy\r\n"
     else:
         assert removal.extras["changed"] and not target.exists()
@@ -1014,23 +1016,24 @@ def test_orphan_link_ownership_requires_exact_recorded_source(tmp_path, boundary
 
 @pytest.mark.parametrize("boundary", ["off", "sync"])
 @pytest.mark.parametrize("retargeted", [False, True])
-def test_vanished_source_record_removes_only_unchanged_broken_link(tmp_path, boundary, retargeted):
+def test_vanished_source_record_removes_only_unchanged_broken_link(tmp_path, monkeypatch, boundary, retargeted):
     fx = _Tmp()
     try:
-        core = next(d for d in _descriptors() if d.pack_id == "_core")
-        vanished = _write_fake_descriptor(tmp_path, "vanished")
-        with mock.patch("astrid.skills.list_skills", return_value=[core, vanished]):
-            skills.install(["vanished"], ["claude"], state_path=fx.state_path)
+        # Discover a real declared external pack through the public source edge.
+        source_root = tmp_path / "external-packs"
+        shutil.copytree(Path(__file__).resolve().parents[1] / "examples/packs/minimal", source_root / "minimal")
+        monkeypatch.setenv("ASTRID_PACKS_PATH", str(source_root))
+        vanished = next(d for d in skills.list_skills() if d.pack_id == "minimal")
+        skills.install([vanished.pack_id], ["claude"], state_path=fx.state_path)
         target = ClaudeAdapter().target_for(vanished)
         if retargeted:
             target.unlink()
-            target.symlink_to(tmp_path / "unknown/astrid/vanished/skill")
+            target.symlink_to(tmp_path / "unknown/astrid/minimal/docs")
         shutil.rmtree(vanished.skill_dir)
-        with mock.patch("astrid.skills.list_skills", return_value=[core]):
-            report = (skills.disable_owned(state_path=fx.state_path) if boundary == "off" else
-                      skills.sync(harness_names=["claude"], state_path=fx.state_path))
+        report = (skills.disable_owned(state_path=fx.state_path) if boundary == "off" else
+                  skills.sync(harness_names=["claude"], state_path=fx.state_path))
         assert target.is_symlink() is retargeted
-        assert ("vanished" in state.load(fx.state_path)["installs"]["claude"]) is retargeted
+        assert (vanished.pack_id in state.load(fx.state_path)["installs"]["claude"]) is retargeted
         assert bool(report.get("conflicts")) is retargeted
     finally:
         fx.close()
@@ -1042,7 +1045,7 @@ def test_codex_changes_only_bytes_within_fence(boundary):
     try:
         adapter = CodexAdapter()
         descriptors = _descriptors()[:1]
-        before = b"# user\r\n\r\ntrailing spaces  \r\n\n\n"
+        before = b"# user\xff\r\n\r\ntrailing spaces  \r\n\n\n"
         after = b"\r\n\r\n\n  after  \r\n"
         adapter.agents_md.write_bytes(before + BEGIN_MARKER.encode() + b"\nold\n" + END_MARKER.encode() + after)
         if boundary == "off":
@@ -1095,3 +1098,34 @@ def test_force_preserves_ordinary_foreign_entry(tmp_path, entry_kind, mechanism)
     steps = adapter.apply("install", [descriptor], force=True, mechanism=mechanism)
     assert any(step.extras.get("conflict") for step in steps)
     assert protected.read_bytes() == b"user bytes\r\n"
+
+
+@pytest.mark.parametrize("boundary", ["off", "sync"])
+def test_recorded_source_is_not_re_resolved_through_later_foreign_symlink(tmp_path, boundary):
+    fx = _Tmp()
+    try:
+        original_source = tmp_path / "original-source"
+        original_source.mkdir()
+        target = fx.home / ".claude/skills/astrid-vanished"
+        target.parent.mkdir()
+        target.symlink_to(original_source)
+        data = state.load(fx.state_path)
+        data["installs"]["claude"]["vanished"] = {
+            "target": str(target), "mechanism": "symlink", "source": str(original_source)}
+        state.save(data, fx.state_path)
+        foreign = tmp_path / "foreign/astrid/notes"
+        foreign.mkdir(parents=True)
+        (foreign / "note").write_bytes(b"keep these bytes")
+        original_source.rmdir()
+        original_source.symlink_to(foreign)
+        target.unlink()
+        target.symlink_to(foreign)
+        report = (skills.disable_owned(state_path=fx.state_path) if boundary == "off" else
+                  skills.sync(harness_names=["claude"], state_path=fx.state_path))
+        assert target.is_symlink() and target.readlink() == foreign
+        assert original_source.is_symlink() and original_source.readlink() == foreign
+        assert (foreign / "note").read_bytes() == b"keep these bytes"
+        assert "vanished" in state.load(fx.state_path)["installs"]["claude"]
+        assert any(row["path"] == str(target) for row in report["conflicts"])
+    finally:
+        fx.close()
