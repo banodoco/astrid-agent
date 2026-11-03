@@ -280,6 +280,29 @@ def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypat
     assert result["status"] == "pass"
 
 
+@pytest.mark.parametrize("job_id,shell", [
+    ("pinokio-fully-local-linux", "sh"),
+    ("pinokio-fully-local-windows", "powershell.exe"),
+])
+def test_fully_local_rows_fail_closed_before_direct_or_backend_lifecycle(tmp_path, monkeypatch, job_id, shell):
+    args = argparse.Namespace(leg="fresh-install", shell=shell, mode="pinokio-fully-local",
+                              job_id=job_id, source_override=False)
+    def unexpected(*unused, **kwargs):
+        pytest.fail("fully-local row must not fall back to another lifecycle")
+    monkeypatch.setattr(journey, "bootstrap", unexpected)
+    monkeypatch.setattr(journey, "execute_pinokio_backend", unexpected)
+    evidence = tmp_path / "evidence"
+    with pytest.raises(RuntimeError, match="requires its dedicated lifecycle adapter"):
+        journey._execute_owned(args, tmp_path / "program", tmp_path / "data", evidence,
+                               SimpleNamespace(pid=123), "birth")
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["job_id"] == job_id
+    assert receipt["mode"] == "pinokio-fully-local"
+    assert receipt["status"] == "fail"
+    assert receipt["installed_tuple"] is None
+    assert set(receipt["checks"].values()) == {"not-run"}
+
+
 def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
     assert workflow.count("repository: banodoco/astrid-app") == 4
