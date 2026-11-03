@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from importlib import metadata as importlib_metadata
 import logging
 import os
+from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +16,13 @@ from astrid.core.pack._common import (
     PackValidationError,
     _optional_string,
 )
-from astrid.core.pack.definition import PackDefinition
 from astrid.core.pack.canonical import (
-    CanonicalPackValidationError,
     LEGACY_MANIFEST_NAMES,
+    CanonicalPackValidationError,
     canonical_manifest_path,
     validate_canonical_pack,
 )
+from astrid.core.pack.definition import PackDefinition
 from astrid.core.pack.permissions import (
     _normalize_pack_permissions,
     _optional_pack_extensions,
@@ -120,6 +120,7 @@ def scan_packs(
     """
     if root is None:
         from astrid.core.pack.source_setup import active_source_inventory
+
         inventory = active_source_inventory()
         sources = inventory.sources if inventory is not None else ()
         roots = (*_default_pack_roots(), *(source.pack_root for source in sources))
@@ -127,6 +128,16 @@ def scan_packs(
                                required_pack_ids=required_pack_ids, _validate=_validate,
                                source_records={source.pack_id: source for source in sources})
     source_root = Path(root)
+    from astrid.core.pack.transaction import group_read_lock
+
+    with group_read_lock(source_root):
+        return _scan_packs_locked(source_root, include_hidden=include_hidden,
+                                  strict=strict, required_pack_ids=required_pack_ids,
+                                  _validate=_validate)
+
+
+def _scan_packs_locked(source_root: Path, *, include_hidden: bool, strict: bool,
+                       required_pack_ids: frozenset[str], _validate: bool) -> PackScan:
     if not source_root.is_dir():
         return PackScan((), ())
     packs: list[PackDefinition] = []
