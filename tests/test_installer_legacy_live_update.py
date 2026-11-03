@@ -1,5 +1,6 @@
 """The frozen release-0 exception is confined to the live update gates."""
 import copy
+import io
 import json
 import shutil
 from pathlib import Path
@@ -51,6 +52,117 @@ def gate(root, data):
     backend = Backend(root, root / "install.log", root / "uv", process_control="strict")
     assert backend.source_checkout_ownership(data, current(root)) is False
     return backend
+
+
+def _identityless_door_backend(root, data, health, discovery, monkeypatch):
+    """Serve one authenticated-looking legacy door without a live socket."""
+    version = current(root)
+    assert version is not None
+    version.env["ASTRID_RUNTIME_DOOR_PORT"] = "1234"
+    realm = "legacy-rollback-realm"
+    discovery.update({
+        "door_endpoint": "http://127.0.0.1:1234",
+        "active_realm": realm,
+    })
+    write_json(data / "runtime/discovery.json", discovery)
+    health["services"] = [{"name": "pack-host", "state": "running"}]
+    write_json(data / "runtime/generic-host.ready.json", {})
+    status = {
+        "discovery": {"runtime_instance_id": discovery["runtime_instance_id"]},
+        "support": {"pid_alive": True},
+    }
+
+    class Door:
+        def open(self, request, *, timeout):
+            value = health if request.full_url.endswith("/health") else {"realm_id": realm}
+            return io.BytesIO(json.dumps(value).encode("utf-8"))
+
+    backend = Backend(root, root / "install.log", root / "uv", process_control="strict")
+    monkeypatch.setattr(backend, "runtime", lambda *_args, **_kwargs: status)
+    monkeypatch.setattr("astrid.installer.backend.urllib.request.build_opener", lambda *_args: Door())
+    return backend, version, realm
+
+
+def _one_verify_attempt(monkeypatch):
+    moments = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr("astrid.installer.backend.time.monotonic", lambda: next(moments))
+    monkeypatch.setattr("astrid.installer.backend.time.sleep", lambda _seconds: None)
+
+
+def test_backend_verify_accepts_admitted_identityless_direct_r0_after_rollback(legacy, monkeypatch):
+    root, data, health, discovery, _ = legacy
+    old = current(root)
+    assert old is not None
+    candidate = Version(root / "versions/candidate", root / "candidate-python", root / "candidate-profile", {}, 1)
+    candidate.root.mkdir()
+    # Model the terminal rollback selection: only the restored R0 version is
+    # current when its browser door is verified.
+    (root / "current").write_text(candidate.root.name)
+    (root / "current").write_text(old.root.name)
+    admitted = []
+    real_admitted = legacy_identity.admitted
+
+    def admit(*args, **kwargs):
+        result = real_admitted(*args, **kwargs)
+        admitted.append(result)
+        return result
+
+    monkeypatch.setattr(legacy_identity, "admitted", admit)
+    backend, version, realm = _identityless_door_backend(root, data, health, discovery, monkeypatch)
+
+    backend.verify(version, data, realm, timeout=1)
+
+    assert admitted == [True]
+
+
+def test_backend_verify_identityless_r0_requires_predecessor_admission(legacy, monkeypatch):
+    root, data, health, discovery, _ = legacy
+    backend, version, realm = _identityless_door_backend(root, data, health, discovery, monkeypatch)
+    monkeypatch.setattr(legacy_identity, "admitted", lambda *_args, **_kwargs: False)
+    _one_verify_attempt(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="browser door"):
+        backend.verify(version, data, realm, timeout=1)
+
+
+@pytest.mark.parametrize("change", [
+    "explicit_null", "partial_identity", "mismatched_identity", "altered_predecessor", "foreign_manager",
+])
+def test_backend_verify_refuses_identityless_r0_without_exact_predecessor_provenance(legacy, monkeypatch, change):
+    root, data, health, discovery, _ = legacy
+    expected_admission_calls = 0
+    if change == "explicit_null":
+        health["identity"] = None
+    elif change == "partial_identity":
+        discovery["identity"] = {"release": 0}
+    elif change == "mismatched_identity":
+        health["identity"] = {"release": 0, "managed_by": "pinokio"}
+    elif change == "altered_predecessor":
+        health["schema_digest"] = "sha256:altered"
+        expected_admission_calls = 1
+    else:
+        write_json(root / "install.json", {
+            "owner": "haus.astrid.runtime", "managed_by": "pinokio", "data_root": str(data),
+        })
+        expected_admission_calls = 1
+    admitted = []
+    real_admitted = legacy_identity.admitted
+
+    def admit(*args, **kwargs):
+        result = real_admitted(*args, **kwargs)
+        admitted.append(result)
+        return result
+
+    monkeypatch.setattr(legacy_identity, "admitted", admit)
+    backend, version, realm = _identityless_door_backend(
+        root, data, health, discovery, monkeypatch,
+    )
+    _one_verify_attempt(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="browser door"):
+        backend.verify(version, data, realm, timeout=1)
+
+    assert admitted == [False] * expected_admission_calls
 
 
 @pytest.mark.parametrize("system,service_name", [("linux", "[Service]"), ("darwin", "<plist"), ("win32", "<Task")])
