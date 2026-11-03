@@ -49,6 +49,14 @@ with open(sys.argv[1], 'a+b') as f:
 def test_capture_unavailable_and_record_failure_do_not_raise(tmp_path):
     assert linux_lock_capture.capture(tmp_path / "missing")["path"] == "unavailable"
     linux_lock_capture.record(tmp_path / "missing", tmp_path / "no-dir" / "log", lambda _: None)
+    lock = tmp_path / "private-lock-name"
+    lock.write_text("secret contents")
+    log = tmp_path / "log"
+    protected = []
+    linux_lock_capture.record(lock, log, lambda fd: protected.append(fd))
+    text = log.read_text()
+    assert protected and "secret contents" not in text and str(lock) not in text
+    assert json.loads(text.removeprefix("installer-lock-parent "))["path"]["inode"] == lock.stat().st_ino
 
 
 def test_only_opted_in_upgrade_records_and_failure_is_nonfatal(tmp_path, monkeypatch):
