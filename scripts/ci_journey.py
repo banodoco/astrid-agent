@@ -23,6 +23,7 @@ import time
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 if __package__:
@@ -48,6 +49,7 @@ else:
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RECEIPT_MODE = ContextVar("journey_receipt_mode", default=None)
 HEALTH_URL = windows.HEALTH_URL
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 OWNER_FILE = "tst-b1-owner.json"
@@ -462,8 +464,27 @@ def read_json(path: Path) -> dict:
     return value
 
 
+def labelled_receipt(value: dict) -> dict:
+    context = RECEIPT_MODE.get()
+    if context is None:
+        return value
+    if context["proof_mode"] == "proof":
+        return {**value, "proof_mode": "proof"}
+    status = value.get("status", "not-run")
+    if status == "fail" and "diagnostic_status" in value and not any(
+        value.get(key) for key in ("error", "cleanup_error")
+    ):
+        status = value["diagnostic_status"]
+    return {**value, **context, "classification": "NON-PROOF",
+            "qualification": {"eligible": False}, "diagnostic_status": status,
+            # Existing checkers reject this even before mode enforcement lands.
+            "status": "fail"}
+
+
 def write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == "journey-result.json":
+        value = labelled_receipt(value)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -589,6 +610,9 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             continue
         target = destination / name
         try:
+            if name == "journey-result.json":
+                # Also cover adapters that write their receipt directly.
+                write_json(source, read_json(source))
             if source.suffix == ".log":
                 with source.open("rb") as stream:
                     stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
@@ -1457,6 +1481,42 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
 
 
 def execute(args: argparse.Namespace) -> dict:
+    proof_mode = getattr(args, "proof_mode", None)
+    candidate_path = getattr(args, "candidate", None)
+    candidate = read_json(candidate_path) if candidate_path and candidate_path.is_file() else {}
+    app_checkout = getattr(args, "app_checkout", None)
+    manifest_path = app_checkout / "public/install-manifest.json" if app_checkout else None
+    manifest = read_json(manifest_path) if manifest_path and manifest_path.is_file() else {}
+    if proof_mode != "diag" and any(
+        value.get("proof_mode", "proof") != "proof" or value.get("diagnostic_manifest")
+        for value in (candidate, manifest)
+    ):
+        raise ValueError("diagnostic inputs require explicit --proof-mode diag")
+    context = None
+    if proof_mode == "diag":
+        if __package__:
+            from .ci_journey_dispatch import require_diagnostic_branch
+        else:
+            from ci_journey_dispatch import require_diagnostic_branch
+        require_diagnostic_branch(os.environ.get("GITHUB_REF", ""))
+        if (not getattr(args, "job_id", None) or candidate.get("proof_mode") != "diag"
+                or manifest.get("proof_mode") != "diag" or not candidate.get("diagnostic_manifest")):
+            raise ValueError("diag requires a selected row and job-built diagnostic candidate/manifest")
+        context = {"proof_mode": "diag", "diagnostic_manifest": candidate["diagnostic_manifest"]}
+    elif proof_mode == "proof":
+        if args.source_override or getattr(args, "diagnostic_start_at", None):
+            raise ValueError("diagnostic execution cannot emit proof receipts")
+        context = {"proof_mode": "proof"}
+    elif proof_mode is not None:
+        raise ValueError("unknown proof mode")
+    token = RECEIPT_MODE.set(context)
+    try:
+        return labelled_receipt(_execute(args))
+    finally:
+        RECEIPT_MODE.reset(token)
+
+
+def _execute(args: argparse.Namespace) -> dict:
     diagnostic_start_at = getattr(args, "diagnostic_start_at", None)
     run_root, root, data, evidence = run_scope(
         args.run_root, args.root, args.data_root, args.leg,
@@ -1825,6 +1885,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-release0-to-release1", action="store_true",
                         help="admit only the exact frozen release-0 direct journey to release 1")
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: install Agent and Runtime from local Git commits")
+    parser.add_argument("--proof-mode", choices=("proof", "diag"),
+                        help="explicit receipt mode; diag never satisfies qualification")
     parser.add_argument("--agent-checkout", type=Path)
     parser.add_argument("--runtime-checkout", type=Path)
     parser.add_argument("--retain-for-next-leg", action="store_true",

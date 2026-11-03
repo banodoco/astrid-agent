@@ -29,6 +29,26 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      rows:
+        description: "all or one exact row: direct-{linux,macos,windows}, pinokio-backend-{OS}, pinokio-fully-local-{OS}; partial runs never qualify"
+        required: false
+        default: all
+        type: string
+      proof_mode:
+        description: "proof or diag; diag requires a LOOKAHEAD/KEEPGOING branch and never qualifies"
+        required: false
+        default: proof
+        type: string
+      agent_ref:
+        description: Full Agent SHA for diag in-job manifest only
+        required: false
+        default: ''
+        type: string
+      runtime_ref:
+        description: Full Runtime SHA for diag in-job manifest only
+        required: false
+        default: ''
+        type: string
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
@@ -90,6 +110,26 @@ on:
         description: JSON object keyed by linux/macos/windows containing complete explicit M4-4a executor configs
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
+        type: string
+      rows:
+        description: "all or one exact row: direct-{linux,macos,windows}, pinokio-backend-{OS}, pinokio-fully-local-{OS}; partial runs never qualify"
+        required: false
+        default: all
+        type: string
+      proof_mode:
+        description: "proof or diag; diag requires a LOOKAHEAD/KEEPGOING branch and never qualifies"
+        required: false
+        default: proof
+        type: string
+      agent_ref:
+        description: Full Agent SHA for diag in-job manifest only
+        required: false
+        default: ''
+        type: string
+      runtime_ref:
+        description: Full Runtime SHA for diag in-job manifest only
+        required: false
+        default: ''
         type: string
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
@@ -163,6 +203,8 @@ jobs:
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
       matrix: ${{ steps.config.outputs.matrix }}
+      rows: ${{ steps.config.outputs.rows }}
+      proof_mode: ${{ steps.config.outputs.proof_mode }}
     steps:
       - name: Check out reviewed Agent matrix contracts
         uses: actions/checkout@v4
@@ -252,6 +294,11 @@ jobs:
           M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
           M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
           M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
+          ROWS: ${{ inputs.rows || 'all' }}
+          PROOF_MODE: ${{ inputs.proof_mode || 'proof' }}
+          AGENT_REF: ${{ inputs.agent_ref || '' }}
+          RUNTIME_REF: ${{ inputs.runtime_ref || '' }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -260,7 +307,13 @@ jobs:
           import journey_matrix
           import journey_release2
           import journey_failure_modes
+          import ci_journey_dispatch
           candidate = json.loads(os.environ["CANDIDATE"])
+          rows = os.environ.get("ROWS", "all")
+          proof_mode = os.environ.get("PROOF_MODE", "proof")
+          candidate = ci_journey_dispatch.dispatch_candidate(
+              candidate, proof_mode=proof_mode, agent_ref=os.environ.get("AGENT_REF", ""),
+              runtime_ref=os.environ.get("RUNTIME_REF", ""), workflow_ref=os.environ.get("WORKFLOW_REF", ""), rows=rows)
           if not isinstance(candidate, dict) or any(
               not re.fullmatch(r"[0-9a-f]{40}", str(candidate.get(key, "")))
               for key in ("app", "agent", "runtime", "pinokio")
@@ -274,7 +327,7 @@ jobs:
           old_launcher = os.environ["OLD_LAUNCHER_REF"]
           if old_launcher != "bbba620e3d89eeff8021417f365e6ea584203105":
               raise SystemExit("the approved old_launcher_ref SHA is required")
-          stopped_path = os.environ["STOPPED_PATH_AGENT_REF"]
+          stopped_path = candidate["agent"] if proof_mode == "diag" else os.environ["STOPPED_PATH_AGENT_REF"]
           m4_5_only = os.environ["M4_5_ONLY"].lower() == "true"
           if stopped_path != candidate["agent"]:
               raise SystemExit("stopped_path_agent_ref must equal the frozen candidate Agent SHA")
@@ -338,10 +391,9 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if direct_only:
-              matrix = [row for row in matrix if row["mode"] == "direct"]
-          elif backend_only:
-              matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
+          matrix = ci_journey_dispatch.select_rows(
+              matrix, rows, direct_only=direct_only, backend_only=backend_only,
+              other_suites=m4_5_enabled or m4_5_only or m4_4b_enabled or m4_6_enabled)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
                                   ("old_launcher_ref", old_launcher),
@@ -357,6 +409,7 @@ jobs:
                                   ("m4_6_enabled", str(m4_6_enabled).lower()),
                                   ("m4_6_candidate", m4_6_candidate),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
+                                  ("rows", rows), ("proof_mode", proof_mode),
                                   ("matrix", {"include": matrix})):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
@@ -430,12 +483,31 @@ jobs:
             echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
             echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Freeze and validate candidate inputs
+      - name: Freeze candidate inputs
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+      - name: Build explicitly diagnostic App manifest from requested checkouts
+        if: needs.config.outputs.proof_mode == 'diag'
+        shell: bash
+        run: |
+          python agent/scripts/ci_journey_dispatch.py --proof-mode diag \
+            --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app \
+            --agent-checkout candidate-agent --runtime-checkout runtime \
+            --output "$RUNNER_TEMP/c6-diagnostic-${{ matrix.job_id }}"
+      - name: Retain diagnostic manifest binding
+        if: always() && needs.config.outputs.proof_mode == 'diag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: c6-diagnostic-${{ matrix.job_id }}
+          path: ${{ runner.temp }}/c6-diagnostic-${{ matrix.job_id }}
+          retention-days: 30
+          if-no-files-found: error
+      - name: Validate candidate inputs
+        shell: bash
+        run: |
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
       - name: Establish Linux user service manager
         if: matrix.job_id == 'direct-linux'
@@ -668,6 +740,7 @@ jobs:
             $backendConfigArgs = @('--pinokio-backend-config', $backendConfigPath)
           }
           python -u agent/scripts/ci_journey.py `
+            --proof-mode '${{ needs.config.outputs.proof_mode }}' `
             --job-id '${{ matrix.job_id }}' --mode '${{ matrix.mode }}' --leg '${{ matrix.leg }}' `
             --candidate "$env:RUNNER_TEMP/candidate.json" `
             --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
@@ -989,6 +1062,8 @@ jobs:
         shell: bash
         env:
           CONFIG_RESULT: ${{ needs.config.result }}
+          PROOF_MODE: ${{ inputs.proof_mode || 'proof' }}
+          ROWS: ${{ inputs.rows || 'all' }}
           JOURNEY_RESULT: ${{ needs.journey.result }}
           M4_5_ENABLED: ${{ needs.config.outputs.m4_5_enabled }}
           M4_5_ONLY: ${{ needs.config.outputs.m4_5_only }}
@@ -999,6 +1074,9 @@ jobs:
           RELEASE2_RESULT: ${{ needs.release2.result }}
         run: |
           test "$CONFIG_RESULT" = success
+          # Partial/diagnostic runs produce evidence only, never a green release gate.
+          test "$PROOF_MODE" = proof
+          test "$ROWS" = all
           if [ "$M4_5_ONLY" != true ]; then test "$JOURNEY_RESULT" = success; fi
           if [ "$M4_5_ENABLED" = true ]; then test "$RELEASE2_RESULT" = success; fi
           if [ "$M4_4B_ENABLED" = true ]; then test "$M4_4B_RESULT" = success; fi
