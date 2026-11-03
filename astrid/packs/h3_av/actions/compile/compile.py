@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
 import hashlib
 import json
 import shutil
@@ -43,7 +45,7 @@ def _sha256(path: Path) -> str:
 
 
 def _pack_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return pack_root("h3_av")
 
 
 def _resolved_request(preparation: Mapping[str, Any]) -> H3Request:

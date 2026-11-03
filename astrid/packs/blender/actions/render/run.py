@@ -30,8 +30,8 @@ Outputs (written under ``--out``)
 from __future__ import annotations
 
 # ruff: noqa: E402
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("blender.render")
 import argparse
@@ -48,7 +48,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli_choices import StaticChoices
+from astrid.pack_api import StaticChoices
 
 from astrid.packs.blender.render_core import (
     DEFAULT_SCENE,

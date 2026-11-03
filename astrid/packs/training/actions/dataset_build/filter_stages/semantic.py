@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from astrid.pack_api import pack_root
+
+PACK_ROOT = pack_root('training')
+
 import hashlib
 import json
 import mimetypes
@@ -17,7 +21,6 @@ from typing import Any
 import jsonschema
 
 from astrid import sdk
-from astrid.core.foundation.paths import REPO_ROOT
 
 from ..artifacts import (
     load_valid_cached_sidecar,
@@ -56,7 +59,7 @@ class _SemanticFilterBase:
     stage_order = 6
     provider_id = ""
 
-    def __init__(self, *, runner: Runner = subprocess.run, repo_root: Path = REPO_ROOT, **_: Any) -> None:
+    def __init__(self, *, runner: Runner = subprocess.run, repo_root: Path = PACK_ROOT, **_: Any) -> None:
         self._runner = runner
         self._repo_root = repo_root
 
@@ -213,7 +216,7 @@ class SemanticVideoFilter(_SemanticFilterBase):
     provider_id = "video_understand"
 
 
-def semantic_sidecar_path(item: Mapping[str, Any], config: Mapping[str, Any], *, stage_id: str, repo_root: Path = REPO_ROOT) -> Path:
+def semantic_sidecar_path(item: Mapping[str, Any], config: Mapping[str, Any], *, stage_id: str, repo_root: Path = PACK_ROOT) -> Path:
     out_dir = config.get("out_dir")
     if out_dir is None:
         out_dir = resolve_media_path(item, repo_root=repo_root, required=True).parent / stage_id

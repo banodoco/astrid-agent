@@ -9,7 +9,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from astrid.core.path_utils import has_url_scheme
+from astrid.pack_api import has_url_scheme
 
 from .config import (
     STEP_ORDER,

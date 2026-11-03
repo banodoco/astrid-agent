@@ -18,7 +18,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
+from astrid.pack_api import build_manifest, write_manifest
 
 from .motion.diffview import compare, compose_page
 

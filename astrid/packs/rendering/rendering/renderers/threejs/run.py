@@ -31,22 +31,21 @@ from typing import Any, Mapping, Sequence
 # Astrid wheel.  The command transport sanitizes PYTHONPATH, so direct script
 # execution must make the owning checkout importable before SDK imports.
 if __package__ in {None, ""}:
-    _CHECKOUT_ROOT = Path(__file__).resolve().parents[6]
+    _candidate = Path(__file__).resolve().parent
+    while _candidate.parent != _candidate and not (_candidate / "astrid").is_dir():
+        _candidate = _candidate.parent
+    if not (_candidate / "astrid").is_dir():
+        raise RuntimeError("could not locate the Astrid source package for the raw renderer")
+    _CHECKOUT_ROOT = _candidate
     if str(_CHECKOUT_ROOT) not in sys.path:
         sys.path.insert(0, str(_CHECKOUT_ROOT))
 
-from astrid.core import timeline
-from astrid.core.foundation.atomic_io import write_json_atomic
+from astrid.pack_api import save_registry
+from astrid.pack_api import write_json_atomic
 from astrid.core.rendering.artifacts import validate_render_result
 from astrid.core.rendering.assets import AssetMaterializer
-from astrid.core.rendering.contracts import (
-    SCHEMA_VERSION,
-    AudioOwnership,
-    RenderRequest,
-    RenderResult,
-    SupportReport,
-    VideoArtifact,
-)
+from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import AudioOwnership, RenderRequest, RenderResult, SupportReport, VideoArtifact
 from astrid.core.rendering.errors import (
     RendererException,
     make_renderer_error,
@@ -520,7 +519,7 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
                 TemporaryDirectory(prefix=".threejs-empty-assets-", dir=str(workspace))
             )
             assets_path = Path(empty_assets_tmp) / "assets.json"
-            timeline.save_registry({"assets": {}}, assets_path)
+            save_registry({"assets": {}}, assets_path)
         else:
             assets_path = requested_assets_path
         assets_data = _load_registry_mapping(assets_path)

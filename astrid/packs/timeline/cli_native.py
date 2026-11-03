@@ -7,7 +7,8 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from astrid.core.cli.domain_output import DomainResult, print_result
+from astrid.pack_api import print_result
+from astrid.core.cli.domain_output import DomainResult
 
 
 def _commit_conflict_message(parsed, details: Mapping[str, object]) -> str:
@@ -376,7 +377,7 @@ def show_native(parsed):
 
 
 def _trim_selector(bundle, parsed):
-    from astrid.core.timeline.cuts import bundle_fps
+    from astrid.pack_api import bundle_fps
     from astrid.core.timeline.duration import clip_timeline_duration
     from astrid.sdk.timeline._command_state import State
     from astrid.sdk.timeline_checkout import Checkout

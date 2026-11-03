@@ -33,23 +33,20 @@ from typing import Any
 # Raw commands run with a sanitized environment and their owning pack as cwd.
 # Make the checkout importable when this file is executed directly.
 if __package__ in {None, ""}:
-    _CHECKOUT_ROOT = Path(__file__).resolve().parents[6]
+    _candidate = Path(__file__).resolve().parent
+    while _candidate.parent != _candidate and not (_candidate / "astrid").is_dir():
+        _candidate = _candidate.parent
+    if not (_candidate / "astrid").is_dir():
+        raise RuntimeError("could not locate the Astrid source package for the raw compositor")
+    _CHECKOUT_ROOT = _candidate
     if str(_CHECKOUT_ROOT) not in sys.path:
         sys.path.insert(0, str(_CHECKOUT_ROOT))
 
-from astrid.core.foundation.atomic_io import write_json_atomic
+from astrid.pack_api import write_json_atomic
 from astrid.core.media import MediaProbe, MediaProbeError, ffprobe_metadata_strict
 from astrid.core.rendering.artifacts import validate_render_result
-from astrid.core.rendering.contracts import (
-    SCHEMA_VERSION,
-    AudioOwnership,
-    FinalizeRequest,
-    RenderProfile,
-    RenderRequest,
-    RenderResult,
-    SupportReport,
-    VideoArtifact,
-)
+from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import AudioOwnership, FinalizeRequest, RenderProfile, RenderRequest, RenderResult, SupportReport, VideoArtifact
 from astrid.core.rendering.errors import (
     RendererException,
     make_renderer_error,

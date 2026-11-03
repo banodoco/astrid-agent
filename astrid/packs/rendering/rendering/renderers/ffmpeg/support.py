@@ -18,12 +18,8 @@ from typing import Any
 
 from astrid.core.media import MediaProbe, ffprobe_metadata_strict
 from astrid.core.rendering.assets import AssetMaterializer
-from astrid.core.rendering.contracts import (
-    SCHEMA_VERSION,
-    AudioOwnership,
-    RenderRequest,
-    SupportReport,
-)
+from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import AudioOwnership, RenderRequest, SupportReport
 from astrid.core.rendering.profile import _mp4_time_base
 from astrid.core.theme import ThemeValidationError, builtin_theme, load_runtime_theme
 from astrid.packs.rendering.rendering.renderers.ffmpeg import audio_reactive_colour

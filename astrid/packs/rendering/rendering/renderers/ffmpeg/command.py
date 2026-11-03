@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from astrid.core import timeline
+from astrid.pack_api import load_registry
 from astrid.core.rendering.contracts import RenderRequest
 
 
@@ -187,7 +187,7 @@ def resolve_render_command_inputs(
     timeline_data = json.loads(timeline_path.read_text(encoding="utf-8"))
     if not isinstance(timeline_data, dict):
         raise ValueError("timeline must contain a JSON object")
-    registry = timeline.load_registry(assets_path)
+    registry = load_registry(assets_path)
     validate_ffmpeg_media_timeline(timeline_data)
     return RenderCommandInputs(
         timeline_path=timeline_path,

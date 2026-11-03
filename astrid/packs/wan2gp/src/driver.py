@@ -25,7 +25,7 @@ from typing import Any, Mapping
 
 from runtime_protocol.dirfd import filesystem as os
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
+from astrid.pack_api import build_manifest, write_manifest
 
 from .compiler import compile_from_inputs, portable_digest, runner_fingerprint, warmth_identity
 

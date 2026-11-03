@@ -220,7 +220,7 @@ class RenderRemotionRegistryGenerationTest(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, stdout=_lock_receipt(kwargs), stderr="")
 
             with (
-                mock.patch.object(render_remotion, "REPO_ROOT", project_root),
+                mock.patch.object(render_remotion, "CHECKOUT_ROOT", project_root),
                 mock.patch.object(
                     render_remotion,
                     "_validate_project_dir",

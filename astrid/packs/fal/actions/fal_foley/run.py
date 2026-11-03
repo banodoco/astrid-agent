@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError, _redact_credential_data, _redact_credentials
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import AstridError
+from astrid.pack_api import redact_credential_data, redact_credentials
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('fal.fal_foley')
 import argparse
@@ -14,18 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.generation.backends.fal import FalBackend
-from astrid.core.model_catalog.registry import ModelRegistry
-from astrid.core.util.http import (
-    HttpClient,
-    default_client,
-    fal_submit_and_poll,
-)
-from astrid.core.util.generation_helpers import (
-    load_provider_key,
-    write_journal_atomic,
-)
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import FalBackend
+from astrid.pack_api import ModelRegistry
+from astrid.pack_api import HttpClient, default_client, fal_submit_and_poll
+from astrid.pack_api import load_provider_key, write_journal_atomic
 
 FAL_MODEL_ID = "fal-ai/hunyuan-video-foley"
 
@@ -40,7 +34,7 @@ def _save_audio(
         audio = result["video"]
     if not audio or not audio.get("url"):
         raise AstridError(
-            f"fal foley result had no audio url: {_redact_credentials(str(_redact_credential_data(result)))[:400]}",
+            f"fal foley result had no audio url: {redact_credentials(str(redact_credential_data(result)))[:400]}",
             code="FAL_FOLEY_MISSING_AUDIO_URL",
             field="audio.url",
             fix="Retry the Foley request; if it recurs, inspect the fal response and report the missing audio URL.",

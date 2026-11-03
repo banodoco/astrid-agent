@@ -11,13 +11,15 @@ exception or non-zero exit prints the message plus the lib paths and exits 2.
 """
 from __future__ import annotations
 
+from astrid.pack_api import astrid_root
+
 import argparse
 import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
-_BOOTSTRAP = Path(__file__).resolve().parents[2] / "core" / "generation" / "_engine_python_bootstrap.py"
+_BOOTSTRAP = astrid_root() / "core" / "generation" / "_engine_python_bootstrap.py"
 
 
 def _load_engine_child_env():

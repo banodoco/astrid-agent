@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('foley.foley_map')
 import argparse
@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from astrid import sdk  # noqa: E402
-from astrid.core._shared.result_manifest import build_manifest, write_manifest  # noqa: E402
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.contracts.errors import AstridError
-from astrid.core.runtime import run_subprocess
+from astrid.pack_api import build_manifest, write_manifest  # noqa: E402
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import AstridError
+from astrid.pack_api import run_subprocess
 
 GLOBAL_QUERY = (
     "You are designing AMBIENT atmosphere audio for a video — drones, hums, "

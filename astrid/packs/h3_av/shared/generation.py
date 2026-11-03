@@ -5,6 +5,8 @@ comfy_extras/nodes_minimax_h3.py, MiniMaxH3ReferenceToVideo.
 """
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
 import hashlib
 import json
 import os
@@ -108,7 +110,7 @@ def character_swap_asset_sha256() -> str:
     if not isinstance(source_files, Mapping):
         raise ValueError("T9 candidate manifest has no source file pins")
 
-    astrid_root = Path(__file__).resolve().parents[4]
+    astrid_root = checkout_root()
     _validated_synthetic_fixture_path(substitute, source_files)
 
     for relative in (

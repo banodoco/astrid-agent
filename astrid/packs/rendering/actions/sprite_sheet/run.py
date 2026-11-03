@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("rendering.sprite_sheet")
 
@@ -19,9 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import CredentialsScope
 from astrid.packs.generation.actions.generate_image_openai.run import DEFAULT_MODEL
 
 from .png_io import (  # noqa: F401
@@ -90,11 +90,11 @@ def build(args: argparse.Namespace) -> int:
         Path(args.reference_image).expanduser().resolve() if args.reference_image else None
     )
     if reference_image is not None and not reference_image.is_file():
-        from astrid.core.contracts.die import pack_die as _die
+        from astrid.pack_api import pack_die as _die
 
         _die(f"--reference-image not found: {reference_image}")
     if input_sheet is not None and reference_image is not None:
-        from astrid.core.contracts.die import pack_die as _die
+        from astrid.pack_api import pack_die as _die
 
         _die(
             "--reference-image generates a new sheet and cannot be combined with --input-sheet post-processing"
@@ -103,13 +103,13 @@ def build(args: argparse.Namespace) -> int:
     inferred_rows = args.rows
     if input_sheet is not None:
         if not input_sheet.is_file():
-            from astrid.core.contracts.die import pack_die as _die
+            from astrid.pack_api import pack_die as _die
 
             _die(f"--input-sheet not found: {input_sheet}")
         input_width, input_height = _png_dimensions(input_sheet)
         if inferred_cols is None:
             if input_width % args.frame_width:
-                from astrid.core.contracts.die import pack_die as _die
+                from astrid.pack_api import pack_die as _die
 
                 _die(
                     "--input-sheet width is not divisible by --frame-width; pass --cols explicitly or adjust frame size"
@@ -117,7 +117,7 @@ def build(args: argparse.Namespace) -> int:
             inferred_cols = input_width // args.frame_width
         if inferred_rows is None:
             if input_height % args.frame_height:
-                from astrid.core.contracts.die import pack_die as _die
+                from astrid.pack_api import pack_die as _die
 
                 _die(
                     "--input-sheet height is not divisible by --frame-height; pass --rows explicitly or adjust frame size"
@@ -628,7 +628,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from astrid.core.contracts.die import pack_die as _die
+    from astrid.pack_api import pack_die as _die
 
     args = build_parser().parse_args(argv)
     if args.cols is not None and args.cols < 1:

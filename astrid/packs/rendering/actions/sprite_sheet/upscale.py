@@ -13,8 +13,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.pack_api import AstridError
+from astrid.pack_api import CredentialsScope
 from astrid.packs.generation.actions.generate_image_openai.run import (
     DEFAULT_MODEL,
     _die,

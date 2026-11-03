@@ -24,9 +24,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
 from astrid.core.env_vars import ASTRID_REMOTION_PROJECT_DIR
-from astrid.core.execution.executor.registry import load_default_registry
+from astrid.pack_api import load_default_registry
 from astrid.core.execution.executor.runner import ExecutorRunRequest, run_executor
-from astrid.core.media import require_runtime_materialized_file
+from astrid.pack_api import require_runtime_materialized_file
 
 PACK_ID = "rendering.render"
 FAMILY = "render_export"

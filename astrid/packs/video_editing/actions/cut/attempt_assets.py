@@ -12,9 +12,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.media import require_runtime_materialized_file
-from astrid.core.timeline import CARRY_FORWARD_SOURCE_FIELDS, AssetRegistry
+from astrid.pack_api import AstridError
+from astrid.pack_api import require_runtime_materialized_file
+from astrid.pack_api import CARRY_FORWARD_SOURCE_FIELDS, AssetRegistry
 
 _PRESERVED_REGISTRY_FIELDS = (
     "origin",

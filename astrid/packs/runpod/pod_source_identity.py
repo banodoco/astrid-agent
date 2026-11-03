@@ -2,6 +2,8 @@
 """Verify the transported source pair before workspace setup or engine downloads."""
 from __future__ import annotations
 
+from astrid.pack_api import checkout_root
+
 import hashlib
 import json
 import os
@@ -47,7 +49,7 @@ def _verify(source_root: Path, profile_path: Path) -> dict:
     lock = agent / "runtime.lock.json"
     if hashlib.sha256(lock.read_bytes()).hexdigest() != manifest["runtime_lock_sha256"]:
         raise ValueError("pod Runtime lock digest differs from transported provenance")
-    check = runpy.run_path(str(Path(__file__).resolve().parents[3] / "scripts" / "vendor_lock.py"))["check"]
+    check = runpy.run_path(str(checkout_root() / "scripts" / "vendor_lock.py"))["check"]
     if check(lock, runtime, agent):
         raise ValueError("pod Runtime producer or vendored artifacts differ from runtime.lock.json")
     identity = requested_startup_identity(source)

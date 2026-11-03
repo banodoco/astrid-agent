@@ -1220,7 +1220,7 @@ def _verify_runtime_output_binding(
     # ``other/manifest.json`` masquerade as this pack's ``manifest.json``.
     try:
         run_relative = manifest_path.resolve(strict=False).relative_to(
-            manifest_path.resolve(strict=False).parents[1]
+            manifest_path.resolve(strict=False).parent.parent
         )
         pack_prefix = run_relative.parent.as_posix()
     except (ValueError, IndexError):

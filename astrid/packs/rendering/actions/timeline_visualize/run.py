@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError, AstridValueError, render_astrid_error
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridError, AstridValueError, render_astrid_error
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint("rendering.timeline_visualize")
 
@@ -21,7 +21,7 @@ from typing import Any, Iterable, Mapping
 
 from astrid.sdk.workspace_client import page_pair
 from astrid.sdk.pagination import paged_rows
-from astrid.core.cli_choices import StaticChoices
+from astrid.pack_api import StaticChoices
 from astrid.core.timeline.events.schema import TimelineActor, TimelineEvent, with_event_hash
 from astrid.packs.rendering.actions.timeline_visualize.select import (
     KernelTimeline,
