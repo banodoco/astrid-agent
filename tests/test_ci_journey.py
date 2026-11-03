@@ -244,7 +244,8 @@ def test_diagnostic_stage_runs_only_seed_block_after_validated_checkpoint(tmp_pa
     calls = []
     monkeypatch.setattr(journey, "verify", lambda *unused, **kwargs: calls.append("verify"))
     monkeypatch.setattr(jumps, "task_after_update", lambda *unused: "task-1")
-    def workspace(_root, _version, _data, _evidence, action, request):
+    def workspace(_root, _version, _data, _evidence, action, request, observer):
+        assert observer is jumps.ci_journey_turnover.observe_turnover
         calls.append(action)
         if action == "seed":
             assert request == {"project": "tst-m4-3b-release0", "generation": "release0",
@@ -2099,6 +2100,9 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
                            candidate_agent_checkout=tmp_path / "candidate-agent")
     state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
     calls = []
+    observations = []
+    monkeypatch.setattr(jumps.ci_journey_turnover, "observe_turnover",
+                        lambda **kw: observations.append((kw["action"], kw["phase"])))
 
     def ownership(_root, _data):
         assert state["running"] and not state["local"]
@@ -2203,6 +2207,9 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     )]
     assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
                      "stop", "snapshot", "start", "task"]
+    assert observations == ([(action, phase) for action in ("seed", "snapshot")
+                             for phase in ("before-stop", "owner-absent", "after-start-request")]
+                            if manager == "task-scheduler" else [])
     assert state["running"] and not state["local"]
 
 

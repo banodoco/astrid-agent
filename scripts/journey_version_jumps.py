@@ -17,10 +17,11 @@ import time
 
 if __package__:
     from . import check_journey_evidence as evidence_gate
-    from . import ci_journey as journey, upgrade_release
+    from . import ci_journey as journey, ci_journey_turnover, upgrade_release
 else:
     import check_journey_evidence as evidence_gate
     import ci_journey as journey
+    import ci_journey_turnover
     import upgrade_release
 
 
@@ -292,10 +293,11 @@ def execute_diagnostic_release0_stage(args, root: Path, data: Path, evidence: Pa
         journey.verify("observe", journey.installation(root, data)[0], data, baseline)
         project = "tst-m4-3b-release0"
         keys = direct_workspace(root, version, data, baseline, "seed", {
-            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+            "project": project, "generation": "release0", "task_id": None, "create_project": True},
+            ci_journey_turnover.observe_turnover)
         result["checks"]["seed"] = "pass"
         keys["task_id"] = task_after_update(version, baseline / "release0-task", project)
-        direct_workspace(root, version, data, baseline, "snapshot", keys)
+        direct_workspace(root, version, data, baseline, "snapshot", keys, ci_journey_turnover.observe_turnover)
         result["checks"]["snapshot"] = "pass"
         result["status"] = "pass"
     except Exception as exc:
@@ -456,7 +458,7 @@ def start_direct_runtime(evidence: Path) -> None:
 
 
 def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
-                     action: str, request: dict) -> dict:
+                     action: str, request: dict, observe_turnover=None) -> dict:
     """Temporarily release the installed owner for the local workspace helper."""
     service = journey.assert_direct_service_ownership(root, data)
     journey.assert_one_runtime(data, evidence)
@@ -473,6 +475,18 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
         start = ["launchctl", "bootstrap", domain, service["service_path"]]
     elif manager != "task-scheduler":
         raise RuntimeError(f"Unsupported direct service manager: {manager}")
+    reference = None
+
+    def observe(phase):
+        if manager == "task-scheduler" and observe_turnover is not None:
+            try:
+                return observe_turnover(action=action, phase=phase, evidence=evidence,
+                                        data=data, reference=reference)
+            except Exception:
+                pass  # Diagnostics have no lifecycle authority.
+        return None
+
+    reference = observe("before-stop")
     try:
         if manager == "task-scheduler":
             journey.windows.EVIDENCE = evidence
@@ -486,6 +500,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             if time.monotonic() >= deadline:
                 raise RuntimeError("Installed Runtime did not stop for workspace access")
             time.sleep(1)
+        observe("owner-absent")
         return workspace(version, data, evidence, action, request, realm=realm)
     finally:
         if manager == "task-scheduler":
@@ -493,6 +508,7 @@ def direct_workspace(root: Path, version: dict, data: Path, evidence: Path,
             journey.windows.powershell("$ErrorActionPreference='Stop'; Start-ScheduledTask "
                                        "-TaskName 'Astrid Runtime' -TaskPath '\\'",
                                        f"{action}-start-service.log", show=False, timeout=30)
+            observe("after-start-request")
         else:
             journey.run(start, evidence / f"{action}-start-service.log", timeout=120)
         journey.wait_ready(data)
@@ -591,9 +607,10 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         journey.verify("observe", old_path, data, baseline)
         project = "tst-m4-3b-release0"
         keys = direct_workspace(root, old, data, baseline, "seed", {
-            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+            "project": project, "generation": "release0", "task_id": None, "create_project": True},
+            ci_journey_turnover.observe_turnover)
         keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
-        before = direct_workspace(root, old, data, baseline, "snapshot", keys)
+        before = direct_workspace(root, old, data, baseline, "snapshot", keys, ci_journey_turnover.observe_turnover)
         # The helper temporarily stops the service, so identify the actual R0
         # owner that the update must replace after the last offline observation.
         old_health = journey.healthy(data)
