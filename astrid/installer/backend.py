@@ -231,10 +231,21 @@ class Backend:
             raise BackupSpaceError("There is not enough free disk space to back up your workspace.")
         try:
             platform.private_directory(destination)
+            realm_manifest = self._backup_manifest(root)
+            support_manifest = self._backup_manifest(data, support=True)
             self._copy(root, destination / "realm")
             self._copy(data, destination / "support", support=True)
+            # Verify the retained bytes and detect changes during the copy.
+            # The lock prevents Runtime writers; this also fails closed if an
+            # outside writer or a faulty copy changes the selected data.
+            if (realm_manifest != self._backup_manifest(root)
+                    or support_manifest != self._backup_manifest(data, support=True)
+                    or realm_manifest != self._backup_manifest(destination / "realm")
+                    or support_manifest != self._backup_manifest(destination / "support")):
+                raise ValueError("The offline backup could not be verified.")
             result = {"root": str(destination), "kind": "offline"}
-            write_json(destination / "backup.json", result)
+            write_json(destination / "backup.json", {**result, "manifest": {
+                "realm": realm_manifest, "support": support_manifest}})
             return result
         except BaseException:
             if destination.exists():
@@ -834,6 +845,33 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             directories[:] = [name for name in directories if name not in ignored]
             size += sum((parent / name).stat().st_size for name in files if name not in ignored)
         return size
+
+    def _backup_manifest(self, source: Path, *, support=False) -> dict:
+        """Describe copied directories and regular files by relative path and digest."""
+        def failed(error):
+            raise error
+
+        result = {}
+        for folder, directories, files in os.walk(source, onerror=failed):
+            parent = Path(folder)
+            ignored = self._backup_ignored(source, parent, directories + files, support=support)
+            directories[:] = sorted(name for name in directories if name not in ignored)
+            for name in directories:
+                path = parent / name
+                if not stat.S_ISDIR(path.stat(follow_symlinks=False).st_mode):
+                    raise ValueError(f"Backup refused a non-directory: {path}")
+                result[path.relative_to(source).as_posix()] = {"type": "directory"}
+            for name in sorted(set(files) - ignored):
+                path = parent / name
+                if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
+                    raise ValueError(f"Backup refused a non-regular file: {path}")
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                result[path.relative_to(source).as_posix()] = {
+                    "type": "file", "sha256": digest.hexdigest()}
+        return result
 
     def _copy(self, source: Path, destination: Path, *, clone=False, support=False) -> None:
         from runtime_protocol.fsclone import clone_or_copy_file

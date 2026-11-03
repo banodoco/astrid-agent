@@ -1,5 +1,7 @@
 """Offline upgrade primitives retain the Runtime's real kernel locks."""
 
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -72,6 +74,7 @@ def test_offline_backup_requires_lock_and_never_starts_runtime(tmp_path):
     root = data / "runtime" / "realms" / "selected"
     root.mkdir(parents=True)
     (root / "realm.sqlite3").write_bytes(b"state")
+    (root / "empty").mkdir()
     write_json(data / "runtime" / "catalog.json", {"selected_realm_id": "selected"})
     backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
     backend.runtime = lambda *args, **kwargs: pytest.fail("offline backup started Runtime")
@@ -81,10 +84,35 @@ def test_offline_backup_requires_lock_and_never_starts_runtime(tmp_path):
     with backend.realm_upgrade_lock(realm, timeout=0):
         backup = backend.offline_realm_backup(data, realm)
     assert (Path(backup["root"]) / "realm" / "realm.sqlite3").read_bytes() == b"state"
+    manifest = json.loads((Path(backup["root"]) / "backup.json").read_text())["manifest"]
+    assert manifest["realm"]["realm.sqlite3"] == {
+        "type": "file", "sha256": hashlib.sha256(b"state").hexdigest()}
+    assert manifest["realm"]["empty"] == {"type": "directory"}
     assert (Path(backup["root"]) / "support" / "runtime" / "catalog.json").is_file()
     assert not (Path(backup["root"]) / "support" / "runtime" / "realms").exists()
     with pytest.raises(ValueError, match="replacement-directory custody"):
         backend.restore(None, data, realm, backup)
+
+
+def test_offline_backup_refuses_and_removes_corrupt_copy(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    root = data / "runtime" / "realms" / "selected"
+    root.mkdir(parents=True)
+    (root / "state").write_bytes(b"original")
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    copy = backend._copy
+
+    def corrupt_copy(source, destination, **kwargs):
+        copy(source, destination, **kwargs)
+        if source == root:
+            (destination / "state").write_bytes(b"corrupt")
+
+    monkeypatch.setattr(backend, "_copy", corrupt_copy)
+    with backend.realm_upgrade_lock({"realm_root": str(root)}, timeout=0):
+        with pytest.raises(ValueError, match="could not be verified"):
+            backend.offline_realm_backup(data, {"realm_root": str(root)})
+    assert list((backend.root / "backups").iterdir()) == []
+    assert (root / "state").read_bytes() == b"original"
 
 
 def test_manual_upgrade_lock_cannot_be_nested_with_runtime_owner_fence(tmp_path):
