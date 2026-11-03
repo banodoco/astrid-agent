@@ -721,10 +721,8 @@ def _capture_regular_file(source: Path, destination: Path, run_root: Path) -> di
             "artifact": destination.name}
 
 
-def capture_authentic_r0_bootstrap_failure(output: Path, evidence: Path, run_root: Path) -> dict:
-    """Retain the failed Linux R0 bootstrap log before cleanup can remove its run state."""
-    source = evidence / "release0" / "release0-bootstrap.log"
-    target = output / "failure" / source.name
+def _capture_authentic_r0_failure_file(source: Path, target: Path, run_root: Path) -> dict:
+    """Retain one bounded, sanitized regular file before R0 failure cleanup."""
     unavailable = {
         "path": None,
         "raw_sha256": None,
@@ -757,6 +755,18 @@ def capture_authentic_r0_bootstrap_failure(output: Path, evidence: Path, run_roo
     return {"status": status, "source_path": captured["path"],
             **{key: value for key, value in captured.items() if key not in {"status", "path"}},
             **unavailable}
+
+
+def capture_authentic_r0_bootstrap_failure(output: Path, evidence: Path, run_root: Path) -> dict:
+    """Retain the failed Linux R0 bootstrap log before cleanup can remove its run state."""
+    source = evidence / "release0" / "release0-bootstrap.log"
+    return _capture_authentic_r0_failure_file(source, output / "failure" / source.name, run_root)
+
+
+def capture_authentic_r0_install_log_failure(output: Path, run_root: Path) -> dict:
+    """Retain the actual run-owned Linux installer log after an R0 bootstrap failure."""
+    source = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs" / "install.log"
+    return _capture_authentic_r0_failure_file(source, output / "failure" / source.name, run_root)
 
 
 def _capture_manager_state_sanitized(destination: Path, run_root: Path, root: Path, data: Path) -> dict:
@@ -2866,6 +2876,7 @@ def execute_authentic_r0_capture(args: argparse.Namespace) -> dict:
             try:
                 result["failure_diagnostics"] = {
                     "release0_bootstrap": capture_authentic_r0_bootstrap_failure(output, evidence, run_root),
+                    "install_log": capture_authentic_r0_install_log_failure(output, run_root),
                 }
             except Exception as diagnostic_error:
                 result["failure_diagnostics"] = {

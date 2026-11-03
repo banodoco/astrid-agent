@@ -191,7 +191,8 @@ def test_authentic_r0_capture_executes_r0_seed_only_and_marks_receipt_ineligible
     assert (run_root / "capture-upload" / "capture-receipt.json").is_file()
 
 
-def _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, raw: bytes | None):
+def _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, raw: bytes | None,
+                                         install_raw: bytes | None = None):
     run_root = tmp_path / "run"
     root, data, evidence = run_root / "program", run_root / "data", run_root / "evidence"
     args = argparse.Namespace(
@@ -220,6 +221,10 @@ def _authentic_r0_bootstrap_failure_args(tmp_path, monkeypatch, raw: bytes | Non
         if raw is not None:
             source.parent.mkdir(parents=True)
             source.write_bytes(raw)
+        install_log = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs" / "install.log"
+        if install_raw is not None:
+            install_log.parent.mkdir(parents=True)
+            install_log.write_bytes(install_raw)
         raise RuntimeError("release0-bootstrap.log: exit 1")
 
     monkeypatch.setattr(jumps, "bootstrap_release0", failed_bootstrap)
@@ -280,6 +285,60 @@ def test_authentic_r0_failed_bootstrap_records_missing_log(tmp_path, monkeypatch
     assert result["cleanup"]["status"] == "pass"
     assert not root.exists() and not data.exists()
     assert not (run_root / "capture-upload" / "failure" / "release0-bootstrap.log").exists()
+
+
+def test_authentic_r0_failed_bootstrap_retains_actual_install_log_before_cleanup(tmp_path, monkeypatch):
+    install_raw = (b"prelude\n" + b"x" * (journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES + 29) +
+                   b"\nTOKEN=do-not-publish\nBearer secret-token-value\nfirst underlying installer error\n")
+    args, run_root, root, data = _authentic_r0_bootstrap_failure_args(
+        tmp_path, monkeypatch, b"release0 bootstrap failed\n", install_raw)
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    entry = result["failure_diagnostics"]["install_log"]
+    artifact = run_root / entry["path"]
+    assert entry["status"] == "captured"
+    assert entry["source_path"] == "$RUN_ROOT/home/.local/state/astrid-runtime/logs/install.log"
+    assert entry["path"] == "capture-upload/failure/install.log"
+    assert entry["raw_sha256"] == hashlib.sha256(install_raw).hexdigest()
+    assert entry["artifact_sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert entry["bytes"] == len(install_raw)
+    assert entry["captured_bytes"] == artifact.stat().st_size <= journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+    assert entry["truncated"] is True
+    retained = artifact.read_text(encoding="utf-8")
+    assert "first underlying installer error" in retained
+    assert "do-not-publish" not in retained and "secret-token-value" not in retained
+    assert result["cleanup"]["status"] == "pass"
+    assert not root.exists() and not data.exists()
+    assert artifact.is_file()
+    receipt = journey.read_json(run_root / "capture-upload" / "capture-receipt.json")
+    assert receipt["artifacts"]["failure/install.log"] == entry["artifact_sha256"]
+
+
+def test_authentic_r0_failed_bootstrap_reports_missing_actual_install_log(tmp_path, monkeypatch):
+    args, run_root, root, data = _authentic_r0_bootstrap_failure_args(
+        tmp_path, monkeypatch, b"release0 bootstrap failed\n")
+
+    result = journey.execute_authentic_r0_capture(args)
+
+    assert result["failure_diagnostics"]["install_log"] == {
+        "status": "missing",
+        "source_path": "$RUN_ROOT/home/.local/state/astrid-runtime/logs/install.log",
+        "chain": [{
+            "path": "$RUN_ROOT/home/.local/state/astrid-runtime/logs/install.log",
+            "kind": "absent",
+        }],
+        "path": None,
+        "raw_sha256": None,
+        "artifact_sha256": None,
+        "bytes": None,
+        "captured_bytes": None,
+        "truncated": False,
+        "limit_bytes": journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+    }
+    assert result["cleanup"]["status"] == "pass"
+    assert not root.exists() and not data.exists()
+    assert not (run_root / "capture-upload" / "failure" / "install.log").exists()
 
 
 def test_tst_b1_local_sources_require_explicit_test_mode(tmp_path, monkeypatch):
