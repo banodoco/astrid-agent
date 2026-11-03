@@ -265,11 +265,14 @@ def _free_port() -> int:
 def _write_preview_app(root: Path, sources: dict[str, str], node_modules: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "node_modules").symlink_to(node_modules, target_is_directory=True)
+    (root / "public").mkdir()
+    (root / "public/fonts").symlink_to(ROOT / "remotion/public/fonts", target_is_directory=True)
     source_a = root / "revision-a.tsx"
     source_b = root / "revision-b.tsx"
     source_a.write_text(sources["very"], encoding="utf-8")
     source_b.write_text(sources["next"], encoding="utf-8")
     built_in = (ROOT / "astrid/packs/astrid_motion/rendering/elements/effects/am-discord/component.tsx").as_posix()
+    fonts = (ROOT / "remotion/src/fonts.ts").as_posix()
     (root / "index.html").write_text(
         '<link rel="stylesheet" href="/style.css"><div id="root"></div>'
         '<script type="module" src="/preview.tsx"></script>',
@@ -289,6 +292,9 @@ def _write_preview_app(root: Path, sources: dict[str, str], node_modules: Path) 
         "import RevealVery from './revision-a.tsx';\n"
         "import RevealNext from './revision-b.tsx';\n"
         f"import AmDiscord from {json.dumps(built_in)};\n"
+        f"import {{getLocalFontFaceCss, LOCAL_FONT_FACES, LOCAL_FONT_GLYPH_PROBE}} from {json.dumps(fonts)};\n"
+        "const style=document.createElement('style');style.dataset.astridLocalFonts='true';style.textContent=getLocalFontFaceCss();document.head.appendChild(style);\n"
+        "window.astridFontProbe={faces:LOCAL_FONT_FACES, glyphs:LOCAL_FONT_GLYPH_PROBE};\n"
         "const params={server:'STAND-IN',channel:'# announcements',sidebar:false,badge:'',messages:[{author:'Astrid',tag:'BOT',avatarColor:'#5865F2',time:'10:00',lines:['The very next day'],appearAt:0}]};\n"
         "const Scene=()=>{useEffect(()=>{document.body.dataset.ready='1';},[]);return <AbsoluteFill>"
         "<Sequence from={0} durationInFrames={10}><RevealVery params={{}}/></Sequence>"
@@ -340,7 +346,11 @@ def _capture_vite_preview(
             "const page=await browser.newPage({viewport:{width:1920,height:1080},deviceScaleFactor:1});\n"
             "page.on('pageerror', error=>console.error(`pageerror: ${error.stack||error}`));\n"
             "page.on('console', message=>{if(message.type()==='error')console.error(`console: ${message.text()}`);});\n"
-            "for(const frame of JSON.parse(frames)){await page.goto(`${base}/?frame=${frame}`,{waitUntil:'networkidle'});await page.waitForSelector('body[data-ready=\\\"1\\\"]');await page.screenshot({path:`${out}/frame-${frame}.png`});}\n"
+            "for(const frame of JSON.parse(frames)){await page.goto(`${base}/?frame=${frame}`,{waitUntil:'networkidle'});await page.waitForSelector('body[data-ready=\\\"1\\\"]');\n"
+            "const fonts=await page.evaluate(async()=>{const {faces,glyphs}=window.astridFontProbe;const results=[];for(const face of faces){const spec=`${face.style==='italic'?'italic ':''}${face.weight} 16px \"${face.family}\"`;try{const loaded=await document.fonts.load(spec,glyphs);results.push({family:face.family,weight:face.weight,style:face.style||'normal',file:face.file,loaded:loaded.length,status:loaded.map(f=>f.status),check:document.fonts.check(spec,glyphs)});}catch(error){results.push({family:face.family,weight:face.weight,style:face.style||'normal',file:face.file,error:String(error)});}}await document.fonts.ready;return {status:document.fonts.status,glyphs,faces:results};});\n"
+            "await (await import('node:fs/promises')).writeFile(`${out}/font-checks-${frame}.json`,JSON.stringify(fonts,null,2)+'\\n');\n"
+            "if(fonts.status!=='loaded'||fonts.faces.some(f=>!f.check||!f.loaded||f.status.some(s=>s!=='loaded')))throw new Error(`Local font check failed for frame ${frame}`);\n"
+            "await page.screenshot({path:`${out}/frame-${frame}.png`});}\n"
             "await browser.close();\n",
             encoding="utf-8",
         )
