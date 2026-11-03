@@ -145,6 +145,15 @@ on:
           - direct-windows
           - direct
 
+      leg:
+        description: Diagnostic journey leg (fresh-install does not count as an upgrade receipt)
+        required: false
+        default: release0-to-release1
+        type: choice
+        options:
+          - release0-to-release1
+          - fresh-install
+
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
@@ -256,6 +265,7 @@ jobs:
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
           JOURNEY_ROW: ${{ inputs.row || '' }}
+          JOURNEY_LEG: ${{ inputs.leg || 'release0-to-release1' }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
           M4_5_ONLY: ${{ inputs.m4_5_only || false }}
@@ -305,6 +315,11 @@ jobs:
           valid_rows = {"", "direct-linux", "direct-macos", "direct-windows", "direct"}
           if journey_row not in valid_rows:
               raise SystemExit("row must be direct-linux, direct-macos, direct-windows or direct")
+          journey_leg = os.environ["JOURNEY_LEG"]
+          if journey_leg not in {"release0-to-release1", "fresh-install"}:
+              raise SystemExit("invalid journey leg")
+          if journey_leg == "fresh-install" and not journey_row:
+              raise SystemExit("fresh-install is only available for direct diagnostics")
           if journey_row:
               direct_only = True
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
@@ -356,6 +371,9 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
+          for row in matrix:
+              if row["mode"] == "direct":
+                  row["leg"] = journey_leg
           if direct_only:
               matrix = [row for row in matrix if row["mode"] == "direct"]
           elif backend_only:
