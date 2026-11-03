@@ -734,6 +734,44 @@ jobs:
           name: v03-intel-build-setup-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/v03-intel-diagnostics
           if-no-files-found: warn
+      - name: Stage macOS direct update bootstrap log
+        if: always() && matrix.job_id == 'direct-macos' && matrix.os == 'macos' && matrix.mode == 'direct' && matrix.leg == 'release0-to-release1'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import stat
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'astrid-r1-direct-macos'
+          matches = []
+          def raise_walk_error(error):
+              raise error
+          for directory, dirs, files in os.walk(root / 'evidence', onerror=raise_walk_error):
+              for name in dirs + files:
+                  if name == 'update-bootstrap.log':
+                      matches.append(Path(directory) / name)
+                      if len(matches) > 1:
+                          raise RuntimeError('Multiple update-bootstrap.log matches')
+          if len(matches) != 1:
+              raise RuntimeError('Expected exactly one update-bootstrap.log; found none')
+          source = matches[0]
+          if not stat.S_ISREG(source.lstat().st_mode):
+              raise RuntimeError(f'update-bootstrap.log is not a regular non-symlink file: {source}')
+          # Read one byte beyond the collector's 1 MiB limit; never truncate evidence.
+          with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+              if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                  raise RuntimeError(f'update-bootstrap.log is not a regular file: {source}')
+              content = stream.read(1024 * 1024 + 1)
+          if len(content) > 1024 * 1024:
+              raise RuntimeError('update-bootstrap.log exceeds the 1 MiB text-log limit')
+          destination = root / 'evidence-upload' / 'before-cleanup' / 'update-bootstrap.log'
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          if destination.is_symlink():
+              raise RuntimeError('Staged update-bootstrap.log must not be a symlink')
+          destination.write_bytes(content)
+          print(f'Staged {source} ({len(content)} bytes) at {destination}')
+          PY
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()
