@@ -7,6 +7,7 @@ from scripts import ci_stop_r25_exact as stop
 
 
 def setup_fake(monkeypatch):
+    monkeypatch.setattr(stop, 'silence_cancel', lambda: None)
     expected = {10: [1, 'Mon Nov 2 23:31:58 2026', 'a'],
                 11: [10, 'Mon Nov 2 23:32:00 2026', 'b'],
                 12: [11, 'Mon Nov 2 23:32:01 2026', 'c']}
@@ -99,3 +100,152 @@ def test_manual_workflow_embeds_exact_guard_and_no_cleanup():
     assert 'workflow_dispatch:' in workflow and 'actions/checkout' not in workflow
     source = (root / 'scripts/ci_stop_r25_exact.py').read_text()
     assert 'os.killpg' not in source and 'shutil.rmtree' not in source and '.unlink(' not in source
+
+
+def test_cancellation_while_freezing_resumes_every_persisted_intent(monkeypatch):
+    rows, sent = setup_fake(monkeypatch)
+    def signal(pid, sig):
+        sent.append((pid, sig))
+        if sig == stop.signal.SIGSTOP and pid == 11:
+            raise stop.Cancelled('fixture cancellation')
+        if sig == stop.signal.SIGSTOP: rows[pid]['state'] = 'T'
+        if sig == stop.signal.SIGCONT: rows[pid]['state'] = 'S'
+    monkeypatch.setattr(stop.os, 'kill', signal)
+    audit = {}; checkpoints = []
+    assert not stop.freeze_and_stop(audit, lambda value: checkpoints.append(json.loads(json.dumps(value))))
+    assert audit['stage'] == 'refused-pre-kill'
+    assert sent == [(10, stop.signal.SIGSTOP), (11, stop.signal.SIGSTOP),
+                    (11, stop.signal.SIGCONT), (10, stop.signal.SIGCONT)]
+    assert any(item.get('stop_intents') == [10, 11] and item['stage'] == 'freezing' for item in checkpoints)
+
+
+def test_partial_kill_recovery_only_kills_still_frozen_matching_survivors(monkeypatch):
+    rows, sent = setup_fake(monkeypatch)
+    original = json.loads(json.dumps(rows))
+    def partial(pid, sig):
+        sent.append((pid, sig))
+        if sig == stop.signal.SIGSTOP: rows[pid]['state'] = 'T'
+        elif sig == stop.signal.SIGKILL and pid == 12: rows.pop(pid)
+        elif sig == stop.signal.SIGKILL and pid == 11: raise OSError('fixture kill failure')
+    monkeypatch.setattr(stop.os, 'kill', partial)
+    audit = {'schema': 'r25-exact-stop/v2', 'runner': 'hannah-mac', 'uid': 503,
+             'guard_sha256': stop.guard_fingerprint(), 'deletion': 'none'}
+    assert not stop.freeze_and_stop(audit, lambda _: None)
+    assert audit['stage'] == 'partial-kill-review-required'
+    assert rows[10]['state'] == rows[11]['state'] == 'T'
+    monkeypatch.setattr(stop, 'descendants', lambda roots: set(roots))
+    def finish(pid, sig):
+        sent.append((pid, sig))
+        assert sig == stop.signal.SIGKILL
+        rows.pop(pid)
+    monkeypatch.setattr(stop.os, 'kill', finish)
+    assert stop.recovery(audit, lambda _: None)
+    assert audit['stage'] == 'recovered-stop' and audit['recovery_killed'] == [11, 10]
+    assert not rows
+
+
+def test_partial_recovery_refuses_identity_mismatch_without_signal(monkeypatch):
+    rows, sent = setup_fake(monkeypatch)
+    audit = {'schema': 'r25-exact-stop/v2', 'runner': 'hannah-mac', 'uid': 503,
+             'guard_sha256': stop.guard_fingerprint(), 'deletion': 'none', 'stage': 'kill-started',
+             'before': {str(pid): dict(row) for pid, row in rows.items()}, 'stop_intents': [10, 11, 12], 'frozen_pids': [10, 11, 12]}
+    for row in rows.values(): row['state'] = 'T'
+    rows[12]['start'] = 'different process'
+    with pytest.raises(RuntimeError, match='changed'):
+        stop.recovery(audit, lambda _: None)
+    assert sent == []
+
+
+def test_ps_error_is_not_treated_as_absence(monkeypatch):
+    monkeypatch.setattr(stop.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=1, stdout='', stderr='permission denied'))
+    with pytest.raises(RuntimeError, match='absence'):
+        stop.observe(10)
+
+
+def test_ps_empty_requires_esrch_for_absence(monkeypatch):
+    monkeypatch.setattr(stop.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=1, stdout='', stderr=''))
+    monkeypatch.setattr(stop.os, 'kill', lambda *a: (_ for _ in ()).throw(ProcessLookupError()))
+    assert stop.observe(10) is None
+    monkeypatch.setattr(stop.os, 'kill', lambda *a: None)
+    with pytest.raises(RuntimeError, match='exists'):
+        stop.observe(10)
+
+
+def test_concurrent_lock_is_refused(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(stop, 'UID', os.getuid())
+    fd = stop.acquire_lock(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match='active'):
+            stop.acquire_lock(tmp_path)
+    finally:
+        os.close(fd)
+
+
+def test_checkpoint_writes_durable_json_outside_runner_temp(tmp_path):
+    path = tmp_path / 'audit.json'
+    stop.checkpoint(path, {'stage': 'freezing', 'stop_intents': [10]})
+    assert json.loads(path.read_text())['stop_intents'] == [10]
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_failed_pre_kill_resume_can_be_explicitly_recovered(monkeypatch):
+    rows, sent = setup_fake(monkeypatch)
+    def interrupted(pid, sig):
+        sent.append((pid, sig))
+        if sig == stop.signal.SIGSTOP and pid == 11: raise stop.Cancelled('fixture cancellation')
+        if sig == stop.signal.SIGSTOP: rows[pid]['state'] = 'T'
+        if sig == stop.signal.SIGCONT and pid == 10: raise OSError('fixture resume failure')
+    monkeypatch.setattr(stop.os, 'kill', interrupted)
+    audit = {'schema': 'r25-exact-stop/v2', 'runner': 'hannah-mac', 'uid': 503,
+             'guard_sha256': stop.guard_fingerprint(), 'deletion': 'none'}
+    assert not stop.freeze_and_stop(audit, lambda _: None)
+    assert audit['stage'] == 'pre-kill-recovery-required'
+    def resume(pid, sig):
+        assert sig == stop.signal.SIGCONT
+        rows[pid]['state'] = 'S'
+    monkeypatch.setattr(stop.os, 'kill', resume)
+    assert stop.recovery(audit, lambda _: None)
+    assert audit['stage'] == 'recovered-pre-kill' and rows[10]['state'] == 'S'
+
+
+def test_cancel_handler_produces_catchable_interruption():
+    with pytest.raises(stop.Cancelled):
+        stop.cancel_handler(stop.signal.SIGTERM, None)
+
+
+def test_recovery_does_not_create_missing_audit_directory(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(stop, 'UID', os.getuid())
+    path = tmp_path / 'missing'
+    with pytest.raises(RuntimeError, match='absent'):
+        stop.owned_private_directory(path, create=False)
+    assert not path.exists()
+
+
+def test_partial_kill_recovery_refuses_incomplete_freeze_record(monkeypatch):
+    rows, sent = setup_fake(monkeypatch)
+    audit = {'schema': 'r25-exact-stop/v2', 'runner': 'hannah-mac', 'uid': 503,
+             'guard_sha256': stop.guard_fingerprint(), 'deletion': 'none', 'stage': 'kill-started',
+             'before': {str(pid): dict(row) for pid, row in rows.items()},
+             'stop_intents': [10, 11], 'frozen_pids': [10, 11]}
+    with pytest.raises(RuntimeError, match='fully verified'):
+        stop.recovery(audit, lambda _: None)
+    assert sent == []
+
+
+def test_interrupted_partial_recovery_keeps_durable_recovery_stage(monkeypatch):
+    rows, sent = setup_fake(monkeypatch)
+    before = {str(pid): dict(row) for pid, row in rows.items()}
+    for row in rows.values(): row['state'] = 'T'
+    audit = {'schema': 'r25-exact-stop/v2', 'runner': 'hannah-mac', 'uid': 503,
+             'guard_sha256': stop.guard_fingerprint(), 'deletion': 'none', 'stage': 'kill-started',
+             'before': before, 'stop_intents': [10, 11, 12], 'frozen_pids': [10, 11, 12]}
+    monkeypatch.setattr(stop, 'descendants', lambda roots: set(roots))
+    monkeypatch.setattr(stop.os, 'kill', lambda pid, sig: (_ for _ in ()).throw(stop.Cancelled('cancelled')))
+    saved = []
+    with pytest.raises(stop.Cancelled):
+        stop.recovery(audit, lambda value: saved.append(json.loads(json.dumps(value))))
+    assert saved[-1]['stage'] == 'recovery-killing'
+    assert saved[-1]['recovery_killed'] == []
+    assert all(row['state'] == 'T' for row in rows.values())
