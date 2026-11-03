@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - venue/M-QUAL-R-36-M46-BOUNDARY-PUSH-R1-1
+      - lane/M-QUAL/R-36-M46-USER-SERVICE-DIAG
 permissions:
   contents: read
 jobs:
@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo /usr/bin/python3 - "$RUNNER_TEMP/m46-boundary-probe/lifecycle.json" <<'PY'
-          import json, os, pwd, subprocess, sys, time
+          import json, os, pwd, subprocess, sys, tempfile, time
           from pathlib import Path
           account = pwd.getpwnam('m46candidate')
           uid, gid = account.pw_uid, account.pw_gid
@@ -125,6 +125,34 @@ jobs:
                   raise RuntimeError('synthetic service remains')
               after = call(query + ['show', 'm46-boundary.service', '-p', 'MainPID', '-p', 'ActiveState'])
               result.update(after=after, synthetic_service_lifecycle=True)
+          except Exception as exc:
+              result['error'] = f'{type(exc).__name__}: {exc}'
+              # Best effort and bounded: retain failure details before principal cleanup,
+              # without replacing the original failure or changing the lifecycle checks.
+              diagnostics = []
+              result['failure_diagnostics'] = diagnostics
+              query = ['/usr/bin/systemctl', '--user', '--machine=m46candidate@.host']
+              for argv in (
+                  query + ['show', 'm46-boundary.service', '-p', 'ActiveState', '-p', 'SubState',
+                           '-p', 'Result', '-p', 'ExecMainCode', '-p', 'ExecMainStatus',
+                           '-p', 'ExecStart', '-p', 'MainPID', '-p', 'InvocationID'],
+                  query + ['status', 'm46-boundary.service', '--no-pager', '--full', '-n', '20'],
+                  ['/usr/bin/journalctl', '-b', '--no-pager', '-n', '100', '-o', 'short-precise', f'_UID={uid}'],
+              ):
+                  row = dict(argv=argv)
+                  diagnostics.append(row)
+                  try:
+                      with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+                          p = subprocess.run(argv, stdout=out, stderr=err, timeout=10)
+                          row['inner_exit'] = p.returncode
+                          for key, stream in (('stdout', out), ('stderr', err)):
+                              stream.seek(0)
+                              data = stream.read(32769)
+                              row[key] = data[:32768].decode('utf-8', errors='replace')
+                              row[key + '_truncated'] = len(data) > 32768
+                  except Exception as capture_exc:
+                      row['capture_error'] = f'{type(capture_exc).__name__}: {capture_exc}'
+              raise
           finally:
               Path(sys.argv[1]).write_text(json.dumps(result, indent=2) + '\n')
           PY
