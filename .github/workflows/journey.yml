@@ -72,6 +72,11 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      protected_browser_enabled:
+        description: Execute and verify the two checkout-based protected App browser orders
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       candidate:
@@ -134,6 +139,11 @@ on:
         description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
         required: false
         type: string
+      protected_browser_enabled:
+        description: Execute and verify the two checkout-based protected App browser orders
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
@@ -160,6 +170,7 @@ jobs:
       m4_5_matrix: ${{ steps.config.outputs.m4_5_matrix }}
       m4_4b_enabled: ${{ steps.config.outputs.m4_4b_enabled }}
       m4_6_enabled: ${{ steps.config.outputs.m4_6_enabled }}
+      protected_browser_enabled: ${{ steps.config.outputs.protected_browser_enabled }}
       m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
       m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
       matrix: ${{ steps.config.outputs.matrix }}
@@ -251,6 +262,7 @@ jobs:
           M4_5_BOUNDARY_ARGS: ${{ inputs.m4_5_boundary_args || '[]' }}
           M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
           M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
+          PROTECTED_BROWSER_ENABLED: ${{ inputs.protected_browser_enabled || false }}
           M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
         run: |
           python3 - <<'PY'
@@ -355,6 +367,7 @@ jobs:
                                   ("m4_5_matrix", {"include": list(journey_matrix.M4_5_MATRIX)}),
                                   ("m4_4b_enabled", str(m4_4b_enabled).lower()),
                                   ("m4_6_enabled", str(m4_6_enabled).lower()),
+                                  ("protected_browser_enabled", str(os.environ.get("PROTECTED_BROWSER_ENABLED", "false").lower() == "true").lower()),
                                   ("m4_6_candidate", m4_6_candidate),
                                   ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
                                   ("matrix", {"include": matrix})):
@@ -978,10 +991,85 @@ jobs:
           path: ${{ runner.temp }}/m4-6-${{ matrix.job_id }}/output
           if-no-files-found: warn
 
+  protected_browser:
+    if: needs.config.outputs.protected_browser_enabled == 'true'
+    needs: config
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.config.outputs.driver_agent_ref }}
+          path: driver
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ fromJSON(needs.config.outputs.candidate).agent }}
+          path: candidate-agent
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
+          path: app
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ fromJSON(needs.config.outputs.candidate).runtime }}
+          path: runtime
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
+          path: pinokio
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install checkout browser dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv runtime/.venv
+          runtime/.venv/bin/python -m pip install -e ./runtime
+          python -m venv candidate-agent/.venv
+          candidate-agent/.venv/bin/python -m pip install -e ./candidate-agent
+          candidate-agent/.venv/bin/python -m pip install --no-deps -e ./runtime
+          cd app
+          npm ci --legacy-peer-deps
+          npx playwright install --with-deps chromium
+          sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Execute and verify both protected browser orders
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+          DRIVER_HEAD: ${{ needs.config.outputs.driver_agent_ref }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/protected-browser"
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/protected-browser-candidate.json"
+          python -u driver/scripts/ci_journey_browser.py --candidate "$RUNNER_TEMP/protected-browser-candidate.json" \
+            --driver driver --driver-head "$DRIVER_HEAD" --app app --agent candidate-agent \
+            --runtime runtime --pinokio pinokio --output "$RUNNER_TEMP/protected-browser"
+      - name: Retain browser reports and checkout receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: protected-browser-checkout-receipt
+          path: ${{ runner.temp }}/protected-browser
+          if-no-files-found: warn
+          retention-days: 30
+
   gate:
     name: Journey evidence (exact tuple)
     if: always()
-    needs: [config, journey, release2, m4_4b_local, failure_modes]
+    needs: [config, journey, release2, m4_4b_local, failure_modes, protected_browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -996,6 +1084,8 @@ jobs:
           M4_4B_RESULT: ${{ needs.m4_4b_local.result }}
           M4_6_ENABLED: ${{ needs.config.outputs.m4_6_enabled }}
           M4_6_RESULT: ${{ needs.failure_modes.result }}
+          PROTECTED_BROWSER_ENABLED: ${{ needs.config.outputs.protected_browser_enabled }}
+          PROTECTED_BROWSER_RESULT: ${{ needs.protected_browser.result }}
           RELEASE2_RESULT: ${{ needs.release2.result }}
         run: |
           test "$CONFIG_RESULT" = success
@@ -1003,6 +1093,7 @@ jobs:
           if [ "$M4_5_ENABLED" = true ]; then test "$RELEASE2_RESULT" = success; fi
           if [ "$M4_4B_ENABLED" = true ]; then test "$M4_4B_RESULT" = success; fi
           if [ "$M4_6_ENABLED" = true ]; then test "$M4_6_RESULT" = success; fi
+          if [ "$PROTECTED_BROWSER_ENABLED" = true ]; then test "$PROTECTED_BROWSER_RESULT" = success; fi
       - name: Check out reviewed Agent receipt harness
         if: always()
         uses: actions/checkout@v4
@@ -1022,6 +1113,23 @@ jobs:
         if: always()
         with:
           python-version: "3.11"
+      - name: Download the protected browser receipt and raw reports
+        if: needs.config.outputs.protected_browser_enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: protected-browser-checkout-receipt
+          path: protected-browser-receipts
+      - name: Verify the protected browser receipt against the frozen tuple
+        if: needs.config.outputs.protected_browser_enabled == 'true'
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+          DRIVER_HEAD: ${{ needs.config.outputs.driver_agent_ref }}
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/protected-browser-candidate.json"
+          python agent/scripts/ci_journey_browser.py --verify-only --candidate "$RUNNER_TEMP/protected-browser-candidate.json" \
+            --driver agent --driver-head "$DRIVER_HEAD" --app app --agent unused --runtime unused \
+            --pinokio unused --output protected-browser-receipts
       - name: Download every per-job receipt
         uses: actions/download-artifact@v4
         with:
