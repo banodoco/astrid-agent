@@ -274,14 +274,13 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
     index_path = recipes._INDEX_PATH.relative_to(root).as_posix()
     result[index_path] = hashlib.sha256(recipes._INDEX_PATH.read_bytes()).hexdigest()
     refs = recipes.recipe_data_refs(recipe)
-    if recipe.engine == "comfyui":
-        path = root / _RELOCATION_PATH
-        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
-            raise IntegrityError("unsafe relocation evidence")
-        try:
-            result[_RELOCATION_PATH] = hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError as exc:
-            raise IntegrityError("reviewed engine relocation evidence is unavailable") from exc
+    path = root / _RELOCATION_PATH
+    if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+        raise IntegrityError("unsafe relocation evidence")
+    try:
+        result[_RELOCATION_PATH] = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise IntegrityError("reviewed engine relocation evidence is unavailable") from exc
     for ref in refs:
         _, payload = recipes._read_ref(ref)
         result[ref.path] = hashlib.sha256(payload).hexdigest()
@@ -289,34 +288,36 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 def _relocated_identity(recipe, recipe_sha256, helper_sha256=None):
-    """Admit only the reviewed frozen-base relocation, never a generic old helper.
+    """Admit only exact persisted identities from the reviewed relocation.
 
-    The packaged record binds both recipe identities and every exact current
-    helper/data byte except the record itself. It is itself in the live helper
-    manifest. Later code/data changes invalidate this exception until reviewed.
-    This applies to persisted install evidence only, never service custody or
-    the live controller/target protocol.
+    The packaged record binds each recipe pair to its exact current helper/data
+    closure. It is itself in the live helper manifest. Later code/data changes
+    invalidate helper admission until reviewed. Service custody and the live
+    controller/target protocol always require current identities.
     """
-    if recipe.engine != "comfyui":
-        return False
     record = recipes._json(recipes._ROOT / _RELOCATION_PATH)
-    if (not isinstance(record, dict) or set(record) != {
-            "schema", "base", "recipe_sha256", "legacy_recipe_sha256",
-            "legacy_helper_sha256", "files"}
-            or record["schema"] != "astrid.engine-relocation.v1"
+    if (not isinstance(record, dict) or set(record) != {"schema", "base", "identities"}
+            or record["schema"] != "astrid.engine-relocation.v2"
             or record["base"] != "4b5bd6ca046a08626f8c42a450fe14c7297fb4bf"
-            or record["legacy_recipe_sha256"] != recipe_sha256
-            or record["recipe_sha256"] != recipes.recipe_digest(recipe)
-            or helper_sha256 is not None and record["legacy_helper_sha256"] != helper_sha256):
+            or not isinstance(record["identities"], list)):
         return False
-    # Recipe identity is a data-semantic mapping. Only persisted helper
-    # admission needs the exact reviewed current code closure; leaving that
-    # decision at the environment gate preserves stale-helper reinstall errors.
-    if helper_sha256 is None:
-        return True
-    manifest = dict(helper_manifest(recipe))
-    manifest.pop(_RELOCATION_PATH)
-    return record["files"] == manifest
+    current_recipe = recipes.recipe_digest(recipe)
+    for identity in record["identities"]:
+        if (not isinstance(identity, dict) or set(identity) != {
+                "recipe_sha256", "legacy_recipe_sha256", "legacy_helper_sha256", "files_sha256"}
+                or identity["recipe_sha256"] != current_recipe
+                or identity["legacy_recipe_sha256"] != recipe_sha256
+                or helper_sha256 is not None and identity["legacy_helper_sha256"] != helper_sha256):
+            continue
+        # Keep recipe mapping separate from helper admission so stale helpers
+        # retain the established environment reinstall refusal code and step.
+        if helper_sha256 is None:
+            return True
+        manifest = dict(helper_manifest(recipe))
+        manifest.pop(_RELOCATION_PATH)
+        if identity["files_sha256"] == _sha(manifest):
+            return True
+    return False
 
 
 def _receipt_recipe_matches(recipe, digest):

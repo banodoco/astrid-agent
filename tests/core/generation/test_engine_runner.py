@@ -2591,3 +2591,398 @@ def test_pre_relocation_comfyui_receipt_survives_status_without_rewrite(tmp_path
             "failed", "engine_reinstall_required", "environment:comfy")
     assert snapshot() == original
     assert {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshot().items()} == original_hashes
+
+
+# Exact production evidence from 4b5bd6c; see the task capture provenance.
+_PRE_RELOCATION_H3 = {'.astrid-engine/environments/comfy/install-receipt-torch.json': '{"name":"torch","record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sha256":"858f0cbcc78d726fea9499eb3464faa98392fa093845a3262209bd226b7844d6","url":"https://download.pytorch.org/whl/cu130/torch-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl","version":"2.10.0+cu130"}',
+ '.astrid-engine/environments/comfy/install-receipt-torchaudio.json': '{"name":"torchaudio","record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sha256":"ed573e7319ba9a6e137b4895eddf4c9fcd424bb4e10a629267d64b55acc57fbb","url":"https://download.pytorch.org/whl/cu130/torchaudio-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl","version":"2.10.0+cu130"}',
+ '.astrid-engine/environments/comfy/install-receipt-torchvision.json': '{"name":"torchvision","record_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","sha256":"c2f5e38f0cd57a2796e4503c0f13365deba01dbc167ef820f0beec7ca96f5f2e","url":"https://download.pytorch.org/whl/cu130/torchvision-0.25.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl","version":"0.25.0+cu130"}',
+ '.astrid-engine/environments/comfy/lock.json': '{"environment":"comfy","helper_sha256":"f333434895fa5d9e9235230e1f8b687e9e92db7d8914a1b8a0d2a99cd3dfd3ee","recipe_sha256":"59655dbb05e48dd3d1bc838bf8fc44e34f5e2bfa79f9660548827314aff8795f","requirements_lock_sha256":"ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a","schema":"astrid.requirements-lock.v1"}',
+ '.astrid-engine/environments/comfy/receipt.json': '{"environment":"comfy","helper_sha256":"f333434895fa5d9e9235230e1f8b687e9e92db7d8914a1b8a0d2a99cd3dfd3ee","recipe_sha256":"59655dbb05e48dd3d1bc838bf8fc44e34f5e2bfa79f9660548827314aff8795f","requirements_lock_sha256":"ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a","validated":true}',
+ '.astrid-engine/install.json': '{"completed_at":"2026-11-03T00:00:00+00:00","engine":"vibecomfy-h3","error_code":null,"failed_step_id":null,"health":{"checked_at":"2026-11-03T00:00:00+00:00","object_info_sha256":"bac3d734cefe7e27dab3d507b434a84c697966bd4729e1f003dd797b1f0a347f","required_nodes_present":true,"status":"healthy"},"models":[{"action":"downloaded","bytes":20970379616,"model":"h3-reference-to-video","path":"@ROOT@/models/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors","resumed_from_bytes":0,"sha256":"9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779","verified":true},{"action":"downloaded","bytes":27141342152,"model":"h3-text-encoder","path":"@ROOT@/models/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors","resumed_from_bytes":0,"sha256":"bc2ced0fbea64757fa9acddccfc0b3f4819d1dcf1da6c124d690d368be283923","verified":true},{"action":"downloaded","bytes":2811065184,"model":"h3-video-vae","path":"@ROOT@/models/vae/minimax_h3_video_vae_int8_convrot.safetensors","resumed_from_bytes":0,"sha256":"52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e","verified":true},{"action":"downloaded","bytes":605254808,"model":"h3-audio-vae","path":"@ROOT@/models/vae/minimax_h3_audio_vae_fp32.safetensors","resumed_from_bytes":0,"sha256":"8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48","verified":true},{"action":"downloaded","bytes":1956193000,"model":"h3-turbo-lora","path":"@ROOT@/models/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors","resumed_from_bytes":0,"sha256":"2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e","verified":true}],"models_lock_sha256":"d86ca8584229010f39c326f2c2d5b6dd3c0aa7b3c06ec6deb0ab5dc5f89c61a5","placement":"local","platform":"linux-x86_64-cu130","qualified":false,"receipt_id":"frozen-pre-relocation-h3","recipe_sha256":"59655dbb05e48dd3d1bc838bf8fc44e34f5e2bfa79f9660548827314aff8795f","requirements_locks":{"comfy":"ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"},"root":"@ROOT@","schema":"astrid.engine-install.v1","source_commits":{"comfyui":"ee71d5c4993f29086b27fde1629a945ae48425bf","h3-motion-context":"361624fb406b63eb6694442eac6c895fc1533a70","vibecomfy":"b2123edfbe7b950848b5c98d575fd9554302fc73","videohelpersuite":"4ee72c065db22c9d96c2427954dc69e7b908444b"},"started_at":"2026-11-03T00:00:00+00:00","status":"installed","steps":[{"action":"executed","facts":{"commit":"ee71d5c4993f29086b27fde1629a945ae48425bf"},"id":"source:comfyui","kind":"source","validation":"passed"},{"action":"executed","facts":{"commit":"b2123edfbe7b950848b5c98d575fd9554302fc73"},"id":"source:vibecomfy","kind":"source","validation":"passed"},{"action":"executed","facts":{"commit":"361624fb406b63eb6694442eac6c895fc1533a70"},"id":"source:h3-motion-context","kind":"source","validation":"passed"},{"action":"executed","facts":{"commit":"4ee72c065db22c9d96c2427954dc69e7b908444b"},"id":"source:videohelpersuite","kind":"source","validation":"passed"},{"action":"executed","facts":{"requirements_lock_sha256":"ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"},"id":"environment:comfy","kind":"environment","validation":"passed"},{"action":"executed","facts":{"bytes":20970379616,"sha256":"9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779"},"id":"model:h3-reference-to-video","kind":"model","validation":"passed"},{"action":"executed","facts":{"bytes":27141342152,"sha256":"bc2ced0fbea64757fa9acddccfc0b3f4819d1dcf1da6c124d690d368be283923"},"id":"model:h3-text-encoder","kind":"model","validation":"passed"},{"action":"executed","facts":{"bytes":2811065184,"sha256":"52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e"},"id":"model:h3-video-vae","kind":"model","validation":"passed"},{"action":"executed","facts":{"bytes":605254808,"sha256":"8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"},"id":"model:h3-audio-vae","kind":"model","validation":"passed"},{"action":"executed","facts":{"bytes":1956193000,"sha256":"2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e"},"id":"model:h3-turbo-lora","kind":"model","validation":"passed"},{"action":"executed","facts":{"launch_sha256":"f4ad701b2c8136a9599c918f524ae449d71327e35c80f19621746ed18af199e4","owner_id":"owner-incarnation-1"},"id":"start","kind":"start","validation":"passed"},{"action":"executed","facts":{"object_info_sha256":"bac3d734cefe7e27dab3d507b434a84c697966bd4729e1f003dd797b1f0a347f","required_nodes_present":true},"id":"health","kind":"health","validation":"passed"}]}',
+ 'runtime/extra_model_paths.yaml': '{"astrid_engine":{"base_path":"@ROOT@/models","diffusion_models":"diffusion_models","loras":"loras","text_encoders":"text_encoders","vae":"vae"}}',
+ 'runtime/vibecomfy/custom_nodes.lock': '# Generated by vibecomfy nodes lock.\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-DepthAnythingV2]\n'
+                                        'name = "ComfyUI-DepthAnythingV2"\n'
+                                        'slug = "ComfyUI-DepthAnythingV2"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "553187872eeb1d52e50dc53209fa57e569609a72"\n'
+                                        'git_commit_sha = "553187872eeb1d52e50dc53209fa57e569609a72"\n'
+                                        'url = "https://github.com/kijai/ComfyUI-DepthAnythingV2.git"\n'
+                                        'schema_hash = '
+                                        '"f4e181ab42ca179eda161acba5121e999cb54b1dbee0dc087a22bd42af7241ae"\n'
+                                        'class_schema_sha256 = '
+                                        '"f4e181ab42ca179eda161acba5121e999cb54b1dbee0dc087a22bd42af7241ae"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["DepthAnything_V2", "DownloadAndLoadDepthAnythingV2Model", '
+                                        '"LoadVideoDepthAnythingModel", "VideoDepthAnythingOutput", '
+                                        '"VideoDepthAnythingProcess"]\n'
+                                        'pip_packages = ["opencv-python-headless", "transformers"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-GGUF]\n'
+                                        'name = "ComfyUI-GGUF"\n'
+                                        'slug = "ComfyUI-GGUF"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "6ea2651e7df66d7585f6ffee804b20e92fb38b8a"\n'
+                                        'git_commit_sha = "6ea2651e7df66d7585f6ffee804b20e92fb38b8a"\n'
+                                        'url = "https://github.com/city96/ComfyUI-GGUF.git"\n'
+                                        'schema_hash = '
+                                        '"1336fad984841444a9559b602c34ef11d1dd4b68a9a902437aaee6771ab5d2d3"\n'
+                                        'class_schema_sha256 = '
+                                        '"1336fad984841444a9559b602c34ef11d1dd4b68a9a902437aaee6771ab5d2d3"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["DualCLIPLoaderGGUF", "UnetLoaderGGUF"]\n'
+                                        'pip_packages = ["gguf"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-H3-Motion-Context-MultiRef]\n'
+                                        'name = "ComfyUI-H3-Motion-Context-MultiRef"\n'
+                                        'slug = "ComfyUI-H3-Motion-Context-MultiRef"\n'
+                                        'source = "git"\n'
+                                        'commit = "361624fb406b63eb6694442eac6c895fc1533a70"\n'
+                                        'git_commit_sha = "361624fb406b63eb6694442eac6c895fc1533a70"\n'
+                                        'url = "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git"\n'
+                                        'last_seen_at = "2026-09-15T15:40:00+00:00"\n'
+                                        'class_set = ["H3V2VGranularFractionalDenoise", '
+                                        '"MiniMaxH3AVExtensionController", "MiniMaxH3AVSourceAudioModeParam", '
+                                        '"MiniMaxH3AVStartModeParam", "MiniMaxH3AssembleExtension", '
+                                        '"MiniMaxH3AssembleInterior", "MiniMaxH3AudioVAECompatibility", '
+                                        '"MiniMaxH3ClearAVNoiseMask", "MiniMaxH3CropTo32", "MiniMaxH3CustomKeyframes", '
+                                        '"MiniMaxH3CustomKeyframesMasked", "MiniMaxH3ExistingVideoMaskedContext", '
+                                        '"MiniMaxH3ExtensionStartMode", "MiniMaxH3FanRecoveredContext", '
+                                        '"MiniMaxH3FinalizeVHSOutput", "MiniMaxH3GeneratedAVMaskedContext", '
+                                        '"MiniMaxH3LastActiveVHSPreviewBarrier", "MiniMaxH3MaskedAVBridge", '
+                                        '"MiniMaxH3MotionContext", "MiniMaxH3MotionContextLoadLatent", '
+                                        '"MiniMaxH3MotionContextSaveLatent", "MiniMaxH3MotionContextTrim", '
+                                        '"MiniMaxH3MusicVideoController", "MiniMaxH3OptionalReferenceImage", '
+                                        '"MiniMaxH3OptionalStartFrame", "MiniMaxH3ReferenceToVideo", '
+                                        '"MiniMaxH3SetAVNoiseMask", "MiniMaxH3SigmaShift", '
+                                        '"MiniMaxH3SongMaskedAVContext", "MiniMaxH3SourceAudioPolicy", '
+                                        '"MiniMaxH3SourceAudioRegenLength", "MiniMaxH3SourceAudioRegenMask", '
+                                        '"MiniMaxH3StartCanvasSelector", "MiniMaxH3StartMaskedContext", '
+                                        '"MiniMaxH3StreamLiveExtensionAVToVHS", "MiniMaxH3StreamLiveMusicVideoToVHS", '
+                                        '"MiniMaxH3Validate24FPSVideo"]\n'
+                                        'pip_packages = ["safetensors"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-KJNodes]\n'
+                                        'name = "ComfyUI-KJNodes"\n'
+                                        'slug = "ComfyUI-KJNodes"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "b7646ad70a7daa7aeb919ca542274758d26ba2df"\n'
+                                        'git_commit_sha = "b7646ad70a7daa7aeb919ca542274758d26ba2df"\n'
+                                        'url = "https://github.com/kijai/ComfyUI-KJNodes.git"\n'
+                                        'schema_hash = '
+                                        '"1beaf129c8fa26175d89a28f9ca10d08b5ac27c8fc9bff920263fcbba17cb691"\n'
+                                        'class_schema_sha256 = '
+                                        '"1beaf129c8fa26175d89a28f9ca10d08b5ac27c8fc9bff920263fcbba17cb691"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["BlockifyMask", "DrawMaskOnImage", "GetImageRangeFromBatch", '
+                                        '"GetImageSizeAndCount", "INTConstant", "ImageResizeKJv2", "LTXVAddGuide", '
+                                        '"PathchSageAttentionKJ", "PointsEditor", "PreviewAnimation", '
+                                        '"ResizeImagesByLongerEdge", "SimpleCalculatorKJ", "VAELoaderKJ"]\n'
+                                        'pip_packages = ["matplotlib"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-LTXVideo]\n'
+                                        'name = "ComfyUI-LTXVideo"\n'
+                                        'slug = "ComfyUI-LTXVideo"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "229437c6b65796d6a7a63ae34be2bd5ba31fa543"\n'
+                                        'git_commit_sha = "229437c6b65796d6a7a63ae34be2bd5ba31fa543"\n'
+                                        'url = "https://github.com/Lightricks/ComfyUI-LTXVideo.git"\n'
+                                        'schema_hash = '
+                                        '"82e0b1f31509a969cf441c45e2517d0cd93f31b5390cc16f4a0ffa244421f39e"\n'
+                                        'class_schema_sha256 = '
+                                        '"82e0b1f31509a969cf441c45e2517d0cd93f31b5390cc16f4a0ffa244421f39e"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["EmptyLTXVLatentVideo", "LTX2AttentionTunerPatch", "LTX2_NAG", '
+                                        '"LTXAVTextEncoderLoader", "LTXVAudioVAEDecode", "LTXVAudioVAELoader", '
+                                        '"LTXVChunkFeedForward", "LTXVConcatAVLatent", "LTXVConditioning", '
+                                        '"LTXVCropGuides", "LTXVEmptyLatentAudio", "LTXVImgToVideo", '
+                                        '"LTXVImgToVideoInplaceKJ", "LTXVPreprocess", "LTXVScheduler", '
+                                        '"LTXVSeparateAVLatent", "LatentUpscaleModelLoader"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-Qwen3-TTS]\n'
+                                        'name = "ComfyUI-Qwen3-TTS"\n'
+                                        'slug = "ComfyUI-Qwen3-TTS"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "17c22adb80a63c1c51bf74549e71a5cf218f4e1b"\n'
+                                        'git_commit_sha = "17c22adb80a63c1c51bf74549e71a5cf218f4e1b"\n'
+                                        'url = "https://github.com/DarioFT/ComfyUI-Qwen3-TTS.git"\n'
+                                        'schema_hash = '
+                                        '"e1e936d1fb13d4c87f7d49c935b7d9a0c1d5860306c5a5b4233c125d769a0be0"\n'
+                                        'class_schema_sha256 = '
+                                        '"e1e936d1fb13d4c87f7d49c935b7d9a0c1d5860306c5a5b4233c125d769a0be0"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["Qwen3AudioCompare", "Qwen3CustomVoice", "Qwen3DataPrep", '
+                                        '"Qwen3DatasetFromFolder", "Qwen3FineTune", "Qwen3LoadPrompt", "Qwen3Loader", '
+                                        '"Qwen3PromptMaker", "Qwen3SavePrompt", "Qwen3VoiceClone", '
+                                        '"Qwen3VoiceDesign"]\n'
+                                        'pip_packages = ["accelerate", "librosa", "modelscope", "qwen-tts", '
+                                        '"soundfile"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-QwenTTS]\n'
+                                        'name = "ComfyUI-QwenTTS"\n'
+                                        'slug = "ComfyUI-QwenTTS"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "d8122a8ba835b65fd65c113d2b273b1ad1579293"\n'
+                                        'git_commit_sha = "d8122a8ba835b65fd65c113d2b273b1ad1579293"\n'
+                                        'url = "https://github.com/1038lab/ComfyUI-QwenTTS.git"\n'
+                                        'schema_hash = '
+                                        '"4137bb4f37ea178be0e794377829905d9ede1bc65496a23a51d766a3f03b2c84"\n'
+                                        'class_schema_sha256 = '
+                                        '"4137bb4f37ea178be0e794377829905d9ede1bc65496a23a51d766a3f03b2c84"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["AILab_Qwen3TTSCustomVoice", '
+                                        '"AILab_Qwen3TTSCustomVoice_Advanced", "AILab_Qwen3TTSLoadVoice", '
+                                        '"AILab_Qwen3TTSVoiceClone", "AILab_Qwen3TTSVoiceClone_Advanced", '
+                                        '"AILab_Qwen3TTSVoiceDesign", "AILab_Qwen3TTSVoiceDesign_Advanced", '
+                                        '"AILab_Qwen3TTSVoiceInstruct", "AILab_Qwen3TTSVoiceInstructZH", '
+                                        '"AILab_Qwen3TTSVoicesLibrary", "AILab_Qwen3TTSWhisperSTT"]\n'
+                                        'pip_packages = ["accelerate", "librosa", "openai-whisper", "qwen-tts", '
+                                        '"soundfile", "tiktoken"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-VideoHelperSuite]\n'
+                                        'name = "ComfyUI-VideoHelperSuite"\n'
+                                        'slug = "ComfyUI-VideoHelperSuite"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "4ee72c065db22c9d96c2427954dc69e7b908444b"\n'
+                                        'git_commit_sha = "4ee72c065db22c9d96c2427954dc69e7b908444b"\n'
+                                        'url = "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git"\n'
+                                        'schema_hash = '
+                                        '"8391e679554eecd5d324a3e34a713ff240e619e3a07476587845ba18c9fae310"\n'
+                                        'class_schema_sha256 = '
+                                        '"8391e679554eecd5d324a3e34a713ff240e619e3a07476587845ba18c9fae310"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["VHS_LoadAudio", "VHS_LoadAudioUpload", "VHS_LoadVideo", '
+                                        '"VHS_LoadVideoFFmpeg", "VHS_LoadVideoFFmpegPath", "VHS_SelectEveryNthImage", '
+                                        '"VHS_SelectEveryNthLatent", "VHS_SelectEveryNthMask", "VHS_SplitImages", '
+                                        '"VHS_VideoInfo", "VHS_VideoInfoLoaded", "VHS_VideoInfoSource", '
+                                        '"VHS_VideoCombine"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-WanAnimatePreprocess]\n'
+                                        'name = "ComfyUI-WanAnimatePreprocess"\n'
+                                        'slug = "ComfyUI-WanAnimatePreprocess"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "1a35b81a418bbba093356ad19b19bf2a76a24f4e"\n'
+                                        'git_commit_sha = "1a35b81a418bbba093356ad19b19bf2a76a24f4e"\n'
+                                        'url = "https://github.com/kijai/ComfyUI-WanAnimatePreprocess.git"\n'
+                                        'schema_hash = '
+                                        '"2037d30d5343a44a9403c928ea18688bb050b9114fc2d3741df2c6b64edaf7f5"\n'
+                                        'class_schema_sha256 = '
+                                        '"2037d30d5343a44a9403c928ea18688bb050b9114fc2d3741df2c6b64edaf7f5"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["DrawViTPose", "OnnxDetectionModelLoader", '
+                                        '"PoseAndFaceDetection", "PoseDetectionOneToAllAnimation", '
+                                        '"PoseRetargetPromptHelper"]\n'
+                                        'pip_packages = ["onnx", "onnxruntime-gpu", "opencv-python-headless"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-WanVideoWrapper]\n'
+                                        'name = "ComfyUI-WanVideoWrapper"\n'
+                                        'slug = "ComfyUI-WanVideoWrapper"\n'
+                                        'source = "git"\n'
+                                        'commit = "df8f3e49daaad117cf3090cc916c83f3d001494c"\n'
+                                        'git_commit_sha = "df8f3e49daaad117cf3090cc916c83f3d001494c"\n'
+                                        'url = "https://github.com/kijai/ComfyUI-WanVideoWrapper.git"\n'
+                                        'schema_hash = '
+                                        '"80187858cc6ec371c9860fd9ca5fcf5174324d75782046657e252492512d115f"\n'
+                                        'class_schema_sha256 = '
+                                        '"80187858cc6ec371c9860fd9ca5fcf5174324d75782046657e252492512d115f"\n'
+                                        'class_set = ["CreateCFGScheduleFloatList", "LoadWanVideoT5TextEncoder", '
+                                        '"WanVideoBlockSwap", "WanVideoControlEmbeds", "WanVideoDecode", '
+                                        '"WanVideoEasyCache", "WanVideoEmptyEmbeds", "WanVideoEncode", '
+                                        '"WanVideoExperimentalArgs", "WanVideoImageToVideoEncode", '
+                                        '"WanVideoLoraSelect", "WanVideoLoraSelectMulti", "WanVideoModelLoader", '
+                                        '"WanVideoSLG", "WanVideoSampler", "WanVideoSetBlockSwap", "WanVideoSetLoRAs", '
+                                        '"WanVideoTextEmbedBridge", "WanVideoTextEncode", "WanVideoTextEncodeCached", '
+                                        '"WanVideoTorchCompileSettings", "WanVideoVACEEncode", '
+                                        '"WanVideoVACEModelSelect", "WanVideoVACEStartToEndFrame", '
+                                        '"WanVideoVAELoader"]\n'
+                                        'pip_packages = ["onnx", "opencv-python-headless"]\n'
+                                        '\n'
+                                        '[nodepacks.ComfyUI-segment-anything-2]\n'
+                                        'name = "ComfyUI-segment-anything-2"\n'
+                                        'slug = "ComfyUI-segment-anything-2"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "0c35fff5f382803e2310103357b5e985f5437f32"\n'
+                                        'git_commit_sha = "0c35fff5f382803e2310103357b5e985f5437f32"\n'
+                                        'url = "https://github.com/kijai/ComfyUI-segment-anything-2.git"\n'
+                                        'schema_hash = '
+                                        '"e3640990ce145928d9404234721b4f23fd02717c7f07af03b3d0be0f8a150e9c"\n'
+                                        'class_schema_sha256 = '
+                                        '"e3640990ce145928d9404234721b4f23fd02717c7f07af03b3d0be0f8a150e9c"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["DownloadAndLoadSAM2Model", "Florence2toCoordinates", '
+                                        '"Sam2AutoSegmentation", "Sam2Segmentation", "Sam2VideoSegmentation", '
+                                        '"Sam2VideoSegmentationAddPoints"]\n'
+                                        'pip_packages = ["opencv-python-headless"]\n'
+                                        '\n'
+                                        '[nodepacks.ExamplePack]\n'
+                                        'name = "ExamplePack"\n'
+                                        'slug = "ExamplePack"\n'
+                                        'source = "git"\n'
+                                        'commit = "pinnedsha"\n'
+                                        'git_commit_sha = "pinnedsha"\n'
+                                        'url = "https://example.test/example.git"\n'
+                                        '\n'
+                                        '[nodepacks.comfyui_controlnet_aux]\n'
+                                        'name = "comfyui_controlnet_aux"\n'
+                                        'slug = "comfyui_controlnet_aux"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "e8b689a513c3e6b63edc44066560ca5919c0576e"\n'
+                                        'git_commit_sha = "e8b689a513c3e6b63edc44066560ca5919c0576e"\n'
+                                        'url = "https://github.com/Fannovel16/comfyui_controlnet_aux.git"\n'
+                                        'schema_hash = '
+                                        '"e485b148824d72ef7af7e90f711eefb511ffe73b25cd1c6053e1e5c7bd3bbd62"\n'
+                                        'class_schema_sha256 = '
+                                        '"e485b148824d72ef7af7e90f711eefb511ffe73b25cd1c6053e1e5c7bd3bbd62"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["CannyEdgePreprocessor", "DWPreprocessor"]\n'
+                                        'pip_packages = ["onnxruntime", "opencv-python-headless"]\n'
+                                        '\n'
+                                        '[nodepacks.rgthree-comfy]\n'
+                                        'name = "rgthree-comfy"\n'
+                                        'slug = "rgthree-comfy"\n'
+                                        'source = "git"\n'
+                                        'version = "unknown"\n'
+                                        'commit = "738105af5fb14e96fbecaf406dc356e284797e8c"\n'
+                                        'git_commit_sha = "738105af5fb14e96fbecaf406dc356e284797e8c"\n'
+                                        'url = "https://github.com/rgthree/rgthree-comfy.git"\n'
+                                        'schema_hash = '
+                                        '"2b52072e02c59cb05ce83e5c45e1c7fd5b1273fee9b62eaaa0e66a81a4c07872"\n'
+                                        'class_schema_sha256 = '
+                                        '"2b52072e02c59cb05ce83e5c45e1c7fd5b1273fee9b62eaaa0e66a81a4c07872"\n'
+                                        'last_seen_at = "2026-05-20T09:08:36.504684+00:00"\n'
+                                        'class_set = ["Any Switch (rgthree)", "Fast Groups Bypasser (rgthree)", "Fast '
+                                        'Groups Muter (rgthree)", "GetNode", "Label (rgthree)", "Power Lora Loader '
+                                        '(rgthree)", "Seed (rgthree)", "SetNode"]\n'}
+
+
+class _H3ReceiptContext(_ComfyuiReceiptContext):
+    def __init__(self, root):
+        super().__init__(root)
+        self.recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+        self.health_objects = {node: {} for node in self.recipe.health.required_nodes}
+
+
+def test_pre_relocation_h3_receipt_survives_status_without_rewrite(tmp_path, monkeypatch):
+    """Read exact 4b5bd6c H3 evidence through status, endpoint and target locks."""
+    from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
+    import importlib.abc
+
+    class NoPacks(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.startswith("astrid.packs."):
+                raise AssertionError("optional pack import: " + fullname)
+    monkeypatch.setattr(sys, "meta_path", [NoPacks(), *sys.meta_path])
+    root = tmp_path / "legacy-h3"
+    context = _H3ReceiptContext(root)
+    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    for name, raw in _PRE_RELOCATION_H3.items():
+        destination = root / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw.replace("@ROOT@", str(root)).encode())
+    directory = root / ".astrid-engine/environments/comfy"
+    lock_path = directory / "requirements.lock"
+    lock_bytes = (recipes._ROOT / recipe.environments[0].requirements.packaged_lock.path).read_bytes()
+    assert hashlib.sha256(lock_bytes).hexdigest() == LINUX_LOCK_SHA256
+    lock_path.write_bytes(lock_bytes)
+    old = json.loads((root / runner._RECEIPT).read_bytes())
+    assert old["recipe_sha256"] == "59655dbb05e48dd3d1bc838bf8fc44e34f5e2bfa79f9660548827314aff8795f"
+    legacy_helper = "f333434895fa5d9e9235230e1f8b687e9e92db7d8914a1b8a0d2a99cd3dfd3ee"
+    assert json.loads((directory / "receipt.json").read_bytes())["helper_sha256"] == legacy_helper
+    for source in recipe.sources:
+        context.sources[str(root / source.relative_path)] = {
+            "origin": source.pin.repository, "head": old["source_commits"][source.name], "dirty": ""}
+    for model in old["models"]:
+        context.files[model["path"]] = FileFact(True, True, False, model["bytes"], model["sha256"])
+    context.server = "owner-incarnation-1"
+    context.environments["comfy"] = True
+
+    def snapshot():
+        return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+    def read_status():
+        return runner.engine_status("vibecomfy-h3", platform=PLATFORM, placement="local", root=str(root),
+                                    context=context, deadline=context.deadline)
+
+    original = snapshot()
+    original_hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in original.items()}
+    payload = _helper_payload(root, recipe=recipe)
+    with pytest.raises(IntegrityError, match="code/data identity"):
+        target.dispatch("identity", {**payload, "recipe_sha256": old["recipe_sha256"],
+                                     "helper_sha256": legacy_helper})
+    for _ in range(2):
+        report = read_status()
+        assert report.status == "installed", report
+        for field in ("receipt_id", "recipe_sha256", "models_lock_sha256", "requirements_locks", "source_commits"):
+            assert getattr(report, field) == old[field]
+        assert [(m.model, m.path, m.bytes, m.sha256) for m in report.models] == [
+            (m["model"], m["path"], m["bytes"], m["sha256"]) for m in old["models"]]
+    endpoint = local_engine_endpoint("vibecomfy-h3", root=str(root), context=context, deadline_seconds=60).endpoint
+    assert endpoint.attestation.install_receipt_sha256 == original_hashes[runner._RECEIPT]
+    assert snapshot() == original
+    assert not [e for e in context.events if e[0] in {
+        "write", "mkdir", "download", "acquire", "service:start", "target:lock-inputs",
+        "target:commit-lock", "target:install-locks", "target:models-config"}]
+
+    # All three persisted recipe gates retain exact identity and byte checks.
+    path = root / runner._RECEIPT
+    value = json.loads(path.read_bytes()); value["recipe_sha256"] = "0" * 64
+    path.write_text(json.dumps(value))
+    with pytest.raises(IntegrityError, match="install receipt identity differs"):
+        read_status()
+    path.write_bytes(original[runner._RECEIPT])
+    for name, field, code in [
+            ("receipt.json", "recipe_sha256", "integrity_failed"),
+            ("receipt.json", "helper_sha256", "engine_reinstall_required"),
+            ("lock.json", "recipe_sha256", "integrity_failed"),
+            ("lock.json", "helper_sha256", "engine_reinstall_required"),
+            ("lock.json", "requirements_lock_sha256", "integrity_failed")]:
+        path = directory / name
+        value = json.loads(path.read_bytes()); value[field] = "0" * 64
+        path.write_text(json.dumps(value))
+        refused = read_status()
+        assert (refused.status, refused.error_code, refused.failed_step_id) == (
+            "failed", code, "environment:comfy")
+        path.write_bytes(original[path.relative_to(root).as_posix()])
+    lock_path.write_bytes(lock_bytes + b"\n")
+    assert read_status().status == "failed"
+    lock_path.write_bytes(lock_bytes)
+    source = context.sources[str(root / recipe.sources[0].relative_path)]
+    source["head"] = "0" * 40
+    assert read_status().status == "failed"
+    source["head"] = old["source_commits"][recipe.sources[0].name]
+
+    manifest = runner.helper_manifest(recipe)
+    package = tmp_path / "package"
+    for name in manifest:
+        destination = package / name; destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((recipes._ROOT / name).read_bytes())
+    with monkeypatch.context() as patched:
+        patched.setattr(recipes, "_ROOT", package)
+        patched.setattr(recipes, "_INDEX_PATH", package / "packs/engine-index.json")
+        for ref in recipes.pin_data_refs(recipe.pins):
+            pin_path = package / ref.path
+            pins = pin_path.read_bytes(); pin_path.write_bytes(pins + b" ")
+            with pytest.raises(IntegrityError, match="digest mismatch"):
+                read_status()
+            pin_path.write_bytes(pins)
+        # Exact new helper bytes remain required; a legacy recipe is not a
+        # blanket exception for stale code, data or live protocol identities.
+        helper = package / "core/generation/model_downloader.py"
+        helper.write_bytes(helper.read_bytes() + b"\n")
+        refused = read_status()
+        assert (refused.status, refused.error_code, refused.failed_step_id) == (
+            "failed", "engine_reinstall_required", "environment:comfy")
+    assert snapshot() == original
+    assert {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshot().items()} == original_hashes
