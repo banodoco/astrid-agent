@@ -50,7 +50,8 @@ command, installs Astrid skills, and leaves skill copies off. The four choices
 are controlled by `--autostart on|off`, `--command on|off`, `--skills on|off`,
 and `--skill-copies on|off`. Ask for consent once for a fresh install when it
 has not already been given. After consent, use one installer command with the
-approved values; preserve all choices from an approved handoff.
+approved values. An already-approved handoff needs no second consent question;
+preserve all its choices.
 
 **Testing the installer?** Follow the [tester guide](docs/testing/TESTING.md), which records a known chat-history
 gap in the currently published agent engine.
