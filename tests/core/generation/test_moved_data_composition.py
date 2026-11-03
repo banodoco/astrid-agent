@@ -767,7 +767,9 @@ def test_default_parent_inventory_skips_legacy_folder_orchestrator_policy(tmp_pa
         "inputs: []\noutputs: []\n",
         encoding='utf-8',
     )
-    monkeypatch.delenv('ASTRID_PACKS_PATH', raising=False)
+    # A project root selects its local pack; other installed packs enter the
+    # default inventory through an explicit discovery root.
+    monkeypatch.setenv('ASTRID_PACKS_PATH', str(pack))
 
     executors = load_executor_registry(project_root=project)
     orchestrators = load_orchestrator_registry(executor_registry=executors, project_root=project)
