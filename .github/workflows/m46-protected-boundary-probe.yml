@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - lane/M-QUAL/R-36-M46-USER-SERVICE-DIAG
+      - lane/M-QUAL/R-36-M46-CAPABILITY-DISCRIMINATOR-R1
 permissions:
   contents: read
 jobs:
@@ -29,9 +29,45 @@ jobs:
           mkdir -m 700 "$RUNNER_TEMP/m46-boundary-probe"
           sudo useradd --create-home --home-dir /home/m46candidate --user-group --shell /usr/sbin/nologin m46candidate
           id -u m46candidate > "$RUNNER_TEMP/m46-boundary-probe/created-uid"
+          # Only this fresh UID's manager receives the system-manager drop-in.
+          uid="$(cat "$RUNNER_TEMP/m46-boundary-probe/created-uid")"
+          dropin="/etc/systemd/system/user@${uid}.service.d"
+          if [ -e "$dropin" ] || [ -L "$dropin" ]; then exit 21; fi
+          if sudo systemctl is-active --quiet "user@${uid}.service"; then exit 22; fi
+          sudo mkdir -m 755 "$dropin"
+          printf '%s\n' "$dropin" > "$RUNNER_TEMP/m46-boundary-probe/created-dropin"
+          printf '[Service]\nCapabilityBoundingSet=\n' | sudo tee "$dropin/90-m46-capabilities.conf" >/dev/null
+          sudo systemctl daemon-reload
           sudo loginctl enable-linger m46candidate
           sudo systemctl start "user@$(id -u m46candidate).service"
+      - name: Retain manager startup failure
+        if: ${{ !cancelled() && steps.provision.outcome == 'failure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker="$RUNNER_TEMP/m46-boundary-probe/created-uid"
+          if [ ! -f "$marker" ]; then exit 0; fi
+          sudo /usr/bin/python3 - "$marker" "$RUNNER_TEMP/m46-boundary-probe/manager-start-failure.json" <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+          uid = int(Path(sys.argv[1]).read_text().strip())
+          unit = f'user@{uid}.service'
+          result = dict(admitted=False, commands=[])
+          for argv in (['systemctl', 'show', unit, '-p', 'ActiveState', '-p', 'SubState', '-p', 'Result', '-p', 'ExecMainStatus', '-p', 'MainPID', '-p', 'DropInPaths'],
+                       ['systemctl', 'status', unit, '--no-pager', '--full', '-n', '20'],
+                       ['journalctl', '-b', '--no-pager', '-n', '100', '-o', 'short-precise', f'_SYSTEMD_UNIT={unit}']):
+              row = dict(argv=argv)
+              result['commands'].append(row)
+              try:
+                  p = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+                  row.update(inner_exit=p.returncode, stdout=p.stdout[:32768], stderr=p.stderr[:32768],
+                             stdout_truncated=len(p.stdout)>32768, stderr_truncated=len(p.stderr)>32768)
+              except Exception as exc:
+                  row['capture_error'] = f'{type(exc).__name__}: {exc}'
+          Path(sys.argv[2]).write_text(json.dumps(result, indent=2) + '\n')
+          PY
       - name: Attempt export and uploader interference under the separate UID
+        id: boundary_control
         shell: bash
         run: |
           set -euo pipefail
@@ -67,8 +103,45 @@ jobs:
           finally:
               output.write_text(json.dumps(evidence, indent=2) + '\n')
           PY
-      - name: Observe a synthetic candidate-owned user service from the protected collector
+      - name: Verify disposable user manager capability boundary
+        id: manager_boundary
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/bin/python3 - "$RUNNER_TEMP/m46-boundary-probe/manager.json" <<'PY'
+          import json, os, pwd, subprocess, sys
+          from pathlib import Path
+          account = pwd.getpwnam('m46candidate')
+          unit = f'user@{account.pw_uid}.service'
+          result = dict(admitted=False, native_product_observed=False, commands=[])
+          try:
+              argv = ['/usr/bin/systemctl', 'show', unit, '-p', 'MainPID', '-p', 'ActiveState', '-p', 'CapabilityBoundingSet', '-p', 'DropInPaths']
+              p = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+              result['commands'].append(dict(argv=argv, inner_exit=p.returncode, stdout=p.stdout, stderr=p.stderr))
+              if p.returncode: raise RuntimeError('manager show failed')
+              fields = dict(line.split('=', 1) for line in p.stdout.splitlines() if '=' in line)
+              pid = int(fields['MainPID'])
+              expected_dropin = f'/etc/systemd/system/{unit}.d/90-m46-capabilities.conf'
+              if pid <= 0 or fields['ActiveState'] != 'active' or expected_dropin not in fields['DropInPaths'].split():
+                  raise RuntimeError('manager or configured drop-in not observed')
+              status = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines() if ':' in line)
+              observed = {name: status[name].strip() for name in ('Uid', 'Gid', 'Groups', 'CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')}
+              result.update(manager_pid=pid, manager_fields=fields, manager_status=observed)
+              if (set(map(int, status['Uid'].split())) != {account.pw_uid}
+                  or set(map(int, status['Gid'].split())) != {account.pw_gid}
+                  or not set(map(int, status['Groups'].split())) <= {account.pw_gid}
+                  or any(int(status[name].strip(), 16) != 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))):
+                  raise RuntimeError('manager identity or capability boundary differs')
+              result['manager_boundary_verified'] = True
+          except Exception as exc:
+              result['error'] = f'{type(exc).__name__}: {exc}'
+              raise
+          finally:
+              Path(sys.argv[1]).write_text(json.dumps(result, indent=2) + '\n')
+          PY
+      - name: Observe a synthetic candidate-owned user service from the protected collector
+        if: ${{ !cancelled() && steps.provision.outcome == 'success' && steps.manager_boundary.outcome == 'success' && steps.boundary_control.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -94,10 +167,12 @@ jobs:
           [Service]
           ExecStart=/usr/bin/sleep 300
           NoNewPrivileges=yes
-          CapabilityBoundingSet=
+          # Bounding set is inherited from the separately verified user manager.
           UNIT
-          systemctl --user daemon-reload
-          systemctl --user start m46-boundary.service
+          systemctl --user daemon-reload || { code=$?; printf 'daemon-reload inner_exit=%s\n' "$code"; exit "$code"; }
+          printf 'daemon-reload inner_exit=0\n'
+          systemctl --user start m46-boundary.service || { code=$?; printf 'start inner_exit=%s\n' "$code"; exit "$code"; }
+          printf 'start inner_exit=0\n'
           '''
               call(['/usr/bin/setpriv', f'--reuid={uid}', f'--regid={gid}', '--clear-groups',
                     '--no-new-privs', '--inh-caps=-all', '--ambient-caps=-all', '--bounding-set=-all',
@@ -105,15 +180,22 @@ jobs:
                     f'XDG_RUNTIME_DIR=/run/user/{uid}', f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus',
                     '/bin/sh', '-eu', '-c', script])
               query = ['/usr/bin/systemctl', '--user', '--machine=m46candidate@.host']
-              before = call(query + ['show', 'm46-boundary.service', '-p', 'MainPID', '-p', 'InvocationID', '-p', 'ActiveState', '-p', 'FragmentPath'])
+              before = call(query + ['show', 'm46-boundary.service', '-p', 'MainPID', '-p', 'InvocationID', '-p', 'ActiveState', '-p', 'FragmentPath', '-p', 'CapabilityBoundingSet', '-p', 'NoNewPrivileges'])
               fields = dict(line.split('=', 1) for line in before.splitlines() if '=' in line)
               pid = int(fields['MainPID'])
-              if pid <= 0 or fields['ActiveState'] != 'active' or not fields['InvocationID']:
+              if (pid <= 0 or fields['ActiveState'] != 'active' or not fields['InvocationID']
+                  or fields['FragmentPath'] != account.pw_dir + '/.config/systemd/user/m46-boundary.service'
+                  or fields['NoNewPrivileges'] != 'yes'):
                   raise RuntimeError('candidate user-manager observation incomplete')
               status = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines() if ':' in line)
               executable = str(Path(f'/proc/{pid}/exe').resolve(strict=True))
-              if (set(map(int, status['Uid'].split())) != {uid} or executable != '/usr/bin/sleep'
-                  or status['NoNewPrivs'].strip() != '1' or int(status['CapEff'].strip(), 16) != 0):
+              result['service_status'] = {name: status[name].strip() for name in ('Uid', 'Gid', 'Groups', 'NoNewPrivs', 'CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')}
+              result['manager'] = fields
+              if (set(map(int, status['Uid'].split())) != {uid}
+                  or set(map(int, status['Gid'].split())) != {gid}
+                  or not set(map(int, status['Groups'].split())) <= {gid}
+                  or executable != '/usr/bin/sleep' or status['NoNewPrivs'].strip() != '1'
+                  or any(int(status[name].strip(), 16) != 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))):
                   raise RuntimeError('service token or executable differs')
               result.update(service_pid=pid, service_executable=executable, service_uid=uid,
                             service_birth_stat=Path(f'/proc/{pid}/stat').read_text(), manager=fields)
@@ -172,7 +254,15 @@ jobs:
           # pkill exit 1 means no remaining process. Every other failure is fatal.
           if sudo pkill -KILL -u "$expected_uid"; then :; else test "$?" = 1; fi
           test -z "$(ps -u "$expected_uid" -o pid=)"
-          sudo userdel --remove m46candidate
+          sudo userdel --remove m46candidate || cleanup_failed=1
+          dropin_marker="$RUNNER_TEMP/m46-boundary-probe/created-dropin"
+          if [ -f "$dropin_marker" ]; then
+            expected_dropin="/etc/systemd/system/user@${expected_uid}.service.d"
+            test "$(cat "$dropin_marker")" = "$expected_dropin"
+            sudo rm -f "$expected_dropin/90-m46-capabilities.conf" || cleanup_failed=1
+            sudo rmdir "$expected_dropin" || cleanup_failed=1
+            sudo systemctl daemon-reload || cleanup_failed=1
+          fi
           exit "$cleanup_failed"
       - name: Retain unqualified experiment outputs
         if: always()
