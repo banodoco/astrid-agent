@@ -324,7 +324,10 @@ class PinokioNativeServiceProfile:
     def source_owner_mapping(self) -> dict[str, str]:
         # backend.py:1102-1117,1302-1312 at U2_AGENT_MAPPING_COMMIT.
         # The bypass is source behavior, never an observed empty OS inventory.
-        return {"managed_by": "pinokio", "agent_os_registration": "bypassed"}
+        return {
+            "managed_by": "pinokio", "action_session_owner": "pinokio-engine",
+            "agent_os_registration": "bypassed",
+        }
 
     @property
     def runtime_command_shape(self) -> tuple[str, ...]:
@@ -333,7 +336,7 @@ class PinokioNativeServiceProfile:
         if self.os_name == "windows":
             return ("<environmentCmd(installed.env)>", "/d", "/s", "/c",
                     f'""<program-root>\\run.cmd"{off}"')
-        return ("<program-root>/run", *(('--hosted-origin', 'off') if off else ()))
+        return ("<program-root>/run", *(("--hosted-origin", "off") if off else ()))
 
     @property
     def unbound_identities(self) -> dict[str, None]:
@@ -356,7 +359,7 @@ class PinokioNativeServiceProfile:
     def verify_current_bytes(self) -> None:
         refreshed = type(self).bind_source(
             slot_id=self.slot_id,
-            contract={"job_id": self.slot_id, **_PINOKIO_SESSION_ROWS[self.slot_id]},
+            contract={"job_id": self.slot_id, **_PINOKIO_SESSION_ROWS.get(self.slot_id, {})},
             app_root=Path(self.app_root), source_commit=U2_PINOKIO_COMMIT,
         )
         if refreshed != self:

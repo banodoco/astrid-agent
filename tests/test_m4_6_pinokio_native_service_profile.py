@@ -2,7 +2,6 @@
 
 from dataclasses import replace
 import hashlib
-from pathlib import Path
 
 import pytest
 
@@ -46,7 +45,10 @@ def test_six_profiles_bind_distinct_modes_actions_and_keep_native_identities_unb
         "start": "pinokio/start.js", "stop": "pinokio/stop.js",
         "update": "pinokio/update.js", "uninstall": "pinokio/uninstall.js",
     }
-    assert profile.source_owner_mapping == {"managed_by": "pinokio", "agent_os_registration": "bypassed"}
+    assert profile.source_owner_mapping == {
+        "managed_by": "pinokio", "action_session_owner": "pinokio-engine",
+        "agent_os_registration": "bypassed",
+    }
     if row["os"] == "windows":
         assert profile.runtime_command_shape == (
             "<environmentCmd(installed.env)>", "/d", "/s", "/c",
