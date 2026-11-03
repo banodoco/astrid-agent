@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Callable
@@ -772,6 +773,7 @@ class JourneyDriver:
         *,
         payload: Mapping[str, Any] | None = None,
         fields: set[str],
+        session: object | None = None,
     ) -> dict[str, Any]:
         self._require_native()
         assert self._context is not None
@@ -809,28 +811,56 @@ class JourneyDriver:
         product_environment = {
             name: os.environ[name] for name in inherited_names if name in os.environ
         }
+        begin = getattr(session, "begin_checkpointed_product_action", None)
+        poll = getattr(session, "poll_checkpointed_product_action", None)
+        finish = getattr(session, "end_checkpointed_product_action", None)
+        checkpointed = callable(begin) and callable(poll) and callable(finish)
+        if checkpointed:
+            begin(action)
+        completed = False
         try:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 self._command,
-                input=_canonical(request).decode("utf-8") + "\n",
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self._timeout,
                 cwd=self._command_cwd,
                 env=product_environment,
                 shell=False,
-                check=False,
             )
+            deadline = time.monotonic() + self._timeout
+            stdout = stderr = ""
+            input_value: str | None = _canonical(request).decode("utf-8") + "\n"
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.kill()
+                    process.communicate()
+                    raise subprocess.TimeoutExpired(self._command, self._timeout)
+                try:
+                    stdout, stderr = process.communicate(
+                        input=input_value, timeout=min(0.05, remaining)
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    input_value = None
+                    if checkpointed:
+                        poll(action)
+            completed = process.returncode == 0
         except (OSError, subprocess.SubprocessError) as exc:
             raise JourneyDriverError(f"product action {action!r} could not run: {exc}") from exc
+        finally:
+            if checkpointed:
+                finish(action, completed=completed)
         if process.returncode != 0:
-            detail = process.stderr.strip()
+            detail = stderr.strip()
             raise JourneyDriverError(
                 f"product action {action!r} exited {process.returncode}"
                 + (f": {detail}" if detail else "")
             )
         try:
-            response_value = json.loads(process.stdout)
+            response_value = json.loads(stdout)
         except json.JSONDecodeError as exc:
             raise JourneyDriverError(f"product action {action!r} returned invalid JSON") from exc
         response = _exact_fields(
@@ -858,9 +888,10 @@ class JourneyDriver:
         *,
         payload: Mapping[str, Any] | None = None,
         scenario: str | None = None,
+        session: object | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         fields = {"discovery"} | ({"scenario"} if scenario is not None else set())
-        response = self._invoke(action, payload=payload, fields=fields)
+        response = self._invoke(action, payload=payload, fields=fields, session=session)
         discovery = _mapping(response["discovery"], f"product action {action!r} discovery")
         if scenario is None:
             return discovery, None
@@ -992,35 +1023,42 @@ class JourneyDriver:
         self._check_context(context)
         values: dict[str, Any] = {}
 
-        before_discovery, _ = self._discovery_action("interruption-recovery-before")
+        before_discovery, _ = self._discovery_action(
+            "interruption-recovery-before", session=session
+        )
         before = session.observe("interruption_recovery", "before", before_discovery)
-        interrupted_controller, _ = self._discovery_action("interruption-controller")
+        interrupted_controller, _ = self._discovery_action(
+            "interruption-controller", session=session
+        )
         interrupted_authorization = session.before_external_controller_interruption(
             interrupted_controller
         )
         self._invoke(
             "interrupt-controller",
             fields=set(),
+            session=session,
         )
         session.observe_external_controller_interrupted(interrupted_authorization)
         session.terminate_owned_runtime(before, before_discovery)
         after_discovery, interruption = self._discovery_action(
             "interruption-recovery-after",
             scenario="interruption_recovery",
+            session=session,
         )
         session.observe("interruption_recovery", "after", after_discovery)
-        recovery_controller, _ = self._discovery_action("recovery-controller")
+        recovery_controller, _ = self._discovery_action("recovery-controller", session=session)
         recovery_authorization = session.before_external_recovery_controller(recovery_controller)
         self._invoke(
             "complete-recovery-controller",
             fields=set(),
+            session=session,
         )
         session.observe_external_recovery_controller_complete(recovery_authorization)
         assert interruption is not None
         values["interruption_recovery"] = interruption
 
         rollback_discovery, rollback = self._discovery_action(
-            "failed-candidate-rollback", scenario="failed_candidate_rollback"
+            "failed-candidate-rollback", scenario="failed_candidate_rollback", session=session
         )
         session.observe("failed_candidate_rollback", "after", rollback_discovery)
         assert rollback is not None
@@ -1029,21 +1067,26 @@ class JourneyDriver:
         stop_cases: dict[str, Any] = {}
         for outcome in native_service_adapter.failure.STOP_OUTCOMES:
             scenario_name = f"stop_safety.{outcome}"
-            stop_before_discovery, _ = self._discovery_action(f"stop-safety-{outcome}-before")
+            stop_before_discovery, _ = self._discovery_action(
+                f"stop-safety-{outcome}-before", session=session
+            )
             session.observe(scenario_name, "before", stop_before_discovery)
             stop_after_discovery, case = self._discovery_action(
                 f"stop-safety-{outcome}",
                 scenario=scenario_name,
+                session=session,
             )
             session.observe(scenario_name, "after", stop_after_discovery)
             assert case is not None
             stop_cases[outcome] = case
         values["stop_safety"] = {"status": "pass", "cases": stop_cases}
 
-        removal_discovery, _ = self._discovery_action("keep-data-uninstall-before")
+        removal_discovery, _ = self._discovery_action(
+            "keep-data-uninstall-before", session=session
+        )
         current = session.observe("keep_data_uninstall", "before", removal_discovery)
         session.before_product_removal(current, removal_discovery)
-        removal_response = self._invoke("remove-product", fields={"scenario"})
+        removal_response = self._invoke("remove-product", fields={"scenario"}, session=session)
         removal_scenario = _exact_fields(
             removal_response["scenario"],
             {"name", "value"},

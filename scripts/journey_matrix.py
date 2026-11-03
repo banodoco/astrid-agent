@@ -84,6 +84,111 @@ M4_5_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in M4_5_MATRIX)
 M4_6_MATRIX: Final = RELEASE1_MATRIX
 M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
 
+# Hannah's Option B decision keeps the Pinokio rows in Release 1, but only for
+# action-boundary/end-state assertions. The associated gap-free custody and
+# removal-authority-continuity claims remain explicit, separately attributable
+# R1.x work. A boundary snapshot is not renamed into a custody claim.
+PINOKIO_M4_6_SLOT_IDS: Final = tuple(
+    row["job_id"] for row in M4_6_MATRIX if row["mode"] != "direct"
+)
+DIRECT_M4_6_SLOT_IDS: Final = tuple(
+    row["job_id"] for row in M4_6_MATRIX if row["mode"] == "direct"
+)
+M4_6_SCENARIO_IDS: Final = (
+    "interruption-recovery",
+    "rollback",
+    "keep_data_uninstall",
+    "stop_safety",
+)
+PINOKIO_R1_SNAPSHOT_ACTIONS: Final = (
+    "install",
+    "start",
+    "stop",
+    "retry-after-stop",
+    "update",
+    "uninstall",
+)
+PINOKIO_R1_SNAPSHOT_SCENARIO_ASSERTIONS: Final = {
+    "interruption-recovery": (
+        "durable_journal",
+        "same_operation_recovery",
+        "terminal_identity",
+        "data_preserved",
+    ),
+    "rollback": (
+        "controlled_candidate_failure",
+        "release0_identity",
+        "healthy_restart",
+        "data_preserved",
+    ),
+    "keep_data_uninstall": (
+        "program_removed",
+        "service_removed",
+        "data_kept",
+        "sentinel_preserved",
+    ),
+    "stop_safety": (
+        "refused_stop",
+        "unknown_stop",
+        "no_update_retry_or_activation",
+        "data_unchanged",
+        "release0_identity",
+    ),
+}
+OPTION_B_DECISION: Final = (
+    "deferred-R1.x (Hannah decision, 2026-11-02 option B)"
+)
+OPTION_B_DECISION_POINTER: Final = "docs/merge-plan/DECISIONS.md:338"
+DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS: Final = tuple(
+    {
+        # ``id`` is the original, exact M4-6 obligation ID. The assertion ID
+        # separates the deferred claim from the R1 assertion with the same ID
+        # in END_STATE_INVENTORY.
+        "id": f"{scenario_id}:{row['job_id']}",
+        "assertion_id": f"{scenario_id}:{row['job_id']}:continuous-custody",
+        "r1_snapshot_assertion_id": f"{scenario_id}:{row['job_id']}:snapshot-end-state",
+        "release_scope": OPTION_B_DECISION,
+        "decision_pointer": OPTION_B_DECISION_POINTER,
+        "r1_gate": "excluded-deferred-R1.x",
+        "claim": "gap-free Pinokio custody and removal-authorization continuity",
+        # Only keep-data uninstall directly removes a product. The other
+        # scenarios were coupled to removal authority by the old conjunctive
+        # slot receipt; neither continuity claim is an R1 snapshot assertion.
+        "removal_authorization_relation": (
+            "direct-removal" if scenario_id == "keep_data_uninstall" else "slot-coupled-removal"
+        ),
+        "deferred_to": "R1.x gap-free observer work",
+    }
+    for row in M4_6_MATRIX
+    if row["mode"] != "direct"
+    for scenario_id in M4_6_SCENARIO_IDS
+)
+
+# Rule 36 P13 applies the same separation to the three native direct slots.
+# Checkpoint observations are required in R1; they do not establish process
+# containment or gap-free history between samples.  Keep those claims visible
+# and explicitly deferred, rather than silently treating a checkpoint as proof.
+DIRECT_CHECKPOINT_DECISION: Final = "deferred-R1.x (M-INT rule 36 P13, 2026-11-02T22:04:52Z)"
+DIRECT_CHECKPOINT_DECISION_POINTER: Final = "ORCHESTRATOR.md:11776"
+DEFERRED_R1_X_DIRECT_CONTAINMENT_CONTINUITY_OBLIGATIONS: Final = tuple(
+    {
+        "id": f"{scenario_id}:{row['job_id']}",
+        "assertion_id": f"{scenario_id}:{row['job_id']}:containment-continuous-history",
+        "r1_snapshot_assertion_id": f"{scenario_id}:{row['job_id']}:checkpoint-end-state",
+        "release_scope": DIRECT_CHECKPOINT_DECISION,
+        "decision_pointer": DIRECT_CHECKPOINT_DECISION_POINTER,
+        "r1_gate": "excluded-deferred-R1.x",
+        "claim": "native manager/process containment and continuous-history custody",
+        "removal_authorization_relation": (
+            "direct-removal" if scenario_id == "keep_data_uninstall" else "slot-coupled-removal"
+        ),
+        "deferred_to": "R1.x direct containment/continuous-history collector work",
+    }
+    for row in M4_6_MATRIX
+    if row["mode"] == "direct"
+    for scenario_id in M4_6_SCENARIO_IDS
+)
+
 # Release end-state inventory.  These are obligations rather than receipts:
 # route availability never promotes an obligation to a passed release gate.
 # Keeping the mappings next to the matrices lets the one evidence checker show
@@ -131,11 +236,30 @@ END_STATE_INVENTORY: Final = (
         {
             "id": f"interruption-recovery:{row['job_id']}", "phase": "interruption-recovery",
             "job_id": row["job_id"], "os": row["os"], "channel": row["mode"],
+            "assertion_id": (
+                f"interruption-recovery:{row['job_id']}:checkpoint-end-state" if row["mode"] == "direct" else
+                f"interruption-recovery:{row['job_id']}:snapshot-end-state"
+            ),
             "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
             "route": "journey_failure_modes.py:scenario_errors(interruption_recovery)",
-            "route_state": "unimplemented", "dependency": "hosted native-service M4-6 adapter and receipt",
-            "predicate": "injected interruption, journal, explicit same-operation recovery, terminal identity and preserved data",
-            "source": "journey_failure_modes.py:_interruption_errors", "evidence_kind": "m4-6",
+            "route_state": "unimplemented",
+            "dependency": (
+                "hosted direct checkpoint bundle plus external M-CI run/job/artifact join" if row["mode"] == "direct" else
+                "authenticated Pinokio action-boundary snapshot receipt"
+            ),
+            "predicate": (
+                "step-boundary snapshots, in-step polling, independent initial/final censuses, "
+                "injected interruption, journal, explicit same-operation recovery, terminal identity and preserved data; "
+                "containment/continuous-history deferred-R1.x"
+                if row["mode"] == "direct" else
+                "action-boundary snapshots, bounded polling, independent initial/final censuses, "
+                "exactly-one-owner, uninstall end-state and preserved data; no custody-continuity claim"
+            ),
+            "source": (
+                "journey_predicates.py:check_m4_6" if row["mode"] == "direct" else
+                "check_journey_evidence.py:_pinokio_snapshot_end_state_errors"
+            ),
+            "evidence_kind": "m4-6" if row["mode"] == "direct" else "m4-6-snapshot-end-state",
         } for row in M4_6_MATRIX
     ),
     {
@@ -149,10 +273,29 @@ END_STATE_INVENTORY: Final = (
         {
             "id": f"{scenario}:{row['job_id']}", "phase": "rollback-uninstall-stop", "job_id": row["job_id"],
             "os": row["os"], "channel": row["mode"],
+            "assertion_id": (
+                f"{scenario}:{row['job_id']}:checkpoint-end-state" if row["mode"] == "direct" else
+                f"{scenario}:{row['job_id']}:snapshot-end-state"
+            ),
             "owner": "M-QUAL" if row["mode"] == "direct" else "M-PIN",
             "route": f"journey_failure_modes.py:scenario_errors({failure_name})",
-            "route_state": "unimplemented", "dependency": "hosted native-service M4-6 adapter and receipt",
-            "predicate": predicate, "source": source, "evidence_kind": "m4-6",
+            "route_state": "unimplemented",
+            "dependency": (
+                "hosted direct checkpoint bundle plus external M-CI run/job/artifact join" if row["mode"] == "direct" else
+                "authenticated Pinokio action-boundary snapshot receipt"
+            ),
+            "predicate": (
+                f"{predicate}; step-boundary snapshots, in-step polling, independent initial/final censuses, "
+                "data kept/removed invariants; containment/continuous-history deferred-R1.x"
+                if row["mode"] == "direct" else
+                f"{predicate}; action-boundary snapshots, bounded polling, independent initial/final "
+                "censuses, exactly-one-owner and uninstall/data end-state; no custody-continuity claim"
+            ),
+            "source": (
+                "journey_predicates.py:check_m4_6" if row["mode"] == "direct" else
+                "check_journey_evidence.py:_pinokio_snapshot_end_state_errors"
+            ),
+            "evidence_kind": "m4-6" if row["mode"] == "direct" else "m4-6-snapshot-end-state",
         } for scenario, failure_name, predicate, source in (
             ("rollback", "failed_candidate_rollback", "controlled candidate failure; authentic real-R0 executable identity, healthy restart and semantic data preserved", "journey_failure_modes.py:_rollback_errors"),
             ("keep_data_uninstall", "keep_data_uninstall", "remove program and service; retain workspace/CAS/semantic data and sentinel", "journey_failure_modes.py:_uninstall_errors"),
