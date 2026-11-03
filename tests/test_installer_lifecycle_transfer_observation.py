@@ -45,6 +45,33 @@ def test_observation_captures_effective_action_principal_and_all_files_without_a
     manager.run.assert_not_called()
 
 
+@pytest.mark.parametrize("unit_file_state", ["enabled", "disabled", "static"])
+def test_stopped_observation_preserves_state_but_cannot_authorize_transfer(observed, unit_file_state):
+    manager, data, _dropin, fields = observed
+    fields.update(ActiveState="inactive", SubState="dead", MainPID="0", ControlPID="0",
+                  Job="", UnitFileState=unit_file_state)
+    result = manager._observe_stopped_systemd_transfer_definition(data)
+    assert dict(result.properties)["UnitFileState"] == unit_file_state
+    with pytest.raises(RuntimeError, match="historical containment"):
+        manager._prepare_lifecycle_transfer()
+    manager.run.assert_not_called()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("ActiveState", "active"), ("SubState", "failed"), ("MainPID", "123"),
+    ("ControlPID", "456"), ("Job", "42"), ("UnitFileState", "masked"),
+    ("UnitFileState", ""),
+])
+def test_stopped_observation_refuses_live_pending_or_unknown_state(observed, key, value):
+    manager, data, _dropin, fields = observed
+    fields.update(ActiveState="inactive", SubState="dead", MainPID="0", ControlPID="0",
+                  Job="", UnitFileState="enabled")
+    fields[key] = value
+    with pytest.raises(ValueError, match="supported stopped state"):
+        manager._observe_stopped_systemd_transfer_definition(data)
+    manager.run.assert_not_called()
+
+
 @pytest.mark.parametrize("key,value", [
     ("Id", "other.service"), ("LoadState", "not-found"),
     ("FragmentPath", "/other/astrid.service"), ("ExecStart", ""),

@@ -563,7 +563,26 @@ class Service:
 
     def _prepare_lifecycle_transfer(self) -> None:
         """Fail closed until census, custody, and reversible fencing exist."""
-        raise RuntimeError("Lifecycle transfer is unsupported: manager census and restart fencing are unavailable.")
+        raise RuntimeError(
+            "Lifecycle transfer is unsupported: historical containment, retained custody, "
+            "and replacement-safe restart fencing are unavailable."
+        )
+
+    def _observe_stopped_systemd_transfer_definition(self, data: Path) -> _SystemdTransferObservation:
+        """Reject visibly non-stopped states; a matching sample grants no authority.
+
+        The unit's current state and job do not prove absence of historical
+        descendants or other queued activations.  In particular this result
+        must not be used to install a gate, stop, register or start a unit.
+        """
+        observation = self._observe_systemd_transfer_definition(data)
+        fields = dict(observation.properties)
+        if (fields["ActiveState"] != "inactive" or fields["SubState"] != "dead"
+                or fields["MainPID"] != "0" or fields["ControlPID"] != "0"
+                or fields["Job"] != ""
+                or fields["UnitFileState"] not in {"enabled", "disabled", "static"}):
+            raise ValueError("The observed systemd unit is not in a supported stopped state.")
+        return observation
 
     def _launchd_stop_identity(self, value: str, data: Path) -> tuple[dict, dict]:
         """Validate and snapshot the loaded, installer-owned LaunchAgent."""
