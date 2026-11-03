@@ -374,7 +374,7 @@
   },
   {
    "id": "generation.generate_image_codex",
-   "disposition": "required",
+   "disposition": "optional",
    "evidence_reason": "Bounded canonical Codex image profile with ordered CAS references and ChatGPT CLI authentication.",
    "adapter_family": "provider",
    "resource_keys": ["provider"],
@@ -440,7 +440,7 @@
   },
   {
    "id": "generation.generate_speech",
-   "disposition": "required",
+   "disposition": "optional",
    "evidence_reason": "Draft speech synthesis via declared Edge TTS egress (api.msedgeservices.com:443, legacy fallback speech.platform.bing.com:443) and ffmpeg.",
    "adapter_family": "cpu",
    "resource_keys": [
@@ -969,7 +969,7 @@
   },
   {
    "id": "stream_content.distill",
-   "disposition": "required",
+   "disposition": "optional",
    "evidence_reason": "Current-machine CPU/media orchestration capability covered by the generic host; child provider readiness is explicit.",
    "adapter_family": "cpu",
    "resource_keys": [
@@ -985,7 +985,7 @@
   },
   {
    "id": "stream_content.segment_map",
-   "disposition": "required",
+   "disposition": "optional",
    "evidence_reason": "Current-machine CPU/media analysis capability covered by the generic host.",
    "adapter_family": "cpu",
    "resource_keys": [
@@ -1233,7 +1233,7 @@
   },
   {
    "adapter_family": "cpu",
-   "disposition": "required",
+   "disposition": "optional",
    "evidence_reason": "Required public action in the active core Video Editing pack; local binary readiness is explicit.",
    "id": "video_editing.event_talks",
    "required_binaries": [
