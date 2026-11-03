@@ -42,22 +42,23 @@ def unzip(bundle):
     return lzma.decompress(base64.b64decode(bundle.env['ASTRID_ENGINE_SOURCE']))
 
 
-@pytest.mark.parametrize('engine', ['vibecomfy-h3', 'comfyui'])
-def test_console_dry_run_and_help_are_isolated_and_exact(engine):
-    argv = (*ARGV[:2], engine, *ARGV[3:])
-    b = bootstrap.build_cli_bootstrap(argv)
-    loader = b.command[-1].replace("raise SystemExit(entries[0].load()())", "entry = entries[0].load()\n    print('ORIGIN=' + sys.modules['astrid.console'].__file__, file=sys.stderr)\n    raise SystemExit(entry())")
-    result = run(b, loader=loader)
-    assert result.returncode == 0, result.stderr
-    assert 'ORIGIN=' in result.stderr and 'astrid-engine-cli-' in result.stderr
-    plan = json.loads(result.stdout)
-    assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
-    local = subprocess.run([sys.executable, '-c', 'from astrid.console import main; raise SystemExit(main())', *argv],
-                           env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, text=True, capture_output=True)
-    assert local.returncode == 0 and result.stdout == local.stdout
-    help_result = run(bootstrap.build_cli_bootstrap(('engines', '--help')))
-    assert help_result.returncode == 0 and 'astrid engines' in help_result.stdout
-    assert not Path('/tmp/astrid-plan').exists()
+def test_console_dry_run_and_help_are_isolated_and_exact():
+    def check(argv):
+        b = bootstrap.build_cli_bootstrap(argv)
+        loader = b.command[-1].replace("raise SystemExit(entries[0].load()())", "entry = entries[0].load()\n    print('ORIGIN=' + sys.modules['astrid.console'].__file__, file=sys.stderr)\n    raise SystemExit(entry())")
+        result = run(b, loader=loader)
+        assert result.returncode == 0, result.stderr
+        assert 'ORIGIN=' in result.stderr and 'astrid-engine-cli-' in result.stderr
+        plan = json.loads(result.stdout)
+        assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
+        local = subprocess.run([sys.executable, '-c', 'from astrid.console import main; raise SystemExit(main())', *argv],
+                               env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, text=True, capture_output=True)
+        assert local.returncode == 0 and result.stdout == local.stdout
+        help_result = run(bootstrap.build_cli_bootstrap(('engines', '--help')))
+        assert help_result.returncode == 0 and 'astrid engines' in help_result.stdout
+        assert not Path('/tmp/astrid-plan').exists()
+    check(ARGV)
+    check((*ARGV[:2], 'comfyui', *ARGV[3:]))
 
 
 def test_exact_bytes_determinism_and_identity():
