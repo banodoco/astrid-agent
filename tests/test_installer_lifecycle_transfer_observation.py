@@ -22,6 +22,7 @@ def observed(tmp_path, monkeypatch):
     dropin = manager.path.parent / "astrid.service.d" / "override.conf"
     dropin.parent.mkdir()
     dropin.write_text("[Service]\nRestart=no\n")
+    monkeypatch.setattr(service, "_typed_environment_files", lambda: ())
     fields = dict.fromkeys(service._TRANSFER_UNIT_PROPERTIES, "")
     fields.update(Id="astrid.service", LoadState="loaded", FragmentPath=str(manager.path),
                   DropInPaths=str(dropin), ExecStart="{ path=/selected ; argv[]=/selected ; }",
@@ -119,7 +120,7 @@ def test_symlink_file_and_incomplete_or_failed_manager_query_refuse(observed, mo
     dropin.unlink()
     dropin.write_text("[Service]\nRestart=no\n")
     del fields["ControlGroup"]
-    with pytest.raises(ValueError, match="Incomplete"):
+    with pytest.raises(ValueError, match="incomplete"):
         manager._observe_systemd_transfer_definition(data)
     monkeypatch.setattr(service, "_transfer_systemctl_show", Mock(side_effect=subprocess.CalledProcessError(1, "systemctl")))
     with pytest.raises(subprocess.CalledProcessError):
@@ -133,5 +134,23 @@ def test_other_managers_explicitly_refuse_transfer(tmp_path, system):
     with pytest.raises(RuntimeError, match="unsupported"):
         manager._observe_systemd_transfer_definition(tmp_path)
     with pytest.raises(RuntimeError, match="unsupported"):
+        manager._prepare_lifecycle_transfer()
+    manager.run.assert_not_called()
+
+
+def test_typed_environment_is_private_and_changes_refuse(observed, monkeypatch, caplog):
+    manager, data, _, _ = observed
+    entries = (("/secret/*", True), ("/secret/*", False))
+    monkeypatch.setattr(service, "_typed_environment_files", lambda: entries)
+    result = manager._observe_systemd_transfer_definition(data)
+    assert result.environment_files == entries
+    assert "/secret" not in repr(result) and "/secret" not in caplog.text
+    monkeypatch.setattr(service, "_typed_environment_files", Mock(side_effect=[(), entries]))
+    with pytest.raises(ValueError, match="changed"):
+        manager._observe_systemd_transfer_definition(data)
+    monkeypatch.setattr(service, "_typed_environment_files", Mock(side_effect=ValueError("unsupported")))
+    with pytest.raises(ValueError, match="unsupported"):
+        manager._observe_systemd_transfer_definition(data)
+    with pytest.raises(RuntimeError):
         manager._prepare_lifecycle_transfer()
     manager.run.assert_not_called()

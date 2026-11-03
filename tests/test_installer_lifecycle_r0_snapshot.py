@@ -22,6 +22,7 @@ def snapshot(tmp_path, monkeypatch):
     (manager.root / "current").write_text("r0\n")
     manager.path.parent.mkdir(parents=True, exist_ok=True)
     manager.path.write_bytes(service._r0_systemd_fragment(version, data, manager.log, manager.env_file))
+    monkeypatch.setattr(service, "_typed_environment_files", lambda: ())
     fields = dict.fromkeys(service._TRANSFER_UNIT_PROPERTIES, "")
     fields.update(Id="astrid.service", LoadState="loaded", FragmentPath=str(manager.path),
                   ExecStart="{ path=/python ; argv[]=/python -c line1\nline2 ; }",
@@ -150,3 +151,55 @@ def test_dropin_and_unreadable_manager_are_independent(snapshot, monkeypatch):
     result = values(manager._snapshot_linux_r0(version, data))
     assert result["fragment"] == "match" and result["unit_target"] == "unknown"
     assert result["active_state"] == "unknown" and result["sample_stability"] == "unknown"
+
+
+@pytest.mark.parametrize("entries, expected", [((), "absent"), ((("/secret/*", True),), "present"),
+                                             ((("/one", False), ("/two", True)), "present")])
+def test_typed_environment_is_bound_but_cannot_grant_authority(snapshot, monkeypatch, entries, expected, caplog):
+    manager, version, data, _ = snapshot
+    baseline = manager._snapshot_linux_r0(version, data)
+    monkeypatch.setattr(service, "_typed_environment_files", lambda: entries)
+    result = manager._snapshot_linux_r0(version, data)
+    assert values(result)["environment_files"] == expected
+    assert values(result)["effective_environment_files"] == "unknown"
+    assert values(result)["sample_stability"] == "match"
+    assert result.authority is False
+    if entries:
+        assert result.binding_digest != baseline.binding_digest
+    assert "/secret" not in repr(result) and "/secret" not in caplog.text
+    with pytest.raises(RuntimeError):
+        manager._prepare_lifecycle_transfer()
+    manager.run.assert_not_called()
+
+
+def test_typed_failure_and_change_make_snapshot_unknown(snapshot, monkeypatch):
+    manager, version, data, _ = snapshot
+    monkeypatch.setattr(service, "_typed_environment_files", Mock(side_effect=ValueError("unsupported")))
+    result = values(manager._snapshot_linux_r0(version, data))
+    assert result["environment_files"] == result["unit_target"] == result["sample_stability"] == "unknown"
+    monkeypatch.setattr(service, "_typed_environment_files", Mock(side_effect=[(), (("/later", True),)]))
+    result = values(manager._snapshot_linux_r0(version, data))
+    assert result["environment_files"] == "absent" and result["sample_stability"] == "unknown"
+    monkeypatch.setattr(service, "_typed_environment_files", Mock(side_effect=[(), ValueError("unsupported")]))
+    assert values(manager._snapshot_linux_r0(version, data))["sample_stability"] == "unknown"
+    manager.run.assert_not_called()
+
+
+def test_loaded_dropin_and_later_optional_file_never_prove_absence(snapshot, monkeypatch, tmp_path):
+    manager, version, data, fields = snapshot
+    dropin = manager.path.parent / "astrid.service.d" / "override.conf"
+    dropin.parent.mkdir()
+    optional = tmp_path / "later.env"
+    dropin.write_text(f"[Service]\nEnvironmentFile=-{optional}\n")
+    fields["DropInPaths"] = str(dropin)
+    monkeypatch.setattr(service, "_typed_environment_files", lambda: ((str(optional), True),))
+    first = manager._snapshot_linux_r0(version, data)
+    optional.write_text("SECRET=private\n")
+    second = manager._snapshot_linux_r0(version, data)
+    for result in (first, second):
+        assert values(result)["environment_files"] == "present"
+        assert values(result)["effective_environment_files"] == "unknown"
+        assert result.authority is False
+    with pytest.raises(RuntimeError):
+        manager._prepare_lifecycle_transfer()
+    manager.run.assert_not_called()

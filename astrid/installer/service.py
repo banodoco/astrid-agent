@@ -10,6 +10,7 @@ import os
 import platform as system_platform
 import plistlib
 import re
+import selectors
 import stat
 import subprocess
 import sys
@@ -49,7 +50,7 @@ TASK_QUERY = f"$t=Get-ScheduledTask | Where-Object {{ $_.TaskName -eq '{TASK}' -
 # reply does not authenticate the user manager or prove a descendant census.
 _TRANSFER_UNIT_PROPERTIES = (
     "Id", "LoadState", "FragmentPath", "DropInPaths", "ExecStart",
-    "WorkingDirectory", "Environment", "EnvironmentFiles", "User", "Group",
+    "WorkingDirectory", "Environment", "User", "Group",
     "DynamicUser", "Restart", "RestartUSec", "KillMode", "TimeoutStopUSec",
     "Triggers", "TriggeredBy", "Wants", "Requires", "Before", "After",
     "InvocationID", "MainPID", "ControlPID", "ControlGroup", "ActiveState",
@@ -72,6 +73,7 @@ class _SystemdTransferObservation:
     selection: _TransferFileObservation = field(repr=False)
     properties: tuple[tuple[str, str], ...] = field(repr=False)
     files: tuple[_TransferFileObservation, ...] = field(repr=False)
+    environment_files: tuple[tuple[str, bool], ...] = field(repr=False)
 
 
 def _transfer_file_observation(path: Path) -> _TransferFileObservation:
@@ -113,16 +115,96 @@ def _transfer_systemctl_show() -> str:
     return result.stdout
 
 
+# Limit both runtime and captured bytes; neither bus errors nor values go to logs.
+def _bounded_busctl(args: list[str]) -> bytes:
+    process = subprocess.Popen(
+        ["busctl", "--user", "--json=short", "--no-pager", "--timeout=15",
+         "--auto-start=no", "--allow-interactive-authorization=no", *args],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    data = bytearray()
+    deadline = time.monotonic() + 15
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise ValueError("systemd typed query timed out")
+                chunk = os.read(process.stdout.fileno(), 65537 - len(data))
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > 65536:
+                    raise ValueError("systemd typed query exceeds limit")
+        if process.wait(timeout=max(0.001, deadline - time.monotonic())) != 0:
+            raise ValueError("systemd typed query failed")
+        return bytes(data)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("systemd typed query timed out") from exc
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+
+
+def _busctl_json(raw: bytes) -> dict:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate typed response key")
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    except (ValueError, UnicodeError, RecursionError):
+        raise ValueError("malformed typed systemd response") from None
+    if not isinstance(value, dict) or set(value) != {"type", "data"}:
+        raise ValueError("malformed typed systemd response")
+    return value
+
+
+def _typed_environment_files() -> tuple[tuple[str, bool], ...]:
+    """Sample the resolved service object; values are private and non-authoritative."""
+    destination = "org.freedesktop.systemd1"
+    object_path = "/org/freedesktop/systemd1/unit/astrid_2eservice"
+    def resolve():
+        reply = _busctl_json(_bounded_busctl([
+            "call", destination, "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager", "GetUnit", "s", "astrid.service"]))
+        if reply != {"type": "o", "data": [object_path]}:
+            raise ValueError("unexpected systemd service object")
+    resolve()
+    reply = _busctl_json(_bounded_busctl([
+        "get-property", destination, object_path,
+        "org.freedesktop.systemd1.Service", "EnvironmentFiles"]))
+    entries = reply.get("data")
+    if reply.get("type") != "a(sb)" or not isinstance(entries, list) or len(entries) > 1024:
+        raise ValueError("unsupported systemd environment files response")
+    result = []
+    for entry in entries:
+        if (not isinstance(entry, list) or len(entry) != 2 or
+                not isinstance(entry[0], str) or type(entry[1]) is not bool):
+            raise ValueError("malformed systemd environment files response")
+        try:
+            encoded = entry[0].encode("utf-8", "strict")
+        except UnicodeError:
+            raise ValueError("malformed systemd environment files response") from None
+        if not encoded or len(encoded) > 4096 or b"\0" in encoded:
+            raise ValueError("malformed systemd environment files response")
+        result.append((entry[0], entry[1]))
+    resolve()
+    return tuple(result)
+
+
 def _transfer_unit_fields(output: str) -> dict[str, str]:
-    fields: dict[str, str] = {}
-    for line in output.splitlines():
-        key, separator, value = line.partition("=")
-        if not separator or key not in _TRANSFER_UNIT_PROPERTIES or key in fields:
-            raise ValueError("Malformed systemd transfer observation.")
-        fields[key] = value
-    if set(fields) != set(_TRANSFER_UNIT_PROPERTIES):
-        raise ValueError("Incomplete systemd transfer observation.")
-    return fields
+    # Both observations consume the same systemctl format, including ExecStart
+    # continuations. Completeness and duplicate checks remain mandatory.
+    return _snapshot_unit_fields(output)
 
 
 @dataclass(frozen=True)
@@ -169,6 +251,8 @@ def _snapshot_unit_fields(output: str) -> dict[str, str]:
     key = None
     for line in output.splitlines():
         name, separator, value = line.partition("=")
+        if separator and name == "EnvironmentFiles":
+            raise ValueError("unexpected text systemd property")
         if separator and name in _TRANSFER_UNIT_PROPERTIES:
             if name in fields:
                 raise ValueError("ambiguous systemd property")
@@ -650,6 +734,7 @@ class Service:
                     or record.get("data_root") != str(data)):
                 raise ValueError("Lifecycle transfer selection does not match this installation.")
             fields = _transfer_unit_fields(_transfer_systemctl_show())
+            environment_files = _typed_environment_files()
             if (fields["Id"] != "astrid.service" or fields["LoadState"] != "loaded"
                     or fields["FragmentPath"] != str(self.path) or not fields["ExecStart"]
                     or fields["NeedDaemonReload"] != "no"):
@@ -666,7 +751,7 @@ class Service:
                     or tuple(_transfer_file_observation(Path(item.path)) for item in files) != files):
                 raise ValueError("Lifecycle transfer files changed during collection.")
             return _SystemdTransferObservation(
-                os.getuid(), selection, tuple(sorted(fields.items())), files)
+                os.getuid(), selection, tuple(sorted(fields.items())), files, environment_files)
 
         first = observe()
         if observe() != first:
@@ -736,8 +821,13 @@ class Service:
         try:
             if self.system != "linux" or sys.platform != "linux":
                 raise ValueError("unsupported platform")
-            fields = _snapshot_unit_fields(_transfer_systemctl_show())
+            sampled_fields = _snapshot_unit_fields(_transfer_systemctl_show())
+            environment_files = _typed_environment_files()
+            fields = sampled_fields
             binding_parts["unit_properties"] = fields
+            binding_parts["environment_files"] = environment_files
+            put("environment_files", "absent" if not environment_files else "present",
+                "unverified manager typed report")
             put("unit_target", "match" if fields["Id"] == "astrid.service" and
                 fields["FragmentPath"] == str(self.path) and fields["LoadState"] == "loaded" else "mismatch",
                 "unverified manager's unit target")
@@ -765,7 +855,7 @@ class Service:
             put("unit_file_state", "match" if fields["UnitFileState"] in {"enabled", "disabled", "static"}
                 else "unknown", "unverified manager report")
         except (OSError, subprocess.SubprocessError, ValueError, UnicodeError):
-            for name in ("unit_target", "dropins", "dropin_files", "active_state", "sub_state", "main_pid", "control_pid",
+            for name in ("unit_target", "dropins", "dropin_files", "environment_files", "active_state", "sub_state", "main_pid", "control_pid",
                          "unit_job", "reload_needed", "unit_file_state"):
                 put(name, "unknown", "systemd query unavailable or ambiguous")
         group = fields["ControlGroup"] if fields else ""
@@ -792,7 +882,9 @@ class Service:
                 stable = False
         if fields is not None:
             try:
-                stable = stable and _snapshot_unit_fields(_transfer_systemctl_show()) == fields
+                later_fields = _snapshot_unit_fields(_transfer_systemctl_show())
+                later_environment_files = _typed_environment_files()
+                stable = stable and later_fields == fields and later_environment_files == environment_files
             except (OSError, subprocess.SubprocessError, ValueError, UnicodeError):
                 stable = False
         else:
