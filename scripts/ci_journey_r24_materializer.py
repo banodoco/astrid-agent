@@ -848,11 +848,23 @@ def execute(args: argparse.Namespace) -> int:
         python = str(version["python"])
         agent_client = checkouts["agent"] / "astrid_runtime_client/generated.py"
         worker_file = evidence / "worker-ready.json"
-        _run([python, "-I", str(helper), "ensure-worker", "--backend", str(backend),
+        owner_diagnostic = evidence / "owner-discovery-diagnostic.json"
+        worker_result = _run([python, "-I", str(helper), "ensure-worker", "--backend", str(backend),
               "--agent-client", str(agent_client),
-              "--output", str(worker_file)], log=evidence / "worker-ready.log",
+              "--output", str(worker_file),
+              "--owner-diagnostic", str(owner_diagnostic)], log=evidence / "worker-ready.log",
              receipt=receipt, label="authenticate-health-start-local-worker",
-             env=installed_env, timeout=900)
+             env=installed_env, timeout=900, check=False)
+        if owner_diagnostic.is_file() and not owner_diagnostic.is_symlink():
+            receipt["owner_discovery_diagnostic"] = {
+                "path": str(owner_diagnostic.relative_to(evidence)),
+                "sha256": _sha(owner_diagnostic),
+                "same_invocation_command": "authenticate-health-start-local-worker",
+            }
+        if worker_result.returncode:
+            raise MaterializerError(
+                f"authenticate-health-start-local-worker exited {worker_result.returncode}"
+            )
 
         receipt["stage"] = "admit-installed-agent-task"
         _write(receipt_path, receipt)
