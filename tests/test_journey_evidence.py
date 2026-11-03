@@ -238,6 +238,11 @@ def test_intel_diagnostic_reuses_lifecycle_assertions_and_is_not_release1(tmp_pa
     source = tmp_path / 'direct-macos' / 'journey-result.json'
     row = json.loads(source.read_text())
     row['runner_image'] = 'macos-15-intel'
+    row.pop('service_manager')
+    row['service_manager_prerequisite']['manager'] = 'launchd'
+    row['service_transition'] = {release: {'manager': 'launchd', 'service_path': '/owned/launchd.plist',
+                                           'foreground_fallback': False}
+                                 for release in ('release0', 'release1')}
     row['os_build'] = 'macOS-15.7-x86_64-i386-64bit'
     row['runner_provenance'].update(observed_os_family='darwin', RUNNER_ARCH='X64',
                                     observed_architecture='x86_64')
@@ -263,7 +268,7 @@ def test_intel_diagnostic_reuses_lifecycle_assertions_and_is_not_release1(tmp_pa
         ('scenario', 'fresh-install'), ('runner_image', 'macos-15'), ('shell', 'powershell.exe'),
         ('os_build', 'Linux-test'), ('status', 'skipped'), ('source_override_test_mode', True),
         ('final_cleanup', 'not-run'), ('import_origins', {}),
-        ('service_manager_prerequisite', {}), ('service_manager', {}),
+        ('service_manager_prerequisite', {}), ('service_transition', {}),
         ('release_transition', {}), ('release0_fixture', {}), ('semantic_data', {}),
         ('candidate_checkouts', {}), ('sources', {}), ('installed_tuple', {}),
     ]
@@ -282,6 +287,12 @@ def test_intel_diagnostic_reuses_lifecycle_assertions_and_is_not_release1(tmp_pa
         del bad['runner_provenance'][field]
         write(bad)
         assert gate.evaluate_direct_macos_intel(candidate, tmp_path), field
+    for release in ('release0', 'release1'):
+        for field, value in [('manager', 'foreground'), ('service_path', ''), ('foreground_fallback', True)]:
+            bad = copy.deepcopy(row)
+            bad['service_transition'][release][field] = value
+            write(bad)
+            assert gate.evaluate_direct_macos_intel(candidate, tmp_path), (release, field)
     for check in row['checks']:
         bad = copy.deepcopy(row)
         bad['checks'][check] = 'not-run'
@@ -340,6 +351,11 @@ def test_intel_diagnostic_cli_validates_candidate_and_keeps_release_gate(tmp_pat
     source = receipts / 'direct-macos' / 'journey-result.json'
     row = json.loads(source.read_text())
     row['runner_image'] = 'macos-15-intel'
+    row.pop('service_manager')
+    row['service_manager_prerequisite']['manager'] = 'launchd'
+    row['service_transition'] = {release: {'manager': 'launchd', 'service_path': '/owned/launchd.plist',
+                                           'foreground_fallback': False}
+                                 for release in ('release0', 'release1')}
     row['os_build'] = 'macOS-15.7-x86_64-i386-64bit'
     row['runner_provenance'].update(observed_os_family='darwin', RUNNER_ARCH='X64',
                                     observed_architecture='x86_64')

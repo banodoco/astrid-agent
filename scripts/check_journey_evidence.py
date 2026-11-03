@@ -354,13 +354,29 @@ def evaluate_direct_macos_intel(candidate, results):
         after = read(phases["after-cleanup"])
     except (OSError, ValueError) as exc:
         return [f"Intel diagnostic: {exc}"]
-    errors = _release1_row_errors(candidate, DIRECT_MACOS_INTEL_DIAGNOSTIC, after)
+    # The R0->R1 driver emits the same ownership observation separately for
+    # both releases, rather than the generic fresh-install service_manager key.
+    transition = after.get("service_transition")
+    prerequisite = after.get("service_manager_prerequisite")
+    errors = []
+    if not isinstance(prerequisite, dict) or prerequisite.get("manager") != "launchd":
+        errors.append("Intel diagnostic: launchd prerequisite is absent")
+    if not isinstance(transition, dict):
+        transition = {}
+    for release in ("release0", "release1"):
+        service = transition.get(release)
+        if (not isinstance(service, dict) or service.get("manager") != "launchd"
+                or service.get("foreground_fallback") is not False
+                or not isinstance(service.get("service_path"), str) or not service["service_path"].strip()):
+            errors.append(f"Intel diagnostic: {release} launchd ownership is absent or invalid")
+    evaluated = {**after, "service_manager": transition.get("release1")}
+    errors.extend(_release1_row_errors(candidate, DIRECT_MACOS_INTEL_DIAGNOSTIC, evaluated))
     if after.get("job_id") != DIRECT_MACOS_INTEL_DIAGNOSTIC["job_id"]:
         errors.append("Intel diagnostic: wrong job id")
     for field in ("receipt_kind", "job_id", "mode", "scenario", "status", "runner_image",
                   "runner_provenance", "os_build", "shell", "source_override_test_mode",
                   "candidate_checkouts", "sources", "installed_tuple", "import_origins",
-                  "service_manager_prerequisite", "service_manager", "release_transition",
+                  "service_manager_prerequisite", "service_transition", "release_transition",
                   "release0_fixture", "semantic_data", "checks"):
         if field not in before or before.get(field) != after.get(field):
             errors.append(f"Intel diagnostic: {field} differs across cleanup snapshots")
