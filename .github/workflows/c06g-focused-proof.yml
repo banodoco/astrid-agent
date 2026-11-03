@@ -1,0 +1,64 @@
+name: C-06g focused coordinator proof
+
+on:
+  push:
+    branches:
+      - lane/M-CI/C-06G-FOCUSED-PROOF-R1
+    paths:
+      - .github/workflows/c06g-focused-proof.yml
+
+permissions:
+  contents: read
+
+jobs:
+  focused-coordinator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: tests/ci
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install focused test dependencies
+        run: python -m pip install 'PyYAML>=6.0' 'jsonschema>=4.0'
+      - name: Record and verify candidate identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "checkout_sha=$(git rev-parse HEAD)"
+            echo "parent_sha=$(git rev-parse HEAD^)"
+            sha256sum scripts/ci/regression_coordinator.py tests/ci/test_regression_coordinator.py
+          } | tee "$RUNNER_TEMP/c06g-identity.log"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = 024fe668b2e34a86ef2b06e9f918919593580abd
+          git diff --exit-code 024fe668b2e34a86ef2b06e9f918919593580abd HEAD -- . ':(exclude).github/workflows/c06g-focused-proof.yml'
+      - name: Run named and adjacent tests
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          echo '$ python -m unittest -v test_regression_coordinator.DeploymentAdapterTests.test_preexisting_terminal_pass_is_quarantined_and_requires_red_readback test_regression_coordinator.DeploymentAdapterTests.test_mark_terminal_on_legacy_pass_invalidates_old_readback test_regression_coordinator.DeploymentAdapterTests.test_predicted_red_digest_cannot_verify_during_quarantine' | tee "$RUNNER_TEMP/c06g-named.log"
+          python -m unittest -v test_regression_coordinator.DeploymentAdapterTests.test_preexisting_terminal_pass_is_quarantined_and_requires_red_readback test_regression_coordinator.DeploymentAdapterTests.test_mark_terminal_on_legacy_pass_invalidates_old_readback test_regression_coordinator.DeploymentAdapterTests.test_predicted_red_digest_cannot_verify_during_quarantine 2>&1 | tee -a "$RUNNER_TEMP/c06g-named.log"
+          named_exit=${PIPESTATUS[0]}
+          echo "named_inner_exit=$named_exit" | tee -a "$RUNNER_TEMP/c06g-named.log"
+          echo '$ python -m unittest -v test_regression_coordinator test_regression_finalizer test_regression_deployment test_regression_aggregate test_regression_green test_local_regression_green test_trusted_finalizer' | tee "$RUNNER_TEMP/c06g-adjacent.log"
+          python -m unittest -v test_regression_coordinator test_regression_finalizer test_regression_deployment test_regression_aggregate test_regression_green test_local_regression_green test_trusted_finalizer 2>&1 | tee -a "$RUNNER_TEMP/c06g-adjacent.log"
+          adjacent_exit=${PIPESTATUS[0]}
+          echo "adjacent_inner_exit=$adjacent_exit" | tee -a "$RUNNER_TEMP/c06g-adjacent.log"
+          if [ "$named_exit" -ne 0 ] || [ "$adjacent_exit" -ne 0 ]; then exit 1; fi
+      - name: Upload identity and test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c06g-focused-proof
+          path: |
+            ${{ runner.temp }}/c06g-identity.log
+            ${{ runner.temp }}/c06g-named.log
+            ${{ runner.temp }}/c06g-adjacent.log
+          if-no-files-found: warn
