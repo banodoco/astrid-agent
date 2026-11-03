@@ -14,7 +14,10 @@ from . import clash
 from ._command_state import ABSENT, equal, present
 from ._commit_patch import canonical_site
 from ._doc_patch import value_at
-from .sync import _legacy_request_matches, _native_command, _part_identity, _response, _settle_pending, _settled_part
+from .sync import (
+    _legacy_request_matches, _native_command, _part_identity, _response,
+    _retry_outbox_locks, _settle_pending, _settled_part,
+)
 from .outbox import Outbox
 
 
@@ -527,6 +530,11 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
     if overwrite and fn is None:
         raise ValueError("overwrite requires the original edit function")
     failure = record.get("failure") or {}
+    if (failure.get("details") or {}).get("reason") == "user_editing":
+        # The captured edit was held off, not conflicted. Even when the caller
+        # still has its function, review and resume that flight before deriving
+        # any new intent or wire identity.
+        fn = None
     if ((failure.get("details") or {}).get("status") in {"refused", "invalid"}
             and (failure.get("details") or {}).get("reason") != "user_editing"
             and (record.get("origin") != "function" or fn is None)):
@@ -637,15 +645,60 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
                 "not replayed; re-run the original function on the newest timeline and review "
                 "the result."
             )
-            result["next"] = (
-                f'# The saved function edit is only a captured command list. It conflicts with '
-                f'the current timeline and was not submitted. If available, re-run the original '
-                f'function on the newest timeline.\n'
-                f'tl.retry({record["id"]!r}, your_function)'
-            )
+            if failure_details.get("reason") != "user_editing":
+                result["next"] = (
+                    f'# The saved function edit is only a captured command list. It conflicts with '
+                    f'the current timeline and was not submitted. If available, re-run the original '
+                    f'function on the newest timeline.\n'
+                    f'tl.retry({record["id"]!r}, your_function)'
+                )
         return result
     failure = {"message": data.get("message") or details.get("message"), "details": details}
     return _refused(record, failure, data)
+
+
+def _resume_user_editing(session, path, record, expected_state):
+    """Restore a saved flight without rebuilding its wire request or fence."""
+    from ._pending import snapshot
+
+    part = _part(record)
+    flight = copy.deepcopy(record.get("flight"))
+    if not isinstance(flight, dict) or not flight.get("fence"):
+        raise ValueError("saved user-editing request has no fenced flight")
+    captured = {"base": _pin(part["base"]), "pending": copy.deepcopy(part["commands"])}
+    session._flight_body(captured, flight, None, False)
+    if snapshot(captured, flight, record["failure"])["parts"][0] != part:
+        raise ValueError("saved user-editing flight no longer matches its pending part")
+    flight.update(pending_id=record["id"], pending_path=str(path),
+                  pending_part=record.get("part", 0), pending_how="retry",
+                  pending_identity=_part_identity(record))
+    with _retry_outbox_locks(session.outbox, path):
+        state = session._state()
+        owner = (state if Path(path).resolve() == session.outbox.path.resolve()
+                 else Outbox(Path(path)).read())
+        saved = owner.get("pending_changes", {}).get(record["id"])
+        if saved is None or _record_digest(saved) != _record_digest(record):
+            raise ValueError("pending change changed after this retry preview; preview it again")
+        if owner["scope"] != state["scope"]:
+            raise ValueError("resume the user-editing flight with its original realm and actor")
+        if state != expected_state:
+            raise ValueError("outbox changed after this retry preview; retry the original flight first")
+        if state.get("flight") != flight:
+            if state.get("flight") is not None or state.get("pending"):
+                raise ValueError("retry the original in-flight request before the saved user-editing flight")
+            state.update(captured, flight=flight,
+                         commit_options=copy.deepcopy(part.get("commit_options") or {}),
+                         evaluation=copy.deepcopy(part.get("evaluation")))
+            state.pop("conflict", None)
+            session.outbox.write(state)
+
+    def require_original(state):
+        # Restoration and sending use separate lock scopes. A concurrent ACK
+        # may already have settled this flight and started another one.
+        if state.get("flight") != flight:
+            raise ValueError("saved user-editing flight changed before it could be resumed")
+
+    return session._flush(prepare=require_original, release_conflict=True)
 
 
 def commit_preview(timeline, result):
@@ -682,17 +735,20 @@ def commit_preview(timeline, result):
     options = {key: copy.deepcopy(request[key]) for key in ("merge", "reads") if key in request}
     group_id = request.get("group_id", current["id"])
     try:
-        submitted = timeline.session.submit(
-            request["commands"], label=request["label"], steps=request.get("steps", []),
-            merge=options.get("merge", "fields"), reads=options.get("reads"),
-            idempotency_key=str(uuid.uuid4()),
-            logical_key=current["key"], group_id=group_id,
-            rationale=copy.deepcopy(request.get("rationale")),
-            imports=copy.deepcopy(part.get("imports", [])),
-            expected_state=expected, base={"revision_id": request["base_revision_id"],
-                                            "publication_id": request["base_publication_id"]},
-            pending_id=pending_id, pending_path=path, pending_part=current.get("part", 0), pending_how="retry",
-            pending_identity=_part_identity(current))
+        if (current.get("failure", {}).get("details") or {}).get("reason") == "user_editing":
+            submitted = _resume_user_editing(timeline.session, path, current, expected)
+        else:
+            submitted = timeline.session.submit(
+                request["commands"], label=request["label"], steps=request.get("steps", []),
+                merge=options.get("merge", "fields"), reads=options.get("reads"),
+                idempotency_key=str(uuid.uuid4()),
+                logical_key=current["key"], group_id=group_id,
+                rationale=copy.deepcopy(request.get("rationale")),
+                imports=copy.deepcopy(part.get("imports", [])),
+                expected_state=expected, base={"revision_id": request["base_revision_id"],
+                                             "publication_id": request["base_publication_id"]},
+                pending_id=pending_id, pending_path=path, pending_part=current.get("part", 0), pending_how="retry",
+                pending_identity=_part_identity(current))
         accepted = timeline._accepted(submitted)
         saved = next((record for record_path, record in timeline._pending_records_with_paths("all")
                       if record.get("id") == pending_id and str(record_path) == path), None)
