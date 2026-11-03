@@ -53,6 +53,24 @@ def test_exact_binding_is_stable_and_non_authoritative(snapshot):
         manager._prepare_lifecycle_transfer()
 
 
+def test_binding_tracks_real_and_effective_uid_independently(snapshot, monkeypatch):
+    manager, version, data, _ = snapshot
+    monkeypatch.setattr(service, "owned_by_current_user", lambda *_: True)
+    monkeypatch.setattr(service.platform, "current_user", lambda: 101)
+    monkeypatch.setattr(service.os, "geteuid", lambda: 202)
+    initial = manager._snapshot_linux_r0(version, data)
+    monkeypatch.setattr(service.platform, "current_user", lambda: 102)
+    real_changed = manager._snapshot_linux_r0(version, data)
+    monkeypatch.setattr(service.platform, "current_user", lambda: 101)
+    monkeypatch.setattr(service.os, "geteuid", lambda: 203)
+    effective_changed = manager._snapshot_linux_r0(version, data)
+    assert len({initial.binding_digest, real_changed.binding_digest, effective_changed.binding_digest}) == 3
+    assert all(result.authority is False for result in (initial, real_changed, effective_changed))
+    with pytest.raises(RuntimeError):
+        manager._prepare_lifecycle_transfer()
+    manager.run.assert_not_called()
+
+
 def test_foreign_and_replaced_definition(snapshot, monkeypatch):
     manager, version, data, fields = snapshot
     original_binding = manager._snapshot_linux_r0(version, data).binding_digest

@@ -46,6 +46,17 @@ def test_observation_captures_effective_action_principal_and_all_files_without_a
     manager.run.assert_not_called()
 
 
+def test_transfer_observation_binds_real_uid_when_effective_uid_differs(observed, monkeypatch):
+    manager, data, _, _ = observed
+    monkeypatch.setattr(service, "owned_by_current_user", lambda *_: True)
+    monkeypatch.setattr(service.platform, "current_user", lambda: 101)
+    monkeypatch.setattr(service.os, "geteuid", lambda: 202)
+    assert manager._observe_systemd_transfer_definition(data).uid == 101
+    with pytest.raises(RuntimeError, match="unsupported"):
+        manager._prepare_lifecycle_transfer()
+    manager.run.assert_not_called()
+
+
 @pytest.mark.parametrize("unit_file_state", ["enabled", "disabled", "static"])
 def test_stopped_observation_preserves_state_but_cannot_authorize_transfer(observed, unit_file_state):
     manager, data, _dropin, fields = observed

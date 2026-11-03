@@ -751,7 +751,7 @@ class Service:
                     or tuple(_transfer_file_observation(Path(item.path)) for item in files) != files):
                 raise ValueError("Lifecycle transfer files changed during collection.")
             return _SystemdTransferObservation(
-                os.getuid(), selection, tuple(sorted(fields.items())), files, environment_files)
+                platform.current_user(), selection, tuple(sorted(fields.items())), files, environment_files)
 
         first = observe()
         if observe() != first:
@@ -770,7 +770,7 @@ class Service:
         def put(name: str, result: str, reason: str) -> None:
             predicates[name] = _TransferPredicate(result, reason)
         binding_parts = {"version": version.document(), "data": str(data), "unit": str(self.path),
-                         "uid": os.getuid(), "known_children": known_children}
+                         "uid": platform.current_user(), "known_children": known_children}
         candidates: tuple[tuple[int, int, int, int, str], ...] = ()
         files = []
         # The same raw, owned objects are reread after the census.
