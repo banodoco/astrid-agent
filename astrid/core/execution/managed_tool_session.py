@@ -13,7 +13,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import math
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
@@ -155,6 +157,17 @@ class AdmissionToken:
 
 
 @dataclass(frozen=True, slots=True)
+class _ReleaseIntent:
+    """Local reservation only; it does not confer engine authority."""
+
+    association_id: str
+    request_id: str
+    binding_identity: tuple[Any, ...]
+    generation: int
+    deadline: float
+
+
+@dataclass(frozen=True, slots=True)
 class SessionCustodyEnvelope:
     """Host-owned evidence envelope; not a replacement for Runtime records."""
 
@@ -195,6 +208,9 @@ class _ActiveSession:
     fenced: bool = False
     dispatched: set[str] = field(default_factory=set)
     last_admission_token_id: str | None = None
+    release_intent: _ReleaseIntent | None = None
+    release_outcome: str | None = None
+    release_fence_generation: int | None = None
 
 
 _MISSING_ADAPTER_OPERATION = object()
@@ -226,7 +242,8 @@ class ManagedToolSession:
     @property
     def active(self) -> bool:
         with self._lock:
-            return self._active is not None and not self._active.fenced
+            return (self._active is not None and not self._active.fenced
+                    and self._active.release_intent is None)
 
     @property
     def occupied(self) -> bool:
@@ -281,6 +298,8 @@ class ManagedToolSession:
             if self._closed:
                 raise ManagedToolSessionError("managed session manager is closed")
             if self._active is not None:
+                if self._active.release_intent is not None:
+                    raise SessionCapacityError("checked release retains the session slot")
                 if self._active.binding.identity_key == binding.identity_key:
                     if self._active.fenced:
                         raise SessionCapacityError("fenced session requires verified release")
@@ -312,7 +331,7 @@ class ManagedToolSession:
         """Verify an independent observation still matches the owned session."""
         with self._lock:
             active = self._require_active_locked()
-            if active.fenced:
+            if active.fenced or active.release_intent is not None:
                 raise StaleAdmissionError("managed session is fenced")
             if active.binding.identity_key != binding.identity_key:
                 self._fence_locked(reason="binding_changed")
@@ -330,7 +349,7 @@ class ManagedToolSession:
     def admit(self, *, capability_id: str, invocation_id: str) -> AdmissionToken:
         with self._lock:
             active = self._require_active_locked()
-            if active.fenced:
+            if active.fenced or active.release_intent is not None:
                 raise StaleAdmissionError("managed session is fenced")
             if active.capability.capability_id != capability_id:
                 raise ManagedToolSessionError("capability does not match owned session")
@@ -497,6 +516,82 @@ class ManagedToolSession:
                 return self._fence_and_release_locked(reason=reason)
             return None
 
+    def _begin_checked_release(
+        self, *, association_id: str, request_id: str, expected_binding: SessionBinding,
+        expected_generation: int, deadline: float,
+    ) -> _ReleaseIntent:
+        """Reserve the exact quiescent slot without changing its generation.
+
+        A future caller must hold the host admission lock and this manager's
+        lock through the producer call, and retain the intent with its
+        authenticated request. This reservation alone never authorizes a
+        native operation.
+        """
+        with self._lock:
+            active = self._active
+            now = time.monotonic()
+            if (not isinstance(association_id, str) or not association_id
+                    or not isinstance(request_id, str) or not request_id
+                    or not isinstance(expected_binding, SessionBinding)
+                    or type(expected_generation) is not int or expected_generation < 1
+                    or type(deadline) not in (int, float) or not math.isfinite(deadline)
+                    or not 0 < deadline - now <= 10):
+                raise StaleAdmissionError("invalid checked release authorization")
+            if (active is None or active.fenced or active.release_intent is not None
+                    or active.generation != expected_generation
+                    or self._generation != expected_generation
+                    or active.binding.identity_key != expected_binding.identity_key):
+                raise StaleAdmissionError("checked release authorization is stale")
+            if active.in_flight or active.dispatched:
+                raise SessionCapacityError("session release is pending active admissions")
+            intent = _ReleaseIntent(association_id, request_id, expected_binding.identity_key,
+                                    expected_generation, float(deadline))
+            active.release_intent = intent
+            return intent
+
+    def _finish_checked_release(self, intent: _ReleaseIntent, *, outcome: str) -> None:
+        """Apply a correlated producer result; never invoke the native adapter.
+
+        Caller must authenticate and correlate the producer result before using
+        this local state transition. Only unresolved may later be reconciled.
+        """
+        self._apply_checked_release(intent, outcome=outcome, reconcile=False)
+
+    def _reconcile_checked_release(self, intent: _ReleaseIntent, *, outcome: str) -> None:
+        """Apply an authenticated readback for the retained request."""
+        self._apply_checked_release(intent, outcome=outcome, reconcile=True)
+
+    def _apply_checked_release(self, intent: _ReleaseIntent, *, outcome: str, reconcile: bool) -> None:
+        with self._lock:
+            active = self._active
+            if (not isinstance(intent, _ReleaseIntent) or active is None
+                    or active.release_intent is not intent
+                    or active.binding.identity_key != intent.binding_identity
+                    or active.generation != intent.generation):
+                raise StaleAdmissionError("checked release intent is stale")
+            if outcome not in {"busy", "completed", "failed", "unresolved"}:
+                raise ValueError("invalid checked release outcome")
+            if active.release_outcome is None:
+                if reconcile:
+                    raise StaleAdmissionError("checked release has no unresolved request")
+                if active.fenced or self._generation != intent.generation:
+                    raise StaleAdmissionError("checked release reservation was fenced")
+                if time.monotonic() > intent.deadline:
+                    outcome = "unresolved"
+                if outcome == "busy":
+                    active.release_intent = None
+                    return
+                active.fenced = True
+                self._generation += 1
+                active.release_fence_generation = self._generation
+                active.release_outcome = outcome
+            elif (not reconcile or active.release_outcome != "unresolved" or outcome != "completed"
+                  or not active.fenced
+                  or self._generation != active.release_fence_generation):
+                raise StaleAdmissionError("checked release cannot be reconciled")
+            if outcome == "completed":
+                self._active = None
+
     def _require_active_locked(self) -> _ActiveSession:
         if self._active is None:
             raise ManagedToolSessionError("no managed session is open")
@@ -529,6 +624,8 @@ class ManagedToolSession:
         if active is None:
             self._generation += 1
             return
+        if active.release_intent is not None:
+            raise SessionCapacityError("checked release retains the session slot")
         try:
             fenced = self._fence_locked(reason=reason)
             if isinstance(fenced, Mapping) and fenced.get("ok") is False:
