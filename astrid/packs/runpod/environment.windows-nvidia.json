@@ -1,0 +1,30 @@
+{
+  "python": "3.12.10",
+  "exclude_newer": "2026-10-31T00:00:00Z",
+  "cuda_index": "cu130",
+  "torch": {
+    "torch": "2.10.0+cu130",
+    "torchvision": "0.25.0+cu130",
+    "torchaudio": "2.10.0+cu130"
+  },
+  "source": {
+    "pin": "comfyui-plain"
+  },
+  "vibecomfy_source": {
+    "pin": "vibecomfy"
+  },
+  "custom_nodes": [
+    {
+      "name": "ComfyUI-H3-Motion-Context-MultiRef",
+      "pin": "h3-motion-context"
+    },
+    {
+      "name": "ComfyUI-VideoHelperSuite",
+      "pin": "videohelpersuite"
+    }
+  ],
+  "pins": {
+    "path": "packs/runpod/pins.json",
+    "sha256": "d2b88e957e43c294ad70270c93a29fbbe6c4bc9a786dbc079a69631f9d34ebba"
+  }
+}

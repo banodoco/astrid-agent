@@ -3,8 +3,8 @@
   "engine": "comfyui",
   "platform": "linux-x86_64-cu130",
   "pins": {
-    "path": "packs/runpod/pins.json",
-    "sha256": "0b52fa5c71413b32bd10561d0f7cabdb6b2d037d90eaeacdb88801682663ea3b"
+    "path": "packs/vibecomfy/pins.json",
+    "sha256": "d18b348b36695336cc46c931b32948aea9cde59093ee8d14fe8b8779c61439b6"
   },
   "source_bindings": [
     {
@@ -27,7 +27,7 @@
       "requirements": {
         "mode": "packaged",
         "packaged_lock": {
-          "path": "packs/comfyui/requirements.linux-cu130.lock",
+          "path": "packs/vibecomfy/requirements.linux-cu130.lock",
           "sha256": "75f69f564bab7b45e50cb11ef5b2a5bade979e4dd76400393404c0d211a670a7"
         },
         "input_paths": [],
@@ -60,7 +60,7 @@
   ],
   "primary_environment": "comfy",
   "models_lock": {
-    "path": "packs/comfyui/models.lock.json",
+    "path": "packs/vibecomfy/models.lock.json",
     "sha256": "15644292198c752e4c4c37d4eb6f86afd2c7232181bc9606921ac0ef2dcff093"
   },
   "start": {
