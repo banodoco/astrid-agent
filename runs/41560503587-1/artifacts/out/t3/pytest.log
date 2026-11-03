@@ -1,0 +1,20 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.7.0 -- /home/runner/work/_temp/t04-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/runner/work/astrid-agent/astrid-agent/agent
+configfile: pyproject.toml
+plugins: anyio-4.16.0, platformdirs-4.14.3, timeout-2.4.0, split-0.11.0, cov-7.1.0
+timeout: 600.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 1 item
+
+tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin ERROR [100%]
+
+==================================== ERRORS ====================================
+________ ERROR at setup of test_pinned_element_render_proof_on_standin _________
+real pinned-element render prerequisites unavailable: ffmpeg is not on PATH; ffprobe is not on PATH
+- generated xml file: /home/runner/work/astrid-agent/astrid-agent/out/t3/results.xml -
+=========================== short test summary info ============================
+ERROR tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin - Failed: real pinned-element render prerequisites unavailable: ffmpeg is not on PATH; ffprobe is not on PATH
+=============================== 1 error in 1.11s ===============================

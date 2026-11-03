@@ -1,0 +1,77 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "set -euo pipefail\nmkdir -p out/t3\npython3 - <<'IDENTITY'\nimport hashlib,json,pathlib,subprocess\nroots={x:pathlib.Path(x) for x in ['agent','runtime','app','pinokio']}\nident={x:{'head':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD'],text=True).strip(),'tree':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD^{tree}'],text=True).strip(),'status':subprocess.check_output(['git','-C',str(p),'status','--porcelain'],text=True).strip()} for x,p in roots.items()}\nident['app_manifest_sha256']=hashlib.sha256((roots['app']/'public/install-manifest.json').read_bytes()).hexdigest()\nident['runtime_lock_sha256']=hashlib.sha256((roots['agent']/'requirements/runtime.lock').read_bytes()).hexdigest()\nident['installed_product_digest']=None\nident['installed_product_note']='Editable source test environment; no installed-product digest claimed.'\npathlib.Path('out/t3/identity.json').write_text(json.dumps(ident,indent=2)+'\\n')\nIDENTITY\ncurl -fsSL https://nodejs.org/dist/v20.19.4/node-v20.19.4-linux-x64.tar.gz -o \"$RUNNER_TEMP/t04-node.tgz\"\nprintf '%s  %s\\n' d80a33707605ced9a31b8f543cea9ab512bc3d2fef2c148f31a50e939ff07560 \"$RUNNER_TEMP/t04-node.tgz\" | sha256sum -c -\ntar -xzf \"$RUNNER_TEMP/t04-node.tgz\" -C \"$RUNNER_TEMP\"\nexport PATH=\"$RUNNER_TEMP/node-v20.19.4-linux-x64/bin:$PATH\"\ntest \"$(node --version)\" = v20.19.4\ntest \"$(npm --version)\" = 10.8.2\npython3 -m venv \"$RUNNER_TEMP/t04-venv\"\nV=\"$RUNNER_TEMP/t04-venv/bin/python\"\n\"$V\" -m pip install -e 'agent[dev]'\n\"$V\" -m pip install --no-deps -e runtime -e runtime/packages/python\n\"$V\" -c 'import runtime_protocol; from pathlib import Path; p=Path(runtime_protocol.__file__).resolve(); print(\"runtime_protocol\",p); assert p.is_relative_to(Path(\"runtime\").resolve())'\nnpm ci --prefix agent/remotion --no-audit --no-fund\n(cd agent/remotion && npx remotion browser ensure)\nnpm ci --prefix app --no-audit --no-fund\n(cd app && npx playwright install --with-deps chromium)\nexport ASTRID_T3_EVIDENCE_DIR=\"$GITHUB_WORKSPACE/out/t3/evidence\"\ncd agent\nset +e\n\"$V\" -m pytest -o addopts= -vv -rA --basetemp=\"$RUNNER_TEMP/t04-pytest\" --junitxml=../out/t3/results.xml tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin > ../out/t3/pytest.log 2>&1\nrc=$?\nset -e\nprintf '%s\\n' \"$rc\" > ../out/t3/inner-exit.txt\nexport TEST_EXIT=\"$rc\"\npython3 - <<'RETAIN'\nimport json,os,pathlib,shutil\nout=pathlib.Path('../out/t3'); root=pathlib.Path(os.environ['RUNNER_TEMP'])/'t04-pytest'\nfor name in ('export-frames','preview-frames','builtin-baseline'):\n for i,p in enumerate(root.rglob(name)):\n  if p.is_dir(): shutil.copytree(p,out/'visuals'/name/str(i),dirs_exist_ok=True)\ndata={'inner_exit':int(os.environ['TEST_EXIT']),'groups':{'1':'two pinned revisions, colors and source digests','2':'missing/corrupt snapshot rejection','3':'built-in baseline unchanged','4':'preview/export frames 5,15,25 within asserted tolerance'},'mapping_only':True,'fixture_limitations':['occurrence video is image-only','voice fixtures are silent']}\n(out/'group-map.json').write_text(json.dumps(data,indent=2)+'\\n')\nRETAIN\nexit \"$rc\"\n",
+  "effective_tuple": {
+    "agent": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+    "app": "a55bec9ff384b5bbfee5535962880084ab2adb1b",
+    "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+  },
+  "event": "push",
+  "inner_exit_code": 1,
+  "inventory": [
+    {
+      "bytes": 381,
+      "path": "artifacts/out/t3/group-map.json",
+      "sha256": "b4c43da0949d198ad43e1b13a068b12d1ac8609206e32536e20094660bb9315a"
+    },
+    {
+      "bytes": 917,
+      "path": "artifacts/out/t3/identity.json",
+      "sha256": "0f6451a39c17b6bc1211c9587cee2e7abccb62275ec09cdd229b28e1750e9a67"
+    },
+    {
+      "bytes": 2,
+      "path": "artifacts/out/t3/inner-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 1319,
+      "path": "artifacts/out/t3/pytest.log",
+      "sha256": "16dd9b2a9256ba5b21b05c90d253e4aa7a4c8a555301ae512de7d3f65ef350f4"
+    },
+    {
+      "bytes": 663,
+      "path": "artifacts/out/t3/results.xml",
+      "sha256": "ab3219cc8b27bcb909c6842f62824565174a28db378ab699a3b2dc3be68e0460"
+    },
+    {
+      "bytes": 95702,
+      "path": "command.log",
+      "sha256": "c4983ae4f3b97353cf11b0d5a1f3b0c8657ecaa0df465175397f703f38d63879"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 3494,
+      "path": "requested-inputs.json",
+      "sha256": "45e09249417a6c73b85885e080779cfebf3b0aafaef88b49efce347d98303a9b"
+    },
+    {
+      "bytes": 442,
+      "path": "tuple.txt",
+      "sha256": "6fbc21853ae260c3abbc27ae2abbe3397b5112fdadc8707e2cb0c2749b8ad8d2"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+    "app_ref": "a55bec9ff384b5bbfee5535962880084ab2adb1b",
+    "artifact_paths": "out/t3",
+    "command": "set -euo pipefail\nmkdir -p out/t3\npython3 - <<'IDENTITY'\nimport hashlib,json,pathlib,subprocess\nroots={x:pathlib.Path(x) for x in ['agent','runtime','app','pinokio']}\nident={x:{'head':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD'],text=True).strip(),'tree':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD^{tree}'],text=True).strip(),'status':subprocess.check_output(['git','-C',str(p),'status','--porcelain'],text=True).strip()} for x,p in roots.items()}\nident['app_manifest_sha256']=hashlib.sha256((roots['app']/'public/install-manifest.json').read_bytes()).hexdigest()\nident['runtime_lock_sha256']=hashlib.sha256((roots['agent']/'requirements/runtime.lock').read_bytes()).hexdigest()\nident['installed_product_digest']=None\nident['installed_product_note']='Editable source test environment; no installed-product digest claimed.'\npathlib.Path('out/t3/identity.json').write_text(json.dumps(ident,indent=2)+'\\n')\nIDENTITY\ncurl -fsSL https://nodejs.org/dist/v20.19.4/node-v20.19.4-linux-x64.tar.gz -o \"$RUNNER_TEMP/t04-node.tgz\"\nprintf '%s  %s\\n' d80a33707605ced9a31b8f543cea9ab512bc3d2fef2c148f31a50e939ff07560 \"$RUNNER_TEMP/t04-node.tgz\" | sha256sum -c -\ntar -xzf \"$RUNNER_TEMP/t04-node.tgz\" -C \"$RUNNER_TEMP\"\nexport PATH=\"$RUNNER_TEMP/node-v20.19.4-linux-x64/bin:$PATH\"\ntest \"$(node --version)\" = v20.19.4\ntest \"$(npm --version)\" = 10.8.2\npython3 -m venv \"$RUNNER_TEMP/t04-venv\"\nV=\"$RUNNER_TEMP/t04-venv/bin/python\"\n\"$V\" -m pip install -e 'agent[dev]'\n\"$V\" -m pip install --no-deps -e runtime -e runtime/packages/python\n\"$V\" -c 'import runtime_protocol; from pathlib import Path; p=Path(runtime_protocol.__file__).resolve(); print(\"runtime_protocol\",p); assert p.is_relative_to(Path(\"runtime\").resolve())'\nnpm ci --prefix agent/remotion --no-audit --no-fund\n(cd agent/remotion && npx remotion browser ensure)\nnpm ci --prefix app --no-audit --no-fund\n(cd app && npx playwright install --with-deps chromium)\nexport ASTRID_T3_EVIDENCE_DIR=\"$GITHUB_WORKSPACE/out/t3/evidence\"\ncd agent\nset +e\n\"$V\" -m pytest -o addopts= -vv -rA --basetemp=\"$RUNNER_TEMP/t04-pytest\" --junitxml=../out/t3/results.xml tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin > ../out/t3/pytest.log 2>&1\nrc=$?\nset -e\nprintf '%s\\n' \"$rc\" > ../out/t3/inner-exit.txt\nexport TEST_EXIT=\"$rc\"\npython3 - <<'RETAIN'\nimport json,os,pathlib,shutil\nout=pathlib.Path('../out/t3'); root=pathlib.Path(os.environ['RUNNER_TEMP'])/'t04-pytest'\nfor name in ('export-frames','preview-frames','builtin-baseline'):\n for i,p in enumerate(root.rglob(name)):\n  if p.is_dir(): shutil.copytree(p,out/'visuals'/name/str(i),dirs_exist_ok=True)\ndata={'inner_exit':int(os.environ['TEST_EXIT']),'groups':{'1':'two pinned revisions, colors and source digests','2':'missing/corrupt snapshot rejection','3':'built-in baseline unchanged','4':'preview/export frames 5,15,25 within asserted tolerance'},'mapping_only':True,'fixture_limitations':['occurrence video is image-only','voice fixtures are silent']}\n(out/'group-map.json').write_text(json.dumps(data,indent=2)+'\\n')\nRETAIN\nexit \"$rc\"\n",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime_ref": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+    "slot": "5"
+  },
+  "run_attempt": "1",
+  "run_id": "41560503587",
+  "source_head": "4f4f623a8ca405d2a0409b6f775c892c55f220fb",
+  "source_ref": "refs/heads/venue/M-QUAL-R-34-T04-SELF-SERVE-EXEC-R1-2",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-QUAL-R-34-T04-SELF-SERVE-EXEC-R1-2",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "4f4f623a8ca405d2a0409b6f775c892c55f220fb"
+}
