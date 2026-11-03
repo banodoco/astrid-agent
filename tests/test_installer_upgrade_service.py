@@ -36,7 +36,7 @@ def test_upgrade_service_stop_and_exact_restore(unit):
     manager.stop_for_upgrade(state)
     assert calls == [["systemctl", "--user", "disable", "--now", "astrid.service"]]
     manager.path.write_bytes(b"candidate")
-    manager.restore_upgrade_definition(state)
+    manager.restore_upgrade_definition(state, expected_current=b"candidate")
     assert manager.path.read_bytes() == original
     assert manager.path.stat().st_mode & 0o777 == 0o640
     manager.restore_upgrade_activation(state)
@@ -51,6 +51,16 @@ def test_upgrade_stop_refuses_changed_definition(unit):
     manager.path.write_text("replacement")
     with pytest.raises(ValueError, match="changed before stop"):
         manager.stop_for_upgrade(state)
+    assert calls == []
+
+
+def test_upgrade_restore_refuses_changed_definition(unit):
+    manager, version, data, calls, _ = unit
+    state = manager.capture_upgrade_state(version, data)
+    manager.path.write_bytes(b"foreign")
+    with pytest.raises(ValueError, match="changed before restore"):
+        manager.restore_upgrade_definition(state, expected_current=b"candidate")
+    assert manager.path.read_bytes() == b"foreign"
     assert calls == []
 
 

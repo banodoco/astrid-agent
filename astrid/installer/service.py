@@ -562,10 +562,16 @@ class Service:
                 raise RuntimeError("The Astrid service still has running processes; upgrade refused.")
             time.sleep(min(0.2, max(0, deadline - time.monotonic())))
 
-    def restore_upgrade_definition(self, state: dict) -> None:
-        """Restore saved bytes while the caller retains realm authority."""
+    def restore_upgrade_definition(self, state: dict, *, expected_current: bytes) -> None:
+        """Restore saved bytes only over the definition identified by the caller."""
         self._validate_upgrade_state(state)
         raw = base64.b64decode(state["definition"], validate=True)
+        if not isinstance(expected_current, bytes):
+            raise ValueError("The current service definition must be identified before restore.")
+        current = self.path.lstat()
+        if (not stat.S_ISREG(current.st_mode) or not owned_by_current_user(self.path, current)
+                or self.path.read_bytes() != expected_current):
+            raise ValueError("The service definition changed before restore; recovery refused.")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(dir=self.path.parent, prefix=f".{self.path.name}.")
         temporary = Path(name)
