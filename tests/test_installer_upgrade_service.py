@@ -100,3 +100,99 @@ def test_unobservable_platform_refuses_before_mutation(tmp_path, system):
     with pytest.raises(RuntimeError, match="process container"):
         manager.capture_upgrade_state(version, tmp_path / "data")
     assert calls == []
+
+@pytest.fixture
+def launchd(tmp_path, monkeypatch):
+    import os
+    from astrid.installer import service
+    from astrid.installer.core import write_json
+    from astrid.installer.service import command
+
+    monkeypatch.setattr(service.platform, "current_user", lambda: os.getuid())
+    data, calls = tmp_path / "data", []
+    manager = Service(tmp_path / "program", tmp_path / "log", None, home=tmp_path, system="darwin")
+    folder = manager.root / "versions" / "old"
+    folder.mkdir(parents=True)
+    version = Version(folder, folder / "bin" / "python", folder / "profile", {})
+    write_json(folder / "version.json", version.document())
+    write_json(manager.selection, {"owner": LABEL, "program_root": str(manager.root), "data_root": str(data)})
+    manager.path.parent.mkdir(parents=True)
+    manager.path.write_text(render("darwin", version, data, manager.log, env_file=manager.env_file))
+    target = f"gui/{os.getuid()}/{LABEL}"
+    argv = command(version, data, log=manager.log, env_file=manager.env_file)
+    job = {"pid": 123, "override": "enabled", "action": argv, "loaded": True}
+
+    def run(args):
+        calls.append(list(args))
+        if args[:2] == ["launchctl", "print"]:
+            if not job["loaded"]:
+                import subprocess
+                raise subprocess.CalledProcessError(113, args, output="Could not find service")
+            action = job["action"]
+            return (f"{target} = {{\n\tpath = {manager.path}\n\tstate = running\n"
+                    f"\tpid = {job['pid']}\n\tprogram = {action[0]}\n"
+                    f"\targuments = {{\n" + "\n".join(action) + "\n\t}\n}")
+        if args[:2] == ["launchctl", "print-disabled"]:
+            return f'{{\n\t"{LABEL}" => {job["override"]}\n}}'
+        if args[1] in {"enable", "disable"}:
+            job["override"] = "enabled" if args[1] == "enable" else "disabled"
+            return ""
+        if args[1] == "bootout":
+            job["loaded"] = False
+            return ""
+        raise AssertionError(args)
+
+    manager.run = run
+    return manager, version, data, calls, job, target
+
+
+@pytest.mark.parametrize("override,restore_command", [("enabled", "enable"), ("disabled", "disable")])
+def test_launchd_upgrade_stop_orders_disable_bootout_and_restores_override(launchd, override, restore_command):
+    manager, version, data, calls, job, target = launchd
+    job["override"] = override
+    state = json.loads(json.dumps(manager.capture_launchd_upgrade_stop(version, data, owner_pid=123)))
+    manager.stop_launchd_for_upgrade(state)
+    mutations = [call for call in calls if call[1] in {"enable", "disable", "bootout"}]
+    assert mutations == [["launchctl", "disable", target], ["launchctl", "bootout", target]]
+    manager.restore_launchd_upgrade_override(state)
+    assert calls[-1] == ["launchctl", restore_command, target]
+
+
+def test_launchd_upgrade_refuses_unknown_override_and_owner_before_mutation(launchd):
+    manager, version, data, calls, job, _ = launchd
+    with pytest.raises(ValueError, match="does not match"):
+        manager.capture_launchd_upgrade_stop(version, data, owner_pid=999)
+    job["override"] = "unknown"
+    with pytest.raises(ValueError, match="override is unknown"):
+        manager.capture_launchd_upgrade_stop(version, data, owner_pid=123)
+    assert all(call[1] not in {"enable", "disable", "bootout"} for call in calls)
+
+
+def test_launchd_upgrade_revalidates_before_disable_and_bootout(launchd):
+    manager, version, data, calls, job, target = launchd
+    state = manager.capture_launchd_upgrade_stop(version, data, owner_pid=123)
+    job["pid"] = 456
+    with pytest.raises(ValueError, match="does not match"):
+        manager.stop_launchd_for_upgrade(state)
+    assert ["launchctl", "disable", target] not in calls
+    job["pid"] = 123
+    run = manager.run
+    def change_after_disable(args):
+        result = run(args)
+        if args[1] == "disable":
+            job["pid"] = 456
+        return result
+    manager.run = change_after_disable
+    with pytest.raises(ValueError, match="does not match"):
+        manager.stop_launchd_for_upgrade(state)
+    assert ["launchctl", "bootout", target] not in calls
+    job["pid"] = 123
+    manager.restore_launchd_upgrade_override(state)
+    assert calls[-1] == ["launchctl", "enable", target]
+
+
+def test_launchd_inactive_registration_does_not_load_job(launchd):
+    manager, version, data, calls, _job, _ = launchd
+    manager.register(version, data, activate=False)
+    assert manager.path.read_text() == render("darwin", version, data, manager.log, env_file=manager.env_file)
+    assert calls == []

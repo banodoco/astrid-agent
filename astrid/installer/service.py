@@ -593,6 +593,96 @@ class Service:
         if state["running"]:
             self.run(["systemctl", "--user", "start", "astrid.service"])
 
+    def _launchd_upgrade_override(self) -> bool:
+        """Read an explicit disabled override; absent or ambiguous is unknown."""
+        domain = f"gui/{platform.current_user()}"
+        value = self.run(["launchctl", "print-disabled", domain])
+        matches = re.findall(r'^\s*"' + re.escape(LABEL) + r'"\s*=>\s*(enabled|disabled)\s*$',
+                             value, re.MULTILINE)
+        if len(matches) != 1:
+            raise ValueError("The launchd disabled override is unknown; upgrade refused.")
+        return matches[0] == "disabled"
+
+    def capture_launchd_upgrade_stop(self, version: Version, data: Path, *, owner_pid: int | None) -> dict:
+        """Capture a loaded, validated job and explicit override before mutation.
+
+        This is only a manager-stop preimage, not proof of process-tree drain
+        or an implementation of full activation restoration. The transaction
+        must persist it before stop and fail closed without those capabilities.
+        """
+        if self.system != "darwin":
+            raise ValueError("A launchd upgrade stop requires macOS.")
+        record = self.recorded()
+        if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                or record.get("data_root") != str(data) or record.get("foreground")):
+            raise ValueError("The selected service does not match this managed installation.")
+        identity = self.validate_stop_target(version, data, owner_pid=owner_pid)
+        if identity is None:
+            raise ValueError("The selected launchd job is not loaded; upgrade refused.")
+        disabled = self._launchd_upgrade_override()
+        latest, observation = self._launchd_stop_identity(
+            self.run(["launchctl", "print", identity["target"]]), data)
+        if (latest != identity or (observation["state"] == "running" and
+                                   observation["pid"] != owner_pid)):
+            raise ValueError("The selected launchd service changed during capture; upgrade refused.")
+        return {"system": "darwin", "data": str(data), "owner_pid": owner_pid,
+                "running": observation["state"] == "running",
+                "identity": {**identity, "arguments": list(identity["arguments"]),
+                             "plist": base64.b64encode(identity["plist"]).decode("ascii"),
+                             "plist_stat": list(identity["plist_stat"])},
+                "disabled": disabled}
+
+    def _validate_launchd_upgrade_stop(self, state: dict) -> dict:
+        if (self.system != "darwin" or not isinstance(state, dict) or state.get("system") != "darwin"
+                or type(state.get("disabled")) is not bool or type(state.get("running")) is not bool
+                or not isinstance(state.get("data"), str)
+                or (state.get("owner_pid") is not None and
+                    (type(state["owner_pid"]) is not int or state["owner_pid"] <= 0))
+                or not isinstance(state.get("identity"), dict)):
+            raise ValueError("The saved launchd upgrade state is invalid.")
+        try:
+            identity = dict(state["identity"])
+            identity["arguments"] = tuple(identity["arguments"])
+            identity["plist_stat"] = tuple(identity["plist_stat"])
+            identity["plist"] = base64.b64decode(identity["plist"], validate=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("The saved launchd upgrade state is invalid.") from exc
+        target = f"gui/{platform.current_user()}/{LABEL}"
+        if identity.get("target") != target or identity.get("path") != str(self.path):
+            raise ValueError("The saved launchd upgrade target is invalid.")
+        record = self.recorded()
+        if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                or record.get("data_root") != state["data"] or record.get("foreground")):
+            raise ValueError("The launchd install selection changed; recovery refused.")
+        return identity
+
+    def stop_launchd_for_upgrade(self, state: dict) -> None:
+        """Disable then boot out a revalidated job, without a stopped precheck."""
+        identity = self._validate_launchd_upgrade_stop(state)
+        data, owner_pid = Path(state["data"]), state["owner_pid"]
+        current = self.validate_stop_target(None, data, owner_pid=owner_pid, expected_identity=identity)
+        if current != identity or self._launchd_upgrade_override() != state["disabled"]:
+            raise ValueError("The selected launchd service changed before stop; upgrade refused.")
+        target = identity["target"]
+        self.run(["launchctl", "disable", target])
+        # Revalidate the loaded action after disable; a failed or ambiguous
+        # observation leaves the saved preimage for transaction recovery.
+        current = self.validate_stop_target(None, data, owner_pid=owner_pid, expected_identity=identity)
+        if current != identity:
+            raise ValueError("The selected launchd service changed before bootout; recovery required.")
+        self.run(["launchctl", "bootout", target])
+
+    def restore_launchd_upgrade_override(self, state: dict) -> None:
+        """Restore the explicitly observed override after a partial stop."""
+        identity = self._validate_launchd_upgrade_stop(state)
+        current = self.validate_stop_target(None, Path(state["data"]), owner_pid=state["owner_pid"],
+                                            expected_identity=identity)
+        if current is not None and current != identity:
+            raise ValueError("The selected launchd service changed; recovery refused.")
+        if not self._launchd_upgrade_override():
+            raise ValueError("The launchd disabled override changed; recovery refused.")
+        self.run(["launchctl", "disable" if state["disabled"] else "enable", identity["target"]])
+
     def _launchd_stop_identity(self, value: str, data: Path) -> tuple[dict, dict]:
         """Validate and snapshot the loaded, installer-owned LaunchAgent."""
         target = f"gui/{platform.current_user()}/{LABEL}"
@@ -1127,7 +1217,7 @@ class Service:
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
     def register(self, version: Version, data: Path, *, activate: bool = True) -> None:
-        if not activate and self.system != "linux":
+        if not activate and self.system not in {"linux", "darwin"}:
             raise RuntimeError("Staged service registration is unavailable on this platform.")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_file.exists():
@@ -1138,7 +1228,8 @@ class Service:
             self.system, version, data, self.log, user=user, env_file=self.env_file,
         ))
         if self.system == "darwin":
-            self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
+            if activate:
+                self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
         elif self.system == "linux":
             if self.systemd():
                 self.run(["systemctl", "--user", "daemon-reload"])
