@@ -61,3 +61,63 @@ def test_owner_wait_refuses_missing_and_linked_lock(tmp_path):
     with pytest.raises((OSError, ValueError)):
         Backend.wait_for_realm_owner(SimpleNamespace(), {"realm_root": str(tmp_path)})
     assert target.read_bytes() == b"original"
+
+
+def test_update_waits_after_stop_before_backup_and_upgrade(tmp_path, monkeypatch):
+    from astrid.installer import core
+
+    root, data = tmp_path / "program", tmp_path / "data"
+    root.mkdir()
+    old = core.Version(root / "versions/old", root / "old-python", root / "old-profile", {})
+    candidate = core.Version(root / "versions/new", root / "new-python", root / "new-profile", {})
+    events = []
+    backend = SimpleNamespace(
+        wait_for_realm_owner=lambda _realm: events.append("wait"),
+        finish=lambda *_: events.append("finish"),
+    )
+    monkeypatch.setattr(core, "install_runtime", lambda *_: None)
+    monkeypatch.setattr(core, "install_launcher", lambda *_: None)
+    installer = core.Installer(root, data, backend)
+    installer._run_update_transaction(
+        old, {"realm_id": "r0", "realm_root": str(data / "realm")},
+        prepare=lambda: candidate,
+        stop=lambda *_: events.append("stop"),
+        backup=lambda *_: events.append("backup") or {"root": str(root / "backups/b")},
+        migrate=lambda *_: events.append("upgrade"),
+        switch_candidate=lambda *_: events.append("switch"),
+        switch_old=lambda *_: events.append("switch-old"),
+        activate=lambda *_: events.append("activate"),
+        activate_old=lambda *_: events.append("activate-old"),
+    )
+    assert events == ["stop", "wait", "backup", "upgrade", "switch", "activate", "finish"]
+
+
+def test_owner_wait_failure_runs_existing_rollback_before_backup(tmp_path, monkeypatch):
+    from astrid.installer import core
+
+    root, data = tmp_path / "program", tmp_path / "data"
+    root.mkdir()
+    old = core.Version(root / "versions/old", root / "old-python", root / "old-profile", {})
+    candidate = core.Version(root / "versions/new", root / "new-python", root / "new-profile", {})
+    events = []
+
+    def wait(_realm):
+        events.append("wait")
+        raise TimeoutError("owner busy")
+
+    monkeypatch.setattr(core, "install_runtime", lambda *_: None)
+    installer = core.Installer(root, data, SimpleNamespace(wait_for_realm_owner=wait))
+    with pytest.raises(TimeoutError, match="owner busy"):
+        installer._run_update_transaction(
+            old, {"realm_id": "r0", "realm_root": str(data / "realm")},
+            prepare=lambda: candidate,
+            stop=lambda *_: events.append("stop"),
+            backup=lambda *_: pytest.fail("backup ran after owner wait failure"),
+            migrate=lambda *_: pytest.fail("upgrade ran after owner wait failure"),
+            switch_candidate=lambda *_: pytest.fail("selected candidate after owner wait failure"),
+            switch_old=lambda *_: events.append("switch-old"),
+            activate=lambda *_: pytest.fail("activated candidate after owner wait failure"),
+            activate_old=lambda *_: events.append("activate-old"),
+        )
+    assert events == ["stop", "wait", "stop", "switch-old", "activate-old"]
+    assert core.read_json(root / "update-transaction.json")["step"] == "rolled_back"
