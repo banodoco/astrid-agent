@@ -1,0 +1,15 @@
+Processing ./agent
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: astrid
+  Building wheel for astrid (pyproject.toml): started
+  Building wheel for astrid (pyproject.toml): finished with status 'done'
+  Created wheel for astrid: filename=astrid-0.1.0-py3-none-any.whl size=58759078 sha256=d88b623f068257f056399af76ef34a3378e9de4567fe79f4f4e4409caea9f715
+  Stored in directory: /Users/runner/work/astrid-agent/astrid-agent/scratch/tmp/pip-ephem-wheel-cache-zrfrhil3/wheels/28/e5/a9/9cc0dd2f8bc049a27b80f1b1a01669a880871704335c5788df
+Successfully built astrid
+Installing collected packages: astrid
+Successfully installed astrid-0.1.0

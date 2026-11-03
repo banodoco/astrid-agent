@@ -1,0 +1,109 @@
+[
+  {
+    "step": "checkout-agent",
+    "command": [
+      "git",
+      "-C",
+      "/Users/runner/work/astrid-agent/astrid-agent/agent",
+      "rev-parse",
+      "HEAD"
+    ],
+    "cwd": "/Users/runner/work/astrid-agent/astrid-agent",
+    "exit": 0
+  },
+  {
+    "step": "checkout-runtime",
+    "command": [
+      "git",
+      "-C",
+      "/Users/runner/work/astrid-agent/astrid-agent/runtime",
+      "rev-parse",
+      "HEAD"
+    ],
+    "cwd": "/Users/runner/work/astrid-agent/astrid-agent",
+    "exit": 0
+  },
+  {
+    "step": "venv",
+    "command": [
+      "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+      "-m",
+      "venv",
+      "/Users/runner/work/astrid-agent/astrid-agent/scratch/venv"
+    ],
+    "cwd": "/Users/runner/work/astrid-agent/astrid-agent",
+    "exit": 0
+  },
+  {
+    "step": "dependencies",
+    "command": [
+      "/Users/runner/work/astrid-agent/astrid-agent/scratch/venv/bin/python",
+      "-m",
+      "pip",
+      "install",
+      "pytest==9.0.2",
+      "pytest-timeout>=2.4",
+      "jsonschema>=4",
+      "PyYAML>=6",
+      "filelock>=3.13"
+    ],
+    "cwd": "/Users/runner/work/astrid-agent/astrid-agent",
+    "exit": 0
+  },
+  {
+    "step": "install-runtime",
+    "command": [
+      "/Users/runner/work/astrid-agent/astrid-agent/scratch/venv/bin/python",
+      "-m",
+      "pip",
+      "install",
+      "--no-deps",
+      "/Users/runner/work/astrid-agent/astrid-agent/runtime"
+    ],
+    "cwd": "/Users/runner/work/astrid-agent/astrid-agent",
+    "exit": 0
+  },
+  {
+    "step": "install-agent",
+    "command": [
+      "/Users/runner/work/astrid-agent/astrid-agent/scratch/venv/bin/python",
+      "-m",
+      "pip",
+      "install",
+      "--no-deps",
+      "/Users/runner/work/astrid-agent/astrid-agent/agent"
+    ],
+    "cwd": "/Users/runner/work/astrid-agent/astrid-agent",
+    "exit": 0
+  },
+  {
+    "step": "installed-helper",
+    "command": [
+      "/Users/runner/work/astrid-agent/astrid-agent/scratch/venv/bin/python",
+      "-I",
+      "-B",
+      "/Users/runner/work/astrid-agent/astrid-agent/venue/proof/r18-custody-import-native/helper.py",
+      "/Users/runner/work/astrid-agent/astrid-agent/scratch",
+      "/Users/runner/work/astrid-agent/astrid-agent/agent/astrid/installer/custody.py"
+    ],
+    "cwd": "/Users/runner/work/astrid-agent/astrid-agent",
+    "exit": 0
+  },
+  {
+    "step": "focused-controls",
+    "command": [
+      "/Users/runner/work/astrid-agent/astrid-agent/scratch/venv/bin/python",
+      "-m",
+      "pytest",
+      "-p",
+      "no:cacheprovider",
+      "-q",
+      "tests/test_installer_pinokio_custody.py::test_custody_identity_requires_the_same_user_process_incarnation",
+      "tests/test_installer_birth_identity.py::test_exact_birth_identity_remains_valid_without_runtime_bridge_call",
+      "tests/test_installer_birth_identity.py::test_legacy_linux_bridge_refuses_invalid_owner_coordinates_without_runtime_call",
+      "tests/test_installer_birth_identity.py::test_custody_and_generated_launcher_keep_pid_uid_gates_around_birth_bridge"
+    ],
+    "cwd": "/Users/runner/work/astrid-agent/astrid-agent/agent",
+    "exit": 0
+  }
+]

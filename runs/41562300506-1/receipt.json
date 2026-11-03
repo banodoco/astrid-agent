@@ -1,0 +1,27 @@
+{
+  "attempt": "1",
+  "command": "python3 -B venue/proof/r18-custody-import-native/run.py",
+  "effective": {
+    "agent": "23252c5da5b89b87ea38570b4b87b3a66f9e955e",
+    "runtime": "a95e0e836234bc6d27ba557ba1297da95ed55290",
+    "venue": "8142a9a2249196192b091ef189bb78164b69c825"
+  },
+  "format": "r18-custody-import-native/v1",
+  "inner_exit": "0",
+  "limitations": [
+    "Installed helper and fixture-based identity/refusal checks only; no launchd lifecycle, product acceptance, or protected review.",
+    "A missing step, child observation, or exit is not a pass."
+  ],
+  "requested": {
+    "agent": "23252c5da5b89b87ea38570b4b87b3a66f9e955e",
+    "runtime": "a95e0e836234bc6d27ba557ba1297da95ed55290",
+    "runtime_status": "provisional"
+  },
+  "run_id": "41562300506",
+  "runner_os": "macOS-15.8.2-arm64-arm-64bit-Mach-O",
+  "source_ref": "refs/heads/venue/M-R1FIX-R18-CUSTODY-IMPORT-NATIVE-P19-1",
+  "source_sha": "8142a9a2249196192b091ef189bb78164b69c825",
+  "uid": 501,
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/r18-custody-import-native.yml@refs/heads/venue/M-R1FIX-R18-CUSTODY-IMPORT-NATIVE-P19-1",
+  "workflow_sha": "8142a9a2249196192b091ef189bb78164b69c825"
+}

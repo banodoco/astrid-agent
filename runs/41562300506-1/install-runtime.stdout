@@ -1,0 +1,15 @@
+Processing ./runtime
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: astrid-runtime
+  Building wheel for astrid-runtime (pyproject.toml): started
+  Building wheel for astrid-runtime (pyproject.toml): finished with status 'done'
+  Created wheel for astrid-runtime: filename=astrid_runtime-0.1.0-py3-none-any.whl size=845993 sha256=6cdedf22c19494348113f8036ae1b0d96b8c000c22a2e5b62834f44c70be8b9c
+  Stored in directory: /Users/runner/work/astrid-agent/astrid-agent/scratch/tmp/pip-ephem-wheel-cache-iglrcnl2/wheels/bc/ab/e9/247e4eb291866ef18aacfb5fe748d503d75870f2d1ae8e3540
+Successfully built astrid-runtime
+Installing collected packages: astrid-runtime
+Successfully installed astrid-runtime-0.1.0

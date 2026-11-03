@@ -1,0 +1,16 @@
+{
+  "uid": 501,
+  "euid": 501,
+  "platform": "macOS-15.8.2-arm64-arm-64bit-Mach-O",
+  "mac_ver": [
+    "15.8.2",
+    [
+      "",
+      "",
+      ""
+    ],
+    "arm64"
+  ],
+  "python": "3.13.17 (v3.13.17:64e080d3815, Oct 21 2026, 07:24:09) [Clang 21.0.0 (clang-2100.1.1.101)]",
+  "executable": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
+}
