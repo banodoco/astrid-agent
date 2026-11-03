@@ -60,6 +60,48 @@ def test_authentic_r0_capture_path_chain_and_sanitizer_preserve_structure(tmp_pa
     assert "do-not-publish" not in (run_root / "captured-service-env.txt").read_text(encoding="utf-8")
 
 
+def test_authentic_r0_capture_caps_all_regular_artifacts_after_sanitization(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    root, data = run_root / "program", run_root / "data"
+    source_bytes = b"TOKEN=do-not-publish\n"
+    sources = (
+        root / "install.json",
+        run_root / "astrid-install.json",
+        run_root / "home" / ".local" / "share" / "astrid-install.json",
+        run_root / "home" / ".config" / "systemd" / "user" / "astrid.service",
+    )
+    for source in sources:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(source_bytes)
+    calls = []
+
+    def expanding_redactor(text):
+        calls.append(text)
+        return text.replace("do-not-publish", "<redacted>") + ("x" * journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES)
+
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setattr(journey.windows, "_redact_pack_host_text", expanding_redactor)
+    monkeypatch.setattr(journey, "_capture_manager_state_sanitized", lambda *unused: {"status": "observed"})
+
+    observation = journey.capture_authentic_r0_observation(
+        run_root / "capture-upload", phase="post-seed", run_root=run_root,
+        root=root, data=data, version=None)
+
+    artifacts = [
+        run_root / "capture-upload" / "post-seed" / "program_install_record.json",
+        run_root / "capture-upload" / "post-seed" / "run_selection_owner.json",
+        run_root / "capture-upload" / "post-seed" / "home_selection_owner.json",
+        run_root / "capture-upload" / "post-seed" / "service-definition.txt",
+    ]
+    assert calls == [source_bytes.decode("utf-8")] * len(artifacts)
+    assert all(artifact.stat().st_size == journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES for artifact in artifacts)
+    assert all(b"do-not-publish" not in artifact.read_bytes() for artifact in artifacts)
+    assert all(entry["captured_bytes"] == journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+               and entry["truncated"] is True
+               for entry in [*observation["fields"]["installer_owner_records"].values(),
+                             observation["fields"]["service_definition"]])
+
+
 def test_authentic_r0_capture_shared_route_does_not_select_release1_driver(monkeypatch):
     calls = []
     monkeypatch.setattr(journey, "_authentic_r0_capture_main", lambda argv: calls.append(argv) or 0)
