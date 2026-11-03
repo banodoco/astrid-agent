@@ -152,17 +152,24 @@ def test_outcome_result_code_faults_and_effects():
     ('publish_ordinary_candidate', (object(),)),
     ('remove_owned_suppression', (object(), object())),
 ])
-def test_all_calls_and_retries_refuse_before_native_effects(action, args, monkeypatch):
+def test_all_calls_and_retries_refuse_before_native_effects(action, args, monkeypatch, tmp_path):
+    sentinel = tmp_path / "native-state"
+    sentinel.write_bytes(b"unchanged")
     def forbidden(*args, **kwargs):
         pytest.fail('native action attempted')
     monkeypatch.setattr(subprocess, 'run', forbidden)
     monkeypatch.setattr(os, 'system', forbidden)
+    monkeypatch.setattr(os, 'open', forbidden)
+    monkeypatch.setattr(os, 'unlink', forbidden)
+    monkeypatch.setattr(os, 'replace', forbidden)
     adapter = wire.LifecycleTransferAdapter()
     for _ in range(2):
         with pytest.raises(wire.ProducerUnavailable) as error:
             getattr(adapter, action)(*args, request=object(), challenge=object())
         assert error.value.action == action
         assert error.value.expected_evidence_kind == wire.ACTION_KINDS[action]
+    monkeypatch.undo()
+    assert sentinel.read_bytes() == b"unchanged"
 
 
 def _request_arguments():
