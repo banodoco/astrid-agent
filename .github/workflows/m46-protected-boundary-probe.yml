@@ -1,6 +1,9 @@
 name: M46 Linux protected principal experiment (unqualified)
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - venue/M-QUAL-R-36-M46-BOUNDARY-PUSH-R1-1
 permissions:
   contents: read
 jobs:
