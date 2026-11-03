@@ -1,6 +1,9 @@
 name: R18 native Intel crypto probe
 
 on:
+  push:
+    branches:
+      - lane/M-VENUE/R18-MAC-INTEL-CRYPTO-PROBE-R2
   workflow_dispatch:
 
 permissions:
