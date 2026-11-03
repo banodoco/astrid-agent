@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from astrid.core.contracts.errors import AstridError
+from astrid.core.media import load_rgba, outline_integrity
 
 # Brand palette from the Astrid style guide, plus pure white and black so
 # neutral backgrounds and outlines remain representable.
@@ -176,11 +177,6 @@ def parse_grid(value: Any) -> tuple[int, int] | str | None:
             recovery_command="use grid=auto or grid=320x180",
         )
     return (int(match.group(1)), int(match.group(2)))
-
-
-def load_rgba(path: str) -> np.ndarray:
-    with Image.open(path) as image:
-        return np.asarray(image.convert("RGBA"), dtype=np.uint8).copy()
 
 
 def save_rgba(arr: np.ndarray, path: str) -> None:
@@ -777,22 +773,6 @@ def cutout_image(
     report["warnings"] = warnings
     report["output"] = {"width": out.shape[1], "height": out.shape[0]}
     return out, report
-
-
-def outline_integrity(sprite: np.ndarray) -> dict[str, Any]:
-    """Fraction of exposed alpha boundary cells carrying a dark outline."""
-    alpha = sprite[..., 3] >= 128
-    surrounded = np.pad(alpha, 1, constant_values=False)
-    boundary = alpha & ~(
-        surrounded[:-2, 1:-1] & surrounded[2:, 1:-1]
-        & surrounded[1:-1, :-2] & surrounded[1:-1, 2:]
-    )
-    rgb = sprite[..., :3].astype(np.float64)
-    dark = (0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]) < 100
-    count = int(boundary.sum())
-    return {"fraction": round(float((boundary & dark).sum() / count), 4) if count else 0.0,
-            "dark_rule": "luminance < 100",
-            "dark_boundary_cells": int((boundary & dark).sum()), "boundary_cells": count}
 
 
 def _bbox(mask: np.ndarray) -> tuple[int, int, int, int]:

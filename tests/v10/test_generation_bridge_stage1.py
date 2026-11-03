@@ -14,7 +14,7 @@ from astrid.packs.generation.actions.generate_image.task_adapter import (
     _decode_inputs,
     validate_shot_generation_recipe,
 )
-from astrid.packs.shots.dependencies import analyze_invalidation
+from astrid.core.shots.dependencies import analyze_invalidation
 from astrid.sdk import get_capability
 from astrid.sdk.invocation import _manifest_preview_command
 

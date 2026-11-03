@@ -284,9 +284,9 @@ FAMILY_PARSER_MODULES: dict[str, str] = {
     "documents": "astrid.core.cli.domain_documents",
     "preferences": "astrid.core.cli.domain_preferences",
     "timelines": "astrid.packs.timeline.cli",
-    "shots": "astrid.packs.shots.cli",
+    "shots": "astrid.core.cli.domain_shots",
     "media": "astrid.core.cli.domain_media",
-    "references": "astrid.packs.references.cli",
+    "references": "astrid.core.cli.domain_references",
     "tasks": "astrid.core.cli.domain_tasks",
     "runs": "astrid.core.cli.domain_runs",
 }

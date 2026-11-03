@@ -5,7 +5,7 @@ Task T30 proves the ``media`` product family
 (``import|list|show|verify|relate|thumbnails``) are reachable through one-call
 SDK adapters, import accepts **only files/folders**, relate accepts only the
 frozen five relation kinds, and the manifest-declared nested ``references``
-mount (``astrid/packs/references/cli.py``) exposes exactly
+mount (``astrid/core/cli/domain_references.py``) exposes exactly
 ``create|update|archive|associate|link|set-primary|list|show`` beneath ``media`` — with
 **no top-level references family**. Every mutation preserves exact media
 IDs, mutation receipts/keys, validation, and typed failure envelopes; all
@@ -399,7 +399,7 @@ def _subparser_choices(parser: argparse.ArgumentParser) -> set[str]:
 
 def test_media_parser_has_thumbnail_backfill_and_references_mount() -> None:
     from astrid.core.cli.domain_media import COMMANDS, build_parser
-    from astrid.packs.references.cli import COMMANDS as REFERENCE_COMMANDS
+    from astrid.core.cli.domain_references import COMMANDS as REFERENCE_COMMANDS
 
     assert tuple(spec.name for spec in COMMANDS) == (
         "import",
@@ -429,7 +429,7 @@ def test_media_parser_has_thumbnail_backfill_and_references_mount() -> None:
 
 def test_product_dispatch_injects_references_commands_at_composition_boundary() -> None:
     import astrid.core.cli.domain_product as domain_product
-    from astrid.packs.references import cli as references_cli
+    from astrid.core.cli import domain_references as references_cli
 
     seen: dict[str, object] = {}
     media_module = types.ModuleType("media_stub")
@@ -797,7 +797,7 @@ def test_media_unknown_verb_is_a_usage_error() -> None:
 )
 def test_media_help_is_executable(argv: list[str]) -> None:
     from astrid.core.cli.domain_media import build_parser
-    from astrid.packs.references.cli import COMMANDS as REFERENCE_COMMANDS
+    from astrid.core.cli.domain_references import COMMANDS as REFERENCE_COMMANDS
 
     parser = build_parser(
         _FakeClient(), reference_commands=REFERENCE_COMMANDS
@@ -813,7 +813,7 @@ def test_media_help_is_executable(argv: list[str]) -> None:
 
 
 def test_references_parser_has_exactly_nine_verbs_beneath_media() -> None:
-    from astrid.packs.references.cli import COMMANDS, build_parser
+    from astrid.core.cli.domain_references import COMMANDS, build_parser
 
     assert tuple(spec.name for spec in COMMANDS) == (
         "create",
@@ -1283,7 +1283,7 @@ def test_references_set_primary_rejects_missing_media_reference() -> None:
 )
 def test_media_references_help_is_executable(argv: list[str]) -> None:
     from astrid.core.cli.domain_media import build_parser
-    from astrid.packs.references.cli import COMMANDS as REFERENCE_COMMANDS
+    from astrid.core.cli.domain_references import COMMANDS as REFERENCE_COMMANDS
 
     parser = build_parser(
         _FakeClient(), reference_commands=REFERENCE_COMMANDS

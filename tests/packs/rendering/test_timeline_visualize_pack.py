@@ -51,7 +51,7 @@ from astrid.packs.rendering.actions.timeline_visualize.schemas import (
 from astrid.packs.rendering.actions.timeline_visualize.scope import (
     select_scope,
 )
-from astrid.packs.rendering.actions.timeline_visualize.snapshot_digest import (
+from astrid.core.timeline.snapshot_digest import (
     canonical_json_bytes,
     sha256_bytes,
 )
