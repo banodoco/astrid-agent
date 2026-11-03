@@ -513,10 +513,12 @@ class Timeline(Checkout):
                         preview_media.append(row)
                 commands.append({"schema_version": 1, "op": "media.admit", "version": "1",
                                  "select": None, "args": {"inputs": inputs}})
-            self._append(commands, label="Edit document", verified_media=preview_media)
+            self._append(commands, label="Edit document", verified_media=preview_media,
+                         split_media_admission=bool(inputs))
             self._free_edits = True
 
-    def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None):
+    def _append(self, commands, *, label, intent="", tags=(), reads=None, verified_media=None,
+                split_media_admission=False):
         from .commands import CommandError, execute
 
         try:
@@ -533,8 +535,12 @@ class Timeline(Checkout):
         start = len(self._commands)
         patch = [copy.deepcopy(change) for command in commands if command["op"] == "doc.patch"
                  for change in command["args"]["changes"]]
+        end = start + len(plan.commands)
+        # Admission has no document writes. Keeping it in its own step lets
+        # Runtime authenticate the authored patch and admission independently.
+        edit_end = end - 1 if split_media_admission else end
         step = {"id": f"step-{len(self._steps) + 1}", "label": label, "intent": intent,
-                "tags": list(tags), "command_ordinals": list(range(start, start + len(plan.commands))),
+                "tags": list(tags), "command_ordinals": list(range(start, edit_end)),
                 "patch": patch}
         if reads is not None:
             step["reads"] = copy.deepcopy(reads)
@@ -542,6 +548,9 @@ class Timeline(Checkout):
         # request/step reads. The provider captures against the pinned base.
         self._commands.extend(copy.deepcopy(commands))
         self._steps.append(step)
+        if split_media_admission:
+            self._steps.append({"id": f"step-{len(self._steps) + 1}", "label": "Admit media",
+                                "intent": "", "tags": [], "command_ordinals": [edit_end], "patch": []})
         self.bundle = copy.deepcopy(plan.bundle)
         self._runtime_document = self.bundle.get("source_mapping", {}).pop("_runtime_document", self._runtime_document)
         self._command_bundle = copy.deepcopy(self.bundle)
