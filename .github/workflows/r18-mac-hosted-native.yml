@@ -1,0 +1,69 @@
+name: R18 focused macOS native owner proof
+on:
+  push:
+    branches: ['venue/M-R1FIX-R18-MAC-HOSTED-NATIVE-P19-1']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: venue
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: 098ae387521b3adb782f9b62bf60aa3ba2feb711
+          path: agent
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: a95e0e836234bc6d27ba557ba1297da95ed55290
+          path: runtime
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: 2145dc85b21f3c5a22f96a842c0d257ae29051e5
+          path: app
+      - name: Run focused native proof
+        id: proof
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          set +e
+          python3 venue/proof/r18-mac-hosted/native.py >out/command.log 2>&1
+          rc=$?
+          printf '%s\n' "$rc" >out/exit-code.txt
+          exit "$rc"
+      - name: Publish run receipt
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          mkdir -p out
+          test -f out/exit-code.txt || printf 'missing: proof step did not reach exit capture\n' >out/exit-code.txt
+          python3 venue/proof/r18-mac-hosted/receipt.py
+          python3 venue/proof/r18-mac-hosted/hashes.py
+          git clone --no-checkout venue results
+          git -C results remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git -C results config user.name github-actions\[bot\]
+          git -C results config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C results checkout --orphan result
+          git -C results rm -rf . >/dev/null 2>&1 || true
+          dest="results/runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$dest"
+          cp -R out/. "$dest/"
+          git -C results add runs
+          git -C results commit -m "R18 macOS native receipt $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git -C results -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')" push origin HEAD:refs/heads/venue-results/M-R1FIX-R18-MAC-HOSTED-NATIVE-P19-1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: r18-mac-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: warn
