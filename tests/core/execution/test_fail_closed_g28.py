@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import threading
 import time
 from dataclasses import replace
@@ -268,8 +267,8 @@ def test_admission_cancellation_has_no_stop_proof(case):
 
 @pytest.mark.linux_native
 @pytest.mark.non_root
-@pytest.mark.skipif(getattr(os, "geteuid", lambda: 0)() == 0, reason="requires the non-root product user")
 def test_cancel_with_real_live_process_reports_unknown_stop(case, monkeypatch):
+    import os
     import subprocess
     import sys
 
