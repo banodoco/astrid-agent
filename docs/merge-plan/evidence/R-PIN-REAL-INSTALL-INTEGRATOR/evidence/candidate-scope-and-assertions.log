@@ -1,0 +1,1 @@
+{"assertion_statements_unchanged": 90, "base": "bc735b9e212cd004348f7494fc4c5b6f4dc512bb", "candidate": "643cd5c27a77589a37a9a857fbfb55c944300813", "changed_files": ["tests/test_ci_journey_r24_materializer.py"], "product_source_changed": false, "test_file_sha256": "7a7444c09fda1ead6024d8f02cb2cc6575beb4e356414257a87195df31877e6c"}

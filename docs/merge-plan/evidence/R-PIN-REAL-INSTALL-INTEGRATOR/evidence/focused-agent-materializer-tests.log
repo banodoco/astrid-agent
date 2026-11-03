@@ -1,0 +1,133 @@
+.FFF                                                                     [100%]
+=================================== FAILURES ===================================
+____ test_worker_start_accepts_only_exact_generation_not_found[404-foreign] ____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fbab50962c0>
+tmp_path = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_accepts_only0')
+status = 404, code = 'foreign'
+
+    @pytest.mark.parametrize("status,code", [(404, "foreign"), (409, "not_found")])
+    def test_worker_start_accepts_only_exact_generation_not_found(monkeypatch, tmp_path, status, code):
+        from astrid_runtime_client.generated import ApiError
+    
+        client = SimpleNamespace(
+            get_local_worker_generation=lambda: (_ for _ in ()).throw(ApiError(status, code, "missing")),
+            start_local_worker=lambda *unused: pytest.fail("must not start for an inexact error"),
+        )
+        monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+            client, {}, tmp_path, {"active_realm": "realm"}, {}))
+        monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (None, None))
+        with pytest.raises(ApiError):
+>           task_boundary.ensure_worker(tmp_path, tmp_path / "client.py")
+
+tests/test_ci_journey_r24_materializer.py:798: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+backend = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_accepts_only0')
+agent_client = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_accepts_only0/client.py')
+owner_diagnostic = None
+
+    def ensure_worker(backend: Path, agent_client: Path,
+                      owner_diagnostic: Path | None = None) -> dict[str, Any]:
+        from astrid_runtime_client.generated import ApiError
+    
+>       client, _install, _data, discovery, source = _client(
+            backend, agent_client, owner_diagnostic)
+E       TypeError: test_worker_start_accepts_only_exact_generation_not_found.<locals>.<lambda>() takes 2 positional arguments but 3 were given
+
+scripts/ci_journey_r24_task.py:231: TypeError
+___ test_worker_start_accepts_only_exact_generation_not_found[409-not_found] ___
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fbab5627410>
+tmp_path = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_accepts_only1')
+status = 409, code = 'not_found'
+
+    @pytest.mark.parametrize("status,code", [(404, "foreign"), (409, "not_found")])
+    def test_worker_start_accepts_only_exact_generation_not_found(monkeypatch, tmp_path, status, code):
+        from astrid_runtime_client.generated import ApiError
+    
+        client = SimpleNamespace(
+            get_local_worker_generation=lambda: (_ for _ in ()).throw(ApiError(status, code, "missing")),
+            start_local_worker=lambda *unused: pytest.fail("must not start for an inexact error"),
+        )
+        monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+            client, {}, tmp_path, {"active_realm": "realm"}, {}))
+        monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (None, None))
+        with pytest.raises(ApiError):
+>           task_boundary.ensure_worker(tmp_path, tmp_path / "client.py")
+
+tests/test_ci_journey_r24_materializer.py:798: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+backend = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_accepts_only1')
+agent_client = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_accepts_only1/client.py')
+owner_diagnostic = None
+
+    def ensure_worker(backend: Path, agent_client: Path,
+                      owner_diagnostic: Path | None = None) -> dict[str, Any]:
+        from astrid_runtime_client.generated import ApiError
+    
+>       client, _install, _data, discovery, source = _client(
+            backend, agent_client, owner_diagnostic)
+E       TypeError: test_worker_start_accepts_only_exact_generation_not_found.<locals>.<lambda>() takes 2 positional arguments but 3 were given
+
+scripts/ci_journey_r24_task.py:231: TypeError
+_______________ test_worker_start_is_observed_with_get_start_get _______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fbab50d5d00>
+tmp_path = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_is_observed_0')
+
+    def test_worker_start_is_observed_with_get_start_get(monkeypatch, tmp_path):
+        from astrid_runtime_client.generated import ApiError
+    
+        calls = []
+        generation = {"state": "active", "profile_id": "astrid", "workspace_uuid": "realm",
+                      "executor_incarnation": "incarnation"}
+    
+        def get_generation():
+            calls.append("get")
+            if calls == ["get"]:
+                raise ApiError(404, "not_found", "missing")
+            return generation
+    
+        def start(profile, realm):
+            calls.append(("start", profile, realm))
+            return {"state": "active"}
+    
+        health = SimpleNamespace(runtime_instance_id="instance", runtime_session_id="session", runtime_epoch=7)
+        handshake = SimpleNamespace(realm_id="realm")
+        client = SimpleNamespace(get_local_worker_generation=get_generation, start_local_worker=start)
+        monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+            client, {}, tmp_path, {"active_realm": "realm"}, {}))
+        monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (health, handshake))
+>       result = task_boundary.ensure_worker(tmp_path, tmp_path / "client.py")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_ci_journey_r24_materializer.py:824: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+backend = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_is_observed_0')
+agent_client = PosixPath('/home/user/merge/ws/M-PIN/queue/running/R-PIN-REAL-INSTALL-INTEGRATOR/pytest-agent/test_worker_start_is_observed_0/client.py')
+owner_diagnostic = None
+
+    def ensure_worker(backend: Path, agent_client: Path,
+                      owner_diagnostic: Path | None = None) -> dict[str, Any]:
+        from astrid_runtime_client.generated import ApiError
+    
+>       client, _install, _data, discovery, source = _client(
+            backend, agent_client, owner_diagnostic)
+E       TypeError: test_worker_start_is_observed_with_get_start_get.<locals>.<lambda>() takes 2 positional arguments but 3 were given
+
+scripts/ci_journey_r24_task.py:231: TypeError
+=============================== warnings summary ===============================
+../../../../../../cache/uv/archive-v0/gbb5KzQQpai65KIn/lib/python3.13/site-packages/_pytest/config/__init__.py:1428
+  /home/user/merge/cache/uv/archive-v0/gbb5KzQQpai65KIn/lib/python3.13/site-packages/_pytest/config/__init__.py:1428: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_ci_journey_r24_materializer.py::test_worker_start_accepts_only_exact_generation_not_found[404-foreign]
+FAILED tests/test_ci_journey_r24_materializer.py::test_worker_start_accepts_only_exact_generation_not_found[409-not_found]
+FAILED tests/test_ci_journey_r24_materializer.py::test_worker_start_is_observed_with_get_start_get
+3 failed, 1 passed, 1 warning in 0.39s
