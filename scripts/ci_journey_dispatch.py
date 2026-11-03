@@ -5,10 +5,9 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
-
+from pathlib import Path
 
 ARTIFACTS = ("public/install", "public/install.sh", "public/install.ps1")
 
@@ -148,6 +147,11 @@ def main(argv=None) -> int:
     (args.output / "candidate.json").write_bytes(args.candidate.read_bytes())
     (args.output / "install-manifest.json").write_bytes(
         (args.app_checkout / "public/install-manifest.json").read_bytes())
+    if os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+            summary.write("\nC6 diagnostic manifest: NON-PROOF (`proof_mode: diag`).\n\n")
+            summary.write(f"Manifest SHA-256: `{receipt['manifest_sha256']}`\n\n")
+            summary.write(f"Requested refs: `{json.dumps(receipt['requested_refs'], sort_keys=True)}`\n")
     return 0
 
 

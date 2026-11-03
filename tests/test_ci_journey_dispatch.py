@@ -1,13 +1,12 @@
 """C6: exercise the real config, immutable bindings and existing proof refusal."""
 import argparse
-import copy
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 import yaml
@@ -15,7 +14,6 @@ import yaml
 from scripts import ci_journey as journey
 from scripts import ci_journey_dispatch as dispatch
 from tests.test_journey_evidence import gate, release1_receipts
-
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = yaml.safe_load((REPO / ".github/workflows/journey.yml").read_text())
@@ -81,6 +79,7 @@ def test_default_preserves_nine_rows_and_legacy_channel_filters(config):
 
 def test_diag_binds_requested_refs_and_requires_isolated_branch(config):
     inputs = {"ROWS": "direct-linux", "PROOF_MODE": "diag",
+              "CANDIDATE": json.dumps({"app": "a" * 40, "pinokio": "d" * 40}),
               "AGENT_REF": "1" * 40, "RUNTIME_REF": "2" * 40}
     result, values = config(**inputs)
     assert result.returncode == 0, result.stderr
@@ -195,6 +194,7 @@ def test_execution_labels_success_and_early_failure_receipts_and_staged_copies(s
     if outcome == "failure":
         with pytest.raises(RuntimeError, match="native prerequisite failed"):
             journey.execute(args)
+
     else:
         assert journey.execute(args)["diagnostic_status"] == "pass"
     receipts = list((tmp_path / "run").rglob("journey-result.json"))
@@ -210,6 +210,59 @@ def test_execution_labels_success_and_early_failure_receipts_and_staged_copies(s
         args.proof_mode = mode
         with pytest.raises(ValueError, match="explicit --proof-mode diag"):
             journey.execute(args)
+
+
+def test_actual_runner_refusal_is_labelled_before_snapshot(sources, tmp_path, monkeypatch):
+    candidate, app, agent, runtime = sources
+    bound, _ = prepare(sources)
+    path = tmp_path / "candidate.json"
+    path.write_text(json.dumps(bound))
+    run_root = tmp_path / "run"
+    args = argparse.Namespace(proof_mode="diag", candidate=path, app_checkout=app, job_id="direct-linux",
+                              mode="direct", leg="release0-to-release1", run_root=run_root,
+                              root=run_root / "program", data_root=run_root / "data", shell="sh")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/test/KEEPGOING")
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+
+    def refuse(_identity):
+        raise RuntimeError("runner provenance unavailable")
+    monkeypatch.setattr(journey, "assert_runner_identity", refuse)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *args: None)
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *args: None)
+    with pytest.raises(RuntimeError, match="runner provenance unavailable"):
+        journey.execute(args)
+    for receipt in run_root.rglob("journey-result.json"):
+        value = json.loads(receipt.read_text())
+        assert value["proof_mode"] == "diag" and value["status"] == "fail"
+        assert value["qualification"]["eligible"] is False
+    assert (run_root / "evidence-upload/before-cleanup/journey-result.json").is_file()
+
+
+def test_raw_adapter_receipt_is_labelled_before_export(tmp_path):
+    evidence = tmp_path / "run/evidence/leg"
+    evidence.mkdir(parents=True)
+    (evidence / "journey-result.json").write_text('{"status":"pass"}')
+    (evidence / "verify-install.json").write_text('{"passed":true}')
+    token = journey.RECEIPT_MODE.set({"proof_mode": "diag"})
+    try:
+        journey.retain_named_evidence(evidence, "before-cleanup")
+    finally:
+        journey.RECEIPT_MODE.reset(token)
+    exported = json.loads((tmp_path / "run/evidence-upload/before-cleanup/journey-result.json").read_text())
+    assert exported["proof_mode"] == "diag" and exported["status"] == "fail"
+    assert exported["diagnostic_status"] == "pass"
+    verifier = json.loads((tmp_path / "run/evidence-upload/before-cleanup/verify-install.json").read_text())
+    assert verifier["proof_mode"] == "diag" and verifier["qualification"]["eligible"] is False
+    assert verifier["passed"] is True
+    assert (evidence / "verify-install.json").read_text() == '{"passed":true}'
+
+
+def test_explicit_proof_is_labelled_and_does_not_inherit_a_diagnostic_context(tmp_path, monkeypatch):
+    args = argparse.Namespace(proof_mode="proof", source_override=False)
+    monkeypatch.setattr(journey, "_execute", lambda _args: {"status": "pass"})
+    assert journey.execute(args) == {"status": "pass", "proof_mode": "proof"}
+    args.proof_mode = None
+    assert journey.execute(args) == {"status": "pass"}  # Legacy absence is never relabelled as proof.
 
 
 def test_existing_aggregate_rejects_diagnostics_even_with_all_nine_successful_lifecycles(tmp_path):

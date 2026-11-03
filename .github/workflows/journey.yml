@@ -481,7 +481,7 @@ jobs:
             echo "- Candidate Agent: $(git -C candidate-agent rev-parse HEAD)"
             echo "- Candidate Runtime: $(git -C runtime rev-parse HEAD)"
             echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
-            echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
+            echo "- Shipped manifest SHA-256 (before diagnostic build): $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze candidate inputs
         shell: bash
@@ -1073,6 +1073,7 @@ jobs:
           M4_6_RESULT: ${{ needs.failure_modes.result }}
           RELEASE2_RESULT: ${{ needs.release2.result }}
         run: |
+          set -euo pipefail
           test "$CONFIG_RESULT" = success
           # Partial/diagnostic runs produce evidence only, never a green release gate.
           test "$PROOF_MODE" = proof

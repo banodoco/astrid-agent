@@ -617,6 +617,11 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                 with source.open("rb") as stream:
                     stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
                     target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            elif source.suffix == ".json" and (RECEIPT_MODE.get() or {}).get("proof_mode") == "diag":
+                # Label exported verifier/manager sidecars too, preserving the
+                # live verifier inputs and their original assertion outcomes.
+                write_json(target, {**read_json(source), "proof_mode": "diag",
+                                    "classification": "NON-PROOF", "qualification": {"eligible": False}})
             else:
                 shutil.copyfile(source, target)
         except Exception as exc:
