@@ -158,3 +158,59 @@ def test_symlink_and_duplicate_entries_fail():
                 z.writestr("journey-failure-result.json", b'{}')
         with pytest.raises(ValueError):
             checker._m4_6_native_bundle(stream.getvalue(), CANDIDATE, slot)
+
+
+def six_shapes():
+    """Fictional API shapes and archives, with no authority or hosted origin."""
+    rows = [case(slot) for slot in SLOTS]
+    jobs, artifacts = [], []
+    for index, row in enumerate(rows):
+        row['job_id'] = 100 + index
+        row['check_run_id'] = 200 + index
+        row['artifact_id'] = 300 + index
+        job = row['jobs'][0]
+        job['id'] = row['job_id']
+        job['check_run_url'] = f"https://api.github.com/repos/banodoco/astrid-agent/check-runs/{row['check_run_id']}"
+        row['check_run']['id'] = row['check_run_id']
+        row['artifact']['id'] = row['artifact_id']
+        jobs.append(job)
+        artifacts.append(copy.deepcopy(row['artifact']))
+    for row in rows:
+        row['jobs'] = copy.deepcopy(jobs)
+        row['artifacts'] = copy.deepcopy(artifacts)
+    return rows
+
+
+def test_six_synthetic_shapes_are_complete_but_never_admit():
+    result = checker.m4_6_actions_synthetic_set(six_shapes())
+    assert result['admitted'] is False
+    assert len(result['slots']) == 6
+    assert all(row['admitted'] is False for row in result['slots'])
+    assert 'unverified' in result['reason']
+
+
+@pytest.mark.parametrize('change', [
+    lambda rows: rows.pop(),
+    lambda rows: rows.append(copy.deepcopy(rows[0])),
+    lambda rows: rows.__setitem__(5, copy.deepcopy(rows[0])),
+    lambda rows: rows[0].update(slot_id='direct-linux'),
+    lambda rows: rows[0].update(run_id=22),
+    lambda rows: rows[0].update(attempt=1),
+    lambda rows: rows[0].update(head_sha='d' * 40),
+    lambda rows: rows[0].update(harness_sha='d' * 40),
+    lambda rows: rows[0].update(workflow_sha='d' * 40),
+    lambda rows: rows[0]['candidate'].update(agent='d' * 40),
+    lambda rows: rows[0].update(job_id=rows[1]['job_id']),
+    lambda rows: rows[0].update(check_run_id=rows[1]['check_run_id']),
+    lambda rows: rows[0].update(artifact_id=rows[1]['artifact_id']),
+    lambda rows: rows[0]['jobs'].pop(),
+    lambda rows: rows[0]['artifacts'].pop(),
+    lambda rows: rows[0]['check_run'].update(conclusion='cancelled'),
+    lambda rows: rows[0]['artifact'].update(digest='sha256:' + 'f' * 64),
+    lambda rows: rows[0].update(archive=b'corrupt'),
+])
+def test_six_shape_set_rejects_incomplete_or_crossed_inputs(change):
+    rows = six_shapes()
+    change(rows)
+    with pytest.raises(ValueError):
+        checker.m4_6_actions_synthetic_set(rows)

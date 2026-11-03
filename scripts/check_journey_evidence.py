@@ -787,6 +787,40 @@ def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, check_run_id
             "admitted": False, "reason": "unauthenticated diagnostic; protected workflow and native source profiles unverified"}
 
 
+# Frozen independently of caller-supplied rows and the broader nine-slot matrix.
+_M4_6_PINOKIO_SLOTS = frozenset({
+    "pinokio-backend-macos", "pinokio-backend-linux", "pinokio-backend-windows",
+    "pinokio-fully-local-macos", "pinokio-fully-local-linux", "pinokio-fully-local-windows",
+})
+
+
+def m4_6_actions_synthetic_set(rows):
+    """Validate six diagnostic shapes; never authenticate or admit their contents.
+
+    The reviewed producer construction, protected upload and authenticated,
+    paginated API collection do not exist here. This is deliberately not an
+    origin index and cannot be used as a production acceptance decision.
+    """
+    if not isinstance(rows, list) or len(rows) != 6 or any(not isinstance(r, dict) for r in rows):
+        raise ValueError("exactly six diagnostic rows required")
+    slots = [r.get("slot_id") for r in rows]
+    if any(not isinstance(s, str) for s in slots) or len(set(slots)) != 6 or set(slots) != _M4_6_PINOKIO_SLOTS:
+        raise ValueError("six unique fixed Pinokio slots required")
+    # All rows must refer to the same separately selected tuple and run.
+    shared = ("candidate", "run_id", "attempt", "harness_sha", "head_sha",
+              "workflow_sha", "workflow_ref", "workflow", "run", "jobs", "artifacts")
+    if any(any(r.get(k) != rows[0].get(k) for k in shared) for r in rows[1:]):
+        raise ValueError("inconsistent shared selection or API collection")
+    for key in ("job_id", "check_run_id", "artifact_id"):
+        values = [r.get(key) for r in rows]
+        if any(type(v) is not int or v <= 0 for v in values) or len(set(values)) != 6:
+            raise ValueError("distinct positive per-slot identities required")
+    results = [m4_6_actions_index(**row) for row in rows]
+    return {"slots": sorted(results, key=lambda row: row["slot_id"]),
+            "admitted": False,
+            "reason": "synthetic diagnostic only; API provenance and workflow construction unverified"}
+
+
 def _m4_6_local_row_errors(candidate, contract, row, path):
     """Validate one local M4-6 receipt; it is never hosted end-state proof."""
     try:
