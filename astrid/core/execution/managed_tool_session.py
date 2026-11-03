@@ -626,6 +626,12 @@ class ManagedToolSession:
             return
         if active.release_intent is not None:
             raise SessionCapacityError("checked release retains the session slot")
+        # Some adapters cannot safely use the legacy fence/release sequence:
+        # their fence may itself call native control.  Refuse before either
+        # callback, preserving the original slot and any live admission.
+        preflight = getattr(active.adapter, "_refuse_legacy_release", None)
+        if callable(preflight):
+            preflight()
         try:
             fenced = self._fence_locked(reason=reason)
             if isinstance(fenced, Mapping) and fenced.get("ok") is False:

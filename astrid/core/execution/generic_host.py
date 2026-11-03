@@ -929,29 +929,15 @@ class _ManagedVibeSessionAdapter:
             return {"ok": True, "cancelled": True, "reason": reason, "dispatched": False}
         return self.cancel(reason=reason)
 
+    def _refuse_legacy_release(self) -> None:
+        # A binding or endpoint is not a supervisor-issued release grant.  In
+        # particular, the legacy fence may itself call /api/free.  Until the
+        # private owner/incarnation handoff is available, keep the slot and do
+        # not invoke either legacy callback in any host launch mode.
+        raise SessionCapacityError("Comfy release authority unavailable; custody retained")
+
     def release(self, *, reason: str) -> dict[str, Any]:
-        if reason == "capacity_replacement" and self.residency_bound:
-            raise HostError("native engine replacement requires a fresh Runtime-selected preparation; custody retained")
-        if reason == "cpu_residency_eviction" and (
-            self.residency_identity() is None or self.cpu_handoff_failed
-        ):
-            raise HostError("native CPU handoff release remains unresolved")
-        try:
-            evidence = self.backend.release(reason=reason)
-            result = self._native_evidence(
-                evidence, kind="released", native_key="released", reason=reason
-            )
-            if reason == "cpu_residency_eviction" and result["ok"] is not True:
-                self.cpu_handoff_failed = True
-            if result["ok"] is True:
-                transport = getattr(self.backend, "_endpoint_transport", None)
-                if transport is not None:
-                    transport.close()
-            return result
-        except BaseException:
-            if reason == "cpu_residency_eviction":
-                self.cpu_handoff_failed = True
-            raise
+        self._refuse_legacy_release()
 
 
 class _ManagedWanChildAdapter:
