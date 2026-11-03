@@ -1,0 +1,27 @@
+{
+  "active_realm": "release0",
+  "advertised_at": 1700000000.0,
+  "capability_digest": "",
+  "coordinator_epoch": "0123456789abcdef0123456789abcdef",
+  "credential_file": "/fixture/astrid/credentials/astrid.json",
+  "endpoint": "http://127.0.0.1:43123",
+  "pid": 1234,
+  "process_birth_id": "proc-start-ticks:56789",
+  "protocol_version": "workspace.v1",
+  "realm_root": "/fixture/astrid/runtime/realms/release0",
+  "runtime_instance_id": "0123456789abcdef0123456789abcdef",
+  "schema_version": "workspace-schema-v1",
+  "version": 1,
+  "worker_actor": "astrid-pack-host",
+  "worker_credential_file": "/fixture/astrid/runtime/credentials/astrid-pack-host.token",
+  "worker_credential_pending": false,
+  "worker_scopes": [
+    "handshake",
+    "worker:register",
+    "worker:execute",
+    "projects:read",
+    "tasks:read",
+    "objects:read",
+    "objects:write"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "pid": 1234,
+  "process_birth_id": "proc-start-ticks:56789",
+  "realm_id": "release0",
+  "realm_root": "/fixture/astrid/runtime/realms/release0",
+  "runtime_instance_id": "0123456789abcdef0123456789abcdef"
+}

@@ -47,3 +47,8 @@ PYTHONPATH="$M42_OLD_CHECKOUT" python3 work/coord/M4-2/generate_release0_service
 Then compare the regenerated output to `SHA256SUMS`.  `provenance.json` records
 the URLs, source refs, exact renderer, registration sidecar, normalized inputs,
 and stand-in source.
+
+`runtime-support/` contains separately checksummed, source-modeled R0 Linux
+bootstrap discovery and support marker examples. They are not historical
+captures; see its README for source references, usage, and limitations. The
+original pinned `SHA256SUMS` and its historical inputs remain unchanged.
