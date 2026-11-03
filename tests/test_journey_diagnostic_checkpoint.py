@@ -309,3 +309,96 @@ def test_diagnostic_checkpoint_refuses_each_changed_retained_realm_before_seed(
     assert receipt["status"] == "fail"
     assert receipt["checks"] == {"preconditions": "not-run", "seed": "not-run", "snapshot": "not-run"}
     assert receipt["qualification"]["eligible"] is False
+
+
+def test_windows_empty_realm_owner_lock_uses_exact_empty_digest_without_read(tmp_path, monkeypatch):
+    args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
+    lock = realm / "owner.lock"
+    lock.touch()
+    original_read = Path.read_bytes
+    reads = []
+
+    def denied_lock(path):
+        reads.append(path)
+        if path == lock:
+            raise PermissionError(13, "locked")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", denied_lock)
+    with monkeypatch.context() as native:
+        native.setattr(jumps.sys, "platform", "win32")
+        state = jumps._preseed_workspace_state(data)
+        assert state == jumps._preseed_workspace_state(data)
+    assert lock not in reads
+    expected = [
+        {"path": "attachments", "kind": "directory"},
+        {"path": "owner.lock", "kind": "file", "sha256": jumps.hashlib.sha256(b"").hexdigest()},
+        {"path": "preferences.json", "kind": "file", "sha256": jumps.hashlib.sha256((realm / "preferences.json").read_bytes()).hexdigest()},
+        {"path": "realm.sqlite3", "kind": "file", "sha256": jumps.hashlib.sha256((realm / "realm.sqlite3").read_bytes()).hexdigest()},
+    ]
+    assert state == {"realm_root": str(realm), "entry_count": len(expected),
+                     "tree_sha256": jumps.semantic_digest({"entries": expected})}
+
+
+@pytest.mark.parametrize("target", ["owner.lock", "attachments/owner.lock", "realm.sqlite3"])
+def test_windows_denied_nonempty_or_other_workspace_file_fails_closed(tmp_path, monkeypatch, target):
+    args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
+    path = realm / target
+    path.write_bytes(b"persistent bytes")
+    original_read = Path.read_bytes
+    def denied(path_to_read):
+        if path_to_read == path:
+            raise PermissionError(13, "denied")
+        return original_read(path_to_read)
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    with monkeypatch.context() as native:
+        native.setattr(jumps.sys, "platform", "win32")
+        with pytest.raises(PermissionError):
+            jumps._preseed_workspace_state(data)
+
+
+def test_windows_lock_change_and_persistent_change_refuse_checkpoint(tmp_path, monkeypatch):
+    args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
+    lock = realm / "owner.lock"
+    lock.touch()
+    with monkeypatch.context() as native:
+        native.setattr(jumps.sys, "platform", "win32")
+        baseline = jumps._preseed_workspace_state(data)
+        lock.write_bytes(b"unknown")
+        assert jumps._preseed_workspace_state(data) != baseline
+        lock.write_bytes(b"")
+        (realm / "realm.sqlite3").write_bytes(b"changed")
+        assert jumps._preseed_workspace_state(data) != baseline
+
+
+def test_preseed_directory_access_denial_fails_closed(tmp_path, monkeypatch):
+    args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
+    original_scandir = jumps.os.scandir
+    def denied(path):
+        if Path(path) == realm / "attachments":
+            raise PermissionError(13, "directory denied")
+        return original_scandir(path)
+    monkeypatch.setattr(jumps.os, "scandir", denied)
+    with pytest.raises(PermissionError):
+        jumps._preseed_workspace_state(data)
+
+
+def test_windows_changed_lock_refuses_diagnostic_before_seed(tmp_path, monkeypatch):
+    args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
+    lock = realm / "owner.lock"
+    lock.touch()
+    with monkeypatch.context() as native:
+        native.setattr(jumps.sys, "platform", "win32")
+        args.diagnostic_state.unlink()
+        version_path, _, version = journey.installation(root, data)
+        fixture, manifest, receipt = jumps.release0_admission(args)
+        _, target = journey.selected_manifest(args.app_checkout)
+        jumps.write_diagnostic_release0_preconditions(
+            args, root, data, fixture_receipt=receipt, release0_manifest=manifest,
+            target_manifest=target, candidate=journey.read_json(args.candidate),
+            version_path=version_path, version=version)
+        lock.write_bytes(b"changed")
+        with pytest.raises(RuntimeError, match="workspace changed after its pre-seed checkpoint"):
+            jumps.execute_diagnostic_release0_stage(args, root, data, evidence)
+    assert journey.read_json(evidence / "journey-result.json")["checks"] == {
+        "preconditions": "not-run", "seed": "not-run", "snapshot": "not-run"}

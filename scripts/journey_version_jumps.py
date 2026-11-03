@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import sys
 import time
 from collections import deque
@@ -145,18 +146,36 @@ def _preseed_workspace_state(data: Path) -> dict:
 
     def entries() -> list[dict[str, str]]:
         found = []
-        for path in sorted(realm.rglob("*"), key=lambda item: item.relative_to(realm).as_posix()):
-            relative = path.relative_to(realm).as_posix()
-            if path.is_symlink():
-                raise RuntimeError("Diagnostic pre-seed workspace contains a symlink")
-            if path.is_dir():
-                found.append({"path": relative, "kind": "directory"})
-            elif path.is_file():
-                found.append({"path": relative, "kind": "file",
-                              "sha256": _bytes_sha256(path, "pre-seed workspace file")})
-            else:
-                raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
-        return found
+
+        def visit(directory: Path) -> None:
+            # pathlib.rglob may suppress directory enumeration errors. An
+            # incomplete inventory must never compare equal to a checkpoint.
+            with os.scandir(directory) as scan:
+                children = sorted(scan, key=lambda entry: entry.name)
+            for child in children:
+                path = Path(child.path)
+                relative = path.relative_to(realm).as_posix()
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    raise RuntimeError("Diagnostic pre-seed workspace contains a symlink")
+                if stat.S_ISDIR(info.st_mode):
+                    found.append({"path": relative, "kind": "directory"})
+                    visit(path)
+                elif stat.S_ISREG(info.st_mode):
+                    # R0 RealmStore holds this exact root-level lock for its lifetime.
+                    # On Windows even a read of an empty locked file can be denied.
+                    # A zero length stat establishes its complete byte content; never
+                    # infer contents for a nonempty lock or any other file.
+                    if sys.platform == "win32" and relative == "owner.lock" and info.st_size == 0:
+                        digest = hashlib.sha256(b"").hexdigest()
+                    else:
+                        digest = _bytes_sha256(path, "pre-seed workspace file")
+                    found.append({"path": relative, "kind": "file", "sha256": digest})
+                else:
+                    raise RuntimeError("Diagnostic pre-seed workspace contains a non-regular entry")
+
+        visit(realm)
+        return sorted(found, key=lambda entry: entry["path"])
 
     first = entries()
     second = entries()
