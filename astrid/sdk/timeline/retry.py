@@ -391,7 +391,9 @@ def _summary_rederive(record, packet, session):
     label = record.get("label") or "Timeline edit"
     receipts = packet.get("receipts") or []
     receipt = next((item for item in receipts if item.get("touches_conflict")), None)
-    conflicts = ((record.get("failure") or {}).get("details") or {}).get("conflicts", [])
+    conflicts = packet.get("conflicts")
+    if not isinstance(conflicts, list):
+        conflicts = ((record.get("failure") or {}).get("details") or {}).get("conflicts", [])
     conflict = conflicts[0] if conflicts else {}
     try:
         site = clash.friendly_target(session, record, conflict)
@@ -405,14 +407,10 @@ def _summary_rederive(record, packet, session):
         if publisher:
             cause += f' ({publisher})'
         cause += f' changed {site}'
-    preserve = ""
-    if receipt and receipt.get("via") == "app":
-        current = conflict.get("theirs")
-        if isinstance(current, dict) and current.get("state") == "present":
-            preserve = f' The user value is {current.get("value")!r}; preserve it and re-derive only compatible work.'
-        else:
-            preserve = ' Preserve the user value and re-derive only compatible work.'
-    return (f'"{label}" can no longer apply as reviewed: {cause}.{preserve} '
+    from ._commit_wording import conflict_guidance
+
+    guidance = conflict_guidance(conflicts, receipts, packet.get("current_values", []))
+    return (f'"{label}" can no longer apply as reviewed: {cause}. {guidance} '
             f'Run what produced the list again on the newest timeline, preview it, then commit it '
             f'with pending="{record["id"]}".')
 
@@ -626,14 +624,26 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
             )
         return result
     if status == "conflict":
-        packet = clash.explain(timeline.session, record)
-        already_applied = _already_applied(timeline, path, record, packet)
+        # The saved user_editing refusal has no conflict yet. Present the fresh
+        # probe result through a copy so the wire flight and durable record stay
+        # byte-for-byte unchanged until the Agent reviews or commits a preview.
+        presentation_record = copy.deepcopy(record)
+        presentation_failure = copy.deepcopy(presentation_record.get("failure") or {})
+        presentation_details = copy.deepcopy(presentation_failure.get("details") or {})
+        presentation_details["status"] = "conflict"
+        for field in ("conflicts", "current"):
+            if field in details:
+                presentation_details[field] = copy.deepcopy(details[field])
+        presentation_failure["details"] = presentation_details
+        presentation_record["failure"] = presentation_failure
+        packet = clash.explain(timeline.session, presentation_record)
+        already_applied = _already_applied(timeline, path, presentation_record, packet)
         if already_applied is not None:
             return already_applied
         result = {"status": "re_derive", "pending_id": record["id"],
-                  "data": {"conflicts": copy.deepcopy(details.get("conflicts", [])),
+                  "data": {"conflicts": copy.deepcopy(presentation_details.get("conflicts", [])),
                            "receipts": copy.deepcopy(packet.get("receipts"))},
-                  "summary": _summary_rederive(record, packet, timeline.session),
+                  "summary": _summary_rederive(presentation_record, packet, timeline.session),
                   "next": (f'# make_edit is your function; re-run it on the newest timeline and review the preview.\n'
                          f'preview = tl.commit(make_edit, label={record.get("label")!r}, dry_run=True)\n'
                          f'tl.commit(preview["data"]["commands"], label={record.get("label")!r},\n'
@@ -647,10 +657,10 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
             )
             if failure_details.get("reason") != "user_editing":
                 result["next"] = (
-                    f'# The saved function edit is only a captured command list. It conflicts with '
-                    f'the current timeline and was not submitted. If available, re-run the original '
-                    f'function on the newest timeline.\n'
-                    f'tl.retry({record["id"]!r}, your_function)'
+                    '# The saved function edit is only a captured command list. It conflicts with '
+                    'the current timeline and was not submitted. Re-run the original function on '
+                    'the newest timeline, review its preview, then commit the reviewed commands.\n'
+                    + result["next"]
                 )
         return result
     failure = {"message": data.get("message") or details.get("message"), "details": details}

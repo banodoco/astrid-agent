@@ -90,6 +90,9 @@ class _CommitFailure(TimelineEditError):
                     f'The timeline changed again before "{label or "Timeline edit"}" landed; '
                     f'nothing was committed. {pending_id} is still saved')
                 self.presentation["fix"] = f'tl.retry("{pending_id}")'
+        from ._commit_wording import add_conflict_guidance
+
+        add_conflict_guidance(self.presentation, self.failure, self.clash)
         self.headline = self.presentation["headline"]
         self.detail = self.presentation["detail"]
         self.fix = self.presentation["fix"]

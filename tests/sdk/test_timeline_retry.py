@@ -547,8 +547,12 @@ def test_user_editing_pending_resume_rejects_newer_queued_work(saved_user_editin
 
 
 def test_user_editing_pending_conflict_requires_rederive_without_rerunning_function(saved_user_editing):
+    import copy
+
     case = saved_user_editing
     error, record = case.save()
+    saved_flight = copy.deepcopy(record["flight"])
+    saved_record = copy.deepcopy(record)
     body = json.loads(record["flight"]["body"])
     user_body = {key: body[key] for key in ("api_version", "project_id", "timeline_id",
                                           "base_revision_id", "base_publication_id", "commands")}
@@ -561,12 +565,22 @@ def test_user_editing_pending_conflict_requires_rederive_without_rerunning_funct
     evaluations = len(case.evaluations)
     result = case.timeline.retry(error)
     assert result["status"] == "re_derive"
+    assert "keep this value" in result["summary"]
+    assert "custom" in result["summary"]
+    assert "preserve it" in result["summary"].lower()
+    assert "re-derive only compatible work" in result["summary"].lower()
     assert "dry_run=True" in result["next"]
     assert 'pending=' in result["next"]
     assert "tl.retry(" not in result["next"]
+    assert result["data"]["conflicts"]
     assert len(case.evaluations) == evaluations
     assert len(case.posts) == posts
-    assert case.timeline.pending_show(record["id"])["state"] == "pending"
+    after = case.timeline.pending_show(record["id"])
+    assert after["state"] == "pending"
+    assert after["flight"] == saved_flight
+    assert after["flight"]["body"] == saved_record["flight"]["body"]
+    assert after["flight"]["key"] == saved_record["flight"]["key"]
+    assert after["failure"] == saved_record["failure"]
     current = type(case.timeline).open(case.project, "film", client=case.client,
                                        outbox_path=case.path.parent / "user-readback.json")
     assert current.bundle["parent"]["custom"] == {"user": "keep this value"}
@@ -611,8 +625,8 @@ def test_rederive_for_app_conflict_names_user_value_and_preservation(monkeypatch
     summary = retry_module._summary_rederive(record, packet, SimpleNamespace())
     assert "the user (editor) changed clip a label" in summary
     assert "User label" in summary
-    assert "preserve it" in summary
-    assert "re-derive only compatible work" in summary
+    assert "preserve it" in summary.lower()
+    assert "re-derive only compatible work" in summary.lower()
 
 
 def test_commit_preview_submits_identical_base_and_closes_pending(monkeypatch, tmp_path):
@@ -1167,6 +1181,8 @@ def test_saved_function_reads_turn_stale_retry_preview_into_rederive(monkeypatch
     assert result["data"]["captured_list_requires_approval"] is True
     assert "not replayed" in result["summary"]
     assert "original function" in result["next"]
+    assert "dry_run=True" in result["next"]
+    assert "pending='pc_saved'" in result["next"]
     assert timeline.session.submissions == []
 
 

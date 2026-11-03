@@ -1183,6 +1183,9 @@ def test_user_editing_then_field_conflict_saves_the_original_edit(connected, mon
     with pytest.raises(CommitConflict) as caught:
         session.flush(idempotency_key="deferred-conflict")
     assert len(calls) == 2 and calls[0] == calls[1]
+    assert "clip a.start time" in caught.value.fix
+    assert "9" in caught.value.fix
+    assert "preserve it. re-derive only compatible work" in caught.value.fix.lower()
     saved = json.loads(path.read_bytes())
     record = saved["pending_changes"][caught.value.pending_id]
     assert saved["flight"] is None

@@ -198,6 +198,19 @@ def _closures(session, base, head, entries):
     return base_closure, head_closure
 
 
+def _current_value(conflict, head_closure):
+    """Read a conflicted address from the verified latest history image."""
+    if head_closure is None:
+        return None
+    try:
+        physical, normalized = canonical_site(
+            head_closure, conflict['ref'], conflict.get('path', []))
+        image = head_closure.images[physical]
+        return copy.deepcopy(value_at(image['payload'], physical, normalized))
+    except (KeyError, CommandError):
+        return None
+
+
 def friendly_target(session, record, conflict):
     """Resolve a conflict label from the saved base and verified public history."""
     part = _part(record)
@@ -263,8 +276,13 @@ def explain(session, record):
     try:
         base_closure, head_closure = _closures(session, base, packet['head'], entries)
         targets = [_target(conflict, base_closure, head_closure) for conflict in conflicts]
+        packet['current_values'] = [
+            _current_value(conflict, head_closure)
+            for conflict in conflicts
+        ]
     except Exception:  # noqa: BLE001 - summaries remain available without friendly enrichment
         targets = []
+        packet['current_values'] = []
     packet['summary'] = _summary(record, packet['receipts'] or [], targets)
     pending_id = record.get('id')
     packet['next'] = (f'tl.retry({pending_id!r}, your_function)' if record.get('origin') == 'function'
