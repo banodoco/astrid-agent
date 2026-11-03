@@ -40,13 +40,14 @@ on:
         default: R24_LIVE_PIN_MANIFEST_CANDIDATE
         type: string
       mode:
-        description: Bounded action route; r24-only or backend
+        description: Bounded action route; r24-only, backend, or fully-local
         required: true
         default: r24-only
         type: choice
         options:
           - r24-only
           - backend
+          - fully-local
       mode_producer_ref:
         description: Immutable audited R-25 mode-action producer commit
         required: true
@@ -133,7 +134,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Checkout audited R-25 mode-action producer
-        if: env.R25_REQUESTED_MODE == 'backend'
+        if: env.R25_REQUESTED_MODE == 'backend' || env.R25_REQUESTED_MODE == 'fully-local'
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-pinokio
@@ -194,7 +195,7 @@ jobs:
             --confirmation "$REQUESTED_CONFIRMATION"
             --mode "$REQUESTED_MODE"
           )
-          if [ "$REQUESTED_MODE" = backend ]; then
+          if [ "$REQUESTED_MODE" = backend ] || [ "$REQUESTED_MODE" = fully-local ]; then
             materializer_args+=(
               --mode-producer "$R24_CHECKOUTS/mode-producer"
               --mode-producer-ref "$REQUESTED_MODE_PRODUCER_REF"

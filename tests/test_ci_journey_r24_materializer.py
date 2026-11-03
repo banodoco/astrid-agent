@@ -62,12 +62,16 @@ def test_pterm_and_documented_route_arguments_are_exact(tmp_path):
         "--mode-producer-checkout", str(tmp_path / "mode-producer"),
         "--output", str(tmp_path / "run/evidence/r25-linux-mode-actions"),
     ]
-    with pytest.raises(materializer.MaterializerError, match="bounded backend"):
-        materializer.route_argv(
-            tmp_path / "runner", tmp_path / "run", tmp_path / "candidate.json",
-            tmp_path / "config.json", tmp_path / "producer", roots,
-            mode="fully-local", mode_producer_root=tmp_path / "mode-producer",
-        )
+    local_argv = materializer.route_argv(
+        tmp_path / "runner", tmp_path / "run", tmp_path / "candidate.json",
+        tmp_path / "config.json", tmp_path / "producer", roots,
+        mode="fully-local", mode_producer_root=tmp_path / "mode-producer",
+    )
+    assert local_argv[-6:] == [
+        "--mode", "fully-local",
+        "--mode-producer-checkout", str(tmp_path / "mode-producer"),
+        "--output", str(tmp_path / "run/evidence/r25-linux-mode-actions"),
+    ]
 
 
 def test_install_candidate_preserves_the_first_identity_error(tmp_path, monkeypatch):
