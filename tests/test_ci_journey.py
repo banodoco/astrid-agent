@@ -1186,6 +1186,22 @@ def test_seed_diagnostics_survive_cleanup(tmp_path, monkeypatch, exit_code):
     assert json.loads((staged / (prefix + "exit.log")).read_bytes()) == {"exit_code": exit_code}
 
 
+def test_upgrade_bootstrap_evidence_is_staged_without_unlisted_files(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "release0-to-release1"
+    release1 = evidence / "release1"
+    release1.mkdir(parents=True)
+    (release1 / "update-bootstrap.log").write_text("update failure")
+    (release1 / "secret.txt").write_text("not evidence")
+    (evidence / "verify-update.log").write_text("verification")
+    (evidence / "keepgoing-report.md").write_text("report")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = tmp_path / "run" / "evidence-upload" / "before-cleanup"
+    assert (staged / "release1-update-bootstrap.log").read_text() == "update failure"
+    assert (staged / "verify-update.log").read_text() == "verification"
+    assert (staged / "keepgoing-report.md").read_text() == "report"
+    assert not (staged / "secret.txt").exists()
+
+
 def test_seed_diagnostics_distinguish_repeated_invocations(tmp_path, monkeypatch):
     from scripts import journey_version_jumps
 
