@@ -782,17 +782,32 @@ class Coordinator:
             return self.fail_finalization(batch_id, "interrupted_finalization_after_start_marker")
         return {"batch_id": batch_id, "state": FINALIZING, "recovery": "safe_to_start_once", "sealed_input": sealed}
 
-    def mark_terminal(self, batch_id, reason="publication verified"):
-        """Called only by an external publisher adapter after exact read-back."""
+    def mark_terminal(self, batch_id, *, readback_verdict_digest, reason="publication verified"):
+        """Record an adapter's exact read-back of the current red verdict."""
         _require(isinstance(reason, str) and reason, "terminal transition needs a reason")
+        _sha256(readback_verdict_digest, "read-back verdict digest")
         with self._transaction() as connection:
             row = self._row(connection, batch_id)
             self._assert_active_generation(connection, row)
             _require(row["state"] == VERDICT_READY, "only a verified verdict can become terminal")
-            connection.execute("UPDATE batches SET state = ?, terminal_reason = ?, updated_at = ? WHERE batch_id = ?",
-                               (TERMINAL, reason, _utc_now(), batch_id))
-            self._event(connection, batch_id, "terminal", {"reason": reason})
-            return self._batch_value(connection, self._row(connection, batch_id))
+            old_verdict = json.loads(row["verdict_json"]) if row["verdict_json"] else None
+            if (isinstance(old_verdict, dict) and old_verdict.get("result") == "pass" and
+                    readback_verdict_digest == row["verdict_digest"] == digest(old_verdict)):
+                self._event(connection, batch_id, "publication_verification_invalidated",
+                            {"reason": reason, "verdict_digest": row["verdict_digest"]})
+            value = self._batch_value(connection, row)
+            matches = (isinstance(old_verdict, dict) and old_verdict.get("result") == "fail" and
+                       isinstance(value["verdict"], dict) and value["verdict"].get("result") == "fail" and
+                       readback_verdict_digest == value["verdict_digest"] == digest(value["verdict"]))
+            if matches:
+                connection.execute("UPDATE batches SET state = ?, terminal_reason = ?, updated_at = ? WHERE batch_id = ?",
+                                   (TERMINAL, reason, _utc_now(), batch_id))
+                self._event(connection, batch_id, "terminal",
+                            {"reason": reason, "verdict_digest": readback_verdict_digest})
+                value = self._batch_value(connection, self._row(connection, batch_id))
+        # Commit quarantine even when the caller presented the old digest.
+        _require(matches, "read-back does not match the current red verdict")
+        return value
 
     def _batch_value(self, connection, row):
         verdict = json.loads(row["verdict_json"]) if row["verdict_json"] else None
@@ -800,19 +815,28 @@ class Coordinator:
             # Older coordinators could have committed a green verdict before
             # the upgrade. Quarantine it durably before returning it to any
             # caller, including recovery and terminal-state reads.
+            if row["state"] == TERMINAL:
+                self._event(connection, row["batch_id"], "publication_verification_invalidated",
+                            {"reason": row["terminal_reason"], "verdict_digest": row["verdict_digest"]})
             verdict.update(result="fail", reasons=[UNVERIFIED_PASS])
             value_digest = digest(verdict)
-            connection.execute("UPDATE batches SET verdict_json = ?, verdict_digest = ?, updated_at = ? "
+            state = VERDICT_READY if row["state"] == TERMINAL else row["state"]
+            terminal_reason = None if row["state"] == TERMINAL else row["terminal_reason"]
+            connection.execute("UPDATE batches SET verdict_json = ?, verdict_digest = ?, state = ?, "
+                               "terminal_reason = ?, updated_at = ? "
                                "WHERE batch_id = ?",
-                               (canonical_json(verdict), value_digest, _utc_now(), row["batch_id"]))
+                               (canonical_json(verdict), value_digest, state, terminal_reason,
+                                _utc_now(), row["batch_id"]))
             self._event(connection, row["batch_id"], "unverified_verdict_refused",
                         {"reason": UNVERIFIED_PASS, "verdict_digest": value_digest})
+            row = self._row(connection, row["batch_id"])
         return {
             "batch_id": row["batch_id"], "generation": row["generation"], "state": row["state"],
             "tuple_digest": row["tuple_digest"], "target_sha": row["target_sha"],
             "invocation_id": row["invocation_id"],
             "sealed_results_digest": row["sealed_results_digest"],
             "verdict": verdict,
+            "verdict_digest": row["verdict_digest"],
             "terminal_reason": row["terminal_reason"],
         }
 

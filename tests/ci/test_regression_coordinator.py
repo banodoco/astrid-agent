@@ -237,6 +237,67 @@ class DeploymentAdapterTests(CoordinatorFixture):
         self.assertEqual(sum(event["event_type"] == "unverified_verdict_refused"
                              for event in self.coordinator.events("recorded")), 1)
 
+    def legacy_recorded_pass(self, name, *, terminal=False):
+        _, _, status = self.legacy_pass(name)
+        self.coordinator.fail_finalization(name, "fixture")
+        verdict = self.coordinator.batch(name)["verdict"]
+        verdict.update(status)
+        old_digest = coordinator.digest(verdict)
+        with self.coordinator._transaction() as connection:
+            connection.execute(
+                "UPDATE batches SET verdict_json = ?, verdict_digest = ?, state = ?, terminal_reason = ? "
+                "WHERE batch_id = ?",
+                (coordinator.canonical_json(verdict), old_digest,
+                 coordinator.TERMINAL if terminal else coordinator.VERDICT_READY,
+                 "legacy publication verified" if terminal else None, name))
+            if terminal:
+                # The old terminal event did not include a digest.
+                self.coordinator._event(connection, name, "terminal", {"reason": "legacy publication verified"})
+        return old_digest
+
+    def assert_red_requires_new_readback(self, name, old_digest):
+        value = self.coordinator.batch(name)
+        self.assert_refused(value)
+        self.assertIsNone(value["terminal_reason"])
+        red_digest = coordinator.digest(value["verdict"])
+        self.assertEqual(value["verdict_digest"], red_digest)
+        self.assertNotEqual(old_digest, red_digest)
+        history = [event["value"] for event in self.coordinator.events(name)
+                   if event["event_type"] == "publication_verification_invalidated"]
+        self.assertEqual(history, [{"reason": "legacy publication verified", "verdict_digest": old_digest}])
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "current red verdict"):
+            self.coordinator.mark_terminal(name, readback_verdict_digest=old_digest)
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "current red verdict"):
+            self.coordinator.mark_terminal(name, readback_verdict_digest=HASH_A)
+        self.assertEqual(self.coordinator.batch(name), value)
+        verified = self.coordinator.mark_terminal(name, readback_verdict_digest=red_digest)
+        self.assertEqual(verified["state"], coordinator.TERMINAL)
+        self.assertEqual(verified["verdict_digest"], red_digest)
+        self.assertEqual(self.coordinator.events(name)[-1]["value"]["verdict_digest"], red_digest)
+        self.assertEqual([event["value"] for event in self.coordinator.events(name)
+                          if event["event_type"] == "publication_verification_invalidated"], history)
+
+    def test_preexisting_terminal_pass_is_quarantined_and_requires_red_readback(self):
+        old_digest = self.legacy_recorded_pass("legacy-terminal", terminal=True)
+        self.assert_red_requires_new_readback("legacy-terminal", old_digest)
+
+    def test_mark_terminal_on_legacy_pass_invalidates_old_readback(self):
+        old_digest = self.legacy_recorded_pass("legacy-ready")
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "current red verdict"):
+            self.coordinator.mark_terminal("legacy-ready", readback_verdict_digest=old_digest,
+                                           reason="legacy publication verified")
+        self.assert_red_requires_new_readback("legacy-ready", old_digest)
+
+    def test_predicted_red_digest_cannot_verify_during_quarantine(self):
+        self.legacy_recorded_pass("predicted")
+        row = self.coordinator._connection.execute(
+            "SELECT verdict_json FROM batches WHERE batch_id = ?", ("predicted",)).fetchone()
+        predicted = json.loads(row["verdict_json"])
+        predicted.update(result="fail", reasons=[coordinator.UNVERIFIED_PASS])
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "current red verdict"):
+            self.coordinator.mark_terminal("predicted", readback_verdict_digest=coordinator.digest(predicted))
+        self.assert_refused(self.coordinator.batch("predicted"))
+
     def test_coordinator_supervisor_refuses_parent_status_without_replay(self):
         _, directory, _ = self.legacy_pass("supervised")
         with mock.patch.object(finalizer, "run", side_effect=AssertionError("finalizer replayed")):
