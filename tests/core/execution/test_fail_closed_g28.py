@@ -273,7 +273,7 @@ def test_cancel_with_real_live_process_reports_unknown_stop(case, monkeypatch):
     import sys
 
     assert sys.platform == "linux" and os.geteuid() != 0
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
     original_cancel = case.runtime.cancel
     observed = []
 
@@ -291,9 +291,13 @@ def test_cancel_with_real_live_process_reports_unknown_stop(case, monkeypatch):
         case.host.run_task(case.task, lease_token="lease-result")
         assert observed == [(None, False)]
         assert process.poll() is None
+        report = generic_host._task_scope.stop(process, grace=0.2)
+        assert report.status == "settled" and report.pgid == process.pid
+        assert process.poll() is not None
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 @pytest.mark.parametrize("caller_owned", [False, True])
