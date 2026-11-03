@@ -12,6 +12,7 @@ from pathlib import Path
 
 if __package__:
     from .journey_matrix import (
+        DIRECT_MACOS_INTEL_DIAGNOSTIC,
         GPU_MATRIX,
         END_STATE_INVENTORY,
         M4_4A_BACKEND_MATRIX,
@@ -30,6 +31,7 @@ if __package__:
 else:
     try:
         from journey_matrix import (
+            DIRECT_MACOS_INTEL_DIAGNOSTIC,
             GPU_MATRIX,
             END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
@@ -47,6 +49,7 @@ else:
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
+            DIRECT_MACOS_INTEL_DIAGNOSTIC,
             GPU_MATRIX,
             END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
@@ -77,6 +80,7 @@ RUNNER_PROVENANCE = {
     "ubuntu-22.04": ("Linux", "ubuntu22"),
     "windows-2022": ("Windows", "win22"),
     "macos-15": ("macOS", "macos15"),
+    "macos-15-intel": ("macOS", "macos15"),
 }
 
 
@@ -137,6 +141,8 @@ def validate_tuple(candidate, app, manifest):
 
 
 def evaluate(candidate, manifest, results, required, expected_runner, expected_shell, allow_override=False):
+    if expected_runner == "macos-15-intel":
+        return ["Intel macOS evidence requires the dedicated diagnostic contract"]
     errors = []
     by_name = {}
     for path in Path(results).rglob("journey-result.json"):
@@ -210,6 +216,13 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
+def _intel_provenance_matches(provenance):
+    return (isinstance(provenance, dict)
+            and provenance.get("observed_os_family") == "darwin"
+            and provenance.get("RUNNER_ARCH") == "X64"
+            and provenance.get("observed_architecture") == "x86_64")
+
+
 def _release1_row_errors(candidate, contract, row):
     """Validate one Release-1 row for both the aggregate and inventory view."""
     job_id = contract["job_id"]
@@ -233,6 +246,8 @@ def _release1_row_errors(candidate, contract, row):
             or not isinstance(provenance.get("ImageVersion"), str)
             or not provenance["ImageVersion"].strip()):
         errors.append(f"{job_id}: hosted runner provenance does not match the required matrix")
+    if contract["runner"] == "macos-15-intel" and not _intel_provenance_matches(provenance):
+        errors.append(f"{job_id}: Intel macOS architecture provenance does not match")
     os_build = row.get("os_build")
     if not isinstance(os_build, str) or not os_build.startswith(expected_os + "-"):
         errors.append(f"{job_id}: OS build does not match the required matrix")
@@ -324,6 +339,31 @@ def evaluate_release1_matrix(candidate, results):
             errors.append(f"{job_id}: missing receipt")
             continue
         errors.extend(_release1_row_errors(candidate, contract, row))
+    return errors
+
+
+def evaluate_direct_macos_intel(candidate, results):
+    """Evaluate the paired diagnostic snapshots without relaxing lifecycle checks."""
+    paths = list(Path(results).rglob("journey-result.json"))
+    phases = {path.parent.name: path for path in paths}
+    if (len(paths) != 2 or set(phases) != {"before-cleanup", "after-cleanup"}
+            or phases["before-cleanup"].parent.parent != phases["after-cleanup"].parent.parent):
+        return ["Intel diagnostic: expected exactly one paired before/after cleanup receipt"]
+    try:
+        before = read(phases["before-cleanup"])
+        after = read(phases["after-cleanup"])
+    except (OSError, ValueError) as exc:
+        return [f"Intel diagnostic: {exc}"]
+    errors = _release1_row_errors(candidate, DIRECT_MACOS_INTEL_DIAGNOSTIC, after)
+    if after.get("job_id") != DIRECT_MACOS_INTEL_DIAGNOSTIC["job_id"]:
+        errors.append("Intel diagnostic: wrong job id")
+    for field in ("receipt_kind", "job_id", "mode", "scenario", "status", "runner_image",
+                  "runner_provenance", "os_build", "shell", "source_override_test_mode",
+                  "candidate_checkouts", "sources", "installed_tuple", "import_origins",
+                  "service_manager_prerequisite", "service_manager", "release_transition",
+                  "release0_fixture", "semantic_data", "checks"):
+        if field not in before or before.get(field) != after.get(field):
+            errors.append(f"Intel diagnostic: {field} differs across cleanup snapshots")
     return errors
 
 
@@ -917,12 +957,14 @@ def main():
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--app-checkout", type=Path)
     parser.add_argument("--results", type=Path)
-    parser.add_argument("--expected-runner", choices=(*RUNNER_PROVENANCE, "local"))
+    parser.add_argument("--expected-runner", choices=(*(key for key in RUNNER_PROVENANCE if key != "macos-15-intel"), "local"))
     parser.add_argument("--expected-shell", choices=("sh", "powershell.exe", "pwsh.exe"))
     parser.add_argument("--cadence", choices=tuple(REQUIRED), default="release-candidate")
     parser.add_argument("--required", action="append", help="Override scenario list for focused local checks")
     parser.add_argument("--allow-source-override", action="store_true", help="Explicit test-mode evidence only")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--diagnostic-macos-intel", action="store_true",
+                        help="validate one Intel diagnostic; never a Release-1 aggregate")
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact nine Release-1 job receipts under --results")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
@@ -941,7 +983,8 @@ def main():
     errors = []
     try:
         aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
-                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu))
+                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu,
+                               args.diagnostic_macos_intel))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
         if args.report_end_state_obligations and aggregate_modes:
@@ -974,6 +1017,10 @@ def main():
             if args.results is None or args.allow_source_override or args.required or args.prepare_only:
                 raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
             errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))
+        elif args.diagnostic_macos_intel:
+            if args.results is None or args.allow_source_override or args.required or args.prepare_only:
+                raise ValueError("Intel diagnostic requires --results and never admits overrides or subsets")
+            errors.extend(evaluate_direct_macos_intel(candidate, args.results))
         elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
@@ -1000,7 +1047,7 @@ def main():
             errors.extend(evaluate(candidate, manifest, args.results, args.required or REQUIRED[args.cadence], args.expected_runner, args.expected_shell, args.allow_source_override))
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         errors.append(str(exc))
-    heading = "## Journey evidence: " + ("FAIL" if errors else "PASS")
+    heading = ("## Intel diagnostic evidence: " if args.diagnostic_macos_intel else "## Journey evidence: ") + ("FAIL" if errors else "PASS")
     report = heading + "\n\n" + ("\n".join(f"- {error}" for error in errors) if errors else "All required scenarios and candidate identity verified.") + "\n"
     if args.report_end_state_obligations and "obligation_statuses" in locals():
         report += "\n" + format_end_state_obligations(obligation_statuses)

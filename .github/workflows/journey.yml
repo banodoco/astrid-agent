@@ -162,6 +162,7 @@ jobs:
       old_launcher_ref: ${{ steps.config.outputs.old_launcher_ref }}
       stopped_path_agent_ref: ${{ steps.config.outputs.stopped_path_agent_ref }}
       m4_4a_executor_configs: ${{ steps.config.outputs.m4_4a_executor_configs }}
+      direct_macos_intel_only: ${{ steps.config.outputs.direct_macos_intel_only }}
       m4_4a_backend_only: ${{ steps.config.outputs.m4_4a_backend_only }}
       m4_5_enabled: ${{ steps.config.outputs.m4_5_enabled }}
       m4_5_only: ${{ steps.config.outputs.m4_5_only }}
@@ -355,8 +356,7 @@ jobs:
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
           if intel_only:
-              matrix = [{**row, "runner": "macos-15-intel"} for row in matrix
-                        if row["job_id"] == "direct-macos"]
+              matrix = [journey_matrix.DIRECT_MACOS_INTEL_DIAGNOSTIC]
           elif direct_only:
               matrix = [row for row in matrix if row["mode"] == "direct"]
           elif backend_only:
@@ -366,6 +366,7 @@ jobs:
                                   ("old_launcher_ref", old_launcher),
                                   ("stopped_path_agent_ref", stopped_path),
                                   ("m4_4a_executor_configs", executor_configs),
+                                  ("direct_macos_intel_only", str(intel_only).lower()),
                                   ("m4_4a_backend_only", str(backend_only).lower()),
                                   ("m4_5_enabled", str(m4_5_enabled).lower()),
                                   ("m4_5_only", str(m4_5_only).lower()),
@@ -1047,6 +1048,14 @@ jobs:
           pattern: journey-receipt-*
           path: receipts
           merge-multiple: true
+      - name: Evaluate the Intel macOS diagnostic receipt
+        if: needs.config.outputs.direct_macos_intel_only == 'true'
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --diagnostic-macos-intel
       - name: Aggregate the exact Release-1 receipt matrix
         if: needs.config.outputs.m4_5_only != 'true' && needs.config.outputs.m4_4a_backend_only != 'true'
         shell: bash

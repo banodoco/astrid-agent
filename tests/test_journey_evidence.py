@@ -231,3 +231,83 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert "candidate-agent" in workflow and "pinokio" in workflow
     assert '"leg":"release0-to-release1"' in workflow
     assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
+
+
+def test_intel_diagnostic_reuses_lifecycle_assertions_and_is_not_release1(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    source = tmp_path / 'direct-macos' / 'journey-result.json'
+    row = json.loads(source.read_text())
+    row['runner_image'] = 'macos-15-intel'
+    row['os_build'] = 'macOS-15.7-x86_64-i386-64bit'
+    row['runner_provenance'].update(observed_os_family='darwin', RUNNER_ARCH='X64',
+                                    observed_architecture='x86_64')
+    for path in tmp_path.glob('*/journey-result.json'):
+        path.unlink()
+    before = tmp_path / 'before-cleanup' / 'journey-result.json'
+    after = tmp_path / 'after-cleanup' / 'journey-result.json'
+    before.parent.mkdir()
+    after.parent.mkdir()
+    def write(value):
+        prior = copy.deepcopy(value)
+        prior.pop("final_cleanup", None)
+        before.write_text(json.dumps(prior))
+        after.write_text(json.dumps(value))
+    write(row)
+    assert not gate.evaluate_direct_macos_intel(candidate, tmp_path)
+    assert gate.evaluate_release1_matrix(candidate, tmp_path)
+    assert gate._release1_row_errors(candidate, gate.RELEASE1_MATRIX[0], row)
+    assert gate.evaluate(candidate, {}, tmp_path, [], 'macos-15-intel', 'sh')
+
+    changes = [
+        ('job_id', 'direct-linux'), ('mode', 'pinokio-backend'),
+        ('scenario', 'fresh-install'), ('runner_image', 'macos-15'), ('shell', 'powershell.exe'),
+        ('os_build', 'Linux-test'), ('status', 'skipped'), ('source_override_test_mode', True),
+        ('final_cleanup', 'not-run'), ('import_origins', {}),
+        ('service_manager_prerequisite', {}), ('service_manager', {}),
+        ('release_transition', {}), ('release0_fixture', {}), ('semantic_data', {}),
+        ('candidate_checkouts', {}), ('sources', {}), ('installed_tuple', {}),
+    ]
+    for field, value in changes:
+        bad = copy.deepcopy(row)
+        bad[field] = value
+        write(bad)
+        assert gate.evaluate_direct_macos_intel(candidate, tmp_path), field
+    for field, value in [('observed_os_family', 'linux'), ('RUNNER_OS', 'Linux'),
+                         ('ImageOS', 'macos14'), ('ImageVersion', ''),
+                         ('RUNNER_ARCH', 'ARM64'), ('observed_architecture', 'arm64')]:
+        bad = copy.deepcopy(row)
+        bad['runner_provenance'][field] = value
+        write(bad)
+        assert gate.evaluate_direct_macos_intel(candidate, tmp_path), field
+        del bad['runner_provenance'][field]
+        write(bad)
+        assert gate.evaluate_direct_macos_intel(candidate, tmp_path), field
+    for check in row['checks']:
+        bad = copy.deepcopy(row)
+        bad['checks'][check] = 'not-run'
+        write(bad)
+        assert gate.evaluate_direct_macos_intel(candidate, tmp_path), check
+    write(row)
+    bad = copy.deepcopy(row)
+    bad['checks']['one_runtime'] = 'fail'
+    before.write_text(json.dumps(bad))
+    assert any('differs across cleanup snapshots' in e for e in gate.evaluate_direct_macos_intel(candidate, tmp_path))
+    write(row)
+    duplicate = tmp_path / 'other' / 'journey-result.json'
+    duplicate.parent.mkdir(exist_ok=True)
+    duplicate.write_text(json.dumps(row))
+    assert gate.evaluate_direct_macos_intel(candidate, tmp_path)
+    duplicate.unlink()
+    before.unlink()
+    assert gate.evaluate_direct_macos_intel(candidate, tmp_path)
+
+
+def test_workflow_intel_diagnostic_keeps_full_gate():
+    workflow = (Path(__file__).parents[1] / '.github/workflows/journey.yml').read_text()
+    assert 'matrix = [journey_matrix.DIRECT_MACOS_INTEL_DIAGNOSTIC]' in workflow
+    assert 'direct_macos_intel_only: ${{ steps.config.outputs.direct_macos_intel_only }}' in workflow
+    assert '--diagnostic-macos-intel' in workflow
+    assert "if: needs.config.outputs.direct_macos_intel_only == 'true'" in workflow
+    gate_step = workflow.split('      - name: Aggregate the exact Release-1 receipt matrix\n', 1)[1].split('      - name:', 1)[0]
+    assert '--aggregate-release1' in gate_step
+    assert 'direct_macos_intel_only' not in gate_step
