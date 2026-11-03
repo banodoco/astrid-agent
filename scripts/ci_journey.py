@@ -2240,20 +2240,26 @@ def execute(args: argparse.Namespace) -> dict:
                 except Exception as exc:
                     primary_error = exc
                     print(f"Journey failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+                    permission_site = None
+                    if (sys.platform == "win32" and args.leg == "release0-to-release1"
+                            and isinstance(exc, PermissionError)):
+                        try:
+                            if __package__:
+                                from . import journey_version_jumps
+                            else:
+                                import journey_version_jumps
+                            permission_site = journey_version_jumps._permission_failure_site(exc)
+                        except Exception:
+                            permission_site = {"status": "unavailable"}
+                        # Keep the bounded safe discriminator even if receipt I/O is the denial.
+                        print("Journey permission failure site: " + json.dumps(permission_site),
+                              file=sys.stderr, flush=True)
                     try:
                         result_path = evidence / "journey-result.json"
                         recorded = read_json(result_path) if result_path.is_file() else {}
                         recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
-                        if (sys.platform == "win32" and args.leg == "release0-to-release1"
-                                and isinstance(exc, PermissionError)):
-                            try:
-                                if __package__:
-                                    from . import journey_version_jumps
-                                else:
-                                    import journey_version_jumps
-                                recorded["permission_failure_site"] = journey_version_jumps._permission_failure_site(exc)
-                            except Exception:
-                                recorded["permission_failure_site"] = {"status": "unavailable"}
+                        if permission_site is not None:
+                            recorded["permission_failure_site"] = permission_site
                         write_json(result_path, recorded)
                     except Exception as receipt_error:
                         print(f"Journey failure receipt failed: {type(receipt_error).__name__}: {receipt_error}",

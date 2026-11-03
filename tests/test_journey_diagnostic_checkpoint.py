@@ -200,7 +200,9 @@ def test_permission_site_bounds_deep_traceback_without_messages_or_source():
     assert len(json.dumps(site)) < 16384
 
 
-def test_windows_permission_in_lifecycle_receipt_finally_is_captured_by_outer_driver(tmp_path, monkeypatch):
+@pytest.mark.parametrize("receipt_read_denied", [False, True])
+def test_windows_permission_in_lifecycle_receipt_finally_is_captured_by_outer_driver(
+        tmp_path, monkeypatch, capsys, receipt_read_denied):
     # A PermissionError in a lifecycle finally block bypasses its body's except.
     # Keep that competing operation distinguishable at the real outer boundary.
     run_root = tmp_path / "run"
@@ -223,17 +225,26 @@ def test_windows_permission_in_lifecycle_receipt_finally_is_captured_by_outer_dr
     monkeypatch.setattr(journey, "sentinel_process", lambda *unused: nullcontext((argparse.Namespace(pid=42), "birth")))
     monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
     monkeypatch.setattr(journey, "_execute_owned", lifecycle)
+    if receipt_read_denied:
+        monkeypatch.setattr(journey, "read_json", lambda *unused: (_ for _ in ()).throw(original))
     with monkeypatch.context() as native:
         native.setattr(journey.sys, "platform", "win32")
         with pytest.raises(PermissionError) as caught:
             journey.execute(args)
     assert caught.value is original
+    prefix = "Journey permission failure site: "
+    line = next(line for line in capsys.readouterr().err.splitlines() if line.startswith(prefix))
+    logged_site = json.loads(line[len(prefix):])
+    assert logged_site["errno"] == 13 and "private-" not in line
+    if receipt_read_denied:
+        return
     receipt = journey.read_json(evidence / "journey-result.json")
     assert receipt["status"] == "fail"
     site = receipt["permission_failure_site"]
     assert [frame["function"] for frame in site["frames"]] == ["execute", "lifecycle"]
     assert site["hash_target_role"] is None
     assert "private-" not in json.dumps(site)
+    assert site == logged_site
     staged = run_root / "evidence-upload" / "before-cleanup" / "journey-result.json"
     assert journey.read_json(staged)["permission_failure_site"] == site
 
