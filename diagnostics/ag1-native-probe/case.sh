@@ -77,6 +77,7 @@ cp agent/scripts/*.py "$run/agent/scripts/"
 cp -a agent/tests/fixtures/release0 "$run/agent/tests/fixtures/"
 cp app/public/install app/public/install-manifest.json "$run/app/public/"
 cp agent/diagnostics/ag1-native-probe/driver.py "$run/driver.py"
+cp agent/diagnostics/ag1-native-probe/incarnation.py "$run/incarnation.py"
 cp agent/diagnostics/ag1-native-probe/native-probe.py "$run/native-probe.py"
 cp agent/diagnostics/ag1-native-probe/capture-systemd.py "$run/capture-systemd.py"
 [[ $(sha256sum "$run/native-probe.py" | cut -d' ' -f1) = 2d580aafc4c6b095febea8f4983cb62e3e1e2e5e376cbf094edf679bb5e23c60 ]]

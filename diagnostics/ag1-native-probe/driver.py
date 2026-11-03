@@ -8,6 +8,8 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.request
+from incarnation import Witness, snapshot
 
 HERE = Path(__file__).resolve().parent
 RUN = Path(os.environ['LOOP_ROOT'])
@@ -107,10 +109,32 @@ def snap(name):
     dump(name + '.json', stamp)
 
 
+def sample_witness(witness):
+    sample = witness.capture()
+    endpoint = sample['discovery']['value']['endpoint'].rstrip('/')
+    req = urllib.request.Request(endpoint + '/v1/health', headers={'Accept': 'application/json', 'X-Astrid-Owner-Identity': '1'})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=5) as response:
+        health = json.load(response)
+    query = subprocess.run(['systemctl', '--user', 'show', 'astrid.service', '--property=MainPID', '--value'], capture_output=True, text=True, timeout=5)
+    after = witness.capture()
+    sample['checks']['after_query_sample'] = after['all_checks']
+    sample['checks']['bracketed_objects_stable'] = all(sample[k] == after[k] for k in ('process', 'discovery', 'marker', 'catalog', 'listener_inodes', 'owner_lock'))
+    sample['after_query_sample'] = after
+    sample['health'] = health
+    sample['manager_main_pid'] = {'exit': query.returncode, 'stdout': query.stdout, 'stderr': query.stderr}
+    sample['checks']['endpoint_health_instance'] = health.get('status') == 'ok' and health.get('runtime_instance_id') == sample['discovery']['value']['runtime_instance_id']
+    sample['checks']['manager_main_pid'] = query.returncode == 0 and query.stdout.strip() == str(witness.pid)
+    sample['checks']['pidfd_alive_after_queries'] = witness.fd is not None and __import__('incarnation').alive(witness.fd)
+    sample['all_checks'] = all(sample['checks'].values())
+    return sample
+
+
 def main():
     mode = os.environ['PROBE_MODE']
     result = {'kind': 'diagnostic-only', 'mode': mode, 'authority': False,
               'r0_install_exit': None, 'probe_exit': None, 'stop_exit': None}
+    witness = None
+    first = None
     try:
         assert os.getuid() != 0
         dump('identity.json', {'uid': os.getuid(), 'euid': os.geteuid(), 'home': str(Path.home()),
@@ -121,6 +145,7 @@ def main():
              'r0_runtime': '6d53a19070faf63fc15ae1f81417722edc2c8a5f'})
         fixture, manifest, provenance = jumps.verified_release0_fixture(RUN / 'agent/tests/fixtures/release0')
         dump('r0-fixture.json', provenance)
+        witness = Witness(RUN / 'data', RUN / 'program')
         rc = command('r0-install', ['sh', fixture / 'served/install', '--manifest', manifest,
                      '--root', RUN / 'program', '--data-root', RUN / 'data'], 900)
         result['r0_install_exit'] = rc
@@ -132,6 +157,19 @@ def main():
         dump('r0-selection.json', {'version_path': str(selected), 'version': version, 'service': service,
                                    'discovery': journey.healthy(RUN / 'data')})
         snap('r0-ready')
+        try:
+            first = sample_witness(witness)
+            dump('incarnation-before.json', {'launch': witness.initial, 'sample': first, 'exit': 0 if first['all_checks'] else 1})
+            # Independent, live different-process control; it must not match the publication.
+            fd = os.pidfd_open(os.getpid())
+            try:
+                negative = snapshot(os.getpid(), fd, RUN / 'data')
+                dump('incarnation-negative.json', {'sample': negative, 'exit': 0 if not negative['checks']['pid_and_birth'] and not negative['all_checks'] else 1})
+            finally:
+                os.close(fd)
+        except Exception as exc:
+            dump('incarnation-before.json', {'launch': witness.initial, 'exit': 2, 'error': repr(exc)})
+            dump('incarnation-negative.json', {'exit': 2, 'error': 'control not completed: ' + repr(exc)})
         if command('venv', ['python3', '-m', 'venv', RUN / 'venv'], 120): raise RuntimeError('venv failed')
         py = RUN / 'venv/bin/python'
         if command('dependencies', [py, '-m', 'pip', 'install', 'PyYAML', RUN / 'runtime'], 600):
@@ -151,6 +189,13 @@ def main():
                      '--data', RUN / 'data', '--home', RUN / 'home', '--expect', mode], 120)
         result['probe_exit'] = rc
         snap('after-probe')
+        if mode == 'running':
+            try:
+                second = sample_witness(witness)
+                stable = first['discovery'] == second['discovery'] and first['marker'] == second['marker'] and first['catalog'] == second['catalog']
+                dump('incarnation-after.json', {'sample': second, 'publication_and_selection_unchanged': stable, 'exit': 0 if second['all_checks'] and stable else 1})
+            except Exception as exc:
+                dump('incarnation-after.json', {'exit': 2, 'error': repr(exc)})
         if rc: raise RuntimeError('probe failed; inspect inner log')
         result['status'] = 'checkpoint-observed-non-authoritative'
         return 0
@@ -160,6 +205,8 @@ def main():
         (OUT / 'exception.txt').write_text(traceback.format_exc())
         return 1
     finally:
+        if witness is not None:
+            witness.close()
         dump('result.json', result)
 
 if __name__ == '__main__':
