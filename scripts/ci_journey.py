@@ -7,6 +7,7 @@ is an explicit test mode for candidate Agent and Runtime Git commits.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -15,6 +16,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -1233,6 +1235,113 @@ def runtime_processes(data: Path) -> list[int]:
     return [pid for pid, command in records if _runtime_owner_command(command)]
 
 
+def _cleanup_json(path: Path) -> tuple[str, dict | None]:
+    """Read a bounded support record without following its final symlink."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return "not-regular", None
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(65537)
+        finally:
+            os.close(fd)
+        if len(raw) > 65536:
+            return "oversize", None
+        value = json.loads(raw)
+        return ("observed", value) if isinstance(value, dict) else ("invalid", None)
+    except FileNotFoundError:
+        return "absent", None
+    except (OSError, UnicodeError, ValueError):
+        return "unavailable", None
+
+
+def mac_cleanup_observation(data: Path, sentinel, birth: str) -> dict:
+    """External, sequential observations; never retain commands or support-file contents."""
+    observation = {"started_utc": datetime.now(timezone.utc).isoformat(),
+                   "started_monotonic_ns": time.monotonic_ns()}
+    try:
+        manager = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/haus.astrid.runtime"],
+                                 capture_output=True, text=True, timeout=30, check=False)
+        # These fields are the only accepted launchctl output; arbitrary text,
+        # arguments and environment values are never retained.
+        state = (re.search(r"(?m)^[ \t]*state = (running|waiting|exited|SIGTERMed)[ \t]*$", manager.stdout)
+                 if manager.returncode == 0 else None)
+        pid = (re.search(r"(?m)^[ \t]*pid = ([0-9]+)[ \t]*$", manager.stdout)
+               if manager.returncode == 0 else None)
+        observation["launchctl"] = {"status": "observed", "exit_code": manager.returncode,
+                                    "state": state.group(1) if state else None,
+                                    "pid": int(pid.group(1)) if pid else None}
+    except (OSError, subprocess.SubprocessError):
+        observation["launchctl"] = {"status": "unavailable"}
+    try:
+        pids = runtime_processes(data)
+        processes = []
+        for pid in pids:
+            observed_birth = process_birth(pid)
+            # ps lstart is a fixed, locale-dependent date, not arbitrary output.
+            if not observed_birth or not re.fullmatch(
+                    r"[A-Za-z]{3} +[A-Za-z]{3} +[0-9]{1,2} +[0-9]{2}:[0-9]{2}:[0-9]{2} +[0-9]{4}",
+                    observed_birth):
+                observed_birth = None
+            processes.append({"pid": pid, "birth": observed_birth})
+        observation["owners"] = {"status": "observed", "processes": processes}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        observation["owners"] = {"status": "unavailable"}
+    status, discovery = _cleanup_json(data / "runtime" / "discovery.json")
+    discovery_pid = discovery.get("pid") if discovery else None
+    observation["discovery"] = {"status": status,
+                                "pid": discovery_pid if type(discovery_pid) is int and discovery_pid > 0 else None}
+    status, catalog = _cleanup_json(data / "runtime" / "catalog.json")
+    selected = catalog.get("selected_realm_id") if catalog else None
+    realms = catalog.get("realms") if catalog else None
+    selected_present = None
+    if status == "observed" and isinstance(realms, list):
+        if selected is None:
+            selected_present = False
+        elif isinstance(selected, str) and selected and all(isinstance(row, dict) for row in realms):
+            selected_present = any(row.get("realm_id") == selected for row in realms)
+    observation["catalog"] = {"status": status, "selected_realm_present": selected_present}
+    try:
+        sent = sentinel_observation(sentinel, birth)
+        if sent["exit_code"] is None and sent.get("observed_birth") is None:
+            observation["sentinel"] = {"status": "unavailable"}
+        else:
+            observation["sentinel"] = {"status": "observed", "alive": sent["alive"],
+                                       "exit_code": sent["exit_code"]}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        observation["sentinel"] = {"status": "unavailable"}
+    observation.update(finished_utc=datetime.now(timezone.utc).isoformat(),
+                       finished_monotonic_ns=time.monotonic_ns())
+    return observation
+
+
+def safe_mac_cleanup_observation(data: Path, sentinel, birth: str) -> dict:
+    try:
+        return mac_cleanup_observation(data, sentinel, birth)
+    except Exception:
+        return {"status": "unavailable", "finished_utc": datetime.now(timezone.utc).isoformat(),
+                "finished_monotonic_ns": time.monotonic_ns()}
+
+
+def record_mac_cleanup_observation(result_path: Path, before: dict, after: dict, command: dict) -> None:
+    """Best effort: diagnostic failures must not replace the uninstall result."""
+    try:
+        recorded = read_json(result_path) if result_path.is_file() else {}
+        before_sentinel, after_sentinel = before.get("sentinel", {}), after.get("sentinel", {})
+        comparison = (before_sentinel.get("alive") == after_sentinel.get("alive")
+                      if before_sentinel.get("status") == after_sentinel.get("status") == "observed"
+                      else None)
+        recorded["mac_final_uninstall_observation"] = {
+            "scope": "external-command-boundaries", "before": before, "after": after,
+            "command": command, "sentinel_alive_unchanged": comparison,
+            "workspace_semantics": "unavailable-no-read-only-producer",
+        }
+        write_json(result_path, recorded)
+    except Exception:
+        print("Journey macOS cleanup observation receipt unavailable", file=sys.stderr, flush=True)
+
+
 def assert_one_runtime(data: Path) -> None:
     discovery = healthy(data)
     owners = runtime_processes(data)
@@ -1556,9 +1665,29 @@ def execute(args: argparse.Namespace) -> dict:
                         try:
                             if (root / "current").is_file():
                                 _, _, installed = installation(root, data)
-                                installed_cli(installed, ["install", "--uninstall", "--root", str(root),
-                                                          "--data-root", str(data)], evidence,
-                                              "final-uninstall.log", timeout=1800)
+                                observe = (sys.platform == "darwin" and getattr(args, "mode", "direct") == "direct"
+                                           and args.leg == "release0-to-release1")
+                                before = safe_mac_cleanup_observation(data, sentinel, birth) if observe else None
+                                command = {"started_utc": datetime.now(timezone.utc).isoformat(),
+                                           "started_monotonic_ns": time.monotonic_ns()} if observe else None
+                                try:
+                                    installed_cli(installed, ["install", "--uninstall", "--root", str(root),
+                                                              "--data-root", str(data)], evidence,
+                                                  "final-uninstall.log", timeout=1800)
+                                    if observe:
+                                        command.update(outcome="exited", exit_code=0)
+                                except Exception as exc:
+                                    if observe:
+                                        match = re.match(r"^final-uninstall\.log: exit (\d+);", str(exc))
+                                        command.update(outcome="exited" if match else "unavailable",
+                                                       exit_code=int(match.group(1)) if match else None)
+                                    raise
+                                finally:
+                                    if observe:
+                                        command.update(finished_utc=datetime.now(timezone.utc).isoformat(),
+                                                       finished_monotonic_ns=time.monotonic_ns())
+                                        after = safe_mac_cleanup_observation(data, sentinel, birth)
+                                        record_mac_cleanup_observation(result_path, before, after, command)
                                 if (root / "current").exists() or runtime_processes(data):
                                     raise RuntimeError("Owned installation remained after final uninstall")
                             cleanup_sentinel = sentinel_observation(sentinel, birth)
