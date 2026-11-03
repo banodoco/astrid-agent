@@ -1514,7 +1514,7 @@ def execute(args: argparse.Namespace) -> dict:
                                      "first_error": f"{type(exc).__name__}: {exc}", "evidence_path": str(evidence)})
             report["stages"].extend({"stage": name, "result": "not-run", "forced_continuation_used": False,
                                      "first_error": "Unsafe or unavailable preflight", "evidence_path": str(evidence)}
-                                    for name in keepgoing.STAGES)
+                                    for name in (keepgoing.FRESH_STAGES if args.leg == "fresh-install" else keepgoing.STAGES))
             keepgoing.write(evidence, report)
         failure_path = evidence / "journey-result.json"
         recorded = read_json(failure_path) if failure_path.is_file() else {
@@ -1885,8 +1885,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     diagnostic = args.diagnostic_start_at is not None
     if args.diagnostic_keep_going and (diagnostic or args.mode != "direct" or
-            args.leg != "release0-to-release1" or not args.job_id or args.source_override or args.retain_for_next_leg):
-        parser.error("keep-going requires a disposable direct release0-to-release1 matrix job")
+            args.leg not in {"release0-to-release1", "fresh-install"} or not args.job_id or args.source_override or args.retain_for_next_leg):
+        parser.error("keep-going requires a disposable direct lifecycle matrix job")
     if (args.leg == "update-over-old-declaration") != (args.old_declaration is not None):
         parser.error("--old-declaration is required only for update-over-old-declaration")
     if bool(args.diagnostic_state) != diagnostic:

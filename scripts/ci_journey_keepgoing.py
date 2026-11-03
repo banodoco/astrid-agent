@@ -1,6 +1,7 @@
 """Disposable direct lifecycle diagnostic. Its receipts are never proof."""
 from pathlib import Path
 import json
+import os
 
 if __package__:
     from . import ci_journey as journey, journey_version_jumps as jumps
@@ -16,6 +17,10 @@ STAGES = ("admission", "release0-bootstrap", "release0-start", "release0-selecti
           "release0-owner", "release1-update", "release1-start", "release1-selection",
           "release1-verify-update", "release1-verify-install", "release1-snapshot",
           "semantic-preservation", "release1-task", "one-runtime", "sentinel")
+
+
+FRESH_STAGES = ("admission", "release1-install", "release1-start", "release1-selection",
+                "release1-verify-install", "release1-task", "one-runtime", "sentinel")
 
 
 def initial(evidence, args):
@@ -111,6 +116,45 @@ def execute(args, root: Path, data: Path, evidence: Path, sentinel, birth: str):
                 row["retained_evidence_error"] = f"{type(exc).__name__}: {exc}"
         report["stages"].append(row)
         write(evidence, report)
+    if args.leg == "fresh-install":
+        producers.update(app="admission", updated="release1-install", started1="release1-start",
+                         version="release1-selection")
+        def fresh_admission():
+            app = args.app_checkout.resolve(strict=True)
+            path, manifest = journey.selected_manifest(app, source_override=False, agent=None, runtime=None, evidence=evidence)
+            if gate.validate_tuple(journey.read_json(args.candidate), app, path) != manifest or manifest.get("release") != 1:
+                raise RuntimeError("fresh-install requires a frozen release-1 manifest")
+            if (root / "current").exists():
+                raise RuntimeError("fresh-install requires an uninstalled machine")
+            if not journey.sentinel_observation(sentinel, birth)["alive"]:
+                raise RuntimeError("Unrelated sentinel exited before installation")
+            state.update(app=app, candidate_path=path, manifest=manifest)
+        def fresh_install():
+            journey.bootstrap(state["app"], state["candidate_path"], args.shell, "install", evidence / "release1", root, data)
+            state["updated"] = True
+        def fresh_start():
+            jumps.start_direct_runtime(evidence / "release1")
+            journey.wait_ready(data, timeout=int(os.environ.get("ASTRID_CI_WAIT_READY_TIMEOUT", "900")))
+            state["started1"] = True
+        def fresh_select():
+            path, selected_data, version = journey.installation(root, data)
+            if selected_data != data or jumps.installed_release(version) != 1:
+                raise RuntimeError("Fresh install did not select release 1 and the requested data root")
+            journey.selected_tuple(state["manifest"], version)
+            journey.assert_direct_service_ownership(root, data)
+            state.update(version=version, version_path=path)
+        def fresh_sentinel():
+            if not journey.sentinel_observation(sentinel, birth)["alive"]:
+                raise RuntimeError("Unrelated sentinel did not survive fresh installation")
+        stage("admission", [], fresh_admission, evidence)
+        stage("release1-install", ["app"], fresh_install, evidence / "release1" / "install-bootstrap.log")
+        stage("release1-start", ["updated"], fresh_start, evidence / "release1")
+        stage("release1-selection", ["started1"], fresh_select, evidence / "release1")
+        stage("release1-verify-install", ["version"], lambda: journey.verify("install", state["version_path"], data, evidence), evidence / "verify-install.log")
+        stage("release1-task", ["version"], lambda: jumps.task_after_update(state["version"], evidence / "release1-working-task", project), evidence / "release1-working-task")
+        stage("one-runtime", ["version"], lambda: journey.assert_one_runtime(data), evidence)
+        stage("sentinel", [], fresh_sentinel, evidence)
+        return report
     def admission():
         fixture, manifest0, receipt = jumps.release0_admission(args)
         app = args.app_checkout.resolve(strict=True)
