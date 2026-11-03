@@ -661,10 +661,17 @@ def _windows_job_drain_ownership(path: Path) -> dict:
     script = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$acl = Get-Acl -LiteralPath $args[0] -ErrorAction Stop
+try {
+    $stage = 'Get-Acl'
+    $acl = Get-Acl -LiteralPath $env:ASTRID_DIAGNOSTIC_ACL_PATH -ErrorAction Stop
+
+$stage = 'GetOwner'
 $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+$stage = 'GetCurrentIdentity'
 $current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$stage = 'GetAccessRules'
 $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+$stage = 'summarize-rules'
 $writeMask = [int]([Security.AccessControl.FileSystemRights]::WriteData -bor
     [Security.AccessControl.FileSystemRights]::AppendData -bor
     [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
@@ -680,17 +687,33 @@ $foreignAllowWrites = @($rules | Where-Object {
     access_rule_count = $rules.Count
     foreign_allow_write_rule_count = $foreignAllowWrites.Count
 } | ConvertTo-Json -Compress
+} catch {
+    $e = $_.Exception
+    $chain = @()
+    while ($null -ne $e -and $chain.Count -lt 5) {
+        $item = @{type=$e.GetType().FullName; hresult=[int]$e.HResult}
+        if ($e -is [ComponentModel.Win32Exception]) { $item.native_error_code = $e.NativeErrorCode }
+        $chain += $item
+        $e = $e.InnerException
+    }
+    @{status='unavailable'; reason='acl-query-failed'; stage=$stage;
+      error_id=$_.FullyQualifiedErrorId; exceptions=$chain} | ConvertTo-Json -Compress -Depth 6
+    exit 0
+}
 """
     env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
+    env["ASTRID_DIAGNOSTIC_ACL_PATH"] = str(path)
     try:
         completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, str(path)],
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             env=env, capture_output=True, text=True, timeout=15, check=False,
         )
         if completed.returncode:
             return {"status": "unavailable", "reason": "acl-query-failed",
                     "exit_code": completed.returncode}
         value = json.loads(completed.stdout)
+        if isinstance(value, dict) and value.get("status") == "unavailable" and value.get("reason") == "acl-query-failed":
+            return value
         if not isinstance(value, dict) or value.get("status") != "observed":
             return {"status": "unavailable", "reason": "acl-query-malformed"}
         if (type(value.get("owner_matches_current_user")) is not bool or
@@ -700,6 +723,27 @@ $foreignAllowWrites = @($rules | Where-Object {
         return value
     except (OSError, subprocess.SubprocessError, ValueError):
         return {"status": "unavailable", "reason": "acl-query-unavailable"}
+
+
+def _windows_job_drain_native_query(path: Path) -> dict:
+    """Bound a separate read-only native query at the late diagnostic boundary."""
+    if sys.platform != "win32":
+        return {"status": "unavailable", "reason": "not-windows"}
+    try:
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name("ci_journey_turnover.py")),
+                                 "--file-security"], input=json.dumps(str(path)), text=True,
+                                capture_output=True, timeout=5, check=False)
+        if result.returncode:
+            return {"status": "unavailable", "reason": "worker-failed", "exit_code": result.returncode}
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict) or value.get("status") not in ("observed", "unavailable", "absent"):
+            raise ValueError("malformed native query")
+        return value
+    except subprocess.TimeoutExpired:
+        return {"status": "unavailable", "reason": "timeout"}
+    except (OSError, ValueError) as exc:
+        return {"status": "unavailable", "reason": "worker-error", "error": type(exc).__name__,
+                "winerror": getattr(exc, "winerror", None)}
 
 
 def _windows_job_drain_identifier(value: object, pattern: re.Pattern[str]) -> dict:
@@ -848,10 +892,12 @@ def capture_windows_job_drain_evidence(evidence: Path, run_root: Path, data: Pat
         receipt_path, limit=WINDOWS_JOB_DRAIN_CAPTURE_LIMIT)
     lock_path = support / ".pack-host-job-cleanup.lock"
     lock = _windows_job_drain_file_metadata(lock_path)
-    receipt = {"file": {**receipt_file, "ownership": (_windows_job_drain_ownership(receipt_path)
+    receipt = {"file": {**receipt_file, "native_query": _windows_job_drain_native_query(receipt_path),
+                        "ownership": (_windows_job_drain_ownership(receipt_path)
                                                          if receipt_file["status"] == "read"
                                                          else {"status": "not-observed"})},
-               "lock": {**lock, "ownership": (_windows_job_drain_ownership(lock_path)
+               "lock": {**lock, "native_query": _windows_job_drain_native_query(lock_path),
+                        "ownership": (_windows_job_drain_ownership(lock_path)
                                                   if lock["status"] == "regular"
                                                   else {"status": "not-observed"})},
                "status": receipt_file["status"]}

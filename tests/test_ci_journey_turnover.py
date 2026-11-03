@@ -128,3 +128,114 @@ def test_turnover_unsafe_leaf_is_unavailable(tmp_path):
     result = read(evidence, "seed", "before-stop")
     assert result["registration"]["status"] == "unsafe"
     assert result["reference"]["status"] == "unavailable"
+
+
+def test_native_file_acl_absence_unsafe_and_win32_error(tmp_path, monkeypatch):
+    import ctypes
+    monkeypatch.setattr(observer, "_native_windows", lambda: True)
+    assert observer._native_file_security(tmp_path / "missing") == {"status": "absent"}
+    path = tmp_path / "receipt"
+    path.write_text("{}")
+    assert observer._native_file_security(tmp_path)["reason"] == "unsafe-leaf"
+
+    class Call:
+        def __init__(self, value):
+            self.value = value
+        def __call__(self, *args):
+            return self.value
+    class Library:
+        GetNamedSecurityInfoW = Call(5)
+        LocalFree = Call(0)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: Library(), raising=False)
+    assert observer._native_file_security(path) == {
+        "status": "unavailable", "stage": "GetNamedSecurityInfoW", "winerror": 5}
+
+
+def test_selected_task_native_result_and_error_classification(monkeypatch):
+    monkeypatch.setattr(observer, "_native_windows", lambda: True)
+    payload = {"definition": {"status": "observed", "xml": "<Task/>"},
+               "security": {"status": "unavailable", "stage": "GetSecurityDescriptor", "hresult": -2147024891}}
+    def run(argv, **kwargs):
+        assert "Schedule.Service" in argv[-1]
+        assert kwargs["timeout"] == 8
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+    monkeypatch.setattr(observer.subprocess, "run", run)
+    assert observer._selected_task() == {"status": "queried", **payload}
+    monkeypatch.setattr(observer.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 3, "", "private"))
+    assert observer._selected_task() == {"status": "unavailable", "reason": "powershell-failed", "exit_code": 3}
+    monkeypatch.setattr(observer.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired("ps", 8)))
+    assert observer._selected_task()["reason"] == "timeout"
+
+
+def test_native_observation_correlates_and_isolates_queries(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    put(data / "runtime" / "generic-host.json", {"pid": 7232, "process_birth_id": "windows-creation:123",
+        "runtime_instance_id": "b" * 32, "runtime_service_launch_id": "a" * 32})
+    put(data / "runtime" / "discovery.json", {"pid": 5928, "process_birth_id": "windows-creation:456",
+        "runtime_instance_id": "b" * 32})
+    monkeypatch.setenv("GITHUB_RUN_ID", "41563306389")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setenv("GITHUB_JOB", "direct_windows")
+    monkeypatch.setattr(observer, "_selected_task", lambda: {"status": "queried"})
+    monkeypatch.setattr(observer, "_native_file_security", lambda path: (
+        {"status": "absent"} if path.name.endswith(".json") else
+        {"status": "unavailable", "stage": "GetNamedSecurityInfoW", "winerror": 5}))
+    record = observer._native_observation(data, "before-stop", "seed")
+    assert (record["run_id"], record["run_attempt"], record["job"]) == ("41563306389", "1", "direct_windows")
+    assert record["task"]["path"] == "\\" and record["task"]["name"] == "Astrid Runtime"
+    assert record["host"]["pid"] == 7232 and record["runtime"]["process_birth_id"] == "windows-creation:456"
+    assert record["receipt_acl"]["status"] == "absent" and record["lock_acl"]["winerror"] == 5
+    monkeypatch.setattr(observer, "_native_file_security", lambda _: 1 / 0)
+    later = observer._native_observation(data, "owner-absent", "seed")
+    assert later["task"]["observation"]["status"] == "not-queried"
+    assert later["receipt_acl"]["reason"] == "observer-error"
+
+
+def test_existing_acl_query_preserves_error_chain(tmp_path, monkeypatch):
+    path = tmp_path / "receipt"
+    failure = {"status": "unavailable", "reason": "acl-query-failed", "stage": "Get-Acl",
+               "exceptions": [{"type": "System.ComponentModel.Win32Exception", "hresult": -2147467259,
+                               "native_error_code": 5}]}
+    monkeypatch.setattr(journey.os, "name", "nt")
+    def run(argv, **kwargs):
+        assert kwargs["env"]["ASTRID_DIAGNOSTIC_ACL_PATH"] == str(path)
+        assert "Get-Acl" in argv[-1]
+        return subprocess.CompletedProcess(argv, 0, json.dumps(failure), "")
+    monkeypatch.setattr(journey.subprocess, "run", run)
+    assert journey._windows_job_drain_ownership(path) == failure
+
+
+def test_late_native_query_retains_exit_and_timeout(tmp_path, monkeypatch):
+    path = tmp_path / "receipt"
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    def failed(argv, **kwargs):
+        assert argv[-1] == "--file-security"
+        assert json.loads(kwargs["input"]) == str(path) and kwargs["timeout"] == 5
+        return subprocess.CompletedProcess(argv, 4, "", "")
+    monkeypatch.setattr(journey.subprocess, "run", failed)
+    assert journey._windows_job_drain_native_query(path) == {
+        "status": "unavailable", "reason": "worker-failed", "exit_code": 4}
+    monkeypatch.setattr(journey.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(subprocess.TimeoutExpired("worker", 5)))
+    assert journey._windows_job_drain_native_query(path)["reason"] == "timeout"
+
+
+def test_native_file_acl_success_uses_read_only_flags_and_frees_descriptor(tmp_path, monkeypatch):
+    import ctypes
+    path = tmp_path / "receipt"
+    path.write_text("{}")
+    monkeypatch.setattr(observer, "_native_windows", lambda: True)
+    calls = []
+    class Call:
+        def __init__(self, name):
+            self.name = name
+        def __call__(self, *args):
+            calls.append((self.name, args))
+            return 0
+    class Library:
+        GetNamedSecurityInfoW = Call("get")
+        LocalFree = Call("free")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: Library(), raising=False)
+    result = observer._native_file_security(path)
+    assert result["status"] == "observed" and result["winerror"] == 0
+    assert [name for name, _ in calls] == ["get", "free"]
+    assert calls[0][1][:3] == (str(path), 1, 7)
