@@ -9,7 +9,9 @@ Two mechanisms:
 
 from __future__ import annotations
 
+import copy
 import os
+import re
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -25,6 +27,7 @@ from .base import (
     ensure_symlink,
     managed_target_matches,
     remove_symlink,
+    require_owned_target,
     target_mechanism,
 )
 
@@ -68,6 +71,13 @@ class HermesAdapter(HarnessAdapter):
             return steps
         for descriptor in descriptors:
             target = self.target_for(descriptor)
+            try:
+                require_owned_target(target, (descriptor.skill_dir.resolve(),
+                    *opts.get("owned_sources", {}).get(target, ())))
+            except AstridError as exc:
+                steps.append(PlannedStep(str(exc), target=target,
+                    extras={"changed": False, "conflict": str(exc)}))
+                continue
             if action == "install":
                 steps.append(PlannedStep(description=f"install {target} from {descriptor.skill_dir}", target=target))
             else:
@@ -79,11 +89,18 @@ class HermesAdapter(HarnessAdapter):
         force = bool(opts.get("force"))
         if mechanism == "external-dir":
             entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
-            changed = self._rewrite_config(action, entry)
+            dry_run = bool(opts.get("dry_run"))
+            if action == "uninstall" and dry_run:
+                config = self._load_config()
+                skills = config.get("skills")
+                external_dirs = skills.get("external_dirs", []) if isinstance(skills, dict) else []
+                changed = entry in (external_dirs or [])
+            else:
+                changed = self._rewrite_config(action, entry)
             verb = "registered" if action == "install" else "removed"
             return [
                 PlannedStep(
-                    description=(verb if changed else "unchanged") + f" {self.config_path}",
+                    description=(verb if changed else "unchanged") + f" {entry}",
                     target=self.config_path,
                     extras={"changed": changed, "mechanism": "external-dir", "entry": entry},
                 )
@@ -93,7 +110,8 @@ class HermesAdapter(HarnessAdapter):
             target = self.target_for(descriptor)
             if action == "install":
                 try:
-                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=mechanism)
+                    changed = ensure_symlink(target, descriptor.skill_dir, force=force, mechanism=mechanism,
+                        owned_sources=opts.get("owned_sources", {}).get(target, ()))
                 except AstridError as exc:
                     steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
                     continue
@@ -105,7 +123,12 @@ class HermesAdapter(HarnessAdapter):
                     )
                 )
             else:
-                changed = remove_symlink(target)
+                try:
+                    changed = remove_symlink(target, sources=(descriptor.skill_dir.resolve(),
+                        *opts.get("owned_sources", {}).get(target, ())))
+                except AstridError as exc:
+                    steps.append(PlannedStep(str(exc), target=target, extras={"changed": False, "conflict": str(exc)}))
+                    continue
                 steps.append(
                     PlannedStep(
                         description=("removed" if changed else "absent") + f" {target}",
@@ -164,6 +187,8 @@ class HermesAdapter(HarnessAdapter):
             import yaml
         except ImportError:  # pragma: no cover
             raise RuntimeError("PyYAML is required for hermes external-dir mechanism")
+        if action == "uninstall":
+            return self._remove_external_dir_entry_preserving_bytes(entry, yaml)
         data = self._load_config()
         skills = data.setdefault("skills", {})
         if not isinstance(skills, dict):
@@ -174,13 +199,86 @@ class HermesAdapter(HarnessAdapter):
         if action == "install":
             if entry not in external_dirs:
                 external_dirs.append(entry)
-        else:
+        else:  # pragma: no cover - uninstalls take the byte-preserving path above
             external_dirs = [item for item in external_dirs if item != entry]
         if external_dirs == original and self.config_path.exists():
             return False
         skills["external_dirs"] = external_dirs
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         self.config_path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
+        return True
+
+    def _remove_external_dir_entry_preserving_bytes(self, entry: str, yaml) -> bool:
+        if not self.config_path.exists():
+            return False
+        original_bytes = self.config_path.read_bytes()
+        try:
+            original_text = original_bytes.decode("utf-8")
+            data = yaml.safe_load(original_text) or {}
+        except (UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise RuntimeError(f"cannot safely remove Hermes external-dir entry: {exc}") from exc
+        skills = data.get("skills") if isinstance(data, dict) else None
+        external_dirs = skills.get("external_dirs") if isinstance(skills, dict) else None
+        if not isinstance(external_dirs, list) or entry not in external_dirs:
+            return False
+
+        lines = original_text.splitlines(keepends=True)
+        skills_line = next((i for i, line in enumerate(lines)
+                            if re.match(r"^skills\s*:\s*(?:#.*)?(?:\r?\n)?$", line)), None)
+        if skills_line is None:
+            raise RuntimeError("cannot safely locate Hermes skills.external_dirs block")
+        external_line = None
+        for i in range(skills_line + 1, len(lines)):
+            line = lines[i]
+            if line.strip() and not line.lstrip().startswith("#") and not line[0].isspace():
+                break
+            if re.match(r"^\s+external_dirs\s*:\s*(?:#.*)?(?:\r?\n)?$", line):
+                external_line = i
+                break
+        if external_line is None:
+            raise RuntimeError("cannot safely locate Hermes external_dirs list")
+
+        key_indent = len(lines[external_line]) - len(lines[external_line].lstrip(" "))
+        entry_line = None
+        for i in range(external_line + 1, len(lines)):
+            line = lines[i]
+            stripped = line.lstrip(" ")
+            if not stripped.strip() or stripped.startswith("#"):
+                continue
+            indent = len(line) - len(stripped)
+            if indent < key_indent or (indent == key_indent and not stripped.startswith("-")):
+                break
+            if not stripped.startswith("-"):
+                raise RuntimeError("cannot safely parse Hermes external_dirs block list")
+            try:
+                item = yaml.safe_load(stripped)
+            except yaml.YAMLError as exc:
+                raise RuntimeError("cannot safely parse Hermes external_dirs list item") from exc
+            if isinstance(item, list) and len(item) == 1 and item[0] == entry:
+                entry_line = i
+                break
+        if entry_line is None:
+            raise RuntimeError("cannot safely locate recorded Hermes external-dir entry")
+
+        updated_lines = lines[:entry_line] + lines[entry_line + 1:]
+        updated_text = "".join(updated_lines)
+        try:
+            updated_data = yaml.safe_load(updated_text) or {}
+        except yaml.YAMLError as exc:
+            raise RuntimeError("removing Hermes external-dir entry would invalidate config") from exc
+        updated_skills = updated_data.get("skills") if isinstance(updated_data, dict) else None
+        updated_dirs = updated_skills.get("external_dirs") if isinstance(updated_skills, dict) else None
+        expected_dirs = list(external_dirs)
+        expected_dirs.remove(entry)
+        if list(updated_dirs or []) != expected_dirs:
+            raise RuntimeError("removing Hermes external-dir entry changed unrelated list entries")
+        if isinstance(updated_skills, dict):
+            updated_skills["external_dirs"] = list(updated_dirs or [])
+        expected_data = copy.deepcopy(data)
+        expected_data["skills"]["external_dirs"] = list(updated_dirs or [])
+        if updated_data != expected_data:
+            raise RuntimeError("removing Hermes external-dir entry changed unrelated config values")
+        self.config_path.write_bytes(updated_text.encode("utf-8"))
         return True
 
 

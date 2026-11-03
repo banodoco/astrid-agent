@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+import pytest
 import yaml
 
 from astrid import skills
@@ -21,6 +23,7 @@ from astrid.skills.harnesses import (
     HermesAdapter,
 )
 from astrid.skills.harnesses.codex import BEGIN_MARKER, END_MARKER
+from astrid.skills.harnesses.hermes import PACKS_DIR_FOR_EXTERNAL
 
 
 class _Tmp:
@@ -256,6 +259,52 @@ class HermesExternalDirTest(unittest.TestCase):
             data = yaml.safe_load((fx.home / ".hermes" / "config.yaml").read_text(encoding="utf-8"))
             external_dirs = (data.get("skills") or {}).get("external_dirs") or []
             self.assertFalse(any(entry.endswith("/astrid/packs") for entry in external_dirs))
+        finally:
+            fx.close()
+
+    def test_external_dir_off_dry_run_preserves_config_and_install_records(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
+            config_path = fx.home / ".hermes" / "config.yaml"
+            config_bytes = config_path.read_bytes()
+            state_bytes = fx.state_path.read_bytes()
+            entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+
+            report = skills.disable_owned(state_path=fx.state_path, dry_run=True)
+
+            self.assertEqual(config_path.read_bytes(), config_bytes)
+            self.assertEqual(fx.state_path.read_bytes(), state_bytes)
+            action = next(row for row in report["actions"] if row["harness"] == "hermes")
+            self.assertIn(entry, action["removed"])
+        finally:
+            fx.close()
+
+    def test_external_dir_off_removes_only_recorded_entry_and_reports_it(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
+            config_path = fx.home / ".hermes" / "config.yaml"
+            entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+            config_before = (
+                b"# preserve header spacing  \r\n"
+                b'unrelated:\r\n  raw: "keep  these bytes"\r\n'
+                b"skills:\r\n  mode: precise\r\n  external_dirs:\r\n"
+                + f"  - {entry}\r\n".encode("utf-8")
+                + b"  - /unrelated/external-skills # keep inline comment\r\n"
+                + b"  # preserve list note bytes\r\n"
+            )
+            config_path.write_bytes(config_before)
+            expected_config = config_before.replace(f"  - {entry}\r\n".encode("utf-8"), b"", 1)
+
+            report = skills.disable_owned(state_path=fx.state_path)
+
+            self.assertEqual(config_path.read_bytes(), expected_config)
+            after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(after["skills"]["external_dirs"], ["/unrelated/external-skills"])
+            self.assertEqual(after["unrelated"], {"raw": "keep  these bytes"})
+            action = next(row for row in report["actions"] if row["harness"] == "hermes")
+            self.assertIn(entry, action["removed"])
         finally:
             fx.close()
 
@@ -871,3 +920,305 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
             result = subprocess.run(["bash", "-c", block], cwd=tmp_path, env=env, text=True,
                                     capture_output=True, timeout=120)
             assert result.returncode == 0, result.stdout + result.stderr
+
+
+# R1-X1: exercise the real adapters and public compositions at each boundary.
+
+_ADAPTER_TYPES = (ClaudeAdapter, CodexAdapter, HermesAdapter)
+
+
+@pytest.fixture
+def foreign_root():
+    # The task-local TMPDIR may itself contain an "astrid" component. These
+    # tiny protected inputs must distinguish that heuristic's two branches.
+    root = os.environ.get("TEMP") if os.name == "nt" else "/tmp"
+    with TemporaryDirectory(prefix="skill-foreign-", dir=root) as directory:
+        yield Path(directory)
+
+
+@pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
+@pytest.mark.parametrize("mechanism", ["symlink", "copy"])
+@pytest.mark.parametrize("foreign_name", ["notes", "projects/astrid/notes"])
+def test_replacement_and_uninstall_preserve_foreign_links(tmp_path, foreign_root, adapter_type, mechanism, foreign_name):
+    descriptor = _write_fake_descriptor(tmp_path / "declared", "demo")
+    adapter = adapter_type(home=tmp_path / "harness")
+    target = adapter.target_for(descriptor)
+    foreign = foreign_root / foreign_name
+    foreign.mkdir(parents=True)
+    assert ("astrid" in foreign.resolve().parts) == ("astrid" in Path(foreign_name).parts)
+    protected = foreign / "SKILL.md"
+    protected.write_bytes(b"user bytes\r\n  \n")
+    target.parent.mkdir(parents=True)
+    target.symlink_to(foreign)
+    for action in ("install", "uninstall"):
+        planned = adapter.plan(action, [descriptor], mechanism=mechanism, force=True)
+        assert any(step.target == target and step.extras.get("conflict") for step in planned)
+        steps = adapter.apply(action, [descriptor], mechanism=mechanism, force=True)
+        assert any(step.target == target and step.extras.get("conflict") for step in steps)
+        assert target.is_symlink() and target.readlink() == foreign
+        assert protected.read_bytes() == b"user bytes\r\n  \n"
+
+
+@pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
+@pytest.mark.parametrize("edited", [False, True])
+def test_adapter_uninstall_reports_copy_outcome(tmp_path, adapter_type, edited):
+    descriptor = _write_fake_descriptor(tmp_path / "declared", "demo")
+    adapter = adapter_type(home=tmp_path / "harness")
+    adapter.apply("install", [descriptor], mechanism="copy")
+    target = adapter.target_for(descriptor)
+    if edited:
+        (target / "SKILL.md").write_bytes(b"my edited copy\r\n")
+    steps = adapter.apply("uninstall", [descriptor])
+    removal = next(step for step in steps if step.target == target)
+    if edited:
+        assert removal.extras.get("conflict")
+        assert "edited" in removal.description
+        assert (target / "SKILL.md").read_bytes() == b"my edited copy\r\n"
+    else:
+        assert removal.extras["changed"] and not target.exists()
+        assert not any(step.extras.get("changed") for step in adapter.apply("uninstall", [descriptor]))
+
+
+@pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
+@pytest.mark.parametrize("known", [False, True])
+def test_adapter_uninstall_distinguishes_broken_declared_link(tmp_path, adapter_type, known):
+    descriptor = _write_fake_descriptor(tmp_path / "declared", "demo")
+    adapter = adapter_type(home=tmp_path / "harness")
+    target = adapter.target_for(descriptor)
+    target.parent.mkdir(parents=True)
+    source = descriptor.skill_dir if known else tmp_path / "foreign/astrid/demo/skill"
+    target.symlink_to(source)
+    shutil.rmtree(descriptor.skill_dir)
+    steps = adapter.apply("uninstall", [descriptor])
+    assert target.is_symlink() is (not known)
+    assert any(step.extras.get("conflict") for step in steps) is (not known)
+
+
+@pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
+@pytest.mark.parametrize("boundary", ["sync", "off", "uninstall"])
+@pytest.mark.parametrize("foreign_name", ["notes", "projects/astrid/_core/notes"])
+def test_public_boundaries_preserve_retargeted_record(tmp_path, foreign_root, adapter_type, boundary, foreign_name):
+    fx = _Tmp()
+    try:
+        harness = adapter_type.name
+        skills.sync(harness_names=[harness], state_path=fx.state_path)
+        adapter = adapter_type()
+        target = adapter.skills_dir / "astrid"
+        before = state.load(fx.state_path)["installs"][harness]["_core"]
+        target.unlink()
+        foreign = foreign_root / foreign_name
+        foreign.mkdir(parents=True)
+        assert ("astrid" in foreign.resolve().parts) == ("astrid" in Path(foreign_name).parts)
+        protected = foreign / "note"
+        protected.write_bytes(b"protected\r\n  ")
+        target.symlink_to(foreign)
+        if boundary == "sync":
+            report = skills.sync(harness_names=[harness], state_path=fx.state_path)
+        elif boundary == "off":
+            report = skills.disable_owned(state_path=fx.state_path)
+        else:
+            report = skills.uninstall(["_core"], [harness], state_path=fx.state_path)
+        assert target.readlink() == foreign
+        assert protected.read_bytes() == b"protected\r\n  "
+        assert any(row["path"] == str(target) for row in report["conflicts"])
+        assert state.load(fx.state_path)["installs"][harness]["_core"] == before
+    finally:
+        fx.close()
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "hermes"])
+def test_public_uninstall_preserves_edited_copy_record_and_selection(harness):
+    fx = _Tmp()
+    try:
+        skills.install(["foley"], [harness], mechanism="copy", state_path=fx.state_path)
+        adapter = {"claude": ClaudeAdapter, "codex": CodexAdapter, "hermes": HermesAdapter}[harness]()
+        target = adapter.skills_dir / "astrid-foley"
+        edited = target / "SKILL.md"
+        edited.write_bytes(edited.read_bytes() + b"\nmy change\r\n")
+        snapshot = edited.read_bytes()
+        before = state.load(fx.state_path)
+        report = skills.uninstall(["foley"], [harness], state_path=fx.state_path)
+        after = state.load(fx.state_path)
+        assert edited.read_bytes() == snapshot
+        assert report["conflicts"]
+        assert after["installs"][harness]["foley"] == before["installs"][harness]["foley"]
+        assert after["skills"][harness]["skills"]["foley"] == before["skills"][harness]["skills"]["foley"]
+    finally:
+        fx.close()
+
+
+@pytest.mark.parametrize("boundary", ["sync", "off"])
+@pytest.mark.parametrize("recorded", [False, True])
+def test_orphan_link_ownership_requires_exact_recorded_source(tmp_path, boundary, recorded):
+    fx = _Tmp()
+    try:
+        target = fx.home / ".claude/skills/astrid-vanished"
+        target.parent.mkdir()
+        source = tmp_path / "source/vanished/skill"
+        source.mkdir(parents=True)
+        target.symlink_to(source)
+        if recorded:
+            data = state.load(fx.state_path)
+            # Legacy destination-only record cannot prove a retargeted link.
+            data["installs"]["claude"]["vanished"] = {"target": str(target), "mechanism": "symlink"}
+            state.save(data, fx.state_path)
+        for _ in range(2):
+            report = (skills.sync(harness_names=["claude"], state_path=fx.state_path) if boundary == "sync"
+                      else skills.disable_owned(state_path=fx.state_path))
+            assert target.is_symlink() and target.readlink() == source
+            assert any(row["path"] == str(target) for row in report["conflicts"])
+            if recorded:
+                assert "vanished" in state.load(fx.state_path)["installs"]["claude"]
+    finally:
+        fx.close()
+
+
+@pytest.mark.parametrize("boundary", ["off", "sync"])
+@pytest.mark.parametrize("retargeted", [False, True])
+def test_vanished_source_record_removes_only_unchanged_broken_link(tmp_path, monkeypatch, boundary, retargeted):
+    fx = _Tmp()
+    try:
+        # Discover a real declared external pack through the public source edge.
+        source_root = tmp_path / "external-packs"
+        shutil.copytree(Path(__file__).resolve().parents[1] / "examples/packs/minimal", source_root / "minimal")
+        monkeypatch.setenv("ASTRID_PACKS_PATH", str(source_root))
+        vanished = next(d for d in skills.list_skills() if d.pack_id == "minimal")
+        skills.install([vanished.pack_id], ["claude"], state_path=fx.state_path)
+        target = ClaudeAdapter().target_for(vanished)
+        if retargeted:
+            target.unlink()
+            target.symlink_to(tmp_path / "unknown/astrid/minimal/docs")
+        shutil.rmtree(vanished.skill_dir)
+        report = (skills.disable_owned(state_path=fx.state_path) if boundary == "off" else
+                  skills.sync(harness_names=["claude"], state_path=fx.state_path))
+        assert target.is_symlink() is retargeted
+        assert (vanished.pack_id in state.load(fx.state_path)["installs"]["claude"]) is retargeted
+        assert bool(report.get("conflicts")) is retargeted
+    finally:
+        fx.close()
+
+
+@pytest.mark.parametrize("boundary", ["install", "uninstall", "off"])
+def test_codex_changes_only_bytes_within_fence(boundary):
+    fx = _Tmp()
+    try:
+        adapter = CodexAdapter()
+        descriptors = _descriptors()[:1]
+        before = b"# user\xff\r\n\r\ntrailing spaces  \r\n\n\n"
+        after = b"\r\n\r\n\n  after  \r\n"
+        adapter.agents_md.write_bytes(before + BEGIN_MARKER.encode() + b"\nold\n" + END_MARKER.encode() + after)
+        if boundary == "off":
+            skills.disable_owned(state_path=fx.state_path)
+            assert adapter.agents_md.read_bytes() == before + after
+        else:
+            adapter.apply(boundary, descriptors, all_after_descriptors=descriptors if boundary == "install" else [])
+            result = adapter.agents_md.read_bytes()
+            assert result[:result.index(BEGIN_MARKER.encode())] == before
+            assert result[result.index(END_MARKER.encode()) + len(END_MARKER):] == after
+    finally:
+        fx.close()
+
+
+@pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
+@pytest.mark.parametrize("mechanism", ["copy", "symlink"])
+@pytest.mark.parametrize("edited", [False, True])
+def test_refresh_owned_copy_after_source_changes(tmp_path, adapter_type, mechanism, edited):
+    descriptor = _write_fake_descriptor(tmp_path / "declared", "demo")
+    adapter = adapter_type(home=tmp_path / "harness")
+    adapter.apply("install", [descriptor], mechanism="copy")
+    target = adapter.target_for(descriptor)
+    if edited:
+        (target / "SKILL.md").write_bytes(b"keep my edit")
+    descriptor.skill_md.write_bytes(b"updated source")
+    steps = adapter.apply("install", [descriptor], mechanism=mechanism)
+    if edited:
+        assert any(step.extras.get("conflict") for step in steps)
+        assert not target.is_symlink()
+        assert (target / "SKILL.md").read_bytes() == b"keep my edit"
+    else:
+        assert not any(step.extras.get("conflict") for step in steps)
+        assert (target / "SKILL.md").read_bytes() == b"updated source"
+        assert not any(step.extras.get("changed") for step in adapter.apply("install", [descriptor], mechanism=mechanism))
+
+
+@pytest.mark.parametrize("entry_kind", ["directory", "file"])
+@pytest.mark.parametrize("mechanism", ["copy", "symlink"])
+def test_force_preserves_ordinary_foreign_entry(tmp_path, entry_kind, mechanism):
+    descriptor = _write_fake_descriptor(tmp_path / "declared", "demo")
+    adapter = ClaudeAdapter(home=tmp_path / "harness")
+    target = adapter.target_for(descriptor)
+    target.parent.mkdir(parents=True)
+    if entry_kind == "directory":
+        target.mkdir()
+        protected = target / "SKILL.md"
+    else:
+        protected = target
+    protected.write_bytes(b"user bytes\r\n")
+    steps = adapter.apply("install", [descriptor], force=True, mechanism=mechanism)
+    assert any(step.extras.get("conflict") for step in steps)
+    assert protected.read_bytes() == b"user bytes\r\n"
+
+
+@pytest.mark.parametrize("boundary", ["off", "sync"])
+def test_recorded_source_is_not_re_resolved_through_later_foreign_symlink(tmp_path, boundary):
+    fx = _Tmp()
+    try:
+        original_source = tmp_path / "original-source"
+        original_source.mkdir()
+        target = fx.home / ".claude/skills/astrid-vanished"
+        target.parent.mkdir()
+        target.symlink_to(original_source)
+        data = state.load(fx.state_path)
+        data["installs"]["claude"]["vanished"] = {
+            "target": str(target), "mechanism": "symlink", "source": str(original_source)}
+        state.save(data, fx.state_path)
+        foreign = tmp_path / "foreign/astrid/notes"
+        foreign.mkdir(parents=True)
+        (foreign / "note").write_bytes(b"keep these bytes")
+        original_source.rmdir()
+        original_source.symlink_to(foreign)
+        target.unlink()
+        target.symlink_to(foreign)
+        report = (skills.disable_owned(state_path=fx.state_path) if boundary == "off" else
+                  skills.sync(harness_names=["claude"], state_path=fx.state_path))
+        assert target.is_symlink() and target.readlink() == foreign
+        assert original_source.is_symlink() and original_source.readlink() == foreign
+        assert (foreign / "note").read_bytes() == b"keep these bytes"
+        assert "vanished" in state.load(fx.state_path)["installs"]["claude"]
+        assert any(row["path"] == str(target) for row in report["conflicts"])
+    finally:
+        fx.close()
+
+
+@pytest.mark.parametrize("adapter_type", _ADAPTER_TYPES)
+@pytest.mark.parametrize("mechanism", ["copy", "symlink"])
+def test_extra_install_keeps_preservation_conflict_after_followup_sync(tmp_path, monkeypatch, adapter_type, mechanism):
+    fx = _Tmp()
+    try:
+        pack = tmp_path / "external/demo_pack"
+        extra = pack / "docs/extra"
+        extra.mkdir(parents=True)
+        (pack / "pack.yaml").write_text(yaml.safe_dump({
+            "schema_version": 3, "id": "demo_pack", "name": "Demo Pack", "version": "0.1.0",
+            "documentation": {"kind": "skill", "path": "docs/SKILL.md"},
+            "resources": [{"kind": "skill", "path": "docs/extra/SKILL.md"}],
+        }), encoding="utf-8")
+        (pack / "docs/SKILL.md").write_text("---\nname: demo\ndescription: Main skill.\n---\nMain.\n", encoding="utf-8")
+        (extra / "SKILL.md").write_text("---\nname: extra\ndescription: Extra skill.\n---\nExtra.\n", encoding="utf-8")
+        monkeypatch.setenv("ASTRID_PACKS_PATH", str(pack.parent))
+        assert any(d.skill_id == "demo_pack-extra" for d in discovery.list_extras(skills.list_skills()))
+        adapter = adapter_type()
+        target = adapter.skills_dir / "astrid-demo_pack-extra"
+        target.parent.mkdir()
+        foreign = tmp_path / "projects/astrid/demo_pack-extra/notes"
+        foreign.mkdir(parents=True)
+        (foreign / "note").write_bytes(b"protected extra target\r\n")
+        target.symlink_to(foreign)
+        report = skills.install(["demo_pack"], [adapter.name], skill_names=["extra"],
+                                mechanism=mechanism, state_path=fx.state_path)
+        assert target.is_symlink() and target.readlink() == foreign
+        assert (foreign / "note").read_bytes() == b"protected extra target\r\n"
+        assert any(row["path"] == str(target) for row in report["conflicts"])
+        assert "demo_pack-extra" not in state.load(fx.state_path)["installs"][adapter.name]
+    finally:
+        fx.close()
