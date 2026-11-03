@@ -4,12 +4,13 @@ from __future__ import annotations
 import subprocess
 import sys
 import plistlib
+import stat
 from pathlib import Path
 
 import pytest
 
 from astrid.installer.core import RuntimeOperationError, Version, read_json, write_json
-from astrid.installer.service import LABEL, Service, command, platform, render
+from astrid.installer.service import LABEL, Service, bootstrap_root, command, platform, render
 from tests.test_installer_lifecycle import _installer_runtime, _publish_owner
 
 
@@ -107,6 +108,32 @@ def _r0_program_root_plist(backend, data, version):
     value = plistlib.dumps(document)
     backend.service.path.write_bytes(value)
     return value
+
+
+def _trusted_bootstrap_venv(backend, version):
+    """Create the authentic R0 POSIX venv-to-bootstrap interpreter shape."""
+    bootstrap = bootstrap_root(backend.service.home, "darwin")
+    target = (bootstrap / "python" / "cpython-3.11.13-macos-aarch64-none"
+              / "bin" / "python3.11")
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    for entry in (bootstrap, bootstrap / "python", target.parent.parent, target.parent):
+        entry.chmod(0o700)
+    target.chmod(0o700)
+    version.python.parent.mkdir(parents=True, exist_ok=True)
+    version.python.unlink(missing_ok=True)
+    version.python.symlink_to(target)
+    config = version.root / "py" / "pyvenv.cfg"
+    config.write_text(f"home = {target.parent}\n", encoding="utf-8")
+    config.chmod(0o600)
+    return target, config, bootstrap
+
+
+def _external_launchd_identity(backend, data, version, outputs, target):
+    _observe(backend, data, version, outputs, state="running", pid=777)
+    return backend.service.admit_launchd_bootout(
+        data, owner_pid=777, owner_birth_id="birth-1",
+    )
 
 
 def _preserved_selection_workspace(backend, data, paths):
@@ -655,6 +682,147 @@ def test_already_unloaded_launchd_job_is_idempotent_after_c1_exit(tmp_path, monk
     assert signals == [777]
     assert manager_stops == ["stop"]
     assert [argv[1] for argv in queries].count("bootout") == 1
+
+
+@pytest.mark.parametrize("layout", ["default", "custom"])
+def test_trusted_bootstrap_venv_interpreter_is_shared_by_live_and_retained_validation(
+        tmp_path, monkeypatch, layout):
+    backend, data, _paths, _boundary, version, outputs, _queries, _bootouts, _stops, _signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    if layout == "default":
+        root = bootstrap_root(backend.service.home, "darwin").parent
+        root.mkdir(parents=True, exist_ok=True)
+        backend.service.root = root
+        version_root = root / "versions" / "old"
+        version_root.mkdir(parents=True)
+        program = version_root / "py" / "bin" / "python"
+        program.parent.mkdir(parents=True)
+        version = Version(version_root, program, version_root / "profile.json", {}, 17)
+        version.profile.write_text("{}", encoding="utf-8")
+        target, config, _bootstrap = _trusted_bootstrap_venv(backend, version)
+        # The bootstrap is within the default program root.  This preserves the
+        # ordinary in-root form while using the same rule as the custom case.
+        assert backend.service._trusted_launchd_interpreter(program, target)
+        assert config.is_file()
+        return
+
+    target, _config, _bootstrap = _trusted_bootstrap_venv(backend, version)
+    monkeypatch.setattr(platform, "process_executable", lambda _pid: str(target))
+    identity = _external_launchd_identity(backend, data, version, outputs, target)
+    retained = backend.service.retain_launchd_bootout_identity(identity)
+
+    assert identity["live_owner"]["format"] == "astrid-launchd-r0-live-owner/v2"
+    assert identity["live_owner"]["program"] == str(version.python)
+    assert retained == identity["live_owner"]
+    assert backend.service.launchd_bootout_identity_matches(identity, retained)
+
+
+@pytest.mark.parametrize("case", [
+    "foreign_owner", "unsafe_target_mode", "unsafe_bootstrap_mode", "traversal",
+    "symlinked_parent", "wrong_home", "wrong_target", "untrusted_bootstrap",
+])
+def test_trusted_bootstrap_venv_refuses_each_provenance_mismatch(tmp_path, monkeypatch, case):
+    backend, _data, _paths, _boundary, version, _outputs, _queries, _bootouts, _stops, _signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    target, config, bootstrap = _trusted_bootstrap_venv(backend, version)
+    if case == "foreign_owner":
+        from astrid.installer import service as module
+
+        owned = module.owned_by_current_user
+        monkeypatch.setattr(module, "owned_by_current_user",
+                            lambda path, observed: path != target and owned(path, observed))
+    elif case == "unsafe_target_mode":
+        target.chmod(0o720)
+    elif case == "unsafe_bootstrap_mode":
+        bootstrap.chmod(0o720)
+    elif case == "traversal":
+        config.write_text(f"home = {target.parent}/../bin\n", encoding="utf-8")
+    elif case == "symlinked_parent":
+        parent = version.python.parent
+        real_parent = parent.with_name("real-bin")
+        parent.rename(real_parent)
+        parent.symlink_to(real_parent, target_is_directory=True)
+    elif case == "wrong_home":
+        wrong = target.parent.with_name("wrong-home")
+        wrong.mkdir()
+        config.write_text(f"home = {wrong}\n", encoding="utf-8")
+    elif case == "wrong_target":
+        wrong = target.parent.parent / "other-bin" / "python3"
+        wrong.parent.mkdir()
+        wrong.write_text("#!/bin/sh\n", encoding="utf-8")
+        wrong.chmod(0o700)
+        config.write_text(f"home = {target.parent}\n", encoding="utf-8")
+        version.python.unlink()
+        version.python.symlink_to(wrong)
+    else:
+        fake_home = tmp_path / "attacker-home"
+        fake_target = fake_home / "python" / "cpython-3.11.13-macos-aarch64-none" / "bin" / "python3.11"
+        fake_target.parent.mkdir(parents=True)
+        fake_target.write_text("#!/bin/sh\n", encoding="utf-8")
+        fake_target.chmod(0o700)
+        config.write_text(f"home = {fake_target.parent}\n", encoding="utf-8")
+        version.python.unlink()
+        version.python.symlink_to(fake_target)
+        monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", str(fake_home / "python"))
+        monkeypatch.setenv("XDG_DATA_HOME", str(fake_home / "data"))
+        assert bootstrap_root(backend.service.home, "darwin") == bootstrap
+
+    assert not backend.service._trusted_launchd_interpreter(version.python, version.python.resolve())
+
+
+@pytest.mark.parametrize("case", ["pid", "birth", "owner"])
+def test_external_bootstrap_venv_keeps_live_identity_refusals(tmp_path, monkeypatch, case):
+    backend, data, _paths, _boundary, version, outputs, queries, _bootouts, _stops, signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    target, _config, _bootstrap = _trusted_bootstrap_venv(backend, version)
+    monkeypatch.setattr(platform, "process_executable", lambda _pid: str(target))
+    if case == "pid":
+        _observe(backend, data, version, outputs, state="running", pid=778)
+        owner_pid, owner_birth = 777, "birth-1"
+    elif case == "birth":
+        monkeypatch.setattr(platform, "process_identity", lambda pid: {
+            "pid": pid, "uid": platform.current_user(), "birth_id": "replacement-birth",
+        })
+        _observe(backend, data, version, outputs, state="running", pid=777)
+        owner_pid, owner_birth = 777, "birth-1"
+    else:
+        monkeypatch.setattr(platform, "process_identity", lambda pid: {
+            "pid": pid, "uid": platform.current_user() + 1, "birth_id": "birth-1",
+        })
+        _observe(backend, data, version, outputs, state="running", pid=777)
+        owner_pid, owner_birth = 777, "birth-1"
+
+    with pytest.raises(ValueError, match="selected Runtime owner"):
+        backend.service.admit_launchd_bootout(data, owner_pid=owner_pid, owner_birth_id=owner_birth)
+
+    assert signals == []
+    assert not any(argv[1:2] == ["bootout"] for argv in queries)
+
+
+def test_external_bootstrap_venv_retained_identity_rejects_inconsistent_program_and_changed_target(
+        tmp_path, monkeypatch):
+    backend, data, _paths, _boundary, version, outputs, _queries, _bootouts, _stops, _signals = _prepared(
+        tmp_path, monkeypatch,
+    )
+    target, _config, _bootstrap = _trusted_bootstrap_venv(backend, version)
+    monkeypatch.setattr(platform, "process_executable", lambda _pid: str(target))
+    identity = _external_launchd_identity(backend, data, version, outputs, target)
+    retained = backend.service.retain_launchd_bootout_identity(identity)
+    malformed = {**retained, "program": str(version.python.with_name("foreign-python"))}
+
+    with pytest.raises(ValueError, match="retained R0 LaunchAgent live identity"):
+        backend.service._validated_launchd_bootout_identity(malformed)
+
+    replacement = target.with_name("python3")
+    replacement.write_text("#!/bin/sh\n", encoding="utf-8")
+    replacement.chmod(stat.S_IMODE(target.stat().st_mode))
+    version.python.unlink()
+    version.python.symlink_to(replacement)
+    with pytest.raises(ValueError, match="retained R0 LaunchAgent live identity"):
+        backend.service.launchd_bootout_identity_matches(identity, retained)
 
 
 @pytest.mark.parametrize("appears", [False, True])
