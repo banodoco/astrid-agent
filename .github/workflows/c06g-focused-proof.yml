@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -33,10 +33,13 @@ jobs:
           {
             echo "checkout_sha=$(git rev-parse HEAD)"
             echo "parent_sha=$(git rev-parse HEAD^)"
+            echo "r1_sha=79ca30ff13b424cbd2243d47571d820426e6dacd"
+            echo "candidate_sha=024fe668b2e34a86ef2b06e9f918919593580abd"
             sha256sum scripts/ci/regression_coordinator.py tests/ci/test_regression_coordinator.py
           } | tee "$RUNNER_TEMP/c06g-identity.log"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse HEAD^)" = 024fe668b2e34a86ef2b06e9f918919593580abd
+          git merge-base --is-ancestor 79ca30ff13b424cbd2243d47571d820426e6dacd HEAD
+          git merge-base --is-ancestor 024fe668b2e34a86ef2b06e9f918919593580abd HEAD
           git diff --exit-code 024fe668b2e34a86ef2b06e9f918919593580abd HEAD -- . ':(exclude).github/workflows/c06g-focused-proof.yml'
       - name: Install candidate-pinned legacy schemas
         shell: bash
