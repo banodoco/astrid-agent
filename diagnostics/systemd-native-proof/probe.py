@@ -217,8 +217,21 @@ def controls():
     }.items():
         rc, out, err = command(common + args)
         result["controls"][name] = {"exit": rc, "stdout_sha256": digest(out), "stderr_sha256": digest(err)}
-        assert rc != 0
-    return "all refused"
+        if name != "wrong_object":
+            assert rc != 0
+    # systemd may answer a synthesized unit path, so test the candidate's
+    # canonical GetUnit guard with a genuine reply for the loaded anchor.
+    def wrong_getunit(args):
+        if args[0] == "call":
+            args = [*args[:-1], "proof-anchor.service"]
+        return observed_bus(args)
+    service._bounded_busctl = wrong_getunit
+    try:
+        refusal = expect_refusal(original_typed, (ValueError,))
+    finally:
+        service._bounded_busctl = observed_bus
+    result["controls"]["wrong_resolved_object"] = {"refusal": refusal}
+    return "invalid properties and identity refused; wrong object request exit recorded"
 
 try:
     assert os.getuid() > 0 and os.getuid() == os.geteuid()
@@ -227,6 +240,12 @@ try:
     # Status may be denied even when the actual user-bus queries work.
     result["boot_id_sha256"] = digest(Path("/proc/sys/kernel/random/boot_id").read_bytes())
     result["pid_namespace_inode"] = Path("/proc/self/ns/pid").stat().st_ino
+    # Keep inactive astrid.service referenced by an active ordering peer; the
+    # manager may garbage-collect a stopped unit immediately after show.
+    anchor = manager.path.parent / "proof-anchor.service"
+    anchor.write_text("[Unit]\nAfter=astrid.service\n[Service]\nType=oneshot\nExecStart=/bin/true\nRemainAfterExit=yes\n")
+    systemctl("daemon-reload")
+    systemctl("start", "proof-anchor.service")
     for name, fn in (("empty_stopped", empty), ("single_optional_stopped", single),
                      ("multiple_duplicate_stopped", multiple), ("glob_stopped", glob_case), ("optional_created", created),
                      ("running", running), ("changed_endpoints", changed),
