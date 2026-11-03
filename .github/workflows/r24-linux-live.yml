@@ -225,6 +225,7 @@ jobs:
             ${{ runner.temp }}/r24-live-run/tst-b1-owner.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-materializer.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/owner-discovery-diagnostic.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/project.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.stderr.log
@@ -256,6 +257,7 @@ jobs:
             ${{ runner.temp }}/r24-live-run/evidence/materializer/start.log
             ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/worker-ready.log
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/owner-discovery-diagnostic.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/project.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.json
             ${{ runner.temp }}/r24-live-run/evidence/materializer/omp-invocation.stderr.log

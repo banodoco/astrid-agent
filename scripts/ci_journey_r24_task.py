@@ -53,7 +53,69 @@ def _loopback_endpoint(value: Any) -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def _installed(backend: Path) -> tuple[dict[str, Any], Path, dict[str, Any], Path]:
+def _write_owner_discovery_diagnostic(
+    path: Path | None, *, data_root: Path, expected_credential: Path,
+    credential_regular_nonsymlink: bool, credential_matches: bool,
+    discovery: dict[str, Any],
+) -> None:
+    if path is None:
+        return
+    observed_credential = discovery.get("credential_file")
+    observed_endpoint = discovery.get("endpoint")
+    parsed_endpoint = None
+    endpoint_parse_succeeded = False
+    if isinstance(observed_endpoint, str):
+        try:
+            parsed = urlsplit(observed_endpoint)
+            port = parsed.port
+            endpoint_parse_succeeded = True
+            if (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+                    and port is not None and 1 <= port <= 65535
+                    and parsed.username is None and parsed.password is None
+                    and not parsed.query and not parsed.fragment
+                    and parsed.path in {"", "/"}):
+                parsed_endpoint = f"http://127.0.0.1:{port}"
+        except ValueError:
+            pass
+    # Discovery is not trusted to be secret-free. Preserve ordinary endpoint
+    # strings exactly, but redact URL components that can carry credentials or
+    # arbitrary values when the parser can identify them.
+    safe_endpoint = observed_endpoint
+    endpoint_redacted = False
+    if isinstance(observed_endpoint, str):
+        try:
+            parsed = urlsplit(observed_endpoint)
+            if (parsed.username is not None or parsed.password is not None
+                    or parsed.query or parsed.fragment
+                    or parsed.scheme not in {"http", "https"}
+                    or parsed.hostname not in {"127.0.0.1", "localhost"}
+                    or parsed.path not in {"", "/"}):
+                safe_endpoint = "<redacted-endpoint-components>"
+                endpoint_redacted = True
+        except ValueError:
+            safe_endpoint = "<unparseable-endpoint>"
+            endpoint_redacted = True
+    diagnostic = {
+        "schema": "astrid.r24.owner-discovery-diagnostic.v1",
+        "selected_data_root": str(data_root),
+        "resolved_expected_owner_token_path": str(expected_credential),
+        "expected_owner_token_regular_nonsymlink": credential_regular_nonsymlink,
+        "discovery_credential_file": observed_credential,
+        "discovery_credential_path_equals_expected": credential_matches,
+        "discovery_endpoint": safe_endpoint,
+        "endpoint_redacted": endpoint_redacted,
+        "endpoint_parse_succeeded": endpoint_parse_succeeded,
+        "canonical_endpoint": parsed_endpoint,
+        "endpoint_equals_canonical": (
+            parsed_endpoint is not None and parsed_endpoint == observed_endpoint
+        ),
+    }
+    _write(path, diagnostic)
+
+
+def _installed(
+    backend: Path, owner_diagnostic: Path | None = None,
+) -> tuple[dict[str, Any], Path, dict[str, Any], Path]:
     if not backend.is_absolute() or backend.is_symlink() or not backend.is_dir():
         raise TaskBoundaryError("absolute installed backend required")
     install = _read(backend / "install.json")
@@ -73,11 +135,29 @@ def _installed(backend: Path) -> tuple[dict[str, Any], Path, dict[str, Any], Pat
         raise TaskBoundaryError("installed version identity mismatch")
     discovery = _read(data / "runtime/discovery.json")
     credential_path = data / "runtime/credentials/owner.token"
-    if credential_path.is_symlink() or not credential_path.is_file():
+    credential_regular_nonsymlink = (
+        not credential_path.is_symlink() and credential_path.is_file()
+    )
+    if not credential_regular_nonsymlink:
         raise TaskBoundaryError("Runtime owner credential mismatch")
     credential = credential_path.resolve(strict=True)
-    if (Path(str(discovery.get("credential_file", ""))) != credential
-            or _loopback_endpoint(discovery.get("endpoint")) != discovery.get("endpoint")):
+    credential_matches = (
+        Path(str(discovery.get("credential_file", ""))) == credential
+    )
+    endpoint = discovery.get("endpoint")
+    try:
+        canonical_endpoint = _loopback_endpoint(endpoint)
+        endpoint_matches = canonical_endpoint == endpoint
+    except TaskBoundaryError:
+        canonical_endpoint = None
+        endpoint_matches = False
+    if not credential_matches or not endpoint_matches:
+        _write_owner_discovery_diagnostic(
+            owner_diagnostic, data_root=data, expected_credential=credential,
+            credential_regular_nonsymlink=credential_regular_nonsymlink,
+            credential_matches=credential_matches,
+            discovery=discovery,
+        )
         raise TaskBoundaryError("Runtime owner discovery mismatch")
     return install, data.resolve(), discovery, credential
 
@@ -95,10 +175,11 @@ def _source_binding(version_root: Path, expected: Path, observed: Path) -> dict[
             "expected_path": str(expected.resolve())}
 
 
-def _client(backend: Path, agent_client: Path):
+def _client(backend: Path, agent_client: Path,
+            owner_diagnostic: Path | None = None):
     from astrid_runtime_client import generated
 
-    install, data, discovery, credential = _installed(backend)
+    install, data, discovery, credential = _installed(backend, owner_diagnostic)
     current = (backend / "current").read_text(encoding="utf-8").strip()
     version_root = (backend / "versions" / current).resolve(strict=True)
     source = _source_binding(
@@ -126,10 +207,12 @@ def _health(client: Any, discovery: dict[str, Any]) -> tuple[Any, Any]:
     return health, handshake
 
 
-def ensure_worker(backend: Path, agent_client: Path) -> dict[str, Any]:
+def ensure_worker(backend: Path, agent_client: Path,
+                  owner_diagnostic: Path | None = None) -> dict[str, Any]:
     from astrid_runtime_client.generated import ApiError
 
-    client, _install, _data, discovery, source = _client(backend, agent_client)
+    client, _install, _data, discovery, source = _client(
+        backend, agent_client, owner_diagnostic)
     health, handshake = _health(client, discovery)
     started = False
     try:
@@ -240,11 +323,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend", type=Path, required=True)
     parser.add_argument("--agent-client", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--owner-diagnostic", type=Path)
     parser.add_argument("--task-id")
     parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args(argv)
     if args.mode == "ensure-worker":
-        value = ensure_worker(args.backend, args.agent_client)
+        value = ensure_worker(args.backend, args.agent_client, args.owner_diagnostic)
     else:
         if not args.task_id or not HEX32.fullmatch(args.task_id):
             raise TaskBoundaryError("32-hex task id required")

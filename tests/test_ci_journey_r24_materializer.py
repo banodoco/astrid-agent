@@ -495,6 +495,56 @@ def test_runtime_endpoint_rejects_nonexact_loopback(value):
         "http://127.0.0.1:17340")
 
 
+@pytest.mark.parametrize(
+    "bad_field,bad_value,expected_credential_match,expected_endpoint_match",
+    [
+        ("credential_file", "/foreign/runtime/owner.token", False, True),
+        ("endpoint", "http://localhost:17340", True, False),
+    ],
+)
+def test_owner_discovery_failure_writes_secret_free_same_invocation_predicates(
+    tmp_path, bad_field, bad_value, expected_credential_match,
+    expected_endpoint_match,
+):
+    backend = tmp_path / "backend"
+    version_root = backend / "versions/v1"
+    data = tmp_path / "selected-data"
+    credentials = data / "runtime/credentials"
+    credentials.mkdir(parents=True)
+    version_root.mkdir(parents=True)
+    (backend / "install.json").write_text(json.dumps({
+        "owner": "haus.astrid.runtime", "managed_by": "pinokio",
+        "data_root": str(data),
+    }))
+    (backend / "current").write_text("v1")
+    (version_root / "version.json").write_text(json.dumps({
+        "root": str(version_root.resolve()),
+        "identity": {"release": 1, "managed_by": "pinokio"},
+    }))
+    expected_credential = credentials / "owner.token"
+    expected_credential.write_text("secret-token-sentinel")
+    discovery = {
+        "credential_file": str(expected_credential.resolve()),
+        "endpoint": "http://127.0.0.1:17340",
+    }
+    discovery[bad_field] = bad_value
+    (data / "runtime/discovery.json").write_text(json.dumps(discovery))
+    diagnostic_path = tmp_path / "owner-diagnostic.json"
+
+    with pytest.raises(task_boundary.TaskBoundaryError, match="owner discovery mismatch"):
+        task_boundary._installed(backend, diagnostic_path)
+
+    diagnostic_bytes = diagnostic_path.read_bytes()
+    diagnostic = json.loads(diagnostic_bytes)
+    assert diagnostic["selected_data_root"] == str(data)
+    assert diagnostic["resolved_expected_owner_token_path"] == str(expected_credential.resolve())
+    assert diagnostic["expected_owner_token_regular_nonsymlink"] is True
+    assert diagnostic["discovery_credential_path_equals_expected"] is expected_credential_match
+    assert diagnostic["endpoint_parse_succeeded"] is True
+    assert diagnostic["endpoint_equals_canonical"] is expected_endpoint_match
+    assert "secret-token-sentinel" not in diagnostic_bytes.decode("ascii")
+
+
 class _RunningProcess:
     returncode = None
 
