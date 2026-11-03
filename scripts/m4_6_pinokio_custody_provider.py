@@ -64,7 +64,6 @@ _IMPORT_RE: Final = re.compile(
     re.MULTILINE,
 )
 _REQUIRE_CALL_RE: Final = re.compile(r"\brequire\s*\(")
-_DYNAMIC_IMPORT_RE: Final = re.compile(r"\bimport\s*\(")
 _MAX_ACTION_BYTES: Final = 8 * 1024 * 1024
 _MAX_GRAPH_FILES: Final = 128
 _PINOKIO_SESSION_ROWS: Final = {
@@ -210,6 +209,137 @@ def _resolve_helper(importer: Path, specifier: str, *, root: Path) -> Path | Non
     raise PinokioSourceMismatch(f"static helper cannot be resolved: {specifier}")
 
 
+def _dynamic_import_specifiers(source: str, *, relative_path: str) -> list[str]:
+    """Find dynamic imports in JavaScript code, skipping comments and strings.
+
+    The source graph accepts only the deliberately small form
+    ``import('./literal.js')``.  It does not evaluate expressions or decode
+    escaped specifiers. Template substitutions are scanned as JavaScript code
+    so an import inside ```${ ... }``` cannot be hidden in template text.
+    """
+    found: list[str] = []
+
+    def trivia(index: int) -> int:
+        while index < len(source):
+            if source[index].isspace():
+                index += 1
+            elif source.startswith("//", index):
+                newline = source.find("\n", index + 2)
+                return len(source) if newline < 0 else trivia(newline + 1)
+            elif source.startswith("/*", index):
+                end = source.find("*/", index + 2)
+                if end < 0:
+                    raise PinokioSourceMismatch(
+                        f"unterminated comment in action/helper: {relative_path}"
+                    )
+                index = end + 2
+            else:
+                break
+        return index
+
+    def quoted(index: int) -> tuple[str, int]:
+        quote = source[index]
+        end = index + 1
+        while end < len(source):
+            char = source[end]
+            if char == "\\":
+                raise PinokioSourceMismatch(
+                    f"escaped dynamic import specifier cannot be bound: {relative_path}"
+                )
+            if char == quote:
+                return source[index + 1:end], end + 1
+            if char in "\r\n":
+                break
+            end += 1
+        raise PinokioSourceMismatch(
+            f"unterminated dynamic import specifier: {relative_path}"
+        )
+
+    def scan_code(index: int, *, interpolation: bool = False) -> int:
+        depth = 0
+        while index < len(source):
+            char = source[index]
+            if source.startswith("//", index):
+                newline = source.find("\n", index + 2)
+                index = len(source) if newline < 0 else newline + 1
+                continue
+            if source.startswith("/*", index):
+                end = source.find("*/", index + 2)
+                if end < 0:
+                    raise PinokioSourceMismatch(
+                        f"unterminated comment in action/helper: {relative_path}"
+                    )
+                index = end + 2
+                continue
+            if char in "'\"":
+                quote = char
+                index += 1
+                while index < len(source):
+                    if source[index] == "\\":
+                        index += 2
+                    elif source[index] == quote:
+                        index += 1
+                        break
+                    else:
+                        index += 1
+                continue
+            if char == "`":
+                index += 1
+                while index < len(source):
+                    if source[index] == "\\":
+                        index += 2
+                    elif source[index] == "`":
+                        index += 1
+                        break
+                    elif source.startswith("${", index):
+                        index = scan_code(index + 2, interpolation=True)
+                    else:
+                        index += 1
+                continue
+            if char == "}" and interpolation:
+                if depth == 0:
+                    return index + 1
+                depth -= 1
+                index += 1
+                continue
+            if char == "{":
+                depth += 1
+                index += 1
+                continue
+            if (
+                source.startswith("import", index)
+                and (index == 0 or not (source[index - 1].isalnum() or source[index - 1] in "_$" or ord(source[index - 1]) > 127))
+                and (index + 6 == len(source) or not (source[index + 6].isalnum() or source[index + 6] in "_$" or ord(source[index + 6]) > 127))
+            ):
+                cursor = trivia(index + 6)
+                if cursor < len(source) and source[cursor] == "(":
+                    cursor = trivia(cursor + 1)
+                    if cursor >= len(source) or source[cursor] not in "'\"":
+                        raise PinokioSourceMismatch(
+                            f"nonliteral dynamic import cannot be bound: {relative_path}"
+                        )
+                    specifier, cursor = quoted(cursor)
+                    cursor = trivia(cursor)
+                    if cursor >= len(source) or source[cursor] != ")":
+                        raise PinokioSourceMismatch(
+                            f"dynamic import options or trailing expressions cannot be bound: {relative_path}"
+                        )
+                    found.append(specifier)
+                    index = cursor + 1
+                    continue
+            if char == "}":
+                depth = max(0, depth - 1)
+            index += 1
+        if interpolation:
+            raise PinokioSourceMismatch(
+                f"unterminated template interpolation in action/helper: {relative_path}"
+            )
+        return index
+
+    scan_code(0)
+    return found
+
+
 @dataclass(frozen=True)
 class ImmutableActionFile:
     """One descriptor/helper file bound by resolved path and exact bytes."""
@@ -268,10 +398,7 @@ class PinokioActionGraph:
                 text = ""
             imports = _IMPORT_RE.findall(text)
             literal_requires = sum(1 for groups in imports if groups[0])
-            if (
-                len(_REQUIRE_CALL_RE.findall(text)) != literal_requires
-                or _DYNAMIC_IMPORT_RE.search(text) is not None
-            ):
+            if len(_REQUIRE_CALL_RE.findall(text)) != literal_requires:
                 raise PinokioSourceMismatch(
                     f"dynamic action/helper import cannot be bound: {resolved.relative_to(root)}"
                 )
@@ -280,6 +407,19 @@ class PinokioActionGraph:
                 helper = _resolve_helper(resolved, specifier, root=root)
                 if helper is not None:
                     pending.append((helper, f"helper:{helper.relative_to(root).as_posix()}"))
+            for specifier in _dynamic_import_specifiers(
+                text, relative_path=resolved.relative_to(root).as_posix()
+            ):
+                if not specifier.startswith(("./", "../")):
+                    raise PinokioSourceMismatch(
+                        f"foreign dynamic import cannot be bound: {resolved.relative_to(root)} -> {specifier}"
+                    )
+                helper = _resolve_helper(resolved, specifier, root=root)
+                if helper is None:
+                    raise PinokioSourceMismatch(
+                        f"foreign dynamic import cannot be bound: {resolved.relative_to(root)} -> {specifier}"
+                    )
+                pending.append((helper, f"helper:{helper.relative_to(root).as_posix()}"))
 
         files: list[ImmutableActionFile] = []
         for path, digest in entries.items():

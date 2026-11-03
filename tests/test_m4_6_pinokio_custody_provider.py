@@ -101,6 +101,67 @@ def test_action_graph_refuses_dynamic_helper_resolution(tmp_path: Path, operatio
         PinokioActionGraph.collect(app)
 
 
+def test_action_graph_binds_literal_dynamic_imports_and_scans_template_expressions(
+    tmp_path: Path,
+) -> None:
+    app = _installed_app(tmp_path)
+    actions = app / "pinokio"
+    (actions / "update.js").write_text(
+        "// import('./comment-only.js')\n"
+        "const note = \"import('./string-only.js')\";\n"
+        "const message = `plain text ${await import('./dynamic-helper.mjs')}`;\n",
+        encoding="utf-8",
+    )
+    (actions / "dynamic-helper.mjs").write_text(
+        "export const leaf = await import('./dynamic-leaf.js');\n", encoding="utf-8"
+    )
+    (actions / "dynamic-leaf.js").write_text("export default true;\n", encoding="utf-8")
+
+    graph = PinokioActionGraph.collect(app)
+
+    assert {
+        "helper:pinokio/dynamic-helper.mjs",
+        "helper:pinokio/dynamic-leaf.js",
+    } <= {item.role for item in graph.files}
+    assert "helper:pinokio/comment-only.js" not in {item.role for item in graph.files}
+    assert "helper:pinokio/string-only.js" not in {item.role for item in graph.files}
+
+
+@pytest.mark.parametrize(
+    ("specifier", "message"),
+    [
+        ("modulePath", "nonliteral dynamic import cannot be bound"),
+        ("'node:fs'", "foreign dynamic import cannot be bound"),
+        ("'https://example.invalid/helper.js'", "foreign dynamic import cannot be bound"),
+        ("'../../outside.js'", "outside app root"),
+        ("'./missing.mjs'", "static helper cannot be resolved"),
+        ("'./escaped\\\\name.mjs'", "escaped dynamic import specifier cannot be bound"),
+    ],
+)
+def test_action_graph_refuses_unbound_literal_dynamic_imports(
+    tmp_path: Path, specifier: str, message: str
+) -> None:
+    app = _installed_app(tmp_path)
+    if specifier == "'../../outside.js'":
+        (tmp_path / "outside.js").write_text("export default false;\n", encoding="utf-8")
+    (app / "pinokio" / "update.js").write_text(
+        f"await import({specifier});\n", encoding="utf-8"
+    )
+
+    with pytest.raises(PinokioSourceMismatch, match=message):
+        PinokioActionGraph.collect(app)
+
+
+def test_action_graph_refuses_dynamic_import_with_options(tmp_path: Path) -> None:
+    app = _installed_app(tmp_path)
+    (app / "pinokio" / "update.js").write_text(
+        "await import('./helper.js', { with: { type: 'json' } });\n", encoding="utf-8"
+    )
+
+    with pytest.raises(PinokioSourceMismatch, match="options or trailing expressions"):
+        PinokioActionGraph.collect(app)
+
+
 def test_uninstall_helper_closure_is_bound_and_drift_refuses(tmp_path: Path) -> None:
     app = _installed_app(tmp_path)
     actions = app / "pinokio"
