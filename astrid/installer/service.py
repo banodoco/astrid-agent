@@ -550,6 +550,9 @@ class Service:
                 raise ValueError("Unsupported systemd drop-in paths.")
             files = tuple(_transfer_file_observation(path) for path in
                           (self.path, *(Path(path) for path in dropins)))
+            if (_transfer_file_observation(self.selection) != selection
+                    or tuple(_transfer_file_observation(Path(item.path)) for item in files) != files):
+                raise ValueError("Lifecycle transfer files changed during collection.")
             return _SystemdTransferObservation(
                 os.getuid(), selection, tuple(sorted(fields.items())), files)
 
