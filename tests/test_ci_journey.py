@@ -1256,13 +1256,16 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
                            app_checkout=app, candidate=candidate_path)
     state = {"running": True, "pid": 10, "release": 0, "local": False, "content": None}
     calls = []
+    evidence_calls = []
 
     def ownership(_root, _data):
         assert state["running"] and not state["local"]
         return {"manager": manager, "service_path": str(tmp_path / "service.plist")}
 
-    def one_runtime(_data):
+    def one_runtime(_data, _evidence=None):
         assert state["running"] and not state["local"]
+        if _evidence is not None:
+            evidence_calls.append(_evidence)
 
     def manager_action(operation):
         calls.append(operation)
@@ -1349,6 +1352,7 @@ def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeyp
     monkeypatch.setattr(journey, "verify", verify)
     result = jumps.execute_release0_to_release1(args, root, data, evidence,
                                                 SimpleNamespace(pid=1), "birth")
+    assert evidence / "release0" in evidence_calls
     assert result["status"] == "pass" and result["semantic_data"]["identical"]
     assert calls == ["stop", "seed", "start", "task", "stop", "snapshot", "start",
                      "stop", "snapshot", "start", "task"]
