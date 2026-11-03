@@ -968,6 +968,7 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     assert intel_rows == [{"job_id": "direct-macos", "mode": "direct", "leg": "release0-to-release1",
                            "runner": "macos-15-intel", "shell": "sh", "os": "macos"}]
     assert workflow.count("      direct_macos_intel_only:\n") == 2
+    assert "DIRECT_MACOS_INTEL_ONLY: ${{ inputs.direct_macos_intel_only || false }}" in config_step
     for direct, overrides in [("false", {}), ("true", {"M4_4A_BACKEND_ONLY": "true"}),
                               ("true", {"M4_5_ENABLED": "true"}), ("true", {"M4_5_ONLY": "true"}),
                               ("true", {"M4_4B_ENABLED": "true"}), ("true", {"M4_6_ENABLED": "true"})]:
