@@ -1,0 +1,453 @@
+From d9a0cd0adbec3771e71599628e43b01715a50a87 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 2 Nov 2026 18:41:54 +0000
+Subject: [PATCH] Preserve failure evidence across cancellation races [skip ci]
+
+---
+ astrid/core/execution/generic_host.py         |  61 +++-
+ .../execution/test_cancellation_ordering.py   | 278 ++++++++++++++++++
+ 2 files changed, 332 insertions(+), 7 deletions(-)
+ create mode 100644 tests/core/execution/test_cancellation_ordering.py
+
+diff --git a/astrid/core/execution/generic_host.py b/astrid/core/execution/generic_host.py
+index e4239d3..c801b88 100644
+--- a/astrid/core/execution/generic_host.py
++++ b/astrid/core/execution/generic_host.py
+@@ -5056,9 +5056,30 @@ class RuntimeProtocolClient:
+         fence: int | None = None,
+         lease_id: str | None = None,
+     ):
++        def preserve_failure(resource):
++            def field(name):
++                return resource.get(name) if isinstance(resource, Mapping) else getattr(resource, name, None)
++            state = field("state") or field("status")
++            result = field("result")
++            error = result.get("error") if isinstance(result, Mapping) else None
++            # Runtime can return an existing failed task. It also retains its
++            # failure result if failure races the version-fenced cancel write.
++            if state == "failed" or (state == "cancelled" and error):
++                detail = error if isinstance(error, Mapping) else {}
++                raise AstridError(detail.get("message") or "Runtime task failed during cancellation",
++                                  code=detail.get("code") or "executor_failed",
++                                  field=detail.get("field"), fix=detail.get("fix") or
++                                  "Inspect the Runtime task failure before retrying")
++
+         if attempt_id is None or fence is None:
+-            return self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
++            result = self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
++            preserve_failure(result)
++            return result
+         task = self._lifecycle_client().get_task(task_id)
++        preserve_failure(task)
++        state = task.get("state", task.get("status")) if isinstance(task, Mapping) else getattr(task, "state", None)
++        if state == "cancelled":
++            return task
+         current_attempt = (
+             task.get("attempt_id")
+             if isinstance(task, Mapping)
+@@ -5069,11 +5090,13 @@ class RuntimeProtocolClient:
+         version = task.get("version") if isinstance(task, Mapping) else getattr(task, "version", None)
+         if isinstance(version, bool) or not isinstance(version, int):
+             raise HostError("runtime cancellation target has no version fence")
+-        return self._lifecycle_client().cancel_task(
++        result = self._lifecycle_client().cancel_task(
+             task_id,
+             expected_version=version,
+             idempotency_key=f"cancel-{task_id}-{attempt_id}-{int(fence)}",
+         )
++        preserve_failure(result)
++        return result
+ 
+     def get_object(self, digest: str) -> bytes:
+         response = self.generated.get_object(digest)
+@@ -9325,6 +9348,7 @@ class GenericPackHost:
+         terminal["write_attempted"] = True
+         minimal = _minimal or terminal.get("minimal", False)
+         forced_at_start = terminal.get("forced")
++        status_at_start = terminal.get("status")
+         if not minimal:
+             # Terminal evidence must exist before optional manifest validation
+             # or output harvesting can block or throw inside failure handling.
+@@ -9459,6 +9483,7 @@ class GenericPackHost:
+             # A slow harvest may have started before the observer's timeout.
+             # Recheck at publication, without holding this lock over harvesting.
+             if (terminal.get("receipt_final") or terminal.get("forced") != forced_at_start
++                    or terminal.get("status") != status_at_start
+                     or (terminal.get("forced") and not minimal)):
+                 return
+             root.mkdir(parents=True, exist_ok=True)
+@@ -9623,8 +9648,9 @@ class GenericPackHost:
+                 # failure mutation; a broken read cannot suppress that write.
+                 if task_snapshot()["status"] != "cancelled":
+                     raise
+-                terminal.update(recorded=True, status="cancelled", forced="cancelled", minimal=True,
+-                                error=AstridError("execution cancelled", code="cancelled"))
++                # A remote cancellation rejects our write; it does not erase
++                # the local failure or deadline that required that write.
++                terminal["recorded"] = True
+ 
+         def read_progress():
+             root = terminal.get("root")
+@@ -9719,12 +9745,16 @@ class GenericPackHost:
+             if code == "lease_lost" and terminal["lease_diagnostic"].get("category") == "observing":
+                 record_lease_diagnostic("lease_loss_unclassified")
+             with completion_lock:
+-                if terminal.get("recorded") or terminal.get("forced"):
++                deadline_after_cancel = (code == "timeout" and terminal.get("forced") == "cancelled"
++                                         and terminal.get("status") == "cancelled")
++                if (terminal.get("recorded") or terminal.get("forced")) and not deadline_after_cancel:
+                     return
+                 error = AstridError("execution deadline exceeded" if code == "timeout" else
+                                     "execution lease lost" if code == "lease_lost" else "execution cancelled", code=code)
+                 terminal.update(forced=code, error=error, status="timeout" if code == "timeout" else
+                                 "cancelled" if code == "cancelled" else "failed", minimal=True)
++                if deadline_after_cancel:
++                    terminal["receipt_final"] = False
+                 abort.set()
+             try:
+                 if code == "cancelled":
+@@ -9736,7 +9766,11 @@ class GenericPackHost:
+                 else:
+                     ensure_failure(error)
+             except BaseException as reporting_error:
+-                terminal["reporting_error"] = reporting_error
++                with completion_lock:
++                    terminal["reporting_error"] = reporting_error
++                    if (code == "cancelled" and terminal.get("forced") == "cancelled"
++                            and terminal.get("status") == "cancelled"):
++                        terminal.update(status="failed", error=reporting_error, receipt_final=False)
+             finally:
+                 if terminal.get("root") is not None:
+                     self._write_task_result(terminal)
+@@ -9901,6 +9935,9 @@ class GenericPackHost:
+                     _publish_busy(busy_path, -1)
+                 if owns_attempt:
+                     self._handoff_leave_attempt(thread_id)
++                if (sys.exc_info()[1] is None and terminal.get("forced") == "cancelled"
++                        and terminal.get("reporting_error") is not None):
++                    raise terminal["reporting_error"]
+ 
+     def _run_task_impl(
+         self,
+@@ -10257,9 +10294,13 @@ class GenericPackHost:
+                     raise HostError("deadline cancellation could not be verified") from status_exc
+                 if state not in {"cancelled", "failed"}:
+                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
+-                deadline_failed = state == "failed"
++                # Cancellation may have won the remote transition, but the
++                # local execution still exceeded its deadline.
++                deadline_failed = True
+ 
+         def handle_guard_abort() -> None:
++            if _terminal.get("forced") == "cancelled" and _terminal.get("reporting_error") is not None:
++                raise _terminal["reporting_error"]
+             if _terminal.get("forced") == "lease_lost":
+                 raise HostError("execution lease lost")
+             if _terminal.get("forced") == "timeout":
+@@ -10277,6 +10318,7 @@ class GenericPackHost:
+                 )
+                 raise HostError(_evidence_cap_message(evidence_failure_message))
+             if deadline_exceeded:
++                _terminal["force_abort"]("timeout")
+                 terminalize_deadline()
+             elif callable(getattr(self.client, "cancel", None)):
+                 completion_call(self.client.cancel, task_id, attempt_id=attempt_id,
+@@ -11090,6 +11132,11 @@ class GenericPackHost:
+             # Keep the lease pump alive through harvesting, upload, and
+             # settlement; only stop it once the claimed attempt is terminal.
+             cleanup_errors: list[str] = []
++            failure = sys.exc_info()[1]
++            if (_terminal.get("forced") == "cancelled" and failure is not None
++                    and not isinstance(failure, HostCancelled)):
++                with _terminal["completion_lock"]:
++                    _terminal.update(status="failed", error=failure, receipt_final=False)
+             if not _terminal.get("forced"):
+                 _terminal.update(
+                     status="succeeded" if settled else "timeout" if deadline_exceeded or deadline_failed
+diff --git a/tests/core/execution/test_cancellation_ordering.py b/tests/core/execution/test_cancellation_ordering.py
+new file mode 100644
+index 0000000..836744f
+--- /dev/null
++++ b/tests/core/execution/test_cancellation_ordering.py
+@@ -0,0 +1,278 @@
++"""Cancellation must retain failure evidence and the original child owner."""
++from __future__ import annotations
++
++import json
++import threading
++
++import pytest
++
++from astrid.core.execution import generic_host
++from astrid.core.execution.generic_host import HostCancelled, RuntimeProtocolClient
++from tests.core.execution.test_fail_closed_g28 import case, lease_clock, receipt
++from tests.test_generic_host_result_json import host_case
++
++
++pytestmark = pytest.mark.timeout(15)
++
++
++@pytest.fixture
++def real_runtime(case, tmp_path, monkeypatch):
++    from astrid_runtime_client.generated import Task, WorkspaceClient
++    from runtime_protocol.service import RuntimeService
++    from runtime_protocol.store import RealmStore
++
++    realm = tmp_path / "realm"
++    RealmStore.initialize(realm).close()
++    service = RuntimeService(realm)
++    digest = "sha256:" + "2" * 64
++    service.register_capability({"capability_id": "test.echo", "definition_digest": digest,
++                                 "required_resource_keys": ["cpu"]})
++    service.register_executor({"executor_id": "host-review", "capabilities": ["test.echo"],
++                               "resource_keys": ["cpu"]}, idempotency_key="register-review")
++    created = service.create_task({"capability_id": "test.echo", "capability_digest": digest,
++                                   "idempotency_key": "task-review"})
++    attempt = service.claim_next({"executor_id": "host-review", "capability_ids": ["test.echo"],
++                                  "runtime_epoch": service.health()["runtime_epoch"]},
++                                 idempotency_key="claim-review")
++    data = case.task["task"]
++    data.update(id=created["task"]["id"], attempt_id=attempt["attempt_id"], fence=attempt["fence"],
++                runtime_epoch=attempt["runtime_epoch"])
++    decoder = WorkspaceClient("http://unused.invalid")
++
++    class Generated:
++        timeout = 30
++
++        def health(self):
++            return service.health()
++
++        def get_task(self, task_id):
++            return Task.from_json(service._task_resource(service.task(task_id)))
++
++        def fail_attempt(self, attempt_id, **kwargs):
++            key = kwargs.pop("idempotency_key")
++            return decoder._mutation_json(json.dumps(
++                service.fail_attempt(attempt_id, kwargs, idempotency_key=key)).encode())
++
++        def cancel_task(self, task_id, **kwargs):
++            key = kwargs.pop("idempotency_key")
++            return decoder._mutation_json(json.dumps(
++                service.cancel_task_canonical(task_id, kwargs, idempotency_key=key)).encode())
++
++        def heartbeat_attempt(self, attempt_id, **kwargs):
++            key = kwargs.pop("idempotency_key")
++            return service.heartbeat_attempt(attempt_id, kwargs, idempotency_key=key)
++
++    protocol = object.__new__(RuntimeProtocolClient)
++    protocol.generated = Generated()
++    protocol._attempt_runtime_epochs = {attempt["attempt_id"]: attempt["runtime_epoch"]}
++    protocol._heartbeat_lock = threading.RLock()
++    protocol._heartbeat_sequence = 0
++    protocol._heartbeat_session = "review"
++    for operation in ("fail", "cancel", "task", "heartbeat"):
++        monkeypatch.setattr(case.runtime, operation, getattr(protocol, operation))
++    try:
++        yield service, attempt
++    finally:
++        service.close()
++
++
++@pytest.mark.parametrize("failure", ["executor", "timeout", "executor_after_ack"])
++def test_failure_after_runtime_cancel_is_not_clean_cancellation(case, real_runtime, monkeypatch, failure):
++    from runtime_protocol.errors import LeaseError
++    service, attempt = real_runtime
++    terminal = {}
++    implementation = case.host._run_task_impl
++
++    def capture(*args, _terminal, **kwargs):
++        terminal.update(value=_terminal)
++        return implementation(*args, _terminal=_terminal, **kwargs)
++
++    monkeypatch.setattr(case.host, "_run_task_impl", capture)
++
++    def execute(*_args, **_kwargs):
++        if failure == "executor_after_ack":
++            terminal["value"]["force_abort"]("cancelled")
++        else:
++            service.cancel_task_canonical(case.task["task"]["id"], idempotency_key="external-cancel")
++        if failure == "timeout":
++            terminal["value"]["force_abort"]("timeout")
++            raise HostCancelled("child stopped for deadline")
++        raise OSError("executor failed while cancellation arrived")
++
++    monkeypatch.setattr(case.host, "_run_command_definition", execute)
++    if failure != "timeout":
++        with pytest.raises((OSError, LeaseError)):
++            case.host.run_task(case.task, lease_token=attempt["lease_id"])
++    else:
++        result = case.host.run_task(case.task, lease_token=attempt["lease_id"])
++        assert result == {"task_id": case.task["task"]["id"], "status": "failed", "deadline_exceeded": True}
++    stored = service.task(case.task["task"]["id"])["task"]
++    assert stored["status"] == "cancelled"  # Remote terminal owner remains authoritative.
++    assert receipt(case)["status"] == ("timeout" if failure == "timeout" else "failed")
++    assert receipt(case)["error"]["code"] == ("timeout" if failure == "timeout" else "executor_failed")
++    assert not case.runtime.settlements
++
++
++def test_late_cancel_exception_replaces_already_published_cancellation(case, monkeypatch):
++    entered, release = threading.Event(), threading.Event()
++    error = OSError("cancel RPC failed after the foreground stopped")
++
++    def cancel(*_args, **_kwargs):
++        entered.set()
++        assert release.wait(2)
++        raise error
++
++    monkeypatch.setattr(case.runtime, "cancel", cancel)
++
++    def execute(*_args, _terminal, **_kwargs):
++        observer = threading.Thread(target=_terminal["force_abort"], args=("cancelled",))
++        observer.start()
++        try:
++            assert entered.wait(2)
++            assert _terminal["cancel_signal"].is_set()
++            case.host._write_task_result(_terminal)
++            assert receipt(case)["status"] == "cancelled"
++        finally:
++            release.set()
++            observer.join(timeout=2)
++        assert not observer.is_alive()
++        assert _terminal["reporting_error"] is error
++        assert receipt(case)["status"] == "failed"
++        assert receipt(case)["error"]["message"] == str(error)
++        return _terminal
++
++    monkeypatch.setattr(case.host, "_run_task_impl", execute)
++    with pytest.raises(OSError, match="cancel RPC failed after the foreground stopped"):
++        case.host.run_task(case.task, lease_token="lease-result")
++
++
++def test_existing_runtime_failure_survives_local_cancel(case, real_runtime, monkeypatch):
++    service, attempt = real_runtime
++
++    def execute(*_args, **_kwargs):
++        case.runtime.fail(case.task["task"]["id"], attempt["lease_id"], "real Runtime failure",
++                          attempt_id=attempt["attempt_id"], fence=attempt["fence"],
++                          structured_error={"code": "provider_failed", "fix": "Inspect provider failure"})
++        raise HostCancelled("local cancellation races the terminal failure")
++
++    monkeypatch.setattr(case.host, "_run_command_definition", execute)
++    with pytest.raises(Exception, match="real Runtime failure"):
++        case.host.run_task(case.task, lease_token=attempt["lease_id"])
++    assert service.task(case.task["task"]["id"])["task"]["status"] == "failed"
++    assert receipt(case)["status"] == "failed"
++    assert receipt(case)["error"]["code"] == "provider_failed"
++
++
++def test_cancel_reply_preserves_failure_committed_after_read(case, real_runtime, monkeypatch):
++    service, attempt = real_runtime
++    generated = case.runtime.cancel.__self__.generated
++    cancel_task = generated.cancel_task
++
++    def race(task_id, **kwargs):
++        case.runtime.fail(task_id, attempt["lease_id"], "failure after cancel read",
++                          attempt_id=attempt["attempt_id"], fence=attempt["fence"],
++                          structured_error={"code": "provider_failed"})
++        return cancel_task(task_id, **kwargs)
++
++    monkeypatch.setattr(generated, "cancel_task", race)
++
++    def execute(*_args, **_kwargs):
++        raise HostCancelled("local stop")
++
++    monkeypatch.setattr(case.host, "_run_command_definition", execute)
++    with pytest.raises(generic_host.AstridError, match="failure after cancel read"):
++        case.host.run_task(case.task, lease_token=attempt["lease_id"])
++    # Pinned Runtime's version is attempt-based: the remote race remains, but
++    # its retained error must never become a clean local cancellation.
++    stored = service.task(case.task["task"]["id"])["task"]
++    assert stored["status"] == "cancelled"
++    assert stored["result"]["error"]["code"] == "provider_failed"
++    assert receipt(case)["status"] == "failed"
++    assert receipt(case)["error"]["code"] == "provider_failed"
++
++
++def test_already_cancelled_runtime_ack_is_accepted(case, real_runtime, monkeypatch):
++    service, attempt = real_runtime
++
++    def execute(*_args, **_kwargs):
++        service.cancel_task_canonical(case.task["task"]["id"], idempotency_key="external-cancel")
++        raise HostCancelled("remote stop")
++
++    monkeypatch.setattr(case.host, "_run_command_definition", execute)
++    assert case.host.run_task(case.task, lease_token=attempt["lease_id"])["cancelled"]
++    assert receipt(case)["status"] == "cancelled"
++    assert service.task(case.task["task"]["id"])["task"]["status"] == "cancelled"
++
++
++def test_deadline_after_local_cancel_ack_keeps_timeout(case, lease_clock):
++    def before(terminal):
++        terminal["force_abort"]("cancelled")
++        assert terminal["recorded"] and receipt(case)["status"] == "cancelled"
++        lease_clock.at = 10
++        assert terminal["lifetime"].expired()
++        terminal["force_abort"]("timeout")
++
++    terminal = lease_clock.run(before=before)
++    assert terminal["forced"] == "timeout"
++    assert receipt(case)["status"] == "timeout"
++    assert receipt(case)["error"]["code"] == "timeout"
++    assert case.task["task"]["status"] == "cancelled"
++    assert not case.runtime.failures  # No second terminal mutation after acknowledgement.
++
++
++@pytest.mark.parametrize("fault", ["rejected", "transport", "transport_timeout", "absent"])
++def test_heartbeat_cancel_error_keeps_owned_process_containment(tmp_path, monkeypatch, fault):
++    from astrid_runtime_client.generated import ApiError
++    from tests.core.execution.test_generic_host_actions_v3 import pack, task_for
++    from astrid.core.execution import task_scope
++
++    entered = tmp_path / "entered"
++    _, host, runtime, _, _ = pack(tmp_path, code=(
++        "from pathlib import Path\nimport time\n"
++        f"def run(value):\n    Path({str(entered)!r}).write_text('entered')\n"
++        "    time.sleep(30)\n    return value\n"))
++    host.attempt_root = tmp_path / "attempt"
++    host.register()
++    admitted = task_for(runtime)
++    owned, calls = [], []
++    track = host._track_process
++
++    def track_original(process):
++        owned.append(process)
++        track(process)
++
++    def current_task(task_id):
++        pump = threading.current_thread().name.startswith("astrid-heartbeat-")
++        return {"state": "cancel_requested" if entered.exists() and pump else "running"}
++
++    error = ApiError(409, "conflict", "cancel rejected; inspect task version") if fault == "rejected" else OSError("cancel transport unavailable")
++    if fault == "transport_timeout":
++        error = ApiError(0, "transport_timeout", "runtime request timed out")
++
++    def cancel(*args, **kwargs):
++        calls.append(kwargs)
++        raise error
++
++    monkeypatch.setattr(host, "_track_process", track_original)
++    monkeypatch.setattr(runtime, "task", current_task)
++    monkeypatch.setattr(generic_host, "_LEASE_POLL_SECONDS", 0.05)
++    if fault != "absent":
++        monkeypatch.setattr(runtime, "cancel", cancel, raising=False)
++    try:
++        if fault == "absent":
++            assert host.run_task(admitted, lease_token="lease")["cancelled"]
++        else:
++            with pytest.raises(type(error), match=str(error)):
++                host.run_task(admitted, lease_token="lease")
++        assert len(owned) == 1 and owned[0].returncode is not None
++        assert task_scope.stop(owned[0], 0.1).status == "settled"
++        assert not host._active_processes and not host._unresolved_task_scopes
++        assert not runtime.settlements and not runtime.uploaded_objects
++        result = json.loads((host.attempt_root / "result.json").read_text())
++        assert result["status"] == ("cancelled" if fault == "absent" else "failed")
++        if fault != "absent":
++            assert str(error).split(": ")[-1] in result["error"]["message"]
++            assert calls and calls[0] == {"attempt_id": "python-attempt", "fence": 1, "lease_id": "lease"}
++    finally:
++        for process in owned:
++            generic_host._terminate_process_group(process)
+-- 
+2.43.0
+
