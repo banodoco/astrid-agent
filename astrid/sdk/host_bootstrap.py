@@ -1818,6 +1818,7 @@ def ensure_pack_host(
     startup_idle_seconds: float = HOST_STARTUP_IDLE_SECONDS,
     attach_healthy: bool = False,
     _foreground: bool = False,
+    release_offer: Any = None,
 ) -> Mapping[str, Any]:
     """Ensure the runtime-issued host is ready, waiting while it makes progress.
 
@@ -1834,9 +1835,17 @@ def ensure_pack_host(
             or startup_idle_seconds <= 0):
         raise ValueError("pack-host startup idle window must be finite, positive")
     startup_idle_seconds = float(startup_idle_seconds)
+    if release_offer is not None:
+        from astrid.core.generation.engine_release_authority import ReleaseOffer
+        if not isinstance(release_offer, ReleaseOffer):
+            raise PackHostBootstrapError("engine release requires a private readiness offer")
+    if release_offer is not None and (_foreground or not sys.platform.startswith("linux")):
+        raise PackHostBootstrapError("engine release transfer is unavailable for this launch mode")
     worker_file = value.get("worker_credential_file")
     source_checkout = value.get("source_checkout")
     if not worker_file or not source_checkout:
+        if release_offer is not None:
+            raise PackHostBootstrapError("engine release requires a selected host and worker registration")
         # Tiny fake launcher boundaries intentionally model only the runtime
         # handoff.  Real neutral-runtime results contain both fields.
         return {}
@@ -1920,6 +1929,16 @@ def ensure_pack_host(
         or health_value.get("coordinator_epoch")
         or (f"epoch:{runtime_epoch}" if runtime_epoch is not None else None)
     )
+    if release_offer is not None:
+        # Engine and Runtime namespaces stay separate. Epoch is never identity.
+        explicit_instance = health_value.get("runtime_instance_id") or health_value.get("instance_id")
+        if (not isinstance(explicit_instance, str) or not explicit_instance
+                or explicit_instance.startswith("epoch:")
+                or type(health_value.get("runtime_epoch")) is not int or runtime_epoch < 1
+                or (value.get("runtime_instance_id") is not None
+                    and value["runtime_instance_id"] != explicit_instance)):
+            raise PackHostBootstrapError("engine release requires authenticated Runtime instance and epoch")
+        runtime_instance_id = explicit_instance
     schema_digest = health_value.get("schema_digest") or value.get("schema_digest")
     if runtime_epoch is None or runtime_instance_id is None:
         raise PackHostBootstrapError(
@@ -1946,6 +1965,10 @@ def ensure_pack_host(
         current = _read_object(state_path)
         ready = _read_object(ready_path)
         status = _registered_host_status(current) if current else None
+        if release_offer is not None and current:
+            # No resident rendezvous is implemented. Never replace a resident
+            # to manufacture a successful descriptor transfer.
+            raise PackHostBootstrapError("resident engine release transfer is unsupported; original custody retained")
         if not _foreground and attach_healthy and current and ready and status == "ours":
             receipt = _attach_resident_host(
                 current, ready,
@@ -2092,6 +2115,18 @@ def ensure_pack_host(
             # Unwind the bootstrap lock before entering the worker loop. The
             # Runtime owns this process, including its eventual exit/restart.
             raise _ForegroundHost(argv, child_env, runtime_support if execution_origins else source_path)
+        release_parent = release_child = None
+        if release_offer is not None:
+            from astrid.sdk.engine_release_handoff import ReleaseHandoff
+            from astrid.core.generation.engine_release_authority import process_identity
+            # Prepare all fallible launch inputs before allocating descriptors.
+            readiness = release_offer.readiness
+            producer = json.dumps(process_identity(os.getpid()), sort_keys=True)
+            release_parent, release_child = ReleaseHandoff.pair()
+            argv.extend(("--engine-release-fd", str(release_child.fileno()),
+                         "--engine-release-producer", producer,
+                         "--readiness-profile-path", readiness.path,
+                         "--readiness-profile-hash", readiness.sha256))
         try:
             log = log_path.open("ab")
             process = popen_owned_group(
@@ -2104,10 +2139,15 @@ def ensure_pack_host(
                 start_new_session=True,
                 detached=True,
                 close_fds=True,
+                **({"pass_fds": (release_child.fileno(),)} if release_child is not None else {}),
             )
         except OSError as exc:
             raise PackHostBootstrapError(f"generic Astrid pack host could not be started; {reconfigure_action}") from exc
         finally:
+            if release_child is not None:
+                release_child.close()
+            if release_parent is not None and "process" not in locals():
+                release_parent.close()
             try:
                 log.close()
             except UnboundLocalError:
@@ -2147,6 +2187,8 @@ def ensure_pack_host(
         _write_object(state_path, process_state)
 
         def _abandon() -> None:
+            if release_parent is not None:
+                release_parent.close()
             try:
                 _retire_host_locked(process_state)
             finally:
@@ -2224,6 +2266,27 @@ def ensure_pack_host(
             else:
                 reason = "generic Astrid pack host did not become ready"
             raise PackHostBootstrapError(f"{reason}{detail}; inspect {log_path}")
+        release_receipt = None
+        if release_parent is not None:
+            try:
+                from astrid.core.generation.engine_release_authority import process_identity
+                registration = runtime_client.generated.get_executor(PACK_HOST_ACTOR)
+                def registered_field(name):
+                    return registration.get(name) if isinstance(registration, Mapping) else getattr(registration, name, None)
+                if (registered_field("executor_id") != PACK_HOST_ACTOR
+                        or registered_field("runtime_epoch") != runtime_epoch
+                        or registered_field("readiness") != "ready"
+                        or registered_field("source_epoch") != ready.get("source_epoch")):
+                    raise PackHostBootstrapError("engine release selected registration is not authenticated")
+                release_receipt = release_parent.deliver(
+                    release_offer, selected_process=process_identity(process.pid),
+                    runtime={"instance_id": str(runtime_instance_id), "epoch": runtime_epoch,
+                             "endpoint": endpoint, "executor_id": PACK_HOST_ACTOR},
+                    source=source_closure_digest, deadline=time.monotonic() + 5,
+                )
+            except BaseException:
+                _abandon()
+                raise
         return {
             "host_status": "ready",
             "host_pid": process.pid,
@@ -2237,8 +2300,14 @@ def ensure_pack_host(
             "host_source_inventory_identity": inventory_identity,
             "host_boot_manifest_path": str(boot_manifest_path),
             "host_boot_manifest_hash": boot_manifest_hash,
+            "engine_release_transfer": release_receipt,
+            "engine_release_ready": False,
         }
     finally:
+        if "release_parent" in locals() and release_parent is not None:
+            release_parent.close()
+        if "release_child" in locals() and release_child is not None:
+            release_child.close()
         try:
             platform.unlock_file(lock_handle.fileno())
         except (ImportError, OSError):

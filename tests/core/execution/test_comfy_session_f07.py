@@ -21,6 +21,40 @@ from tests.core.execution.test_managed_tool_session import _Adapter, _binding, _
 from tests.core.execution.test_warm_hold import Timers
 from tests.test_generic_host import FakeRuntime
 from tests.test_generic_host_vibecomfy_lifecycle import _FakeCheckout, _install_fixture, _profile, _task
+from tests.core.generation._release_fixtures import binding, claim, ready_owner, session  # noqa: F401
+
+
+def test_claimed_engine_bind_refusal_retains_slot_without_legacy_release(ready_owner, tmp_path):
+    """Real issuer/engine/claim; the local adapter only records forbidden calls."""
+    import time
+    from astrid.core.generation.engine_contracts import CustodyUnresolved
+
+    host = GenericPackHost(pack_roots=[tmp_path])
+    host._engine_release_claim = claim(ready_owner)
+    host.runtime_state = {"runtime_epoch": host._engine_release_claim.runtime["epoch"]}
+    backend = _Adapter()
+    adapter = generic_host._ManagedVibeSessionAdapter(backend)
+    exact_binding = binding(ready_owner)
+    manager = host.managed_tool_session
+    try:
+        with pytest.raises(CustodyUnresolved):
+            host._open_managed_task_session(capability=CapabilityDescriptor("vibecomfy.run"),
+                                       binding=exact_binding, adapter=adapter)
+        assert manager.occupied and not manager.active
+        assert manager.current_binding == exact_binding
+        assert adapter._engine_release_required
+        events = list(backend.events)
+        with pytest.raises(generic_host.HostError, match="original custody retained"):
+            host.release_managed_session(expected_binding=exact_binding,
+                expected_generation=manager.generation, deadline=time.monotonic() + 1)
+        with pytest.raises(SessionCapacityError):
+            manager.close()
+        assert all(event[0] != "release" for event in backend.events)
+        assert backend.events[:len(events)] == events
+        assert manager.occupied and manager.current_adapter is adapter
+        assert not (ready_owner.root / "release-posts").exists()
+    finally:
+        host.warm_holds.close()
 
 
 @pytest.mark.parametrize("fault", ["false", "raise"])

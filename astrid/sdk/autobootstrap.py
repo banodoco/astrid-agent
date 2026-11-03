@@ -420,7 +420,8 @@ def _connection_failure_is_recoverable(exc: AutoBootstrapError) -> bool:
     )
 
 
-def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None = None) -> Mapping[str, Any]:
+def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None = None,
+                   engine_release: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """Invoke the installed launcher once and return its bounded result.
 
     Runtime reads may connect while an existing pack-host child is busy.  The
@@ -428,6 +429,9 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
     needs the generic pack host to be registered and preflight-ready.
     """
     manifest = _manifest_from_environment()
+    if engine_release is not None and (not start_pack_host or set(engine_release) != {
+            "root", "release_root", "profile_path", "engine"}):
+        raise AutoBootstrapError("engine release startup requires an explicit private readiness selection")
     explicit_data_root = data_root is not None
     try:
         from astrid.sdk.storage_root import ensure_no_unmigrated_runtime, resolve_runtime_data_root
@@ -500,12 +504,21 @@ def ensure_runtime(*, start_pack_host: bool = True, data_root: str | Path | None
     # The launcher returns only a path to the owner-only credential file;
     # never put the credential value in the subprocess result or logs.
     result.update(worker_handoff)
+    if engine_release is not None and not worker_handoff:
+        raise AutoBootstrapError("engine release requires a selected worker registration")
     if worker_handoff and start_pack_host:
         from astrid.sdk.host_bootstrap import PackHostBootstrapError, ensure_pack_host
 
         try:
+            release_offer = None
+            if engine_release is not None:
+                from astrid.core.generation.engine_readiness import prepare_ready_engine_release
+                import time
+                _readiness, release_offer = prepare_ready_engine_release(
+                    **dict(engine_release), deadline=time.monotonic() + 60)
             result.update(ensure_pack_host(
-                value, reconfigure_action=RECONFIGURE_ACTION, attach_healthy=True
+                value, reconfigure_action=RECONFIGURE_ACTION, attach_healthy=True,
+                **({"release_offer": release_offer} if release_offer is not None else {}),
             ))
         except PackHostBootstrapError as exc:
             raise AutoBootstrapError(str(exc)) from exc

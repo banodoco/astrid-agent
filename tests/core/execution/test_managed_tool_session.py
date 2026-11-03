@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+import time
+from dataclasses import replace
 
 from astrid.core.execution.managed_tool_session import (
     CapabilityDescriptor,
@@ -36,6 +38,36 @@ def _binding(suffix: str) -> SessionBinding:
         source_digest=f"source-{suffix}",
         config_digest=f"config-{suffix}",
     )
+
+
+def test_checked_release_reserves_prefence_generation_once():
+    """Local state transition only: reservations never confer native authority."""
+    manager, adapter = ManagedToolSession(), _Adapter()
+    binding = replace(_binding("complete"), execution_identity="residency", runtime_epoch=7,
+                      launch_generation="engine-birth", engine_birth_id="engine-birth")
+    opened = manager.open(capability=CapabilityDescriptor("vibecomfy.run"), binding=binding, adapter=adapter)
+    def reserve(request):
+        return manager._begin_checked_release(association_id="retained-association", request_id=request,
+            expected_binding=binding, expected_generation=opened.generation, deadline=time.monotonic() + 5)
+    intent = reserve("busy")
+    assert intent.generation == opened.generation and intent.binding_identity == binding.identity_key
+    assert manager._finish_checked_release(intent, outcome="busy") == "busy"
+    assert manager.generation == opened.generation and manager.active
+    intent = reserve("uncertain")
+    assert manager._finish_checked_release(intent, outcome="unresolved") == "unresolved"
+    poisoned_generation = manager.generation
+    assert poisoned_generation == opened.generation + 1
+    assert manager._active.release_intent is intent and manager.current_binding is binding
+    with pytest.raises(SessionCapacityError):
+        manager.restart(binding=_binding("successor"), adapter=_Adapter())
+    assert manager._reconcile_checked_release(intent, outcome="completed") == "completed"
+    assert not manager.occupied and manager.generation == poisoned_generation
+    successor = manager.open(capability=CapabilityDescriptor("vibecomfy.run"),
+                             binding=_binding("successor"), adapter=_Adapter())
+    with pytest.raises(StaleAdmissionError):
+        manager._reconcile_checked_release(intent, outcome="completed")
+    assert manager.current_binding == successor.binding and manager.generation == successor.generation
+    assert adapter.events == []
 
 
 def test_serial_admission_and_settlement_are_one_shot() -> None:

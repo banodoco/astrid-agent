@@ -427,6 +427,7 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
         "session_dir": str(installation["registry"]), "server_url": marker["url"],
         "pid": marker["pid"], "process_birth_id": marker["process_start_identity"],
         "comfy_pid": marker["comfy_pid"], "comfy_process_birth_id": marker["comfy_process_start_identity"],
+        "launch_generation": marker["comfy_process_start_identity"],
         "launch_token": marker["launch_token"],
         "config_digest": "sha256:" + hashlib.sha256(before["config.json"]).hexdigest(),
         "source_revision": before["source_revision"].decode().strip(),

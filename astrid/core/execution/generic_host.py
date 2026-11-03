@@ -790,6 +790,7 @@ class _ManagedVibeSessionAdapter:
         self.sdk_session_identity: str | None = None
         self._sdk_session_bound = False
         self._invocation_token: AdmissionToken | None = None
+        self._engine_release_required = False
 
     @classmethod
     def from_host_session(cls, *, binding: SessionBinding, native_graph: Any = None, **options: Any) -> Any:
@@ -930,6 +931,8 @@ class _ManagedVibeSessionAdapter:
         return self.cancel(reason=reason)
 
     def release(self, *, reason: str) -> dict[str, Any]:
+        if self._engine_release_required:
+            raise HostError("enrolled engine requires its original bound release authority; custody retained")
         if reason == "capacity_replacement" and self.residency_bound:
             raise HostError("native engine replacement requires a fresh Runtime-selected preparation; custody retained")
         if reason == "cpu_residency_eviction" and (
@@ -6216,6 +6219,8 @@ class GenericPackHost:
         boot_manifest_path: str | Path | None = None,
         boot_manifest_hash: str | None = None,
         execution_policy: ExecutionGuardPolicy | None = None,
+        engine_release_handoff: Any = None,
+        engine_release_producer: Mapping[str, Any] | None = None,
     ):
         configured_roots = [Path(root).expanduser().resolve() for root in pack_roots]
         # ASTRID_PACKS_PATH is an explicit discovery input, never an implicit
@@ -6292,7 +6297,13 @@ class GenericPackHost:
         )
         # One task at a time uses this host object's session slot. Parallel
         # serving owns separate host objects; this is not a device scheduler.
-        self._session_task_lock = threading.Lock()
+        self._session_task_lock = threading.RLock()
+        self._engine_release_handoff = engine_release_handoff
+        self._engine_release_producer = engine_release_producer
+        self._engine_release_claim = None
+        self._bound_engine_release = None
+        self._engine_release_intent = None
+        self._engine_release_result = None
 
         self._active_processes: set[subprocess.Popen] = set()
         self._unresolved_task_scopes: list[str] = []
@@ -6611,11 +6622,97 @@ class GenericPackHost:
         warm session the task is about to reuse or replace.
         """
         manager = self.managed_tool_session
-        return self.warm_holds.lease(manager, stop=self._release_idle_session, lock=manager._lock)
+        gate = self._session_task_lock if self._engine_release_claim is not None else manager._lock
+        return self.warm_holds.lease(manager, stop=self._release_idle_session, lock=gate)
+
+    def _claim_engine_release(self, *, source: str, endpoint: str, deadline: float) -> None:
+        handoff = self._engine_release_handoff
+        if handoff is None:
+            return
+        self._engine_release_handoff = None
+        state = self.runtime_state
+        instance, epoch = state.get("runtime_instance_id"), state.get("runtime_epoch")
+        if (not isinstance(instance, str) or not instance or instance.startswith("epoch:")
+                or type(epoch) is not int or epoch < 1 or not self._registered_runtime_state):
+            handoff.close()
+            raise HostError("release transfer requires authenticated Runtime registration")
+        self._engine_release_claim = handoff.claim(
+            executor_id=self.executor_id, source=source,
+            runtime={"instance_id": instance, "epoch": epoch,
+                     "endpoint": endpoint, "executor_id": self.executor_id},
+            deadline=deadline, producer=self._engine_release_producer,
+        )
+
+    def _checked_engine_release_locked(self, *, binding: SessionBinding, generation: int,
+                                       deadline: float, observe: bool = False) -> Mapping[str, Any]:
+        """Host gate -> MTS lock -> original issuer. No callback can unload twice."""
+        manager, bound = self.managed_tool_session, self._bound_engine_release
+        if bound is None:
+            raise HostError("no bound engine release authority")
+        if not manager._lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            return {"ok": False, "released": False, "release_pending": True, "effect_sent": False}
+        try:
+            intent = self._engine_release_intent
+            if observe:
+                if intent is None:
+                    raise StaleAdmissionError("no retained engine release intent")
+                native = bound.observe(intent.request_id, deadline)
+                if native["status"] == "completed":
+                    manager._reconcile_checked_release(intent, outcome="completed")
+                    self._bound_engine_release = None
+            else:
+                if intent is not None:
+                    if (intent.binding_identity != binding.identity_key or intent.generation != generation):
+                        raise StaleAdmissionError("retained release request belongs to the original generation")
+                    return {"ok": False, "released": False, "release_pending": True,
+                            "native": dict(self._engine_release_result or {})}
+                try:
+                    intent = manager._begin_checked_release(
+                        association_id=bound.association_id, request_id=secrets_module.token_hex(16),
+                        expected_binding=binding, expected_generation=generation, deadline=deadline)
+                except SessionCapacityError:
+                    return {"ok": False, "released": False, "release_pending": True, "effect_sent": False}
+                self._engine_release_intent = intent
+                try:
+                    native = bound.release(intent.request_id, binding, generation, deadline)
+                except BaseException:
+                    manager._finish_checked_release(intent, outcome="unresolved")
+                    self._latch_cleanup_uncertainty("original engine release reply is unresolved")
+                    raise
+                outcome = manager._finish_checked_release(intent, outcome=native["status"])
+                if outcome == "busy":
+                    self._engine_release_intent = None
+                elif outcome == "completed":
+                    self._bound_engine_release = None
+                else:
+                    self._latch_cleanup_uncertainty("original engine release retains its generation and custody")
+                if outcome != native["status"]:
+                    native = {**native, "status": outcome}
+            self._engine_release_result = dict(native)
+            released = native["status"] == "completed" and not manager.occupied
+            return {"ok": released, "released": released, "release_pending": not released,
+                    "native": dict(native), "memory_observed_returned": False}
+        finally:
+            manager._lock.release()
+
+    def observe_engine_release(self, *, deadline: float) -> Mapping[str, Any]:
+        from astrid.core.generation.engine_release_authority import bounded_deadline
+        bounded_deadline(deadline)
+        acquired = (self._session_task_lock.acquire(timeout=max(0, deadline - time.monotonic()))
+                    if self._bound_engine_release is not None
+                    else self._session_task_lock.acquire(blocking=False))
+        if not acquired:
+            return {"ok": False, "released": False, "release_pending": True, "effect_sent": False}
+        try:
+            return self._checked_engine_release_locked(binding=None,
+                generation=0, deadline=deadline, observe=True)
+        finally:
+            self._session_task_lock.release()
 
     def release_managed_session(
         self, *, expected_binding: SessionBinding, expected_generation: int,
         reason: str = "requested",
+        deadline: float | None = None,
     ) -> Mapping[str, Any]:
         """Control the existing owner, without racing task setup or admission.
 
@@ -6624,10 +6721,21 @@ class GenericPackHost:
         """
         if not isinstance(expected_binding, SessionBinding) or type(expected_generation) is not int:
             raise StaleAdmissionError("session release requires exact owner authorization")
-        if not self._session_task_lock.acquire(blocking=False):
+        from astrid.core.generation.engine_release_authority import bounded_deadline
+        deadline = time.monotonic() + 5 if deadline is None else deadline
+        bounded_deadline(deadline)
+        acquired = (self._session_task_lock.acquire(timeout=max(0, deadline - time.monotonic()))
+                    if self._bound_engine_release is not None
+                    else self._session_task_lock.acquire(blocking=False))
+        if not acquired:
             return {"ok": False, "released": False, "release_pending": True}
         try:
             manager = self.managed_tool_session
+            if self._bound_engine_release is not None:
+                return self._checked_engine_release_locked(binding=expected_binding,
+                    generation=expected_generation, deadline=deadline)
+            if self._engine_release_claim is not None:
+                raise HostError("engine release association is absent or unresolved; original custody retained")
             with manager._lock:
                 try:
                     evidence = manager.release(
@@ -6678,7 +6786,12 @@ class GenericPackHost:
             return
         self._vibecomfy_warmth_hint = None
         try:
-            self.managed_tool_session.release(reason="idle")
+            if self._bound_engine_release is not None:
+                manager = self.managed_tool_session
+                self.release_managed_session(expected_binding=manager.current_binding,
+                    expected_generation=manager.generation, reason="idle")
+            else:
+                self.managed_tool_session.release(reason="idle")
         except Exception as exc:
             # The slot stays poisoned and occupied, as after any unverified release.
             self._latch_cleanup_uncertainty(f"{warm[0]} session failed to release after idle: {exc}")
@@ -6853,6 +6966,10 @@ class GenericPackHost:
                         errors.append(exc)
                 raise CleanupUncertainError("CPU attempt cleanup remains unresolved")
         try:
+            if self._bound_engine_release is not None:
+                manager = self.managed_tool_session
+                self.release_managed_session(expected_binding=manager.current_binding,
+                    expected_generation=manager.generation, reason="host_shutdown")
             self.managed_tool_session.close(reason="host_shutdown")
         except BaseException as exc:
             errors.append(exc)
@@ -10273,6 +10390,9 @@ class GenericPackHost:
         owner = self._handoff_accounting_owner
         with owner._handoff_condition, manager._lock:
             active = manager._active
+            if (self._bound_engine_release is not None and active is not None
+                    and active.binding.identity_key != binding.identity_key):
+                raise SessionCapacityError("bound engine reassignment requires original release reconciliation")
             previous = active.adapter if active is not None else None
             cpu_target = (
                 isinstance(adapter, _ManagedTaskAdapter)
@@ -10319,7 +10439,24 @@ class GenericPackHost:
                         pass
                     raise
                 return
+            if isinstance(adapter, _ManagedVibeSessionAdapter) and self._engine_release_claim is not None:
+                adapter._engine_release_required = True
             manager.open(capability=capability, binding=binding, adapter=adapter)
+            if isinstance(adapter, _ManagedVibeSessionAdapter) and self._engine_release_claim is not None:
+                if self._bound_engine_release is None:
+                    claim = self._engine_release_claim
+                    if claim.runtime["epoch"] != self.runtime_state.get("runtime_epoch"):
+                        manager.fence(reason="engine_release_runtime_changed")
+                        raise HostError("engine release Runtime association changed")
+                    try:
+                        self._bound_engine_release = claim.bind(binding, manager.generation,
+                            runtime=claim.runtime, admission={"mode": "host_serial"},
+                            deadline=time.monotonic() + 5)
+                        self._engine_release_intent = None
+                    except BaseException:
+                        manager.fence(reason="engine_release_bind_unresolved")
+                        self._latch_cleanup_uncertainty("engine release association refused or unresolved; original slot retained")
+                        raise
 
     def _write_task_result(self, terminal: dict[str, Any], *, _minimal: bool = False) -> None:
         """Write the host receipt without changing the pack artifact manifest.
@@ -11949,7 +12086,7 @@ class GenericPackHost:
                 session_id = str(vibe_session.get("session_dir") or "")
                 session_birth = str(vibe_session.get("process_birth_id") or "")
                 session_endpoint = str(vibe_session.get("server_url") or "")
-                session_source = str(vibe_session.get("source_revision") or "")
+                session_source = str(vibe_session.get("source_content_digest") or "")
                 session_config = str(vibe_session.get("config_digest") or "")
                 runtime_profile = readiness_profile.get("runtime")
                 if (not isinstance(runtime_profile, Mapping)
@@ -11971,25 +12108,22 @@ class GenericPackHost:
                     source_digest=session_source,
                     config_digest=session_config,
                     execution_identity=stable_session_identity,
-                    runtime_epoch=claim_epoch if isinstance(claim_epoch, int) and not isinstance(claim_epoch, bool) else None,
+                    # Attached B keeps its verified convention. Actual Runtime
+                    # instance/positive claim epoch remain in the private R
+                    # sidecar; neither is derived from engine-owner UUID.
+                    runtime_epoch=(None if self._engine_release_claim is not None else
+                        claim_epoch if isinstance(claim_epoch, int) and not isinstance(claim_epoch, bool) else None),
                     launch_generation=str(vibe_session["launch_generation"]),
                     engine_birth_id=str(vibe_session["comfy_process_birth_id"]),
                 )
-                current = self.managed_tool_session.current_adapter
-                if (self.managed_tool_session.active
-                        and self.managed_tool_session.current_binding == managed_binding
-                        and isinstance(current, _ManagedVibeSessionAdapter)):
-                    managed_adapter = current
-                    if endpoint_transport is not None:
-                        endpoint_transport.close()
-                        endpoint_transport = None
-                else:
-                    managed_adapter = _ManagedVibeSessionAdapter.from_host_session(
-                        binding=managed_binding,
-                        **endpoint_kwargs,
-                        native_graph=getattr(self, "_native_engine_graph", None),
-                        hc03_profile=readiness_profile,
-                    )
+                # Validate a candidate each time; MTS retains the original
+                # adapter for an identical complete binding.
+                managed_adapter = _ManagedVibeSessionAdapter.from_host_session(
+                    binding=managed_binding, **endpoint_kwargs,
+                    native_graph=getattr(self, "_native_engine_graph", None),
+                    hc03_profile=({**readiness_profile, "residency_digest": stable_session_identity}
+                                  if self._engine_release_claim is not None else readiness_profile),
+                )
                 from astrid.core.generation.backends.vibecomfy import vibecomfy_warmth_hint
 
                 current_warmth_hint = vibecomfy_warmth_hint(
@@ -12028,6 +12162,7 @@ class GenericPackHost:
                     adapter=managed_adapter,
                 )
             managed_opened = True
+            managed_adapter = self.managed_tool_session.current_adapter
             self.managed_tool_session.observe(managed_binding)
             managed_token = self.managed_tool_session.admit(
                 capability_id=capability_id,
@@ -12612,15 +12747,24 @@ class GenericPackHost:
                         self._vibecomfy_current_warmth_hint = None
                         self._vibecomfy_requested_warmth_hint = None
                     try:
-                        self.managed_tool_session.release(
-                            reason=(
-                                "task_settled"
-                                if managed_settled
-                                else "task_cancelled"
-                                if cancelled_attempt
-                                else "task_failed"
+                        if self._engine_release_claim is not None:
+                            manager = self.managed_tool_session
+                            if self._bound_engine_release is None:
+                                raise SessionCapacityError("task teardown retains original bound engine custody")
+                            result = self.release_managed_session(expected_binding=manager.current_binding,
+                                expected_generation=manager.generation, reason="task_teardown")
+                            if not result["ok"]:
+                                raise SessionCapacityError("task teardown release remains unresolved")
+                        else:
+                            self.managed_tool_session.release(
+                                reason=(
+                                    "task_settled"
+                                    if managed_settled
+                                    else "task_cancelled"
+                                    if cancelled_attempt
+                                    else "task_failed"
+                                )
                             )
-                        )
                     except Exception as exc:
                         cleanup_errors.append(f"managed release: {exc}")
             if endpoint_transport is not None and (
@@ -16541,6 +16685,8 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         help="fail startup unless an exact execution target is configured",
     )
     parser.add_argument("--host-control-fd", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--engine-release-fd", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--engine-release-producer", help=argparse.SUPPRESS)
     parser.add_argument("--activation-fd", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--activation-socket", help=argparse.SUPPRESS)
     parser.add_argument("--activation-operation-id", help=argparse.SUPPRESS)
@@ -16549,6 +16695,12 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         "--activation-timeout-seconds", type=float, default=120.0, help=argparse.SUPPRESS
     )
     args = parser.parse_args()
+    if (args.engine_release_fd is None) != (args.engine_release_producer is None):
+        parser.error("engine release descriptor and producer must be supplied together")
+    if args.engine_release_fd is not None and (
+            args.engine_release_fd < 3 or args.max_concurrency != 1
+            or args.activation_fd is not None or args.activation_socket is not None):
+        parser.error("engine release transfer supports only a serial detached Linux host")
     _emit_startup_phase("cli_args_parsed")
     from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE
 
@@ -16833,6 +16985,11 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
 
     _emit_startup_phase("host_constructor_begin")
     _install_host_vibecomfy_import_root()
+    release_handoff = None
+    if args.engine_release_fd is not None:
+        from astrid.sdk.engine_release_handoff import ReleaseHandoff
+        release_handoff = ReleaseHandoff(socket.socket(fileno=args.engine_release_fd))
+        release_handoff.channel.set_inheritable(False)
     host = GenericPackHost(
         pack_roots=args.pack_root,
         client=client,
@@ -16844,6 +17001,9 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
         source_inventory_identity=args.source_inventory_identity,
         boot_manifest_path=boot_manifest,
         boot_manifest_hash=boot_manifest_hash,
+        engine_release_handoff=release_handoff,
+        engine_release_producer=(json.loads(args.engine_release_producer)
+                                 if args.engine_release_producer is not None else None),
     )
     _emit_startup_phase("host_constructor_done")
     # Only verified host startup arguments populate this private context. A
@@ -17034,6 +17194,15 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             parser.error("run requires --runtime-endpoint and --credential-file")
         if not args.register:
             host.register()
+        if host._engine_release_handoff is not None:
+            try:
+                host._claim_engine_release(source=identity_attestation["source"]["closure_digest"],
+                    endpoint=str(args.runtime_endpoint).rstrip("/"), deadline=time.monotonic() + 10)
+            except BaseException:
+                host._latch_cleanup_uncertainty("engine release transfer uncertain; original issuer retains custody")
+                if ready_path is not None:
+                    ready_path.unlink(missing_ok=True)
+                raise
         def run_host_loop():
             return host.run(once=args.once, poll_seconds=args.poll_seconds, max_tasks=args.max_tasks)
 

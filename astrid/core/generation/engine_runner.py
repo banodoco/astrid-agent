@@ -80,6 +80,7 @@ _CODE_PATHS = (
 # A2 must extend this list with its transitive custody/helper imports when landing.
 _A2_PATHS = ("core/generation/engine_execution.py", "core/generation/engine_platforms.py",
              "core/generation/_engine_target_files.py", "core/generation/engine_custody.py",
+             "core/generation/engine_release_authority.py", "core/execution/managed_tool_session.py",
              "core/execution/__init__.py", "core/execution/process_group.py",
              "core/execution/custody_broker.py", "core/execution/platform_helpers.py")
 

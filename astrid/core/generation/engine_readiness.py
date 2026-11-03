@@ -610,7 +610,7 @@ def canonical_status(*, root, deadline, engine=ENGINE):
                          context=context, deadline=deadline)
 
 
-def _owned_health(root, recipe, adapter, owner_id, deadline):
+def _owned_health(root, recipe, adapter, owner_id, deadline, release_state=None):
     """Existing supervisor health; never creates a supervisor or starts an engine."""
     from .engine_custody import LinuxEngineServiceClient, _SCHEMA
     from .engine_recipe import recipe_digest
@@ -619,6 +619,8 @@ def _owned_health(root, recipe, adapter, owner_id, deadline):
     client = LinuxEngineServiceClient(root=root, engine=recipe.engine, platform=PLATFORM,
                                       recipe_sha256=recipe_digest(recipe),
                                       helper_sha256=_sha(helper_manifest(recipe)))
+    if release_state is not None:
+        client._pin_release_peer = True
     request = adapter.start_request(recipe, root, deadline=deadline)
     launch = {"argv": list(request.argv), "cwd": request.cwd, "env": dict(request.env)}
     payload = {**client.identity, "schema": _SCHEMA, "launch": launch, "owner_id": owner_id,
@@ -633,6 +635,8 @@ def _owned_health(root, recipe, adapter, owner_id, deadline):
             or not isinstance(facts.get("object_info_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", facts["object_info_sha256"])):
         raise ReadinessError("installed engine health or ownership is unverified")
+    if release_state is not None:
+        release_state.update(client=client, issuer=client._release_peer)
     return facts, launch
 
 
@@ -681,7 +685,8 @@ def _model_root_binding(root, recipe, deadline):
     return verified.as_dict()
 
 
-def produce_readiness(*, root, release_root, deadline, status=None, hardware=None, engine=ENGINE):
+def produce_readiness(*, root, release_root, deadline, status=None, hardware=None, engine=ENGINE,
+                      _release_state=None):
     """Return the ordinary HC03 base profile for the installed engine at ``root``.
 
     ``status`` and ``hardware`` are explicit seams; production uses the
@@ -759,7 +764,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
 
         # 3. Live owned health through the existing supervisor, bound to the receipt.
         start = next(step.facts for step in receipt.steps if step.kind == "start")
-        health, launch = _owned_health(root, recipe, adapter, token, deadline)
+        health, launch = _owned_health(root, recipe, adapter, token, deadline, _release_state)
         if (health["object_info_sha256"] != receipt.health.object_info_sha256
                 or start.get("owner_id") != token or start.get("launch_sha256") != health["launch_sha256"]):
             raise ReadinessError("live engine health differs from the installed receipt")
@@ -792,6 +797,21 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
                 or transport._read(root, receipt_path, deadline) != receipt_bytes
                 or transport._read(root, registry + "/launch.json", deadline) != marker_bytes):
             raise ReadinessError("installed session changed while readiness was produced")
+        if _release_state is not None:
+            from .engine_release_authority import process_identity
+            issuer = _release_state["issuer"]
+            if (issuer != process_identity(installed["daemon"]["pid"])
+                    or issuer["birth"] != installed["daemon"]["birth_id"]):
+                raise ReadinessError("ready issuer differs from the original health peer")
+            _release_state["engine"] = {
+                "installation": _release_state["client"].identity,
+                "issuer": issuer, "engine": process_identity(comfy["pid"]),
+                "owner_instance": runtime_instance_id, "launch_sha256": health["launch_sha256"],
+                "endpoint": installed["url"], "source_revision": installed["source_revision"],
+                "source_content_digest": installed["source_content_digest"],
+                "config_digest": installed["config_digest"],
+                "receipt_digest": "sha256:" + hashlib.sha256(receipt_bytes).hexdigest(),
+            }
     except ManagedSessionError:
         raise ReadinessError("installed session evidence could not be verified") from None
     except EngineError:
@@ -846,6 +866,7 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
             "session_dir": registry, "server_url": installed["url"],
             "pid": installed["daemon"]["pid"], "process_birth_id": installed["daemon"]["birth_id"],
             "comfy_pid": comfy["pid"], "comfy_process_birth_id": comfy["birth_id"],
+            "launch_generation": comfy["birth_id"],
             "launch_token": token, "config_digest": installed["config_digest"],
             "source_revision": installed["source_revision"],
             "source_content_digest": installed["source_content_digest"],
@@ -861,6 +882,31 @@ def run_readiness(*, root, release_root, profile_path, deadline, status=None, ha
     data = _profile_bytes(profile)
     digest = write_profile(profile_path, data, deadline=deadline)
     return ReadinessResult(profile_path, digest, len(data), profile)
+
+
+def prepare_ready_engine_release(*, root, release_root, profile_path, deadline,
+                                 status=None, hardware=None, engine=ENGINE):
+    """Full private readiness plus a release-only offer from its original peer.
+
+    Profile publication/readback precede issuance. The final supervisor-locked
+    compare rechecks the exact receipt, effective source and live incarnation.
+    This function never starts a supervisor and never advertises release support.
+    """
+    from .engine_release_authority import PinnedOwner, ReleaseOffer
+    check_profile_location(profile_path, deadline=deadline)
+    state = {}
+    profile = produce_readiness(root=root, release_root=release_root, deadline=deadline,
+        status=status, hardware=hardware, engine=engine, _release_state=state)
+    data = _profile_bytes(profile)
+    profile_digest = write_profile(profile_path, data, deadline=deadline)
+    owner = PinnedOwner(state["client"], state["issuer"])
+    receipt = owner.request("issue", {"engine": state["engine"], "profile_digest": profile_digest}, deadline)
+    if not isinstance(receipt, dict) or set(receipt) != {"issuance_id", "secret"}:
+        raise ReadinessError("original readiness issuer refused release offer")
+    readiness = ReadinessResult(profile_path, profile_digest, len(data), profile)
+    offer = ReleaseOffer(owner, receipt)
+    offer.readiness = readiness
+    return readiness, offer
 
 
 class _Parser(argparse.ArgumentParser):
