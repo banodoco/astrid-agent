@@ -170,7 +170,7 @@ def test_live_identity_must_match_discovery_instance(tmp_path, monkeypatch):
         _backend(tmp_path).source_checkout_ownership(data)
 
 
-def test_live_source_identity_conflicts_with_selected_managed_version(tmp_path, monkeypatch):
+def test_selected_managed_version_skips_live_source_identity_conflict(tmp_path, monkeypatch):
     from astrid_runtime.paths import RuntimePaths
     from runtime_protocol import platform
 
@@ -186,8 +186,26 @@ def test_live_source_identity_conflicts_with_selected_managed_version(tmp_path, 
                             "runtime_instance_id": "instance", "identity": identity}))
     installed = Version(tmp_path / "program/versions/v1", tmp_path / "py",
                         tmp_path / "profile", {}, 1, None)
-    with pytest.raises(RuntimeError, match="conflicts with the selected managed version"):
-        _backend(tmp_path).source_checkout_ownership(data, installed)
+    # Before the managed-selection shortcut this same live source owner caused
+    # a conflict refusal. Without a selected version it remains a source.
+    backend = _backend(tmp_path)
+    assert backend.source_checkout_ownership(data)
+    assert not backend.source_checkout_ownership(data, installed)
+
+
+def test_selected_managed_version_skips_unreadable_discovery(tmp_path):
+    from astrid_runtime.paths import RuntimePaths
+
+    data = tmp_path / "data"
+    path = RuntimePaths.current(data_root=data).discovery_path
+    path.parent.mkdir(parents=True)
+    path.write_text("{", encoding="utf-8")
+    installed = Version(tmp_path / "program/versions/v1", tmp_path / "py",
+                        tmp_path / "profile", {}, 1, None)
+    backend = _backend(tmp_path)
+    with pytest.raises(RuntimeError, match="Runtime discovery owner identity cannot be read"):
+        backend.source_checkout_ownership(data)
+    assert not backend.source_checkout_ownership(data, installed)
 
 
 @pytest.mark.parametrize("payload", [None, [], {}, {"release": True, "managed_by": None},
