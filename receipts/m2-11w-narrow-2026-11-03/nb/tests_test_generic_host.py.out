@@ -1,0 +1,295 @@
+..F.FF.................................................................. [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+................................................FFF.                     [100%]
+=================================== FAILURES ===================================
+________ test_external_pack_import_root_is_fenced_before_direct_command ________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-262/test_external_pack_import_root0')
+
+    def test_external_pack_import_root_is_fenced_before_direct_command(tmp_path):
+        """A mutation in an imported external-pack module blocks command launch."""
+        pack_root = tmp_path / "fixture_provider"
+        executor_root = pack_root / "executors" / "echo"
+        executor_root.mkdir(parents=True)
+        (pack_root / "pack.yaml").write_text(
+            "schema_version: 1\nid: fixture_provider\nname: Fixture\nversion: 1.0\n"
+            "capabilities: [echo]\ncontent:\n  executors: executors\n",
+            encoding="utf-8",
+        )
+        (pack_root / "helper.py").write_text("VALUE = 'before'\n", encoding="utf-8")
+        (executor_root / "executor.yaml").write_text(
+            json.dumps({
+                "schema_version": 1,
+                "id": "fixture_provider.echo",
+                "name": "Echo",
+                "kind": "external",
+                "version": "1.0",
+                "command": {"argv": [sys.executable, "-c", "from fixture_provider import helper; from pathlib import Path; Path('{out}/answer').write_text(helper.VALUE)"]},
+                "outputs": [],
+            }),
+            encoding="utf-8",
+        )
+        host = GenericPackHost(pack_roots=[pack_root])
+        host.discover()
+>       record = host.capabilities["fixture_provider.echo"]
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'fixture_provider.echo'
+
+tests/test_generic_host.py:251: KeyError
+------------------------------ Captured log call -------------------------------
+WARNING  astrid.core.pack.loader:loader.py:90 quarantined optional pack 'fixture_provider': Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.; capabilities are unavailable until it is fixed (run the pack validator: python3 -m astrid.core.pack.cli validate /tmp/pytest-of-root/pytest-262/test_external_pack_import_root0/fixture_provider)
+WARNING  astrid.core.pack.discovery:discovery.py:487 skipping extra pack /tmp/pytest-of-root/pytest-262/test_external_pack_import_root0/fixture_provider/pack.yaml: manifest failed to load: /tmp/pytest-of-root/pytest-262/test_external_pack_import_root0/fixture_provider/pack.yaml: schema_version must be integer 2 or 3
+_______ test_manifest_credentials_use_shared_precedence_at_host_boundary _______
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-262/test_manifest_credentials_use_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7b70d0abe0>
+
+    def test_manifest_credentials_use_shared_precedence_at_host_boundary(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Readiness and injection agree on shared-file precedence and scope."""
+        _write_credential_manifest(tmp_path)
+        shared = tmp_path / "astrid.env"
+        shared.write_text("FAL_KEY=from-shared\nUNRELATED_SECRET=must-not-cross\n", encoding="utf-8")
+        monkeypatch.setenv("ASTRID_ENV_FILE", str(shared))
+        monkeypatch.setenv("FAL_KEY", "stale-process")
+        monkeypatch.setenv("OPENAI_API_KEY", "unrelated-process")
+    
+        host = GenericPackHost(pack_roots=[tmp_path], credential_source={})
+>       record = host.discover()[0]
+                 ^^^^^^^^^^^^^^^^^^
+E       IndexError: tuple index out of range
+
+tests/test_generic_host.py:325: IndexError
+------------------------------ Captured log call -------------------------------
+WARNING  astrid.core.pack.loader:loader.py:90 quarantined optional pack 'test_manifest_credentials_use_0': Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.; capabilities are unavailable until it is fixed (run the pack validator: python3 -m astrid.core.pack.cli validate /tmp/pytest-of-root/pytest-262/test_manifest_credentials_use_0)
+WARNING  astrid.core.pack.discovery:discovery.py:487 skipping extra pack /tmp/pytest-of-root/pytest-262/test_manifest_credentials_use_0/pack.yaml: manifest failed to load: /tmp/pytest-of-root/pytest-262/test_manifest_credentials_use_0/pack.yaml: schema_version must be integer 2 or 3
+__ test_manifest_credential_missing_from_all_sources_does_not_block_readiness __
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-262/test_manifest_credential_missi0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7b70860d50>
+
+    def test_manifest_credential_missing_from_all_sources_does_not_block_readiness(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_credential_manifest(tmp_path)
+        monkeypatch.setenv("ASTRID_ENV_FILE", str(tmp_path / "missing.env"))
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        host = GenericPackHost(pack_roots=[tmp_path], credential_source={})
+>       record = host.discover()[0]
+                 ^^^^^^^^^^^^^^^^^^
+E       IndexError: tuple index out of range
+
+tests/test_generic_host.py:362: IndexError
+------------------------------ Captured log call -------------------------------
+WARNING  astrid.core.pack.loader:loader.py:90 quarantined optional pack 'test_manifest_credential_missi0': Pack manifest needs an explicit schema upgrade. Migrate to v3 and add it again.; capabilities are unavailable until it is fixed (run the pack validator: python3 -m astrid.core.pack.cli validate /tmp/pytest-of-root/pytest-262/test_manifest_credential_missi0)
+WARNING  astrid.core.pack.discovery:discovery.py:487 skipping extra pack /tmp/pytest-of-root/pytest-262/test_manifest_credential_missi0/pack.yaml: manifest failed to load: /tmp/pytest-of-root/pytest-262/test_manifest_credential_missi0/pack.yaml: schema_version must be integer 2 or 3
+_____ test_host_execution_failure_keeps_coded_fields_and_recovery[astrid] ______
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-262/test_host_execution_failure_ke0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7b70f888a0>
+kind = 'astrid'
+
+    @pytest.mark.parametrize("kind", ["astrid", "exec", "sdk"])
+    def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkeypatch, kind) -> None:
+        from astrid.core.contracts.errors import AstridError
+        from astrid.core.contracts.exec_error import ExecAstridError, ExecError
+        from astrid.sdk.exceptions import CapabilityValidationError
+    
+        _write_manifest(tmp_path / "echo")
+        runtime = FakeRuntime()
+        host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+        host.discover()
+        task = {"task": {
+            "id": "task-coded", "capability": "test.echo", "project_id": "demo",
+            "attempt_id": "attempt-coded", "fence": 1, "spec": {"spec": {"inputs": {}}},
+        }}
+        runtime.tasks["task-coded"] = task
+        errors = {
+            "astrid": AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt", recovery_command="astrid doctor"),
+            "exec": ExecAstridError("ffmpeg missing", exec_error=ExecError("missing_binaries", "precondition", "ffmpeg missing", "install ffmpeg")),
+            "sdk": CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+        }
+        expected = {
+            "astrid": {"code": "invalid_input", "field": "prompt", "fix": "supply a prompt"},
+            "exec": {"code": "missing_binaries", "field": None, "fix": "install ffmpeg"},
+            "sdk": {"code": "validation", "field": "mode", "fix": "choose fast"},
+        }
+    
+        def reject(*args, **kwargs):
+            raise errors[kind]
+    
+        # This boundary test stops before child launch; host identity is fixture data.
+        monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+        monkeypatch.setattr(host, "_materialize_inputs", reject)
+        with pytest.raises(type(errors[kind])) as raised:
+            host.run_task(task, lease_token="lease-coded")
+    
+        assert raised.value is errors[kind]
+        assert not runtime.settlements
+        assert len(runtime.failures) == 1
+        task_id, lease_id, message, kwargs = runtime.failures[0]
+        assert (task_id, lease_id) == ("task-coded", "lease-coded")
+        assert message.startswith(str(errors[kind]))
+        if kind == "astrid":
+            assert message.endswith(" Next: astrid doctor")
+>       assert kwargs == {
+            "attempt_id": "attempt-coded", "fence": 1, "retryable": False,
+            "failure_diagnostic": None, "structured_error": expected[kind],
+        }
+E       AssertionError: assert {'retryable':...c': None, ...} == {'attempt_id'...c': None, ...}
+E         
+E         Omitting 5 identical items, use -vv to show
+E         Left contains 2 more items:
+E         {'outputs': [],
+E          'result': {'error': {'code': 'invalid_input', 'message': 'bad input'},
+E                     'status': 'failed'}}
+E         Use -v to get more diff
+
+tests/test_generic_host.py:5032: AssertionError
+______ test_host_execution_failure_keeps_coded_fields_and_recovery[exec] _______
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-262/test_host_execution_failure_ke1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7b708643d0>
+kind = 'exec'
+
+    @pytest.mark.parametrize("kind", ["astrid", "exec", "sdk"])
+    def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkeypatch, kind) -> None:
+        from astrid.core.contracts.errors import AstridError
+        from astrid.core.contracts.exec_error import ExecAstridError, ExecError
+        from astrid.sdk.exceptions import CapabilityValidationError
+    
+        _write_manifest(tmp_path / "echo")
+        runtime = FakeRuntime()
+        host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+        host.discover()
+        task = {"task": {
+            "id": "task-coded", "capability": "test.echo", "project_id": "demo",
+            "attempt_id": "attempt-coded", "fence": 1, "spec": {"spec": {"inputs": {}}},
+        }}
+        runtime.tasks["task-coded"] = task
+        errors = {
+            "astrid": AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt", recovery_command="astrid doctor"),
+            "exec": ExecAstridError("ffmpeg missing", exec_error=ExecError("missing_binaries", "precondition", "ffmpeg missing", "install ffmpeg")),
+            "sdk": CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+        }
+        expected = {
+            "astrid": {"code": "invalid_input", "field": "prompt", "fix": "supply a prompt"},
+            "exec": {"code": "missing_binaries", "field": None, "fix": "install ffmpeg"},
+            "sdk": {"code": "validation", "field": "mode", "fix": "choose fast"},
+        }
+    
+        def reject(*args, **kwargs):
+            raise errors[kind]
+    
+        # This boundary test stops before child launch; host identity is fixture data.
+        monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+        monkeypatch.setattr(host, "_materialize_inputs", reject)
+        with pytest.raises(type(errors[kind])) as raised:
+            host.run_task(task, lease_token="lease-coded")
+    
+        assert raised.value is errors[kind]
+        assert not runtime.settlements
+        assert len(runtime.failures) == 1
+        task_id, lease_id, message, kwargs = runtime.failures[0]
+        assert (task_id, lease_id) == ("task-coded", "lease-coded")
+        assert message.startswith(str(errors[kind]))
+        if kind == "astrid":
+            assert message.endswith(" Next: astrid doctor")
+>       assert kwargs == {
+            "attempt_id": "attempt-coded", "fence": 1, "retryable": False,
+            "failure_diagnostic": None, "structured_error": expected[kind],
+        }
+E       AssertionError: assert {'retryable':...c': None, ...} == {'attempt_id'...c': None, ...}
+E         
+E         Omitting 5 identical items, use -vv to show
+E         Left contains 2 more items:
+E         {'outputs': [],
+E          'result': {'error': {'code': 'missing_binaries', 'message': 'ffmpeg missing'},
+E                     'status': 'failed'}}
+E         Use -v to get more diff
+
+tests/test_generic_host.py:5032: AssertionError
+_______ test_host_execution_failure_keeps_coded_fields_and_recovery[sdk] _______
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-262/test_host_execution_failure_ke2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7b70f2ef20>
+kind = 'sdk'
+
+    @pytest.mark.parametrize("kind", ["astrid", "exec", "sdk"])
+    def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkeypatch, kind) -> None:
+        from astrid.core.contracts.errors import AstridError
+        from astrid.core.contracts.exec_error import ExecAstridError, ExecError
+        from astrid.sdk.exceptions import CapabilityValidationError
+    
+        _write_manifest(tmp_path / "echo")
+        runtime = FakeRuntime()
+        host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+        host.discover()
+        task = {"task": {
+            "id": "task-coded", "capability": "test.echo", "project_id": "demo",
+            "attempt_id": "attempt-coded", "fence": 1, "spec": {"spec": {"inputs": {}}},
+        }}
+        runtime.tasks["task-coded"] = task
+        errors = {
+            "astrid": AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt", recovery_command="astrid doctor"),
+            "exec": ExecAstridError("ffmpeg missing", exec_error=ExecError("missing_binaries", "precondition", "ffmpeg missing", "install ffmpeg")),
+            "sdk": CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+        }
+        expected = {
+            "astrid": {"code": "invalid_input", "field": "prompt", "fix": "supply a prompt"},
+            "exec": {"code": "missing_binaries", "field": None, "fix": "install ffmpeg"},
+            "sdk": {"code": "validation", "field": "mode", "fix": "choose fast"},
+        }
+    
+        def reject(*args, **kwargs):
+            raise errors[kind]
+    
+        # This boundary test stops before child launch; host identity is fixture data.
+        monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+        monkeypatch.setattr(host, "_materialize_inputs", reject)
+        with pytest.raises(type(errors[kind])) as raised:
+            host.run_task(task, lease_token="lease-coded")
+    
+        assert raised.value is errors[kind]
+        assert not runtime.settlements
+        assert len(runtime.failures) == 1
+        task_id, lease_id, message, kwargs = runtime.failures[0]
+        assert (task_id, lease_id) == ("task-coded", "lease-coded")
+        assert message.startswith(str(errors[kind]))
+        if kind == "astrid":
+            assert message.endswith(" Next: astrid doctor")
+>       assert kwargs == {
+            "attempt_id": "attempt-coded", "fence": 1, "retryable": False,
+            "failure_diagnostic": None, "structured_error": expected[kind],
+        }
+E       AssertionError: assert {'retryable':...c': None, ...} == {'attempt_id'...c': None, ...}
+E         
+E         Omitting 5 identical items, use -vv to show
+E         Left contains 2 more items:
+E         {'outputs': [],
+E          'result': {'error': {'code': 'validation', 'message': 'bad mode'},
+E                     'status': 'failed'}}
+E         Use -v to get more diff
+
+tests/test_generic_host.py:5032: AssertionError
+=============================== warnings summary ===============================
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+------------------- left out of this run by lane (1 entries) -------------------
+[darwin_native] run by CI job darwin-native
+  DESELECTED tests/test_generic_host.py::test_native_persistent_capture_failure_contains_known_root_and_scrubs_fake_auth
+=========================== short test summary info ============================
+FAILED tests/test_generic_host.py::test_external_pack_import_root_is_fenced_before_direct_command
+FAILED tests/test_generic_host.py::test_manifest_credentials_use_shared_precedence_at_host_boundary
+FAILED tests/test_generic_host.py::test_manifest_credential_missing_from_all_sources_does_not_block_readiness
+FAILED tests/test_generic_host.py::test_host_execution_failure_keeps_coded_fields_and_recovery[astrid]
+FAILED tests/test_generic_host.py::test_host_execution_failure_keeps_coded_fields_and_recovery[exec]
+FAILED tests/test_generic_host.py::test_host_execution_failure_keeps_coded_fields_and_recovery[sdk]
+6 failed, 262 passed, 1 deselected, 1 warning in 262.67s (0:04:22)
+exit 1

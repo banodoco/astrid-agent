@@ -1,0 +1,1 @@
+FAILED tests/core/generation/test_entries.py::test_import_list_and_generate_entry

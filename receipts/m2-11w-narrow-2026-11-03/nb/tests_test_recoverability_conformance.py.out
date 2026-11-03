@@ -1,0 +1,92 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________________ test_recoverability_conformance_zero_mode ___________________
+
+    def test_recoverability_conformance_zero_mode() -> None:
+        """Final zero mode: the scanner must produce zero findings across ALL categories.
+    
+        Rejects:
+        * Inline enum choices outside ``RegistryChoices`` / ``StaticChoices``
+        * User-facing bare ``ValueError`` / ``RuntimeError`` raises
+        * Bespoke user-facing ``sys.stderr`` renderers (print/write)
+        * Unscanned expected parser surfaces
+    
+        The allowlists (``ALLOWED_BARE_RAISES`` / ``ALLOWED_STDERR_SITES``) are the
+        only mechanism for exempting a finding — every exempted site must carry an
+        explicit reason in the allowlist so reviewers can audit it.
+        """
+        payload = collect_recoverability_conformance_worklist()
+    
+        kind_findings: list[dict[str, object]] = payload["kind_arg_findings"]
+        enum_findings: list[dict[str, object]] = payload["non_kind_enum_findings"]
+        ast_findings: list[dict[str, object]] = payload["ast_findings"]
+        skipped_count: int = payload["skipped_parser_surface_count"]
+    
+        failure_msgs: list[str] = []
+    
+        if kind_findings:
+            failure_msgs.append(
+                f"{len(kind_findings)} --kind argument(s) not using add_kind_arg(): "
+                + "; ".join(
+                    f"{f['path']}:{f['line']} ({f.get('call', '?')})"
+                    for f in kind_findings
+                )
+            )
+    
+        if enum_findings:
+            failure_msgs.append(
+                f"{len(enum_findings)} enum-choice argument(s) outside "
+                f"RegistryChoices/StaticChoices: "
+                + "; ".join(
+                    f"{f['path']} [{f.get('dest', '?')}] ({f.get('choices_class', '?')})"
+                    for f in enum_findings
+                )
+            )
+    
+        if ast_findings:
+            failure_msgs.append(
+                f"{len(ast_findings)} AST finding(s) (bare raises / direct stderr): "
+                + "; ".join(
+                    f"{f['path']}:{f['line']} ({f['kind']})"
+                    for f in ast_findings[:20]
+                )
+                + (" ..." if len(ast_findings) > 20 else "")
+            )
+    
+        if skipped_count > 0:
+            skipped_surfaces = payload.get("skipped_parser_surfaces", [])
+            failure_msgs.append(
+                f"{skipped_count} unscanned expected parser surface(s): "
+                + "; ".join(
+                    f"{s['path']} ({s.get('reason', '?')})"
+                    for s in skipped_surfaces[:10]
+                )
+                + (" ..." if skipped_count > 10 else "")
+            )
+    
+>       assert not failure_msgs, (
+            "Recoverability conformance scanner found findings that must be addressed:\n\n"
+            + "\n\n".join(failure_msgs)
+            + "\n\n"
+            + "See ALLOWED_BARE_RAISES / ALLOWED_STDERR_SITES in this module for the "
+            + "exemption mechanism.  Every exempted site must carry an explicit reason."
+        )
+E       AssertionError: Recoverability conformance scanner found findings that must be addressed:
+E         
+E         1 enum-choice argument(s) outside RegistryChoices/StaticChoices: astrid/packs/h3_av/actions/transform/run.py [placement] (tuple)
+E         
+E         See ALLOWED_BARE_RAISES / ALLOWED_STDERR_SITES in this module for the exemption mechanism.  Every exempted site must carry an explicit reason.
+E       assert not ['1 enum-choice argument(s) outside RegistryChoices/StaticChoices: astrid/packs/h3_av/actions/transform/run.py [placement] (tuple)']
+
+tests/test_recoverability_conformance.py:520: AssertionError
+=============================== warnings summary ===============================
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_recoverability_conformance.py::test_recoverability_conformance_zero_mode
+1 failed, 1 warning in 44.70s
+exit 1

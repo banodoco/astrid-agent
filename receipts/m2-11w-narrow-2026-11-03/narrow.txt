@@ -1,0 +1,15 @@
+tests/core/generation/test_listing.py
+tests/core/generation/test_preflight.py
+tests/core/generation/test_entries.py
+tests/core/generation/test_gpu_environment.py
+tests/core/generation/test_availability.py
+tests/packs/vibecomfy/test_bundled_qualification.py
+tests/v10/test_authority_lint.py
+tests/core/execution/test_warm_hold.py
+tests/core/execution/test_managed_tool_session.py
+tests/test_generic_host.py
+tests/test_recoverability_conformance.py
+tests/packs/test_pack_enum_recoverability.py
+tests/test_skills.py
+tests/test_structure_contracts.py
+tests/packs/test_capability_bind_contract.py

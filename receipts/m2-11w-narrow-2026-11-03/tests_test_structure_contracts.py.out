@@ -1,0 +1,147 @@
+...........................F..F..                                        [100%]
+=================================== FAILURES ===================================
+_____________ test_real_repo_top_level_matches_structure_constants _____________
+
+    def test_real_repo_top_level_matches_structure_constants() -> None:
+        """M0 real-repo smoke: on-disk ``astrid/`` layout matches
+        ``TOP_LEVEL_ASTRID_FILES`` and ``TOP_LEVEL_ASTRID_DIRS`` with the
+        same filtering as ``_validate_top_level_astrid()``.
+    
+        * Every named file must exist on disk.
+        * Every named directory must exist **or** be ``elements`` (the single
+          planned-absent canonical concept per SD3).
+        * No unexpected ``.py`` files or directories may be present on disk
+          (dotfiles are skipped, matching the validator filter).
+        """
+        from astrid.core.foundation.paths import REPO_ROOT
+        from astrid.core.structure import TOP_LEVEL_ASTRID_DIRS, TOP_LEVEL_ASTRID_FILES
+    
+        astrid_root = REPO_ROOT / "astrid"
+        assert astrid_root.is_dir(), "astrid/ directory must exist on disk"
+    
+        # Canonical planned-absent entry (SD3).
+        PLANNED_ABSENT_DIRS: frozenset[str] = frozenset({"elements"})
+        # ── constants → disk ──────────────────────────────────────────────
+    
+        for fname in sorted(TOP_LEVEL_ASTRID_FILES):
+            fpath = astrid_root / fname
+            assert fpath.is_file(), (
+                f"TOP_LEVEL_ASTRID_FILES entry 'astrid/{fname}' missing from disk"
+            )
+    
+        for dname in sorted(TOP_LEVEL_ASTRID_DIRS):
+            dpath = astrid_root / dname
+            if dname in PLANNED_ABSENT_DIRS:
+                assert not dpath.exists(), (
+                    f"Planned-absent directory 'astrid/{dname}' "
+                    f"must NOT exist on disk in M0"
+                )
+            else:
+                assert dpath.is_dir(), (
+                    f"TOP_LEVEL_ASTRID_DIRS entry 'astrid/{dname}' "
+                    f"missing from disk"
+                )
+    
+        # ── disk → constants (validator filter) ───────────────────────────
+        # Entries already in the shrink-only structure baseline are known debt
+        # (scripts/reshape/baselines/structure_astrid.json); anything else is new.
+        import json
+    
+        baseline = set(json.loads(
+            (REPO_ROOT / "scripts" / "reshape" / "baselines" / "structure_astrid.json").read_text(encoding="utf-8")
+        )["violations"])
+    
+        for child in sorted(astrid_root.iterdir()):
+            if (f"top-level astrid module must move to a canonical package: astrid/{child.name}" in baseline
+                    or f"top-level astrid directory is not a canonical concept: astrid/{child.name}" in baseline):
+                continue
+            # Skip dotfiles (same filter as _validate_top_level_astrid).
+            if child.name.startswith("."):
+                continue
+            if child.name == "__pycache__":
+                continue
+            if child.is_file() and child.suffix == ".py":
+>               assert child.name in TOP_LEVEL_ASTRID_FILES, (
+                    f"Unexpected top-level .py file: astrid/{child.name}"
+                )
+E               AssertionError: Unexpected top-level .py file: astrid/console.py
+E               assert 'console.py' in {'__init__.py', '__main__.py', 'mcp_server.py', 'services.py'}
+E                +  where 'console.py' = PosixPath('/home/user/machine/run/m2-11w/astrid/console.py').name
+
+tests/test_structure_contracts.py:787: AssertionError
+_________________ test_giant_file_inventory_matches_rationale __________________
+
+    def test_giant_file_inventory_matches_rationale() -> None:
+        """M4 gate: every ``astrid/**/*.py`` file over 1,200 physical lines
+        must appear in ``docs/giant-file-rationale.md``, and every entry in
+        the rationale must correspond to an existing file that genuinely
+        exceeds the threshold.  Files at or below 1,200 lines are watch-only
+        and do not require rationale entries.
+        """
+        import re
+    
+        from astrid.core.foundation.paths import REPO_ROOT
+    
+        GIANT_THRESHOLD = 1200
+    
+        # ── 1. Scan every astrid/**/*.py file and count physical lines ─────
+        astrid_root = REPO_ROOT / "astrid"
+        py_files: dict[str, int] = {}
+        for py_path in sorted(astrid_root.rglob("*.py")):
+            # Skip __pycache__ and other dotted directories.
+            parts = py_path.relative_to(astrid_root).parts
+            if any(part.startswith(".") for part in parts):
+                continue
+            rel = py_path.relative_to(REPO_ROOT).as_posix()
+            lines = py_path.read_text(encoding="utf-8").count("\n")
+            py_files[rel] = lines
+    
+        # ── 2. Parse the rationale doc ──────────────────────────────────────
+        rationale_path = REPO_ROOT / "docs" / "giant-file-rationale.md"
+        rationale_text = rationale_path.read_text(encoding="utf-8")
+    
+        # Extract table entries of the form: | N | `path` | NNNN | ...
+        # Pattern: | number | `astrid/...` | digits | ...
+        entry_pattern = re.compile(
+            r"\|\s*\d+\s*\|\s*`([^`]+)`\s*\|\s*([\d,]+)\s*\|"
+        )
+        rationale_entries: dict[str, int] = {}
+        for match in entry_pattern.finditer(rationale_text):
+            file_path = match.group(1)
+            lines_str = match.group(2).replace(",", "")
+            rationale_entries[file_path] = int(lines_str)
+    
+        m4_complete = "M4-complete" in rationale_text
+        if not m4_complete:
+            assert rationale_entries, (
+                "giant-file-rationale.md must contain at least one table entry "
+                "(or include an M4-complete marker when all files are below threshold)"
+            )
+    
+        # ── 3. Every file over threshold must be in rationale ───────────────
+        over_threshold = {
+            rel: lines
+            for rel, lines in py_files.items()
+            if lines > GIANT_THRESHOLD
+        }
+        missing_from_rationale = over_threshold.keys() - rationale_entries.keys()
+>       assert not missing_from_rationale, (
+            f"Files over {GIANT_THRESHOLD} lines missing from "
+            f"giant-file-rationale.md: {sorted(missing_from_rationale)}"
+        )
+E       AssertionError: Files over 1200 lines missing from giant-file-rationale.md: ['astrid/core/execution/_child_bridge.py', 'astrid/installer/backend.py', 'astrid/installer/update_job.py', 'astrid/packs/rendering/actions/render/managed_timeline.py', 'astrid/sdk/generation.py', 'astrid/sdk/timeline/model.py', 'astrid/sdk/timeline/sync.py', 'astrid/sdk/timeline_restructure.py']
+E       assert not {'astrid/core/execution/_child_bridge.py', 'astrid/installer/backend.py', 'astrid/installer/update_job.py', 'astrid/packs/rendering/actions/render/managed_timeline.py', 'astrid/sdk/generation.py', 'astrid/sdk/timeline/model.py', ...}
+
+tests/test_structure_contracts.py:1009: AssertionError
+=============================== warnings summary ===============================
+../../../../../tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_structure_contracts.py::test_real_repo_top_level_matches_structure_constants
+FAILED tests/test_structure_contracts.py::test_giant_file_inventory_matches_rationale
+2 failed, 31 passed, 1 warning in 0.97s
+exit 1

@@ -1,0 +1,91 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+______ test_pack_enum_recoverability_inventory_marks_not_applicable_packs ______
+
+    def test_pack_enum_recoverability_inventory_marks_not_applicable_packs() -> None:
+>       inventory = _inventory()
+                    ^^^^^^^^^^^^
+
+tests/packs/test_pack_enum_recoverability.py:263: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    @lru_cache(maxsize=1)
+    def _inventory() -> Inventory:
+        payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        applicable_by_pack: dict[str, list[EnumSurface]] = defaultdict(list)
+        scanned_surface_counts: dict[str, int] = defaultdict(int)
+    
+        for surface in payload["scanned_parser_surfaces"]:
+            pack = _pack_name(surface["path"])
+            if pack is None:
+                continue
+            scanned_surface_counts[pack] += 1
+            if surface["enum_arg_count"] == 0:
+                continue
+            with _internal_invocation_env():
+                module = importlib.import_module(surface["module"])
+                parser = getattr(module, surface["builder"])()
+            enum_args = _enum_args(parser)
+>           assert len(enum_args) == surface["enum_arg_count"], (
+                f"{surface['path']} scanner recorded {surface['enum_arg_count']} enum surfaces "
+                f"but the harness found {len(enum_args)}"
+            )
+E           AssertionError: astrid/packs/generation/actions/generate_image_openai/run.py scanner recorded 3 enum surfaces but the harness found 4
+E           assert 4 == 3
+E            +  where 4 = len([{'parser_path': (), 'dest': 'preset', 'option_strings': ('--preset',), 'valid_options': ('saint-peter-of-banodoco',)}...t')}, {'parser_path': (), 'dest': 'moderation', 'option_strings': ('--moderation',), 'valid_options': ('auto', 'low')}])
+
+tests/packs/test_pack_enum_recoverability.py:133: AssertionError
+_____ test_pack_enum_recoverability_sampled_surfaces_recover_within_budget _____
+
+    def test_pack_enum_recoverability_sampled_surfaces_recover_within_budget() -> None:
+>       sampled = _sampled_surfaces()
+                  ^^^^^^^^^^^^^^^^^^^
+
+tests/packs/test_pack_enum_recoverability.py:271: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/packs/test_pack_enum_recoverability.py:236: in _sampled_surfaces
+    inventory = _inventory()
+                ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    @lru_cache(maxsize=1)
+    def _inventory() -> Inventory:
+        payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        applicable_by_pack: dict[str, list[EnumSurface]] = defaultdict(list)
+        scanned_surface_counts: dict[str, int] = defaultdict(int)
+    
+        for surface in payload["scanned_parser_surfaces"]:
+            pack = _pack_name(surface["path"])
+            if pack is None:
+                continue
+            scanned_surface_counts[pack] += 1
+            if surface["enum_arg_count"] == 0:
+                continue
+            with _internal_invocation_env():
+                module = importlib.import_module(surface["module"])
+                parser = getattr(module, surface["builder"])()
+            enum_args = _enum_args(parser)
+>           assert len(enum_args) == surface["enum_arg_count"], (
+                f"{surface['path']} scanner recorded {surface['enum_arg_count']} enum surfaces "
+                f"but the harness found {len(enum_args)}"
+            )
+E           AssertionError: astrid/packs/generation/actions/generate_image_openai/run.py scanner recorded 3 enum surfaces but the harness found 4
+E           assert 4 == 3
+E            +  where 4 = len([{'parser_path': (), 'dest': 'preset', 'option_strings': ('--preset',), 'valid_options': ('saint-peter-of-banodoco',)}...t')}, {'parser_path': (), 'dest': 'moderation', 'option_strings': ('--moderation',), 'valid_options': ('auto', 'low')}])
+
+tests/packs/test_pack_enum_recoverability.py:133: AssertionError
+=============================== warnings summary ===============================
+../../../../../tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+------------------- left out of this run by lane (1 entries) -------------------
+[opt_in] run by CI job lanes-opt-in
+  DESELECTED tests/packs/test_pack_enum_recoverability.py::test_pack_enum_recoverability_exhaustive_surfaces_recover_within_budget
+=========================== short test summary info ============================
+FAILED tests/packs/test_pack_enum_recoverability.py::test_pack_enum_recoverability_inventory_marks_not_applicable_packs
+FAILED tests/packs/test_pack_enum_recoverability.py::test_pack_enum_recoverability_sampled_surfaces_recover_within_budget
+2 failed, 1 deselected, 1 warning in 0.47s
+exit 1

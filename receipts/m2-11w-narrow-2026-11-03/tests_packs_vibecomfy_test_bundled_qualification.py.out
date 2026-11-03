@@ -1,0 +1,14 @@
+.............                                                            [100%]
+=============================== warnings summary ===============================
+../../../../../tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+tests/packs/vibecomfy/test_bundled_qualification.py: 11 warnings
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 1(VHS_VideoCombine); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+13 passed, 12 warnings in 5.33s
+exit 0

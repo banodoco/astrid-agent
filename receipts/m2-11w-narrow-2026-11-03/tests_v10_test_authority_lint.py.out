@@ -1,0 +1,29 @@
+....................................F                                    [100%]
+=================================== FAILURES ===================================
+_______________ test_live_repository_tree_passes_authority_lint ________________
+
+    def test_live_repository_tree_passes_authority_lint() -> None:
+        """The committed tree is clean under the full authority lint (home of the live-tree gate)."""
+        repo_root = Path(__file__).resolve().parents[2]
+    
+        report = run_authority_lint(repo_root)
+    
+        assert report.mode == "source"
+>       assert report.errors == ()
+E       assert ('astrid/core...exempt)', ...) == ()
+E         
+E         Left contains 28 more items, first extra item: "astrid/core/gateway/__init__.py: kernel-to-pack import 'astrid.packs.h3_av.cli' (only reviewed composition edges are exempt)"
+E         Use -v to get more diff
+
+tests/v10/test_authority_lint.py:1125: AssertionError
+=============================== warnings summary ===============================
+../../../../../tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/v10/test_authority_lint.py::test_live_repository_tree_passes_authority_lint
+1 failed, 36 passed, 1 warning in 5.88s
+exit 1

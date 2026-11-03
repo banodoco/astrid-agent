@@ -1,0 +1,2 @@
+FAILED tests/packs/test_pack_enum_recoverability.py::test_pack_enum_recoverability_inventory_marks_not_applicable_packs
+FAILED tests/packs/test_pack_enum_recoverability.py::test_pack_enum_recoverability_sampled_surfaces_recover_within_budget

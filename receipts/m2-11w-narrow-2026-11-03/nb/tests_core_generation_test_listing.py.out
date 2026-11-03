@@ -1,0 +1,432 @@
+EEEEEEEEEEE.E...........                                                 [100%]
+==================================== ERRORS ====================================
+_ ERROR at setup of test_discovered_windows_target_resolves_real_turbo_roles[t2i] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f48546869e0>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_discovered_windows_target_resolves_real_turbo_roles[i2i] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4854686b10>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_base_missing_and_ambiguous_models_fail_closed[unets0-vaes0-missing0] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4854d18b90>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_base_missing_and_ambiguous_models_fail_closed[unets1-vaes1-missing1] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f485441b9b0>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_base_missing_and_ambiguous_models_fail_closed[unets2-vaes2-missing2] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f485441bf00>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_base_missing_and_ambiguous_models_fail_closed[unets3-vaes3-missing3] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f48542ade50>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_target_probe_is_single_snapshot_and_never_starts_or_submits _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4853bc4350>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+__ ERROR at setup of test_no_target_and_malformed_probe_preserve_unready_rows __
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4854329f40>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_missing_vae_loader_and_none_object_info_fail_closed_with_fix _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4854329130>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_unknown_model_roles_fail_closed_without_claiming_readiness _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4854d5c9f0>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_stale_direct_image_aliases_are_not_represented_as_resolved_turbo _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4854e726d0>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+_ ERROR at setup of test_probe_failure_keeps_target_without_echoing_endpoint_error _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4852557b90>
+
+    @pytest.fixture
+    def comfy(monkeypatch):
+        """A fake Windows ComfyUI discovered through the real loopback scanner."""
+>       class Handler(BaseHTTPRequestHandler):
+
+tests/core/generation/test_listing.py:52: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/generation/test_listing.py:53: in Handler
+    schema = _target_info()
+             ^^^^^^^^^^^^^^
+tests/core/generation/test_listing.py:44: in _target_info
+    from tests.core.generation.backends.test_comfy_model_resolution import target_info
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:185: in exec_module
+    exec(co, module.__dict__)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    """Target roles cross the real canonical compiler without granting byte custody."""
+    from __future__ import annotations
+    
+    import copy
+    import json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    
+    import pytest
+>   from aiohttp import web
+E   ModuleNotFoundError: No module named 'aiohttp'
+
+tests/core/generation/backends/test_comfy_model_resolution.py:11: ModuleNotFoundError
+=============================== warnings summary ===============================
+../m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR tests/core/generation/test_listing.py::test_discovered_windows_target_resolves_real_turbo_roles[t2i]
+ERROR tests/core/generation/test_listing.py::test_discovered_windows_target_resolves_real_turbo_roles[i2i]
+ERROR tests/core/generation/test_listing.py::test_base_missing_and_ambiguous_models_fail_closed[unets0-vaes0-missing0]
+ERROR tests/core/generation/test_listing.py::test_base_missing_and_ambiguous_models_fail_closed[unets1-vaes1-missing1]
+ERROR tests/core/generation/test_listing.py::test_base_missing_and_ambiguous_models_fail_closed[unets2-vaes2-missing2]
+ERROR tests/core/generation/test_listing.py::test_base_missing_and_ambiguous_models_fail_closed[unets3-vaes3-missing3]
+ERROR tests/core/generation/test_listing.py::test_target_probe_is_single_snapshot_and_never_starts_or_submits
+ERROR tests/core/generation/test_listing.py::test_no_target_and_malformed_probe_preserve_unready_rows
+ERROR tests/core/generation/test_listing.py::test_missing_vae_loader_and_none_object_info_fail_closed_with_fix
+ERROR tests/core/generation/test_listing.py::test_unknown_model_roles_fail_closed_without_claiming_readiness
+ERROR tests/core/generation/test_listing.py::test_stale_direct_image_aliases_are_not_represented_as_resolved_turbo
+ERROR tests/core/generation/test_listing.py::test_probe_failure_keeps_target_without_echoing_endpoint_error
+12 passed, 1 warning, 12 errors in 26.08s
+exit 1

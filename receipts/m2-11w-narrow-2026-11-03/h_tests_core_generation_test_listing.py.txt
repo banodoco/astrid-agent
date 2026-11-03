@@ -1,0 +1,13 @@
+ERROR tests/core/generation/test_listing.py::test_base_missing_and_ambiguous_models_fail_closed[unets0-vaes0-missing0]
+ERROR tests/core/generation/test_listing.py::test_base_missing_and_ambiguous_models_fail_closed[unets1-vaes1-missing1]
+ERROR tests/core/generation/test_listing.py::test_base_missing_and_ambiguous_models_fail_closed[unets2-vaes2-missing2]
+ERROR tests/core/generation/test_listing.py::test_base_missing_and_ambiguous_models_fail_closed[unets3-vaes3-missing3]
+ERROR tests/core/generation/test_listing.py::test_discovered_windows_target_resolves_real_turbo_roles[i2i]
+ERROR tests/core/generation/test_listing.py::test_discovered_windows_target_resolves_real_turbo_roles[t2i]
+ERROR tests/core/generation/test_listing.py::test_missing_vae_loader_and_none_object_info_fail_closed_with_fix
+ERROR tests/core/generation/test_listing.py::test_no_target_and_malformed_probe_preserve_unready_rows
+ERROR tests/core/generation/test_listing.py::test_probe_failure_keeps_target_without_echoing_endpoint_error
+ERROR tests/core/generation/test_listing.py::test_stale_direct_image_aliases_are_not_represented_as_resolved_turbo
+ERROR tests/core/generation/test_listing.py::test_target_probe_is_single_snapshot_and_never_starts_or_submits
+ERROR tests/core/generation/test_listing.py::test_unknown_model_roles_fail_closed_without_claiming_readiness
+FAILED tests/core/generation/test_listing.py::test_qualified_fake_model_remains_available

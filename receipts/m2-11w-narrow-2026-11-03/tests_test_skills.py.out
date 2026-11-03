@@ -1,0 +1,15 @@
+.........................................F                               [100%]
+=================================== FAILURES ===================================
+________ test_timeline_main_skill_code_blocks_run_with_scratch_runtime _________
+no Runtime checkout: set ASTRID_RUNTIME_CHECKOUT to one (looked at ['/home/user/machine/run/astrid-runtime', '/home/user/machine/astrid-runtime'])
+=============================== warnings summary ===============================
+../../../../../tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_skills.py::test_timeline_main_skill_code_blocks_run_with_scratch_runtime
+1 failed, 41 passed, 1 warning in 313.42s (0:05:13)
+exit 1

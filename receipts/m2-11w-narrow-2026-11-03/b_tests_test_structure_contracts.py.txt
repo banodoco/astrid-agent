@@ -1,0 +1,2 @@
+FAILED tests/test_structure_contracts.py::test_giant_file_inventory_matches_rationale
+FAILED tests/test_structure_contracts.py::test_real_repo_top_level_matches_structure_constants

@@ -1,0 +1,68 @@
+...............F                                                         [100%]
+=================================== FAILURES ===================================
+_____________________ test_import_list_and_generate_entry ______________________
+no Runtime checkout: set ASTRID_RUNTIME_CHECKOUT to one (looked at ['/home/user/machine/run/astrid-runtime', '/home/user/machine/astrid-runtime'])
+=============================== warnings summary ===============================
+../../../../../tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636
+  /tmp/claude-0/m2-11w-env/venv/lib/python3.13/site-packages/_pytest/config/__init__.py:1636: PytestConfigWarning: Unknown config option: timeout
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 1(UNETLoader); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 2(CLIPLoader); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 3(VAELoader); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 4(ModelSamplingAuraFlow); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 5(CLIPTextEncode); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 6(CLIPTextEncode); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 7(EmptySD3LatentImage); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 8(KSampler); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 9(VAEDecode); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+  /tmp/claude-0/m2-11w-env/src/vibecomfy/vibecomfy/porting/emit/ui.py:3676: UserWarning: emit_ui_json: schema-less node 10(SaveImage); emitting best-effort slots. Pass strict=True to hard-fail.
+    return func(wf, *args, **kwargs)
+
+tests/core/generation/test_entries.py::test_explicit_entry_plan_is_visible
+  /tmp/vibecomfy-port-convert-sr4d6a21/emitted.py:24: PendingDeprecationWarning: vibecomfy.templates.ref('name') is a legacy generated-template fallback; new generated templates bind InputSpec.node to node objects inside build().
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/core/generation/test_entries.py::test_import_list_and_generate_entry
+1 failed, 15 passed, 22 warnings in 173.13s (0:02:53)
+exit 1
