@@ -10600,6 +10600,13 @@ class GenericPackHost:
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
                     raise HostCancelled("settlement returned after the attempt was terminated")
+                if operation == getattr(self.client, "cancel", None):
+                    task = result.get("task", result.get("data", result)) if isinstance(result, Mapping) else result
+                    state = task.get("state", task.get("status")) if isinstance(task, Mapping) else None
+                    task_id = task.get("task_id", task.get("id")) if isinstance(task, Mapping) else None
+                    if state != "cancelled" or task_id != str(data["id"]):
+                        terminal["completion_state"] = "pending"
+                        raise HostError("Runtime cancellation is pending stop evidence")
                 terminal.update(recorded=True, completion=result, completion_state="acknowledged")
                 terminal.pop("evidence_pending", None)
                 terminal.pop("publication_pending", None)
@@ -10841,16 +10848,15 @@ class GenericPackHost:
                 abort.set()
             try:
                 if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
-                    # Admission shutdown happens before the producer starts.
-                    # During execution the observer cannot claim the child
-                    # stopped until the local execution path returns.
+                    # A stage marker does not prove the execution scope is
+                    # stopped, including while admission races with launch.
                     completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
                                     fence=exact_fence, lease_id=lease_token,
                                     runtime_epoch=data.get("runtime_epoch"), outputs=[],
                                     result={"status": "cancelled",
                                             "error": {"code": "cancelled",
                                                       "message": "execution cancelled"}},
-                                    stop_observed=terminal.get("stage") == "admission")
+                                    stop_observed=False)
                 elif code == "cancelled":
                     # Local containment cannot turn an unacknowledged Runtime
                     # cancellation into a failed task. Keep cancellation as
@@ -11662,7 +11668,9 @@ class GenericPackHost:
                     "attempt_id": attempt_id, "fence": fence, "lease_id": lease_token,
                     "runtime_epoch": task_data.get("runtime_epoch"),
                     "outputs": evidence_outputs, "result": evidence_result,
-                    "stop_observed": True,
+                    # Returning from an executor or harvesting its spool does
+                    # not prove the whole incarnation-bound scope stopped.
+                    "stop_observed": False,
                 }
                 try:
                     completion_call(self.client.cancel, task_id, **cancel_kwargs)
@@ -13186,10 +13194,11 @@ class GenericPackHost:
                     "runtime_epoch": _claim_field(claim, "runtime_epoch"),
                     "spec": _claim_field(claim, "spec"),
                 }
-                return self.run_task({"task": claimed_task},
+                self.run_task({"task": claimed_task},
                     lease_token=str(_claim_field(claim, "lease_id")),
                     attempt_id=str(attempt_id), fence=int(_claim_field(claim, "fence")),
                     _setup_error=exc)
+                raise
             return self._execute_claimed_task(claim, delegated_child=True)
         finally:
             self._handoff_leave_attempt(thread_id)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import threading
 import time
 from dataclasses import replace
@@ -38,7 +39,7 @@ def case(host_case, monkeypatch):
         assert kwargs["fence"] == data["fence"]
         assert kwargs["lease_id"] == "lease-result"
         assert kwargs["runtime_epoch"] == data["runtime_epoch"]
-        assert kwargs["stop_observed"] is True
+        assert kwargs["stop_observed"] is False
         assert isinstance(kwargs["outputs"], list)
         assert isinstance(kwargs["result"], dict)
         data["status"] = "cancelled"
@@ -257,6 +258,43 @@ def test_cancellation_records_terminal_state_and_receipt(case, monkeypatch, sour
     assert receipt(case)["status"] == "cancelled"
     assert receipt(case)["error"]["code"] == "cancelled"
     assert not case.runtime.failures
+
+
+def test_admission_cancellation_has_no_stop_proof(case):
+    with pytest.raises(HostCancelled):
+        case.host.run_task(case.task, lease_token="lease-result", _setup_error=HostCancelled("cancel"))
+    assert case.task["task"]["status"] == "cancelled"
+
+
+@pytest.mark.linux_native
+@pytest.mark.non_root
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 0)() == 0, reason="requires the non-root product user")
+def test_cancel_with_real_live_process_reports_unknown_stop(case, monkeypatch):
+    import subprocess
+    import sys
+
+    assert sys.platform == "linux" and os.geteuid() != 0
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    original_cancel = case.runtime.cancel
+    observed = []
+
+    def cancel(*args, **kwargs):
+        observed.append((process.poll(), kwargs["stop_observed"]))
+        return original_cancel(*args, **kwargs)
+
+    def execute(*args, **kwargs):
+        assert process.poll() is None
+        raise HostCancelled("execution cancelled while process remains live")
+
+    monkeypatch.setattr(case.runtime, "cancel", cancel)
+    monkeypatch.setattr(case.host, "_run_command_definition", execute)
+    try:
+        case.host.run_task(case.task, lease_token="lease-result")
+        assert observed == [(None, False)]
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
 
 
 @pytest.mark.parametrize("caller_owned", [False, True])
@@ -563,7 +601,28 @@ def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_pa
         monkeypatch.setattr(case.host, "_run_command_definition", execute)
         started = time.monotonic()
         if outcome == "cancelled":
-            case.host.run_task(case.task, lease_token=attempt["lease_id"])
+            with pytest.raises(HostError):
+                case.host.run_task(case.task, lease_token=attempt["lease_id"])
+            owner = case.host._reconciliation_owners[attempt["attempt_id"]]
+            try:
+                stored = service.task(data["id"])["task"]
+                assert stored["status"] == "cancel_requested"
+                assert stored["attempt_id"] == attempt["attempt_id"]
+                reservation = service.store.conn.execute(
+                    "SELECT released_at FROM reservations WHERE task_id=?", (data["id"],)
+                ).fetchone()
+                assert reservation[0] is None
+                assert owner.is_alive() and not (case.root / "result.json").exists()
+            finally:
+                # Simulate later authoritative readback so the local owner can
+                # exit; no stop evidence is asserted to the real Runtime.
+                monkeypatch.setattr(case.runtime, "task", lambda *_: {
+                    "id": data["id"], "status": "cancelled", "attempt_id": attempt["attempt_id"],
+                    "fence": attempt["fence"],
+                })
+                owner.join(timeout=5)
+            assert not owner.is_alive()
+            return
         else:
             with pytest.raises((OSError, HostError)):
                 case.host.run_task(case.task, lease_token=attempt["lease_id"])
