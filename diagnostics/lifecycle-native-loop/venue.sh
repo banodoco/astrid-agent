@@ -104,7 +104,7 @@ unit_path=$(sudo -u "$name" env "${user_env[@]}" systemctl --user show astrid.se
 ! sudo -u "$name" test -e "$run/home/.config/systemd/user/astrid.service"
 log 'starting authentic R0 installer and bounded R1 update observation'
 set +e
-sudo -u "$name" env "${user_env[@]}" python3 "$run/observe.py" >"$out/driver.log" 2>&1
+sudo -u "$name" env "${user_env[@]}" sh -c 'cd "$LOOP_ROOT" && exec python3 "$LOOP_ROOT/observe.py"' >"$out/driver.log" 2>&1
 rc=$?
 set -e
 log "driver exit=$rc"
