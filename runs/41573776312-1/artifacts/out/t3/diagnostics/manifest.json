@@ -1,0 +1,24 @@
+{
+  "kinds": {
+    "failed-validation": {
+      "absence": "no matching files found",
+      "errors": [],
+      "matched": 0,
+      "omitted_over_limit": 0,
+      "retained": [],
+      "root": "/home/runner/work/_temp/t04-pytest"
+    },
+    "probe-stderr": {
+      "absence": "no matching files found",
+      "errors": [],
+      "matched": 0,
+      "omitted_over_limit": 0,
+      "retained": [],
+      "root": "/tmp/astrid-probe-logs"
+    }
+  },
+  "limits": {
+    "bytes_per_file": 65536,
+    "files_per_kind": 16
+  }
+}

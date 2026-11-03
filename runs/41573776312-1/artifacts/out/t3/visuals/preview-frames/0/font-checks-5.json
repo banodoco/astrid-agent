@@ -1,0 +1,116 @@
+{
+  "status": "loaded",
+  "glyphs": "Astrid 2RP — Aa 0123",
+  "faces": [
+    {
+      "family": "Sixtyfour",
+      "weight": 400,
+      "style": "normal",
+      "file": "fonts/Sixtyfour.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "Inter",
+      "weight": 400,
+      "style": "normal",
+      "file": "fonts/Inter-Regular.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "Inter",
+      "weight": 700,
+      "style": "normal",
+      "file": "fonts/Inter-Bold.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "JetBrains Mono",
+      "weight": 400,
+      "style": "normal",
+      "file": "fonts/JetBrainsMono-Regular.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "JetBrains Mono",
+      "weight": 700,
+      "style": "normal",
+      "file": "fonts/JetBrainsMono-Bold.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "Departure Mono",
+      "weight": 400,
+      "style": "normal",
+      "file": "fonts/DepartureMono-Regular.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "Gelasio",
+      "weight": 400,
+      "style": "normal",
+      "file": "fonts/Gelasio-Regular.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "Gelasio",
+      "weight": 400,
+      "style": "italic",
+      "file": "fonts/Gelasio-Italic.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "Gelasio",
+      "weight": 700,
+      "style": "normal",
+      "file": "fonts/Gelasio-Bold.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    },
+    {
+      "family": "Gelasio",
+      "weight": 700,
+      "style": "italic",
+      "file": "fonts/Gelasio-BoldItalic.woff2",
+      "loaded": 1,
+      "status": [
+        "loaded"
+      ],
+      "check": true
+    }
+  ]
+}

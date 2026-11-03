@@ -1,0 +1,14 @@
+{
+  "inner_exit": 1,
+  "groups": {
+    "1": "two pinned revisions, colors and source digests",
+    "2": "missing/corrupt snapshot rejection",
+    "3": "built-in baseline unchanged",
+    "4": "preview/export frames 5,15,25 within asserted tolerance"
+  },
+  "mapping_only": true,
+  "fixture_limitations": [
+    "occurrence video is image-only",
+    "voice fixtures are silent"
+  ]
+}

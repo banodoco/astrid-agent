@@ -1,0 +1,107 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.7.0 -- /home/runner/work/_temp/t04-venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/runner/work/astrid-agent/astrid-agent/agent
+configfile: pyproject.toml
+plugins: anyio-4.16.0, platformdirs-4.14.3, timeout-2.4.0, split-0.11.0, cov-7.1.0
+timeout: 600.0s
+timeout method: signal
+timeout func_only: False
+collecting ... collected 1 item
+
+tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin FAILED [100%]
+
+=================================== FAILURES ===================================
+_________________ test_pinned_element_render_proof_on_standin __________________
+
+configured = <tests.core.test_project_packs.FakeDocuments object at 0x7ff886181f70>
+remotion_project = PosixPath('/home/runner/work/astrid-agent/astrid-agent/agent/remotion')
+preview_runtime = (PosixPath('/home/runner/work/astrid-agent/astrid-agent/app/node_modules'), PosixPath('/home/runner/work/_temp/node-v20.19.4-linux-x64/bin/node'))
+tmp_path = PosixPath('/home/runner/work/_temp/t04-pytest/test_pinned_element_render_pro0')
+
+    def test_pinned_element_render_proof_on_standin(
+        configured,
+        remotion_project: Path,
+        preview_runtime: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        node_modules, node = preview_runtime
+        runtime, refs, sources = _make_admitted_standin(configured)
+        snapshot = resolve_managed_render_snapshot(
+            project_ref="demo",
+            timeline_ref="main",
+            client=runtime,
+        )
+        validate_managed_render_snapshot(snapshot)
+        assert len(selections(snapshot.config)) == 2
+        assert {row["reference"]["revision"] for row in selections(snapshot.config)} == {
+            refs[0]["revision"], refs[1]["revision"]
+        }
+        clip_rows = snapshot.config["clips"]
+        assert runtime.standin_before_placement["clipType"] == "am-discord"
+        assert "elementRef" not in runtime.standin_before_placement
+        assert clip_rows[0]["id"] == "occ-standin:c02-02-am-discord"
+        assert clip_rows[0]["clipType"] == "reveal"
+        assert clip_rows[0]["elementRef"] == refs[0]
+        assert clip_rows[1]["elementRef"] == refs[1]
+    
+        timeline_path, assets_path, authority = managed_timeline.materialize_managed_render_snapshot(
+            tmp_path / "managed", snapshot
+        )
+        export_frames = run.capture_remotion_frames(
+            timeline_path,
+            assets_path,
+            tmp_path / "export-frames",
+            list(SAMPLES.values()),
+            project_dir=remotion_project,
+            frame_resolution=(1920, 1080),
+        )
+        assert all(path.is_file() and path.stat().st_size > 0 for path in export_frames.values())
+    
+        preview_root = tmp_path / "vite-preview"
+        _write_preview_app(preview_root, sources, node_modules)
+        preview_frames = _capture_vite_preview(
+            preview_root, tmp_path / "preview-frames", list(SAMPLES.values()),
+            node_modules=node_modules, node=node,
+        )
+        parity = {
+            label: _metrics(preview_frames[frame], export_frames[frame])
+            for label, frame in SAMPLES.items()
+        }
+>       assert all(row["pass"] for row in parity.values()), parity
+E       AssertionError: {'day': {'differing_pixels': 5034, 'height': 1080, 'max_channel_delta': 193, 'mean_absolute_delta': 0.09008841306584363, ...}, 'next': {'differing_pixels': 0, 'height': 1080, 'max_channel_delta': 0, 'mean_absolute_delta': 0.0, ...}, 'very': {'differing_pixels': 0, 'height': 1080, 'max_channel_delta': 0, 'mean_absolute_delta': 0.0, ...}}
+E       assert False
+E        +  where False = all(<generator object test_pinned_element_render_proof_on_standin.<locals>.<genexpr> at 0x7ff8850206c0>)
+
+tests/integrations/test_pinned_element_render_proof.py:446: AssertionError
+---------------------------- Captured stderr setup -----------------------------
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5526, "elapsed_ms": 2666}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5526, "elapsed_ms": 2439}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5526, "elapsed_ms": 1506}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "registry_settle", "outcome": "completed", "process_id": 5526, "elapsed_ms": 8827}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5526, "elapsed_ms": 2898}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5526, "elapsed_ms": 41}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5526, "elapsed_ms": 185}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5526, "elapsed_ms": 2140}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5526, "elapsed_ms": 2506}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5526, "elapsed_ms": 185}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5526, "elapsed_ms": 2503}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5526, "elapsed_ms": 2432}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "launch_transaction", "outcome": "completed", "process_id": 5526, "elapsed_ms": 22645}
+----------------------------- Captured stderr call -----------------------------
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "complete_inputs", "outcome": "completed", "process_id": 5526, "elapsed_ms": 2206}
+{"diagnostic": "astrid.remotion_validation_phase", "phase": "owned_probe", "outcome": "completed", "process_id": 5526, "elapsed_ms": 41}
+=============================== warnings summary ===============================
+tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin
+tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin
+tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin
+  /home/runner/work/astrid-agent/astrid-agent/agent/tests/integrations/test_pinned_element_render_proof.py:385: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    differing = sum(1 for pixel in diff.getdata() if pixel != (0, 0, 0))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/runner/work/astrid-agent/astrid-agent/out/t3/results.xml -
+=========================== short test summary info ============================
+FAILED tests/integrations/test_pinned_element_render_proof.py::test_pinned_element_render_proof_on_standin - AssertionError: {'day': {'differing_pixels': 5034, 'height': 1080, 'max_channel_delta': 193, 'mean_absolute_delta': 0.09008841306584363, ...}, 'next': {'differing_pixels': 0, 'height': 1080, 'max_channel_delta': 0, 'mean_absolute_delta': 0.0, ...}, 'very': {'differing_pixels': 0, 'height': 1080, 'max_channel_delta': 0, 'mean_absolute_delta': 0.0, ...}}
+assert False
+ +  where False = all(<generator object test_pinned_element_render_proof_on_standin.<locals>.<genexpr> at 0x7ff8850206c0>)
+======================== 1 failed, 3 warnings in 45.70s ========================

@@ -1,0 +1,12 @@
+{
+  "playwright_version": "1.60.0",
+  "playwright_core_version": "1.60.0",
+  "browser_revision": "1223",
+  "expected_browser_version": "148.0.7778.96",
+  "launched_browser_version": "148.0.7778.96",
+  "browsers_path": "/home/runner/work/_temp/t04-playwright-browsers",
+  "executable": "/home/runner/work/_temp/t04-playwright-browsers/chromium_headless_shell-1223/chrome-headless-shell-linux64/chrome-headless-shell",
+  "executable_sha256": "7b8e92dca0acf9c24b5974507b3031d6bd18cc009cd431c2595e521430ea747a",
+  "isolated_home": "/home/runner/work/_temp/t04-browser-preflight-home",
+  "launch": "success"
+}
