@@ -41,7 +41,7 @@ def test_control_rejects_ambiguous_or_unbounded_frames(data):
         decode(data)
 
 
-@pytest.mark.parametrize("fault", ["controller_loss", "malformed_control", "timeout", "stale_generation"])
+@pytest.mark.parametrize("fault", ["controller_loss", "malformed_control", "timeout", "stale_generation", "changed_dispatch"])
 def test_real_dispatch_closes_before_drain_and_retains_handler_obligation(fault):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -152,6 +152,11 @@ def test_real_dispatch_closes_before_drain_and_retains_handler_obligation(fault)
                     fence.boundary(q, None, False, 0)
                     assert fence.record['status'] == 'unresolved'
                     assert fence.record['effect_sent'] is False
+                elif fault == 'changed_dispatch':
+                    app._handle = forbidden
+                    await loop.sock_sendall(parent, canonical({'version': VERSION, 'enrollment': enrollment,
+                        'sequence': sequence + 1, 'operation': 'status', 'payload': {}}))
+                    assert await asyncio.wait_for(loop.sock_recv(parent, 65536), 2) == b''
                 else:
                     sequence_before = sequence
                     payload = ({**binding, 'generation': 0} if fault == 'stale_generation' else {})

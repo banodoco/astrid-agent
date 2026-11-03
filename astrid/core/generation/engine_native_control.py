@@ -64,11 +64,12 @@ class NativeController:
                     or reply.get("engine") != process_identity(self.engine.process.pid)
                     or reply.get("state") not in {"OPEN", "DRAINING", "RETIRED", "UNCERTAIN"}
                     or type(reply.get("worker_ready")) is not bool
+                    or type(reply.get("dispatch_ready")) is not bool
                     or any(type(reply.get(k)) is not int or reply[k] < 0 for k in ("handlers", "tasks"))
                     or not isinstance(reply.get("routes"), str) or len(reply["routes"]) != 64
                     or self.routes is not None and reply["routes"] != self.routes
                     or set(reply) != {"sequence", "version", "enrollment", "engine", "routes", "state",
-                                      "bound", "worker_ready", "handlers", "tasks", "record"}):
+                                      "bound", "worker_ready", "handlers", "tasks", "dispatch_ready", "record"}):
                 raise ValueError("native control attestation differs")
             self.routes = reply["routes"]
             return reply
@@ -78,7 +79,7 @@ class NativeController:
 
     def attest(self, deadline):
         reply = self.request("status", {}, deadline)
-        if reply["state"] not in {"OPEN", "DRAINING", "RETIRED"}:
+        if reply["state"] not in {"OPEN", "DRAINING", "RETIRED"} or not reply["dispatch_ready"]:
             raise CustodyUnresolved("native gate state is unknown")
         return {k: reply[k] for k in ("version", "enrollment", "engine", "routes")}
 

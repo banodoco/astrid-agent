@@ -104,6 +104,8 @@ class Fence:
         self.server = None
         self.object_info = None
         self.dispatch = None
+        self.make_handler = None
+        self.http_server = None
         self.controller_fd = os.pidfd_open(enrollment["controller"]["pid"])
         if identity(enrollment["controller"]["pid"]) != enrollment["controller"]:
             raise ValueError("controller birth changed")
@@ -111,6 +113,11 @@ class Fence:
     def poison(self):
         with self.lock:
             self.state = "UNCERTAIN"
+
+    def dispatch_ready(self):
+        return (self.http_server is not None and self.server.app._handle is self.dispatch
+                and self.server.app._make_handler is self.make_handler
+                and self.http_server.request_handler is self.dispatch)
 
     def connected(self):
         if select.select([self.controller_fd], [], [], 0)[0]:
@@ -196,6 +203,8 @@ class Fence:
                 self.poison()
                 raise RuntimeError("foreign worker boundary")
             self.connected()
+            if self.http_server is not None and not self.dispatch_ready():
+                self.poison()
             self.worker_iterations += 1
             quiet = not (self.handlers or self.tasks or q.queue or q.currently_running or q.flags or need_gc)
             self.worker_ready = quiet
@@ -293,7 +302,7 @@ class Fence:
             kind = policy(request.method, request.raw_path)
             token = None
             with self.lock:
-                if (not self.connected() or server.app._handle is not self.dispatch
+                if (not self.connected() or not self.dispatch_ready()
                         or request.headers.get("Upgrade") or kind == "deny"):
                     return web.Response(status=403)
                 if kind == "tracked":
@@ -322,13 +331,26 @@ class Fence:
                     self.handlers.discard(token)
         self.dispatch = dispatch
         server.app._handle = dispatch
+        original_make_handler = server.app._make_handler
+        def make_handler(*positional, **kwargs):
+            if self.http_server is not None or server.app._handle is not dispatch:
+                self.poison()
+                raise ValueError("native dispatcher changed or multiple servers")
+            actual = original_make_handler(*positional, **kwargs)
+            if actual.request_handler is not dispatch:
+                self.poison()
+                raise ValueError("native server callback differs")
+            self.http_server = actual
+            return actual
+        self.make_handler = make_handler
+        server.app._make_handler = make_handler
         server.loop.create_task(self.control())
 
     def snapshot(self):
         return {"version": VERSION, "enrollment": self.enrollment, "engine": identity(os.getpid()),
                 "routes": self.route_digest, "state": self.state, "bound": self.bound,
                 "worker_ready": self.worker_ready, "handlers": len(self.handlers),
-                "tasks": len(self.tasks), "record": self.record}
+                "tasks": len(self.tasks), "dispatch_ready": self.dispatch_ready(), "record": self.record}
 
     async def control(self):
         loop = asyncio.get_running_loop()
@@ -345,6 +367,8 @@ class Fence:
                     op, payload = value["operation"], value["payload"]
                     if not self.connected():
                         raise ValueError("native controller lost")
+                    if op != "enroll" and not self.dispatch_ready():
+                        raise ValueError("native dispatcher is not enrolled")
                     if op == "enroll":
                         if self.state != "CLOSED" or self.bound is not None or payload != {}:
                             raise ValueError("native enrollment reused")
