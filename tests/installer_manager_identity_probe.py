@@ -13,7 +13,6 @@ import socket
 import struct
 import subprocess
 import threading
-import time
 import traceback
 
 ROOT = pathlib.Path(os.environ['PROOF_ROOT'])
@@ -22,7 +21,11 @@ OUT = ROOT / 'result.json'
 UNIT = 'astrid-identity-discriminator.service'
 PRIVATE = pathlib.Path(os.environ['XDG_RUNTIME_DIR']) / 'systemd/private'
 result = {'authority': False, 'uid': os.getuid(), 'euid': os.geteuid(),
-          'predicates': {}, 'calls': [], 'errors': [], 'cleanup': {}}
+          'predicates': {name: {'state': 'unknown', 'detail': 'not completed'} for name in (
+              'same_upstream_peer_credentials', 'peer_uid_is_caller',
+              'same_process_incarnation_bracket', 'loaded_definition_changes_only_after_reload',
+              'complete_effective_definition', 'authenticated_manager_epoch')},
+          'calls': [], 'errors': [], 'cleanup': {}}
 
 def record(name, value, detail=None):
     result['predicates'][name] = {'state': value, 'detail': detail}
@@ -148,7 +151,6 @@ def main():
             after_u, p5 = export('unit-after-reload', 'org.freedesktop.systemd1.Unit', path)
             after_s, p6 = export('service-after-reload', 'org.freedesktop.systemd1.Service', path)
             last = proc(first_peer[0])
-            exited = bool(select.poll().poll(0)) if False else None
             poller = select.poll(); poller.register(fd, select.POLLIN); exited = bool(poller.poll(0))
             peers = [first_peer, p1, p2, p3, p4, p5, p6]
             result['manager'] = {'first': first, 'last': last, 'peer_credentials': first_peer,
@@ -186,13 +188,14 @@ def main():
             result['cleanup']['error'] = repr(exc)
             raise
 
-try:
-    main()
-except Exception as exc:
-    result['errors'].append({'type': type(exc).__name__, 'message': str(exc), 'traceback': traceback.format_exc()})
-    write_result()
-    raise
-else:
-    write_result()
-    if any(x['state'] == 'failed' for x in result['predicates'].values()):
-        raise SystemExit(1)
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as exc:
+        result['errors'].append({'type': type(exc).__name__, 'message': str(exc), 'traceback': traceback.format_exc()})
+        write_result()
+        raise
+    else:
+        write_result()
+        if any(x['state'] == 'failed' for x in result['predicates'].values()):
+            raise SystemExit(1)
