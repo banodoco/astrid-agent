@@ -502,4 +502,3 @@ if __name__ == '__main__':
         OUT.write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
     # A completed experiment may exit zero; authority and admission always refuse.
     raise SystemExit(result['diagnostic_exit'])
-
