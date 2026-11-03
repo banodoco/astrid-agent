@@ -82,9 +82,19 @@ uid_owned=$(id -u "$name")
 sudo chown -R "$name:$name" "$run"
 log "created disposable user=$name uid=$uid_owned run=$run"
 sudo loginctl enable-linger "$name"
+sudo systemctl start "user-runtime-dir@$uid_owned.service"
 sudo systemctl start "user@$uid_owned.service"
-for _ in {1..30}; do [[ -S "/run/user/$uid_owned/bus" ]] && break; sleep 1; done
-[[ -S "/run/user/$uid_owned/bus" ]]
+for _ in {1..15}; do [[ -S "/run/user/$uid_owned/bus" ]] && break; sleep 1; done
+if [[ ! -S "/run/user/$uid_owned/bus" ]]; then
+  log 'user bus absent; capturing manager and runtime-directory diagnostics'
+  sudo systemctl --no-pager --full status "user-runtime-dir@$uid_owned.service" "user@$uid_owned.service" >"$out/manager-status.log" 2>&1 || true
+  sudo journalctl --no-pager -b -u "user@$uid_owned.service" -u "user-runtime-dir@$uid_owned.service" >"$out/manager-journal.log" 2>&1 || true
+  sudo loginctl show-user "$name" >"$out/loginctl.txt" 2>&1 || true
+  sudo ls -la "/run/user/$uid_owned" >"$out/runtime-dir.txt" 2>&1 || true
+  dpkg-query -W dbus-user-session dbus-daemon dbus  >"$out/dbus-packages.txt" 2>&1 || true
+  namei -l "$run/home" >"$out/home-ancestors.txt" 2>&1 || true
+  exit 91
+fi
 user_env=(HOME="$run/home" USER="$name" LOGNAME="$name" XDG_RUNTIME_DIR="/run/user/$uid_owned" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid_owned/bus" XDG_CONFIG_HOME="$run/home/.config" XDG_DATA_HOME="$run/home/.local/share" XDG_STATE_HOME="$run/home/.local/state" TMPDIR="$run/tmp" ASTRID_RUNTIME_DATA_ROOT="$run/data" ASTRID_CI_PROGRAM_ROOT="$run/program" ASTRID_CI_DATA_ROOT="$run/data" LOOP_ROOT="$run" BROWSER=/bin/true)
 sudo -u "$name" env "${user_env[@]}" systemctl --user show -p UnitPath -p Version >"$out/manager-preflight.txt"
 unit_path=$(sudo -u "$name" env "${user_env[@]}" systemctl --user show astrid.service -p LoadState --value)
