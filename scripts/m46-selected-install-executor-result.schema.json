@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:astrid:m46:selected-install-executor-result:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "reason",
+    "request_id",
+    "runner_head",
+    "request_sha256",
+    "tuple",
+    "action",
+    "mode",
+    "source_sha256",
+    "graph_check",
+    "action_invoked",
+    "action_exit",
+    "readback",
+    "observer_binding",
+    "settlement",
+    "slot_receipt"
+  ],
+  "properties": {
+    "schema": {
+      "const": "astrid.m46.selected-install-executor-result.v1"
+    },
+    "status": {
+      "const": "blocked"
+    },
+    "reason": {
+      "enum": [
+        "agent-action-graph-refused",
+        "agent-action-graph-check-failed",
+        "install-not-covered-by-agent-action-graph"
+      ]
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "runner_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "tuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app",
+        "agent",
+        "runtime",
+        "pinokio"
+      ],
+      "properties": {
+        "app": {
+          "const": "79f7e5397c044c4c97dc7e97b20ad96f787e5247"
+        },
+        "agent": {
+          "const": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61"
+        },
+        "runtime": {
+          "const": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+        },
+        "pinokio": {
+          "const": "f8605a3877ac76c0d7f65e4b013bc112b8c96992"
+        }
+      }
+    },
+    "action": {
+      "const": "pinokio/install.js"
+    },
+    "mode": {
+      "const": "backend"
+    },
+    "source_sha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app/public/install-manifest.json",
+        "app/public/install",
+        "pinokio/pinokio/install.js",
+        "pinokio/pinokio/start.js",
+        "pinokio/pinokio/lib.js",
+        "pinokio/pinokio/session.mjs",
+        "pinokio/pinokio/providers/r24-action.cjs",
+        "pinokio/pinokio/providers/r24-linux.py",
+        "pinokio/pinokio/providers/r24-linux-binding.json",
+        "pinokio/.github/venue/m46-engine-overlay.cjs"
+      ],
+      "properties": {
+        "app/public/install-manifest.json": {
+          "const": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f"
+        },
+        "app/public/install": {
+          "const": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d"
+        },
+        "pinokio/pinokio/install.js": {
+          "const": "60f4473e91b769af0480098b96a36500f3c1628ac33a7617f68df4de1fe436e2"
+        },
+        "pinokio/pinokio/start.js": {
+          "const": "442ff8fb73d65047bc4dd34de997bd36920efab16733aeb6ddd967afe291c037"
+        },
+        "pinokio/pinokio/lib.js": {
+          "const": "59bb0a556b425dafb4d986aaab54f0dbd23a988814a0d64a6cb4437c52d3d998"
+        },
+        "pinokio/pinokio/session.mjs": {
+          "const": "460ff77a8cda2b711c785a607e4a399f8c33ddc903496e4c769b717d010aad99"
+        },
+        "pinokio/pinokio/providers/r24-action.cjs": {
+          "const": "2901c4e75b11a96547d2033e62118ee64247670b8f9531fc6bbad9fb1b34be01"
+        },
+        "pinokio/pinokio/providers/r24-linux.py": {
+          "const": "978b52548281250ed264d7f08d8c8179419a1aa11035ddb1d6450960839e0dc9"
+        },
+        "pinokio/pinokio/providers/r24-linux-binding.json": {
+          "const": "52ef516056a70c033cfc33b8a411d98fcb358474810a0a957fde2c3f3e5c6f53"
+        },
+        "pinokio/.github/venue/m46-engine-overlay.cjs": {
+          "const": "26822d88bffd8b038b954d3e851b3b061776ab2d9ae081f5eda3463e85048ca1"
+        }
+      }
+    },
+    "graph_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "argv",
+        "exit_code",
+        "files"
+      ],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": {
+            "type": "string"
+          }
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "graph.stdout",
+            "graph.stderr"
+          ],
+          "properties": {
+            "graph.stdout": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sha256",
+                "bytes"
+              ],
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 65536
+                }
+              }
+            },
+            "graph.stderr": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sha256",
+                "bytes"
+              ],
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 65536
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "action_invoked": {
+      "const": false
+    },
+    "action_exit": {
+      "type": "null"
+    },
+    "readback": {
+      "type": "null"
+    },
+    "observer_binding": {
+      "const": "not-produced"
+    },
+    "settlement": {
+      "const": "unknown"
+    },
+    "slot_receipt": {
+      "const": "not-produced"
+    }
+  }
+}
