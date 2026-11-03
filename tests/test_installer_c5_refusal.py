@@ -1,6 +1,8 @@
 """Interim refusal while the offline transaction capability is unavailable."""
 
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,24 @@ from astrid.installer import app_update, core
 
 def _unexpected(*_args, **_kwargs):
     pytest.fail("the unsafe update reached an effect")
+
+
+def test_direct_update_keeps_selection_and_does_not_stage(tmp_path):
+    root = tmp_path / "program"
+    data = tmp_path / "data"
+    old_root = root / "versions" / "old"
+    old_root.mkdir(parents=True)
+    old = core.Version(old_root, Path(sys.executable), old_root / "profile.json", {})
+    core.write_json(old_root / "version.json", old.document())
+    core.switch(root, old)
+    before = (root / "current").read_bytes()
+    backend = SimpleNamespace(existing=lambda _: old, has_workspace=lambda _: True,
+                              workspace=lambda *_: {"realm_id": "r", "realm_root": str(data / "r")},
+                              stage=_unexpected)
+    with pytest.raises(ValueError, match="Safe offline update is unavailable"):
+        core.Installer(root, data, backend, say=lambda _: None).run("update", {})
+    assert (root / "current").read_bytes() == before
+    assert not (root / "update-transaction.json").exists()
 
 
 @pytest.mark.parametrize("kind", ["migration", "app"])
