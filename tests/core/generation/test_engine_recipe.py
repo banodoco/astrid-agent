@@ -8,7 +8,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from astrid.core.generation import engine_recipe as recipes
-from astrid.core.generation.engine_contracts import DataRef, ModelLockValidationError, RecipeValidationError, UnknownEngine, UnsupportedPlatform, UnsafePathError
+from astrid.core.generation.engine_contracts import DataRef, IntegrityError, ModelLockValidationError, RecipeValidationError, UnknownEngine, UnsupportedPlatform, UnsafePathError
 
 
 def _model_ref(tmp_path, value):
@@ -303,5 +303,6 @@ def test_shared_pin_imports_refuse_invalid_authority(tmp_path, monkeypatch, dama
         imported["ref"]["path"] = "../common.json"
     outer.write_text(json.dumps(document))
     monkeypatch.setattr(recipes, "_ROOT", tmp_path)
-    with pytest.raises(RecipeValidationError):
+    error = IntegrityError if damage == "digest" else RecipeValidationError
+    with pytest.raises(error):
         recipes.load_pin_set(DataRef(outer.name, hashlib.sha256(outer.read_bytes()).hexdigest()))
