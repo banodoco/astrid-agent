@@ -493,6 +493,9 @@ class Installer:
             backup_image = None
             try:
                 self._save_update(transaction, "stopped")
+                wait_for_owner = getattr(self.backend, "wait_for_realm_owner", None)
+                if wait_for_owner is not None:
+                    wait_for_owner(realm)
                 if backup is not None:
                     backup_image = backup(old, self.data, realm)
                     transaction["backup"] = backup_image
