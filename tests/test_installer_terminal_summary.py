@@ -34,15 +34,29 @@ def test_prompt_declines_without_choices():
 def test_prompt_customizes_each_supported_choice():
     output = io.StringIO()
     choices, declined = cli._prompt_choices(
-        input_fn=iter(["c", "n", "", "n", "y"]).__next__, output=output)
+        input_fn=iter(["c", "", "n", "", ""]).__next__, output=output)
     assert choices == {
-        "autostart": False,
-        "command": True,
-        "skills": False,
-        "skill_copies": True,
+        "autostart": RECOMMENDED_CHOICES["autostart"],
+        "command": False,
+        "skills": RECOMMENDED_CHOICES["skills"],
+        "skill_copies": RECOMMENDED_CHOICES["skill_copies"],
     }
     assert declined is False
     assert output.getvalue().count("? [") == 5
+    assert output.getvalue().endswith("Use copies for skills? [y/N]\n")
+
+
+def test_prompt_customizes_explicit_yes_and_no_choices():
+    output = io.StringIO()
+    choices, declined = cli._prompt_choices(
+        input_fn=iter(["c", "y", "n", "y", "n"]).__next__, output=output)
+    assert choices == {
+        "autostart": True,
+        "command": False,
+        "skills": True,
+        "skill_copies": False,
+    }
+    assert declined is False
 
 
 def test_fresh_cli_custom_prompt_uses_common_choice_resolver(tmp_path, monkeypatch):

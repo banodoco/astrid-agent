@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -251,3 +253,72 @@ def test_windows_bootstrap_forwards_core_refusal_and_keeps_scriptblock_open():
     assert "if ($FileInvocation) {" in script and "exit $NativeExitCode" in script
     assert "throw $Message" in script
     assert "# Throw instead of exit: irm | iex must never close the user's shell." in script
+
+
+@pytest.mark.app_checkout
+def test_windows_bootstrap_streams_each_customize_prompt_before_input():
+    script = (_app_root() / "public/install.ps1").read_text(encoding="utf-8")
+    assert "process.OutputDataReceived += (sender, data) => {" in script
+    assert "if (streamOutput && !failurePending) Console.WriteLine(data.Data);" in script
+    assert "process.BeginOutputReadLine();" in script
+    assert "$Result = Invoke-InstallerCommand $Uv $RunArgs -StreamOutput" in script
+
+    child_code = (
+        "from astrid.installer.cli import _prompt_choices; "
+        "_prompt_choices()"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(AGENT_ROOT), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-c", child_code],
+        cwd=AGENT_ROOT,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    delivered = queue.Queue()
+
+    def read_lines():
+        assert process.stdout is not None
+        for line in process.stdout:
+            delivered.put(line)
+
+    reader = threading.Thread(target=read_lines, daemon=True)
+    reader.start()
+    answers = iter(["c", "", "n", "", ""])
+    expected = [
+        "Continue with this setup? [Y/n/c]",
+        "Start Astrid at sign-in? [Y/n]",
+        "Add the astrid terminal command? [Y/n]",
+        "Install Astrid skills for detected agents? [Y/n]",
+        "Use copies for skills? [y/N]",
+    ]
+    observed = []
+    try:
+        for prompt in expected:
+            while True:
+                line = delivered.get(timeout=5)
+                observed.append(line.rstrip("\r\n"))
+                if observed[-1] == prompt:
+                    break
+            assert line.endswith("\n"), f"prompt was not newline-terminated: {line!r}"
+            assert process.stdin is not None
+            process.stdin.write(next(answers) + "\n")
+            process.stdin.flush()
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        if process.stdin:
+            process.stdin.close()
+        if process.stdout:
+            process.stdout.close()
+        if process.stderr:
+            process.stderr.close()
+    assert [line for line in observed if "? [" in line] == expected

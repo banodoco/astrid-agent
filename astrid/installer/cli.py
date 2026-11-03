@@ -52,7 +52,7 @@ def _prompt_choices(*, input_fn=None, output=None):
         value = "on" if RECOMMENDED_CHOICES[name] else "off"
         print(f"  {name.replace('_', ' ')}: {value}", file=output)
     while True:
-        output.write("Continue with this setup? [Y/n/c] ")
+        output.write("Continue with this setup? [Y/n/c]\n")
         output.flush()
         answer = input_fn().strip().lower()
         if answer in {"", "y", "yes"}:
@@ -70,11 +70,11 @@ def _prompt_choices(*, input_fn=None, output=None):
             for name in CHOICE_NAMES:
                 default = "Y/n" if RECOMMENDED_CHOICES[name] else "y/N"
                 while True:
-                    output.write(f"{labels[name]} [{default}] ")
+                    output.write(f"{labels[name]} [{default}]\n")
                     output.flush()
                     response = input_fn().strip().lower()
                     if response in {"", "y", "yes"}:
-                        choices[name] = True
+                        choices[name] = RECOMMENDED_CHOICES[name] if not response else True
                         break
                     if response in {"n", "no"}:
                         choices[name] = False
