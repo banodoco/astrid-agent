@@ -986,8 +986,8 @@ def evaluate_m4_4b_local_smoke(results):
 # supplies that missing edge; it must never be passed off as an authenticated
 # external_checkpoint_join to journey_predicates.check_m4_6.
 M4_6_ORIGIN_NEEDS = (
-    "M4-6 artifact-to-job/attempt/slot platform attestation is unavailable; "
-    "API metadata and artifact names do not establish origin"
+    "M4-6 workflow-construction binding is not verified; "
+    "API metadata and artifact names alone do not establish origin"
 )
 
 
