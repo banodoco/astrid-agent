@@ -865,6 +865,9 @@ jobs:
           if-no-files-found: warn
 
   failure_modes:
+    # These names describe local diagnostics only; they do not authenticate a
+    # native collector or make the artifacts eligible for the hosted gate.
+    name: m4-6-local-${{ matrix.job_id }}
     if: needs.config.outputs.m4_6_enabled == 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
@@ -974,7 +977,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
-          name: m4-6-local-${{ matrix.job_id }}
+          name: m4-6-local-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.job_id }}
           path: ${{ runner.temp }}/m4-6-${{ matrix.job_id }}/output
           if-no-files-found: warn
 
@@ -1078,7 +1081,8 @@ jobs:
         if: always() && needs.config.outputs.m4_6_enabled == 'true'
         uses: actions/download-artifact@v4
         with:
-          pattern: m4-6-local-*
+          # A partial re-run must not silently borrow an earlier attempt's rows.
+          pattern: m4-6-local-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: m4-6-local-results
       - name: Aggregate M4-6 disposable execution outputs
         if: always() && needs.config.outputs.m4_6_enabled == 'true'
