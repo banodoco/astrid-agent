@@ -1,5 +1,4 @@
 import errno
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -10,6 +9,9 @@ import pytest
 
 from astrid.installer import linux_lock_capture
 from astrid.installer.backend import Backend
+
+if sys.platform == "linux":
+    import fcntl
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc capture")
@@ -32,6 +34,7 @@ with open(sys.argv[1], 'a+b') as f:
 """, str(lock)], capture_output=True, text=True, check=True)
         result = json.loads(child.stdout)
         after = linux_lock_capture.capture(lock)
+        print("LOCK_CONTROL " + json.dumps({"before": before, "child": result, "after": after}, sort_keys=True))
         identity = os.fstat(parent.fileno())
         assert before["pid"] == result["ppid"] == os.getpid()
         assert (result["device"], result["inode"]) == (identity.st_dev, identity.st_ino)
