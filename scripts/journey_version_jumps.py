@@ -55,7 +55,7 @@ def _bytes_sha256(path: Path, label: str) -> str:
 
 
 def _permission_failure_site(exc: PermissionError) -> dict:
-    """Bounded frame metadata, without source lines, locals, paths or messages."""
+    """Bounded frame metadata, without source lines, locals, absolute paths or messages."""
     frames = deque(maxlen=24)
     count = 0
     tb = exc.__traceback__
@@ -68,7 +68,10 @@ def _permission_failure_site(exc: PermissionError) -> dict:
                 source = "scripts/" + name
                 break
         function = code.co_name
-        frames.append({"source": source, "function": (
+        module = tb.tb_frame.f_globals.get("__name__", "")
+        frames.append({"source": source, "module": (
+            module if isinstance(module, str) and len(module) <= 128 and re.fullmatch(r"[A-Za-z0-9_.]+", module)
+            else "redacted"), "function": (
             function if len(function) <= 96 and re.fullmatch(r"[A-Za-z0-9_.<>]+", function)
             else "redacted"), "line": tb.tb_lineno})
         count += 1

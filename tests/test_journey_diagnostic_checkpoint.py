@@ -1,6 +1,7 @@
 """Focused F2 coverage for retained release-0 diagnostic checkpoint fidelity."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -104,6 +105,90 @@ def _retained_preseed_state(tmp_path, monkeypatch):
     )
     evidence = run_root / "evidence" / "release0-to-release1-diagnostic-release0-api-seed"
     return args, root, data, realm, evidence
+
+
+@pytest.mark.parametrize("failure", ["owner-lock-read", "workspace-read", "checkpoint-write", "verify-launch",
+                                   "capture-failure"])
+def test_windows_permission_site_preserves_failure_and_distinguishes_operations(tmp_path, monkeypatch, failure):
+    args, root, data, realm, evidence = _retained_preseed_state(tmp_path, monkeypatch)
+    args.diagnostic_state.unlink()
+    args.job_id = "direct-windows"
+    monkeypatch.setattr(journey, "git_source", lambda unused: {"sha": "5" * 40})
+    monkeypatch.setattr(journey, "sentinel_observation", lambda *unused: {"alive": True})
+    monkeypatch.setattr(jumps, "bootstrap_release0", lambda *unused: None)
+    monkeypatch.setattr(jumps, "start_direct_runtime", lambda *unused: None)
+    monkeypatch.setattr(journey, "wait_ready", lambda *unused: None)
+    original = PermissionError(13, "private-error-token", "private-filename-token")
+    original.winerror = 33
+    target = realm / ("owner.lock" if failure == "owner-lock-read" else "private-workspace-token")
+    target.write_bytes(b"private-file-content-token")
+    read_bytes = Path.read_bytes
+    write_json = journey.write_json
+
+    def denied_read(path):
+        private_local = "private-local-token"
+        if path == target:
+            raise original
+        return read_bytes(path)
+
+    def denied_write(path, value):
+        if path == args.diagnostic_state:
+            raise original
+        return write_json(path, value)
+
+    def denied_verify(*unused):
+        raise original
+
+    if failure in {"owner-lock-read", "workspace-read", "capture-failure"}:
+        monkeypatch.setattr(Path, "read_bytes", denied_read)
+    elif failure == "checkpoint-write":
+        monkeypatch.setattr(journey, "write_json", denied_write)
+    monkeypatch.setattr(journey, "verify", denied_verify)
+    if failure == "capture-failure":
+        monkeypatch.setattr(jumps, "_permission_failure_site", lambda unused: 1 / 0)
+    # Exercise the Windows branch without performing any native OS operation.
+    with monkeypatch.context() as native:
+        native.setattr(jumps.sys, "platform", "win32")
+        with pytest.raises(PermissionError) as caught:
+            jumps.execute_release0_to_release1(args, root, data, evidence, argparse.Namespace(pid=42), "birth")
+    assert caught.value is original
+    receipt = journey.read_json(evidence / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert set(receipt["checks"].values()) == {"not-run"}
+    site = receipt["permission_failure_site"]
+    if failure == "capture-failure":
+        assert site == {"status": "unavailable"}
+        return
+    assert site["errno"] == 13 and site["winerror"] == 33
+    expected = {"owner-lock-read": "realm-owner-lock", "workspace-read": "workspace-entry"}
+    assert site["hash_target_role"] == expected.get(failure)
+    functions = [frame["function"] for frame in site["frames"]]
+    assert "execute_release0_to_release1" in functions
+    assert ("_bytes_sha256" in functions) == (failure in expected)
+    assert functions[-1] == {"checkpoint-write": "denied_write", "verify-launch": "denied_verify"}.get(
+        failure, "denied_read")
+    assert any(frame["source"] == "scripts/journey_version_jumps.py" for frame in site["frames"])
+    encoded = json.dumps(site)
+    assert "private-" not in encoded and str(tmp_path) not in encoded
+    # The existing named evidence path retains the discriminator without new upload allowances.
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    staged = evidence.parent.parent / "evidence-upload" / "before-cleanup" / "journey-result.json"
+    assert journey.read_json(staged)["permission_failure_site"] == site
+
+
+def test_permission_site_bounds_deep_traceback_without_messages_or_source():
+    def recurse(depth):
+        if depth:
+            return recurse(depth - 1)
+        raise PermissionError(13, "private-message-token")
+
+    try:
+        recurse(80)
+    except PermissionError as exc:
+        site = jumps._permission_failure_site(exc)
+    assert len(site["frames"]) == 24 and site["frames_omitted"] > 0
+    assert "private-" not in json.dumps(site)
+    assert len(json.dumps(site)) < 16384
 
 
 def test_diagnostic_checkpoint_accepts_only_unchanged_preseed_realm_and_keeps_custody_checks(
