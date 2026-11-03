@@ -1,0 +1,129 @@
+name: Venue disposable Windows standard-user probe
+
+on:
+  push:
+    branches: ["lane/M-VENUE/V-WIN-R0-SESSION-PROBE-R1"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  session-probe:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Probe disposable user and same-process capture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'venue-session-evidence'
+          New-Item -ItemType Directory -Path $evidence -ErrorAction Stop | Out-Null
+          $receipt = Join-Path $evidence 'receipt.txt'
+          function Record([string]$s) { $s | Tee-Object -FilePath $receipt -Append }
+          Record "run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT job=$env:GITHUB_JOB sha=$env:GITHUB_SHA"
+          Record 'RUNNER IDENTITY (setup phase)'
+          whoami /all | Out-File (Join-Path $evidence 'runner-whoami.txt') -Encoding utf8
+          $runner = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $runnerPrincipal = [Security.Principal.WindowsPrincipal]::new($runner)
+          Record "runner_sid=$($runner.User.Value) runner_effective_admin=$($runnerPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+          $nonce = [guid]::NewGuid().ToString('N')
+          $name = 'vp' + $nonce.Substring(0, 16)
+          $root = Join-Path $env:PUBLIC ("venue-probe-" + $nonce)
+          $createdSid = $null
+          $process = $null
+          $finished = $false
+          $innerExit = $null
+          $cleanupOK = $false
+          $failure = $null
+          try {
+            if ((Get-LocalUser -Name $name -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $root)) { throw 'Unique account or directory already exists; refusing.' }
+            $secret = [Security.SecureString]::new()
+            $bytes = [byte[]]::new(32)
+            [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+            $alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            foreach ($byte in $bytes) { $secret.AppendChar($alphabet[[int]$byte % $alphabet.Length]) }
+            $secret.AppendChar('!'); $secret.AppendChar('a'); $secret.AppendChar('A'); $secret.AppendChar('7')
+            $secret.MakeReadOnly()
+            [Array]::Clear($bytes, 0, $bytes.Length)
+            $user = New-LocalUser -Name $name -Password $secret -AccountNeverExpires -PasswordNeverExpires -Description "Disposable venue probe $nonce"
+            $createdSid = $user.SID.Value
+            Record "created_user=$name created_sid=$createdSid"
+            New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
+            $acl = [Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetAccessRuleProtection($true, $false)
+            $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+            foreach ($sid in @('S-1-5-18', $runner.User.Value, $createdSid)) {
+              $rule = [Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), 'FullControl', $inherit, 'None', 'Allow')
+              $acl.AddAccessRule($rule)
+            }
+            Set-Acl -LiteralPath $root -AclObject $acl
+            $child = @'
+          $ErrorActionPreference = 'Stop'
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($id)
+          "child_name=$($id.Name) child_sid=$($id.User.Value) authentication_type=$($id.AuthenticationType) effective_admin=$($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+          "process_id=$PID session_id=$((Get-Process -Id $PID).SessionId) profile=$env:USERPROFILE localappdata=$env:LOCALAPPDATA"
+          'CHILD WHOAMI /ALL:'
+          whoami /all
+          if ($LASTEXITCODE -ne 0) { throw "whoami /all failed: $LASTEXITCODE" }
+          'CHILD LOGON ID:'
+          whoami /logonid
+          if ($LASTEXITCODE -ne 0) { throw "whoami /logonid failed: $LASTEXITCODE" }
+          if ($id.User.Value -ne $args[0]) { throw 'Unexpected user SID' }
+          if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Child token is administrator' }
+          $testFile = Join-Path $args[1] 'synthetic-write-test.txt'
+          [IO.File]::WriteAllText($testFile, 'venue access test only; not an installation')
+          $hash = Get-FileHash -LiteralPath $testFile -Algorithm SHA256
+          "synthetic_write=success synthetic_sha256=$($hash.Hash) synthetic_read=$([IO.File]::ReadAllText($testFile))"
+          "powershell_path=$((Get-Process -Id $PID).Path) same_process_write_and_hash=true"
+          '@
+            $script = Join-Path $root 'probe.ps1'
+            [IO.File]::WriteAllText($script, $child)
+            $credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name", $secret)
+            $exe = (Get-Process -Id $PID).Path
+            $arguments = @('-NoProfile', '-NonInteractive', '-File', "`"$script`"", $createdSid, "`"$root`"")
+            $process = Start-Process -FilePath $exe -ArgumentList $arguments -Credential $credential -WorkingDirectory $root -RedirectStandardOutput (Join-Path $root 'child.stdout') -RedirectStandardError (Join-Path $root 'child.stderr') -PassThru
+            if (-not $process.WaitForExit(120000)) {
+              $process.Kill()
+              if (-not $process.WaitForExit(30000)) { throw 'Child did not exit after timeout; account cleanup withheld.' }
+              $finished = $true
+              throw 'Child timed out and was stopped.'
+            }
+            $finished = $true
+            $innerExit = $process.ExitCode
+            Record "inner_exit=$innerExit"
+            if ($innerExit -ne 0) { throw "Child failed with exit $innerExit" }
+          } catch {
+            $failure = $_.Exception.Message
+            Record "probe_failure=$failure"
+          } finally {
+            if (Test-Path -LiteralPath $root) {
+              foreach ($file in @('child.stdout', 'child.stderr')) {
+                $source = Join-Path $root $file
+                if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $evidence $file) }
+              }
+            }
+            if ($createdSid -and ($null -eq $process -or $finished)) {
+              $current = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+              if ($current -and $current.SID.Value -eq $createdSid -and $current.Description -eq "Disposable venue probe $nonce") {
+                Remove-LocalUser -SID $current.SID
+                $cleanupOK = $null -eq (Get-LocalUser -SID $current.SID -ErrorAction SilentlyContinue)
+              } else { Record 'cleanup_refused=account ownership could not be verified' }
+            }
+            Record "account_cleanup_verified=$cleanupOK"
+            Record 'No scheduled task, installation, R0 marker, service operation, or unknown-owner cleanup was attempted.'
+            if ($createdSid -and $cleanupOK -and (Test-Path -LiteralPath $root)) {
+              Remove-Item -LiteralPath $root -Recurse -Force
+              Record "probe_directory_removed=$(-not (Test-Path -LiteralPath $root))"
+            }
+          }
+          if ($failure -or -not $cleanupOK -or $innerExit -ne 0) { throw 'Probe or owned-account cleanup failed; inspect receipt and child output.' }
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: venue-windows-session-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/venue-session-evidence/
+          if-no-files-found: error
+          retention-days: 30
