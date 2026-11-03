@@ -1,0 +1,56 @@
+diff --git a/astrid/installer/backend.py b/astrid/installer/backend.py
+index 95a0854dcd0d1f585f5700bf470150713f982530..87a25ef05389267e0ab80845aaef81d179477a5b 100644
+--- a/astrid/installer/backend.py
++++ b/astrid/installer/backend.py
+@@ -1291,7 +1291,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
+                    for record in records.values() if isinstance(record, dict)):
+             return None
+         context = getattr(self, "_update_transaction", None)
+-        selected = Version.load(context[0]["old"]) if context else version
++        transaction = context[0] if context else read_json(self.root / "update-transaction.json")
++        # Strict updates apply skills after the shared transaction has closed.
++        # Its durable receipt still holds the exact old package for this candidate.
++        prior = transaction.get("old") if transaction.get("candidate") == version.document() else None
++        selected = Version.load(prior) if isinstance(prior, dict) else version
+         script = ("import json; from astrid.core.foundation.paths import REPO_ROOT; "
+                   "print(json.dumps(str(REPO_ROOT / 'astrid' / 'packs')))")
+         entry = json.loads(self.run([selected.python, "-X", "utf8", "-I", "-c", script],
+diff --git a/tests/test_installer_app_update.py b/tests/test_installer_app_update.py
+index 62887bbf72c7df07a7aa5544640902fe05f0c93b..b351daf529b87daca6ab6cd3b153b141e8656fdf 100644
+--- a/tests/test_installer_app_update.py
++++ b/tests/test_installer_app_update.py
+@@ -2185,3 +2185,34 @@ def test_ordinary_pinokio_rollback_restores_saved_skill_policy(tmp_path, monkeyp
+     assert env.backend.service.recorded()["choices"] == saved
+     assert state.state_path().read_bytes() == before
+     assert all(target.is_dir() and not target.is_symlink() for target in env.targets.values())
++
++
++def test_strict_update_from_frozen_package_removes_legacy_hermes_registration(tmp_path, monkeypatch):
++    from tests.installer_skill_fixtures import frozen_agent_source
++    from astrid.installer.backend import Backend
++    from astrid.skills import disable_owned, state
++
++    env = _skill_app_update(tmp_path, monkeypatch)
++    disable_owned()
++    frozen_source = frozen_agent_source(tmp_path)
++    previous = env.version("frozen", 11, package_source=frozen_source)
++    env.old = previous
++    switch(env.root, previous)
++    env.backend.persist_identity(previous)
++    # Seed through the actual frozen package and production subprocess boundary.
++    Backend.run(env.backend, [previous.python, "-X", "utf8", "-I", "-m", "astrid.skills", "install",
++        "foley", "--harness", "hermes", "--mechanism", "external-dir", "--json"], extra_env=previous.env)
++    assert "external_entry" not in state.load()["installs"]["hermes"]["foley"]
++    config = env.home / ".hermes/config.yaml"
++    old_entry = str(frozen_source / "astrid/packs")
++    config.write_bytes(config.read_bytes() + b"  - /foreign/skills # keep this registration\n")
++    saved = env.backend.service.recorded()["choices"]
++    env.backend.service.choices = {**saved, "skills": False}
++    result = update.update_app(env.root, env.backend, {"release": 12}, say=lambda _: None)
++    assert current(env.root) == env.candidate
++    assert result["skills"]["ok"]
++    assert old_entry.encode() not in config.read_bytes()
++    assert b"/foreign/skills # keep this registration" in config.read_bytes()
++    assert not state.load()["installs"]["hermes"]
++    assert env.backend.service.recorded()["choices"]["skills"] is False
++    assert read_json(env.root / "update-transaction.json")["step"] == "complete"

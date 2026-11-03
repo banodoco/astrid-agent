@@ -1,0 +1,95 @@
+diff --git a/src/shared/components/RuntimeConnection/SetupBlock.test.tsx b/src/shared/components/RuntimeConnection/SetupBlock.test.tsx
+index 8a555ba10d16d91d4d6ca9fe09a71af329a324e8..0183a434124c5332640c29b0b57e5818f8b975df 100644
+--- a/src/shared/components/RuntimeConnection/SetupBlock.test.tsx
++++ b/src/shared/components/RuntimeConnection/SetupBlock.test.tsx
+@@ -143,3 +143,18 @@ it('changes an open Settings block to restart mode when its first connection suc
+   expect(screen.getByText('Start Astrid')).toBeInTheDocument();
+   expect(screen.getByRole('code')).not.toHaveTextContent('--skills');
+ });
++
++it('retains an explicit same-visit consent edit while ignoring stale stored false on a remembered connection', () => {
++  localStorage.setItem('astrid.runtime.connectedBefore', '1');
++  localStorage.setItem('astrid:pending-setup-v1', JSON.stringify({ alreadySetUp: false,
++    choices: { autostart: true, command: true, skills: true, skillCopies: false } }));
++  const first = render(<SetupBlock initiallySetUp />);
++  const checkbox = screen.getByRole('checkbox', { name: "I've already set up Astrid" });
++  expect(checkbox).toBeChecked();
++  fireEvent.click(checkbox);
++  expect(checkbox).not.toBeChecked();
++  first.unmount();
++  render(<SetupBlock initiallySetUp />);
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).not.toBeChecked();
++  expect(screen.getByRole('button', { name: 'Customize' })).toBeInTheDocument();
++});
+diff --git a/src/shared/components/RuntimeConnection/SetupBlock.tsx b/src/shared/components/RuntimeConnection/SetupBlock.tsx
+index a03e51a9fd29a8435d9125c2480ff01537f3d50f..9258bac86b65a48632caa954689a04fc26ee3699 100644
+--- a/src/shared/components/RuntimeConnection/SetupBlock.tsx
++++ b/src/shared/components/RuntimeConnection/SetupBlock.tsx
+@@ -4,7 +4,7 @@ import { Button } from '@/shared/components/ui/button.tsx';
+ import type { ServiceStatus } from '@/integrations/runtime/generated.ts';
+ import { detectPlatform } from '@/shared/hooks/platformInstall/platformDetection.ts';
+ import { agentInstructions, refusedAgentInstructions, installCommand, localSetupInstructions, readPendingSetupState, RECOMMENDED_SETUP_CHOICES, RUNTIME_CONNECTION_COPY, UPDATE_ROUTES, writePendingSetupState, type CommandMode, type SetupChoices, withCommandShell } from './copy.ts';
+-import { rememberedSetup } from './setupState.ts';
++import { readVisitSetupConsent, rememberedSetup } from './setupState.ts';
+ import { CopyCommandRow, CopyFallback, useCopyAction } from './CopyInstallCommand.tsx';
+ 
+ const CHOICE_ROWS = [
+@@ -32,7 +32,7 @@ export interface SetupBlockProps {
+ /** The single setup/repair command surface shared by onboarding, connection recovery and Settings. */
+ export function SetupBlock({ initiallySetUp, initialChoices, mode = 'install', showCheckbox = true, localBuild = false, localSetup = false, onContinue, continueLabel = 'Continue', services, refusedApiBase }: SetupBlockProps) {
+   const [savedSetup] = useState(readPendingSetupState);
+-  const [alreadySetUp, setAlreadySetUp] = useState(Boolean(initiallySetUp || rememberedSetup()));
++  const [alreadySetUp, setAlreadySetUp] = useState(readVisitSetupConsent() ?? Boolean(initiallySetUp || rememberedSetup()));
+   const [customize, setCustomize] = useState(false);
+   const [choices, setChoices] = useState<SetupChoices>(initialChoices ?? savedSetup.choices ?? RECOMMENDED_SETUP_CHOICES);
+   const [changed, setChanged] = useState<readonly (keyof SetupChoices)[]>(savedSetup.changed ?? []);
+@@ -56,7 +56,7 @@ export function SetupBlock({ initiallySetUp, initialChoices, mode = 'install', s
+ 
+   return <section aria-label="Astrid setup" className="space-y-3 text-left">
+     {showCheckbox && <label className="flex cursor-pointer items-start gap-2 text-sm">
+-      <input type="checkbox" checked={alreadySetUp} onChange={event => { const checked = event.currentTarget.checked; setAlreadySetUp(checked); saveState(checked, choices); }} className="mt-1 accent-primary" />
++      <input type="checkbox" checked={alreadySetUp} onChange={event => { const checked = event.currentTarget.checked; setAlreadySetUp(checked); writePendingSetupState({ alreadySetUp: checked, choices, changed }, true); }} className="mt-1 accent-primary" />
+       <span>I&apos;ve already set up Astrid</span>
+     </label>}
+     <div className="rounded-lg border border-border bg-background/60 p-3 text-sm">
+diff --git a/src/shared/components/RuntimeConnection/setupState.ts b/src/shared/components/RuntimeConnection/setupState.ts
+index 5332d56b7eb7a5a59faa6d32458a2c4deae6fc73..89988ce36054fa739cfaa5d848a087c717e5d1a7 100644
+--- a/src/shared/components/RuntimeConnection/setupState.ts
++++ b/src/shared/components/RuntimeConnection/setupState.ts
+@@ -17,6 +17,8 @@ let connectedInVisit = false;
+ const keys = ['autostart', 'command', 'skills', 'skillCopies'] as const;
+ let memory: PendingSetupState | undefined;
+ let memoryFallback = false;
++let visitConsent: boolean | undefined;
++let lastWrittenRaw: string | undefined;
+ export function hasPendingSetupState(): boolean {
+   if (memoryFallback) return memory !== undefined;
+   try { return localStorage.getItem(KEY) !== null; } catch { return memory !== undefined; }
+@@ -25,6 +27,7 @@ export function readPendingSetupState(): PendingSetupState {
+   if (memoryFallback && memory) return memory;
+   try {
+     const raw = localStorage.getItem(KEY);
++    if (raw !== lastWrittenRaw) visitConsent = undefined;
+     memory = undefined;
+     if (raw) {
+       const value = JSON.parse(raw) as PendingSetupState;
+@@ -35,13 +38,17 @@ export function readPendingSetupState(): PendingSetupState {
+   } catch { /* Use the current visit's intent. */ }
+   return memory ?? { alreadySetUp: false, choices: RECOMMENDED_SETUP_CHOICES, changed: [] };
+ }
+-export function writePendingSetupState(value: PendingSetupState): void {
++export function writePendingSetupState(value: PendingSetupState, consentEdited = false): void {
+   memory = value;
+-  try { localStorage.setItem(KEY, JSON.stringify(value)); memoryFallback = false; }
++  if (consentEdited) visitConsent = value.alreadySetUp;
++  const raw = JSON.stringify(value);
++  try { localStorage.setItem(KEY, raw); lastWrittenRaw = raw; memoryFallback = false; }
+   catch { memoryFallback = true; }
+ }
++export function readVisitSetupConsent(): boolean | undefined { return visitConsent; }
+ export function completePendingSetup(): void {
+   const pending = readPendingSetupState();
++  visitConsent = undefined;
+   writePendingSetupState({ ...pending, alreadySetUp: true, changed: [] });
+ }
+ 

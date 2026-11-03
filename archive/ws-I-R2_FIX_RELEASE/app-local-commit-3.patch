@@ -1,0 +1,19 @@
+diff --git a/src/app/onboarding/WelcomeJourney.integration.test.tsx b/src/app/onboarding/WelcomeJourney.integration.test.tsx
+index 8ff833c05d89d173df73cb02ae61865e83e226a1..138921e5df79a58976bd8ddf1ff510fa3e86bcd8 100644
+--- a/src/app/onboarding/WelcomeJourney.integration.test.tsx
++++ b/src/app/onboarding/WelcomeJourney.integration.test.tsx
+@@ -1,5 +1,5 @@
+-import { readPendingSetupState, writePendingSetupState, RECOMMENDED_SETUP_CHOICES } from '@/shared/components/RuntimeConnection/setupState.ts';
+ // @vitest-environment-options {"url":"https://astrid.haus/tools/video-editor"}
++import { readConnectedBefore, readPendingSetupState, writePendingSetupState, RECOMMENDED_SETUP_CHOICES } from '@/shared/components/RuntimeConnection/setupState.ts';
+ import { webcrypto } from 'node:crypto';
+ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+@@ -117,6 +117,7 @@ function runtimeDoor({ unavailable = false, failDiscovery = false } = {}) {
+ 
+ beforeEach(() => {
+   localStorage.clear();
++  readConnectedBefore();
+   // A new test models a fresh browser visit; reset the visit memory through the real writer.
+   writePendingSetupState({ alreadySetUp: false, choices: RECOMMENDED_SETUP_CHOICES, changed: [] });
+   localStorage.removeItem('astrid:pending-setup-v1');

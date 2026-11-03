@@ -1,0 +1,877 @@
+diff --git a/src/app/onboarding/WelcomeJourney.integration.test.tsx b/src/app/onboarding/WelcomeJourney.integration.test.tsx
+index 5a5590e21613da31ced75d66d56c0c7f37afb03b..8ff833c05d89d173df73cb02ae61865e83e226a1 100644
+--- a/src/app/onboarding/WelcomeJourney.integration.test.tsx
++++ b/src/app/onboarding/WelcomeJourney.integration.test.tsx
+@@ -1,3 +1,4 @@
++import { readPendingSetupState, writePendingSetupState, RECOMMENDED_SETUP_CHOICES } from '@/shared/components/RuntimeConnection/setupState.ts';
+ // @vitest-environment-options {"url":"https://astrid.haus/tools/video-editor"}
+ import { webcrypto } from 'node:crypto';
+ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+@@ -116,6 +117,10 @@ function runtimeDoor({ unavailable = false, failDiscovery = false } = {}) {
+ 
+ beforeEach(() => {
+   localStorage.clear();
++  // A new test models a fresh browser visit; reset the visit memory through the real writer.
++  writePendingSetupState({ alreadySetUp: false, choices: RECOMMENDED_SETUP_CHOICES, changed: [] });
++  localStorage.removeItem('astrid:pending-setup-v1');
++  readPendingSetupState();
+   sessionStorage.clear();
+   writeWelcomePhase(null);
+   navigate.mockReset();
+@@ -146,6 +151,7 @@ afterEach(() => {
+   vi.useRealTimers();
+   vi.restoreAllMocks();
+   vi.unstubAllGlobals();
++  delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+   writeWelcomePhase(null);
+ });
+ 
+@@ -260,6 +266,41 @@ it('carries all-off and copies-on choices plus the checked state from Welcome in
+   expect(door.unexpected).toEqual([]);
+ });
+ 
++it('keeps unchecked consent and customized choices through a same-visit handoff when storage throws', async () => {
++  permission.state = 'granted';
++  const door = runtimeDoor({ unavailable: true });
++  const clipboard = vi.fn(async () => undefined);
++  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboard } });
++  for (const method of ['getItem', 'setItem', 'removeItem'] as const) {
++    vi.spyOn(Storage.prototype, method).mockImplementation(() => { throw new DOMException('Storage blocked', 'SecurityError'); });
++  }
++
++  render(<WelcomeFlow entry="choose" />);
++  fireEvent.click(screen.getByRole('button', { name: 'Continue in this tab' }));
++  fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Start Astrid at sign-in' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Add the `astrid` terminal command' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Install skills for coding agents' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Use copies for skills' }));
++  const setupCommand = screen.getByRole('code').textContent;
++  expect(setupCommand).toContain('--yes --autostart off --command off --skills off --skill-copies on');
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).not.toBeChecked();
++
++  fireEvent.click(screen.getByRole('button', { name: 'Continue to Astrid' }));
++  await waitFor(() => expect(door.requests).toHaveLength(1));
++  fireEvent.focus(window);
++  expect(await screen.findByRole('heading', { name: "Astrid isn't answering on this computer" })).toBeInTheDocument();
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).not.toBeChecked();
++  expect(screen.getByRole('code').textContent).toBe(setupCommand);
++
++  fireEvent.click(screen.getByRole('button', { name: 'Copy for your agent' }));
++  await waitFor(() => expect(clipboard).toHaveBeenCalledOnce());
++  expect(clipboard.mock.calls[0][0]).toContain('May I install Astrid with these setup choices?');
++  expect(clipboard.mock.calls[0][0]).toContain('Setup choices: start at sign-in off · `astrid` terminal command off · coding-agent skills off · skill copies on.');
++  expect(clipboard.mock.calls[0][0]).toContain(setupCommand);
++  expect(door.unexpected).toEqual([]);
++});
++
+ it('offers Open editor after real project discovery fails, with a reload-safe editor entry when browser storage is unavailable', async () => {
+   permission.state = 'granted';
+   const door = runtimeDoor({ failDiscovery: true });
+@@ -283,3 +324,15 @@ it('offers Open editor after real project discovery fails, with a reload-safe ed
+   expect(classifyBrowserEntry(url)).toBe('app');
+   expect(door.unexpected).toEqual([]);
+ });
++
++it('completes unchecked setup intent after a successful first Runtime connection', async () => {
++  permission.state = 'granted';
++  runtimeDoor();
++  render(<WelcomeFlow entry="choose" />);
++  fireEvent.click(screen.getByRole('button', { name: 'Continue in this tab' }));
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).not.toBeChecked();
++  fireEvent.click(screen.getByRole('button', { name: 'Continue to Astrid' }));
++  await waitFor(() => expect(localStorage.getItem('astrid.runtime.connectedBefore')).toBe('1'));
++  expect(readPendingSetupState().alreadySetUp).toBe(true);
++  expect(readPendingSetupState().changed).toEqual([]);
++});
+diff --git a/src/integrations/runtime/RuntimeConnectionProvider.tsx b/src/integrations/runtime/RuntimeConnectionProvider.tsx
+index 2bc74a12ceb297b529979ac731b18809ffc18fb7..2d97b6f6988730ad081ffc1d3e8cbaa7b2967af3 100644
+--- a/src/integrations/runtime/RuntimeConnectionProvider.tsx
++++ b/src/integrations/runtime/RuntimeConnectionProvider.tsx
+@@ -1,3 +1,4 @@
++import { readConnectedBefore, writeConnectedBefore } from '@/shared/components/RuntimeConnection/setupState.ts';
+ /**
+  * The boot gate for the hosted build (Plan A, D3).
+  *
+@@ -52,7 +53,6 @@ import { getSettingsStore } from '@/shared/settings/instance';
+ export const POLL_INTERVAL_MS = 3000;
+ export const PROBE_TIMEOUT_MS = 5000;
+ export const SLOW_PROBE_TIMEOUT_MS = 60_000;
+-const CONNECTED_BEFORE_KEY = 'astrid.runtime.connectedBefore';
+ const PINOKIO_MANAGED_KEY = 'astrid.runtime.managedByPinokio';
+ /** The `error` codes of the Runtime door's refusals (astrid-runtime runtime_protocol/door.py): the only error bodies the page reads as the door's. */
+ export type RuntimeRefusalCode = 'runtime_unavailable' | 'runtime_identity_mismatch';
+@@ -158,22 +158,6 @@ function rememberPinokioManaged(value: boolean | null): void {
+   try { window.localStorage.setItem(PINOKIO_MANAGED_KEY, value ? '1' : '0'); } catch { /* Storage can be unavailable. */ }
+ }
+ 
+-function readConnectedBefore(): boolean {
+-  try {
+-    return window.localStorage.getItem(CONNECTED_BEFORE_KEY) === '1';
+-  } catch {
+-    return false;
+-  }
+-}
+-
+-function writeConnectedBefore(): void {
+-  try {
+-    window.localStorage.setItem(CONNECTED_BEFORE_KEY, '1');
+-  } catch {
+-    // Private window or blocked storage: the panel just keeps its first-time wording.
+-  }
+-}
+-
+ export interface RuntimeConnectionValue {
+   /** True when the app waits for a confirmed Runtime connection before mounting its children. */
+   gated: boolean;
+diff --git a/src/shared/components/RuntimeConnection/CopyInstallCommand.tsx b/src/shared/components/RuntimeConnection/CopyInstallCommand.tsx
+index 1ef995f2aa8d11d80a77529edb8ce02588629b18..b03e5fe62603360b31987ad910c359a563266294 100644
+--- a/src/shared/components/RuntimeConnection/CopyInstallCommand.tsx
++++ b/src/shared/components/RuntimeConnection/CopyInstallCommand.tsx
+@@ -1,3 +1,4 @@
++import { readPendingSetupState } from './copy.ts';
+ import { useEffect, useRef, useState } from 'react';
+ import { Check, Copy } from 'lucide-react';
+ import { Button } from '@/shared/components/ui/button.tsx';
+@@ -78,8 +79,9 @@ export function CopyInstallCommand({ mode = 'install', services, localCommand }:
+   const copy = RUNTIME_CONNECTION_COPY.agent;
+   const localBuild = runtimeOrigin() === '';
+   const fullyLocal = localCommand !== undefined;
+-  const instructions = fullyLocal ? localUpdateInstructions(localCommand, window.location.origin) : agentInstructions(mode, window.location.origin, localBuild, services);
+-  const command = fullyLocal ? localCommand : installCommand(mode);
++  const pending = readPendingSetupState();
++  const instructions = fullyLocal ? localUpdateInstructions(localCommand, window.location.origin) : agentInstructions(mode, window.location.origin, localBuild, services, { choices: pending.choices, alreadySetup: pending.alreadySetUp, changed: pending.changed });
++  const command = fullyLocal ? localCommand : installCommand(mode, pending.choices, false, pending.changed);
+   const agentCopy = useCopyAction(instructions);
+   const agentCopied = agentCopy.status === 'copied';
+ 
+diff --git a/src/shared/components/RuntimeConnection/RuntimeConnectionPanel.test.tsx b/src/shared/components/RuntimeConnection/RuntimeConnectionPanel.test.tsx
+index 41e414caf8f942e478e40ad224deeff9234d4b01..5b57673168792236897c8f562d7fc81157bef25a 100644
+--- a/src/shared/components/RuntimeConnection/RuntimeConnectionPanel.test.tsx
++++ b/src/shared/components/RuntimeConnection/RuntimeConnectionPanel.test.tsx
+@@ -646,3 +646,25 @@ describe('RuntimeConnectionPanel', () => {
+     });
+   });
+ });
++
++it('offers one choices-aware refusal update command and keeps its agent diagnosis and choices aligned', async () => {
++  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
++  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Macintosh');
++  const clipboard = vi.fn(async () => undefined);
++  stubClipboard(clipboard);
++  localStorage.setItem('astrid:pending-setup-v1', JSON.stringify({ alreadySetUp: false,
++    choices: { autostart: false, command: false, skills: false, skillCopies: true } }));
++  panel(connectionFor({ status: 'refused' }, { connectedBefore: true }));
++  expect(screen.getAllByRole('region', { name: 'Astrid setup' })).toHaveLength(1);
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).toBeChecked();
++  fireEvent.click(screen.getByRole('checkbox', { name: "I've already set up Astrid" }));
++  fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Install skills for coding agents' }));
++  const command = screen.getByRole('code').textContent!;
++  expect(command).toContain('--yes --update --autostart off --command off --skills on --skill-copies on');
++  fireEvent.click(screen.getByRole('button', { name: 'Copy for your agent' }));
++  await waitFor(() => expect(clipboard).toHaveBeenCalledOnce());
++  expect(clipboard.mock.calls[0][0]).toContain(command);
++  expect(clipboard.mock.calls[0][0]).toContain('but it refuses requests from the page');
++  expect(clipboard.mock.calls[0][0]).toContain('May I update Astrid with these setup choices?');
++});
+diff --git a/src/shared/components/RuntimeConnection/RuntimeConnectionPanel.tsx b/src/shared/components/RuntimeConnection/RuntimeConnectionPanel.tsx
+index 57f8f1d72693a4b5f39fe45a6a7201cece3f0f1d..3bf859ac475c522417ac83d6272eed2a715fea6b 100644
+--- a/src/shared/components/RuntimeConnection/RuntimeConnectionPanel.tsx
++++ b/src/shared/components/RuntimeConnection/RuntimeConnectionPanel.tsx
+@@ -5,14 +5,13 @@ import { cn } from '@/shared/components/ui/contracts/cn.ts';
+ import { MinkRunner } from '@/shared/components/MinkRunner/MinkRunner.tsx';
+ import { ToolbarPointer } from '@/shared/components/ToolbarPointer/ToolbarPointer.tsx';
+ import type { RuntimeConnectionPanelExit, RuntimeConnectionValue } from '@/integrations/runtime/RuntimeConnectionProvider.tsx';
+-import { runtimeOrigin } from '@/integrations/runtime/connection.ts';
++import { runtimeApiBase, runtimeOrigin } from '@/integrations/runtime/connection.ts';
+ import { ASTRID_HELP_URL } from '@/integrations/astrid/help.ts';
+ import { useSendLinkToComputer } from '@/pages/Home/useSendLinkToComputer.ts';
+ import { CopyFallback, useCopyAction } from './CopyInstallCommand.tsx';
+ import { SetupBlock } from './SetupBlock.tsx';
+ import { CardDisclosure, EditorCard, EditorCardFoot } from './EditorCard.tsx';
+ import { EditorCardLayer } from './EditorCardLayer.tsx';
+-import { CopyRefusedInstructions } from './CopyRefusedInstructions.tsx';
+ import { PINOKIO_INSTALL_COPY, RUNTIME_CONNECTION_COPY as COPY, withBrowser, withOrigin } from './copy.ts';
+ import { detectInstallScenario } from '@/pages/Home/installScenario.ts';
+ import { linkForSupportedBrowser } from '@/integrations/runtime/autoConnectRequest.ts';
+@@ -324,7 +323,8 @@ function NotRunningCard({ connection, onBack }: { readonly connection: RuntimeCo
+ function RefusedCard({ connection, onBack }: { readonly connection: RuntimeConnectionValue; readonly onBack?: () => void }) {
+   const { refused } = COPY;
+   return <Card title={refused.title} sentence={withOrigin(refused.sentence, window.location.origin)} onBack={onBack} status={COPY.waiting} showHelp action={<div className="space-y-2">
+-    <CopyRefusedInstructions />
++    {connection.managedByPinokio ? <p className="text-sm">Update in Pinokio</p>
++      : <SetupBlock mode="update" initiallySetUp={connection.connectedBefore} refusedApiBase={runtimeApiBase()} />}
+     <Button type="button" variant="outline" className="w-full" onClick={connection.connect}>{refused.retry}</Button>
+   </div>} />;
+ }
+diff --git a/src/shared/components/RuntimeConnection/SetupBlock.test.tsx b/src/shared/components/RuntimeConnection/SetupBlock.test.tsx
+index dd14e820a0b2784050fcadd3d032d5e8d517459d..8a555ba10d16d91d4d6ca9fe09a71af329a324e8 100644
+--- a/src/shared/components/RuntimeConnection/SetupBlock.test.tsx
++++ b/src/shared/components/RuntimeConnection/SetupBlock.test.tsx
+@@ -31,10 +31,57 @@ it('customizes choices and shows flags in the frozen order after --yes', () => {
+ it('Settings can turn saved off choices back on with explicit values', () => {
+   vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
+   vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Macintosh');
++  localStorage.setItem('astrid:pending-setup-v1', JSON.stringify({ alreadySetUp: false,
++    choices: { autostart: false, command: false, skills: false, skillCopies: true } }));
+   render(<SetupBlock explicitChoices />);
++  fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
++  for (const label of ['Start Astrid at sign-in', 'Add the `astrid` terminal command', 'Install skills for coding agents', 'Use copies for skills']) {
++    fireEvent.click(screen.getByRole('checkbox', { name: label }));
++  }
+   expect(screen.getByRole('code')).toHaveTextContent('--yes --autostart on --command on --skills on --skill-copies off');
+ });
+ 
++it('does not apply hidden recommended defaults in checked Settings restart mode', () => {
++  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
++  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Macintosh');
++  render(<SetupBlock initiallySetUp explicitChoices />);
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).toBeChecked();
++  expect(screen.getByText('Start Astrid')).toBeInTheDocument();
++  expect(screen.getByRole('code')).toHaveTextContent('--yes');
++  expect(screen.getByRole('code')).not.toHaveTextContent(/--autostart|--command|--skills|--skill-copies/);
++  expect(screen.queryByRole('button', { name: 'Customize' })).not.toBeInTheDocument();
++});
++
++it('lets remembered connection state override an unchecked first-setup handoff', () => {
++  const firstSetup = render(<SetupBlock initiallySetUp={false} />);
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).not.toBeChecked();
++  firstSetup.unmount();
++
++  // RuntimeConnectionProvider writes this marker after a successful connection and passes
++  // connectedBefore through initiallySetUp when the later Not-running surface mounts.
++  localStorage.setItem('astrid.runtime.connectedBefore', '1');
++  render(<SetupBlock initiallySetUp />);
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).toBeChecked();
++  expect(screen.getByText('Start Astrid')).toBeInTheDocument();
++  expect(screen.queryByRole('button', { name: 'Customize' })).not.toBeInTheDocument();
++});
++
++it('emits explicit flags when persisted non-default choices change back toward the defaults', () => {
++  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
++  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Macintosh');
++  localStorage.setItem('astrid:pending-setup-v1', JSON.stringify({
++    alreadySetUp: false,
++    choices: { autostart: false, command: false, skills: false, skillCopies: true },
++  }));
++  render(<SetupBlock />);
++  fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Install skills for coding agents' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Use copies for skills' }));
++  expect(screen.getByRole('checkbox', { name: 'Install skills for coding agents' })).toBeChecked();
++  expect(screen.getByRole('checkbox', { name: 'Use copies for skills' })).not.toBeChecked();
++  expect(screen.getByRole('code')).toHaveTextContent('--yes --autostart off --command off --skills on --skill-copies off');
++});
++
+ it('keeps changed choices and checked state when Welcome hands off to a new setup surface', () => {
+   vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
+   vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Macintosh');
+@@ -67,3 +114,32 @@ it('uses the same choices-aware update command and agent handoff', () => {
+   fireEvent.click(screen.getByRole('checkbox', { name: 'Install skills for coding agents' }));
+   expect(screen.getByRole('code')).toHaveTextContent('--yes --update --skills off');
+ });
++
++it('keeps same-visit choices when writes fail but reads still return old durable state', async () => {
++  const { readPendingSetupState, writePendingSetupState, RECOMMENDED_SETUP_CHOICES } = await import('./setupState.ts');
++  const write = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError'); });
++  try {
++    const first = render(<SetupBlock />);
++    fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
++    fireEvent.click(screen.getByRole('checkbox', { name: 'Install skills for coding agents' }));
++    const command = screen.getByRole('code').textContent;
++    first.unmount();
++    render(<SetupBlock />);
++    expect(screen.getByRole('code').textContent).toBe(command);
++    expect(readPendingSetupState().choices.skills).toBe(false);
++  } finally {
++    write.mockRestore();
++    writePendingSetupState({ alreadySetUp: false, choices: RECOMMENDED_SETUP_CHOICES, changed: [] });
++  }
++});
++
++it('changes an open Settings block to restart mode when its first connection succeeds', () => {
++  const view = render(<SetupBlock initiallySetUp={false} />);
++  fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Install skills for coding agents' }));
++  expect(screen.getByRole('code')).toHaveTextContent('--skills off');
++  view.rerender(<SetupBlock initiallySetUp />);
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).toBeChecked();
++  expect(screen.getByText('Start Astrid')).toBeInTheDocument();
++  expect(screen.getByRole('code')).not.toHaveTextContent('--skills');
++});
+diff --git a/src/shared/components/RuntimeConnection/SetupBlock.tsx b/src/shared/components/RuntimeConnection/SetupBlock.tsx
+index 923ba7a7463860dd21c8f9d75a1a0c7a958500b4..a03e51a9fd29a8435d9125c2480ff01537f3d50f 100644
+--- a/src/shared/components/RuntimeConnection/SetupBlock.tsx
++++ b/src/shared/components/RuntimeConnection/SetupBlock.tsx
+@@ -1,9 +1,10 @@
+-import { useEffect, useState } from 'react';
++import { useEffect, useRef, useState } from 'react';
+ import { Check, Copy } from 'lucide-react';
+ import { Button } from '@/shared/components/ui/button.tsx';
+ import type { ServiceStatus } from '@/integrations/runtime/generated.ts';
+ import { detectPlatform } from '@/shared/hooks/platformInstall/platformDetection.ts';
+-import { agentInstructions, hasPendingSetupState, installCommand, localSetupInstructions, readPendingSetupState, RECOMMENDED_SETUP_CHOICES, RUNTIME_CONNECTION_COPY, UPDATE_ROUTES, writePendingSetupState, type CommandMode, type SetupChoices, withCommandShell } from './copy.ts';
++import { agentInstructions, refusedAgentInstructions, installCommand, localSetupInstructions, readPendingSetupState, RECOMMENDED_SETUP_CHOICES, RUNTIME_CONNECTION_COPY, UPDATE_ROUTES, writePendingSetupState, type CommandMode, type SetupChoices, withCommandShell } from './copy.ts';
++import { rememberedSetup } from './setupState.ts';
+ import { CopyCommandRow, CopyFallback, useCopyAction } from './CopyInstallCommand.tsx';
+ 
+ const CHOICE_ROWS = [
+@@ -20,24 +21,37 @@ export interface SetupBlockProps {
+   readonly showCheckbox?: boolean;
+   readonly localBuild?: boolean;
+   readonly localSetup?: boolean;
++  /** Compatibility prop; only boxes changed by the user produce overrides. */
+   readonly explicitChoices?: boolean;
+   readonly onContinue?: () => void;
+   readonly continueLabel?: string;
+   readonly services?: readonly ServiceStatus[];
++  readonly refusedApiBase?: string;
+ }
+ 
+ /** The single setup/repair command surface shared by onboarding, connection recovery and Settings. */
+-export function SetupBlock({ initiallySetUp, initialChoices, mode = 'install', showCheckbox = true, localBuild = false, localSetup = false, explicitChoices = false, onContinue, continueLabel = 'Continue', services }: SetupBlockProps) {
++export function SetupBlock({ initiallySetUp, initialChoices, mode = 'install', showCheckbox = true, localBuild = false, localSetup = false, onContinue, continueLabel = 'Continue', services, refusedApiBase }: SetupBlockProps) {
+   const [savedSetup] = useState(readPendingSetupState);
+-  const [alreadySetUp, setAlreadySetUp] = useState(hasPendingSetupState() ? savedSetup.alreadySetUp : initiallySetUp ?? savedSetup.alreadySetUp);
++  const [alreadySetUp, setAlreadySetUp] = useState(Boolean(initiallySetUp || rememberedSetup()));
+   const [customize, setCustomize] = useState(false);
+   const [choices, setChoices] = useState<SetupChoices>(initialChoices ?? savedSetup.choices ?? RECOMMENDED_SETUP_CHOICES);
+-  const saveState = (nextAlreadySetUp: boolean, nextChoices: SetupChoices) => writePendingSetupState({ alreadySetUp: nextAlreadySetUp, choices: nextChoices });
+-  useEffect(() => { writePendingSetupState({ alreadySetUp, choices }); }, [alreadySetUp, choices]);
+-  const command = installCommand(mode, choices, explicitChoices);
+-  const instructions = localSetup
+-    ? localSetupInstructions(choices, alreadySetUp, explicitChoices)
+-    : agentInstructions(mode, window.location.origin, localBuild, services, { choices, alreadySetup: alreadySetUp, explicitChoices });
++  const [changed, setChanged] = useState<readonly (keyof SetupChoices)[]>(savedSetup.changed ?? []);
++  const previousSetUp = useRef(initiallySetUp);
++  useEffect(() => {
++    if (initiallySetUp && !previousSetUp.current) {
++      setAlreadySetUp(true);
++      setChanged([]);
++    }
++    previousSetUp.current = initiallySetUp;
++  }, [initiallySetUp]);
++  const saveState = (nextAlreadySetUp: boolean, nextChoices: SetupChoices, nextChanged = changed) => writePendingSetupState({ alreadySetUp: nextAlreadySetUp, choices: nextChoices, changed: nextChanged });
++  useEffect(() => { writePendingSetupState({ alreadySetUp, choices, changed }); }, [alreadySetUp, choices, changed]);
++  const command = installCommand(mode, choices, false, changed);
++  const instructions = refusedApiBase
++    ? refusedAgentInstructions(window.location.origin, refusedApiBase, { choices, alreadySetup: alreadySetUp, changed })
++    : localSetup
++    ? localSetupInstructions(choices, alreadySetUp, false, changed)
++    : agentInstructions(mode, window.location.origin, localBuild, services, { choices, alreadySetup: alreadySetUp, changed });
+   const agentCopy = useCopyAction(instructions);
+ 
+   return <section aria-label="Astrid setup" className="space-y-3 text-left">
+@@ -59,7 +73,9 @@ export function SetupBlock({ initiallySetUp, initialChoices, mode = 'install', s
+               const checked = event.currentTarget.checked;
+               const next = { ...choices, [key]: checked };
+               setChoices(next);
+-              saveState(alreadySetUp, next);
++              const nextChanged = Array.from(new Set([...changed, key]));
++              setChanged(nextChanged);
++              saveState(alreadySetUp, next, nextChanged);
+             }} className="accent-primary" />
+             <span>{label}</span>
+           </label>)}
+diff --git a/src/shared/components/RuntimeConnection/UpdateResolutionActions.test.tsx b/src/shared/components/RuntimeConnection/UpdateResolutionActions.test.tsx
+index 8446226eead69901bccf2be0ca337c1e6d35272e..4d16dd680c55fc76b4609e1e72692cf290de6a22 100644
+--- a/src/shared/components/RuntimeConnection/UpdateResolutionActions.test.tsx
++++ b/src/shared/components/RuntimeConnection/UpdateResolutionActions.test.tsx
+@@ -110,3 +110,35 @@ describe('update resolution Settings actions', () => {
+     }
+   });
+ });
++
++it('uses one choices-aware Setup for a local installer fallback and preserves reverse edits in agent copy', async () => {
++  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
++  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Macintosh');
++  const clipboard = vi.fn(async () => undefined);
++  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboard } });
++  localStorage.setItem('astrid:pending-setup-v1', JSON.stringify({ alreadySetUp: false,
++    choices: { autostart: false, command: false, skills: false, skillCopies: true } }));
++  render(<UpdateResolutionActions installType="fully-local" resolution={resolveUpdate({
++    installType: 'fully-local', compatibility: { kind: 'schema', detail: 'Update required' },
++  })} />);
++  expect(screen.getAllByRole('region', { name: 'Astrid setup' })).toHaveLength(1);
++  fireEvent.click(screen.getByRole('button', { name: 'Customize' }));
++  fireEvent.click(screen.getByRole('checkbox', { name: 'Install skills for coding agents' }));
++  const command = screen.getByRole('code').textContent!;
++  expect(command).toContain('--yes --update --autostart off --command off --skills on --skill-copies on');
++  fireEvent.click(screen.getByRole('button', { name: 'Copy for your agent' }));
++  await waitFor(() => expect(clipboard).toHaveBeenCalledOnce());
++  expect(clipboard.mock.calls[0][0]).toContain(command);
++});
++
++it('keeps remembered setup checked with one block on the autostart-off refusal path', () => {
++  localStorage.setItem('astrid.runtime.connectedBefore', '1');
++  localStorage.setItem('astrid:pending-setup-v1', JSON.stringify({ alreadySetUp: false,
++    choices: RECOMMENDED_SETUP_CHOICES }));
++  render(<UpdateResolutionActions installType="installer" resolution={resolveUpdate({
++    installType: 'installer', updateReason: 'autostart-off',
++  })} />);
++  expect(screen.getAllByRole('region', { name: 'Astrid setup' })).toHaveLength(1);
++  expect(screen.getByRole('checkbox', { name: "I've already set up Astrid" })).toBeChecked();
++  expect(screen.getByRole('code')).not.toHaveTextContent(/--autostart|--command|--skills|--skill-copies/);
++});
+diff --git a/src/shared/components/RuntimeConnection/UpdateResolutionActions.tsx b/src/shared/components/RuntimeConnection/UpdateResolutionActions.tsx
+index a77fff6c76612c2db7e24b6514180d74941d2c80..cda6d73bb519e78741eb7540a97e149c8e64592a 100644
+--- a/src/shared/components/RuntimeConnection/UpdateResolutionActions.tsx
++++ b/src/shared/components/RuntimeConnection/UpdateResolutionActions.tsx
+@@ -28,6 +28,8 @@ export function UpdateResolutionActions({ resolution, operation, installType }:
+   const reload = actions.find((action) => action.label === RELOAD_ACTION);
+   const execute = actions.find((action) => action.execute === 'installer-update');
+   const localCommand = actions.find((action) => action.label === RUN_IT_YOURSELF_ACTION)?.command;
++  const owner = operation?.installType ?? installType;
++  const installerFallback = owner !== 'source' && owner !== 'pinokio';
+   const startUpdate = async () => {
+     const validate = await guarded.flush();
+     if (validate) await operation?.start(validate);
+@@ -39,12 +41,12 @@ export function UpdateResolutionActions({ resolution, operation, installType }:
+     {route && <Button type="button" variant="retro-secondary" size="retro-sm" data-destination={route.destination} onClick={openUpdatesSettings}>{route.label}</Button>}
+     {(resolution.card === 'update' || resolution.card === 'notice') && !resolution.updateReason && <Button type="button" variant="link" size="sm" onClick={openUpdatesSettings}>Details</Button>}
+     {installSpecific && <p className="text-sm font-medium">{installSpecific.label}</p>}
+-    {commandOptions && ((operation?.installType ?? installType ?? (operation ? 'installer' : undefined)) === 'installer'
+-      ? <SetupBlock mode="update" />
+-      : <CopyInstallCommand mode="update" localCommand={localCommand} />)}
+-    {resolution.updateReason === 'autostart-off' && <div className="space-y-2">
++    {commandOptions && resolution.updateReason !== 'autostart-off' && (localCommand
++      ? <CopyInstallCommand mode="update" localCommand={localCommand} />
++      : installerFallback ? <SetupBlock mode="update" /> : null)}
++    {resolution.updateReason === 'autostart-off' && installerFallback && <div className="space-y-2">
+       <p className="text-sm">Run this command to start Astrid and apply the update:</p>
+-      <SetupBlock mode="update" initiallySetUp={false} />
++      <SetupBlock mode="update" />
+     </div>}
+     {operation?.pending && <p role="status">Update in progress. Astrid may disconnect while it restarts.</p>}
+     {operation?.error && <p role="alert">{operation.error}</p>}
+diff --git a/src/shared/components/RuntimeConnection/copy.test.ts b/src/shared/components/RuntimeConnection/copy.test.ts
+index 33bbeb2fe85b669a286deb46042d2c673a564031..6b71e8781af3533119d39ea8fcf7202a4ab2a729 100644
+--- a/src/shared/components/RuntimeConnection/copy.test.ts
++++ b/src/shared/components/RuntimeConnection/copy.test.ts
+@@ -1,3 +1,4 @@
++import { readFileSync } from 'node:fs';
+ import { afterEach, describe, expect, it, vi } from 'vitest';
+ import { agentInstructions, ASTRID_COMMANDS, describeFailure, DIAGNOSTICS_FALLBACK_COPY, healthCheckCommand, installCommand, localSetupInstructions, localSetupSteps, LOCAL_SETUP, refusedAgentInstructions, RUNTIME_CONNECTION_COPY, withOrigin, RECOMMENDED_SETUP_CHOICES } from './copy.ts';
+ 
+@@ -13,9 +14,9 @@ describe('install commands', () => {
+     ['MacIntel', 'Macintosh', 'install', 'curl -fsSL https://astrid.haus/install | sh -s -- --yes'],
+     ['Linux x86_64', 'Linux', 'install', 'curl -fsSL https://astrid.haus/install | sh -s -- --yes'],
+     ['Win32', 'Windows', 'install', '& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes'],
+-    ['MacIntel', 'Macintosh', 'update', 'curl -fsSL https://astrid.haus/install | sh -s -- --update'],
+-    ['Linux x86_64', 'Linux', 'update', 'curl -fsSL https://astrid.haus/install | sh -s -- --update'],
+-    ['Win32', 'Windows', 'update', '& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --update'],
++    ['MacIntel', 'Macintosh', 'update', 'curl -fsSL https://astrid.haus/install | sh -s -- --yes --update'],
++    ['Linux x86_64', 'Linux', 'update', 'curl -fsSL https://astrid.haus/install | sh -s -- --yes --update'],
++    ['Win32', 'Windows', 'update', '& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --update'],
+   ] as const)('%s %s %s command', (platform, os, mode, expected) => {
+     vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform);
+     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(os);
+@@ -28,6 +29,27 @@ describe('install commands', () => {
+     expect(installCommand('install', choices, true)).toBe('curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart off --command on --skills off --skill-copies on');
+   });
+ 
++  it('keeps explicit Settings choices and the consent summary identical to the command', () => {
++    const choices = { ...RECOMMENDED_SETUP_CHOICES, autostart: false, command: false, skills: true, skillCopies: false };
++    const command = installCommand('install', choices, true);
++    const brief = agentInstructions('install', 'https://astrid.haus', false, undefined, { choices, explicitChoices: true });
++    expect(command).toBe('curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart off --command off --skills on --skill-copies off');
++    expect(brief).toContain(command);
++    expect(brief).toContain('May I install Astrid with these setup choices?');
++    expect(brief).toContain('Setup choices: start at sign-in off · `astrid` terminal command off · coding-agent skills on · skill copies off.');
++  });
++
++  it('keeps reverted persisted choices explicit in both the command and agent instructions', () => {
++    const choices = { ...RECOMMENDED_SETUP_CHOICES, autostart: false, command: false, skills: true, skillCopies: false };
++    const changed = ['autostart', 'command', 'skills', 'skillCopies'] as const;
++    const command = installCommand('install', choices, false, changed);
++    const brief = agentInstructions('install', 'https://astrid.haus', false, undefined, { choices, changed });
++    expect(command).toBe('curl -fsSL https://astrid.haus/install | sh -s -- --yes --autostart off --command off --skills on --skill-copies off');
++    expect(brief).toContain(command);
++    expect(brief).toContain('May I install Astrid with these setup choices?');
++    expect(brief).toContain('Setup choices: start at sign-in off · `astrid` terminal command off · coding-agent skills on · skill copies off.');
++  });
++
+   it('routes manual installer updates through --yes and the same changed-choice flags', () => {
+     const choices = { ...RECOMMENDED_SETUP_CHOICES, autostart: false, skills: false, skillCopies: true };
+     expect(installCommand('update', choices)).toBe('curl -fsSL https://astrid.haus/install | sh -s -- --yes --update --autostart off --skills off --skill-copies on');
+@@ -80,7 +102,7 @@ describe('update handoff', () => {
+     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
+     expect(ASTRID_COMMANDS.windowsAgentUpdate).toBe('powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --update"');
+     expect(agentInstructions('update', 'https://astrid.haus')).toContain('--yes --update');
+-    expect(localSetupInstructions()).toContain(ASTRID_COMMANDS.windowsAgentUpdate);
++    expect(localSetupInstructions()).toContain(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${installCommand('update', undefined, false, undefined, 'windows')}"`);
+   });
+ });
+ 
+@@ -137,7 +159,7 @@ describe('refused card', () => {
+     expect(text).toContain(`curl -s -H "Origin: https://astrid.haus" ${BASE}/v1/health`);
+     expect(text).toContain('do not reinstall it, and do not reset, delete or replace my workspace');
+     expect(text).toContain('If the page is https://astrid.haus, this Astrid is probably out of date. Update it with the official installer');
+-    expect(text).toContain(ASTRID_COMMANDS.macLinuxUpdate);
++    expect(text).toContain(installCommand('update'));
+     expect(text).toContain("http://localhost:5190 isn't an address this Astrid serves");
+     // Never the first-install command.
+     expect(text).not.toContain(ASTRID_COMMANDS.macLinux + '\n');
+@@ -148,8 +170,8 @@ describe('refused card', () => {
+     vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32');
+     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Windows');
+     const text = refusedAgentInstructions('https://astrid.haus', BASE);
+-    expect(text).toContain(ASTRID_COMMANDS.windowsUpdate);
+-    expect(text).toContain(ASTRID_COMMANDS.windowsAgentUpdate);
++    expect(text).toContain(installCommand('update'));
++    expect(text).toContain(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${installCommand('update')}"`);
+   });
+ });
+ 
+@@ -185,3 +207,32 @@ describe('failure diagnostics', () => {
+     expect(windowsBrief).toContain("Invoke-RestMethod -Uri 'https://astrid.haus/api/runtime/v1/health' -Headers @{ Origin = 'https://astrid.haus' }");
+   });
+ });
++
++it('uses pending reverse-edit flags in refusal instructions and the local Runtime update step', () => {
++  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
++  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Macintosh');
++  const choices = { autostart: false, command: false, skills: true, skillCopies: false };
++  const changed = ['autostart', 'command', 'skills', 'skillCopies'] as const;
++  const command = installCommand('update', choices, false, changed);
++  expect(refusedAgentInstructions('https://astrid.haus', 'http://127.0.0.1/api/runtime', { choices, changed, alreadySetup: false })).toContain(command);
++  expect(localSetupInstructions(choices, false, false, changed)).toContain(command);
++});
++
++
++it('production bootstraps consume the fixed release Agent pin and forward the selected installer arguments', () => {
++  const manifest = JSON.parse(readFileSync(new URL('../../../../public/install-manifest.json', import.meta.url), 'utf8'));
++  expect(manifest.agent.sha).toMatch(/^[a-f0-9]{40}$/);
++  expect(manifest.agent.sha).not.toBe('12f401eb8f707234697672317c8995a4637dc54d');
++  expect(manifest.release).toBeGreaterThan(2);
++  const posix = readFileSync(new URL('../../../../public/install', import.meta.url), 'utf8');
++  expect(posix).toContain('agent_requirement = git_requirement("agent")');
++  expect(posix).toContain('"/archive/" + sha + ".tar.gz"');
++  expect(posix).toContain('runtime, client, agent_requirement');
++  expect(posix).toContain('"-I", "-m", "astrid", "install"');
++  expect(posix).toContain('args.extend(flags)');
++  const windows = readFileSync(new URL('../../../../public/install.ps1', import.meta.url), 'utf8');
++  expect(windows).toContain("$AgentRequirement = Get-GitRequirement 'agent'");
++  expect(windows).toContain('$RuntimeRequirement,$ClientRequirement,$AgentRequirement');
++  expect(windows).toContain("'-I','-X','utf8','-m','astrid','install'");
++  expect(windows).toContain('$RunArgs += $InstallerArgs');
++});
+diff --git a/src/shared/components/RuntimeConnection/copy.ts b/src/shared/components/RuntimeConnection/copy.ts
+index 13b94961769df633e5aae9eab2483c3c5b3dd289..ac9cb36a8100206fc5b26bc649756c63110b4690 100644
+--- a/src/shared/components/RuntimeConnection/copy.ts
++++ b/src/shared/components/RuntimeConnection/copy.ts
+@@ -43,43 +43,9 @@ export const ASTRID_COMMANDS = {
+   windowsUpdate: '& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --update',
+ } as const;
+ 
+-export interface SetupChoices {
+-  readonly autostart: boolean;
+-  readonly command: boolean;
+-  readonly skills: boolean;
+-  readonly skillCopies: boolean;
+-}
+-
+-export const RECOMMENDED_SETUP_CHOICES: SetupChoices = Object.freeze({
+-  autostart: true,
+-  command: true,
+-  skills: true,
+-  skillCopies: false,
+-});
+-
+-const PENDING_SETUP_KEY = 'astrid:pending-setup-v1';
+-export interface PendingSetupState { readonly alreadySetUp: boolean; readonly choices: SetupChoices }
+-export function hasPendingSetupState(): boolean {
+-  try { return localStorage.getItem(PENDING_SETUP_KEY) !== null; } catch { return false; }
+-}
+-export function readPendingSetupState(): PendingSetupState {
+-  try {
+-    const raw = localStorage.getItem(PENDING_SETUP_KEY);
+-    if (raw) {
+-      const value = JSON.parse(raw) as Partial<PendingSetupState>;
+-      if (typeof value.alreadySetUp === 'boolean' && value.choices &&
+-        ['autostart', 'command', 'skills', 'skillCopies'].every(key => typeof value.choices?.[key as keyof SetupChoices] === 'boolean')) {
+-        return { alreadySetUp: value.alreadySetUp, choices: value.choices as SetupChoices };
+-      }
+-    }
+-  } catch { /* The current setup screen can proceed without durable storage. */ }
+-  return { alreadySetUp: false, choices: RECOMMENDED_SETUP_CHOICES };
+-}
+-
+-export function writePendingSetupState(state: PendingSetupState): void {
+-  try { localStorage.setItem(PENDING_SETUP_KEY, JSON.stringify(state)); }
+-  catch { /* The current setup screen can proceed without durable storage. */ }
+-}
++export { RECOMMENDED_SETUP_CHOICES, hasPendingSetupState, readPendingSetupState, writePendingSetupState } from './setupState.ts';
++import { RECOMMENDED_SETUP_CHOICES, readPendingSetupState, type SetupChoices } from './setupState.ts';
++export type { SetupChoices, PendingSetupState } from './setupState.ts';
+ 
+ const SETUP_FLAGS = [
+   ['autostart', '--autostart'],
+@@ -89,12 +55,12 @@ const SETUP_FLAGS = [
+ ] as const satisfies readonly (readonly [keyof SetupChoices, string])[];
+ 
+ /** Flags stay in one place so the terminal line and agent handoff always describe the same choices. */
+-export function setupChoiceFlags(choices: SetupChoices = RECOMMENDED_SETUP_CHOICES): string[] {
+-  return SETUP_FLAGS.flatMap(([key, flag]) => choices[key] === RECOMMENDED_SETUP_CHOICES[key]
++export function setupChoiceFlags(choices: SetupChoices = RECOMMENDED_SETUP_CHOICES, changed?: readonly (keyof SetupChoices)[]): string[] {
++  return SETUP_FLAGS.flatMap(([key, flag]) => (changed ? !changed.includes(key) : choices[key] === RECOMMENDED_SETUP_CHOICES[key])
+     ? [] : [flag, choices[key] ? 'on' : 'off']);
+ }
+ 
+-/** Settings cannot read saved Runtime choices yet, so its visible selections are applied explicitly. */
++/** A complete explicit vector for callers applying all four selected options. */
+ export function explicitSetupChoiceFlags(choices: SetupChoices): string[] {
+   return SETUP_FLAGS.flatMap(([key, flag]) => [flag, choices[key] ? 'on' : 'off']);
+ }
+@@ -160,17 +126,17 @@ export function localSetupSteps(): readonly LocalSetupStep[] {
+ 
+ export type WindowMode = 'app-window' | 'browser-tab';
+ 
+-export function localSetupInstructions(choices: SetupChoices = RECOMMENDED_SETUP_CHOICES, alreadySetup = false, explicitChoices = false): string {
++export function localSetupInstructions(choices: SetupChoices = RECOMMENDED_SETUP_CHOICES, alreadySetup = false, explicitChoices = false, changed?: readonly (keyof SetupChoices)[]): string {
+   const L = LOCAL_SETUP;
+   return [
+     `Please ${alreadySetup ? 'restart Astrid and set up the fully local editor' : 'set up Astrid to run fully on this computer, including the editor'} so I can change Astrid itself. Do the work yourself and verify the result.`,
+     alreadySetup ? null : 'Before you run the command, ask me once: “May I install Astrid with these setup choices?” Wait for my answer, then run it only if I agree.',
+-    `Setup choices: start at sign-in ${choices.autostart ? 'on' : 'off'} · \`astrid\` terminal command ${choices.command ? 'on' : 'off'} · coding-agent skills ${choices.skills ? 'on' : 'off'} · skill copies ${choices.skillCopies ? 'on' : 'off'}.`,
+-    `1. Install or repair Astrid with the official installer. Fetch and read the script before running it. Run this official installer command: \`${installCommand('install', choices, explicitChoices)}\`. Keep my existing workspace, projects, media, credentials, and agent instructions. The installer may open astrid.haus; finish this setup in the local editor below.`,
++    !alreadySetup || changed?.length ? `Setup choices: start at sign-in ${choices.autostart ? 'on' : 'off'} · \`astrid\` terminal command ${choices.command ? 'on' : 'off'} · coding-agent skills ${choices.skills ? 'on' : 'off'} · skill copies ${choices.skillCopies ? 'on' : 'off'}.` : 'Preserve saved setup choices for every option without an explicit flag in the command.',
++    `1. Install or repair Astrid with the official installer. Fetch and read the script before running it. Run this official installer command: \`${installCommand('install', choices, explicitChoices, changed)}\`. Keep my existing workspace, projects, media, credentials, and agent instructions. The installer may open astrid.haus; finish this setup in the local editor below.`,
+     `2. Get the editor's code from ${L.repoUrl}. Install Git and Node.js 20.19 or newer in the Node 20 release line if needed. Clone with \`${L.cloneCommand}\`, then \`${L.changeDirectoryCommand}\` and \`${L.installDependenciesCommand}\`. If a clone already exists, preserve its changes and update it to \`main\` without discarding work; use \`git pull --ff-only origin main\` when it can fast-forward and resolve any divergence before continuing.`,
+     `3. In that clone, run \`${L.startCommand}\` in a terminal that stays open. This starts the source editor on port 5180, checks the installed Runtime and selected workspace, and connects through the editor's own server. Keep the existing hosted door for https://astrid.haus; do not change its origin or turn it off. If the launcher reports a problem, diagnose it and repair through the official installer when needed. Do not delete or replace my workspace or credentials.`,
+     `4. Open ${L.openUrl} in my browser. The editor opens with my project. This first-open address resumes at connection because I already completed the tour. Verify \`/api/runtime/v1/health\` and \`/api/runtime/v1/realm\` through http://127.0.0.1:5180 and confirm the editor uses my existing Runtime workspace. No browser local-network permission is needed for this route. Do not claim success if any check could not be run; tell me the actual result.`,
+-    `5. Tell me the absolute path of the clone so you or I can edit it. Source edits appear through Vite's normal development workflow. To start later: \`cd\` to that clone and run \`${L.startCommand}\`, then open the local address it prints. To stop the editor: Ctrl+C in its terminal. That stops the editor and proxy, plus any Runtime it started; a Runtime it attached to keeps running for astrid.haus. To update the editor: stop it, save or commit local source changes, then run \`git pull --ff-only origin main\`, \`${L.installDependenciesCommand}\`, and \`${L.startCommand}\`. To update the Runtime and agent: use \`${ASTRID_COMMANDS.macLinuxUpdate}\` on macOS/Linux, or \`${ASTRID_COMMANDS.windowsAgentUpdate}\` in Windows PowerShell, then restart the editor. Read the update script before running it. The local editor can open offline after its dependencies are installed; online models and providers still need internet.`,
++    `5. Tell me the absolute path of the clone so you or I can edit it. Source edits appear through Vite's normal development workflow. To start later: \`cd\` to that clone and run \`${L.startCommand}\`, then open the local address it prints. To stop the editor: Ctrl+C in its terminal. That stops the editor and proxy, plus any Runtime it started; a Runtime it attached to keeps running for astrid.haus. To update the editor: stop it, save or commit local source changes, then run \`git pull --ff-only origin main\`, \`${L.installDependenciesCommand}\`, and \`${L.startCommand}\`. To update the Runtime and agent: use \`${installCommand('update', choices, explicitChoices, changed, 'linux')}\` on macOS/Linux, or \`${windowsAgentCommand(installCommand('update', choices, explicitChoices, changed, 'windows'))}\` in Windows PowerShell, then restart the editor. Read the update script before running it. The local editor can open offline after its dependencies are installed; online models and providers still need internet.`,
+   ].filter((part): part is string => part !== null).join('\n');
+ }
+ 
+@@ -270,16 +236,19 @@ function serviceBrief(services: readonly ServiceStatus[] | undefined, platform:
+     : `If a service fails, inspect its service-<name>.log under ${runtimeLogDirectory(platform)}.`;
+ }
+ 
+-export function installCommand(mode: CommandMode, choices?: SetupChoices, explicitChoices = false): string {
+-  const windows = detectPlatform() === 'windows';
+-  if (mode === 'update' && choices === undefined && !explicitChoices) return windows ? ASTRID_COMMANDS.windowsUpdate : ASTRID_COMMANDS.macLinuxUpdate;
++export function installCommand(mode: CommandMode, choices?: SetupChoices, explicitChoices = false, changed?: readonly (keyof SetupChoices)[], platform: Platform = detectPlatform()): string {
++  const windows = platform === 'windows';
+   const selected = choices ?? RECOMMENDED_SETUP_CHOICES;
+-  const args = ['--yes', ...(mode === 'update' ? ['--update'] : []), ...(explicitChoices ? explicitSetupChoiceFlags(selected) : setupChoiceFlags(selected))].join(' ');
++  const args = ['--yes', ...(mode === 'update' ? ['--update'] : []), ...(explicitChoices ? explicitSetupChoiceFlags(selected) : setupChoiceFlags(selected, changed))].join(' ');
+   return windows
+     ? `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) ${args}`
+     : `${ASTRID_COMMANDS.macLinux} -s -- ${args}`;
+ }
+ 
++function windowsAgentCommand(command: string): string {
++  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${command}"`;
++}
++
+ const SETUP_GUIDE_URL = 'https://github.com/banodoco/astrid-agent/blob/main/docs/setup/SKILL.md';
+ 
+ /** The two ways to update, since this page can't tell an installer install from source checkouts. */
+@@ -294,17 +263,18 @@ export function agentInstructions(
+   pageOrigin: string,
+   localBuild = false,
+   services?: readonly ServiceStatus[],
+-  setup: { readonly choices?: SetupChoices; readonly alreadySetup?: boolean; readonly explicitChoices?: boolean } = {},
++  setup: { readonly choices?: SetupChoices; readonly alreadySetup?: boolean; readonly explicitChoices?: boolean; readonly changed?: readonly (keyof SetupChoices)[] } = {},
+ ): string {
+   const platform = detectPlatform();
+   const windows = platform === 'windows';
+   const choices = setup.choices ?? RECOMMENDED_SETUP_CHOICES;
+   const alreadySetup = setup.alreadySetup ?? false;
+-  const command = installCommand(mode, choices, setup.explicitChoices ?? false);
++  const command = installCommand(mode, choices, setup.explicitChoices ?? false, setup.changed);
+   return [
+     `Please ${mode === 'update' ? 'update my existing Astrid installation' : alreadySetup ? 'restart Astrid on this computer' : 'set up Astrid on this computer'} so the page at ${pageOrigin} can connect. Do the work yourself and verify the result.`,
+     !alreadySetup ? `Before you run the command, ask me once: “May I ${mode === 'update' ? 'update Astrid' : 'install Astrid'} with these setup choices?” Wait for my answer, then run the command only if I agree.` : null,
+-    !alreadySetup ? `Setup choices: start at sign-in ${choices.autostart ? 'on' : 'off'} · \`astrid\` terminal command ${choices.command ? 'on' : 'off'} · coding-agent skills ${choices.skills ? 'on' : 'off'} · skill copies ${choices.skillCopies ? 'on' : 'off'}.` : null,
++    !alreadySetup || setup.changed?.length ? `Setup choices: start at sign-in ${choices.autostart ? 'on' : 'off'} · \`astrid\` terminal command ${choices.command ? 'on' : 'off'} · coding-agent skills ${choices.skills ? 'on' : 'off'} · skill copies ${choices.skillCopies ? 'on' : 'off'}.` : null,
++    'Preserve saved setup choices for every option without an explicit flag in the command. The command is authoritative; do not substitute recommended defaults.',
+     'First inspect the existing installation, running services, profile, selected workspace and data root. Preserve my projects, media, credentials and agent instructions. Do not reset or delete my workspace, or replace it with an empty one.',
+     "Use the current official Astrid installer; read it before running it. The installer adopts an existing workspace itself; don't run workspace or migration commands by hand. Do not bypass ownership guards or overwrite a directory just because the installer refuses it.",
+     windows && mode === 'install'
+@@ -342,7 +312,14 @@ export function localUpdateInstructions(command: string, pageOrigin: string): st
+  * The handoff for a running Astrid that refuses this page's origin: no install, no reset, a check the agent can run,
+  * and the one fix there is (update) when the page is astrid.haus.
+  */
+-export function refusedAgentInstructions(pageOrigin: string, apiBase: string): string {
++export function refusedAgentInstructions(pageOrigin: string, apiBase: string,
++  setup?: { readonly choices: SetupChoices; readonly alreadySetup: boolean; readonly changed?: readonly (keyof SetupChoices)[] },
++): string {
++  const pending = readPendingSetupState();
++  const choices = setup?.choices ?? pending.choices;
++  const changed = setup?.changed ?? pending.changed;
++  const alreadySetup = setup?.alreadySetup ?? pending.alreadySetUp;
++  const command = installCommand('update', choices, false, changed);
+   const platform = detectPlatform();
+   const windows = platform === 'windows';
+   return [
+@@ -350,10 +327,12 @@ export function refusedAgentInstructions(pageOrigin: string, apiBase: string): s
+     `Check it: \`${healthCheckCommand(apiBase, pageOrigin, platform)}\`. A refusal answers 403 with no Access-Control-Allow-Origin header. Compare with \`${healthCheckCommand(apiBase, 'https://astrid.haus', platform)}\`, which should answer with health JSON.`,
+     `Service logs are named service-<name>.log under ${runtimeLogDirectory(platform)}.`,
+     'Astrid is installed and running: do not reinstall it, and do not reset, delete or replace my workspace, projects, media, credentials or agent instructions.',
+-    `If the page is https://astrid.haus, this Astrid is probably out of date. Update it with the official installer's update command; read the script before running it. ${windows ? `In PowerShell: ${ASTRID_COMMANDS.windowsUpdate}\nFrom Git Bash or another shell: ${ASTRID_COMMANDS.windowsAgentUpdate}\nUpdate from Windows, not inside WSL.` : `The command: ${ASTRID_COMMANDS.macLinuxUpdate}`} If you run Astrid from source checkouts instead, update those checkouts to their main branches and restart Astrid; don't run the installer over them.`,
++    `If the page is https://astrid.haus, this Astrid is probably out of date. Update it with the official installer's update command; read the script before running it. ${windows ? `In PowerShell: ${command}\nFrom Git Bash or another shell: ${windowsAgentCommand(command)}\nUpdate from Windows, not inside WSL.` : `The command: ${command}`} If you run Astrid from source checkouts instead, update those checkouts to their main branches and restart Astrid; don't run the installer over them.`,
++    !alreadySetup ? 'Before running the update, ask me once: “May I update Astrid with these setup choices?” Wait for my answer, then run it only if I agree.' : null,
++    'Preserve saved setup choices for every option without an explicit flag in the command. Do not substitute recommended defaults.',
+     `If the page is not https://astrid.haus, ${pageOrigin} isn't an address this Astrid serves. Tell me to open https://astrid.haus instead; don't change Astrid's allowed origins unless I ask.`,
+     'My tab connects by itself once Astrid accepts the page; if it shows a Connect button, click it.',
+-  ].join('\n\n');
++  ].filter((part): part is string => part !== null).join('\n\n');
+ }
+ 
+ /** `{origin}` in a card's text filled with the page's origin. */
+diff --git a/src/shared/components/RuntimeConnection/setupState.ts b/src/shared/components/RuntimeConnection/setupState.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5332d56b7eb7a5a59faa6d32458a2c4deae6fc73
+--- /dev/null
++++ b/src/shared/components/RuntimeConnection/setupState.ts
+@@ -0,0 +1,59 @@
++/** Browser intent survives component handoffs even when durable storage is blocked. */
++export interface SetupChoices {
++  readonly autostart: boolean;
++  readonly command: boolean;
++  readonly skills: boolean;
++  readonly skillCopies: boolean;
++}
++export const RECOMMENDED_SETUP_CHOICES: SetupChoices = Object.freeze({ autostart: true, command: true, skills: true, skillCopies: false });
++export interface PendingSetupState {
++  readonly alreadySetUp: boolean;
++  readonly choices: SetupChoices;
++  readonly changed?: readonly (keyof SetupChoices)[];
++}
++const KEY = 'astrid:pending-setup-v1';
++const CONNECTED_KEY = 'astrid.runtime.connectedBefore';
++let connectedInVisit = false;
++const keys = ['autostart', 'command', 'skills', 'skillCopies'] as const;
++let memory: PendingSetupState | undefined;
++let memoryFallback = false;
++export function hasPendingSetupState(): boolean {
++  if (memoryFallback) return memory !== undefined;
++  try { return localStorage.getItem(KEY) !== null; } catch { return memory !== undefined; }
++}
++export function readPendingSetupState(): PendingSetupState {
++  if (memoryFallback && memory) return memory;
++  try {
++    const raw = localStorage.getItem(KEY);
++    memory = undefined;
++    if (raw) {
++      const value = JSON.parse(raw) as PendingSetupState;
++      if (typeof value.alreadySetUp === 'boolean' && value.choices && keys.every(key => typeof value.choices[key] === 'boolean')) {
++        memory = { ...value, changed: value.changed?.filter(key => keys.includes(key)) ?? keys.filter(key => value.choices[key] !== RECOMMENDED_SETUP_CHOICES[key]) };
++      }
++    }
++  } catch { /* Use the current visit's intent. */ }
++  return memory ?? { alreadySetUp: false, choices: RECOMMENDED_SETUP_CHOICES, changed: [] };
++}
++export function writePendingSetupState(value: PendingSetupState): void {
++  memory = value;
++  try { localStorage.setItem(KEY, JSON.stringify(value)); memoryFallback = false; }
++  catch { memoryFallback = true; }
++}
++export function completePendingSetup(): void {
++  const pending = readPendingSetupState();
++  writePendingSetupState({ ...pending, alreadySetUp: true, changed: [] });
++}
++
++export function readConnectedBefore(): boolean {
++  try { connectedInVisit = localStorage.getItem(CONNECTED_KEY) === '1'; } catch { /* Same visit memory. */ }
++  return connectedInVisit;
++}
++export function writeConnectedBefore(): void {
++  connectedInVisit = true;
++  completePendingSetup();
++  try { localStorage.setItem(CONNECTED_KEY, '1'); } catch { /* Same visit memory. */ }
++}
++export function rememberedSetup(): boolean {
++  return readPendingSetupState().alreadySetUp || readConnectedBefore();
++}
+diff --git a/src/shared/components/SettingsModal/sections/AstridStatusSection.test.tsx b/src/shared/components/SettingsModal/sections/AstridStatusSection.test.tsx
+index cc2c5f6a834fd9625217296846e0c22416200b3d..97051241887e8e8855f0817062c928a3716fae69 100644
+--- a/src/shared/components/SettingsModal/sections/AstridStatusSection.test.tsx
++++ b/src/shared/components/SettingsModal/sections/AstridStatusSection.test.tsx
+@@ -1,11 +1,11 @@
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+ import { AstridStatusSection } from './AstridStatusSection.tsx';
+-import { RUNTIME_CONNECTION_COPY as CONNECTION_COPY, installCommand, RECOMMENDED_SETUP_CHOICES } from '@/shared/components/RuntimeConnection/copy.ts';
++import { RUNTIME_CONNECTION_COPY as CONNECTION_COPY, installCommand } from '@/shared/components/RuntimeConnection/copy.ts';
+ import { ASTRID_HELP_URL } from '@/integrations/astrid/help.ts';
+ import { useAppEventListener } from '@/shared/lib/typedEvents.ts';
+ 
+-const settingsInstallCommand = () => installCommand('install', RECOMMENDED_SETUP_CHOICES, true);
++const settingsInstallCommand = () => installCommand('install');
+ 
+ const mocks = vi.hoisted(() => ({
+   readStatus: vi.fn(),
+diff --git a/src/shared/components/SettingsModal/sections/AstridStatusSection.tsx b/src/shared/components/SettingsModal/sections/AstridStatusSection.tsx
+index fc4968019650189d169bb5ef4c2412b026a9d80e..8acbdfbdccb7e34685e694825c8c65c75740baa3 100644
+--- a/src/shared/components/SettingsModal/sections/AstridStatusSection.tsx
++++ b/src/shared/components/SettingsModal/sections/AstridStatusSection.tsx
+@@ -5,15 +5,13 @@ import { useRuntimeConnection } from '@/integrations/runtime/RuntimeConnectionPr
+ import type { Health, Realm, ServiceStatus } from '@/integrations/runtime/generated.ts';
+ import { Button } from '@/shared/components/ui/button';
+ import { SetupStatusLine } from '@/shared/components/RuntimeConnection/SetupStatusLine.tsx';
+-import { describeFailure, RUNTIME_CONNECTION_COPY, withCommandShell } from '@/shared/components/RuntimeConnection/copy.ts';
++import { describeFailure, RUNTIME_CONNECTION_COPY, UPDATE_ROUTES, withCommandShell } from '@/shared/components/RuntimeConnection/copy.ts';
+ import { connectionStatus } from './ConnectionSection.tsx';
+ import { useInstallerUpdate } from '@/shared/lib/updates/useInstallerUpdate.ts';
+ import { ASTRID_HELP_URL } from '@/integrations/astrid/help.ts';
+ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/shared/components/ui/collapsible';
+ import { Card } from '@/shared/components/ui/card';
+ import { SetupBlock } from '@/shared/components/RuntimeConnection/SetupBlock.tsx';
+-import { CopyInstallCommand } from '@/shared/components/RuntimeConnection/CopyInstallCommand.tsx';
+-import { runtimeOrigin } from '@/integrations/runtime/connection.ts';
+ import { UpdateResolutionActions } from '@/shared/components/RuntimeConnection/UpdateResolutionActions.tsx';
+ import { ASTRID_STATUS_COPY as COPY, connectionStatusCopy } from './astridStatusCopy.ts';
+ 
+@@ -126,9 +124,9 @@ export function AstridStatusSection({ isOpen }: { isOpen: boolean }) {
+ 
+   return (
+     <section className="mb-6" aria-labelledby="astrid-status-title">
+-      {installType === 'installer' && installerUpdate.health?.identity?.managed_by === null && <div className="mb-4 rounded-lg border p-4">
++      {!summary.outOfDate && installType === 'installer' && installerUpdate.health?.identity?.managed_by === null && <div className="mb-4 rounded-lg border p-4">
+         <h2 className="mb-3 text-base font-semibold">Setup</h2>
+-        <SetupBlock initiallySetUp={connection.connectedBefore} explicitChoices services={services.filter((service) => service.state === 'failed' || service.reason || service.last_exit !== null)} />
++        <SetupBlock initiallySetUp={connection.connectedBefore} services={services.filter((service) => service.state === 'failed' || service.reason || service.last_exit !== null)} />
+       </div>}
+       <Card className="p-4">
+         <div className="flex items-start gap-3">
+@@ -143,7 +141,10 @@ export function AstridStatusSection({ isOpen }: { isOpen: boolean }) {
+             {summary.checks && <SetupStatusLine checks={summary.checks} mink={false} announce={false} />}
+             {(!connected || summary.outOfDate) && summary.detail && <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{summary.outOfDate ? withCommandShell(summary.detail) : summary.detail}</p>}
+             {summary.outOfDate === 'runtime' && summary.updateResolution && <UpdateResolutionActions resolution={summary.updateResolution} installType={installType} />}
+-            {summary.outOfDate === 'chat' && (runtimeOrigin() === '' ? <CopyInstallCommand mode="update" /> : <SetupBlock mode="update" />)}
++            {summary.outOfDate === 'chat' && (installType === 'source'
++              ? <p className="text-sm">{UPDATE_ROUTES.source}</p>
++              : installType === 'pinokio' ? <p className="text-sm">Update in Pinokio</p>
++              : <SetupBlock mode="update" initiallySetUp={connection.connectedBefore} />)}
+             {summary.connect && <Button type="button" variant="retro-secondary" size="retro-sm" onClick={() => connection.connect()}>{RUNTIME_CONNECTION_COPY.permission.connect}</Button>}
+             {connected && details && needsRepair && (
+               <>
+diff --git a/src/tools/video-editor/components/AgentChat/AgentChatMenu.test.tsx b/src/tools/video-editor/components/AgentChat/AgentChatMenu.test.tsx
+index 1b658fe61cf2fa7fc7c9aa74ad0a910f51c73679..a690f7e915f4585fc19c478a88f6d1d09cdeeb73 100644
+--- a/src/tools/video-editor/components/AgentChat/AgentChatMenu.test.tsx
++++ b/src/tools/video-editor/components/AgentChat/AgentChatMenu.test.tsx
+@@ -5,7 +5,7 @@ import { createRef, type ComponentProps } from 'react';
+ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+ import { LOCAL_AGENT_IDS, LOCAL_AGENT_TABLE, type LocalAgentChoice } from '@/integrations/astrid/localAgents.ts';
+ import { toast } from '@/shared/components/ui/toast.tsx';
+-import { ASTRID_COMMANDS, RUNTIME_CONNECTION_COPY, withCommandShell } from '@/shared/components/RuntimeConnection/copy.ts';
++import { installCommand, RUNTIME_CONNECTION_COPY, withCommandShell } from '@/shared/components/RuntimeConnection/copy.ts';
+ import { BRIDGE_CONTRACT_VERSION_MISMATCH_CODE } from '@/tools/video-editor/data/bridgeContract.ts';
+ import { BridgeRouteError } from '@/integrations/astrid/transport.ts';
+ import { AgentChatMenu, type AgentChatMenuHandle, type NewChatAgentModels } from './AgentChatMenu.tsx';
+@@ -665,8 +665,8 @@ describe('AgentChatMenu with an out-of-date local Astrid', () => {
+   afterEach(() => vi.restoreAllMocks());
+ 
+   it.each([
+-    ['MacIntel', 'Macintosh', ASTRID_COMMANDS.macLinuxUpdate],
+-    ['Win32', 'Windows', ASTRID_COMMANDS.windowsUpdate],
++    ['MacIntel', 'Macintosh', installCommand('update', undefined, false, undefined, 'mac')],
++    ['Win32', 'Windows', installCommand('update', undefined, false, undefined, 'windows')],
+   ])('shows the update prompt and %s update command instead of the raw error', (platform, os, command) => {
+     vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform);
+     vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(os);

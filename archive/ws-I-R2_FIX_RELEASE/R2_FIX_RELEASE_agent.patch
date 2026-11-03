@@ -1,0 +1,1205 @@
+diff --git a/astrid/installer/app_update.py b/astrid/installer/app_update.py
+index 9d9240274dc3822eb4960d08f81d6b8f3a1bdd59..ecacd6f91186bea770c474e21228410ac3c510e3 100644
+--- a/astrid/installer/app_update.py
++++ b/astrid/installer/app_update.py
+@@ -545,12 +545,8 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
+         outcomes = {"startup": "not confirmed", "command": None, "skills": None}
+ 
+         def persist_selection(version: Version) -> None:
+-            if no_migration:
+-                # Identity must follow the pointer, but requested choices do not
+-                # become durable until the candidate has successfully activated.
+-                backend.persist_identity(version, persist_choices=False)
+-            else:
+-                backend.persist_identity(version)
++            # Pointer identity follows activation; choices commit after readiness.
++            backend.persist_identity(version, persist_choices=False)
+ 
+         def select(candidate: Version) -> None:
+             with selection_lock(lock, backend):
+@@ -576,6 +572,8 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
+                 backend.register(candidate, workspace)
+             lifecycle.start(candidate, workspace, selected_realm["realm_id"])
+             if not no_migration:
++                transaction = backend._update_transaction[0]
++                installer._save_update(transaction, transaction["step"], skills_attempted=True)
+                 try:
+                     outcomes["skills"] = backend.sync_skills(candidate)
+                 except Exception:  # noqa: BLE001 - same best-effort setup as C2
+@@ -607,6 +605,6 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
+             except Exception:  # noqa: BLE001 - same best-effort setup as C2
+                 outcomes["skills"] = {"ok": False, "destinations": []}
+                 say("Couldn't apply Astrid's skill changes; see the log.")
+-            backend.persist_identity(current(root))
++        backend.persist_identity(current(root))
+         say("Astrid is updated and running.")
+         return outcomes
+diff --git a/astrid/installer/backend.py b/astrid/installer/backend.py
+index bb97a0afdeaef2a37bcc0cea2bb21abfbd928e21..87a25ef05389267e0ab80845aaef81d179477a5b 100644
+--- a/astrid/installer/backend.py
++++ b/astrid/installer/backend.py
+@@ -1278,15 +1278,58 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
+         choices = getattr(self.service, "choices", None) or {}
+         skills_on = choices.get("skills", True)
+         copies_on = choices.get("skill_copies", False)
+-        argv = [version.python, "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
++        argv = ["sync", "--json",
+                 "--skills", "on" if skills_on else "off",
+                 "--skill-copies", "on" if copies_on else "off"]
+-        return self._run_skills(version, argv)
++        return self._run_skills(version, self._skills_argv(version, argv, legacy_entry=self._legacy_external_entry(version)))
++
++    def _legacy_external_entry(self, version: Version) -> str | None:
++        from astrid.skills import state
++
++        records = state.load().get("installs", {}).get("hermes", {})
++        if not any(record.get("mechanism") == "external-dir" and not record.get("external_entry")
++                   for record in records.values() if isinstance(record, dict)):
++            return None
++        context = getattr(self, "_update_transaction", None)
++        transaction = context[0] if context else read_json(self.root / "update-transaction.json")
++        # Strict updates apply skills after the shared transaction has closed.
++        # Its durable receipt still holds the exact old package for this candidate.
++        prior = transaction.get("old") if transaction.get("candidate") == version.document() else None
++        selected = Version.load(prior) if isinstance(prior, dict) else version
++        script = ("import json; from astrid.core.foundation.paths import REPO_ROOT; "
++                  "print(json.dumps(str(REPO_ROOT / 'astrid' / 'packs')))")
++        entry = json.loads(self.run([selected.python, "-X", "utf8", "-I", "-c", script],
++                                    extra_env=selected.env, timeout=60))
++        if not isinstance(entry, str) or not Path(entry).is_absolute():
++            raise ValueError("The installed package did not report an absolute packs path.")
++        return entry
++
++    def _skills_argv(self, version: Version, args: list[str] | None = None, *, legacy_entry: str | None = None) -> list:
++        """Use reviewed ownership code with the selected installation's pack sources.
++
++        The installed core supplies its declared pack paths; the bootstrap
++        supplies the current skills implementation even for pre-fix packages.
++        No ambient import path is inherited by the isolated interpreter.
++        """
++        package = Path(__file__).resolve().parents[1] / "skills"
++        script = (
++            "import importlib.util, json, sys; import astrid; "
++            f"spec = importlib.util.spec_from_file_location('astrid.skills', {str(package / '__init__.py')!r}, "
++            f"submodule_search_locations=[{str(package)!r}]); "
++            "module = importlib.util.module_from_spec(spec); sys.modules['astrid.skills'] = module; "
++            "spec.loader.exec_module(module); "
++        )
++        if legacy_entry is not None:
++            script += f"module.adopt_external_entry({legacy_entry!r}); "
++        if args is None:
++            script += "print(json.dumps(module.disable_owned()))"
++        else:
++            script += f"from astrid.skills.cli import main; raise SystemExit(main({args!r}))"
++        return [version.python, "-X", "utf8", "-I", "-c", script]
+ 
+     def remove_skills(self, version: Version) -> dict:
+         """Clean proven owned targets without changing the saved install policy."""
+-        script = "import json; from astrid.skills import disable_owned; print(json.dumps(disable_owned()))"
+-        return self._run_skills(version, [version.python, "-X", "utf8", "-I", "-c", script], action="cleanup")
++        return self._run_skills(version, self._skills_argv(version), action="cleanup")
+ 
+     def _run_skills(self, version: Version, argv: list, *, action: str = "sync") -> dict:
+         failed = False
+diff --git a/astrid/installer/cli.py b/astrid/installer/cli.py
+index d6ebe39b86cc9231d9ac6c9c0d5088a9b0159610..27c3dab97b12c5a8b79c682aeaa8a4d6ee083d2b 100644
+--- a/astrid/installer/cli.py
++++ b/astrid/installer/cli.py
+@@ -125,7 +125,7 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
+                     message += "; " + ", ".join(effects)
+             else:
+                 message = "; " + ", ".join(effects) if effects else "; no owned command/PATH changes were needed"
+-            print("  Command/PATH: off" + message + ".")
++            print("  Command/PATH: " + ("cleanup incomplete" if command.get("preserved_shim") or command.get("error") else "off") + message + ".")
+         elif command.get("error"):
+             print(f"  Command/PATH: setup failed ({command['error']}); use the run-astrid launcher.")
+         elif command.get("path") is None:
+@@ -171,9 +171,9 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
+                 print(f"  Failure: {type(failure).__name__}")
+     selected = resolve_choices(prompt=choices, accept_recommended=choices is None)
+     if not selected["autostart"]:
+-        print("  Startup recovery: Astrid will not start at sign-in. To start it later, rerun the install line; to enable sign-in startup, replace --autostart off with --autostart on in the Way back line.")
++        print("  Startup recovery: With startup disabled, Astrid will not start at sign-in. This run may not have applied that choice; use the Startup result above. To start it later, rerun the install line; to enable sign-in startup, replace --autostart off with --autostart on in the Way back line.")
+     if not selected["command"]:
+-        print("  Command recovery: the astrid command shim is off. To restore it, replace --command off with --command on in the Way back line.")
++        print("  Command recovery: To apply or restore the astrid command shim, replace --command off with --command on in the Way back line.")
+         if install_root is not None:
+             launcher = install_root / ("run-astrid.cmd" if sys.platform == "win32" else "run-astrid")
+             if launcher.is_file():
+@@ -182,7 +182,7 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
+         print("  Skills recovery: to enable Astrid skills later, rerun the install line with --skills on (replace this flag in the Way back line).")
+     if not selected["skill_copies"]:
+         print("  Skill copies recovery: to enable skill copies later, rerun the install line with --skill-copies on (replace this flag in the Way back line).")
+-    print("  Maintenance: rerun the install line to repair or restart; add --update to update, or --uninstall to remove Astrid. Uninstall keeps the workspace unless --delete-data is added.")
++    print("  Maintenance: rerun the install line to repair or restart; add --update to update. To remove Astrid, replace all setup/update arguments with --uninstall. Uninstall keeps the workspace unless --delete-data is added.")
+     print("  Way back: " + _way_back_command(choices, mode=mode))
+ 
+ 
+diff --git a/astrid/installer/core.py b/astrid/installer/core.py
+index d0d5cb68a4dc7a2b08a18f3df86e6edcc176b483..730ef1d6dd975281f4cffc928ad1943550a38e3d 100644
+--- a/astrid/installer/core.py
++++ b/astrid/installer/core.py
+@@ -282,9 +282,24 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
+         save("recovering")
+         if backup is not None and restore_workspace and kind == "migration":
+             backend.restore(old, data, realm, backup)
++        # Requested choices may have reached registration before readiness.
++        # Restore the journaled policy before publishing/reactivating the old version.
++        previous_choices = transaction.get("previous_choices")
++        service = getattr(backend, "service", None)
++        if isinstance(previous_choices, dict) and service is not None:
++            service.choices = dict(previous_choices)
+         switch_old(old, candidate)
+         save("rollback_selected")
+         activate_old(old, data, realm)
++        if isinstance(previous_choices, dict) and service is not None:
++            if transaction.get("skills_attempted"):
++                restored_skills = backend.sync_skills(old)
++                transaction["rollback_skills"] = restored_skills
++                if not restored_skills.get("ok"):
++                    raise RuntimeError("The previous skills policy could not be restored; see the log.")
++            persist = getattr(backend, "persist_identity", None)
++            if persist is not None:
++                persist(old)
+         save("rolled_back")
+ 
+ 
+@@ -459,6 +474,11 @@ class Installer:
+                 "old": old.document(), "realm": realm, "backup": None,
+                 "candidate": candidate.document(),
+             }
++            service = getattr(self.backend, "service", None)
++            recorded = getattr(service, "recorded", lambda: {})()
++            if service is not None and recorded:
++                from .choices import resolve_choices
++                transaction["previous_choices"] = resolve_choices(saved=recorded.get("choices"), existing_install=True)
+             log = getattr(self.backend, "log", None)
+             if isinstance(log, (str, Path)):
+                 transaction["log_path"] = str(absolute(Path(log)))
+@@ -488,6 +508,8 @@ class Installer:
+                         save=lambda step, **details: self._save_update(
+                             transaction, step, **details),
+                     )
++                    if "rollback_skills" in transaction:
++                        self.outcomes["skills"] = transaction["rollback_skills"]
+                 except (Exception, KeyboardInterrupt) as recovery:
+                     if is_lifecycle_refusal(recovery):
+                         raise
+@@ -696,6 +718,10 @@ class Installer:
+                     raise VerificationError("The installed workspace identity changed.")
+                 else:
+                     self.outcomes["startup"] = "registered; Pinokio owns startup"
++                context = getattr(self.backend, "_update_transaction", None)
++                if context is not None:
++                    transaction = context[0]
++                    self._save_update(transaction, transaction["step"], skills_attempted=True)
+                 try:
+                     self.outcomes["skills"] = self.backend.sync_skills(candidate)
+                 except Exception:  # noqa: BLE001 - skill setup must never fail installation
+diff --git a/astrid/skills/__init__.py b/astrid/skills/__init__.py
+index 0963ac1118ca7a78131dd722e9a7d19d82b718f9..d26668e1d2730a9a448f8867401bbec32fdb5d6d 100644
+--- a/astrid/skills/__init__.py
++++ b/astrid/skills/__init__.py
+@@ -208,6 +208,58 @@ def _ownership_sources(adapter, descriptors, current_state, state_path):
+     return sources, declared
+ 
+ 
++def skill_policy(*, skills: bool | None = None, copies: bool | None = None,
++                 mechanism: str | None = None, developer: bool = False) -> tuple[bool, str]:
++    """Resolve the installer policy once for every public skills caller."""
++    import sys
++    from astrid.installer.choices import resolve_choices
++    from astrid.installer.service import LABEL, install_selection
++
++    saved = {}
++    try:
++        record = json.loads(install_selection(Path.home(), sys.platform).read_text(encoding="utf-8"))
++        if isinstance(record, dict) and record.get("owner") == LABEL and isinstance(record.get("choices"), dict):
++            saved = record["choices"]
++    except (OSError, ValueError, TypeError):
++        pass
++    explicit = {}
++    if skills is not None:
++        explicit["skills"] = skills
++    if copies is not None:
++        explicit["skill_copies"] = copies
++    choices = resolve_choices(explicit=explicit, saved=saved, existing_install=bool(saved))
++    return (True if developer else choices["skills"],
++            mechanism or ("copy" if choices["skill_copies"] else "symlink"))
++
++
++@_locked_operation
++def adopt_external_entry(entry: str, *, state_path: Path | None = None) -> None:
++    """Upgrade legacy Hermes receipts using a held installed package source.
++
++    The installer supplies this exact source through the retained interpreter;
++    arbitrary external config entries are never scanned into ownership.
++    """
++    if not Path(entry).is_absolute():
++        raise ValueError("An absolute installed packs path is required.")
++    from .harnesses.hermes import HermesAdapter
++    adapter = HermesAdapter()
++    config = adapter._load_config()
++    if entry not in ((config.get("skills") or {}).get("external_dirs") or []):
++        return
++    current = state.load(state_path)
++    units = {unit.skill_id: unit for unit in list_skills()}
++    changed = False
++    for skill_id, record in current.get("installs", {}).get("hermes", {}).items():
++        unit = units.get(skill_id)
++        if (unit is not None and record.get("mechanism") == "external-dir"
++                and not record.get("external_entry")
++                and record.get("target") in {str(adapter.target_for(unit)), str(adapter.config_path)}):
++            record["external_entry"] = entry
++            changed = True
++    if changed:
++        state.save(current, state_path)
++
++
+ @_locked_operation
+ def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> dict:
+     """Remove proven owned targets, retaining and reporting every conflict."""
+@@ -236,13 +288,11 @@ def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> d
+             if record.get("mechanism") == "external-dir" and harness == "hermes":
+                 external_targets.add(target)
+                 recorded_units = [unit for unit in descriptors if unit.skill_id == skill_id]
+-                if not any(target == adapter.target_for(unit) for unit in recorded_units):
+-                    report["conflicts"].append({"harness": harness, "path": str(target),
+-                        "reason": "recorded Hermes external-dir target does not match this skill; preserved"})
+-                    harness_report["preserved"].append(str(target))
+-                    continue
+                 try:
+-                    steps = adapter.apply("uninstall", descriptors, mechanism="external-dir", dry_run=dry_run)
++                    if not recorded_units:
++                        raise ValueError("recorded Hermes skill is no longer declared; preserved")
++                    entry = adapter.external_entry(record, recorded_units[0])
++                    steps = adapter.apply("uninstall", recorded_units, mechanism="external-dir", external_entry=entry, dry_run=dry_run)
+                 except (OSError, RuntimeError, ValueError) as exc:
+                     report["conflicts"].append({"harness": harness, "path": str(target), "reason": str(exc)})
+                     harness_report["preserved"].append(str(target))
+@@ -288,6 +338,44 @@ def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> d
+     return report
+ 
+ 
++def _prepare_hermes(adapter, current, descriptors, mechanism, *, dry_run=False):
++    """Remove previous mechanisms using their held receipt before replacement."""
++    if adapter.name != "hermes":
++        return []
++    steps = []
++    records = current.get("installs", {}).get("hermes", {})
++    sources, declared = _ownership_sources(adapter, descriptors, current, None)
++    from .harnesses.base import PlannedStep
++    from .harnesses.hermes import PACKS_DIR_FOR_EXTERNAL
++    for skill_id, record in list(records.items()):
++        unit = next((d for d in descriptors if d.skill_id == skill_id), None)
++        if unit is None or not isinstance(record, dict):
++            continue
++        try:
++            if record.get("mechanism") == "external-dir":
++                entry = adapter.external_entry(record, unit)
++                if mechanism == "external-dir" and entry == str(PACKS_DIR_FOR_EXTERNAL.resolve()):
++                    continue
++                steps.extend(adapter.apply("uninstall", [unit], mechanism="external-dir", external_entry=entry, dry_run=dry_run))
++            elif mechanism == "external-dir":
++                target = Path(record["target"])
++                changed = remove_symlink(target, sources=sources.get(target, declared), dry_run=dry_run)
++                steps.append(PlannedStep(f"remove {target}", target=target, extras={"changed": changed}))
++            else:
++                continue
++            if not dry_run:
++                records.pop(skill_id, None)
++        except (AstridError, OSError, RuntimeError, ValueError) as exc:
++            steps.append(PlannedStep(str(exc), target=Path(record.get("target", ".")), extras={"conflict": str(exc)}))
++    return steps
++
++
++def _record_external_entry(current, harness, skill_id, mechanism):
++    if harness == "hermes" and mechanism == "external-dir":
++        from .harnesses.hermes import PACKS_DIR_FOR_EXTERNAL
++        current["installs"][harness][skill_id]["external_entry"] = str(PACKS_DIR_FOR_EXTERNAL.resolve())
++
++
+ @_locked_operation
+ def install(
+     pack_ids: Iterable[str] | None,
+@@ -317,10 +405,15 @@ def install(
+                                                             current_state, state_path)[0]}
+         if harness_name == "codex":
+             kwargs["all_after_descriptors"] = list(_codex_after_set(current_state, descriptors, install=True))
++        transition_steps = _prepare_hermes(adapter, current_state, known_units, kwargs.get("mechanism", mechanism), dry_run=dry_run)
++        if any(step.extras.get("conflict") for step in transition_steps):
++            report.setdefault("conflicts", []).extend({"harness": harness_name, "path": str(step.target), "reason": step.extras["conflict"]} for step in transition_steps if step.extras.get("conflict"))
++            report["actions"].append({"harness": harness_name, "steps": [_step_to_dict(step) for step in transition_steps]})
++            continue
+         if dry_run:
+-            steps = adapter.plan("install", descriptors, **kwargs)
++            steps = transition_steps + adapter.plan("install", descriptors, **kwargs)
+         else:
+-            steps = adapter.apply("install", descriptors, **kwargs)
++            steps = transition_steps + adapter.apply("install", descriptors, **kwargs)
+             conflicts_by_target = {step.target for step in steps if step.extras.get("conflict")}
+             for descriptor in descriptors:
+                 target = adapter.target_for(descriptor)
+@@ -341,6 +434,7 @@ def install(
+             for descriptor in descriptors:
+                 if adapter.target_for(descriptor) in conflicts_by_target:
+                     continue
++                _record_external_entry(current_state, harness_name, descriptor.skill_id, kwargs.get("mechanism", mechanism))
+                 entry = _inventory(current_state, harness_name, descriptor)
+                 entry["selected"] = True
+                 entry["digest"] = discovery.unit_digest(descriptor, extras_for_digest)
+@@ -381,7 +475,13 @@ def uninstall(
+     skill_names: Iterable[str] = (),
+     all_skills: bool = False,
+     developer: bool = False,
++    skills_enabled: bool | None = None,
++    mechanism: str | None = None,
+ ) -> dict:
++    if skills_enabled is None or mechanism is None:
++        saved_enabled, saved_mechanism = skill_policy()
++        skills_enabled = saved_enabled if skills_enabled is None else skills_enabled
++        mechanism = mechanism or saved_mechanism
+     available = list_skills()
+     descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True, developer=developer, available=available)
+     known_units = available + discovery.list_extras(available)
+@@ -394,10 +494,25 @@ def uninstall(
+             adapter, known_units, current_state, state_path)[0]}
+         if harness_name == "codex":
+             kwargs["all_after_descriptors"] = list(_codex_after_set(current_state, descriptors, install=False))
++        external_steps = []
++        ordinary = descriptors
++        if harness_name == "hermes":
++            ordinary = []
++            for unit in descriptors:
++                record = current_state.get("installs", {}).get(harness_name, {}).get(unit.skill_id, {})
++                if record.get("mechanism") != "external-dir":
++                    ordinary.append(unit)
++                    continue
++                try:
++                    entry = adapter.external_entry(record, unit)
++                    external_steps.extend(adapter.apply("uninstall", [unit], mechanism="external-dir", external_entry=entry, dry_run=dry_run))
++                except (OSError, RuntimeError, ValueError) as exc:
++                    from .harnesses.base import PlannedStep
++                    external_steps.append(PlannedStep(str(exc), target=adapter.target_for(unit), extras={"conflict": str(exc)}))
+         if dry_run:
+-            steps = adapter.plan("uninstall", descriptors, **kwargs)
++            steps = external_steps + adapter.plan("uninstall", ordinary, **kwargs)
+         else:
+-            steps = adapter.apply("uninstall", descriptors, **kwargs)
++            steps = external_steps + adapter.apply("uninstall", ordinary, **kwargs)
+             conflicts_by_target = {step.target for step in steps if step.extras.get("conflict")}
+             for descriptor in descriptors:
+                 if adapter.target_for(descriptor) in conflicts_by_target:
+@@ -423,8 +538,9 @@ def uninstall(
+         if targets and any(d.developer_only for d in descriptors):
+             # Recompose so the deselected developer-only skills leave the view.
+             hermes_install = current_state["installs"].get("hermes", {}).get("_core", {})
+-            mechanism = "external-dir" if hermes_install.get("mechanism") == "external-dir" else "symlink"
+-            resynced = sync.__wrapped__(harness_names=targets, mechanism=mechanism, state_path=state_path)
++            resync_mechanism = mechanism or ("external-dir" if hermes_install.get("mechanism") == "external-dir" else "symlink")
++            resynced = (sync.__wrapped__(harness_names=targets, mechanism=resync_mechanism, state_path=state_path)
++                        if skills_enabled else disable_owned.__wrapped__(state_path=state_path))
+             report["resync"] = resynced
+     return report
+ 
+@@ -546,10 +662,15 @@ def sync(
+         kwargs: dict = {"force": force, "mechanism": selected_mechanism, "owned_sources": owned_sources}
+         if harness_name == "codex":
+             kwargs["all_after_descriptors"] = list(descriptors)
++        transition_steps = _prepare_hermes(adapter, current_state, all_units, kwargs.get("mechanism", mechanism), dry_run=dry_run)
++        if any(step.extras.get("conflict") for step in transition_steps):
++            report.setdefault("conflicts", []).extend({"harness": harness_name, "path": str(step.target), "reason": step.extras["conflict"]} for step in transition_steps if step.extras.get("conflict"))
++            report["actions"].append({"harness": harness_name, "steps": [_step_to_dict(step) for step in transition_steps]})
++            continue
+         if dry_run:
+-            steps = adapter.plan("install", descriptors, **kwargs)
++            steps = transition_steps + adapter.plan("install", descriptors, **kwargs)
+         else:
+-            steps = adapter.apply("install", descriptors, **kwargs)
++            steps = transition_steps + adapter.apply("install", descriptors, **kwargs)
+             conflicts_by_target = {step.target for step in steps if step.extras.get("conflict")}
+             disabled_before = list(current_state["disabled_defaults"].get(harness_name, []))
+             for descriptor in descriptors:
+@@ -568,6 +689,7 @@ def sync(
+                         else target_mechanism(target)
+                     ),
+                 )
++                _record_external_entry(current_state, harness_name, descriptor.skill_id, kwargs.get("mechanism", mechanism))
+             current_state["disabled_defaults"][harness_name] = disabled_before
+             # Prune orphan installs from state.
+             installed_ids = {d.skill_id for d in descriptors}
+@@ -658,6 +780,8 @@ def check(
+     deep: bool = False,
+     skill_md_path: Path | None = None,
+     state_path: Path | None = None,
++    skills_enabled: bool = True,
++    mechanism: str | None = None,
+ ) -> dict:
+     """Dry-run drift report for the gateway link + registry block + per-pack links.
+ 
+@@ -674,6 +798,15 @@ def check(
+     ``has_drift`` is ``True`` when any category is non-empty; callers map that
+     to a non-zero exit code.
+     """
++    if not skills_enabled:
++        preview = disable_owned(state_path=state_path, dry_run=True)
++        remaining = [{"harness": action["harness"], "link": "owned skills", "path": path}
++                     for action in preview["actions"] for path in action["removed"]]
++        conflicts = [*preview.get("conflicts", []), *preview.get("ambiguous", [])]
++        return {"detected": [action["harness"] for action in preview["actions"]],
++                "registry_stale": False, "missing": [], "stale_links": remaining,
++                "links": {}, "broken_links": [], "conflicts": conflicts,
++                "has_drift": bool(remaining or conflicts), "skills_enabled": False}
+     from .harnesses.base import ours_link_to_pack_id
+ 
+     all_descriptors = list_skills()
+@@ -746,6 +879,17 @@ def check(
+                 )
+         for descriptor in expected:
+             ok, _msg = adapter.verify(descriptor)
++            wanted = "symlink" if mechanism == "external-dir" and harness_name != "hermes" else mechanism
++            target = adapter.target_for(descriptor)
++            if wanted == "external-dir":
++                from .harnesses.hermes import PACKS_DIR_FOR_EXTERNAL
++                dirs = (adapter._load_config().get("skills") or {}).get("external_dirs") or []
++                policy_matches = str(PACKS_DIR_FOR_EXTERNAL.resolve()) in dirs
++            else:
++                policy_matches = wanted is None or target_mechanism(target) == wanted
++            if ok and not policy_matches:
++                report.setdefault("policy_mismatches", []).append({"harness": harness_name,
++                    "path": str(target), "mechanism": wanted})
+             if not ok:
+                 report["missing"].append(
+                     {"harness": harness_name, "pack": descriptor.pack_id}
+@@ -774,6 +918,7 @@ def check(
+         or report["missing"]
+         or report["stale_links"]
+         or report["broken_links"]
++        or report.get("policy_mismatches")
+     )
+     return report
+ 
+@@ -867,6 +1012,7 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
+                         mechanism=fs_record.mechanism,
+                         source=str(descriptor.skill_dir.resolve()),
+                     )
++                    _record_external_entry(current_state, harness_name, descriptor.pack_id, fs_record.mechanism)
+                     state_changed = True
+                     report["healed"].append(
+                         {"harness": harness_name, "pack": descriptor.pack_id, "action": "recorded-from-fs"}
+diff --git a/astrid/skills/cli.py b/astrid/skills/cli.py
+index daa53b57085f448bb3145b8eadf2fca4de48d5de..aab757bdbb42f7a78ed1703de004b49f1880fd51 100644
+--- a/astrid/skills/cli.py
++++ b/astrid/skills/cli.py
+@@ -194,15 +194,16 @@ def _cmd_install(args: argparse.Namespace) -> int:
+ def _cmd_uninstall(args: argparse.Namespace) -> int:
+     pack_ids = _resolve_packs(args)
+     harness_names = _resolve_harness_arg(args)
+-    report = uninstall_fn(pack_ids=pack_ids, harness_names=harness_names, dry_run=args.dry_run, skill_names=args.skill, all_skills=args.all_skills, developer=args.developer)
++    enabled, mechanism = _skill_policy(args)
++    report = uninstall_fn(skills_enabled=enabled, mechanism=mechanism, pack_ids=pack_ids, harness_names=harness_names, dry_run=args.dry_run, skill_names=args.skill, all_skills=args.all_skills, developer=args.developer)
+     return _emit_report(report, args)
+ 
+ 
+ def _cmd_sync(args: argparse.Namespace) -> int:
++    enabled, mechanism = _skill_policy(args)
+     if getattr(args, "check", False):
+-        report = check_fn(deep=args.deep)
++        report = check_fn(deep=args.deep, skills_enabled=enabled, mechanism=mechanism)
+         return _emit_check_report(report, args)
+-    enabled, mechanism = _skill_policy(args)
+     if not enabled:
+         rc = _emit_report(disable_owned(dry_run=args.dry_run), args)
+         _save_explicit_skill_policy(args)
+@@ -247,33 +248,16 @@ def _cmd_sync(args: argparse.Namespace) -> int:
+ 
+ 
+ def _skill_policy(args: argparse.Namespace) -> tuple[bool, str]:
+-    """Resolve explicit skill flags over the saved installer choice."""
+-    saved: dict = {}
+-    try:
+-        from astrid.installer.service import LABEL, install_selection
+-
+-        record = json.loads(install_selection(Path.home(), sys.platform).read_text(encoding="utf-8"))
+-        if isinstance(record, dict) and record.get("owner") == LABEL:
+-            value = record.get("choices")
+-            if isinstance(value, dict):
+-                saved = value
+-    except (OSError, ValueError, TypeError):
+-        pass
++    from . import skill_policy
++
+     explicit_skills = getattr(args, "skills", None)
+     explicit_copies = getattr(args, "skill_copies", None)
+-    choices = resolve_choices(
+-        explicit={
+-            **({"skills": explicit_skills == "on"} if explicit_skills is not None else {}),
+-            **({"skill_copies": explicit_copies == "on"} if explicit_copies is not None else {}),
+-        },
+-        saved=saved,
+-        existing_install=bool(saved),
++    return skill_policy(
++        skills=explicit_skills == "on" if explicit_skills is not None else None,
++        copies=explicit_copies == "on" if explicit_copies is not None else None,
++        mechanism=getattr(args, "mechanism", None),
++        developer=bool(getattr(args, "developer", False) and args.command != "uninstall"),
+     )
+-    enabled = True if getattr(args, "developer", False) else choices["skills"]
+-    copies = choices["skill_copies"]
+-    requested = getattr(args, "mechanism", None)
+-    mechanism = requested or ("copy" if copies else "symlink")
+-    return bool(enabled), mechanism
+ 
+ 
+ def _save_explicit_skill_policy(args: argparse.Namespace) -> None:
+@@ -337,11 +321,16 @@ def _emit_check_report(report: dict[str, Any], args: argparse.Namespace) -> int:
+             print(f"  [drift] {entry['harness']:<7} {entry['pack']:<14} not linked")
+         for entry in report["stale_links"]:
+             print(f"  [drift] {entry['harness']:<7} {entry['link']:<14} stale link (pack gone)")
++        for mismatch in report.get("policy_mismatches", []):
++            print(f"  [drift] {mismatch['harness']}: {mismatch['path']}: expected {mismatch['mechanism']}")
++        for conflict in report.get("conflicts", []):
++            print(f"  [drift] {conflict['harness']}: {conflict.get('path', '')}: {conflict['reason']}")
+         _print_link_summary(report.get("links", {}))
+         for entry in report.get("broken_links", []):
+             _print_broken_link(entry)
+         if not report["has_drift"]:
+-            print("clean: registry current and all links present")
++            print("clean: skills are off and no owned targets remain" if report.get("skills_enabled") is False else
++                  "clean: registry current and all links present")
+     return 1 if report["has_drift"] else 0
+ 
+ 
+diff --git a/astrid/skills/harnesses/hermes.py b/astrid/skills/harnesses/hermes.py
+index 11fcaa052c709819f8d5a71398c1265e059f4d7c..9be1547690eff54bb93366d65e38eb563674daf2 100644
+--- a/astrid/skills/harnesses/hermes.py
++++ b/astrid/skills/harnesses/hermes.py
+@@ -60,7 +60,7 @@ class HermesAdapter(HarnessAdapter):
+         mechanism = opts.get("mechanism") or "symlink"
+         steps: list[PlannedStep] = []
+         if mechanism == "external-dir":
+-            entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
++            entry = str(opts.get("external_entry") or PACKS_DIR_FOR_EXTERNAL.resolve())
+             verb = "add" if action == "install" else "remove"
+             steps.append(
+                 PlannedStep(
+@@ -88,7 +88,7 @@ class HermesAdapter(HarnessAdapter):
+         mechanism = opts.get("mechanism") or "symlink"
+         force = bool(opts.get("force"))
+         if mechanism == "external-dir":
+-            entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
++            entry = str(opts.get("external_entry") or PACKS_DIR_FOR_EXTERNAL.resolve())
+             dry_run = bool(opts.get("dry_run"))
+             if action == "uninstall" and dry_run:
+                 config = self._load_config()
+@@ -169,6 +169,32 @@ class HermesAdapter(HarnessAdapter):
+                 )
+         return None
+ 
++    def external_entry(self, record: dict, descriptor: SkillDescriptor) -> str:
++        """Identify a held external entry without adopting arbitrary config paths."""
++        target = Path(record.get("target", ""))
++        if target not in {self.target_for(descriptor), self.config_path}:
++            raise ValueError("recorded Hermes external-dir target does not match this skill; preserved")
++        entry = record.get("external_entry")
++        if isinstance(entry, str) and Path(entry).is_absolute():
++            return entry
++        source = record.get("source")
++        if isinstance(source, str) and Path(source).is_absolute():
++            try:
++                relative = descriptor.skill_dir.resolve().relative_to(PACKS_DIR_FOR_EXTERNAL.resolve())
++            except ValueError:
++                relative = None
++            if relative is not None:
++                candidate = Path(source)
++                for _ in relative.parts:
++                    candidate = candidate.parent
++                if candidate.name == "packs" and candidate / relative == Path(source):
++                    return str(candidate)
++        # Old same-version receipts did not carry a source. Only the current
++        # declared package entry is provable in that case.
++        if source is None:
++            return str(PACKS_DIR_FOR_EXTERNAL.resolve())
++        raise ValueError("recorded Hermes external-dir source is ambiguous; preserved")
++
+     def _load_config(self) -> dict:
+         if not self.config_path.exists():
+             return {}
+@@ -261,6 +287,10 @@ class HermesAdapter(HarnessAdapter):
+             raise RuntimeError("cannot safely locate recorded Hermes external-dir entry")
+ 
+         updated_lines = lines[:entry_line] + lines[entry_line + 1:]
++        if len(external_dirs) == 1:
++            # Keep the list type when the last owned entry leaves. Preserve
++            # comments, line endings and every unrelated config byte.
++            updated_lines[external_line] = re.sub(r"(external_dirs\s*:)", r"\1 []", updated_lines[external_line], count=1)
+         updated_text = "".join(updated_lines)
+         try:
+             updated_data = yaml.safe_load(updated_text) or {}
+diff --git a/tests/installer_skill_fixtures.py b/tests/installer_skill_fixtures.py
+index c67495aa5fec0c399c7a824e207a627d9fcdc5f3..45ea8c9c7ccd0461f72ef537be7786fd1c0d8364 100644
+--- a/tests/installer_skill_fixtures.py
++++ b/tests/installer_skill_fixtures.py
+@@ -33,7 +33,7 @@ def skill_installation(tmp_path, monkeypatch, *, manager=None):
+     backend.service.choices = resolve_choices(saved={"skill_copies": True}, existing_install=True)
+     versions = {}
+ 
+-    def version(name, release):
++    def version(name, release, *, package_source=None):
+         folder = root / "versions" / name
+         environment = folder / "python"
+         venv.EnvBuilder(with_pip=False).create(environment)
+@@ -41,7 +41,7 @@ def skill_installation(tmp_path, monkeypatch, *, manager=None):
+         site = (environment / "Lib/site-packages" if sys.platform == "win32" else
+                 next((environment / "lib").glob("python*/site-packages")))
+         # -I remains enabled: explicit fixture paths live in this environment.
+-        paths = [Path(astrid.__file__).resolve().parent.parent,
++        paths = [package_source or Path(astrid.__file__).resolve().parent.parent,
+                  Path(runtime_protocol.__file__).resolve().parent.parent,
+                  Path(sysconfig.get_path("purelib")), Path(sysconfig.get_path("platlib"))]
+         (site / "composition.pth").write_text("\n".join(map(str, dict.fromkeys(paths))) + "\n")
+@@ -91,3 +91,18 @@ def edit_and_foreign(env):
+     shutil.rmtree(foreign)
+     foreign.symlink_to(foreign_root, target_is_directory=True)
+     return edited, edited.read_bytes(), foreign, foreign_file
++
++
++def frozen_agent_source(tmp_path):
++    """Materialize the exact frozen installed package, without a scratch clone."""
++    import io
++    import subprocess
++    import tarfile
++
++    source = tmp_path / "frozen-agent-source"
++    source.mkdir()
++    archive = subprocess.check_output(["git", "-C", str(Path(astrid.__file__).resolve().parent.parent),
++        "archive", "12f401eb8f707234697672317c8995a4637dc54d", "astrid"])
++    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
++        tar.extractall(source, filter="data")
++    return source
+diff --git a/tests/test_installer_app_update.py b/tests/test_installer_app_update.py
+index d8b5362cdb4191570ea89e5096c4a4d7824dfcb9..b351daf529b87daca6ab6cd3b153b141e8656fdf 100644
+--- a/tests/test_installer_app_update.py
++++ b/tests/test_installer_app_update.py
+@@ -2160,3 +2160,59 @@ def test_strict_app_recovery_keeps_saved_policy_without_applying_new_request(tmp
+     assert all(target.exists() for target in env.targets.values())
+     assert not any(event.startswith("skills:") for event in env.events)
+     assert read_json(env.root / "update-transaction.json")["step"] == "rolled_back"
++
++
++@pytest.mark.parametrize("requested", [{"skills": False}, {"skill_copies": False}])
++def test_ordinary_pinokio_rollback_restores_saved_skill_policy(tmp_path, monkeypatch, requested):
++    from astrid.skills import state
++
++    env = _skill_app_update(tmp_path, monkeypatch)
++    saved = env.backend.service.recorded()["choices"]
++    before = state.state_path().read_bytes()
++    env.backend.service.choices = {**saved, **requested}
++    env.fail_start = True
++    monkeypatch.setattr(env.backend, "register", lambda v, _: env.backend.persist_identity(v))
++    monkeypatch.setattr(env.backend, "stop", lambda *_: None)
++    monkeypatch.setattr(env.backend, "backup", lambda *_: None)
++    monkeypatch.setattr(env.backend, "upgrade", lambda *_: None)
++    monkeypatch.setattr(env.backend, "restore", lambda *_: None)
++    # Ordinary migration keeps real selection, journal, activation and policy paths.
++    with pytest.raises(ValueError, match="candidate readiness failed"):
++        update.update_pinokio(env.root, env.backend, {"release": 12},
++                              lifecycle=env.lifecycle if hasattr(env, "lifecycle") else None,
++                              say=lambda _: None)
++    assert current(env.root) == env.old
++    assert env.backend.service.recorded()["choices"] == saved
++    assert state.state_path().read_bytes() == before
++    assert all(target.is_dir() and not target.is_symlink() for target in env.targets.values())
++
++
++def test_strict_update_from_frozen_package_removes_legacy_hermes_registration(tmp_path, monkeypatch):
++    from tests.installer_skill_fixtures import frozen_agent_source
++    from astrid.installer.backend import Backend
++    from astrid.skills import disable_owned, state
++
++    env = _skill_app_update(tmp_path, monkeypatch)
++    disable_owned()
++    frozen_source = frozen_agent_source(tmp_path)
++    previous = env.version("frozen", 11, package_source=frozen_source)
++    env.old = previous
++    switch(env.root, previous)
++    env.backend.persist_identity(previous)
++    # Seed through the actual frozen package and production subprocess boundary.
++    Backend.run(env.backend, [previous.python, "-X", "utf8", "-I", "-m", "astrid.skills", "install",
++        "foley", "--harness", "hermes", "--mechanism", "external-dir", "--json"], extra_env=previous.env)
++    assert "external_entry" not in state.load()["installs"]["hermes"]["foley"]
++    config = env.home / ".hermes/config.yaml"
++    old_entry = str(frozen_source / "astrid/packs")
++    config.write_bytes(config.read_bytes() + b"  - /foreign/skills # keep this registration\n")
++    saved = env.backend.service.recorded()["choices"]
++    env.backend.service.choices = {**saved, "skills": False}
++    result = update.update_app(env.root, env.backend, {"release": 12}, say=lambda _: None)
++    assert current(env.root) == env.candidate
++    assert result["skills"]["ok"]
++    assert old_entry.encode() not in config.read_bytes()
++    assert b"/foreign/skills # keep this registration" in config.read_bytes()
++    assert not state.load()["installs"]["hermes"]
++    assert env.backend.service.recorded()["choices"]["skills"] is False
++    assert read_json(env.root / "update-transaction.json")["step"] == "complete"
+diff --git a/tests/test_installer_lifecycle.py b/tests/test_installer_lifecycle.py
+index 575047626e3fbf1c1e59d7417f7371dcbd71fd7d..66898544023352d0829f068801f82798e42b3440 100644
+--- a/tests/test_installer_lifecycle.py
++++ b/tests/test_installer_lifecycle.py
+@@ -911,8 +911,11 @@ def test_backend_skill_sync_logs_output_and_failure_result(tmp_path, monkeypatch
+     version = Version(tmp_path / "version", Path(sys.executable), tmp_path / "profile.json", {})
+     backend.sync_skills(version)
+ 
+-    assert calls[0][0] == [Path(sys.executable), "-X", "utf8", "-I", "-m", "astrid.skills", "sync", "--json",
+-                           "--skills", "on", "--skill-copies", "off"]
++    argv = calls[0][0]
++    assert argv[:5] == [Path(sys.executable), "-X", "utf8", "-I", "-c"]
++    assert str(Path(__file__).resolve().parents[1] / "astrid/skills/__init__.py") in argv[5]
++    assert "['sync', '--json', '--skills', 'on', '--skill-copies', 'off']" in argv[5]
++    assert "spec_from_file_location('astrid.skills'" in argv[5]
+     assert calls[0][2] == 60
+     assert "sync diagnostic output" in log.read_text(encoding="utf-8")
+     assert "Astrid skills sync failed (CalledProcessError)." in log.read_text(encoding="utf-8")
+@@ -2385,3 +2388,151 @@ def test_ordinary_update_applies_saved_skill_policy(tmp_path, monkeypatch, reque
+             assert target.is_symlink()
+         else:
+             assert not target.exists() and not target.is_symlink()
++
++
++def test_new_bootstrap_uninstalls_frozen_package_without_deleting_retargeted_foreign_link(
++        tmp_path, monkeypatch):
++    from tests.installer_skill_fixtures import frozen_agent_source, skill_installation
++    from astrid.skills import state
++
++    env = skill_installation(tmp_path, monkeypatch)
++    frozen_source = frozen_agent_source(tmp_path)
++    frozen = env.version("frozen", 11, package_source=frozen_source)
++    # Prove the installed interpreter really imports the frozen package, not the candidate.
++    origin = env.backend.run([frozen.python, "-I", "-c",
++        "import astrid.skills; print(astrid.skills.__file__)"], extra_env=frozen.env)
++    assert str(frozen_source / "astrid/skills/__init__.py") in origin
++    switch(env.root, frozen)
++    env.backend.persist_identity(frozen)
++    target = env.targets["claude"]
++    shutil.rmtree(target)
++    foreign = tmp_path / "foreign/astrid/_core/notes"
++    foreign.mkdir(parents=True)
++    (foreign / "keep.txt").write_bytes(b"foreign source bytes\r\n")
++    target.symlink_to(foreign, target_is_directory=True)
++    before = state.load()["installs"]["claude"]["_core"]
++    monkeypatch.setattr(env.backend, "stop", lambda *_: None)
++    monkeypatch.setattr(env.backend.service, "unregister", lambda: None)
++    Installer(env.root, env.data, env.backend, say=lambda _: None).run("uninstall", {})
++    assert target.is_symlink() and target.resolve() == foreign
++    assert (foreign / "keep.txt").read_bytes() == b"foreign source bytes\r\n"
++    assert state.load()["installs"]["claude"]["_core"] == before
++    assert not env.root.exists()
++
++
++@pytest.mark.parametrize("requested", [
++    {"skills": False, "skill_copies": True},
++    {"skills": True, "skill_copies": False},
++])
++def test_ordinary_readiness_rollback_restores_saved_policy_and_owned_copies(
++        tmp_path, monkeypatch, requested):
++    from tests.installer_skill_fixtures import skill_installation
++    from astrid.skills import state
++
++    env = skill_installation(tmp_path, monkeypatch)
++    saved = env.backend.service.recorded()["choices"]
++    before = state.state_path().read_bytes()
++    candidate = env.version("new", 12)
++    env.backend.service.choices = {**saved, **requested}
++    execute = env.backend.run
++    def run(argv, **kwargs):
++        if "-c" in argv and "inspect_canonical_schema" in str(argv[argv.index("-c") + 1]):
++            return json.dumps({"identity": {"version": 31}, "target": 31})
++        return execute(argv, **kwargs)
++    monkeypatch.setattr(env.backend, "run", run)
++    monkeypatch.setattr(env.backend, "stage", lambda *_: candidate)
++    monkeypatch.setattr(env.backend, "validate_candidate", lambda *_: None)
++    monkeypatch.setattr(env.backend, "stop", lambda *_: None)
++    monkeypatch.setattr(env.backend, "register", lambda v, _: env.backend.persist_identity(v))
++    monkeypatch.setattr(env.backend, "start", lambda *_: None)
++    def verify(version, *_):
++        if version == candidate:
++            raise ValueError("candidate readiness failed")
++    monkeypatch.setattr(env.backend, "verify", verify)
++    with pytest.raises(ValueError, match="candidate readiness failed"):
++        Installer(env.root, env.data, env.backend, say=lambda _: None).run("update", {"release": 12})
++    assert current(env.root) == env.old
++    assert env.backend.service.recorded()["choices"] == saved
++    assert env.backend.service.choices == saved
++    assert state.state_path().read_bytes() == before
++    assert all(target.is_dir() and not target.is_symlink() for target in env.targets.values())
++
++
++def test_update_from_frozen_hermes_package_removes_legacy_external_entry(tmp_path, monkeypatch):
++    from tests.installer_skill_fixtures import frozen_agent_source, skill_installation
++    from astrid.skills import disable_owned, state
++
++    env = skill_installation(tmp_path, monkeypatch)
++    disable_owned()
++    frozen_source = frozen_agent_source(tmp_path)
++    previous = env.version("frozen", 11, package_source=frozen_source)
++    switch(env.root, previous)
++    env.backend.persist_identity(previous)
++    env.backend.run([previous.python, "-X", "utf8", "-I", "-m", "astrid.skills", "install",
++        "foley", "--harness", "hermes", "--mechanism", "external-dir", "--json"], extra_env=previous.env)
++    receipt = state.load()["installs"]["hermes"]["foley"]
++    assert "external_entry" not in receipt
++    config = env.home / ".hermes/config.yaml"
++    old_entry = str(frozen_source / "astrid/packs")
++    original = config.read_bytes() + b"  - /foreign/skills # retain this entry\n"
++    config.write_bytes(original)
++    assert old_entry.encode() in original
++    candidate = env.version("new", 12)
++    saved = env.backend.service.recorded()["choices"]
++    env.backend.service.choices = {**saved, "skills": False}
++    execute = env.backend.run
++    def run(argv, **kwargs):
++        if "-c" in argv and "inspect_canonical_schema" in str(argv[argv.index("-c") + 1]):
++            return json.dumps({"identity": {"version": 31}, "target": 31})
++        return execute(argv, **kwargs)
++    monkeypatch.setattr(env.backend, "run", run)
++    monkeypatch.setattr(env.backend, "stage", lambda *_: candidate)
++    monkeypatch.setattr(env.backend, "validate_candidate", lambda *_: None)
++    monkeypatch.setattr(env.backend, "stop", lambda *_: None)
++    monkeypatch.setattr(env.backend, "register", lambda v, _: env.backend.persist_identity(v))
++    monkeypatch.setattr(env.backend, "start", lambda *_: None)
++    monkeypatch.setattr(env.backend, "verify", lambda *_: None)
++    monkeypatch.setattr(env.backend, "open", lambda: None)
++    installer = Installer(env.root, env.data, env.backend, say=lambda _: None)
++    installer.run("update", {"release": 12})
++    assert current(env.root) == candidate
++    assert installer.outcomes["skills"]["ok"]
++    assert old_entry.encode() not in config.read_bytes()
++    assert b"/foreign/skills # retain this entry" in config.read_bytes()
++    assert not state.load()["installs"]["hermes"]
++
++
++def test_late_update_rollback_restores_previous_skill_effects_and_observed_summary(tmp_path, monkeypatch):
++    from tests.installer_skill_fixtures import skill_installation
++    from astrid.installer import core
++
++    env = skill_installation(tmp_path, monkeypatch)
++    saved = env.backend.service.recorded()["choices"]
++    candidate = env.version("new", 12)
++    env.backend.service.choices = {**saved, "skills": False}
++    execute = env.backend.run
++    def run(argv, **kwargs):
++        if "-c" in argv and "inspect_canonical_schema" in str(argv[argv.index("-c") + 1]):
++            return json.dumps({"identity": {"version": 31}, "target": 31})
++        return execute(argv, **kwargs)
++    monkeypatch.setattr(env.backend, "run", run)
++    monkeypatch.setattr(env.backend, "stage", lambda *_: candidate)
++    monkeypatch.setattr(env.backend, "validate_candidate", lambda *_: None)
++    monkeypatch.setattr(env.backend, "stop", lambda *_: None)
++    monkeypatch.setattr(env.backend, "register", lambda v, _: env.backend.persist_identity(v))
++    monkeypatch.setattr(env.backend, "start", lambda *_: None)
++    monkeypatch.setattr(env.backend, "verify", lambda *_: None)
++    def fail_launcher(_):
++        assert current(env.root) == candidate
++        assert all(not target.exists() for target in env.targets.values())
++        raise OSError("launcher write failed after skills")
++    monkeypatch.setattr(core, "install_launcher", fail_launcher)
++    installer = Installer(env.root, env.data, env.backend, say=lambda _: None)
++    with pytest.raises(OSError, match="launcher write failed after skills"):
++        installer.run("update", {"release": 12})
++    assert current(env.root) == env.old
++    assert env.backend.service.recorded()["choices"] == saved
++    assert all(target.is_dir() and not target.is_symlink() for target in env.targets.values())
++    assert installer.outcomes["skills"]["ok"]
++    assert not installer.outcomes["skills"].get("removed")
++    assert installer.outcomes["skills"]["destinations"]
+diff --git a/tests/test_installer_terminal_summary.py b/tests/test_installer_terminal_summary.py
+index 9c3d97090e836a3904f4e157e0dcd29bfb81fc3f..461193e6cf6033d0decddd01f90941f83481c81b 100644
+--- a/tests/test_installer_terminal_summary.py
++++ b/tests/test_installer_terminal_summary.py
+@@ -268,3 +268,26 @@ def test_backend_skill_result_marks_subprocess_failure(tmp_path, monkeypatch):
+         "python": tmp_path / "python", "env": {},
+     })())
+     assert result == {"ok": False, "destinations": []}
++
++
++def test_failed_off_choices_summary_reports_unreached_effects_and_valid_uninstall(capsys):
++    choices = {name: False for name in RECOMMENDED_CHOICES}
++    cli._print_run_summary(choices, mode="update", outcomes={"startup": "not confirmed"},
++                           failure=RuntimeError("staging failed"))
++    output = capsys.readouterr().out
++    assert "Startup: not confirmed" in output
++    assert "Command/PATH: not reached" in output
++    assert "This run may not have applied that choice" in output
++    assert "Startup recovery: Astrid will not start at sign-in" not in output
++    assert "the astrid command shim is off" not in output
++    assert "replace all setup/update arguments with --uninstall" in output
++    cli.parser().parse_args(["--uninstall"])
++
++
++def test_preserved_command_summary_does_not_claim_shim_is_off(capsys):
++    cli._print_run_summary({**RECOMMENDED_CHOICES, "command": False}, mode="update",
++        outcomes={"command": {"action": "disabled", "preserved_shim": True}})
++    output = capsys.readouterr().out
++    assert "Command/PATH: cleanup incomplete" in output
++    assert "shim preserved" in output
++    assert "Command/PATH: off" not in output
+diff --git a/tests/test_skills.py b/tests/test_skills.py
+index 84fdcd474c0bf5b3dfa262501b89c93a7e0a773d..df96e122d457bf8940fa40df00291cb049abdcd5 100644
+--- a/tests/test_skills.py
++++ b/tests/test_skills.py
+@@ -818,6 +818,96 @@ def test_hermes_external_directory_reports_visibility():
+         fx.close()
+ 
+ 
++def test_hermes_external_dir_off_uses_receipt_across_source_root_transition(tmp_path, monkeypatch):
++    from astrid.skills.harnesses import hermes as hermes_harness
++
++    fx = _Tmp()
++    try:
++        old_packs = tmp_path / "old-package" / "astrid" / "packs"
++        new_packs = tmp_path / "new-package" / "astrid" / "packs"
++        old_packs.mkdir(parents=True)
++        new_packs.mkdir(parents=True)
++        monkeypatch.setattr(hermes_harness, "PACKS_DIR_FOR_EXTERNAL", old_packs)
++        skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
++        config = fx.home / ".hermes" / "config.yaml"
++        old_entry = str(old_packs.resolve())
++        assert old_entry in (yaml.safe_load(config.read_text()) or {})["skills"]["external_dirs"]
++
++        # The installed package is upgraded/replaced and the current adapter
++        # now points at a different source tree.
++        monkeypatch.setattr(hermes_harness, "PACKS_DIR_FOR_EXTERNAL", new_packs)
++        report = skills.disable_owned(state_path=fx.state_path)
++
++        assert old_entry not in (yaml.safe_load(config.read_text()) or {})["skills"]["external_dirs"]
++        assert any(old_entry in row["removed"] for row in report["actions"])
++        assert "foley" not in state.load(fx.state_path)["installs"].get("hermes", {})
++    finally:
++        fx.close()
++
++
++@pytest.mark.parametrize("mechanism", ["copy", "symlink"])
++def test_hermes_external_dir_transition_to_managed_target_then_off_cleans_both(tmp_path, mechanism):
++    fx = _Tmp()
++    try:
++        skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
++        config = fx.home / ".hermes" / "config.yaml"
++        external_entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
++
++        skills.sync(harness_names=["hermes"], mechanism=mechanism, state_path=fx.state_path)
++        assert external_entry not in (yaml.safe_load(config.read_text()) or {})["skills"]["external_dirs"]
++
++        skills.disable_owned(state_path=fx.state_path)
++        assert external_entry not in (yaml.safe_load(config.read_text()) or {})["skills"]["external_dirs"]
++        target = HermesAdapter().target_for(next(d for d in _descriptors() if d.pack_id == "foley"))
++        assert not target.exists() and not target.is_symlink()
++        assert not state.load(fx.state_path)["installs"].get("hermes")
++    finally:
++        fx.close()
++
++
++def test_public_hermes_uninstall_removes_external_dir_registration(tmp_path):
++    fx = _Tmp()
++    try:
++        skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
++        config = fx.home / ".hermes" / "config.yaml"
++        entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
++        assert entry in (yaml.safe_load(config.read_text()) or {})["skills"]["external_dirs"]
++
++        report = skills.uninstall(["foley"], ["hermes"], state_path=fx.state_path)
++
++        assert entry not in (yaml.safe_load(config.read_text()) or {})["skills"]["external_dirs"]
++        assert not state.load(fx.state_path)["installs"].get("hermes", {}).get("foley")
++        assert not report.get("conflicts")
++    finally:
++        fx.close()
++
++
++def test_doctor_healed_hermes_external_dir_receipt_can_be_turned_off(tmp_path):
++    fx = _Tmp()
++    try:
++        skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
++        config = fx.home / ".hermes" / "config.yaml"
++        entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
++        current = state.load(fx.state_path)
++        current["installs"]["hermes"] = {}
++        state.save(current, fx.state_path)
++
++        healed = skills.doctor(state_path=fx.state_path, heal=True)
++        assert any(row.get("harness") == "hermes" and row.get("action") == "recorded-from-fs"
++                   for row in healed["healed"])
++        receipt = state.load(fx.state_path)["installs"]["hermes"]["foley"]
++        assert receipt["target"] == str(config)
++        assert receipt["mechanism"] == "external-dir"
++
++        report = skills.disable_owned(state_path=fx.state_path)
++
++        assert entry not in (yaml.safe_load(config.read_text()) or {})["skills"]["external_dirs"]
++        assert "foley" not in state.load(fx.state_path)["installs"].get("hermes", {})
++        assert not report.get("conflicts")
++    finally:
++        fx.close()
++
++
+ def test_install_survives_normal_view_sync():
+     fx = _Tmp()
+     try:
+diff --git a/tests/test_skills_cli.py b/tests/test_skills_cli.py
+index 50a11bdef9ca38b5b155e32aba8a7f0cc6ead2d6..27e5e785dda04088bd0339448bd9b137cc7e70ee 100644
+--- a/tests/test_skills_cli.py
++++ b/tests/test_skills_cli.py
+@@ -1,5 +1,6 @@
+ """Human/JSON policy application through the real skills CLI composition."""
+ import json
++import shutil
+ import sys
+ from pathlib import Path
+ 
+@@ -79,3 +80,148 @@ def test_external_dir_off_dry_run_is_read_only_through_cli(tmp_path, monkeypatch
+     assert config_path.read_bytes() == config_bytes
+     assert state.state_path().read_bytes() == state_bytes
+     assert record_path.read_bytes() == install_record_bytes
++
++
++@pytest.mark.parametrize("saved_skills", [False, True])
++def test_public_developer_uninstall_resync_uses_saved_off_or_copy_policy(
++    tmp_path, capsys, saved_skills
++):
++    home = Path.home()
++    (home / ".claude").mkdir(exist_ok=True)
++    record_path = service.install_selection(home, sys.platform)
++    service.write_json(
++        record_path,
++        {
++            "owner": service.LABEL,
++            "program_root": str(tmp_path / "program"),
++            "choices": {"skills": saved_skills, "skill_copies": True},
++        },
++    )
++
++    # Developer installation is an explicit opt-in even when the saved
++    # managed-skills choice is off. The later uninstall resync must use the
++    # saved policy, rather than recreating the default view behind the CLI.
++    assert cli.main(["install", "--developer", "--harness", "claude", "--json"]) == 0
++    capsys.readouterr()
++    core_target = home / ".claude" / "skills" / "astrid"
++    assert core_target.is_dir() and not core_target.is_symlink()
++    assert json.loads(record_path.read_text())["choices"]["skills"] is saved_skills
++
++    assert cli.main(["uninstall", "--developer", "--harness", "claude", "--json"]) == 0
++    report = json.loads(capsys.readouterr().out)
++    assert "resync" in report
++    if saved_skills:
++        assert core_target.is_dir() and not core_target.is_symlink()
++        assert (core_target / ".astrid-managed-skill.json").is_file()
++    else:
++        assert not core_target.exists() and not core_target.is_symlink()
++        assert json.loads(record_path.read_text())["choices"]["skills"] is False
++
++
++@pytest.mark.parametrize("explicit", [False, True])
++def test_public_sync_check_honors_off_policy_and_is_read_only(tmp_path, monkeypatch, capsys, explicit):
++    home = Path.home()
++    for harness in ("claude", "codex", "hermes"):
++        (home / f".{harness}").mkdir(exist_ok=True)
++    monkeypatch.setenv("ASTRID_STATE_HOME", str(tmp_path / "state-home"))
++    record_path = service.install_selection(home, sys.platform)
++    service.write_json(
++        record_path,
++        {
++            "owner": service.LABEL,
++            "program_root": str(tmp_path / "program"),
++            "choices": {"skills": explicit, "skill_copies": True},
++        },
++    )
++    state_path = state.state_path()
++    state_path.parent.mkdir(parents=True, exist_ok=True)
++    state.save(state._empty_state(), state_path)
++    state_bytes = state_path.read_bytes()
++    install_record_bytes = record_path.read_bytes()
++    args = ["sync"] + (["--skills", "off"] if explicit else []) + ["--check", "--json"]
++
++    assert cli.main(args) == 0
++    report = json.loads(capsys.readouterr().out)
++    assert report["has_drift"] is False
++    assert report["missing"] == []
++    assert state_path.read_bytes() == state_bytes
++    assert record_path.read_bytes() == install_record_bytes
++    for harness in ("claude", "codex", "hermes"):
++        assert not (home / f".{harness}" / "skills" / "astrid").exists()
++
++
++def test_public_sync_check_reports_owned_target_drift_without_writing(tmp_path, monkeypatch, capsys):
++    home = Path.home()
++    (home / ".claude").mkdir(exist_ok=True)
++    monkeypatch.setenv("ASTRID_STATE_HOME", str(tmp_path / "state-home"))
++    record_path = service.install_selection(home, sys.platform)
++    service.write_json(
++        record_path,
++        {
++            "owner": service.LABEL,
++            "program_root": str(tmp_path / "program"),
++            "choices": {"skills": True, "skill_copies": True},
++        },
++    )
++    skills.sync(harness_names=["claude"], mechanism="copy")
++    target = home / ".claude" / "skills" / "astrid"
++    shutil.rmtree(target)
++    state_path = state.state_path()
++    state_bytes = state_path.read_bytes()
++    install_record_bytes = record_path.read_bytes()
++
++    assert cli.main(["sync", "--check", "--harness", "claude", "--json"]) == 1
++    report = json.loads(capsys.readouterr().out)
++    assert report["has_drift"] is True
++    assert any(row["harness"] == "claude" and row["pack"] == "_core" for row in report["missing"])
++    assert not target.exists()
++    assert state_path.read_bytes() == state_bytes
++    assert record_path.read_bytes() == install_record_bytes
++
++
++def test_sync_check_off_reports_remaining_owned_targets_without_writing(tmp_path, capsys):
++    from astrid.skills import state
++    from astrid.installer.core import write_json
++    from astrid.installer.service import LABEL, install_selection
++    import sys
++
++    home = Path.home()
++    (home / ".claude").mkdir(exist_ok=True)
++    selection = install_selection(home, sys.platform)
++    write_json(selection, {"owner": LABEL, "program_root": str(tmp_path / "app"),
++        "choices": {"skills": True, "skill_copies": True}})
++    assert cli.main(["sync", "--harness", "claude", "--json"]) == 0
++    capsys.readouterr()
++    before = state.state_path().read_bytes()
++    policy = selection.read_bytes()
++    assert cli.main(["sync", "--check", "--skills", "off", "--json"]) == 1
++    report = json.loads(capsys.readouterr().out)
++    assert report["has_drift"] and report["stale_links"]
++    assert state.state_path().read_bytes() == before
++    assert selection.read_bytes() == policy
++
++
++def test_sync_check_detects_saved_copy_policy_mismatch_without_writing(tmp_path, capsys):
++    from astrid.skills import state
++    from astrid.installer.core import write_json
++    from astrid.installer.service import LABEL, install_selection
++    import sys
++    import shutil
++
++    home = Path.home()
++    (home / ".claude").mkdir(exist_ok=True)
++    selection = install_selection(home, sys.platform)
++    write_json(selection, {"owner": LABEL, "program_root": str(tmp_path / "app"),
++        "choices": {"skills": True, "skill_copies": True}})
++    assert cli.main(["sync", "--harness", "claude", "--json"]) == 0
++    capsys.readouterr()
++    target = home / ".claude/skills/astrid"
++    source = json.loads((target / ".astrid-managed-skill.json").read_text())["source"]
++    shutil.rmtree(target)
++    target.symlink_to(source, target_is_directory=True)
++    before = state.state_path().read_bytes()
++    assert cli.main(["sync", "--check", "--json"]) == 1
++    report = json.loads(capsys.readouterr().out)
++    assert any(row["harness"] == "claude" and row["mechanism"] == "copy" for row in report["policy_mismatches"])
++    assert state.state_path().read_bytes() == before
++    assert target.is_symlink()

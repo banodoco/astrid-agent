@@ -1,0 +1,15 @@
+diff --git a/public/install-manifest.json b/public/install-manifest.json
+index 26387a545593a977b05d0825757c3253cd0a305f..228dc14e9cef89e565e2390edc690297ee8e583b 100644
+--- a/public/install-manifest.json
++++ b/public/install-manifest.json
+@@ -1,8 +1,8 @@
+ {
+   "schema_version": 1,
+-  "release": 2,
++  "release": 3,
+   "agent": {
+-    "sha": "12f401eb8f707234697672317c8995a4637dc54d"
++    "sha": "421590dda1901857eca65061b27d93330705f237"
+   },
+   "runtime": {
+     "sha": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",

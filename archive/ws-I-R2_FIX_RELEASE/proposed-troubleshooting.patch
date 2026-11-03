@@ -1,0 +1,24 @@
+--- a/docs/setup/troubleshooting.md
++++ b/docs/setup/troubleshooting.md
+@@ -41,16 +41,19 @@
+ operating system. If the previous update was interrupted, use the C1-fenced
+ recovery path above.”
+ 
++These commands retain saved setup choices. If a Setup handoff includes explicit
++choice flags, use that exact command instead; every changed choice is explicit.
++
+ macOS and Linux — **No coding agent? Run this in Terminal:**
+ 
+ ```sh
+-curl -fsSL https://astrid.haus/install | sh -s -- --update
++curl -fsSL https://astrid.haus/install | sh -s -- --yes --update
+ ```
+ 
+ Windows — **Run it yourself in PowerShell:**
+ 
+ ```powershell
+-& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --update
++& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --yes --update
+ ```
+ 
+ ## Make a support bundle
