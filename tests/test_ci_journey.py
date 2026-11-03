@@ -629,6 +629,22 @@ def test_tst_b1_windows_bootstrap_rebuilds_windows_powershell_module_path(tmp_pa
     assert dict(journey.os.environ) == original
 
 
+@pytest.mark.parametrize("executable", [r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.EXE", r"C:\Program Files\PowerShell\7\PWSH.EXE"])
+def test_powershell_run_copies_explicit_environment_and_removes_module_path(tmp_path, monkeypatch, executable):
+    supplied = {"pSmOdUlEpAtH": "incompatible", "KEEP_ME": "explicit"}
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured.update(argv=argv, **kwargs)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    journey.run([executable, "-Command", "exit 0"], tmp_path / "child.log", env=supplied)
+
+    assert captured["env"] == {"KEEP_ME": "explicit"}
+    assert supplied == {"pSmOdUlEpAtH": "incompatible", "KEEP_ME": "explicit"}
+
+
 @pytest.mark.posix_native
 def test_tst_b1_sentinel_survives_then_is_reaped_by_own_context(tmp_path):
     with pytest.raises(RuntimeError, match="stop journey"):
