@@ -1,95 +1,180 @@
 #!/usr/bin/env python3
-"""Fetch reviewed single-job GitHub Actions evidence on the trusted orchestrator."""
+"""Authenticated GitHub Actions artifact collection for sealed hosted sources.
+
+The caller supplies the source binding from the immutable producer plan.  API
+responses and archive contents are treated as hostile until every run, job,
+artifact, checksum, and member identity has been checked.
+"""
+from __future__ import annotations
+
 import hashlib
+import datetime as dt
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import urllib.request
 import zipfile
 
-import local_regression_green as local
 
-API = 'https://api.github.com'
-MAX_ARCHIVE = 100 * 1024 * 1024
-MAX_FILES = 1000
-
-
-class NoAuthRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if redirected and not newurl.startswith(API + '/'):
-            redirected.remove_header('Authorization')
-        return redirected
+API = "https://api.github.com"
+MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+MAX_MEMBERS = 1000
 
 
-def get(path, binary=False):
-    req = urllib.request.Request(API + path, headers={'Accept': 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28', **({'Authorization': 'Bearer ' + os.environ['GH_TOKEN']} if os.environ.get('GH_TOKEN') else {})})
-    with urllib.request.build_opener(NoAuthRedirect()).open(req, timeout=60) as response:
-        data = response.read(MAX_ARCHIVE + 1)
-    if len(data) > MAX_ARCHIVE:
-        raise ValueError('response too large')
-    return data if binary else json.loads(data)
-
-
-def require(condition, message):
+def require(condition: object, message: str) -> None:
     if not condition:
         raise ValueError(message)
 
 
-def download(tup, lanes, destination, fetch=get):
-    """Only reviewed source IDs are accepted; destination must be newly created/private."""
-    seen_ids, seen_artifacts = set(), set()
-    for lane in lanes:
-        source = lane['source']
-        if source['kind'] != 'hosted':
-            continue
-        name = local.component(source['id'])
-        run_id, attempt, job_id, artifact_id = (source[k] for k in ('run_id', 'run_attempt', 'job_id', 'artifact_id'))
-        require(all(type(v) is int and v > 0 for v in (run_id, attempt, job_id, artifact_id)) and attempt == 1, 'hosted source requires positive IDs and first attempt')
-        require(name not in seen_ids and artifact_id not in seen_artifacts, 'duplicate hosted source or artifact')
-        seen_ids.add(name)
-        seen_artifacts.add(artifact_id)
-        repo = lane['repo']
-        url = tup['repos'][repo]['url']
-        require(url == 'https://github.com/banodoco/astrid-' + repo and re.fullmatch(r'[a-z0-9-]+', repo), 'invalid repository')
-        prefix = '/repos/banodoco/astrid-' + repo + '/actions'
-        run = fetch(f'{prefix}/runs/{run_id}')
-        jobs = fetch(f'{prefix}/runs/{run_id}/attempts/{attempt}/jobs?per_page=100')
-        artifacts = fetch(f'{prefix}/runs/{run_id}/artifacts?per_page=100')
-        require(run.get('id') == run_id and run.get('run_attempt') == attempt and run.get('head_sha') == tup['repos'][repo]['sha'] and run.get('status') == 'completed' and run.get('conclusion') == 'success' and run.get('path') == source['workflow_path'] and run.get('repository', {}).get('html_url') == url, 'wrong or unsuccessful run')
-        require(jobs.get('total_count') == 1 and len(jobs.get('jobs', [])) == 1, 'run must contain exactly one job')
-        job = jobs['jobs'][0]
-        require(job.get('id') == job_id and job.get('run_id') == run_id and job.get('run_attempt') == attempt and job.get('status') == 'completed' and job.get('conclusion') == 'success', 'wrong or unsuccessful job')
-        require(type(artifacts.get('total_count')) is int and artifacts['total_count'] <= 100 and len(artifacts.get('artifacts', [])) == artifacts['total_count'], 'incomplete artifact listing')
-        matches = [x for x in artifacts['artifacts'] if x.get('id') == artifact_id or x.get('name') == name]
-        require(len(matches) == 1, 'missing or duplicate artifact')
-        artifact = matches[0]
-        require(artifact.get('id') == artifact_id and artifact.get('name') == name and artifact.get('expired') is False and artifact.get('workflow_run', {}).get('id') == run_id, 'wrong artifact association')
-        digest = artifact.get('digest')
-        require(isinstance(digest, str) and re.fullmatch(r'sha256:[0-9a-f]{64}', digest), 'missing artifact digest')
-        raw = fetch(f'{prefix}/artifacts/{artifact_id}/zip', True)
-        require(hashlib.sha256(raw).hexdigest() == digest[7:], 'artifact archive digest mismatch')
-        base = Path(destination) / name
-        base.mkdir(mode=0o700)
-        entries, total = [], 0
+def _positive_int(value: object, label: str) -> int:
+    require(type(value) is int and value > 0, f"invalid {label}")
+    return int(value)
+
+
+class NoAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not leak the read-only API token to artifact storage redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected and not newurl.startswith(API + "/"):
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+def get(path: str, binary: bool = False) -> object:
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if token := os.environ.get("C06_DOWNLOAD_TOKEN"):
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(API + path, headers=headers)
+    with urllib.request.build_opener(NoAuthRedirect()).open(request, timeout=60) as response:
+        data = response.read(MAX_ARCHIVE_BYTES + 1)
+    require(len(data) <= MAX_ARCHIVE_BYTES, "API response too large")
+    return data if binary else json.loads(data)
+
+
+def source_key(source: dict[str, object]) -> str:
+    """A canonical, cross-batch unique hosted source identity."""
+    return hashlib.sha256(json.dumps(source, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def validate_source(source: object, tuple_repos: object) -> dict[str, object]:
+    require(isinstance(source, dict), "hosted source is not an object")
+    required = {"kind", "repo", "workflow_path", "workflow_revision", "run_id", "run_attempt", "job_id", "artifact_id", "artifact_name", "head_sha"}
+    require(set(source) == required and source.get("kind") == "hosted", "invalid hosted source binding")
+    repo = source["repo"]
+    require(isinstance(repo, str) and re.fullmatch(r"[a-z0-9-]+", repo), "invalid hosted repository")
+    require(isinstance(tuple_repos, dict) and isinstance(tuple_repos.get(repo), dict), "hosted source repo absent from tuple")
+    tuple_repo = tuple_repos[repo]
+    require(source["head_sha"] == tuple_repo.get("sha"), "hosted source head SHA is not tuple-bound")
+    require(tuple_repo.get("url") == "https://github.com/banodoco/astrid-" + repo, "invalid hosted tuple URL")
+    require(isinstance(source["workflow_path"], str) and source["workflow_path"].startswith(".github/workflows/") and
+            ".." not in PurePosixPath(source["workflow_path"]).parts, "invalid hosted workflow path")
+    require(isinstance(source["workflow_revision"], str) and re.fullmatch(r"[0-9a-f]{40}", source["workflow_revision"]),
+            "invalid hosted workflow revision")
+    for name in ("run_id", "run_attempt", "job_id", "artifact_id"):
+        _positive_int(source[name], name)
+    require(isinstance(source["artifact_name"], str) and re.fullmatch(r"[A-Za-z0-9_.-]+", source["artifact_name"]),
+            "invalid hosted artifact name")
+    return dict(source)
+
+
+def _timestamp(value: object) -> dt.datetime:
+    require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value),
+            "missing or invalid hosted timestamp")
+    return dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+
+
+def _safe_member(name: str) -> str:
+    path = PurePosixPath(name)
+    require(bool(name) and not path.is_absolute() and ".." not in path.parts and "\\" not in name and str(path) == name,
+            "unsafe archive member")
+    return name
+
+
+def _verify_workflow_revision(binding: dict[str, object], run: dict[str, object]) -> None:
+    # The run API head SHA and workflow path do not authenticate the executed
+    # workflow revision (in particular for pull requests and reusable workflows).
+    # No accepted independent revision attestation is available at this seam.
+    raise ValueError("hosted workflow revision has no independently authenticated binding")
+
+
+def download(source: object, tuple_repos: object, destination: str | Path, fetch=get) -> dict[str, object]:
+    """Download one pre-bound artifact into a new private directory.
+
+    ``fetch`` is intentionally injectable for deterministic synthetic tests;
+    the production default queries GitHub's API with a read-only token.
+    """
+    binding = validate_source(source, tuple_repos)
+    repo = str(binding["repo"])
+    run_id, attempt, job_id, artifact_id = (int(binding[name]) for name in ("run_id", "run_attempt", "job_id", "artifact_id"))
+    base = "/repos/banodoco/astrid-" + repo + "/actions"
+    run = fetch(f"{base}/runs/{run_id}")
+    jobs = fetch(f"{base}/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
+    artifacts = fetch(f"{base}/runs/{run_id}/artifacts?per_page=100")
+    require(isinstance(run, dict) and isinstance(jobs, dict) and isinstance(artifacts, dict), "malformed hosted API response")
+    require(run.get("id") == run_id and run.get("run_attempt") == attempt and run.get("head_sha") == binding["head_sha"] and
+            run.get("status") == "completed" and run.get("conclusion") == "success" and
+            run.get("path") == binding["workflow_path"] and run.get("repository", {}).get("html_url") == tuple_repos[repo]["url"],
+            "wrong or unsuccessful hosted run")
+    _verify_workflow_revision(binding, run)
+    all_jobs = jobs.get("jobs")
+    require(jobs.get("total_count") == 1 and isinstance(all_jobs, list) and len(all_jobs) == 1, "hosted run is not one reviewed job")
+    job = all_jobs[0]
+    require(isinstance(job, dict) and job.get("id") == job_id and job.get("run_id") == run_id and
+            job.get("run_attempt") == attempt and job.get("status") == "completed" and job.get("conclusion") == "success",
+            "wrong or unsuccessful hosted job")
+    listed = artifacts.get("artifacts")
+    require(type(artifacts.get("total_count")) is int and 0 < artifacts["total_count"] <= 100 and
+            isinstance(listed, list) and len(listed) == artifacts["total_count"], "incomplete hosted artifact list")
+    matching = [item for item in listed if isinstance(item, dict) and item.get("id") == artifact_id]
+    require(len(matching) == 1, "missing or duplicate hosted artifact")
+    artifact = matching[0]
+    require(artifact.get("name") == binding["artifact_name"] and artifact.get("expired") is False and
+            artifact.get("workflow_run", {}).get("id") == run_id, "wrong hosted artifact association")
+    # GitHub's run artifact listing does not identify an attempt or job. A
+    # rerun can include old artifacts even when the latest job succeeded, so no
+    # artifact from a rerun is attributable without an independent attestation.
+    require(attempt == 1, "cannot authenticate artifact association for rerun attempt")
+    created = _timestamp(artifact.get("created_at"))
+    start, end = _timestamp(job.get("started_at")), _timestamp(job.get("completed_at"))
+    require(start < created < end, "artifact is outside selected attempt job window")
+    digest = artifact.get("digest")
+    require(isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest), "missing hosted artifact digest")
+    raw = fetch(f"{base}/artifacts/{artifact_id}/zip", True)
+    require(isinstance(raw, bytes) and len(raw) <= MAX_ARCHIVE_BYTES and hashlib.sha256(raw).hexdigest() == digest[7:],
+            "hosted archive digest mismatch")
+    target = Path(destination)
+    require(not target.exists(), "hosted artifact destination already exists")
+    target.mkdir(mode=0o700, parents=True)
+    files: list[dict[str, object]] = []
+    total = 0
+    try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             members = archive.infolist()
-            require(0 < len(members) <= MAX_FILES, 'invalid archive file count')
-            names = set()
+            require(0 < len(members) <= MAX_MEMBERS, "invalid hosted archive member count")
+            names: set[str] = set()
             for member in members:
-                rel = local.safe_path(member.filename)
-                require(rel != 'run.json' and not member.is_dir() and not (member.external_attr >> 16 & 0o170000 == 0o120000) and rel not in names, 'invalid or duplicate archive member')
-                names.add(rel)
+                name = _safe_member(member.filename)
+                require(not member.is_dir() and not ((member.external_attr >> 16) & 0o170000 == 0o120000) and name not in names,
+                        "duplicate, directory, or symlink hosted archive member")
+                names.add(name)
                 total += member.file_size
-                require(total <= MAX_ARCHIVE, 'expanded archive too large')
+                require(total <= MAX_ARCHIVE_BYTES, "expanded hosted archive too large")
                 data = archive.read(member)
-                target = base / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
-                entries.append({'path': rel, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
-        require({'manifest.json', 'junit.xml'} <= names, 'missing manifest or junit')
-        metadata = {'id': run_id, 'run_attempt': attempt, 'repository': url, 'head_sha': run['head_sha'], 'status': run['status'], 'conclusion': run['conclusion'], 'workflow_path': run['path'], 'job_id': job_id, 'job_conclusion': job['conclusion'], 'run_started_at': run['run_started_at'], 'updated_at': run['updated_at'], 'artifact': {'id': artifact_id, 'name': name, 'run_id': run_id, 'run_attempt': attempt, 'job_id': job_id}, 'files': entries}
-        (base / 'run.json').write_text(json.dumps(metadata), encoding='utf-8')
+                path = target / name
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                path.write_bytes(data)
+                files.append({"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+    except zipfile.BadZipFile as exc:
+        raise ValueError("invalid hosted artifact archive") from exc
+    names = {str(item["path"]) for item in files}
+    require({"manifest.json", "junit.xml"} <= names, "hosted artifact lacks manifest or junit")
+    return {
+        "source": binding,
+        "run": {"id": run_id, "attempt": attempt, "job_id": job_id, "artifact_id": artifact_id,
+                "artifact_name": binding["artifact_name"], "head_sha": binding["head_sha"]},
+        "archive_sha256": digest[7:],
+        "files": files,
+    }

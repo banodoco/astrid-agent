@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -128,6 +129,40 @@ class DeploymentAdapterTests(unittest.TestCase):
         handoff = self.handoff(digest='0' * 64)
         with self.assertRaisesRegex(ValueError, 'wrong or stale'):
             deployment.load_handoff(handoff)
+
+    def test_real_legacy_handoff_and_tampering_write_red_without_publishing(self):
+        handoff = self.handoff()
+        status = self.p / 'status.json'
+        self.assertEqual(deployment.main(['--handoff', str(handoff), '--status', str(status)]), 1)
+        self.assertEqual(json.loads(status.read_text())['result'], 'fail')
+        self.write('tuple.json', self.tuple | {'name': 'forged'})
+        self.assertEqual(deployment.main(['--handoff', str(handoff), '--status', str(status)]), 1)
+        self.assertEqual(json.loads(status.read_text())['result'], 'fail')
+
+    def test_deferred_publication_reports_failure_in_host_verdict(self):
+        status = self.p / 'status.json'
+        status.write_text(json.dumps({'result': 'pass', 'reasons': []}))
+        deployment.mark_publication_failure(status, RuntimeError('network lost'))
+        result = json.loads(status.read_text())
+        self.assertEqual(result['result'], 'fail')
+        self.assertIn('network lost', result['errors'][0])
+        self.assertIn('network lost', result['reasons'][0])
+
+    def test_invalid_handoff_cli_returns_failure_and_writes_red(self):
+        status = self.p / 'cli-status.json'
+        proc = subprocess.run([sys.executable, str(ROOT / 'scripts/ci/regression_deployment.py'),
+                               '--handoff', str(self.p / 'missing.json'), '--status', str(status)],
+                              capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(json.loads(status.read_text())['result'], 'fail')
+
+    def test_legacy_publication_request_fails_closed(self):
+        handoff = self.handoff()
+        status = self.p / 'status.json'
+        self.assertEqual(deployment.main(['--handoff', str(handoff), '--status', str(status), '--publish']), 1)
+        result = json.loads(status.read_text())
+        self.assertEqual(result['result'], 'fail')
+        self.assertTrue(any('publication deferred' in reason for reason in result['reasons']))
 
 
 class RequiredCheckPublisherTests(unittest.TestCase):

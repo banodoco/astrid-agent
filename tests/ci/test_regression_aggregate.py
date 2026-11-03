@@ -1,3 +1,154 @@
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/ci"))
+import regression_aggregate as aggregate
+
+
+class AggregateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    @staticmethod
+    def sealed(outcome="completed"):
+        return {"producer_results": [{"producer_id": "producer-1", "outcome": outcome, "result": {}}]}
+
+    def test_aggregate_rejects_callback_without_authenticated_inputs(self):
+        calls = []
+        result = aggregate.evaluate_sealed(self.sealed(), lambda value: calls.append(value) or {"result": "pass", "reasons": []})
+        self.assertEqual(result["result"], "fail")
+        self.assertEqual(calls, [])
+
+    def test_aggregate_is_unconditional_and_fail_closed_for_missing_or_unavailable_authority(self):
+        calls = []
+        result = aggregate.evaluate_sealed(self.sealed("missing_at_deadline"), lambda value: calls.append(value) or {"result": "pass", "reasons": []})
+        self.assertEqual(result["result"], "fail")
+        self.assertIn("missing_at_deadline", result["reasons"][0])
+        self.assertEqual(calls, [])
+        unavailable = aggregate.evaluate_sealed(self.sealed())
+        self.assertEqual(unavailable["result"], "fail")
+        self.assertIn("unavailable", unavailable["reasons"][0])
+
+    def test_bad_cli_arguments_still_emit_a_red_host_status(self):
+        status = self.root / "status.json"
+        self.assertEqual(aggregate.main(["--status", str(status)]), 1)
+        output = json.loads(status.read_text(encoding="utf-8"))
+        self.assertEqual(output["result"], "fail")
+        self.assertTrue(output["host_verdict"])
+
+    def test_sealed_cli_rejects_incomplete_reviewed_inputs_and_unauthenticated_index(self):
+        from unittest import mock
+        identity, target = "a" * 64, "b" * 40
+        coverage = aggregate.read(aggregate.COVERAGE)
+        lanes = []
+        for row in coverage["lanes"]:
+            lanes.append({**{k: row[k] for k in ("repo", "lane", "platform")},
+                          "source": {"kind": row["kind"]},
+                          "tests": [{"node_id": "synthetic", "protected": row["protected"]}]})
+        feature = {**{k: lanes[0][k] for k in ("repo", "lane", "platform")},
+                   "scenario": "synthetic", "slot_id": "slot", "candidate": "fixture", "files": ["fixture.json"]}
+        coverage["features"] = [{k: feature[k] for k in ("repo", "lane", "platform", "scenario", "slot_id")}]
+        review = {"complete": True, "features_complete": True, "tuple_digest": identity,
+                  "lanes": lanes, "features": [feature]}
+        inventory = {"tuple_digest": identity, "lanes": lanes}
+        sealed = {"batch_id": "batch", "generation": 1, "tuple_digest": identity,
+                  "results": [{"producer_id": "producer", "state": "completed"}], "artifact_index": ["synthetic"]}
+        def write(name, value):
+            path = self.root / name
+            path.write_text(json.dumps(value))
+            return path
+        coverage_path, review_path = write("coverage.json", coverage), write("review.json", review)
+        tuple_path = write("tuple.json", {"repos": {"agent": {"sha": target}}})
+        inventory_path = write("inventory.json", inventory)
+        features_path = write("features.json", [feature])
+        sealed_path = self.root / "sealed.json"
+        status = self.root / "status.json"
+        def run():
+            write("sealed.json", sealed)
+            args = ["--status", str(status)]
+            values = {"sealed-results": sealed_path, "tuple": tuple_path, "inventory": inventory_path,
+                      "ledger": self.root / "ledger", "evidence-root": self.root, "freshness": self.root / "freshness",
+                      "tuple-schema": self.root / "tuple-schema", "ledger-schema": self.root / "ledger-schema",
+                      "features": features_path, "predicate-path": self.root / "predicate", "predicate-sha256": "0" * 64,
+                      "batch-id": "batch", "generation": "1", "invocation-id": "invocation", "tuple-digest": identity,
+                      "target-sha": target, "sealed-input-digest": aggregate._canonical(sealed),
+                      "artifact-index-digest": aggregate._canonical(sealed["artifact_index"])}
+            for key, value in values.items():
+                args.extend(["--" + key, str(value)])
+            self.assertEqual(aggregate.main(args), 1)
+            result = json.loads(status.read_text())
+            self.assertEqual(result["result"], "fail")
+            return " ".join(result["reasons"])
+        with mock.patch.object(aggregate, "COVERAGE", coverage_path), mock.patch.object(aggregate, "REVIEW", review_path), \
+             mock.patch.object(aggregate.ledger, "tuple_identity", return_value=(identity, {})):
+            self.assertIn("not authenticated", run())
+            write("inventory.json", {"tuple_digest": identity, "lanes": lanes[:-1]})
+            self.assertIn("inventory differs", run())
+            write("inventory.json", inventory)
+            for bad in (None, [], [feature, feature], [dict(feature, slot_id="wrong")]):
+                write("features.json", bad)
+                self.assertRegex(run(), "feature")
+            write("features.json", [feature])
+            for bad in (None, [], {}):
+                sealed["artifact_index"] = bad
+                self.assertIn("artifact index", run())
+            sealed["artifact_index"] = ["synthetic"]
+            review["tuple_digest"] = "c" * 64
+            write("review.json", review)
+            self.assertIn("wrong tuple", run())
+
+    def test_pinned_predicate_receives_frozen_candidate_and_checked_snapshots(self):
+        import hashlib
+        repos = {name: {"sha": char * 40} for name, char in zip(
+            ("runtime", "agent", "app", "pinokio"), "abcd")}
+        tup = {"repos": repos, "generated": {"manifest_sha256": "e" * 64}}
+        candidate = {name: value["sha"] for name, value in repos.items()}
+        candidate["manifest_sha256"] = "e" * 64
+        feature = {"repo": "agent", "lane": "synthetic", "platform": "linux", "scenario": "m4_6",
+                   "slot_id": "synthetic", "attempt": 1, "candidate": candidate, "files": ["receipt.json"]}
+        path = self.root / "features.json"
+        path.write_text(json.dumps([feature]))
+        key = ("agent", "synthetic", "linux", "m4_6", "synthetic", 1)
+        raw = b"{}"
+        snapshots = {key: {"receipt.json": (hashlib.sha256(raw).hexdigest(), raw)}}
+        predicate = ROOT / "scripts/ci/journey_predicates.py"
+        def check():
+            return aggregate._validate_features(path, predicate, aggregate.QUAL_PREDICATE_SHA256, tup, snapshots)
+        errors = check()
+        self.assertTrue(any("independent section 5" in item for item in errors), errors)
+        self.assertFalse(any("import failed" in item or "candidate:" in item or "files[0]" in item for item in errors), errors)
+        feature["candidate"] = dict(candidate, agent="f" * 40)
+        path.write_text(json.dumps([feature]))
+        self.assertIn("candidate tuple mismatch", check()[0])
+        feature["candidate"] = candidate
+        path.write_text(json.dumps([feature]))
+        snapshots[key]["receipt.json"] = ("0" * 64, raw)
+        self.assertIn("snapshot SHA-256 mismatch", check()[0])
+        snapshots[key]["receipt.json"] = (hashlib.sha256(b'{"x":1,"x":2}').hexdigest(), b'{"x":1,"x":2}')
+        self.assertIn("duplicate JSON key", check()[0])
+        snapshots[key] = {}
+        self.assertIn("receipt.json", check()[0])
+
+    def test_unapproved_qual_bytes_are_red(self):
+        predicate = self.root / "predicate.py"
+        predicate.write_text("def check_m4_6(evidence):\n    return True, []\n", encoding="utf-8")
+        features = self.root / "features.json"
+        features.write_text(json.dumps([]), encoding="utf-8")
+        self.assertIn("unapproved", aggregate._validate_features(features, predicate, "0" * 64, {"generated": {}})[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+# Retain the published test suite alongside the sealed evaluator cases.
 import datetime as dt
 import hashlib
 import json
@@ -17,7 +168,7 @@ import regression_green as core
 import regression_aggregate as aggregate
 
 
-class AggregateTests(unittest.TestCase):
+class PublishedAggregateTests(unittest.TestCase):
     def test_complete_synthetic_cp1_matrix_and_rejections(self):
         with tempfile.TemporaryDirectory() as directory:
             p = Path(directory)
@@ -129,7 +280,3 @@ class AggregateTests(unittest.TestCase):
     def test_fixed_review_is_explicitly_incomplete(self):
         self.assertFalse(aggregate.read(aggregate.REVIEW)['complete'])
         self.assertEqual(len(aggregate.read(aggregate.COVERAGE)['lanes']), 71)
-
-
-if __name__ == '__main__':
-    unittest.main()

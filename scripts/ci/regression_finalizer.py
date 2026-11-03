@@ -1,90 +1,212 @@
 #!/usr/bin/env python3
-"""Trusted local caller: collect evidence and always invoke the aggregate."""
+"""Evaluate one sealed C-06 result set without starting or replaying producers.
+
+The finalizer only evaluates a sealed coordinator invocation.  It intentionally has no command-plan or
+child-process interface: producer execution belongs to the dispatcher, before the
+batch is sealed.
+"""
+from __future__ import annotations
+
 import argparse
+import datetime as dt
+import fcntl
+import hashlib
 import json
+import os
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 
 import regression_aggregate as aggregate
 
 
-TERMINAL_STATES = frozenset(('success', 'failure', 'cancelled', 'worker-death',
-                             'skipped', 'unstartable'))
+INPUT_VERSION = "c06-sealed-finalizer-input/v1"
+STATUS_VERSION = "c06-finalizer-status/v1"
+CHECK_NAME = "int/regression-green"
 
 
-def completed_producers(path):
-    """Read the coordinator's terminal result list without running producers."""
-    results = json.loads(Path(path).read_text(encoding='utf-8'))
-    if not isinstance(results, list) or not results:
-        raise ValueError('completed producers must be a nonempty list')
-    seen = set()
-    for entry in results:
-        if not isinstance(entry, dict) or set(entry) != {'id', 'state'}:
-            raise ValueError('invalid completed producer record')
-        identifier, state = entry['id'], entry['state']
-        if (not isinstance(identifier, str) or not identifier or identifier in seen or
-                state not in TERMINAL_STATES):
-            raise ValueError('invalid or duplicate completed producer')
-        seen.add(identifier)
-    return results
+class FinalizerError(ValueError):
+    pass
+
+
+class AlreadyStarted(FinalizerError):
+    """The accepted invocation has a durable start marker and may not rerun."""
+
+
+def canonical_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def digest(value):
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _require(condition, message):
+    if not condition:
+        raise FinalizerError(message)
+
+
+def _now():
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def validate_sealed_input(value):
+    fields = {
+        "schema_version", "check", "batch_id", "generation", "invocation_id", "tuple_digest",
+        "target_sha", "sealed_results_digest", "tuple", "producer_results", "sealed_input_digest",
+    }
+    _require(isinstance(value, dict) and set(value) == fields, "invalid sealed finalizer input")
+    _require(value["schema_version"] == INPUT_VERSION and value["check"] == CHECK_NAME,
+             "wrong finalizer input version or check")
+    _require(isinstance(value["batch_id"], str) and isinstance(value["invocation_id"], str) and
+             type(value["generation"]) is int and value["generation"] > 0,
+             "invalid finalizer invocation identity")
+    for field in ("tuple_digest", "target_sha", "sealed_results_digest", "sealed_input_digest"):
+        expected = 40 if field == "target_sha" else 64
+        _require(isinstance(value[field], str) and len(value[field]) == expected and
+                 all(character in "0123456789abcdef" for character in value[field]),
+                 "invalid " + field)
+    _require(isinstance(value["tuple"], dict) and isinstance(value["producer_results"], list) and
+             value["producer_results"], "invalid sealed finalizer payload")
+    body = {key: item for key, item in value.items() if key != "sealed_input_digest"}
+    _require(digest(body) == value["sealed_input_digest"], "sealed finalizer input digest mismatch")
+    _require(digest(value["producer_results"]) == value["sealed_results_digest"],
+             "sealed producer result digest mismatch")
+    return value
+
+
+def _atomic_json(path, value):
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".c06-finalizer-", dir=destination.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(canonical_json(value))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+        directory = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _start_marker(path, sealed):
+    """Create and fsync an O_EXCL marker before a body can evaluate anything."""
+    marker = Path(path)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise AlreadyStarted("finalizer start marker already exists") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(canonical_json({
+                "batch_id": sealed["batch_id"], "generation": sealed["generation"],
+                "invocation_id": sealed["invocation_id"],
+                "sealed_input_digest": sealed["sealed_input_digest"], "started_at": _now(),
+            }))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        directory = os.open(marker.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        # The marker represents an accepted start even if a process dies while
+        # writing its body.  Never remove it here.
+        raise
+
+
+def status_for(sealed, result, reasons):
+    _require(result in ("pass", "fail"), "evaluator returned an invalid result")
+    _require(isinstance(reasons, list) and all(isinstance(item, str) and item for item in reasons),
+             "evaluator returned invalid reasons")
+    if result == "pass":
+        _require(not reasons, "a passing finalizer status cannot contain reasons")
+    return {
+        "schema_version": STATUS_VERSION, "check": CHECK_NAME,
+        "batch_id": sealed["batch_id"], "generation": sealed["generation"],
+        "invocation_id": sealed["invocation_id"], "tuple_digest": sealed["tuple_digest"],
+        "target_sha": sealed["target_sha"], "sealed_input_digest": sealed["sealed_input_digest"],
+        "result": result, "reasons": reasons, "evaluated_at": _now(),
+    }
+
+
+def run(sealed_input, invocation_directory, evaluator=None, status_path=None):
+    """Run one finalizer body and atomically write its tuple-bound status.
+
+    The legacy ``evaluator`` argument cannot authorize a pass. The aggregate
+    is invoked unconditionally and refuses missing authenticated bindings.
+    """
+    try:
+        sealed = validate_sealed_input(sealed_input)
+    except Exception:
+        # Even a malformed sealed handoff crosses the aggregate failure path.
+        # There is no safe invocation identity for a local status here; the
+        # deployment adapter persists the coordinator-generated red verdict.
+        aggregate.evaluate_sealed(sealed_input, evaluator)
+        raise
+    directory = Path(invocation_directory)
+    output = Path(status_path) if status_path is not None else directory / "status.json"
+    lock_path, marker = directory / "invocation.lock", directory / "started.json"
+    directory.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _start_marker(marker, sealed)
+        try:
+            outcome = aggregate.evaluate_sealed(sealed, evaluator)
+            _require(isinstance(outcome, dict) and set(outcome) == {"result", "reasons"},
+                     "evaluator returned malformed outcome")
+            status = status_for(sealed, outcome["result"], outcome["reasons"])
+        except Exception as exc:
+            status = status_for(sealed, "fail", ["finalizer evaluation failed: %s: %s" %
+                                                    (type(exc).__name__, exc)])
+        _atomic_json(output, status)
+        return status
+
+
+def read_complete_status(path, sealed_input):
+    """Read a complete status only if it exactly binds the accepted invocation."""
+    try:
+        status = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise FinalizerError("finalizer status is missing or malformed") from exc
+    sealed = validate_sealed_input(sealed_input)
+    expected = status_for(sealed, status.get("result"), status.get("reasons"))
+    # evaluated_at is intentionally not predetermined; every other field must match.
+    _require(isinstance(status.get("evaluated_at"), str) and
+             all(status.get(key) == value for key, value in expected.items() if key != "evaluated_at"),
+             "finalizer status does not bind the sealed invocation")
+    return status
 
 
 def main(argv=None):
+    # The published handoff lacks a sealed coordinator invocation.  Preserve
+    # the unconditional red aggregate path without executing producer work.
+    raw = list(__import__('sys').argv[1:] if argv is None else argv)
+    if '--sealed-input' not in raw and not any(arg.startswith('--sealed-input=') for arg in raw):
+        return aggregate.main(raw)
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('status', 'tuple', 'ledger', 'broker-root', 'freshness', 'producer-plan'):
-        parser.add_argument('--' + name, required=name != 'producer-plan')
-    parser.add_argument('--completed-producers')
-    parser.add_argument('--batch-id')
-    parser.add_argument('--not-before', default=aggregate.CUTOFF)
+    parser.add_argument("--sealed-input", required=True)
+    parser.add_argument("--invocation-dir", required=True)
+    parser.add_argument("--status")
+    args = parser.parse_args(argv)
     try:
-        args = parser.parse_args(argv)
-    except SystemExit as exc:
-        if exc.code == 0:
-            return 0
-        # The aggregate locates --status even when its arguments are invalid.
-        return aggregate.main(list(sys.argv[1:] if argv is None else argv))
-    with tempfile.TemporaryDirectory(prefix='regression-finalizer-') as tmp:
-        root = Path(tmp)
-        receipt = root / 'collection.json'
-        hosted_root = root / 'hosted'
-        hosted_root.mkdir(mode=0o700)
-        collection, prerequisites = 'failure', 'failure'
-        try:
-            if bool(args.producer_plan) == bool(args.completed_producers):
-                raise ValueError('supply exactly one of producer plan or completed producers')
-            if args.completed_producers:
-                results = completed_producers(args.completed_producers)
-                prerequisites = ('success' if all(row['state'] == 'success' for row in results)
-                                 else 'failure')
-            else:
-                plan = json.loads(Path(args.producer_plan).read_text(encoding='utf-8'))
-                if not isinstance(plan, list) or not plan or any(not isinstance(cmd, list) or not cmd or any(not isinstance(v, str) or not v for v in cmd) for cmd in plan):
-                    raise ValueError('producer plan must be a nonempty list of command argument lists')
-                results = []
-                for command in plan:
-                    try:
-                        results.append(subprocess.run(command, check=False).returncode)
-                    except OSError as exc:
-                        print(f'producer failed to start: {type(exc).__name__}: {exc}', file=sys.stderr)
-                        results.append(None)
-                prerequisites = 'success' if all(code == 0 for code in results) else 'failure'
-            review = aggregate.read(aggregate.REVIEW)
-            if review.get('complete') is not True:
-                raise ValueError('reviewed inventory incomplete')
-            import trusted_hosted_download as hosted
-            hosted.download(aggregate.read(args.tuple), review['lanes'], hosted_root)
-            collection = 'success'
-        except Exception as exc:
-            print(f'collection failed: {type(exc).__name__}: {exc}', file=sys.stderr)
-        finally:
-            receipt.write_text(json.dumps({'collection': collection, 'prerequisites': prerequisites}), encoding='utf-8')
-            return aggregate.main(['--status', args.status, '--tuple', args.tuple, '--ledger', args.ledger,
-                '--broker-root', args.broker_root, '--hosted-root', str(hosted_root), '--freshness', args.freshness,
-                '--collection', str(receipt), '--not-before', args.not_before,
-                *(['--batch-id', args.batch_id] if args.batch_id else [])])
+        sealed = json.loads(Path(args.sealed_input).read_text(encoding="utf-8"))
+        status = run(sealed, args.invocation_dir, status_path=args.status)
+    except Exception as exc:
+        print("ERROR: finalizer failed: %s: %s" % (type(exc).__name__, exc))
+        return 1
+    print(canonical_json(status))
+    return 0 if status["result"] == "pass" else 1
 
 
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
