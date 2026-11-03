@@ -549,19 +549,21 @@ class ManagedToolSession:
             active.release_intent = intent
             return intent
 
-    def _finish_checked_release(self, intent: _ReleaseIntent, *, outcome: str) -> None:
+    def _finish_checked_release(self, intent: _ReleaseIntent, *, outcome: str) -> str:
         """Apply a correlated producer result; never invoke the native adapter.
 
         Caller must authenticate and correlate the producer result before using
         this local state transition. Only unresolved may later be reconciled.
+        Return the applied outcome: a result arriving after the deadline is
+        unresolved locally even if the producer reported completion.
         """
-        self._apply_checked_release(intent, outcome=outcome, reconcile=False)
+        return self._apply_checked_release(intent, outcome=outcome, reconcile=False)
 
-    def _reconcile_checked_release(self, intent: _ReleaseIntent, *, outcome: str) -> None:
+    def _reconcile_checked_release(self, intent: _ReleaseIntent, *, outcome: str) -> str:
         """Apply an authenticated readback for the retained request."""
-        self._apply_checked_release(intent, outcome=outcome, reconcile=True)
+        return self._apply_checked_release(intent, outcome=outcome, reconcile=True)
 
-    def _apply_checked_release(self, intent: _ReleaseIntent, *, outcome: str, reconcile: bool) -> None:
+    def _apply_checked_release(self, intent: _ReleaseIntent, *, outcome: str, reconcile: bool) -> str:
         with self._lock:
             active = self._active
             if (not isinstance(intent, _ReleaseIntent) or active is None
@@ -580,7 +582,7 @@ class ManagedToolSession:
                     outcome = "unresolved"
                 if outcome == "busy":
                     active.release_intent = None
-                    return
+                    return outcome
                 active.fenced = True
                 self._generation += 1
                 active.release_fence_generation = self._generation
@@ -591,6 +593,7 @@ class ManagedToolSession:
                 raise StaleAdmissionError("checked release cannot be reconciled")
             if outcome == "completed":
                 self._active = None
+            return outcome
 
     def _require_active_locked(self) -> _ActiveSession:
         if self._active is None:

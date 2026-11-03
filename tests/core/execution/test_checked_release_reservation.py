@@ -45,7 +45,7 @@ def test_busy_preserves_generation_and_completed_never_calls_adapter():
     manager._finish_checked_release(intent, outcome="busy")
     assert manager.active and manager.generation == generation
     intent = reserve(manager, binding, generation)
-    manager._finish_checked_release(intent, outcome="completed")
+    assert manager._finish_checked_release(intent, outcome="completed") == "completed"
     assert not manager.occupied and manager.generation == generation + 1
     assert adapter.events == []
     with pytest.raises(StaleAdmissionError):
@@ -100,9 +100,9 @@ def test_late_completion_requires_explicit_reconciliation(monkeypatch):
     manager, adapter, binding, generation = setup_slot()
     intent = reserve(manager, binding, generation)
     monkeypatch.setattr(time, "monotonic", lambda: intent.deadline + 1)
-    manager._finish_checked_release(intent, outcome="completed")
+    assert manager._finish_checked_release(intent, outcome="completed") == "unresolved"
     assert manager.occupied and not manager.active
     with pytest.raises(StaleAdmissionError):
         manager._finish_checked_release(intent, outcome="completed")
-    manager._reconcile_checked_release(intent, outcome="completed")
+    assert manager._reconcile_checked_release(intent, outcome="completed") == "completed"
     assert not manager.occupied and adapter.events == []
