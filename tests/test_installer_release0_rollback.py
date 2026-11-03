@@ -118,8 +118,17 @@ def _activate_release0(root: Path, data: Path, version: Version, marker: Path,
     assert ticket["binding"]["data"] == str(data)
     assert ticket["binding"]["operation_id"] == journal["operation_id"]
     assert ticket["binding"]["step"] == "rollback_selected"
-    _start_release0_runtime(root, marker, {**environment, "ASTRID_INSTALL_CUSTODY": json.dumps(ticket)})
+    leased_environment = {**environment, "ASTRID_INSTALL_CUSTODY": json.dumps(ticket)}
+    _start_release0_runtime(root, marker, leased_environment)
     custody.check()
+    marker_bytes = marker.read_bytes()
+    replay = subprocess.run(
+        [str(root / "run"), "--hosted-origin", "off"],
+        check=False, capture_output=True, text=True, env=leased_environment, timeout=30,
+    )
+    assert replay.returncode != 0
+    assert "activation ticket was refused" in replay.stderr
+    assert marker.read_bytes() == marker_bytes
 
 
 def _journal(root: Path, data: Path, old: Version, candidate: Version, step: str) -> dict:
