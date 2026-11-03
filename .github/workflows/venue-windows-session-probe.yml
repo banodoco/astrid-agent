@@ -2,7 +2,7 @@ name: Venue disposable Windows standard-user probe
 
 on:
   push:
-    branches: ["lane/M-VENUE/V-WIN-R0-SESSION-PROBE-R1"]
+    branches: ["lane/M-VENUE/V-WIN-R0-SESSION-PROBE-R2"]
   workflow_dispatch:
 
 permissions:
@@ -46,7 +46,7 @@ jobs:
             $secret.AppendChar('!'); $secret.AppendChar('a'); $secret.AppendChar('A'); $secret.AppendChar('7')
             $secret.MakeReadOnly()
             [Array]::Clear($bytes, 0, $bytes.Length)
-            $user = New-LocalUser -Name $name -Password $secret -AccountNeverExpires -PasswordNeverExpires -Description "Disposable venue probe $nonce"
+            $user = New-LocalUser -Name $name -Password $secret -AccountNeverExpires -PasswordNeverExpires -Description "Venue probe $nonce"
             $createdSid = $user.SID.Value
             Record "created_user=$name created_sid=$createdSid"
             New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
@@ -106,7 +106,7 @@ jobs:
             }
             if ($createdSid -and ($null -eq $process -or $finished)) {
               $current = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
-              if ($current -and $current.SID.Value -eq $createdSid -and $current.Description -eq "Disposable venue probe $nonce") {
+              if ($current -and $current.SID.Value -eq $createdSid -and $current.Description -eq "Venue probe $nonce") {
                 Remove-LocalUser -SID $current.SID
                 $cleanupOK = $null -eq (Get-LocalUser -SID $current.SID -ErrorAction SilentlyContinue)
               } else { Record 'cleanup_refused=account ownership could not be verified' }
