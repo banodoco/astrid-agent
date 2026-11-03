@@ -1,10 +1,9 @@
 """Fixed direct-native M4-6 checkpoint session provider.
 
-The export in this module is selected by ``native_service_adapter``; callers
-cannot select another provider or pass an authority token.  It deliberately
-does not authenticate a GitHub run or publish a verdict.  Its limited job is
-to retain one exact live owner and immutable binding from open through the
-product-authorized removal checkpoint, and to refuse every substitution.
+The source-fixed provider refuses admission until an independently authenticated
+collector context is available. The checkpoint state machine below is retained
+for review and isolated tests; local bindings cannot authenticate a hosted run
+or establish the protected collector-to-artifact join.
 """
 
 from __future__ import annotations
@@ -320,14 +319,14 @@ class _DirectCheckpointProvider:
     def open_authenticated_session(
         self, binding: native.PlatformSessionBinding, owner: object
     ) -> DirectCheckpointPlatformSession:
-        if type(owner) is not native.NativeOwner:
-            raise TrustedPlatformContextUnavailable("exact live NativeOwner is required")
-        session = DirectCheckpointPlatformSession(binding, owner)
-        session._validate_binding()
-        # Independent source read after the adapter's initial census and before
-        # private scratch creation or any native/product mutation.
-        owner.assert_absent()
-        return session
+        # Local binding and process checks cannot establish independent collector
+        # provenance or bind the selected slot to the artifact upload transaction.
+        # Refuse before scratch creation or product mutation until that boundary
+        # is supplied and reviewed; a serialized external join is not authority.
+        del binding, owner
+        raise TrustedPlatformContextUnavailable(
+            "trusted collector context/channel is unavailable; direct hosted admission is closed"
+        )
 
 
 PLATFORM_SESSION_PROVIDER = _DirectCheckpointProvider()

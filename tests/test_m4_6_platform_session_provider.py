@@ -13,6 +13,7 @@ import pytest
 from scripts import native_service_adapter as native
 from scripts.m4_6_platform_session_provider import (
     PLATFORM_SESSION_PROVIDER,
+    DirectCheckpointPlatformSession,
     TrustedPlatformContextUnavailable,
 )
 from tests.failure_mode_fixtures import PROVISIONAL_CANDIDATE
@@ -23,7 +24,7 @@ def test_fixed_provider_has_only_the_contract_open_signature_and_fails_closed() 
     assert tuple(signature.parameters) == ("binding", "owner")
     assert "trusted_origin" not in signature.parameters
 
-    with pytest.raises(TrustedPlatformContextUnavailable, match="exact live NativeOwner"):
+    with pytest.raises(TrustedPlatformContextUnavailable, match="trusted collector context/channel is unavailable"):
         PLATFORM_SESSION_PROVIDER.open_authenticated_session(object(), object())
 
 
@@ -107,7 +108,8 @@ def test_direct_provider_binds_exact_live_context_once_and_never_returns_authori
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     binding, owner, custody, _paths = _openable_linux_context(tmp_path, monkeypatch)
-    session = PLATFORM_SESSION_PROVIDER.open_authenticated_session(binding, owner)
+    session = DirectCheckpointPlatformSession(binding, owner)
+    session._validate_binding()
     assert session.bind_exact_custody(custody, owner) is None
     with pytest.raises(TrustedPlatformContextUnavailable, match="custody-bound, not opened"):
         session.bind_exact_custody(custody, owner)
@@ -122,7 +124,16 @@ def test_direct_provider_refuses_changed_immutable_artifact_before_custody_bind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     binding, owner, custody, paths = _openable_linux_context(tmp_path, monkeypatch)
-    session = PLATFORM_SESSION_PROVIDER.open_authenticated_session(binding, owner)
+    session = DirectCheckpointPlatformSession(binding, owner)
+    session._validate_binding()
     paths["service-executable"].write_bytes(b"changed")
     with pytest.raises(TrustedPlatformContextUnavailable, match="changed, is unsafe, or is absent"):
         session.bind_exact_custody(custody, owner)
+
+
+def test_plausible_local_binding_cannot_open_authenticated_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding, owner, _custody, _paths = _openable_linux_context(tmp_path, monkeypatch)
+    with pytest.raises(TrustedPlatformContextUnavailable, match="trusted collector context/channel is unavailable"):
+        PLATFORM_SESSION_PROVIDER.open_authenticated_session(binding, owner)

@@ -138,7 +138,7 @@ PINOKIO_R1_SNAPSHOT_SCENARIO_ASSERTIONS: Final = {
 OPTION_B_DECISION: Final = (
     "deferred-R1.x (Hannah decision, 2026-11-02 option B)"
 )
-OPTION_B_DECISION_POINTER: Final = "/home/user/repo/docs/merge-plan/DECISIONS.md:316"
+OPTION_B_DECISION_POINTER: Final = "docs/merge-plan/DECISIONS.md:338"
 DEFERRED_R1_X_PINOKIO_CONTINUITY_OBLIGATIONS: Final = tuple(
     {
         # ``id`` is the original, exact M4-6 obligation ID. The assertion ID

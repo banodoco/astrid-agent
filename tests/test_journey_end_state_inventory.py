@@ -155,7 +155,7 @@ def test_option_b_defers_exactly_the_pinokio_continuity_claims_not_their_r1_end_
     assert len(deferred) == 24
     assert all(
         row["release_scope"] == "deferred-R1.x (Hannah decision, 2026-11-02 option B)"
-        and row["decision_pointer"] == "/home/user/repo/docs/merge-plan/DECISIONS.md:316"
+        and row["decision_pointer"] == "docs/merge-plan/DECISIONS.md:338"
         and row["r1_gate"] == "excluded-deferred-R1.x"
         and row["claim"] == "gap-free Pinokio custody and removal-authorization continuity"
         for row in deferred.values()
