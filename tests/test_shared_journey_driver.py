@@ -780,6 +780,41 @@ def test_native_driver_rejects_serialized_observation_promotion(tmp_path):
         driver.service_spec(context)
 
 
+def test_native_driver_refuses_v2_config_before_product_invocation(tmp_path):
+    _, context, state = _native_driver(tmp_path)
+    config_path = tmp_path / "driver.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["protocol"] = "astrid-m4-6-product-driver/v2"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(shared.JourneyDriverError, match="native product protocol must be"):
+        shared.JourneyDriver(config_path, context)
+    assert not state.exists()
+
+
+def test_native_driver_refuses_mixed_version_response(tmp_path, monkeypatch):
+    driver, context, _ = _native_driver(tmp_path)
+
+    def response(*args, **kwargs):
+        request = json.loads(kwargs["input"])
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=json.dumps({
+                "protocol": "astrid-m4-6-product-driver/v2",
+                "sequence": request["sequence"],
+                "action": request["action"],
+                "status": "pass",
+                "service_spec": {},
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr(shared.subprocess, "run", response)
+    with pytest.raises(shared.JourneyDriverError, match="response protocol differs"):
+        driver.service_spec(context)
+
+
 def test_native_driver_rechecks_pinned_helper_before_every_action(tmp_path):
     driver, context, _ = _native_driver(tmp_path)
     helper = tmp_path / "product-driver"
