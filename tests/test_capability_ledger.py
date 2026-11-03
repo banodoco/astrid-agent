@@ -55,13 +55,18 @@ def test_ledger_has_only_canonical_ids_models_backends_and_explicit_unmapped_lab
 def test_host_consumes_the_reconciled_ledger_before_readiness_matrix():
     from astrid.core.execution.generic_host import GenericPackHost
 
-    host = GenericPackHost(pack_roots=[Path("astrid/packs")])
+    # The default packaged resource has no checkout census root. Exercise the
+    # source ledger explicitly while still checking the default shipped matrix.
+    host = GenericPackHost(pack_roots=[Path("astrid/packs")],
+                           capability_matrix=Path("config/astrid-beta-capabilities.json"))
     assert host.ledger["sources"]["counts"]["pack_labels"] == 110
     # The host matrix is the shipped readiness matrix, row for row; deriving the
     # count keeps it from drifting each time a capability is admitted.
     shipped = json.loads(Path("config/astrid-beta-capabilities.json").read_text(encoding="utf-8"))
     assert set(host.matrix) == {row["id"] for row in shipped["capabilities"]}
     assert len(host.matrix) == len(shipped["capabilities"])
+    default_host = GenericPackHost(pack_roots=[Path("astrid/packs")])
+    assert default_host.matrix == host.matrix
     finalizer = host.matrix["h3_av.publication_finalizer"]
     assert finalizer["adapter_family"] == "cpu"
     assert finalizer["resource_keys"] == ["cpu"]
