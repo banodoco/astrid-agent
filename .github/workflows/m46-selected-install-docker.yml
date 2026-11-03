@@ -1,0 +1,116 @@
+name: M46 selected install Docker diagnostic
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  selected-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Check out exact action-run head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+      - name: Capture runner identity and obtain pinned sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/m46-evidence"
+          { printf 'run=%s attempt=%s job=%s sha=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" "$GITHUB_SHA"; uname -a; env | grep -E '^(ImageOS|ImageVersion|RUNNER_(NAME|OS|ARCH))=' | sort; } > "$RUNNER_TEMP/m46-identity.txt"
+          clone_at() {
+            git clone --quiet --no-checkout "$1" "$2"
+            git -C "$2" checkout --quiet --detach "$3"
+          }
+          clone_at https://github.com/banodoco/astrid-app "$RUNNER_TEMP/app" 79f7e5397c044c4c97dc7e97b20ad96f787e5247
+          clone_at https://github.com/banodoco/astrid-agent "$RUNNER_TEMP/agent" ab43bad818ef65ca1e929b973a2f61cd9fc4bf61
+          clone_at https://github.com/banodoco/astrid-agent "$RUNNER_TEMP/u2-verifier" 7664bbdadd7851a6f6a9c4f152c60ccaa5a70ec5
+          git -C "$RUNNER_TEMP/u2-verifier" rev-parse HEAD > "$RUNNER_TEMP/u2-source-sha.txt"
+          clone_at https://github.com/banodoco/astrid-runtime "$RUNNER_TEMP/runtime" 2776ba973b6c8f3555b5629b0840d9691a98d3c2
+          clone_at https://github.com/banodoco/astrid-pinokio "$RUNNER_TEMP/pinokio" f8605a3877ac76c0d7f65e4b013bc112b8c96992
+          clone_at https://github.com/pinokiocomputer/pinokiod "$RUNNER_TEMP/pinokiod" add4a674ad1ba95bb62ec427fce519fe5bf0e9bf
+          clone_at https://github.com/pinokiocomputer/pterm "$RUNNER_TEMP/pterm" 5be43718701c448b43daf0ce51d8935f170065bb
+      - name: Run selected install diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, secrets
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          request = {'schema':'astrid.m46.selected-install-docker-request.v2', 'runner_head':os.environ['GITHUB_SHA'],
+                     'request_id':secrets.token_hex(16), 'action':'install', 'mode':'backend',
+                     'checkouts':{k:str(temp / v) for k,v in {'app':'app','agent':'agent','runtime':'runtime','pinokio':'pinokio'}.items()} | {'runner':os.environ['GITHUB_WORKSPACE']},
+                     'engine_checkout':str(temp/'pinokiod'), 'pterm_checkout':str(temp/'pterm'), 'output_directory':str(temp/'m46-evidence')}
+          (temp/'m46-request.json').write_text(json.dumps(request, indent=2, sort_keys=True)+'\n')
+          PY
+          # Intercept only container cleanup to run the read-only diagnostic while the real install exists.
+          mkdir -p "$RUNNER_TEMP/m46-bin"
+          export M46_REAL_DOCKER="$(command -v docker)"
+          cat > "$RUNNER_TEMP/m46-bin/docker" <<'SH'
+          #!/usr/bin/env bash
+          if [[ "${1:-}" == build && "${2:-}" == -t && "${3:-}" == m46-*:local && $# == 4 ]]; then
+            node "$GITHUB_WORKSPACE/.github/venue/m46-engine-overlay.cjs" "$4" || exit $?
+          fi
+          if [[ "${1:-}" == rm && "${2:-}" == -f && "${3:-}" == m46-* ]]; then
+            timeout 20s python3 "$RUNNER_TEMP/m46-u2-capture.py" "$3" || true
+          fi
+          exec "$M46_REAL_DOCKER" "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/m46-bin/docker"
+          cat > "$RUNNER_TEMP/m46-u2-capture.py" <<'PY'
+          import json, os, pathlib, subprocess, sys
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'm46-evidence'
+          docker, cid = os.environ['M46_REAL_DOCKER'], sys.argv[1]
+          argv = ['python3', '-B', '-m', 'scripts.m4_6_pinokio_custody_provider', '--slot-id', 'pinokio-backend-linux', '--app-root', '/data/pinokio/api/astrid', '--source-commit', 'f8605a3877ac76c0d7f65e4b013bc112b8c96992']
+          (out/'u2-argv.json').write_text(json.dumps(argv, indent=2)+'\n')
+          identity = subprocess.run([docker, 'exec', cid, 'id'], capture_output=True, text=True, timeout=5)
+          (out/'u2-container-identity.txt').write_text('exit='+str(identity.returncode)+'\nstdout='+identity.stdout+'stderr='+identity.stderr)
+          try:
+              rows = [json.loads(line) for line in (out/'child.jsonl').read_text().splitlines()]
+              selected = [r for r in rows if r.get('kind') == 'spawn' and r.get('command') == '/bin/bash' and '79f7e5397c044c4c97dc7e97b20ad96f787e5247' in json.dumps(r.get('args')) and '/data/pinokio/api/astrid/app/astrid' in json.dumps(r.get('args'))]
+              if len(selected) != 1: raise ValueError('selected bootstrap principal unavailable or ambiguous')
+              principal = selected[0]
+              closes = [r for r in rows if r.get('kind') == 'close' and r.get('pid') == principal.get('pid') and r.get('parent_pid') == principal.get('parent_pid')]
+              if len(closes) != 1 or closes[0].get('code') != 0 or closes[0].get('signal') is not None: raise ValueError('selected bootstrap did not complete successfully')
+              if not all((out/name).is_file() for name in ('install-mode.json', 'current.txt', 'version.json', 'install.json')): raise ValueError('validated selected installation readback unavailable')
+              if (pathlib.Path(os.environ['RUNNER_TEMP'])/'u2-source-sha.txt').read_text().strip() != '7664bbdadd7851a6f6a9c4f152c60ccaa5a70ec5': raise ValueError('U2 source SHA mismatch')
+              (out/'u2-selected-principal.json').write_text(json.dumps(principal, indent=2)+'\n')
+              uid, gid = principal.get('uid'), principal.get('gid')
+              if not isinstance(uid, int) or not isinstance(gid, int) or uid <= 0 or gid <= 0: raise ValueError('selected bootstrap principal is root or unavailable')
+              verifier = str(pathlib.Path(os.environ['RUNNER_TEMP'])/'u2-verifier')
+              cp = subprocess.run([docker, 'cp', verifier, cid+':/tmp/m46-u2-verifier'], capture_output=True, text=True, timeout=8)
+              if cp.returncode: raise ValueError('verifier copy failed: '+cp.stderr)
+              check = subprocess.run([docker, 'exec', '--user', f'{uid}:{gid}', '--workdir', '/tmp/m46-u2-verifier', cid, 'id'], capture_output=True, text=True, timeout=3)
+              (out/'u2-principal-identity.txt').write_text('exit='+str(check.returncode)+'\nstdout='+check.stdout+'stderr='+check.stderr)
+              if check.returncode: raise ValueError('selected principal identity unavailable')
+              p = subprocess.run([docker, 'exec', '--user', f'{uid}:{gid}', '--workdir', '/tmp/m46-u2-verifier', cid, *argv], capture_output=True, timeout=6)
+              (out/'u2-stdout.txt').write_bytes(p.stdout[:65536]); (out/'u2-stderr.txt').write_bytes(p.stderr[:65536]); (out/'u2-exit.txt').write_text(str(p.returncode)+'\n')
+          except (OSError, ValueError, subprocess.SubprocessError) as e:
+              (out/'u2-unavailable.txt').write_text(str(e)+'\n')
+          PY
+          export PATH="$RUNNER_TEMP/m46-bin:$PATH"
+          set +e
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/m46_selected_install_docker.py "$RUNNER_TEMP/m46-request.json" > "$RUNNER_TEMP/m46-wrapper.log" 2>&1
+          code=$?
+          printf '%s\n' "$code" > "$RUNNER_TEMP/m46-wrapper-exit.txt"
+          cat "$RUNNER_TEMP/m46-wrapper.log"
+          exit "$code"
+      - name: Retain bounded evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m46-selected-install-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/u2-source-sha.txt
+            ${{ runner.temp }}/m46-identity.txt
+            ${{ runner.temp }}/m46-request.json
+            ${{ runner.temp }}/m46-wrapper.log
+            ${{ runner.temp }}/m46-wrapper-exit.txt
+            ${{ runner.temp }}/m46-evidence/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:astrid:m46:selected-install-docker-request:v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "runner_head",
+    "request_id",
+    "action",
+    "mode",
+    "checkouts",
+    "output_directory",
+    "engine_checkout",
+    "pterm_checkout"
+  ],
+  "properties": {
+    "schema": {
+      "const": "astrid.m46.selected-install-docker-request.v2"
+    },
+    "runner_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "action": {
+      "const": "install"
+    },
+    "mode": {
+      "const": "backend"
+    },
+    "checkouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app",
+        "agent",
+        "runtime",
+        "pinokio",
+        "runner"
+      ],
+      "properties": {
+        "app": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/"
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/"
+        },
+        "runtime": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/"
+        },
+        "pinokio": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/"
+        },
+        "runner": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/"
+        }
+      }
+    },
+    "output_directory": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^/"
+    },
+    "engine_checkout": {
+      "type": "string",
+      "pattern": "^/",
+      "minLength": 1
+    },
+    "pterm_checkout": {
+      "type": "string",
+      "pattern": "^/",
+      "minLength": 1
+    }
+  }
+}

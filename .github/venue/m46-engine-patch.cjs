@@ -1,0 +1,15 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const root = process.argv[2];
+const selected = process.argv[3];
+const sha = value => crypto.createHash('sha256').update(value).digest('hex');
+const file = path.join(root, 'kernel/bin/aria2.js');
+const source = fs.readFileSync(file, 'utf8');
+const before = "  env() {\n    if (this.kernel.platform === 'win32') {";
+const after = "  env(kernel) {\n    if (kernel.platform === 'win32') {";
+if (sha(source) !== '43ccf5bdf6952700a94461f216b0c38f3ab45f3a92f446245f7855210748848c' || source.split(before).length !== 2) throw Error('seed patch source mismatch');
+fs.writeFileSync(file, source.replace(before, after));
+const overlay = require(path.join(selected, '.github/venue/m46-engine-overlay.cjs'));
+console.log(JSON.stringify({ seed_source_sha256: sha(source), seed_patched_sha256: sha(fs.readFileSync(file)), overlay: overlay.applyPinokiodEngineOverlay(root, { verifyGit: false }) }));

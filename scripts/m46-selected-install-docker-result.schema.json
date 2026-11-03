@@ -1,0 +1,564 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:astrid:m46:selected-install-docker-result:v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "reason",
+    "request_id",
+    "request_sha256",
+    "runner_head",
+    "tuple",
+    "action",
+    "mode",
+    "source_sha256",
+    "engine_ref",
+    "pterm_ref",
+    "hosted",
+    "commands",
+    "container",
+    "action_invoked",
+    "child_exit",
+    "readback",
+    "observer_binding",
+    "settlement",
+    "slot_receipt",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": {
+      "const": "astrid.m46.selected-install-docker-result.v2"
+    },
+    "status": {
+      "enum": [
+        "blocked",
+        "observed"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "runner_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "tuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app",
+        "agent",
+        "runtime",
+        "pinokio"
+      ],
+      "properties": {
+        "app": {
+          "const": "79f7e5397c044c4c97dc7e97b20ad96f787e5247"
+        },
+        "agent": {
+          "const": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61"
+        },
+        "runtime": {
+          "const": "2776ba973b6c8f3555b5629b0840d9691a98d3c2"
+        },
+        "pinokio": {
+          "const": "f8605a3877ac76c0d7f65e4b013bc112b8c96992"
+        }
+      }
+    },
+    "action": {
+      "const": "pinokio/install.js"
+    },
+    "mode": {
+      "const": "backend"
+    },
+    "source_sha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app/public/install-manifest.json",
+        "app/public/install",
+        "pinokio/pinokio/install.js",
+        "pinokio/pinokio/start.js",
+        "pinokio/pinokio/lib.js",
+        "pinokio/pinokio/session.mjs",
+        "pinokio/pinokio/providers/r24-action.cjs",
+        "pinokio/pinokio/providers/r24-linux.py",
+        "pinokio/pinokio/providers/r24-linux-binding.json",
+        "pinokio/.github/venue/m46-engine-overlay.cjs",
+        "pinokio/pinokio/shell.mjs",
+        "pinokio/pinokio/environment.js",
+        "pinokio/pinokio/platforms/posix.js",
+        "pinokio/pinokio/platforms/windows.js",
+        "pinokio/pinokio/lifecycle.mjs",
+        "pinokio/pinokio/update-stage.mjs",
+        "pinokio/pinokio/installer-lock.py"
+      ],
+      "properties": {
+        "app/public/install-manifest.json": {
+          "const": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f"
+        },
+        "app/public/install": {
+          "const": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d"
+        },
+        "pinokio/pinokio/install.js": {
+          "const": "60f4473e91b769af0480098b96a36500f3c1628ac33a7617f68df4de1fe436e2"
+        },
+        "pinokio/pinokio/start.js": {
+          "const": "442ff8fb73d65047bc4dd34de997bd36920efab16733aeb6ddd967afe291c037"
+        },
+        "pinokio/pinokio/lib.js": {
+          "const": "59bb0a556b425dafb4d986aaab54f0dbd23a988814a0d64a6cb4437c52d3d998"
+        },
+        "pinokio/pinokio/session.mjs": {
+          "const": "460ff77a8cda2b711c785a607e4a399f8c33ddc903496e4c769b717d010aad99"
+        },
+        "pinokio/pinokio/providers/r24-action.cjs": {
+          "const": "2901c4e75b11a96547d2033e62118ee64247670b8f9531fc6bbad9fb1b34be01"
+        },
+        "pinokio/pinokio/providers/r24-linux.py": {
+          "const": "978b52548281250ed264d7f08d8c8179419a1aa11035ddb1d6450960839e0dc9"
+        },
+        "pinokio/pinokio/providers/r24-linux-binding.json": {
+          "const": "52ef516056a70c033cfc33b8a411d98fcb358474810a0a957fde2c3f3e5c6f53"
+        },
+        "pinokio/.github/venue/m46-engine-overlay.cjs": {
+          "const": "26822d88bffd8b038b954d3e851b3b061776ab2d9ae081f5eda3463e85048ca1"
+        },
+        "pinokio/pinokio/shell.mjs": {
+          "const": "d8c2dfa774c0bda07d29f923f8b84d06055e76a8f4c5b6192980be2dffa8a7e9"
+        },
+        "pinokio/pinokio/environment.js": {
+          "const": "0da2a9d2186e7ce28d40a17d9943c973aa6edd79613caaf31328722d92db0a41"
+        },
+        "pinokio/pinokio/platforms/posix.js": {
+          "const": "20cf174da5668607f2ab0d8f7856475e1d7bd0363bd7c86512658130ce73279b"
+        },
+        "pinokio/pinokio/platforms/windows.js": {
+          "const": "bfcce0736bdff41afae7cbb36c579b2ea49420b4d91bc40c5e7263ada509c519"
+        },
+        "pinokio/pinokio/lifecycle.mjs": {
+          "const": "0ddc6a5596dc02a2f33afba799495c7834ebb193df33fe15c376c2b60859a3ad"
+        },
+        "pinokio/pinokio/update-stage.mjs": {
+          "const": "e563c3d3fb8e5a3d11ddc3ba84f9f15d146eac0ccb359a3f403bb3c68dbda551"
+        },
+        "pinokio/pinokio/installer-lock.py": {
+          "const": "809937b3e6a4f2b48ef1cc75cd262f3acd828f9252cbbb4825a144dabb59fa2f"
+        }
+      }
+    },
+    "engine_ref": {
+      "const": "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
+    },
+    "pterm_ref": {
+      "const": "5be43718701c448b43daf0ce51d8935f170065bb"
+    },
+    "hosted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_JOB",
+        "GITHUB_SHA",
+        "RUNNER_NAME",
+        "RUNNER_OS",
+        "RUNNER_ARCH",
+        "ImageOS",
+        "ImageVersion"
+      ],
+      "properties": {
+        "GITHUB_RUN_ID": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "GITHUB_RUN_ATTEMPT": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "GITHUB_JOB": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "GITHUB_SHA": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "RUNNER_NAME": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "RUNNER_OS": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "RUNNER_ARCH": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ImageOS": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ImageVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "label",
+          "argv",
+          "exit_code",
+          "log"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "log": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "container": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "image_id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "name": {
+              "type": "string"
+            },
+            "image_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "action_invoked": {
+      "type": "boolean"
+    },
+    "child_exit": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "spawn",
+            "close"
+          ],
+          "properties": {
+            "spawn": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema",
+                "kind",
+                "pid",
+                "parent_pid",
+                "command",
+                "args",
+                "cwd",
+                "uid",
+                "gid",
+                "groups",
+                "observed_at"
+              ],
+              "properties": {
+                "schema": {
+                  "const": "astrid.m46.child-diagnostic.v1"
+                },
+                "kind": {
+                  "const": "spawn"
+                },
+                "pid": {
+                  "type": "integer"
+                },
+                "parent_pid": {
+                  "type": "integer"
+                },
+                "command": {
+                  "const": "/bin/bash"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "cwd": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "uid": {
+                  "type": "integer"
+                },
+                "gid": {
+                  "type": "integer"
+                },
+                "groups": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "observed_at": {
+                  "type": "string"
+                }
+              }
+            },
+            "close": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema",
+                "kind",
+                "pid",
+                "parent_pid",
+                "code",
+                "signal",
+                "observed_at"
+              ],
+              "properties": {
+                "schema": {
+                  "const": "astrid.m46.child-diagnostic.v1"
+                },
+                "kind": {
+                  "const": "close"
+                },
+                "pid": {
+                  "type": "integer"
+                },
+                "parent_pid": {
+                  "type": "integer"
+                },
+                "code": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "signal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "observed_at": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "readback": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "current",
+            "identity",
+            "node_executable",
+            "node_sha256",
+            "node_version"
+          ],
+          "properties": {
+            "mode": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_version",
+                "mode"
+              ],
+              "properties": {
+                "schema_version": {
+                  "const": 1
+                },
+                "mode": {
+                  "const": "backend"
+                }
+              }
+            },
+            "current": {
+              "type": "string"
+            },
+            "identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "release",
+                "managed_by"
+              ],
+              "properties": {
+                "release": {
+                  "const": 1
+                },
+                "managed_by": {
+                  "const": "pinokio"
+                }
+              }
+            },
+            "node_executable": {
+              "type": "string"
+            },
+            "node_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "node_version": {
+              "const": "v20.19.4"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observer_binding": {
+      "const": "not-produced"
+    },
+    "settlement": {
+      "const": "unknown"
+    },
+    "slot_receipt": {
+      "const": "not-produced"
+    },
+    "artifacts": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9._-]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sha256",
+          "bytes"
+        ],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048576
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "observed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "reason": {
+            "const": "none"
+          },
+          "action_invoked": {
+            "const": true
+          },
+          "child_exit": {
+            "type": "object",
+            "properties": {
+              "close": {
+                "properties": {
+                  "code": {
+                    "const": 0
+                  },
+                  "signal": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          },
+          "readback": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  ]
+}
