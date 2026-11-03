@@ -311,3 +311,60 @@ def test_workflow_intel_diagnostic_keeps_full_gate():
     gate_step = workflow.split('      - name: Aggregate the exact Release-1 receipt matrix\n', 1)[1].split('      - name:', 1)[0]
     assert '--aggregate-release1' in gate_step
     assert 'direct_macos_intel_only' not in gate_step
+
+
+def test_intel_diagnostic_cli_validates_candidate_and_keeps_release_gate(tmp_path):
+    import hashlib
+    import subprocess
+    import sys
+
+    app = tmp_path / 'app'
+    public = app / 'public'
+    public.mkdir(parents=True)
+    receipts = tmp_path / 'receipts'
+    receipts.mkdir()
+    candidate = release1_receipts(receipts)
+    manifest = {'agent': {'sha': candidate['agent']}, 'runtime': {'sha': candidate['runtime']}}
+    manifest_path = public / 'install-manifest.json'
+    manifest_path.write_text(json.dumps(manifest))
+    for artifact in gate.ARTIFACTS:
+        (app / artifact).write_text(artifact)
+    subprocess.run(['git', 'init', '-q', str(app)], check=True)
+    subprocess.run(['git', '-C', str(app), 'add', 'public'], check=True)
+    subprocess.run(['git', '-C', str(app), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                    'commit', '-qm', 'fixture'], check=True)
+    candidate['app'] = subprocess.check_output(['git', '-C', str(app), 'rev-parse', 'HEAD'], text=True).strip()
+    candidate['manifest_sha256'] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    candidate['artifacts'] = {path: hashlib.sha256((app / path).read_bytes()).hexdigest()
+                              for path in gate.ARTIFACTS}
+    source = receipts / 'direct-macos' / 'journey-result.json'
+    row = json.loads(source.read_text())
+    row['runner_image'] = 'macos-15-intel'
+    row['os_build'] = 'macOS-15.7-x86_64-i386-64bit'
+    row['runner_provenance'].update(observed_os_family='darwin', RUNNER_ARCH='X64',
+                                    observed_architecture='x86_64')
+    row['candidate_checkouts']['app']['sha'] = candidate['app']
+    row['sources']['app']['sha'] = candidate['app']
+    row['installed_tuple']['app'] = candidate['app']
+    for path in receipts.glob('*/journey-result.json'):
+        path.unlink()
+    for phase in ('before-cleanup', 'after-cleanup'):
+        folder = receipts / phase
+        folder.mkdir()
+        value = copy.deepcopy(row)
+        if phase == 'before-cleanup':
+            value.pop('final_cleanup')
+        (folder / 'journey-result.json').write_text(json.dumps(value))
+    candidate_path = tmp_path / 'candidate.json'
+    candidate_path.write_text(json.dumps(candidate))
+    checker = Path(__file__).parents[1] / 'scripts/check_journey_evidence.py'
+    command = [sys.executable, str(checker), '--candidate', str(candidate_path),
+               '--app-checkout', str(app), '--results', str(receipts)]
+    diagnostic = subprocess.run(command + ['--diagnostic-macos-intel'], text=True, capture_output=True)
+    assert diagnostic.returncode == 0, diagnostic.stdout + diagnostic.stderr
+    assert 'Intel diagnostic evidence: PASS' in diagnostic.stdout
+    full = subprocess.run(command + ['--aggregate-release1'], text=True, capture_output=True)
+    assert full.returncode != 0 and 'missing receipt' in full.stdout
+    override = subprocess.run(command + ['--diagnostic-macos-intel', '--allow-source-override'],
+                              text=True, capture_output=True)
+    assert override.returncode != 0 and 'never admits overrides' in override.stdout
