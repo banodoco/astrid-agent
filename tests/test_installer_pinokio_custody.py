@@ -307,3 +307,52 @@ time.sleep(30)
                     child.wait(timeout=5)
                 for stream in (child.stdin, child.stdout, child.stderr):
                     stream.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Exercises Linux lifetime lock path and flock.")
+def test_offline_migration_primitive_under_custody_refuses_independent_operator(tmp_path, monkeypatch):
+    """Exercise the proposed primitive, without claiming the updater wires it yet."""
+    import sqlite3
+
+    from astrid_runtime.operator_upgrade import OperatorUpgradeError, _installer_mutex
+    from runtime_protocol.store import RealmStore, SCHEMA_VERSION
+    from runtime_protocol.upgrade import _owner_fence, migrate_canonical_to_current
+    from tests.installer_schema_fixtures import remove_round1b_schema_objects
+
+    root, _data, home, backend, _versions = _fixture(tmp_path)
+    share = home / ".local" / "share"
+    share.mkdir(parents=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(share))
+    (share / "astrid-install.json").write_text("{}", encoding="utf-8")
+    realm = tmp_path / "realm"
+    RealmStore.initialize(realm, realm_id="realm-1").close()
+    with sqlite3.connect(realm / "realm.sqlite3") as connection:
+        remove_round1b_schema_objects(connection)
+        connection.execute("ALTER TABLE timelines DROP COLUMN name")
+        connection.execute("DROP TABLE user_app_state")
+        connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
+    paths = SimpleNamespace(home=home, runtime_support=tmp_path)
+    with _custody(root, backend) as custody:
+        assert custody is not None
+        # This is the current backend.upgrade child path; it cannot join the
+        # custodian's separately opened lifetime lock as the same operation.
+        with pytest.raises(OperatorUpgradeError, match="another installer owns the installation lifetime lock"):
+            with _installer_mutex(paths):
+                pass
+        independent = subprocess.run(
+            [sys.executable, "-c", "from types import SimpleNamespace\n"
+             "from pathlib import Path\n"
+             "from astrid_runtime.operator_upgrade import _installer_mutex\n"
+             "import sys\n"
+             "with _installer_mutex(SimpleNamespace(home=Path(sys.argv[1]), runtime_support=Path(sys.argv[2]))): pass\n",
+             str(home), str(tmp_path)], capture_output=True, text=True, timeout=10,
+        )
+        assert independent.returncode != 0
+        assert "another installer owns the installation lifetime lock" in independent.stderr
+        # Runtime's own fence sets its reentrant context; its migration can
+        # therefore run while the outer context retains both realm locks.
+        with _owner_fence(realm):
+            result = migrate_canonical_to_current(
+                realm, confirmation="MIGRATE CANONICAL realm-1", expected_realm_id="realm-1")
+        assert result["changed"] is True
+        assert result["target_schema_version"] == SCHEMA_VERSION
