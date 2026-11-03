@@ -21,7 +21,7 @@ Blocking checks (any error exits 1):
    Backup and doctor/status/setup subcommands are not introspectable without
    refactoring their inline parsers, so only their family name is checked.
 3. Catalog freshness. ``scripts/gen_capability_index.py`` runs against a
-   temporary copy of ``astrid/packs/_core/docs/references/capabilities.md``.
+   temporary copy of ``astrid/core/resources/skills/references/capabilities.md``.
    The gate fails if the regenerated file differs from the committed one.
 
 Warning only (never fails the gate):
@@ -55,7 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-CATALOG_PATH = "astrid/packs/_core/docs/references/capabilities.md"
+CATALOG_PATH = "astrid/core/resources/skills/references/capabilities.md"
 CATALOG_GENERATOR = "scripts/gen_capability_index.py"
 PACKS_DIR = "astrid/packs"
 MARKER = "<!-- doc-ref: historical -->"

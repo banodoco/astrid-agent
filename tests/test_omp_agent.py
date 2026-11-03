@@ -141,11 +141,11 @@ def test_installed_named_profile_has_safe_startup_update_contract() -> None:
 
 def test_packaged_profile_resolves_skills_inside_selected_installation() -> None:
     package_root = Path(omp_agent.__file__).resolve().parent
-    core = package_root / "packs" / "_core" / "docs" / "SKILL.md"
+    core = package_root / "core" / "resources" / "skills" / "SKILL.md"
     media = package_root / "packs" / "media" / "docs" / "SKILL.md"
     assert core.is_file() and media.is_file()
     assert str(core) in omp_agent.ASTRID_SYSTEM_PROMPT
-    assert str(media) in omp_agent.ASTRID_SYSTEM_PROMPT
+    assert str(media) not in omp_agent.ASTRID_SYSTEM_PROMPT
     assert "{{ASTRID_PACKAGE_ROOT}}" not in omp_agent.ASTRID_SYSTEM_PROMPT
     assert "Read the discovered `astrid` skill first" not in omp_agent.ASTRID_SYSTEM_PROMPT
 
@@ -156,7 +156,7 @@ def test_installed_prompt_notice_preserves_overrides_and_names_packaged_skills()
     })
     assert flags[0] == "--append-system-prompt"
     assert "Custom guidance" in flags[1]
-    assert str(Path(omp_agent.__file__).resolve().parent / "packs" / "_core" / "docs" / "SKILL.md") in flags[1]
+    assert str(Path(omp_agent.__file__).resolve().parent / "core" / "resources" / "skills" / "SKILL.md") in flags[1]
     assert omp_agent._prompt_args([], agent="scout", env={"ASTRID_HOST_EXECUTION_PROFILE": "installed"}) == []
 
 

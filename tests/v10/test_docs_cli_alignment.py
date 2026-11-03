@@ -76,7 +76,7 @@ _IN_FLIGHT_EXCLUDED = (
 
 _CORE_DOCS = (
     _ROOT / "AGENTS.md",
-    _ROOT / "astrid/packs/_core/docs/SKILL.md",
+    _ROOT / "astrid/core/resources/skills/SKILL.md",
     _ROOT / "docs/getting-started.md",
     _ROOT / "docs/guides/cli-journeys.md",
 )
@@ -397,7 +397,7 @@ def test_validator_rejects_invalid_verb_and_flag() -> None:
 
 def test_core_docs_have_no_retired_invocation_strings() -> None:
     """AGENTS.md and _core/docs/SKILL.md never mention the retired task-mode verbs."""
-    for path in (_ROOT / "AGENTS.md", _ROOT / "astrid/packs/_core/docs/SKILL.md"):
+    for path in (_ROOT / "AGENTS.md", _ROOT / "astrid/core/resources/skills/SKILL.md"):
         text = path.read_text(encoding="utf-8")
         for ghost in _GHOST_STRINGS:
             assert ghost not in text, f"{path.name} contains {ghost!r}"

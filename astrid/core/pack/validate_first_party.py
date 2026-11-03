@@ -412,9 +412,7 @@ def _first_party_inventory(
         else:
             errors.append(f"unexpected top-level directory: {name}")
     core_dir = child_dirs.get("_core")
-    if core_dir is None:
-        errors.append("missing internal directory: _core")
-    else:
+    if core_dir is not None:
         for manifest_name in ("pack.yaml", "pack.yml", "pack.json"):
             if (core_dir / manifest_name).is_file():
                 errors.append(f"_core: skill-only shell must not contain {manifest_name}")

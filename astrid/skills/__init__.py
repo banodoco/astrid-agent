@@ -35,8 +35,6 @@ def default_descriptors(
     except Exception:
         managed_default_ids = set()
     for descriptor in available:
-        if descriptor.skill_dir.resolve().is_relative_to(discovery.PACKS_DIR.resolve()) and descriptor not in result:
-            result.append(descriptor)
         if descriptor.pack_id in managed_default_ids and descriptor not in result:
             result.append(descriptor)
     for descriptor in available:
@@ -897,17 +895,20 @@ def _sync_descriptors_for_harness(
         if isinstance(setup_selection, dict)
         else []
     )
-    selected_ids = {
-        skill_id.split("-", 1)[0]
+    selected_units = {
+        skill_id
         for skill_id, item in current_state.get("skills", {}).get(harness_name, {}).get("skills", {}).items()
         if item.get("selected")
     }
+    units = list(all_descriptors)
+    if selected_units - {d.skill_id for d in units}:
+        units.extend(discovery.list_extras(all_descriptors))
+    selected_ids = {d.pack_id for d in units if d.skill_id in selected_units}
     expected_ids = (
         installed_ids | selected_ids
         | set(default_pack_ids(all_descriptors))
         | {str(value) for value in retained_integrations}
         | {str(value) for value in selected_pack_ids}
-        | (_route_pack_ids(all_descriptors) if view_routes else set())
     )
     expected_ids.difference_update(disabled)
     expected_ids.add("_core")

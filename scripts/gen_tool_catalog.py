@@ -97,9 +97,12 @@ def _tool_rows(pack: PackDefinition) -> tuple[dict[str, Any], ...]:
     return tuple(_descriptor(tool) for tool in canonical.tool_entry_projections())
 
 
-def generate() -> str:
+def generate(*, selected_pack_ids=None) -> str:
     tools: list[dict[str, Any]] = []
+    selected = None if selected_pack_ids is None else set(selected_pack_ids)
     for pack in discover_packs():
+        if selected is not None and pack.id not in selected:
+            continue
         tools.extend(_tool_rows(pack))
     tools.sort(key=lambda item: (item["id"], item["canonical_id"]))
     seen_ids: set[str] = set()
