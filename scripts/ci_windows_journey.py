@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import ntpath
@@ -11,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,26 @@ EVIDENCE = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())) / "X5-wind
 HEALTH_URL = "http://127.0.0.1:17340/api/runtime/v1/health"
 TASK_OUTPUT_TAIL_BYTES = 65536
 TASK_OUTPUT_METADATA_BYTES = 2048
+PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES = 65536
+PACK_HOST_DIAGNOSTIC_MARKER_BYTES = 65536
+PACK_HOST_DIAGNOSTIC_VALUE_BYTES = 2048
+PACK_HOST_DIAGNOSTIC_JSON_BUDGET = 8192
+NATIVE_RUNTIME_LOG_DIR_ENV = "ASTRID_CI_NATIVE_RUNTIME_LOG_DIR"
+_PACK_HOST_SECRET_FIELD = re.compile(
+    r"(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|cookie|"
+    r"credential|password|private[_-]?key|refresh[_-]?token|secret|signature|sig|token)",
+    re.IGNORECASE,
+)
+_PACK_HOST_SECRET_TEXT = re.compile(
+    r"(?im)((?:[\"']?\b(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|"
+    r"cookie|credential|password|private[_-]?key|refresh[_-]?token|secret|signature|sig|token)\b[\"']?)\s*(?:=|:)\s*)"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|(?:bearer|basic)\s+[^\s,;]+|[^\s,;]+)"
+)
+_PACK_HOST_BEARER = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
+_PACK_HOST_URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
+_PACK_HOST_PRIVATE_KEY_BEGIN = re.compile(r"^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
+_PACK_HOST_PRIVATE_KEY_END = re.compile(r"^-----END [A-Z0-9 ]*PRIVATE KEY-----", re.IGNORECASE)
+PACK_HOST_DIAGNOSTIC_OBSERVATIONS = ("first-failed-poll", "first-service-exit", "last-failed-poll")
 
 
 def _powershell_quote(value):
@@ -342,6 +364,339 @@ def health():
     return value
 
 
+def _redact_pack_host_private_key_blocks(value):
+    """Drop complete keys and a tail that starts inside an unbounded key."""
+    output = []
+    inside = False
+    safe_length = 0
+    for line in value.splitlines(keepends=True):
+        if _PACK_HOST_PRIVATE_KEY_BEGIN.match(line):
+            if not inside:
+                output.append("<redacted private key>\n")
+            inside = True
+        elif _PACK_HOST_PRIVATE_KEY_END.match(line):
+            if inside:
+                inside = False
+                safe_length = len(output)
+            else:
+                output = output[:safe_length]
+                output.append("<redacted truncated private key>\n")
+                safe_length = len(output)
+        elif not inside:
+            output.append(line)
+    return "".join(output)
+
+def _redact_pack_host_text(value):
+    """Keep diagnostics useful without retaining credential material."""
+    value = _redact_pack_host_private_key_blocks(value)
+    value = _PACK_HOST_URL_CREDENTIALS.sub(r"\1<redacted>@", value)
+    value = _PACK_HOST_BEARER.sub("Bearer <redacted>", value)
+    value = _PACK_HOST_SECRET_TEXT.sub(r"\1<redacted>", value)
+    return value
+
+def _bounded_pack_host_value(value, budget=None, depth=0):
+    """Return a small, redacted JSON-compatible diagnostic projection."""
+    budget = [PACK_HOST_DIAGNOSTIC_JSON_BUDGET] if budget is None else budget
+    if budget[0] <= 0:
+        return "<omitted: diagnostic budget exhausted>"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        text = _redact_pack_host_text(value)
+        encoded = text.encode("utf-8", errors="replace")
+        allowed = min(PACK_HOST_DIAGNOSTIC_VALUE_BYTES, budget[0])
+        if len(encoded) > allowed:
+            text = encoded[:allowed].decode("utf-8", errors="ignore") + "<truncated>"
+        budget[0] -= min(len(encoded), allowed)
+        return text
+    if depth >= 4:
+        return "<omitted: nesting limit>"
+    if isinstance(value, list):
+        result = [_bounded_pack_host_value(item, budget, depth + 1) for item in value[:16]]
+        if len(value) > 16:
+            result.append(f"<omitted: {len(value) - 16} additional entries>")
+        return result
+    if isinstance(value, dict):
+        result = {}
+        for key in sorted(value, key=str)[:16]:
+            name = str(key)
+            if _PACK_HOST_SECRET_FIELD.search(name):
+                result[name] = "<redacted>"
+            else:
+                result[name] = _bounded_pack_host_value(value[key], budget, depth + 1)
+        if len(value) > 16:
+            result["<omitted>"] = f"{len(value) - 16} additional fields"
+        return result
+    return f"<unsupported {type(value).__name__}>"
+
+def _pack_host_path_kind(info):
+    if stat.S_ISDIR(info.st_mode):
+        return "directory"
+    if stat.S_ISLNK(info.st_mode):
+        return "symlink"
+    if not stat.S_ISREG(info.st_mode):
+        return "non_regular"
+    return "file"
+
+def _read_pack_host_file(path, *, limit, tail):
+    """Read one regular run-owned file, recording every absence/error state."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"status": "missing"}, None, None
+    except OSError as exc:
+        return {"status": "error", "error": type(exc).__name__}, None, None
+    if any(parent.is_symlink() for parent in path.parents) or (
+        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    ):
+        return {"status": "unsafe_type", "type": "link_or_reparse"}, None, None
+    kind = _pack_host_path_kind(info)
+    if kind != "file":
+        return {"status": "unsafe_type", "type": kind}, None, None
+    try:
+        with path.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            if tail:
+                stream.seek(max(0, size - limit))
+            content = stream.read(limit + (0 if tail else 1))
+    except OSError as exc:
+        return {"status": "error", "error": type(exc).__name__}, None, None
+    if not tail and len(content) > limit:
+        return {"status": "oversized", "bytes": size, "limit": limit}, None, None
+    return {"status": "read", "bytes": size, "truncated": tail and size > limit}, content, size
+
+def _capture_pack_host_log(path, logical_name, observation, search_root):
+    details, content, _size = _read_pack_host_file(
+        path, limit=PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES, tail=True,
+    )
+    record = {"source": logical_name, "path": str(path), "search_root": search_root, **details}
+    if content is None:
+        return record
+    safe = _redact_pack_host_text(content.decode("utf-8", errors="replace")).encode("utf-8")
+    # Redaction can only reduce normal log lines, but preserve the hard cap if
+    # an unusual replacement expands an invalid byte sequence.
+    safe = safe[-PACK_HOST_DIAGNOSTIC_LOG_TAIL_BYTES:]
+    evidence_name = f"pack-host-readiness-{observation}-{logical_name}"
+    try:
+        (EVIDENCE / evidence_name).write_bytes(safe)
+    except OSError as exc:
+        return {
+            "source": logical_name, "search_root": search_root,
+            "status": "error", "error": type(exc).__name__,
+        }
+    return {
+        "source": logical_name,
+        "search_root": search_root,
+        "status": "captured",
+        "evidence": evidence_name,
+        "source_bytes": details["bytes"],
+        "captured_bytes": len(safe),
+        "truncated": details["truncated"],
+        "redacted": safe != content,
+        "raw_tail_sha256": hashlib.sha256(content).hexdigest(),
+        "captured_sha256": hashlib.sha256(safe).hexdigest(),
+    }
+
+def _capture_pack_host_marker(path, logical_name):
+    details, content, _size = _read_pack_host_file(
+        path, limit=PACK_HOST_DIAGNOSTIC_MARKER_BYTES, tail=False,
+    )
+    record = {"source": logical_name, **details}
+    if content is None:
+        return record
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return {
+            "source": logical_name,
+            "status": "malformed",
+            "bytes": details["bytes"],
+            "content": _redact_pack_host_text(content.decode("utf-8", errors="replace")),
+        }
+    return {
+        "source": logical_name,
+        "status": "captured",
+        "bytes": details["bytes"],
+        "content": _bounded_pack_host_value(value),
+    }
+
+def _pack_host_service(value):
+    if not isinstance(value, dict) or not isinstance(value.get("services"), list):
+        return None
+    return next((row for row in value["services"]
+                 if isinstance(row, dict) and row.get("name") == "pack-host"), None)
+
+def _pack_host_health_observation(value):
+    if not isinstance(value, dict):
+        error_path = EVIDENCE / "health-error.json"
+        details, content, _size = _read_pack_host_file(
+            error_path, limit=PACK_HOST_DIAGNOSTIC_MARKER_BYTES, tail=False,
+        )
+        health = {"status": "unavailable"}
+        if content is not None:
+            try:
+                health["error"] = _bounded_pack_host_value(json.loads(content.decode("utf-8")))
+            except (UnicodeDecodeError, ValueError):
+                health["error"] = _redact_pack_host_text(content.decode("utf-8", errors="replace"))
+        elif details["status"] != "missing":
+            health["error"] = details
+        return health
+    service = _pack_host_service(value)
+    health = {
+        "status": _bounded_pack_host_value(value.get("status")),
+        "runtime_instance_id": _bounded_pack_host_value(value.get("runtime_instance_id")),
+        "pack_host": {"status": "missing"} if service is None else {
+            name: _bounded_pack_host_value(service.get(name))
+            for name in ("name", "state", "last_exit", "restart_count", "reason") if name in service
+        },
+    }
+    return health
+
+def _load_pack_host_json(path):
+    details, content, _size = _read_pack_host_file(
+        path, limit=PACK_HOST_DIAGNOSTIC_MARKER_BYTES, tail=False,
+    )
+    if content is None:
+        return details, None
+    try:
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return {"status": "malformed", "bytes": details["bytes"]}, None
+    if not isinstance(value, dict):
+        return {"status": "invalid_type", "type": type(value).__name__}, None
+    return {"status": "read", "bytes": details["bytes"]}, value
+
+def _redacted_pack_host_argv(value):
+    if not isinstance(value, list):
+        return _bounded_pack_host_value(value)
+    result = []
+    redact_next = False
+    for raw in value[:16]:
+        text = str(raw)
+        if redact_next:
+            result.append("<redacted>")
+            redact_next = False
+            continue
+        flag, separator, _argument = text.partition("=")
+        if _PACK_HOST_SECRET_FIELD.search(flag.lstrip("-/")):
+            result.append(flag + "=<redacted>" if separator else flag)
+            redact_next = not separator
+        else:
+            result.append(_bounded_pack_host_value(text))
+    if len(value) > 16:
+        result.append(f"<omitted: {len(value) - 16} additional entries>")
+    return result
+
+def _pack_host_service_action_observation():
+    """Read only the safe fields needed to reproduce the installed service action."""
+    try:
+        installed = version()
+        profile_path = installed.get("profile") if isinstance(installed, dict) else None
+        if not isinstance(profile_path, str) or not profile_path:
+            return {"status": "unavailable", "stage": "version", "error": "missing_profile"}
+        profile_details, profile = _load_pack_host_json(Path(profile_path))
+        if profile is None:
+            return {"status": "unavailable", "stage": "profile", "source": profile_details}
+        declaration_path = profile.get("service_declaration")
+        if not isinstance(declaration_path, str) or not declaration_path:
+            return {"status": "unavailable", "stage": "profile", "error": "missing_declaration"}
+        declaration_details, declaration = _load_pack_host_json(Path(declaration_path))
+        if declaration is None:
+            return {
+                "status": "unavailable", "stage": "service_declaration",
+                "source": declaration_details,
+            }
+        service = _pack_host_service(declaration)
+        if service is None:
+            return {"status": "missing", "stage": "service_declaration"}
+        action = {
+            name: _bounded_pack_host_value(service.get(name))
+            for name in ("name", "restart", "ready") if name in service
+        }
+        if "argv" in service:
+            action["argv"] = _redacted_pack_host_argv(service["argv"])
+        return {
+            "status": "observed",
+            "action": action,
+            # Runtime redirects the supervised child's stderr into this same
+            # stdout stream; the bounded log capture below retains its tail.
+            "child_output": {
+                "stdout": "service-pack-host.log",
+                "stderr": "redirected_to_stdout",
+            },
+        }
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        return {"status": "unavailable", "stage": "version", "error": type(exc).__name__}
+
+def _pack_host_readiness_predicates(value, service, ready_file_is_file, ready, accepted):
+    runtime_instance_id = value.get("runtime_instance_id") if isinstance(value, dict) else None
+    return {
+        "health_object": isinstance(value, dict),
+        "health_status_ok": isinstance(value, dict) and value.get("status") == "ok",
+        "pack_host_present": isinstance(service, dict),
+        "pack_host_running": isinstance(service, dict) and service.get("state") == "running",
+        "ready_file_is_file": ready_file_is_file,
+        "ready_json_object": isinstance(ready, dict),
+        "ready_status_ready": isinstance(ready, dict) and ready.get("status") == "ready",
+        "runtime_instance_present": bool(runtime_instance_id),
+        "ready_runtime_instance_matches": (
+            isinstance(ready, dict) and bool(runtime_instance_id) and
+            ready.get("runtime_instance_id") == runtime_instance_id
+        ),
+        "accepted": accepted,
+    }
+
+def _pack_host_service_exit_observed(service):
+    return (isinstance(service, dict) and
+            (service.get("last_exit") is not None or bool(service.get("reason"))))
+
+
+def capture_pack_host_readiness(health_value, accepted):
+    """Keep three finite observations; diagnostics never grant readiness or custody."""
+    if accepted:
+        return
+    service = _pack_host_service(health_value)
+    root = data_root() / "runtime"
+    observations = ["first-failed-poll", "last-failed-poll"]
+    if _pack_host_service_exit_observed(service):
+        observations.append("first-service-exit")
+    for observation in observations:
+        manifest = EVIDENCE / f"pack-host-readiness-{observation}.json"
+        if observation != "last-failed-poll" and manifest.exists():
+            continue
+        EVIDENCE.mkdir(parents=True, exist_ok=True)
+        ready_path = root / "generic-host.ready.json"
+        details, ready = _load_pack_host_json(ready_path)
+        # The marker read follows the original predicate. It may race a writer;
+        # the exact predicate result is recorded separately from this projection.
+        native = os.environ.get(NATIVE_RUNTIME_LOG_DIR_ENV)
+        local = os.environ.get("LOCALAPPDATA")
+        sources = [(root / "generic-host.log", "runtime-support-root")]
+        if native and Path(native).is_absolute():
+            sources += [(Path(native) / name, "native-runtime-logs")
+                        for name in ("service-pack-host.log", "runtime.log")]
+        if local and Path(local).is_absolute():
+            sources += [(Path(local) / "Astrid Runtime/logs" / "runtime-service.log",
+                         "isolated-service-logs")]
+        capture = {
+            "schema_version": 1, "observation": observation,
+            "observed_at_unix_ns": time.time_ns(), "monotonic_ns": time.monotonic_ns(),
+            "predicate_result": accepted,
+            "limitation": "acceptance precedes sequential diagnostic reads; not atomic; no process or Job custody proof",
+            "health": _pack_host_health_observation(health_value),
+            "service_action": _pack_host_service_action_observation(),
+            "ready_read": details,
+            "predicates": _pack_host_readiness_predicates(
+                health_value, service, ready_path.is_file(), ready, accepted),
+            "markers": [_capture_pack_host_marker(root / name, name) for name in
+                        ("generic-host.ready.json", "generic-host.json", "discovery.json")],
+            "logs": [_capture_pack_host_log(path, path.name, observation, selection)
+                     for path, selection in sources],
+            "native_log_root": native or None,
+        }
+        save(manifest.name, capture)
+
+
 def wait_for(label, probe, *, seconds=900):
     deadline = time.monotonic() + seconds
     while True:
@@ -368,6 +723,24 @@ def healthy():
 
 def host_ready():
     value = health()
+    try:
+        accepted = _host_ready(value)
+    except Exception:
+        _try_capture_pack_host_readiness(value, None)
+        raise
+    _try_capture_pack_host_readiness(value, accepted)
+    return accepted
+
+
+def _try_capture_pack_host_readiness(value, accepted):
+    try:
+        capture_pack_host_readiness(value, accepted)
+    except Exception as exc:
+        # A capture failure must preserve the original wait result/exception.
+        print(f"Pack-host diagnostic capture unavailable: {type(exc).__name__}", flush=True)
+
+
+def _host_ready(value):
     if not value or value.get("status") != "ok":
         return False
     service = next((row for row in value.get("services", []) if row.get("name") == "pack-host"), {})
