@@ -374,7 +374,7 @@ def test_qualified_fake_model_remains_available(monkeypatch):
     from astrid.core.generation import availability
     declaration = dict(availability.availability_declaration())
     declaration['models'] = {'wan-2.2': {'available': True}}
-    monkeypatch.setattr(availability, 'availability_declaration', lambda: declaration)
+    monkeypatch.setattr(listing, 'availability_declaration', lambda: declaration)
     rows = [row for row in listing.catalog_rows() if row['id'] == 'wan-2.2']
     assert rows and all(row['availability'] == 'available' for row in rows)
 
