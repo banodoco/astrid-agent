@@ -14,7 +14,7 @@ from tests.failure_mode_fixtures import PROVISIONAL_CANDIDATE
 
 def api_case():
     archive = b"synthetic archive"
-    artifact = {"id": 41, "name": "m4-6-direct-linux", "expired": False,
+    artifact = {"id": 41, "name": "m4-6-local-21-2-direct-linux", "expired": False,
                 "workflow_run": {"id": 21}, "size_in_bytes": len(archive),
                 "digest": "sha256:" + hashlib.sha256(archive).hexdigest()}
     return dict(
@@ -24,7 +24,7 @@ def api_case():
              "repository": {"full_name": "banodoco/astrid-agent"},
              "path": ".github/workflows/journey.yml@refs/heads/lane/example", "workflow_id": 51},
         jobs=[{"id": 31, "run_id": 21, "run_attempt": 2, "status": "completed",
-               "conclusion": "success", "name": "produce / direct-linux",
+               "conclusion": "success", "name": "m4-6-local-direct-linux",
                "runner_name": "GitHub Actions 123", "labels": ["ubuntu-24.04"]}],
         artifact=artifact, artifacts=[copy.deepcopy(artifact)], archive=archive,
         workflow=b"jobs: {}\n", workflow_ref="a" * 40,
@@ -108,10 +108,19 @@ def test_collector_fetches_pinned_workflow_and_all_api_observations(monkeypatch)
     lambda c: c["run"].update(run_attempt=1),
     lambda c: c["jobs"][0].update(id=32),
     lambda c: c["jobs"][0].update(run_attempt=1),
+    lambda c: c["jobs"].clear(),
+    lambda c: c["jobs"].append({**c["jobs"][0], "id": 32}),
+    lambda c: c["jobs"][0].update(name="m4-6-local-direct-windows"),
+    lambda c: c["jobs"][0].update(labels=["windows-2022"]),
+    lambda c: c["jobs"][0].update(labels=["ubuntu-24.04", "windows-2022"]),
+    lambda c: c["jobs"][0].update(runner_name=""),
     lambda c: c["artifact"].update(id=42),
+    lambda c: c["artifact"].update(name="m4-6-local-21-1-direct-linux"),
+    lambda c: c["artifact"].update(name="renamed"),
     lambda c: c["artifact"]["workflow_run"].update(id=22),
     lambda c: c["artifact"].update(size_in_bytes=1),
     lambda c: c["artifacts"].append(copy.deepcopy(c["artifacts"][0])),
+    lambda c: c["artifacts"][0].update(digest="sha256:" + "f" * 64),
     lambda c: c.update(workflow_ref="b" * 40),
     lambda c: c.update(archive=b"altered"),
     lambda c: c.update(slot_id="direct-windows"),

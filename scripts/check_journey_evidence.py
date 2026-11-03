@@ -1028,9 +1028,12 @@ def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
         raise ValueError("API run, attempt, repository, workflow or harness differs")
     if not isinstance(jobs, list):
         raise ValueError("attempt-scoped API jobs are missing")
-    selected = [job for job in jobs if isinstance(job, dict) and job.get("id") == job_id]
-    if len(selected) != 1:
-        raise ValueError("selected job is absent or duplicated in the API attempt")
+    # This is the job name in the published diagnostic workflow.  Select by
+    # slot first, so a caller cannot hide a duplicate behind a chosen ID.
+    selected = [job for job in jobs if isinstance(job, dict)
+                and job.get("name") == f"m4-6-local-{slot_id}"]
+    if len(selected) != 1 or selected[0].get("id") != job_id:
+        raise ValueError("selected slot job is absent, duplicated or has a different ID")
     job = selected[0]
     labels = job.get("labels")
     if (not _positive_integer(job.get("id")) or not _positive_integer(job.get("run_id"))
@@ -1040,12 +1043,16 @@ def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
             or job.get("status") != "completed" or job.get("conclusion") != "success"
             or not isinstance(job.get("name"), str) or not job["name"]
             or not isinstance(job.get("runner_name"), str) or not job["runner_name"]
-            or not isinstance(labels, list) or contract["runner"] not in labels):
+            or not isinstance(labels, list) or any(not isinstance(label, str) for label in labels)
+            or contract["runner"] not in labels
+            or any(label in RUNNER_PROVENANCE and label != contract["runner"]
+                   for label in labels)):
         raise ValueError("API job identity, conclusion or runner differs")
     artifact_run = artifact.get("workflow_run") if isinstance(artifact, dict) else None
     if not isinstance(artifact, dict) or (not _positive_integer(artifact.get("id"))
             or artifact.get("id") != artifact_id
-            or artifact.get("name") != f"m4-6-{slot_id}" or artifact.get("expired") is not False
+            or artifact.get("name") != f"m4-6-local-{run_id}-{attempt}-{slot_id}"
+            or artifact.get("expired") is not False
             or not isinstance(artifact_run, dict) or not _positive_integer(artifact_run.get("id"))
             or artifact_run.get("id") != run_id):
         raise ValueError("API artifact identity or run differs")
@@ -1053,7 +1060,8 @@ def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
         raise ValueError("API run artifact list is missing")
     matches = [row for row in artifacts if isinstance(row, dict)
                and row.get("name") == artifact["name"]]
-    if len(matches) != 1 or matches[0].get("id") != artifact_id:
+    if (len(matches) != 1 or any(matches[0].get(key) != artifact.get(key)
+            for key in ("id", "name", "size_in_bytes", "digest", "expired", "workflow_run"))):
         raise ValueError("artifact name is absent or duplicated in the API run")
     if (not isinstance(archive, bytes) or not _positive_integer(artifact.get("size_in_bytes"))
             or artifact["size_in_bytes"] != len(archive)):
