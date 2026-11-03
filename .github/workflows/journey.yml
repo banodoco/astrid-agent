@@ -1127,9 +1127,9 @@ jobs:
           DRIVER_HEAD: ${{ needs.config.outputs.driver_agent_ref }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/protected-browser-candidate.json"
-          python agent/scripts/ci_journey_browser.py --verify-only --candidate "$RUNNER_TEMP/protected-browser-candidate.json" \
-            --driver agent --driver-head "$DRIVER_HEAD" --app app --agent unused --runtime unused \
-            --pinokio unused --output protected-browser-receipts
+          python agent/scripts/check_journey_evidence.py --aggregate-protected-browser \
+            --candidate "$RUNNER_TEMP/protected-browser-candidate.json" --app-checkout app \
+            --driver-checkout agent --driver-head "$DRIVER_HEAD" --results protected-browser-receipts
       - name: Download every per-job receipt
         uses: actions/download-artifact@v4
         with:

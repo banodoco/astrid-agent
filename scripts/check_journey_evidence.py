@@ -933,6 +933,9 @@ def main():
                         help="require one local-process M4-4b smoke receipt; never hosted evidence")
     parser.add_argument("--aggregate-m4-6-local", action="store_true",
                         help="require all nine separately retained local-disposable M4-6 outputs")
+    parser.add_argument("--aggregate-protected-browser", action="store_true", help="verify both checkout-based protected browser receipts")
+    parser.add_argument("--driver-head", help="exact workflow driver SHA for browser evidence")
+    parser.add_argument("--driver-checkout", type=Path)
     parser.add_argument("--aggregate-gpu", action="store_true",
                         help="require all RunPod GPU journey receipts")
     parser.add_argument("--report-end-state-obligations", action="store_true",
@@ -941,7 +944,7 @@ def main():
     errors = []
     try:
         aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
-                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu))
+                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.aggregate_gpu, args.aggregate_protected_browser))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
         if args.report_end_state_obligations and aggregate_modes:
@@ -970,7 +973,15 @@ def main():
                 raise ValueError("--candidate and --app-checkout are required for hosted Release-1/M4 aggregates")
             candidate = read(args.candidate)
             manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
-        if args.aggregate_gpu:
+        if args.aggregate_protected_browser:
+            if (args.results is None or args.driver_checkout is None or not SHA.fullmatch(str(args.driver_head or ""))
+                    or args.allow_source_override or args.required or args.prepare_only):
+                raise ValueError("browser aggregate requires results and exact driver checkout without overrides")
+            from ci_journey_browser import head, verify
+            if head(args.driver_checkout) != args.driver_head:
+                raise ValueError("browser aggregate driver checkout mismatch")
+            verify(read(args.results / "journey-result.json"), candidate, args.driver_head, args.results)
+        elif args.aggregate_gpu:
             if args.results is None or args.allow_source_override or args.required or args.prepare_only:
                 raise ValueError("GPU aggregate requires --results and never admits overrides or subsets")
             errors.extend(evaluate_gpu_matrix(candidate, manifest, args.results))

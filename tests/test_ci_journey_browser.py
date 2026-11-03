@@ -67,4 +67,4 @@ def test_workflow_requires_and_rechecks_browser_artifact():
     assert 'needs: [config, journey, release2, m4_4b_local, failure_modes, protected_browser]' in workflow
     assert 'if [ "$PROTECTED_BROWSER_ENABLED" = true ]; then test "$PROTECTED_BROWSER_RESULT" = success; fi' in workflow
     assert 'name: protected-browser-checkout-receipt' in workflow
-    assert 'ci_journey_browser.py --verify-only' in workflow
+    assert 'check_journey_evidence.py --aggregate-protected-browser' in workflow
