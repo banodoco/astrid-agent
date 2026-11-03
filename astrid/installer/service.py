@@ -620,7 +620,13 @@ class Service:
         if identity is None:
             raise ValueError("The selected launchd job is not loaded; upgrade refused.")
         disabled = self._launchd_upgrade_override()
+        latest, observation = self._launchd_stop_identity(
+            self.run(["launchctl", "print", identity["target"]]), data)
+        if (latest != identity or (observation["state"] == "running" and
+                                   observation["pid"] != owner_pid)):
+            raise ValueError("The selected launchd service changed during capture; upgrade refused.")
         return {"system": "darwin", "data": str(data), "owner_pid": owner_pid,
+                "running": observation["state"] == "running",
                 "identity": {**identity, "arguments": list(identity["arguments"]),
                              "plist": base64.b64encode(identity["plist"]).decode("ascii"),
                              "plist_stat": list(identity["plist_stat"])},
@@ -628,7 +634,8 @@ class Service:
 
     def _validate_launchd_upgrade_stop(self, state: dict) -> dict:
         if (self.system != "darwin" or not isinstance(state, dict) or state.get("system") != "darwin"
-                or type(state.get("disabled")) is not bool or not isinstance(state.get("data"), str)
+                or type(state.get("disabled")) is not bool or type(state.get("running")) is not bool
+                or not isinstance(state.get("data"), str)
                 or (state.get("owner_pid") is not None and
                     (type(state["owner_pid"]) is not int or state["owner_pid"] <= 0))
                 or not isinstance(state.get("identity"), dict)):
