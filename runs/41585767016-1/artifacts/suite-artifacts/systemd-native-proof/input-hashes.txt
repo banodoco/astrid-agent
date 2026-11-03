@@ -1,0 +1,3 @@
+6651d83841319a86a1847f76528fac33f0cdbfa0afa0a8ea872f9ed8dcd29fe1  agent/astrid/installer/service.py
+dec8e169bdf88308e9cf90f3341d9514ed4106baa90f3e8f7d11f9a0bc9534c1  agent/diagnostics/systemd-native-proof/venue.sh
+582d6e3445c7ac7137753cb9cc327b300dfb03829bc54e7183f322cdcea19ec2  agent/diagnostics/systemd-native-proof/probe.py

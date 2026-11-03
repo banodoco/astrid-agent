@@ -1,0 +1,1275 @@
+{
+  "authority": false,
+  "boot_id_sha256": "f7817627d9d87d8de6ed54d2a2f2ce03559877a677c89bb4bfabbc5c98f761d0",
+  "cases": {
+    "changed_endpoints": {
+      "detail": {
+        "endpoint_samples": 2,
+        "refusal": "ValueError"
+      },
+      "exit": 0
+    },
+    "empty_stopped": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "absent",
+        "ignore_errors": [],
+        "manager_identity": "unknown",
+        "observation": "stable",
+        "refusal": "RuntimeError",
+        "stopped_observation": true,
+        "typed_count": 0
+      },
+      "exit": 0
+    },
+    "failed_second_endpoint": {
+      "detail": {
+        "endpoint_samples": 2,
+        "injection": "real missing property",
+        "refusal": "ValueError"
+      },
+      "exit": 0
+    },
+    "glob_stopped": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "present",
+        "ignore_errors": [
+          true
+        ],
+        "manager_identity": "unknown",
+        "observation": "stable",
+        "refusal": "RuntimeError",
+        "stopped_observation": true,
+        "typed_count": 1
+      },
+      "exit": 0
+    },
+    "invalid_dbus_controls": {
+      "detail": "invalid properties and identity refused; wrong object request exit recorded",
+      "exit": 0
+    },
+    "manager_unavailable": {
+      "detail": {
+        "authority": false,
+        "environment_files": "unknown",
+        "refusal": "ValueError",
+        "sample_stability": "unknown"
+      },
+      "exit": 0
+    },
+    "multiple_duplicate_stopped": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "present",
+        "ignore_errors": [
+          true,
+          true,
+          true
+        ],
+        "manager_identity": "unknown",
+        "observation": "stable",
+        "refusal": "RuntimeError",
+        "stopped_observation": true,
+        "typed_count": 3
+      },
+      "exit": 0
+    },
+    "optional_created": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "present",
+        "ignore_errors": [
+          true,
+          true,
+          true
+        ],
+        "manager_identity": "unknown",
+        "observation": "stable",
+        "refusal": "RuntimeError",
+        "stopped_observation": true,
+        "typed_count": 3
+      },
+      "exit": 0
+    },
+    "running": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "present",
+        "ignore_errors": [
+          true,
+          true,
+          true
+        ],
+        "manager_identity": "unknown",
+        "observation": "stable",
+        "refusal": "RuntimeError",
+        "stopped_guard": "ValueError",
+        "stopped_observation": false,
+        "typed_count": 3
+      },
+      "exit": 0
+    },
+    "single_optional_stopped": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "present",
+        "ignore_errors": [
+          true
+        ],
+        "manager_identity": "unknown",
+        "observation": "stable",
+        "refusal": "RuntimeError",
+        "stopped_observation": true,
+        "typed_count": 1
+      },
+      "exit": 0
+    },
+    "unknown_snapshot": {
+      "detail": {
+        "authority": false,
+        "effective_environment_files": "unknown",
+        "environment_files": "unknown",
+        "sample_stability": "unknown"
+      },
+      "exit": 0
+    }
+  },
+  "controls": {
+    "wrong_interface": {
+      "exit": 1,
+      "stderr_sha256": "cb9b5e723913008fd2afa1abaa3f6e9c49c28efb37dba8a5bbf2242ef5253534",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "wrong_object": {
+      "exit": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd"
+    },
+    "wrong_property": {
+      "exit": 1,
+      "stderr_sha256": "3c2bba55dee1dc95fbbd9b6f7cc1d620b25466fa9af36bc7c3805c7ae0b4740d",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "wrong_resolved_object": {
+      "refusal": "ValueError"
+    }
+  },
+  "end_ns": 1793684771273004016,
+  "euid": 1002,
+  "exit": 0,
+  "manager_bus_status": {
+    "exit": 1,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "pid_namespace_inode": 4026531836,
+  "schema": "systemd-typed-observation-v1",
+  "start_ns": 1793684768571253436,
+  "uid": 1002,
+  "wire": [
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "330485f7fcfee0f141a44b1b235d44436a17f656b51bb7d0947dc24012a57d3c",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "330485f7fcfee0f141a44b1b235d44436a17f656b51bb7d0947dc24012a57d3c",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "330485f7fcfee0f141a44b1b235d44436a17f656b51bb7d0947dc24012a57d3c",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "330485f7fcfee0f141a44b1b235d44436a17f656b51bb7d0947dc24012a57d3c",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "330485f7fcfee0f141a44b1b235d44436a17f656b51bb7d0947dc24012a57d3c",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "330485f7fcfee0f141a44b1b235d44436a17f656b51bb7d0947dc24012a57d3c",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "330485f7fcfee0f141a44b1b235d44436a17f656b51bb7d0947dc24012a57d3c",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "fcc6501bde8fdcb923cc1f6026e926dded2659713e6c7a7ee15e9a72220c811f",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "fcc6501bde8fdcb923cc1f6026e926dded2659713e6c7a7ee15e9a72220c811f",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "fcc6501bde8fdcb923cc1f6026e926dded2659713e6c7a7ee15e9a72220c811f",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "fcc6501bde8fdcb923cc1f6026e926dded2659713e6c7a7ee15e9a72220c811f",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "fcc6501bde8fdcb923cc1f6026e926dded2659713e6c7a7ee15e9a72220c811f",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "fcc6501bde8fdcb923cc1f6026e926dded2659713e6c7a7ee15e9a72220c811f",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "fcc6501bde8fdcb923cc1f6026e926dded2659713e6c7a7ee15e9a72220c811f",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 227,
+      "count": 3,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "b5fc35e8e699f1be280179ad9efdb9f669e8602e21439f517aaf2112f7cdd9af",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 93,
+      "count": 1,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "862cdcf75fee96b93cc762469604a1637943f4a8c6c548968a7095bc9ca6a664",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "bytes": 27,
+      "count": 0,
+      "exit": 0,
+      "operation": "get_property",
+      "sha256": "88fd39174689deaed5d407a5eeb0e69fbdd04fbcdacda18c63e26a770be981bd",
+      "signature": "a(sb)"
+    },
+    {
+      "bytes": 72,
+      "canonical_object": true,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "033474a4a3434ad3a36c2793fa09af22f12f1f6bd94d289378a27c5855f14c97",
+      "signature": "o"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "error_type": "ValueError",
+      "exit": 1,
+      "operation": "get_unit"
+    },
+    {
+      "bytes": 80,
+      "canonical_object": false,
+      "exit": 0,
+      "operation": "get_unit",
+      "sha256": "2fd9b50cc9bc509ecd28a56bd6995ca2677c124a8ee2a8433c1e6663aa9a290a",
+      "signature": "o"
+    }
+  ]
+}
