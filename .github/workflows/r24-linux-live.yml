@@ -23,6 +23,10 @@ on:
         required: false
         default: 13cb31104c8aae655d0ee04efdb9537aa111e340
         type: string
+      delay_discovery_publication_seconds:
+        required: false
+        default: 0
+        type: number
   workflow_dispatch:
     inputs:
       runner_ref:
@@ -52,6 +56,11 @@ on:
         required: true
         default: 13cb31104c8aae655d0ee04efdb9537aa111e340
         type: string
+      delay_discovery_publication_seconds:
+        description: Delay discovery publication for the bounded materializer stimulus (0-30 seconds)
+        required: false
+        default: 0
+        type: number
 
 permissions:
   contents: read
@@ -71,6 +80,7 @@ jobs:
       R24_REQUESTED_CONFIRMATION: ${{ github.event_name == 'push' && 'R24_LIVE_PIN_MANIFEST_CANDIDATE' || inputs.confirmation }}
       R25_REQUESTED_MODE: ${{ github.event_name == 'push' && 'r24-only' || inputs.mode }}
       R25_REQUESTED_MODE_PRODUCER_REF: ${{ github.event_name == 'push' && '13cb31104c8aae655d0ee04efdb9537aa111e340' || inputs.mode_producer_ref }}
+      R24_DELAY_DISCOVERY_PUBLICATION_SECONDS: ${{ github.event_name == 'push' && '0' || inputs.delay_discovery_publication_seconds }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Checkout immutable candidate runner
@@ -96,7 +106,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
-          ref: a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a
+          ref: 79f7e5397c044c4c97dc7e97b20ad96f787e5247
           path: app
           fetch-depth: 1
           persist-credentials: false
@@ -177,8 +187,13 @@ jobs:
           REQUESTED_CONFIRMATION: ${{ env.R24_REQUESTED_CONFIRMATION }}
           REQUESTED_MODE: ${{ env.R25_REQUESTED_MODE }}
           REQUESTED_MODE_PRODUCER_REF: ${{ env.R25_REQUESTED_MODE_PRODUCER_REF }}
+          DELAY_DISCOVERY_PUBLICATION_SECONDS: ${{ env.R24_DELAY_DISCOVERY_PUBLICATION_SECONDS }}
         run: |
           set +e
+          if ! [[ "$DELAY_DISCOVERY_PUBLICATION_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || (( ${#DELAY_DISCOVERY_PUBLICATION_SECONDS} > 2 )) || (( DELAY_DISCOVERY_PUBLICATION_SECONDS > 30 )); then
+            echo "delay_discovery_publication_seconds must be an integer from 0 through 30" >&2
+            exit 2
+          fi
           materializer_args=(
             --runner "$R24_CHECKOUTS/runner"
             --runner-ref "$REQUESTED_RUNNER_REF"
@@ -193,6 +208,7 @@ jobs:
             --run-root "$RUNNER_TEMP/r24-live-run"
             --confirmation "$REQUESTED_CONFIRMATION"
             --mode "$REQUESTED_MODE"
+            --delay-discovery-publication-seconds "$DELAY_DISCOVERY_PUBLICATION_SECONDS"
           )
           if [ "$REQUESTED_MODE" = backend ]; then
             materializer_args+=(
@@ -278,3 +294,13 @@ jobs:
         env:
           INNER_EXIT: ${{ steps.execute.outputs.inner_exit }}
         run: test "$INNER_EXIT" = 0
+      - name: Upload materializer discovery receipt and trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r24-discovery-${{ env.R24_REQUESTED_RUNNER_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/r24-materializer.json
+            ${{ runner.temp }}/r24-live-run/evidence/materializer/delayed-discovery.json
