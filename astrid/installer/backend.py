@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -41,6 +42,37 @@ from .launcher import install_shim, owned_shim, remove_shim
 from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
 from .tools import binary, clone_source, install_tools, source
+
+
+# This is a capability channel, not a user-configurable Runtime setting.  The
+# CLI removes it from every inherited environment and emits it only alongside
+# the matching POSIX ``pass_fds`` entry for the Runtime migration child.
+RUNTIME_INSTALLER_LOCK_FD_ENV = "ASTRID_RUNTIME_INHERITED_INSTALLER_LOCK_FD"
+
+
+def bind_runtime_upgrade_lock(backend, fd: int, lock_path: Path) -> None:
+    """Bind a CLI-held POSIX lifetime lock to one Backend's upgrade path.
+
+    The caller is the CLI immediately after its successful lock acquisition.
+    The path/descriptor checks cannot prove that an FD is locked: Agent's
+    authority is that contiguous CLI scope, while the paired Runtime must
+    independently validate inherited-descriptor authority and custody.
+    """
+    if os.name != "posix":
+        return
+    if type(fd) is not int or fd < 0:
+        raise RuntimeOperationError("The installer lock handoff is unavailable.")
+    try:
+        descriptor = os.fstat(fd)
+        path = lock_path.lstat()
+    except OSError as exc:
+        raise RuntimeOperationError("The installer lock handoff is unavailable.") from exc
+    if (lock_path.is_symlink() or not stat.S_ISREG(descriptor.st_mode)
+            or not stat.S_ISREG(path.st_mode)
+            or descriptor.st_dev != path.st_dev or descriptor.st_ino != path.st_ino
+            or not platform.is_owner_only(lock_path)):
+        raise RuntimeOperationError("The installer lock handoff is unsafe.")
+    backend._runtime_upgrade_lock_fd = fd
 
 
 def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
@@ -115,20 +147,40 @@ class Backend:
         # retired. Keep that receipt local to this controller so an initial
         # unvalidated service definition still requires an ownership check.
         self._foreground_stop_retired = False
+        self._runtime_upgrade_lock_fd: int | None = None
 
-    def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
+    def bind_runtime_upgrade_lock(self, fd: int, lock_path: Path) -> None:
+        """Bind the CLI-held POSIX lifetime lock for one Runtime upgrade child."""
+        bind_runtime_upgrade_lock(self, fd, lock_path)
+
+    def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False,
+            handoff_fd: int | None = None) -> str:
         # Never inherit a developer's Python import path or Runtime connection.
         env = {k: v for k, v in os.environ.items() if k not in {
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
             "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
             "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH", "ASTRID_INSTALLER_OPERATION_ID",
-            "ASTRID_TIMELINE_SCHEMA_PYTHONPATH"}
+            "ASTRID_TIMELINE_SCHEMA_PYTHONPATH", RUNTIME_INSTALLER_LOCK_FD_ENV}
                and not (clean_bun_env and (k.startswith("BUN_") or k == "NODE_OPTIONS"))}
         env.update({"PYTHONIOENCODING": "utf-8"})
-        env.update(extra_env or {})
-        result = subprocess.run([str(s) for s in argv], cwd=cwd, env=env, check=False,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                encoding="utf-8", errors="replace", timeout=timeout)
+        child_env = dict(extra_env or {})
+        child_env.pop(RUNTIME_INSTALLER_LOCK_FD_ENV, None)
+        env.update(child_env)
+        options = {
+            "cwd": cwd, "env": env, "check": False,
+            "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
+            "encoding": "utf-8", "errors": "replace", "timeout": timeout,
+        }
+        if handoff_fd is not None:
+            if os.name != "posix" or type(handoff_fd) is not int or handoff_fd < 0:
+                raise RuntimeOperationError("The installer lock handoff is unavailable.")
+            # Keep this cheap liveness check close to exec.  It cannot prove an
+            # inherited descriptor is locked; that is Runtime's fail-closed
+            # responsibility under the paired handoff contract.
+            os.fstat(handoff_fd)
+            env[RUNTIME_INSTALLER_LOCK_FD_ENV] = str(handoff_fd)
+            options["pass_fds"] = (handoff_fd,)
+        result = subprocess.run([str(s) for s in argv], **options)
         with self.log.open("a", encoding="utf-8") as stream:
             platform.owner_only(stream.fileno())
             # Do not log inherited environments or credentials.
@@ -178,8 +230,12 @@ class Backend:
             argv += ["--source-manifest", str(version.profile)]
         launch_env = dict(version.env) if version else {}
         launch_env.pop("ASTRID_INSTALLER_OPERATION_ID", None)
+        launch_env.pop(RUNTIME_INSTALLER_LOCK_FD_ENV, None)
+        handoff_fd = (self._runtime_upgrade_lock_fd if os.name == "posix" and args == ("upgrade",)
+                      else None)
         try:
-            output = self.run(argv, extra_env=launch_env or None, timeout=timeout)
+            output = self.run(argv, extra_env=launch_env or None, timeout=timeout,
+                              handoff_fd=handoff_fd)
         except subprocess.CalledProcessError as exc:
             # Runtime deliberately returns nonzero for a structured refusal.
             # Retain that result instead of losing it in subprocess's summary.

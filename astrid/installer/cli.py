@@ -10,7 +10,7 @@ import traceback
 from pathlib import Path
 
 from . import update_job
-from .backend import Backend
+from .backend import Backend, bind_runtime_upgrade_lock
 from .core import (
     TERMINAL_STEPS,
     BackupSpaceError,
@@ -162,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         with lock_path.open("a+b") as lock:
             locked = False
             if mode != "doctor":
+                platform.owner_only(lock.fileno())
                 try:
                     platform.lock_file(lock.fileno(), blocking=False)
                 except BlockingIOError:
@@ -324,6 +325,11 @@ def main(argv: list[str] | None = None) -> int:
                 if mode == "doctor":
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)
                 options = {"managed_by": managed_by} if managed_by else {}
+                if locked:
+                    # This is the sole source of a Runtime lock-handoff
+                    # capability.  Keep the CLI's open file description locked
+                    # and alive; Runtime receives it only for its upgrade child.
+                    bind_runtime_upgrade_lock(backend, lock.fileno(), lock_path)
                 installer = Installer(root, data, backend, **options)
                 if args.update_job:
                     if update_job_record is None:
