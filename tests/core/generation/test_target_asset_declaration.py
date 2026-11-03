@@ -397,6 +397,17 @@ def _receipt_attested_managed_workflow(tmp_path, monkeypatch):
         receipt=receipt, receipt_path=receipt_path, requests=requests)
 
 
+def _assert_auxiliary_verification_sidecar(fixture, before_sidecars):
+    auxiliary = fixture.receipt.models[-1]
+    sidecar = (fixture.root / 'models/.vibecomfy/model-verification' /
+               (hashlib.sha256(auxiliary.path.encode()).hexdigest() + '.json'))
+    assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars | {sidecar}
+    verified = json.loads(sidecar.read_text())
+    assert verified['path'] == auxiliary.path
+    assert verified['expected_sha256'] == verified['actual_sha256'] == auxiliary.sha256
+    assert verified['expected_size_bytes'] == auxiliary.bytes
+
+
 @pytest.mark.parametrize('change', ['match', 'hash', 'size', 'missing', 'unattested'])
 def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkeypatch, change):
     fixture = _receipt_attested_managed_workflow(tmp_path, monkeypatch)
@@ -426,8 +437,11 @@ def test_explicit_ready_template_selection_uses_receipt_custody(tmp_path, monkey
         assert bundle.compile(schema_provider=provider).api_digest
         live = local_server_engine._live_preflight(bundle, {}, client.http_origin, tmp_path, client=client)
         assert local_server_engine._approve_live(bundle, {}, live).api_digest
+        _assert_auxiliary_verification_sidecar(fixture, before_sidecars)
+        assert entries.target_schema({'id': 'image/z_image_turbo'}, fixture.workflow, client).auxiliary_model_custody == 'target'
     assert fixture.receipt_path.read_bytes() == before_receipt
-    assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars
+    if change != 'match':
+        assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars
     assert set(fixture.requests) == {'/object_info'}
 
 
@@ -485,6 +499,9 @@ def test_user_authored_managed_selection_uses_receipt_custody(tmp_path, monkeypa
         assert approved.compile(schema_provider=provider).api_digest
         live = local_server_engine._live_preflight(approved, {}, client.http_origin, tmp_path, client=client)
         assert local_server_engine._approve_live(approved, {}, live).api_digest
+        _assert_auxiliary_verification_sidecar(fixture, before_sidecars)
+        assert entries.target_schema(entry, workflow, client).auxiliary_model_custody == 'target'
     assert fixture.receipt_path.read_bytes() == before_receipt
-    assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars
+    if change != 'match':
+        assert set((fixture.root / 'models').rglob('*.json')) == before_sidecars
     assert set(fixture.requests) == {'/object_info'}
