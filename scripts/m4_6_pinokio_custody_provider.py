@@ -96,6 +96,7 @@ _ROLE_BY_OPERATION: Final = {
     "start": "pinokio/start.js",
     "stop": "pinokio/stop.js",
     "update": "pinokio/update.js",
+    "uninstall": "pinokio/uninstall.js",
 }
 
 
@@ -224,7 +225,11 @@ class ImmutableActionFile:
 
 @dataclass(frozen=True)
 class PinokioActionGraph:
-    """Exact start/stop/update descriptors plus all statically resolvable helpers."""
+    """Four operation descriptors plus all statically resolvable helpers.
+
+    This source graph does not resolve installed Runtime argv or authenticate
+    an installation. Including uninstall supplies no removal authority.
+    """
 
     app_root: str
     files: tuple[ImmutableActionFile, ...]
@@ -267,7 +272,9 @@ class PinokioActionGraph:
                 len(_REQUIRE_CALL_RE.findall(text)) != literal_requires
                 or _DYNAMIC_IMPORT_RE.search(text) is not None
             ):
-                raise PinokioSourceMismatch("dynamic action/helper import cannot be bound")
+                raise PinokioSourceMismatch(
+                    f"dynamic action/helper import cannot be bound: {resolved.relative_to(root)}"
+                )
             for groups in imports:
                 specifier = next((item for item in groups if item), "")
                 helper = _resolve_helper(resolved, specifier, root=root)
@@ -282,7 +289,7 @@ class PinokioActionGraph:
         files.sort(key=lambda item: (item.role, item.path))
         roles = {item.role for item in files}
         if not set(_ROLE_BY_OPERATION.values()).issubset(roles):
-            raise PinokioSourceMismatch("required start/stop/update action is absent")
+            raise PinokioSourceMismatch("required start/stop/update/uninstall action is absent")
         payload = {"app_root": str(root), "files": [item.__dict__ for item in files]}
         return cls(
             app_root=str(root), files=tuple(files), graph_sha256=_sha256(_canonical(payload))
@@ -291,7 +298,7 @@ class PinokioActionGraph:
     def action_for(self, operation: str) -> ImmutableActionFile:
         role = _ROLE_BY_OPERATION.get(operation)
         if role is None:
-            raise ValueError("only start, stop, and update actions are supported")
+            raise ValueError("only start, stop, update, and uninstall actions are supported")
         matches = [item for item in self.files if item.role == role]
         if len(matches) != 1:
             raise PinokioSourceMismatch("bound action graph has ambiguous action identity")

@@ -30,6 +30,7 @@ def _installed_app(tmp_path: Path) -> Path:
     (actions / "start.js").write_text("require('./helper');\n", encoding="utf-8")
     (actions / "stop.js").write_text("require('./helper');\n", encoding="utf-8")
     (actions / "update.js").write_text("require('./helper');\n", encoding="utf-8")
+    (actions / "uninstall.js").write_text("require('./helper');\n", encoding="utf-8")
     return app
 
 
@@ -61,6 +62,7 @@ def test_action_graph_binds_all_descriptors_and_resolved_helpers(tmp_path: Path)
         "pinokio/start.js",
         "pinokio/stop.js",
         "pinokio/update.js",
+        "pinokio/uninstall.js",
         "helper:pinokio/helper.js",
     } <= roles
     assert graph.action_for("stop").path == str(app / "pinokio" / "stop.js")
@@ -88,12 +90,64 @@ def test_action_graph_refuses_helper_drift_and_selected_app_mismatch(tmp_path: P
         )
 
 
-def test_action_graph_refuses_dynamic_helper_resolution(tmp_path: Path) -> None:
+@pytest.mark.parametrize("operation", ["update", "uninstall"])
+def test_action_graph_refuses_dynamic_helper_resolution(tmp_path: Path, operation: str) -> None:
     app = _installed_app(tmp_path)
-    (app / "pinokio" / "update.js").write_text("require('./' + 'helper');\n", encoding="utf-8")
+    (app / "pinokio" / f"{operation}.js").write_text("require('./' + 'helper');\n", encoding="utf-8")
 
-    with pytest.raises(PinokioSourceMismatch, match="dynamic action/helper import"):
+    with pytest.raises(
+        PinokioSourceMismatch, match=rf"dynamic action/helper import cannot be bound: pinokio/{operation}\.js"
+    ):
         PinokioActionGraph.collect(app)
+
+
+def test_uninstall_helper_closure_is_bound_and_drift_refuses(tmp_path: Path) -> None:
+    app = _installed_app(tmp_path)
+    actions = app / "pinokio"
+    (actions / "uninstall.js").write_text("require('./removal-helper');\n", encoding="utf-8")
+    (actions / "removal-helper.js").write_text("require('./removal-leaf');\n", encoding="utf-8")
+    leaf = actions / "removal-leaf.js"
+    leaf.write_text("module.exports = { keepData: true };\n", encoding="utf-8")
+    graph = PinokioActionGraph.collect(app)
+
+    assert graph.action_for("uninstall").path == str(actions / "uninstall.js")
+    assert {"helper:pinokio/removal-helper.js", "helper:pinokio/removal-leaf.js"} <= {
+        item.role for item in graph.files
+    }
+    leaf.write_text("module.exports = { keepData: false };\n", encoding="utf-8")
+    with pytest.raises(PinokioSourceMismatch, match="action/helper bytes changed"):
+        graph.verify_current_bytes()
+
+
+def test_action_graph_requires_uninstall_descriptor(tmp_path: Path) -> None:
+    app = _installed_app(tmp_path)
+    (app / "pinokio" / "uninstall.js").unlink()
+
+    with pytest.raises(PinokioSourceMismatch, match="action/helper cannot be resolved"):
+        PinokioActionGraph.collect(app)
+
+
+def test_uninstall_request_is_only_data_and_cannot_settle_from_result_stop(tmp_path: Path) -> None:
+    app = _installed_app(tmp_path)
+    graph = PinokioActionGraph.collect(app)
+    selected = PinokioSelectedApp.bind(
+        ref="pinokio://127.0.0.1:42000/api/astrid", expected_app_id="astrid",
+        expected_app_path=app, status={"id": "astrid", "path": str(app)},
+    )
+    prepared = PreparedPinokioRequest.prepare(
+        request_id="uninstall-request-1", operation="uninstall", graph=graph,
+        selected_app=selected, input={"keep_data": True},
+    )
+    assert prepared.process_payload() == {
+        "uri": str(app / "pinokio" / "uninstall.js"), "id": "uninstall-request-1",
+        "action": "run", "input": {"keep_data": True},
+    }
+    lifecycle = PinokioRequestSettlement(prepared)
+    lifecycle.record_sent()
+    lifecycle.ingest({"id": prepared.request_id, "type": "result", "data": {"uninstalled": True}})
+    lifecycle.ingest({"id": prepared.request_id, "type": "event", "data": "stop"})
+    assert lifecycle.require_terminal_readback().status == "unknown"
+    assert lifecycle.require_terminal_readback().reason == "missing-engine-task-readback"
 
 
 def test_queued_acceptance_is_not_terminal_settlement(tmp_path: Path) -> None:
