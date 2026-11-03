@@ -1,0 +1,77 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "set -euo pipefail\nmkdir -p out/e14\npython3 - <<'IDENTITY'\nimport hashlib,json,pathlib,subprocess\nroots={x:pathlib.Path(x) for x in ['agent','runtime','app','pinokio']}\nident={x:{'head':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD'],text=True).strip(),'tree':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD^{tree}'],text=True).strip(),'status':subprocess.check_output(['git','-C',str(p),'status','--porcelain'],text=True).strip()} for x,p in roots.items()}\nident['app_manifest_sha256']=hashlib.sha256((roots['app']/'public/install-manifest.json').read_bytes()).hexdigest()\nident['runtime_lock_sha256']=hashlib.sha256((roots['agent']/'requirements/runtime.lock').read_bytes()).hexdigest()\nident['installed_product_digest']=None\nident['installed_product_note']='Editable source test environment; no installed-product digest claimed.'\npathlib.Path('out/e14/identity.json').write_text(json.dumps(ident,indent=2)+'\\n')\nIDENTITY\npython3 -m venv \"$RUNNER_TEMP/t04-venv\"\nV=\"$RUNNER_TEMP/t04-venv/bin/python\"\n\"$V\" -m pip install -e 'agent[dev]'\n\"$V\" -m pip install --no-deps -e runtime -e runtime/packages/python\n\"$V\" -c 'import runtime_protocol; from pathlib import Path; p=Path(runtime_protocol.__file__).resolve(); print(\"runtime_protocol\",p); assert p.is_relative_to(Path(\"runtime\").resolve())'\ncd agent\nset +e\n\"$V\" -m pytest -o addopts= --collect-only -q tests/sdk/test_timeline_editing_acceptance_runtime.py tests/sdk/test_timeline_owned_move_publish.py > ../out/e14/collection.log 2>&1\ncollect=$?\n\"$V\" -m pytest -o addopts= -vv -rA --junitxml=../out/e14/results.xml tests/sdk/test_timeline_editing_acceptance_runtime.py tests/sdk/test_timeline_owned_move_publish.py > ../out/e14/pytest.log 2>&1\ntest_exit=$?\nset -e\nexport COLLECT_EXIT=\"$collect\" TEST_EXIT=\"$test_exit\"\npython3 - <<'CHECK'\nimport json,os,pathlib\nexpected=['test_e14_twenty_real_occurrences_arrange_once_and_exact_undo[False]', 'test_e14_twenty_real_occurrences_arrange_once_and_exact_undo[True]', 'test_e14_picture_and_voice_on_new_tracks_one_receipt_exact_undo', 'test_e14_twenty_ordered_media_one_receipt_exact_undo_and_timings', 'test_e14_media_reuse_adds_existing_media_without_second_upload_and_undoes_exactly', 'test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[insert_time]', 'test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[ripple_delete]', 'test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[close_gap]', 'test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[keep_end-4]', 'test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[keep_end-5]', 'test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[plays_on-4]', 'test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[plays_on-5]', 'test_e14_mixed_recut_previews_then_applies_exact_literal_list_once', 'test_e14_friendly_split_preserves_source_windows_and_undoes_exactly', 'test_e14_preview_does_not_reserve_a_key_and_keyed_replay_skips_evaluation', 'test_e14_create_with_picture_audio_content_and_fps_undoes_to_bootstrap', 'test_e14_duplicate_uses_complete_fresh_identity_maps_and_separate_setup_receipt', 'test_e14_duplicate_unknown_copy_retry_reuses_destination_and_receipt', 'test_e14_function_conflict_reruns_but_literal_list_conflict_stays_fixed', 'test_function_rerun_saves_overlapping_user_edit_and_explicit_retry_rebases[error]', 'test_function_rerun_saves_overlapping_user_edit_and_explicit_retry_rebases[id]', 'test_function_rerun_preserves_disjoint_user_title_edit', 'test_e14_function_lost_fallback_refuses_overlapping_read', 'test_e14_function_lost_fallback_merges_disjoint_edit', 'test_e14_explicit_atomic_list_refuses_disjoint_intervening_edit', 'test_e14_final_refusal_releases_outbox_for_new_intent_and_exact_undo', 'test_e14_unknown_commit_reopens_and_retries_the_exact_request', 'test_friendly_split_stages_native_command_for_function_commit', 'test_friendly_split_refuses_shot_owned_clips', 'test_parent_publish_rebases_original_capture_reloads_and_undoes', 'test_parent_publish_captures_source_hold_set_and_undoes_without_legacy_writer', 'test_parent_publish_captures_asset_clear_and_undoes_without_legacy_writer', 'test_parent_publish_captures_transition_clear_and_undoes_without_legacy_writer', 'test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params0]', 'test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params1]', 'test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params2]', 'test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params3]', 'test_attached_transition_clear_refuses_occurrence_owner_atomically', 'test_parent_publish_captures_source_trim_rebases_reloads_and_undoes', 'test_parent_publish_captures_delete_retries_reloads_and_undoes', 'test_parent_publish_captures_split_retries_reloads_and_undoes_exact_rows', 'test_parent_split_dependency_refusal_keeps_draft_atomic', 'test_parent_publish_restart_keeps_exact_request_key_and_rationale', 'test_unrelated_and_detached_publish_never_consume_global_pending_or_flight', 'test_mixed_and_unqueued_edits_are_held_without_consuming_draft', 'test_mixed_parent_delete_and_edit_are_held_without_writes', 'test_ambiguous_owner_and_occurrence_publish_refuse_with_draft_intact']\np=pathlib.Path('../out/e14')\nlines=(p/'collection.log').read_text().splitlines()\nnames=[x.strip().split('::')[-1] for x in lines if '::test_' in x]\ndata={'collection_exit':int(os.environ['COLLECT_EXIT']),'pytest_exit':int(os.environ['TEST_EXIT']),'expected_count':47,'collected_count':len(names),'exact_inventory':names==expected,'missing':[n for n in expected if n not in names],'unexpected':[n for n in names if n not in expected],'media_reuse':'test_e14_media_reuse_adds_existing_media_without_second_upload_and_undoes_exactly','fixture_limitations':['occurrence video is image-only','voice fixtures are silent']}\n(p/'inventory.json').write_text(json.dumps(data,indent=2)+'\\n')\nraise SystemExit(0 if data['collection_exit']==0 and data['pytest_exit']==0 and data['exact_inventory'] else 1)\nCHECK\n",
+  "effective_tuple": {
+    "agent": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+    "app": "a55bec9ff384b5bbfee5535962880084ab2adb1b",
+    "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+  },
+  "event": "push",
+  "inner_exit_code": 1,
+  "inventory": [
+    {
+      "bytes": 5795,
+      "path": "artifacts/out/e14/collection.log",
+      "sha256": "5fd25669fe4e1174245a1839adba45fd6d7d440d5656e5eef4c688cb989a908f"
+    },
+    {
+      "bytes": 917,
+      "path": "artifacts/out/e14/identity.json",
+      "sha256": "0f6451a39c17b6bc1211c9587cee2e7abccb62275ec09cdd229b28e1750e9a67"
+    },
+    {
+      "bytes": 364,
+      "path": "artifacts/out/e14/inventory.json",
+      "sha256": "a00eb317c6dbe83f27f45f53f2cdc36b59c85599e710f2c89d6d63076ccdaaa3"
+    },
+    {
+      "bytes": 49038,
+      "path": "artifacts/out/e14/pytest.log",
+      "sha256": "5802ffd73f2f8bffe72824eaf04669f95e1e83d3fc375f0fe75700fee20357dc"
+    },
+    {
+      "bytes": 43618,
+      "path": "artifacts/out/e14/results.xml",
+      "sha256": "f63b214f87a718bf92ac0c383cfa7d49126f617d5a42758464d9bec29bfd4b6e"
+    },
+    {
+      "bytes": 74114,
+      "path": "command.log",
+      "sha256": "5eeda283e4813d49f25e41ea7b5e3fe8683354d1ed1bb9d334317bf909d549da"
+    },
+    {
+      "bytes": 2,
+      "path": "exit-code.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "bytes": 6492,
+      "path": "requested-inputs.json",
+      "sha256": "547928b3795370d9bcabf660b726662949bbf9893a097341d1770247b0af52db"
+    },
+    {
+      "bytes": 442,
+      "path": "tuple.txt",
+      "sha256": "ac8c4bb6dd27400bbe5c327c06d3d0788e71763b2e91b33fac57f2f8883d5282"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+    "app_ref": "a55bec9ff384b5bbfee5535962880084ab2adb1b",
+    "artifact_paths": "out/e14",
+    "command": "set -euo pipefail\nmkdir -p out/e14\npython3 - <<'IDENTITY'\nimport hashlib,json,pathlib,subprocess\nroots={x:pathlib.Path(x) for x in ['agent','runtime','app','pinokio']}\nident={x:{'head':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD'],text=True).strip(),'tree':subprocess.check_output(['git','-C',str(p),'rev-parse','HEAD^{tree}'],text=True).strip(),'status':subprocess.check_output(['git','-C',str(p),'status','--porcelain'],text=True).strip()} for x,p in roots.items()}\nident['app_manifest_sha256']=hashlib.sha256((roots['app']/'public/install-manifest.json').read_bytes()).hexdigest()\nident['runtime_lock_sha256']=hashlib.sha256((roots['agent']/'requirements/runtime.lock').read_bytes()).hexdigest()\nident['installed_product_digest']=None\nident['installed_product_note']='Editable source test environment; no installed-product digest claimed.'\npathlib.Path('out/e14/identity.json').write_text(json.dumps(ident,indent=2)+'\\n')\nIDENTITY\npython3 -m venv \"$RUNNER_TEMP/t04-venv\"\nV=\"$RUNNER_TEMP/t04-venv/bin/python\"\n\"$V\" -m pip install -e 'agent[dev]'\n\"$V\" -m pip install --no-deps -e runtime -e runtime/packages/python\n\"$V\" -c 'import runtime_protocol; from pathlib import Path; p=Path(runtime_protocol.__file__).resolve(); print(\"runtime_protocol\",p); assert p.is_relative_to(Path(\"runtime\").resolve())'\ncd agent\nset +e\n\"$V\" -m pytest -o addopts= --collect-only -q tests/sdk/test_timeline_editing_acceptance_runtime.py tests/sdk/test_timeline_owned_move_publish.py > ../out/e14/collection.log 2>&1\ncollect=$?\n\"$V\" -m pytest -o addopts= -vv -rA --junitxml=../out/e14/results.xml tests/sdk/test_timeline_editing_acceptance_runtime.py tests/sdk/test_timeline_owned_move_publish.py > ../out/e14/pytest.log 2>&1\ntest_exit=$?\nset -e\nexport COLLECT_EXIT=\"$collect\" TEST_EXIT=\"$test_exit\"\npython3 - <<'CHECK'\nimport json,os,pathlib\nexpected=['test_e14_twenty_real_occurrences_arrange_once_and_exact_undo[False]', 'test_e14_twenty_real_occurrences_arrange_once_and_exact_undo[True]', 'test_e14_picture_and_voice_on_new_tracks_one_receipt_exact_undo', 'test_e14_twenty_ordered_media_one_receipt_exact_undo_and_timings', 'test_e14_media_reuse_adds_existing_media_without_second_upload_and_undoes_exactly', 'test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[insert_time]', 'test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[ripple_delete]', 'test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[close_gap]', 'test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[keep_end-4]', 'test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[keep_end-5]', 'test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[plays_on-4]', 'test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[plays_on-5]', 'test_e14_mixed_recut_previews_then_applies_exact_literal_list_once', 'test_e14_friendly_split_preserves_source_windows_and_undoes_exactly', 'test_e14_preview_does_not_reserve_a_key_and_keyed_replay_skips_evaluation', 'test_e14_create_with_picture_audio_content_and_fps_undoes_to_bootstrap', 'test_e14_duplicate_uses_complete_fresh_identity_maps_and_separate_setup_receipt', 'test_e14_duplicate_unknown_copy_retry_reuses_destination_and_receipt', 'test_e14_function_conflict_reruns_but_literal_list_conflict_stays_fixed', 'test_function_rerun_saves_overlapping_user_edit_and_explicit_retry_rebases[error]', 'test_function_rerun_saves_overlapping_user_edit_and_explicit_retry_rebases[id]', 'test_function_rerun_preserves_disjoint_user_title_edit', 'test_e14_function_lost_fallback_refuses_overlapping_read', 'test_e14_function_lost_fallback_merges_disjoint_edit', 'test_e14_explicit_atomic_list_refuses_disjoint_intervening_edit', 'test_e14_final_refusal_releases_outbox_for_new_intent_and_exact_undo', 'test_e14_unknown_commit_reopens_and_retries_the_exact_request', 'test_friendly_split_stages_native_command_for_function_commit', 'test_friendly_split_refuses_shot_owned_clips', 'test_parent_publish_rebases_original_capture_reloads_and_undoes', 'test_parent_publish_captures_source_hold_set_and_undoes_without_legacy_writer', 'test_parent_publish_captures_asset_clear_and_undoes_without_legacy_writer', 'test_parent_publish_captures_transition_clear_and_undoes_without_legacy_writer', 'test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params0]', 'test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params1]', 'test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params2]', 'test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params3]', 'test_attached_transition_clear_refuses_occurrence_owner_atomically', 'test_parent_publish_captures_source_trim_rebases_reloads_and_undoes', 'test_parent_publish_captures_delete_retries_reloads_and_undoes', 'test_parent_publish_captures_split_retries_reloads_and_undoes_exact_rows', 'test_parent_split_dependency_refusal_keeps_draft_atomic', 'test_parent_publish_restart_keeps_exact_request_key_and_rationale', 'test_unrelated_and_detached_publish_never_consume_global_pending_or_flight', 'test_mixed_and_unqueued_edits_are_held_without_consuming_draft', 'test_mixed_parent_delete_and_edit_are_held_without_writes', 'test_ambiguous_owner_and_occurrence_publish_refuse_with_draft_intact']\np=pathlib.Path('../out/e14')\nlines=(p/'collection.log').read_text().splitlines()\nnames=[x.strip().split('::')[-1] for x in lines if '::test_' in x]\ndata={'collection_exit':int(os.environ['COLLECT_EXIT']),'pytest_exit':int(os.environ['TEST_EXIT']),'expected_count':47,'collected_count':len(names),'exact_inventory':names==expected,'missing':[n for n in expected if n not in names],'unexpected':[n for n in names if n not in expected],'media_reuse':'test_e14_media_reuse_adds_existing_media_without_second_upload_and_undoes_exactly','fixture_limitations':['occurrence video is image-only','voice fixtures are silent']}\n(p/'inventory.json').write_text(json.dumps(data,indent=2)+'\\n')\nraise SystemExit(0 if data['collection_exit']==0 and data['pytest_exit']==0 and data['exact_inventory'] else 1)\nCHECK\n",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime_ref": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+    "slot": "4"
+  },
+  "run_attempt": "1",
+  "run_id": "41560438619",
+  "source_head": "23f7b0a0ff59dc0c54f43918470ce256e0587439",
+  "source_ref": "refs/heads/venue/M-QUAL-R-34-T04-SELF-SERVE-EXEC-R1-1",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-QUAL-R-34-T04-SELF-SERVE-EXEC-R1-1",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "23f7b0a0ff59dc0c54f43918470ce256e0587439"
+}

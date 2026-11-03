@@ -1,0 +1,487 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="27" failures="0" skipped="0" tests="47" time="2.089" timestamp="2026-11-03T01:46:10.802531+00:00" hostname="runnervm48cm3"><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_twenty_real_occurrences_arrange_once_and_exact_undo[False]" time="0.003"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_twenty_real_occurrenc0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d6437d40&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d600b4c0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_twenty_real_occurrences_arrange_once_and_exact_undo[True]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_twenty_real_occurrenc0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5654410&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5990220&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_picture_and_voice_on_new_tracks_one_receipt_exact_undo" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_picture_and_voice_on_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5654e30&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d59905e0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_twenty_ordered_media_one_receipt_exact_undo_and_timings" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_twenty_ordered_media_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5654860&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5990b80&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_media_reuse_adds_existing_media_without_second_upload_and_undoes_exactly" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_media_reuse_adds_exis0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d56562d0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5991260&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[insert_time]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_flat_ripple_helpers_c0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5658380&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5991620&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[ripple_delete]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_flat_ripple_helpers_c0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5654c50&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5991940&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_flat_ripple_helpers_commit_once_and_undo_real_transcript_gap[close_gap]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_flat_ripple_helpers_c0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5654ef0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d59920c0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[keep_end-4]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_music_beds_at_window_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5654cb0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5991260&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[keep_end-5]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_music_beds_at_window_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d565af60&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5990220&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[plays_on-4]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_music_beds_at_window_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d565ade0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d59928e0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_music_beds_at_window_start_and_inside_follow_policy_and_undo[plays_on-5]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_music_beds_at_window_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5663050&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5992de0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_mixed_recut_previews_then_applies_exact_literal_list_once" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_mixed_recut_previews_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d57550d0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d59932e0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_friendly_split_preserves_source_windows_and_undoes_exactly" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_friendly_split_preser0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d57e12b0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5993ba0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_preview_does_not_reserve_a_key_and_keyed_replay_skips_evaluation" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_preview_does_not_rese0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d577bb00&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542c2c0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_create_with_picture_audio_content_and_fps_undoes_to_bootstrap" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_create_with_picture_a0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d57c32c0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542c7c0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_duplicate_uses_complete_fresh_identity_maps_and_separate_setup_receipt" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_duplicate_uses_comple0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d57d8140&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542cd60&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_duplicate_unknown_copy_retry_reuses_destination_and_receipt" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_duplicate_unknown_cop0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5749fd0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542d260&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_function_conflict_reruns_but_literal_list_conflict_stays_fixed" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_function_conflict_rer0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d574a120&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5992d40&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_function_rerun_saves_overlapping_user_edit_and_explicit_retry_rebases[error]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_function_rerun_saves_over0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d57d89e0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d5990220&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_function_rerun_saves_overlapping_user_edit_and_explicit_retry_rebases[id]" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_function_rerun_saves_over0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d57c3020&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d59916c0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_function_rerun_preserves_disjoint_user_title_edit" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_function_rerun_preserves_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d57e2060&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542d3a0&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_function_lost_fallback_refuses_overlapping_read" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_function_lost_fallbac0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5662e70&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542d940&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_function_lost_fallback_merges_disjoint_edit" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_function_lost_fallbac0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d565a510&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542cf40&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_explicit_atomic_list_refuses_disjoint_intervening_edit" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_explicit_atomic_list_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d565b3e0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542c900&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_final_refusal_releases_outbox_for_new_intent_and_exact_undo" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_final_refusal_release0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5656ed0&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542e200&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_editing_acceptance_runtime" name="test_e14_unknown_commit_reopens_and_retries_the_exact_request" time="0.002"><error message="failed on setup with &quot;AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'&#10;  &#10;  - 9ef808711a5207f5be74dc5f267af6fdd7bc9550&#10;  + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020&quot;">tmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_e14_unknown_commit_reopen0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x7fb9d5656630&gt;
+real_runtime = &lt;function real_runtime.&lt;locals&gt;.start at 0x7fb9d542e840&gt;
+
+    @pytest.fixture
+    def editing_case(tmp_path, monkeypatch, real_runtime):
+        """A fresh Runtime realm with a real HTTP client and an empty timeline."""
+        from tests.helpers.runtime import use_runtime
+    
+        monkeypatch.setenv("ASTRID_RUNTIME_CHECKOUT", RUNTIME_CHECKOUT)
+        runtime = use_runtime()
+        actual = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+&gt;       assert actual == RUNTIME_COMMIT
+E       AssertionError: assert '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' == '9ef808711a5207f5be74dc5f267af6fdd7bc9550'
+E         
+E         - 9ef808711a5207f5be74dc5f267af6fdd7bc9550
+E         + 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+
+tests/sdk/test_timeline_editing_acceptance_runtime.py:28: AssertionError</error></testcase><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_friendly_split_stages_native_command_for_function_commit" time="0.001" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_friendly_split_refuses_shot_owned_clips" time="0.001" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_publish_rebases_original_capture_reloads_and_undoes" time="0.167" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_publish_captures_source_hold_set_and_undoes_without_legacy_writer" time="0.045" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_publish_captures_asset_clear_and_undoes_without_legacy_writer" time="0.038" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_publish_captures_transition_clear_and_undoes_without_legacy_writer" time="0.036" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params0]" time="0.019" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params1]" time="0.002" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params2]" time="0.002" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_attached_transition_set_refuses_unsupported_or_mixed_calls_atomically[params3]" time="0.003" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_attached_transition_clear_refuses_occurrence_owner_atomically" time="0.004" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_publish_captures_source_trim_rebases_reloads_and_undoes" time="0.107" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_publish_captures_delete_retries_reloads_and_undoes" time="0.090" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_publish_captures_split_retries_reloads_and_undoes_exact_rows" time="0.085" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_split_dependency_refusal_keeps_draft_atomic" time="0.015" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_parent_publish_restart_keeps_exact_request_key_and_rationale" time="0.049" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_unrelated_and_detached_publish_never_consume_global_pending_or_flight" time="0.053" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_mixed_and_unqueued_edits_are_held_without_consuming_draft" time="0.068" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_mixed_parent_delete_and_edit_are_held_without_writes" time="0.037" /><testcase classname="tests.sdk.test_timeline_owned_move_publish" name="test_ambiguous_owner_and_occurrence_publish_refuse_with_draft_intact" time="0.022" /></testsuite></testsuites>

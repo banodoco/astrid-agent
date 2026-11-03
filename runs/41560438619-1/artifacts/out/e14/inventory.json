@@ -1,0 +1,14 @@
+{
+  "collection_exit": 0,
+  "pytest_exit": 1,
+  "expected_count": 47,
+  "collected_count": 47,
+  "exact_inventory": true,
+  "missing": [],
+  "unexpected": [],
+  "media_reuse": "test_e14_media_reuse_adds_existing_media_without_second_upload_and_undoes_exactly",
+  "fixture_limitations": [
+    "occurrence video is image-only",
+    "voice fixtures are silent"
+  ]
+}
