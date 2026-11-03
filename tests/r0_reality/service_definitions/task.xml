@@ -1,0 +1,21 @@
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Astrid Runtime</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><UserId>S-1-5-21-1234</UserId></LogonTrigger><TimeTrigger><Enabled>true</Enabled><StartBoundary>2000-01-01T00:00:00+00:00</StartBoundary><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition></TimeTrigger></Triggers>
+  <Principals><Principal id="Owner"><UserId>S-1-5-21-1234</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
+  </Settings>
+  <Actions Context="Owner"><Exec><Command>C:\Astrid\versions\v1\py\Scripts\pythonw.exe</Command><Arguments>-X utf8 -I -c "import json,os,sys
+from pathlib import Path
+os.environ.update({'PATH': 'C:\\Astrid\\tools;C:\\Windows\\System32', 'PYTHONUTF8': '1'})
+sys.stdout=sys.stderr=open('C:\\Astrid\\logs\\runtime-service.log','a',encoding='utf-8',buffering=1)
+from astrid_runtime.cli import main
+sys.exit(main(['run', '--profile', 'astrid', '--data-root', 'C:\\Astrid Data', '--source-manifest', 'C:\\Astrid\\versions\\v1\\profile.json']))"</Arguments><WorkingDirectory>C:\Astrid\versions\v1</WorkingDirectory></Exec></Actions>
+</Task>

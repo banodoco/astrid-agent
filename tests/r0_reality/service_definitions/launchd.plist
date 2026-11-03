@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/astrid/tools:/usr/bin:/bin</string>
+		<key>PYTHONUTF8</key>
+		<string>1</string>
+	</dict>
+	<key>ExitTimeOut</key>
+	<integer>90</integer>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>haus.astrid.runtime</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/astrid/versions/v1/py/bin/python</string>
+		<string>-X</string>
+		<string>utf8</string>
+		<string>-I</string>
+		<string>-m</string>
+		<string>astrid_runtime</string>
+		<string>run</string>
+		<string>--profile</string>
+		<string>astrid</string>
+		<string>--data-root</string>
+		<string>/astrid data</string>
+		<string>--source-manifest</string>
+		<string>/astrid/versions/v1/profile.json</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/logs/runtime-service.log</string>
+	<key>StandardOutPath</key>
+	<string>/logs/runtime-service.log</string>
+</dict>
+</plist>
