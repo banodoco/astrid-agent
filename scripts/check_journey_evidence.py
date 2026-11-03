@@ -982,9 +982,8 @@ def evaluate_m4_4b_local_smoke(results):
 
 
 # GitHub's artifact metadata identifies a run but not the producing job or
-# attempt.  This index is diagnostic only until a platform origin attestation
-# supplies that missing edge; it must never be passed off as an authenticated
-# external_checkpoint_join to journey_predicates.check_m4_6.
+# attempt. This diagnostic index does not yet verify the ruled workflow
+# construction and must not be passed to the predicate as an authenticated join.
 M4_6_ORIGIN_NEEDS = (
     "M4-6 workflow-construction binding is not verified; "
     "API metadata and artifact names alone do not establish origin"
