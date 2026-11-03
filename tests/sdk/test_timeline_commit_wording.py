@@ -39,6 +39,26 @@ def test_unknown_failure_wording_never_claims_failure_or_nonapplication():
                for word in ("fail", "error", "lost", "not committed"))
 
 
+@pytest.mark.parametrize("fixed_list", [False, True], ids=["function", "list"])
+def test_initial_conflict_presentation_names_the_user_field_and_current_value(fixed_list):
+    from astrid.sdk.timeline.sync import CommitConflict
+
+    failure = {"code": "conflict", "message": "the field changed", "details": {
+        "status": "conflict", "reason": "value_conflict",
+        "conflicts": [{"ref": "parent/track:V1", "path": ["label"],
+                       "ours": {"state": "present", "value": "Agent value"}}],
+    }}
+    error = CommitConflict(failure, label="Agent track label", fixed_list=fixed_list,
+                           clash={"receipts": [{"touches_conflict": True, "via": "app"}],
+                                  "current_values": [{"state": "present", "value": "User track name"}]})
+
+    assert "track V1.label" in error.fix
+    assert "user's current value" in error.fix
+    assert "User track name" in error.fix
+    assert "Preserve it." in error.fix
+    assert "Re-derive only compatible work." in error.fix
+
+
 def test_ambiguous_selection_has_bounded_structured_candidates():
     rows = [{"id": f"clip-{index}", "track": "V1", "start": index, "end": index + 1}
             for index in range(14)]
