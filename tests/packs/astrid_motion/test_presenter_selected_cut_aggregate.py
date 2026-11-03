@@ -17,15 +17,15 @@ from astrid.core.timeline.cuts import find_cut
 from astrid.packs.rendering.actions.timeline_visualize.composed_frame import CaptureSceneLabels
 from astrid.packs.rendering.actions.timeline_visualize.layers import builtin
 from astrid.packs.rendering.actions.timeline_visualize.motion import model, sheet
-from tests.packs.rendering import test_presenter_crop_equivalence as crop_helpers
-from tests.packs.rendering.test_presenter_crop_equivalence import png_crop, public_box
-from tests.packs.rendering.test_presenter_scene_capability import (
+from tests.packs.astrid_motion import test_presenter_crop_equivalence as crop_helpers
+from tests.packs.astrid_motion.test_presenter_crop_equivalence import png_crop, public_box
+from tests.packs.astrid_motion.test_presenter_scene_capability import (
     presenter_query as _presenter_query,
 )
 
 presenter_query = _presenter_query
 pytestmark = pytest.mark.integration
-FIXTURE = Path(__file__).resolve().parents[2] / "fixtures/presenter_selected_cut"
+FIXTURE = Path(__file__).resolve().parent / "fixtures/presenter_selected_cut"
 EXPECTED_HASHES = {
     "inspection.json": "eabcc179baa4b97b6bdf1c8343ca270ef090e1306ab8791ee32787c3226385af",
     "frame-0.png": "6c3c819b5ac4a1b1848e3b72338e1e213e9159b6325eb1068f334dcfffc79ed5",

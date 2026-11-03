@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw
 
 from astrid.packs.rendering.actions.timeline_visualize import fast_lane
 from astrid.packs.rendering.actions.timeline_visualize import sweep as sw
-from tests.packs.rendering.test_timeline_visualize_motion_views import _clip
+from tests.packs.astrid_motion.test_timeline_visualize_motion_views import _clip
 
 FPS = 30.0
 OCC = "occ-film"
