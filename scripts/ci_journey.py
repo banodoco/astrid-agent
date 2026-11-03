@@ -959,6 +959,12 @@ def retain_named_evidence(evidence: Path, phase: str) -> dict[str, tuple[str, st
         if not source_root.is_dir() or source_root.is_symlink():
             continue
         sources.extend(source_root / name for name in sorted(PACK_HOST_READINESS_EVIDENCE_NAMES))
+    # The turnover callback writes only these fixed, bounded R0 phase files.
+    turnover_root = evidence / "release0-api-seed"
+    if turnover_root.is_dir() and not turnover_root.is_symlink():
+        sources.extend(turnover_root / f"runtime-service-service-turnover-{action}-{phase}.log"
+                       for action in ("seed", "snapshot")
+                       for phase in ("before-stop", "owner-absent", "after-start-request"))
     retained_sources = {}
     for source in sources:
         name = source.name
