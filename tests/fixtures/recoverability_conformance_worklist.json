@@ -1611,7 +1611,7 @@
       "stderr_kind": "print"
     }
   ],
-  "expected_parser_surface_count": 94,
+  "expected_parser_surface_count": 93,
   "expected_parser_surfaces": [
     {
       "builder": "build_parser",
@@ -1652,11 +1652,6 @@
       "builder": "build_parser",
       "module": "astrid.packs.chiptune.actions.sfx.run",
       "path": "astrid/packs/chiptune/actions/sfx/run.py"
-    },
-    {
-      "builder": "build_parser",
-      "module": "astrid.packs.comfy_wrap.actions.run.run",
-      "path": "astrid/packs/comfy_wrap/actions/run/run.py"
     },
     {
       "builder": "build_parser",
@@ -2206,7 +2201,7 @@
       ]
     }
   ],
-  "scanned_parser_surface_count": 92,
+  "scanned_parser_surface_count": 91,
   "scanned_parser_surfaces": [
     {
       "builder": "build_parser",
@@ -2263,13 +2258,6 @@
       "module": "astrid.packs.chiptune.actions.sfx.run",
       "path": "astrid/packs/chiptune/actions/sfx/run.py",
       "prog": "chiptune.sfx"
-    },
-    {
-      "builder": "build_parser",
-      "enum_arg_count": 0,
-      "module": "astrid.packs.comfy_wrap.actions.run.run",
-      "path": "astrid/packs/comfy_wrap/actions/run/run.py",
-      "prog": "comfy_wrap.run"
     },
     {
       "builder": "build_parser",

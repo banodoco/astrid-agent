@@ -94,13 +94,6 @@
       ],
       "note": "Runs Blender locally or through an external render host and does not yet write the universal result manifest."
     },
-    "comfy_wrap.run": {
-      "reasons": [
-        "GPU",
-        "external-escape-hatch"
-      ],
-      "note": "Runs ComfyUI workflows through external VibeComfy/ComfyUI tooling requiring GPU."
-    },
     "editorial.human_review": {
       "reasons": [
         "no-artifact"

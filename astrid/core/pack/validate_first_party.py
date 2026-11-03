@@ -24,7 +24,6 @@ _FIRST_PARTY_PACK_IDS = (
     "blender",
     "capture",
     "chiptune",
-    "comfy_wrap",
     "developer",
     "discord_local",
     "editorial",
