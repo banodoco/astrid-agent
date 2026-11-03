@@ -285,17 +285,24 @@ class HermesExternalDirTest(unittest.TestCase):
         try:
             skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
             config_path = fx.home / ".hermes" / "config.yaml"
-            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            data["skills"]["external_dirs"].append("/unrelated/external-skills")
-            data["other"] = {"keep": "these bytes semantically"}
-            config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
             entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+            config_before = (
+                b"# preserve header spacing  \r\n"
+                b'unrelated:\r\n  raw: "keep  these bytes"\r\n'
+                b"skills:\r\n  mode: precise\r\n  external_dirs:\r\n"
+                + f"  - {entry}\r\n".encode("utf-8")
+                + b"  - /unrelated/external-skills # keep inline comment\r\n"
+                + b"  # preserve list note bytes\r\n"
+            )
+            config_path.write_bytes(config_before)
+            expected_config = config_before.replace(f"  - {entry}\r\n".encode("utf-8"), b"", 1)
 
             report = skills.disable_owned(state_path=fx.state_path)
 
+            self.assertEqual(config_path.read_bytes(), expected_config)
             after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             self.assertEqual(after["skills"]["external_dirs"], ["/unrelated/external-skills"])
-            self.assertEqual(after["other"], {"keep": "these bytes semantically"})
+            self.assertEqual(after["unrelated"], {"raw": "keep  these bytes"})
             action = next(row for row in report["actions"] if row["harness"] == "hermes")
             self.assertIn(entry, action["removed"])
         finally:
