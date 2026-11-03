@@ -266,11 +266,11 @@ def test_final_live_provider_pins_are_exact():
         "pinokio/providers/R24-LINUX.md": "99f3d67582789c2b0dabb74dc6b7738b21932637c33b1f4a1fbefbeb35decacb",
     }
     assert provider.LIVE_CANDIDATE == {
-        "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
+        "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
         "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
         "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
         "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-        "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
+        "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
     }
     assert provider.LIVE_STOP == {
         "ref": "3a6a98ae251ca126505245286e2d3e760f4348e9",

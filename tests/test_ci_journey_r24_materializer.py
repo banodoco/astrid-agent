@@ -19,11 +19,11 @@ from scripts import pinokio_linux_mode_actions as mode_actions
 def test_materializer_pins_exact_candidate_producer_and_native_engine():
     assert materializer.R24_CANDIDATE == provider.LIVE_CANDIDATE
     assert materializer.R24_CANDIDATE == {
-        "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
+        "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
         "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
         "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
         "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-        "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
+        "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
     }
     assert provider.LIVE_PRODUCER_REF == "70636d1833164dad84a3551606b61ba2634565ba"
     assert materializer.PINOKIOD_REF == "add4a674ad1ba95bb62ec427fce519fe5bf0e9bf"
@@ -840,7 +840,7 @@ def test_worker_start_accepts_only_exact_generation_not_found(monkeypatch, tmp_p
         get_local_worker_generation=lambda: (_ for _ in ()).throw(ApiError(status, code, "missing")),
         start_local_worker=lambda *unused: pytest.fail("must not start for an inexact error"),
     )
-    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source, unused_diagnostic=None: (
         client, {}, tmp_path, {"active_realm": "realm"}, {}))
     monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (None, None))
     with pytest.raises(ApiError):
@@ -867,7 +867,7 @@ def test_worker_start_is_observed_with_get_start_get(monkeypatch, tmp_path):
     health = SimpleNamespace(runtime_instance_id="instance", runtime_session_id="session", runtime_epoch=7)
     handshake = SimpleNamespace(realm_id="realm")
     client = SimpleNamespace(get_local_worker_generation=get_generation, start_local_worker=start)
-    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source: (
+    monkeypatch.setattr(task_boundary, "_client", lambda unused, unused_source, unused_diagnostic=None: (
         client, {}, tmp_path, {"active_realm": "realm"}, {}))
     monkeypatch.setattr(task_boundary, "_health", lambda unused_client, unused_discovery: (health, handshake))
     result = task_boundary.ensure_worker(tmp_path, tmp_path / "client.py")

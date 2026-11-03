@@ -47,11 +47,11 @@ def test_exact_candidate_provider_and_harness_constants_are_identical() -> None:
     assert r24.R24_CANDIDATE == provider.LIVE_CANDIDATE
     assert provider.LIVE_PRODUCER_REF == "70636d1833164dad84a3551606b61ba2634565ba"
     assert r24.R24_CANDIDATE == {
-        "app": "a10b36b3ecf1365c7e122643b2e3cae5cb5c1c8a",
+        "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
         "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
         "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
         "pinokio": "3a6a98ae251ca126505245286e2d3e760f4348e9",
-        "manifest_sha256": "751bb2fcb489c1194c7a158f5d79d3532a594344ae93cc2da4902947382df3d7",
+        "manifest_sha256": "b2584f0bb5a949890364004572a0182f2b568adcdba061e73b739e1d3d2d623f",
     }
 
 
