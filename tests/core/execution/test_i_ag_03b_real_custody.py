@@ -10,6 +10,8 @@ from astrid.core.execution.generic_host import GenericPackHost
 from tests.test_generic_host import _write_manifest
 
 
+@pytest.mark.linux_native
+@pytest.mark.non_root
 def test_linux_nonroot_real_process_launch_and_secret_custody(tmp_path, monkeypatch):
     """The product user starts and reaps a real child; launch mappings are cleared."""
     assert sys.platform == "linux"
