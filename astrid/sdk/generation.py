@@ -148,6 +148,11 @@ def _public_input_values(values):
         raise GenerationInputError(str(exc)) from exc
 
 
+def _prompt_only_video(*, model, entry, inputs):
+    """Identify an unselected video request containing only a prompt."""
+    return model is None and entry is None and set(inputs) == {"prompt"}
+
+
 def _generation_controls(*, engine, consent, max_usd, deadline):
     from astrid.core.generation.targets import canonical_engine
     if engine is not None:
@@ -1552,6 +1557,13 @@ class GenerationFacade:
         _reject_retired_generation_inputs(inputs)
         inputs.update({name: value for name, value in
                        (("request", request), ("asset_map", asset_map)) if value is not None})
+        if _prompt_only_video(model=model, entry=entry, inputs=inputs):
+            raise GenerationInputError(
+                "Prompt-only video requires a reference or an H3 request. "
+                "Use --image-ref for a video reference, or use --entry h3 --inputs-json FILE "
+                "with a JSON object containing request and asset_map file paths. "
+                "See generate video --entry h3 --help."
+            )
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         action_entry = None

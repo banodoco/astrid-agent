@@ -211,12 +211,16 @@ def test_public_generation_forms_reach_the_existing_facade(monkeypatch, capsys, 
     calls = _facade(monkeypatch)
     monkeypatch.setattr(listing, "main", lambda args: pytest.fail("generation reached listing parser"))
 
+    # Prompt-only video is refused before connecting; use a reference to
+    # continue exercising public forwarding for an admissible video form.
+    reference = ["--image-ref", "dog.png"] if modality == "video" else []
     assert _public_main(entrypoint)([
-        "generate", modality, "a dog", "--target", "http://127.0.0.1:8188", "--json",
+        "generate", modality, "a dog", "--target", "http://127.0.0.1:8188", "--json", *reference,
     ]) == 0
     assert calls == [{
         "model": None, "target": "http://127.0.0.1:8188", "dry_run": False,
         "prompt": "a dog", "client": "runtime-client",
+        **({"image_ref": "dog.png"} if modality == "video" else {}),
     }]
     assert json.loads(capsys.readouterr().out)["image_paths"] == ["dog.png"]
 

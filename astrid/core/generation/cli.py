@@ -439,7 +439,10 @@ def _main(argv: list[str]) -> int:
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
     try:
         generate = getattr(_generate_facade(), parsed.modality)
-        if parsed.dry_run:
+        from astrid.sdk.generation import _prompt_only_video
+        if parsed.dry_run or (parsed.modality == 'video' and _prompt_only_video(
+                model=parsed.model, entry=parsed.entry, inputs=values)):
+            # Let the facade refuse before opening a Runtime connection.
             result = generate(**kwargs)
         else:
             with _open_client() as client:

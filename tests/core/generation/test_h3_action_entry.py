@@ -158,3 +158,31 @@ def test_public_h3_cli_and_sdk_reject_the_same_invalid_entry_inputs(
     captured = capsys.readouterr()
     assert not captured.out and diagnostic in captured.err
     assert calls == []
+
+
+@pytest.mark.parametrize("target", ["auto", "runpod"])
+def test_public_prompt_only_video_refuses_before_runtime_without_substitution(
+    target, capsys, public_h3_contract_boundary,
+):
+    from astrid import console, generate
+
+    client, calls = public_h3_contract_boundary
+    assert console.main(["generate", "video", "--help"]) == 0
+    video_help = capsys.readouterr().out
+    assert console.main(["generate", "video", "--entry", "h3", "--help"]) == 0
+    h3_help = capsys.readouterr().out
+    assert "--image-ref IMAGE_REF" in video_help
+    assert "--entry ENTRY" in video_help and "--inputs-json FILE" in video_help
+    assert "request (file;" in h3_help and "asset_map (file;" in h3_help
+
+    with pytest.raises(CapabilityValidationError, match="Prompt-only video requires") as exc:
+        generate.video(prompt="a moving scene", target=target, client=client)
+    assert exc.value.readiness["entry"] is None
+    assert console.main(["generate", "video", "a moving scene", "--target", target]) == 2
+    captured = capsys.readouterr()
+    error = captured.out + captured.err
+    assert "Prompt-only video requires a reference or an H3 request" in error
+    assert "--image-ref" in error and "--entry h3 --inputs-json FILE" in error
+    assert "request and asset_map file paths" in error
+    assert '"entry": null' in error
+    assert calls == []
