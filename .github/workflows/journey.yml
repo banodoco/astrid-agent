@@ -867,7 +867,7 @@ jobs:
   failure_modes:
     # These names describe local diagnostics only; they do not authenticate a
     # native collector or make the artifacts eligible for the hosted gate.
-    name: m4-6-local-${{ matrix.job_id }}
+    name: m4-6-local-${{ matrix.os }}-${{ matrix.job_id }}
     if: needs.config.outputs.m4_6_enabled == 'true'
     needs: config
     runs-on: ${{ matrix.runner }}
@@ -977,7 +977,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 30
-          name: m4-6-local-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.job_id }}
+          name: m4-6-local-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}-${{ matrix.job_id }}
           path: ${{ runner.temp }}/m4-6-${{ matrix.job_id }}/output
           if-no-files-found: warn
 
