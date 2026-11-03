@@ -2419,3 +2419,51 @@ def test_mac_stop_snapshot_retains_capture_before_cleanup_without_raw_install_lo
     assert not list((run_root / "evidence-upload").rglob("install.log"))
     staged = journey.read_json(run_root / "evidence-upload" / "after-cleanup" / "journey-result.json")
     assert staged["failure_diagnostics"]["before-cleanup"]["mac_stop_capture"] == before
+
+
+def test_linux_lock_capture_workflow_scopes_opt_in():
+    workflow = (journey.ROOT / '.github' / 'workflows' / 'journey.yml').read_text()
+    assert workflow.count('      linux_lock_capture:') == 2
+    assert "matrix.job_id == 'direct-linux' && inputs.linux_lock_capture && '1' || '0'" in workflow
+    assert not journey.credential_name('ASTRID_LINUX_LOCK_CAPTURE')
+
+
+def test_linux_lock_capture_reaches_bootstrap_subprocess(tmp_path, monkeypatch):
+    app, manifest = app_checkout(tmp_path)
+    (app / 'public' / 'install').write_text('#!/bin/sh\nprintf "%s" "$ASTRID_LINUX_LOCK_CAPTURE"\n')
+    evidence = tmp_path / 'evidence'
+    evidence.mkdir()
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    monkeypatch.setenv('ASTRID_LINUX_LOCK_CAPTURE', '1')
+    with journey.without_provider_credentials():
+        journey.bootstrap(app, manifest, 'sh', 'update', evidence, tmp_path / 'root', tmp_path / 'data')
+    assert (evidence / 'update-bootstrap.log').read_text() == '1'
+
+
+def test_linux_lock_snapshot_retains_sanitized_bounded_log_and_refuses_symlink(tmp_path, monkeypatch):
+    run_root = tmp_path / 'run'
+    evidence = run_root / 'evidence' / 'release0-to-release1'
+    evidence.mkdir(parents=True)
+    source = run_root / 'home' / '.local' / 'state' / 'astrid-runtime' / 'logs' / 'install.log'
+    source.parent.mkdir(parents=True)
+    source.write_text('x' * (journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES + 50) +
+                      '\nTOKEN=do-not-publish\ninstaller-lock-parent {"schema":"installer-lock-parent-v1"}\n')
+    journey.write_json(evidence / 'journey-result.json', {'status': 'fail'})
+    monkeypatch.setattr(journey.sys, 'platform', 'linux')
+    monkeypatch.setenv('ASTRID_LINUX_LOCK_CAPTURE', '1')
+    monkeypatch.setattr(journey, 'capture_manager_state', lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'before-cleanup')
+    record = journey.read_json(evidence / 'journey-result.json')['failure_diagnostics']['before-cleanup']['linux_lock_install_log']
+    retained = run_root / 'evidence-upload' / 'before-cleanup' / 'install.log'
+    data = retained.read_bytes()
+    assert record['status'] == 'captured' and record['truncated']
+    assert len(data) <= journey.AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES
+    assert b'do-not-publish' not in data and b'installer-lock-parent' in data
+    assert record['sha256'] == hashlib.sha256(data).hexdigest()
+    assert not (evidence / 'install.log').exists()
+    source.unlink()
+    source.symlink_to(tmp_path / 'secret')
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / 'data', 'after-cleanup')
+    after = journey.read_json(evidence / 'journey-result.json')['failure_diagnostics']['after-cleanup']['linux_lock_install_log']
+    assert after['status'] == 'unavailable'
+    assert retained.read_bytes() == data
