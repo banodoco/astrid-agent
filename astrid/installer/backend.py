@@ -165,20 +165,26 @@ class Backend:
         return True
 
     @contextlib.contextmanager
-    def realm_upgrade_lock(self, realm: dict, *, timeout: float = 120):
+    def realm_upgrade_lock(self, realm: dict, *, timeout: float = 120, deadline: float | None = None):
         """Hold both Runtime admission and lifetime owner locks for an offline upgrade.
 
         Callers must stop the native service first and must not start a Runtime
         until this context has exited. Both locks refer to this directory's
         current identity; replacing the directory requires separate custody.
+        A caller that already waited for native drain must pass the same
+        monotonic deadline here, rather than starting a second timeout.
         """
         from runtime_protocol.store import realm_admission_fence
 
         if self._realm_upgrade_lock is not None:
             raise RuntimeError("A realm upgrade lock is already held.")
         root = absolute(realm["realm_root"])
-        deadline = time.monotonic() + max(0, timeout)
+        shared_deadline = deadline is not None
+        if deadline is None:
+            deadline = time.monotonic() + max(0, timeout)
         while True:
+            if shared_deadline and time.monotonic() >= deadline:
+                raise TimeoutError("The workspace is still in use; the upgrade was refused.")
             stack = contextlib.ExitStack()
             try:
                 directory_fd = stack.enter_context(realm_admission_fence(root, blocking=False))
@@ -197,6 +203,8 @@ class Backend:
                 if (not stat.S_ISREG(selected.st_mode)
                         or (opened.st_dev, opened.st_ino) != (selected.st_dev, selected.st_ino)):
                     raise ValueError("The realm owner lock changed during acquisition.")
+                if shared_deadline and time.monotonic() >= deadline:
+                    raise TimeoutError("The workspace is still in use; the upgrade was refused.")
             except BlockingIOError as exc:
                 stack.close()
                 remaining = deadline - time.monotonic()

@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,17 @@ def test_busy_owner_times_out_and_releases_fence(tmp_path):
             assert _probe(root, "fence") == 0
         finally:
             platform.unlock_file(held.fileno())
+
+
+def test_expired_shared_deadline_refuses_before_acquiring_locks(tmp_path):
+    root = tmp_path / "realm"
+    root.mkdir()
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    with pytest.raises(TimeoutError, match="still in use"):
+        with backend.realm_upgrade_lock({"realm_root": str(root)}, deadline=time.monotonic() - 1):
+            pytest.fail("an expired drain deadline must not admit the upgrade")
+    assert not (root / "owner.lock").exists()
+    assert _probe(root, "fence") == 0
 
 
 def test_offline_backup_requires_lock_and_never_starts_runtime(tmp_path):
