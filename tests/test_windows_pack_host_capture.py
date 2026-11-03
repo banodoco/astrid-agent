@@ -92,11 +92,20 @@ def test_first_exit_and_latest_sample_survive_actual_nested_timeout(capture, mon
     assert first_exit == b"first child error\n"
     assert manifest(nested)["health"]["pack_host"]["restart_count"] == 9
     assert len(list(nested.glob("pack-host-readiness-*.json"))) == 3
-    shared.retain_named_evidence(evidence, "before-cleanup")
+    (evidence / "journey-result.json").write_text(json.dumps({"status": "fail"}))
+    monkeypatch.setattr(shared, "capture_runtime_service_logs", lambda *a: None)
+    monkeypatch.setattr(shared, "capture_manager_state", lambda *a: None)
+    shared.snapshot_failure_evidence(evidence, evidence.parent.parent, evidence.parent.parent / "data", "before-cleanup")
     before = evidence.parent.parent / "evidence-upload/before-cleanup"
     names = {p.name: p.read_bytes() for p in before.iterdir()}
     assert "runtime-service-service-readiness-1-last-failed-poll.json.log" in names
-    assert all(re.fullmatch(r"runtime-service-service-.+\.log", name) for name in names)
+    assert all(name == "journey-result.json" or re.fullmatch(r"runtime-service-service-.+\.log", name) for name in names)
+    receipt = json.loads(names["journey-result.json"])
+    bindings = receipt["failure_diagnostics"]["before-cleanup"]["pack_host_readiness"]
+    assert len(bindings) == 3
+    for item in bindings:
+        path = evidence.parent.parent / item["path"]
+        assert item["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     shutil.rmtree(evidence / "release0-api-seed")
     shared.retain_named_evidence(evidence, "after-cleanup")
     after = before.parent / "after-cleanup"
