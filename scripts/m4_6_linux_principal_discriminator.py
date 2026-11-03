@@ -114,9 +114,11 @@ class OneUseRequest:
         self._used = False
 
     def consume(self, request):
-        if self._used or request != self._request:
-            raise Refusal('foreign or replayed request')
+        if self._used:
+            raise Refusal('replayed request')
         self._used = True
+        if request != self._request:
+            raise Refusal('foreign request')
         return request
 
 

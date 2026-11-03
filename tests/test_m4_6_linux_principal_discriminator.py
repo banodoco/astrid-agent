@@ -9,6 +9,9 @@ def test_one_use_rejects_foreign_and_replay():
     ledger = seam.OneUseRequest('request-1')
     with pytest.raises(seam.Refusal, match='foreign'):
         ledger.consume('foreign')
+    with pytest.raises(seam.Refusal, match='replayed'):
+        ledger.consume('request-1')
+    ledger = seam.OneUseRequest('request-1')
     assert ledger.consume('request-1') == 'request-1'
     with pytest.raises(seam.Refusal, match='replayed'):
         ledger.consume('request-1')
