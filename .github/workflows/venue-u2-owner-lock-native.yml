@@ -1,0 +1,178 @@
+name: Venue U2 native owner lock
+on:
+  push:
+    branches: [lane/M-VENUE/V-U2-OWNER-LOCK-NATIVE-R1]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify inputs and run as non-root
+        shell: bash
+        run: |
+          set -uo pipefail
+          root="$RUNNER_TEMP/venue-u2"
+          mkdir -p "$root/evidence"
+          exec > >(tee "$root/evidence/run.log") 2>&1
+          trap 'rc=$?; echo "workflow_step_exit=$rc"' EXIT
+          echo "run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT job=$GITHUB_JOB workflow_sha=$GITHUB_SHA"
+          uname -a
+          sw_vers
+          id
+          if [ "$(id -u)" -eq 0 ]; then echo 'setup_blocker=root identity'; exit 1; fi
+          for pair in 'runtime 75a1b33f928ae4d5231e3623b1766815f5d6213d' 'r0 6d53a19070faf63fc15ae1f81417722edc2c8a5f'; do
+            set -- $pair
+            if ! git clone --quiet --no-checkout https://github.com/banodoco/astrid-runtime.git "$root/$1" || ! git -C "$root/$1" checkout --quiet --detach "$2"; then echo "setup_blocker=$1 checkout"; exit 1; fi
+            actual=$(git -C "$root/$1" rev-parse HEAD) || exit 1
+            echo "$1.sha=$actual"
+            if [ "$actual" != "$2" ] || [ -n "$(git -C "$root/$1" status --porcelain)" ]; then echo "setup_blocker=$1 identity or cleanliness"; exit 1; fi
+          done
+          python -m venv "$root/venv" || { echo 'setup_blocker=venv'; exit 1; }
+          "$root/venv/bin/python" -m pip install "$root/runtime[test]" || { echo 'setup_blocker=dependencies'; exit 1; }
+          export ASTRID_R0_SOURCE="$root/r0" PYTHONDONTWRITEBYTECODE=1 TMPDIR="$root"
+          cd "$root/runtime" || exit 1
+          result=0
+          for name in test_authentic_r0_owner_busy_then_r1_starts test_authentic_r0_interrupted_render_reconciles_on_r1_start; do
+            selector="tests/test_owner_lock_u2.py::$name"
+            echo "selector=$selector"
+            "$root/venv/bin/python" -m pytest -q -ra --tb=short -p no:cacheprovider --timeout=180 "$selector" > "$root/evidence/$name.log" 2>&1
+            rc=$?
+            cat "$root/evidence/$name.log"
+            echo "inner_exit.$name=$rc"
+            [ "$rc" -eq 0 ] || result=1
+          done
+          exit "$result"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: u2-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/venue-u2/evidence/
+          if-no-files-found: error
+          retention-days: 30
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify inputs and run as disposable standard user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'venue-u2-evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $receipt = Join-Path $evidence 'receipt.txt'
+          function Record([string]$s) { $s | Tee-Object -FilePath $receipt -Append }
+          Record "run=$env:GITHUB_RUN_ID attempt=$env:GITHUB_RUN_ATTEMPT job=$env:GITHUB_JOB workflow_sha=$env:GITHUB_SHA"
+          Record "os=$([System.Environment]::OSVersion.VersionString)"
+          systeminfo | Select-String 'OS Name|OS Version|System Type' | Out-File (Join-Path $evidence 'system.txt') -Encoding utf8
+          whoami /all | Out-File (Join-Path $evidence 'runner-whoami.txt') -Encoding utf8
+          $runner = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $nonce = [guid]::NewGuid().ToString('N')
+          $name = 'vu' + $nonce.Substring(0, 16)
+          $root = Join-Path $env:PUBLIC ("venue-u2-" + $nonce)
+          $createdSid = $null; $process = $null; $finished = $false; $failure = $null; $cleanupOK = $false; $innerExit = $null
+          try {
+            if ((Get-LocalUser -Name $name -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $root)) { throw 'Unique account or directory already exists' }
+            $secret = [Security.SecureString]::new()
+            $bytes = [byte[]]::new(32)
+            [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+            $alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+            foreach ($byte in $bytes) { $secret.AppendChar($alphabet[[int]$byte % $alphabet.Length]) }
+            $secret.AppendChar('!'); $secret.AppendChar('a'); $secret.AppendChar('A'); $secret.AppendChar('7'); $secret.MakeReadOnly()
+            [Array]::Clear($bytes, 0, $bytes.Length)
+            $user = New-LocalUser -Name $name -Password $secret -AccountNeverExpires -PasswordNeverExpires -Description "Venue U2 $nonce"
+            $createdSid = $user.SID.Value
+            Record "created_user=$name created_sid=$createdSid"
+            New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
+            $acl = [Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetAccessRuleProtection($true, $false)
+            $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+            foreach ($sid in @('S-1-5-18', $runner.User.Value, $createdSid)) {
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), 'FullControl', $inherit, 'None', 'Allow'))
+            }
+            Set-Acl -LiteralPath $root -AclObject $acl
+            $child = @'
+          $ErrorActionPreference = 'Stop'
+          $root = $args[1]; $python = $args[2]
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($id)
+          "child_name=$($id.Name) child_sid=$($id.User.Value) effective_admin=$($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+          whoami /all
+          if ($LASTEXITCODE -ne 0) { throw 'whoami failed' }
+          if ($id.User.Value -ne $args[0] -or $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'setup_blocker=wrong SID or administrator token' }
+          $env:TEMP = $root; $env:TMP = $root; $env:USERPROFILE = $root; $env:LOCALAPPDATA = $root; $env:APPDATA = $root; $env:PYTHONDONTWRITEBYTECODE = '1'
+          foreach ($pair in @(@('runtime','75a1b33f928ae4d5231e3623b1766815f5d6213d'), @('r0','6d53a19070faf63fc15ae1f81417722edc2c8a5f'))) {
+            $dir = Join-Path $root $pair[0]
+            & git clone --quiet --no-checkout https://github.com/banodoco/astrid-runtime.git $dir
+            if ($LASTEXITCODE -ne 0) { throw "setup_blocker=$($pair[0]) clone" }
+            & git -C $dir checkout --quiet --detach $pair[1]
+            if ($LASTEXITCODE -ne 0) { throw "setup_blocker=$($pair[0]) checkout" }
+            $sha = (& git -C $dir rev-parse HEAD).Trim()
+            $status = & git -C $dir status --porcelain
+            "$($pair[0]).sha=$sha"
+            if ($sha -ne $pair[1] -or $status) { throw "setup_blocker=$($pair[0]) identity or cleanliness" }
+          }
+          & $python -m venv (Join-Path $root 'venv')
+          if ($LASTEXITCODE -ne 0) { throw 'setup_blocker=venv' }
+          $py = Join-Path $root 'venv\Scripts\python.exe'
+          & $py -m pip install "$root\runtime[test]"
+          if ($LASTEXITCODE -ne 0) { throw 'setup_blocker=dependencies' }
+          $env:ASTRID_R0_SOURCE = Join-Path $root 'r0'
+          Set-Location (Join-Path $root 'runtime')
+          $result = 0
+          foreach ($name in @('test_authentic_r0_owner_busy_then_r1_starts','test_authentic_r0_interrupted_render_reconciles_on_r1_start')) {
+            $selector = "tests/test_owner_lock_u2.py::$name"
+            "selector=$selector"
+            & $py -m pytest -q -ra --tb=short -p no:cacheprovider --timeout=180 $selector *> (Join-Path $root "$name.log")
+            $rc = $LASTEXITCODE
+            Get-Content (Join-Path $root "$name.log")
+            "inner_exit.$name=$rc"
+            if ($rc -ne 0) { $result = 1 }
+          }
+          exit $result
+          '@
+            $script = Join-Path $root 'child.ps1'
+            [IO.File]::WriteAllText($script, $child)
+            $credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name", $secret)
+            $exe = (Get-Process -Id $PID).Path
+            $python = (Get-Command python).Source
+            $arguments = @('-NoProfile', '-NonInteractive', '-File', "`"$script`"", $createdSid, "`"$root`"", "`"$python`"")
+            $process = Start-Process -FilePath $exe -ArgumentList $arguments -Credential $credential -WorkingDirectory $root -RedirectStandardOutput (Join-Path $root 'child.stdout') -RedirectStandardError (Join-Path $root 'child.stderr') -PassThru
+            if (-not $process.WaitForExit(1200000)) { $process.Kill(); if (-not $process.WaitForExit(30000)) { throw 'Child did not exit; account cleanup withheld' }; $finished = $true; throw 'Child timed out' }
+            $finished = $true; $innerExit = $process.ExitCode
+            Record "child_exit=$innerExit"
+            if ($innerExit -ne 0) { throw "Child failed with exit $innerExit" }
+          } catch { $failure = $_.Exception.Message; Record "failure=$failure" }
+          finally {
+            if (Test-Path -LiteralPath $root) {
+              foreach ($file in @('child.stdout','child.stderr','test_authentic_r0_owner_busy_then_r1_starts.log','test_authentic_r0_interrupted_render_reconciles_on_r1_start.log')) {
+                $source = Join-Path $root $file
+                if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $evidence $file) }
+              }
+            }
+            if ($createdSid -and ($null -eq $process -or $finished)) {
+              $current = Get-LocalUser -Name $name -ErrorAction SilentlyContinue
+              if ($current -and $current.SID.Value -eq $createdSid -and $current.Description -eq "Venue U2 $nonce") {
+                Remove-LocalUser -SID $current.SID
+                $cleanupOK = $null -eq (Get-LocalUser -SID $current.SID -ErrorAction SilentlyContinue)
+              } else { Record 'cleanup_refused=account ownership could not be verified' }
+            }
+            Record "account_cleanup_verified=$cleanupOK"
+          }
+          if ($failure -or -not $cleanupOK -or $innerExit -ne 0) { throw 'Test process or owned-account cleanup failed; inspect evidence' }
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: u2-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/venue-u2-evidence/
+          if-no-files-found: error
+          retention-days: 30
