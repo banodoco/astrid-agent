@@ -55,7 +55,8 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
                      "release0-to-release1")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
-                 "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin"}
+                 "windows-2022": "win32", "macos-14": "darwin", "macos-15": "darwin",
+                 "macos-15-intel": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
@@ -417,6 +418,10 @@ def runner_identity() -> dict:
     label = os.environ.get("ASTRID_CI_EXPECTED_RUNNER") or "local"
     raw = {key: os.environ[key] for key in ("RUNNER_OS", "ImageOS", "ImageVersion")
            if os.environ.get(key)}
+    if label == "macos-15-intel":
+        raw["observed_architecture"] = platform.machine()
+        if os.environ.get("RUNNER_ARCH"):
+            raw["RUNNER_ARCH"] = os.environ["RUNNER_ARCH"]
     return {"runner_image": label,
             "runner_provenance": {"observed_os_family": sys.platform, **raw}}
 
@@ -432,6 +437,12 @@ def assert_runner_identity(identity: dict) -> None:
                    if key not in identity["runner_provenance"]]
         if missing:
             raise RuntimeError(f"Hosted runner provenance is missing: {', '.join(missing)}")
+    if label == "macos-15-intel":
+        provenance = identity["runner_provenance"]
+        if (provenance.get("ImageOS") != "macos15"
+                or provenance.get("RUNNER_ARCH") != "X64"
+                or provenance.get("observed_architecture") != "x86_64"):
+            raise RuntimeError("Intel macOS runner provenance requires ImageOS macos15, RUNNER_ARCH X64 and observed x86_64")
     reported_os = identity["runner_provenance"].get("RUNNER_OS")
     if reported_os is not None and GITHUB_RUNNER_OS.get(reported_os) != sys.platform:
         raise RuntimeError(f"RUNNER_OS {reported_os} disagrees with observed {sys.platform}")
@@ -1481,7 +1492,9 @@ def execute(args: argparse.Namespace) -> dict:
         assert_runner_identity(identity)
         if getattr(args, "job_id", None):
             expected = validate_job(args.job_id, args.mode)
-            if expected["runner"] != identity["runner_image"]:
+            if (expected["runner"] != identity["runner_image"] and not
+                    (args.job_id == "direct-macos" and args.mode == "direct"
+                     and identity["runner_image"] == "macos-15-intel")):
                 raise RuntimeError(f"Release-1 job {args.job_id} requires {expected['runner']}, not {identity['runner_image']}")
             if expected["shell"] != args.shell:
                 raise RuntimeError(f"Release-1 job {args.job_id} requires shell {expected['shell']}")

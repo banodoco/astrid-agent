@@ -231,3 +231,145 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert "candidate-agent" in workflow and "pinokio" in workflow
     assert '"leg":"release0-to-release1"' in workflow
     assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow
+
+
+def test_intel_diagnostic_reuses_lifecycle_assertions_and_is_not_release1(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    source = tmp_path / 'direct-macos' / 'journey-result.json'
+    row = json.loads(source.read_text())
+    row['runner_image'] = 'macos-15-intel'
+    row.pop('service_manager')
+    row['service_manager_prerequisite']['manager'] = 'launchd'
+    row['service_transition'] = {release: {'manager': 'launchd', 'service_path': '/owned/launchd.plist',
+                                           'foreground_fallback': False}
+                                 for release in ('release0', 'release1')}
+    row['os_build'] = 'macOS-15.7-x86_64-i386-64bit'
+    row['runner_provenance'].update(observed_os_family='darwin', RUNNER_ARCH='X64',
+                                    observed_architecture='x86_64')
+    for path in tmp_path.glob('*/journey-result.json'):
+        path.unlink()
+    before = tmp_path / 'before-cleanup' / 'journey-result.json'
+    after = tmp_path / 'after-cleanup' / 'journey-result.json'
+    before.parent.mkdir()
+    after.parent.mkdir()
+    def write(value):
+        prior = copy.deepcopy(value)
+        prior.pop("final_cleanup", None)
+        before.write_text(json.dumps(prior))
+        after.write_text(json.dumps(value))
+    write(row)
+    assert not gate.evaluate_direct_macos_intel(candidate, tmp_path)
+    assert gate.evaluate_release1_matrix(candidate, tmp_path)
+    assert gate._release1_row_errors(candidate, gate.RELEASE1_MATRIX[0], row)
+    assert gate.evaluate(candidate, {}, tmp_path, [], 'macos-15-intel', 'sh')
+
+    changes = [
+        ('job_id', 'direct-linux'), ('mode', 'pinokio-backend'),
+        ('scenario', 'fresh-install'), ('runner_image', 'macos-15'), ('shell', 'powershell.exe'),
+        ('os_build', 'Linux-test'), ('os_build', 'macOS-14.7-x86_64'), ('os_build', 'macOS-15-'), ('status', 'skipped'), ('source_override_test_mode', True),
+        ('final_cleanup', 'not-run'), ('import_origins', {}),
+        ('service_manager_prerequisite', {}), ('service_transition', {}),
+        ('release_transition', {}), ('release0_fixture', {}), ('semantic_data', {}),
+        ('candidate_checkouts', {}), ('sources', {}), ('installed_tuple', {}),
+    ]
+    for field, value in changes:
+        bad = copy.deepcopy(row)
+        bad[field] = value
+        write(bad)
+        assert gate.evaluate_direct_macos_intel(candidate, tmp_path), field
+    for field, value in [('observed_os_family', 'linux'), ('RUNNER_OS', 'Linux'),
+                         ('ImageOS', 'macos14'), ('ImageVersion', ''),
+                         ('RUNNER_ARCH', 'ARM64'), ('observed_architecture', 'arm64')]:
+        bad = copy.deepcopy(row)
+        bad['runner_provenance'][field] = value
+        write(bad)
+        assert gate.evaluate_direct_macos_intel(candidate, tmp_path), field
+        del bad['runner_provenance'][field]
+        write(bad)
+        assert gate.evaluate_direct_macos_intel(candidate, tmp_path), field
+    for release in ('release0', 'release1'):
+        for field, value in [('manager', 'foreground'), ('service_path', ''), ('foreground_fallback', True)]:
+            bad = copy.deepcopy(row)
+            bad['service_transition'][release][field] = value
+            write(bad)
+            assert gate.evaluate_direct_macos_intel(candidate, tmp_path), (release, field)
+    for check in row['checks']:
+        bad = copy.deepcopy(row)
+        bad['checks'][check] = 'not-run'
+        write(bad)
+        assert gate.evaluate_direct_macos_intel(candidate, tmp_path), check
+    write(row)
+    bad = copy.deepcopy(row)
+    bad['checks']['one_runtime'] = 'fail'
+    before.write_text(json.dumps(bad))
+    assert any('differs across cleanup snapshots' in e for e in gate.evaluate_direct_macos_intel(candidate, tmp_path))
+    write(row)
+    duplicate = tmp_path / 'other' / 'journey-result.json'
+    duplicate.parent.mkdir(exist_ok=True)
+    duplicate.write_text(json.dumps(row))
+    assert gate.evaluate_direct_macos_intel(candidate, tmp_path)
+    duplicate.unlink()
+    before.unlink()
+    assert gate.evaluate_direct_macos_intel(candidate, tmp_path)
+
+
+def test_intel_diagnostic_cli_validates_candidate_and_keeps_release_gate(tmp_path):
+    import hashlib
+    import subprocess
+    import sys
+
+    app = tmp_path / 'app'
+    public = app / 'public'
+    public.mkdir(parents=True)
+    receipts = tmp_path / 'receipts'
+    receipts.mkdir()
+    candidate = release1_receipts(receipts)
+    manifest = {'agent': {'sha': candidate['agent']}, 'runtime': {'sha': candidate['runtime']}}
+    manifest_path = public / 'install-manifest.json'
+    manifest_path.write_text(json.dumps(manifest))
+    for artifact in gate.ARTIFACTS:
+        (app / artifact).write_text(artifact)
+    subprocess.run(['git', 'init', '-q', str(app)], check=True)
+    subprocess.run(['git', '-C', str(app), 'add', 'public'], check=True)
+    subprocess.run(['git', '-C', str(app), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                    'commit', '-qm', 'fixture'], check=True)
+    candidate['app'] = subprocess.check_output(['git', '-C', str(app), 'rev-parse', 'HEAD'], text=True).strip()
+    candidate['manifest_sha256'] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    candidate['artifacts'] = {path: hashlib.sha256((app / path).read_bytes()).hexdigest()
+                              for path in gate.ARTIFACTS}
+    source = receipts / 'direct-macos' / 'journey-result.json'
+    row = json.loads(source.read_text())
+    row['runner_image'] = 'macos-15-intel'
+    row.pop('service_manager')
+    row['service_manager_prerequisite']['manager'] = 'launchd'
+    row['service_transition'] = {release: {'manager': 'launchd', 'service_path': '/owned/launchd.plist',
+                                           'foreground_fallback': False}
+                                 for release in ('release0', 'release1')}
+    row['os_build'] = 'macOS-15.7-x86_64-i386-64bit'
+    row['runner_provenance'].update(observed_os_family='darwin', RUNNER_ARCH='X64',
+                                    observed_architecture='x86_64')
+    row['candidate_checkouts']['app']['sha'] = candidate['app']
+    row['sources']['app']['sha'] = candidate['app']
+    row['installed_tuple']['app'] = candidate['app']
+    for path in receipts.glob('*/journey-result.json'):
+        path.unlink()
+    for phase in ('before-cleanup', 'after-cleanup'):
+        folder = receipts / phase
+        folder.mkdir()
+        value = copy.deepcopy(row)
+        if phase == 'before-cleanup':
+            value.pop('final_cleanup')
+        (folder / 'journey-result.json').write_text(json.dumps(value))
+    candidate_path = tmp_path / 'candidate.json'
+    candidate_path.write_text(json.dumps(candidate))
+    checker = Path(__file__).parents[1] / 'scripts/check_journey_evidence.py'
+    command = [sys.executable, str(checker), '--candidate', str(candidate_path),
+               '--app-checkout', str(app), '--results', str(receipts)]
+    diagnostic = subprocess.run(command + ['--diagnostic-macos-intel'], text=True, capture_output=True)
+    assert diagnostic.returncode == 0, diagnostic.stdout + diagnostic.stderr
+    assert 'Intel diagnostic evidence: PASS' in diagnostic.stdout
+    full = subprocess.run(command + ['--aggregate-release1'], text=True, capture_output=True)
+    assert full.returncode != 0 and 'missing receipt' in full.stdout
+    override = subprocess.run(command + ['--diagnostic-macos-intel', '--allow-source-override'],
+                              text=True, capture_output=True)
+    assert override.returncode != 0 and 'never admits overrides' in override.stdout

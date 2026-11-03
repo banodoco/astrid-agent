@@ -34,6 +34,11 @@ on:
         required: false
         default: false
         type: boolean
+      direct_macos_intel_only:
+        description: Diagnostic direct macOS Intel row only; requires direct_only and cannot satisfy the full gate
+        required: false
+        default: false
+        type: boolean
       m4_4a_backend_only:
         description: Run and aggregate only the three M4-4a backend rows
         required: false
@@ -93,6 +98,11 @@ on:
         type: string
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
+        required: false
+        default: false
+        type: boolean
+      direct_macos_intel_only:
+        description: Diagnostic direct macOS Intel row only; requires direct_only and cannot satisfy the full gate
         required: false
         default: false
         type: boolean
@@ -244,6 +254,7 @@ jobs:
           STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
           M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
           DIRECT_ONLY: ${{ inputs.direct_only || false }}
+          DIRECT_MACOS_INTEL_ONLY: ${{ inputs.direct_macos_intel_only || false }}
           M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
           M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
           M4_5_ONLY: ${{ inputs.m4_5_only || false }}
@@ -290,6 +301,11 @@ jobs:
               raise SystemExit("each M4-4a executor config must be a JSON object")
           direct_only = os.environ["DIRECT_ONLY"].lower() == "true"
           backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
+          intel_only = os.environ.get("DIRECT_MACOS_INTEL_ONLY", "false").lower() == "true"
+          if intel_only and (not direct_only or backend_only or m4_5_only
+                             or any(os.environ[key].lower() == "true" for key in
+                                    ("M4_5_ENABLED", "M4_4B_ENABLED", "M4_6_ENABLED"))):
+              raise SystemExit("direct_macos_intel_only requires direct_only and no other optional modes")
           if direct_only and (backend_only or m4_5_only):
               raise SystemExit("direct_only cannot be combined with m4_4a_backend_only or m4_5_only")
           m4_5_enabled = os.environ["M4_5_ENABLED"].lower() == "true"
@@ -338,7 +354,10 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe", "os":"windows"},
           ]
-          if direct_only:
+          if intel_only:
+              matrix = [{**row, "runner": "macos-15-intel"} for row in matrix
+                        if row["job_id"] == "direct-macos"]
+          elif direct_only:
               matrix = [row for row in matrix if row["mode"] == "direct"]
           elif backend_only:
               matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]

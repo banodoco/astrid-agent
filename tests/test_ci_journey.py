@@ -543,6 +543,49 @@ def test_tst_b1_macos_hosted_runner_identity(monkeypatch, label):
                 journey.assert_runner_identity(journey.runner_identity())
 
 
+def test_intel_macos_identity_requires_real_image_and_architecture(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setattr(journey.platform, "machine", lambda: "x86_64")
+    for key, value in {"ASTRID_CI_EXPECTED_RUNNER": "macos-15-intel", "RUNNER_OS": "macOS",
+                       "RUNNER_ARCH": "X64", "ImageOS": "macos15", "ImageVersion": "20260824.0482.1"}.items():
+        monkeypatch.setenv(key, value)
+    identity = journey.runner_identity()
+    assert identity["runner_image"] == "macos-15-intel"
+    assert identity["runner_provenance"] == {"observed_os_family": "darwin", "RUNNER_OS": "macOS",
+        "ImageOS": "macos15", "ImageVersion": "20260824.0482.1", "RUNNER_ARCH": "X64",
+        "observed_architecture": "x86_64"}
+    journey.assert_runner_identity(identity)
+    for field, value in (("ImageOS", "macos14"), ("RUNNER_ARCH", "ARM64"),
+                         ("observed_architecture", "arm64"), ("RUNNER_ARCH", None)):
+        altered = {**identity, "runner_provenance": {**identity["runner_provenance"], field: value}}
+        with pytest.raises(RuntimeError, match="Intel macOS runner provenance"):
+            journey.assert_runner_identity(altered)
+
+
+@pytest.mark.parametrize("job_id,mode,leg,allowed", [
+    ("direct-macos", "direct", "release0-to-release1", True),
+    ("pinokio-backend-macos", "pinokio-backend", "fresh-install", False),
+    ("pinokio-fully-local-macos", "pinokio-fully-local", "fresh-install", False),
+])
+def test_intel_runner_only_direct_macos_reaches_candidate_checks(tmp_path, monkeypatch, job_id, mode, leg, allowed):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+                              leg=leg, shell="sh", job_id=job_id, mode=mode)
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setattr(journey.platform, "machine", lambda: "x86_64")
+    for key, value in {"ASTRID_CI_EXPECTED_RUNNER": "macos-15-intel", "RUNNER_OS": "macOS",
+                       "RUNNER_ARCH": "X64", "ImageOS": "macos15", "ImageVersion": "20260824.1"}.items():
+        monkeypatch.setenv(key, value)
+    def candidate_checks(_args):
+        raise RuntimeError("reached candidate checks")
+    monkeypatch.setattr(journey, "candidate_checkouts", candidate_checks)
+    with pytest.raises(RuntimeError, match="reached candidate checks" if allowed else "requires macos-15"):
+        journey.execute(args)
+    result = journey.read_json(run_root / "evidence" / leg / "journey-result.json")
+    assert result["runner_image"] == "macos-15-intel"
+    assert result["runner_provenance"]["observed_architecture"] == "x86_64"
+
+
 @pytest.mark.parametrize("job_id,mode,leg", [
     ("direct-macos", "direct", "release0-to-release1"),
     ("pinokio-backend-macos", "pinokio-backend", "fresh-install"),
@@ -920,6 +963,17 @@ def test_journey_workflow_direct_only_selects_three_rows_and_keeps_full_gate(tmp
     assert {(row["job_id"], row["mode"], row["runner"], row["leg"]) for row in rows} == expected_direct
     assert workflow.count("      direct_only:\n") == 2
     assert "DIRECT_ONLY: ${{ inputs.direct_only" in config_step
+
+    intel_rows = matrix("true", DIRECT_MACOS_INTEL_ONLY="true")
+    assert intel_rows == [{"job_id": "direct-macos", "mode": "direct", "leg": "release0-to-release1",
+                           "runner": "macos-15-intel", "shell": "sh", "os": "macos"}]
+    assert workflow.count("      direct_macos_intel_only:\n") == 2
+    for direct, overrides in [("false", {}), ("true", {"M4_4A_BACKEND_ONLY": "true"}),
+                              ("true", {"M4_5_ENABLED": "true"}), ("true", {"M4_5_ONLY": "true"}),
+                              ("true", {"M4_4B_ENABLED": "true"}), ("true", {"M4_6_ENABLED": "true"})]:
+        proc = config(direct, DIRECT_MACOS_INTEL_ONLY="true", **overrides)
+        assert proc.returncode != 0
+        assert "direct_macos_intel_only requires direct_only" in proc.stderr
 
     backend_rows = matrix("false", M4_4A_BACKEND_ONLY="true")
     assert {row["job_id"] for row in backend_rows} == {
