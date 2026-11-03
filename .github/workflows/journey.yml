@@ -658,6 +658,38 @@ jobs:
           name: journey-manager-${{ matrix.job_id }}
           path: ${{ runner.temp }}/journey-manager-${{ matrix.job_id }}
           if-no-files-found: warn
+      - name: Prepare native Intel R0 build inputs
+        if: github.event_name == 'workflow_dispatch' && matrix.job_id == 'direct-macos' && matrix.runner == 'macos-15-intel'
+        shell: bash
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          DRIVER_AGENT_REF: ${{ needs.config.outputs.driver_agent_ref }}
+        run: |
+          set -o pipefail
+          diag="$RUNNER_TEMP/v03-intel-diagnostics"
+          mkdir -p "$diag"
+          {
+            printf 'workflow_sha=%s\ndriver_agent_ref=%s\n' "$WORKFLOW_SHA" "$DRIVER_AGENT_REF"
+            for checkout in agent app candidate-agent runtime pinokio; do
+              printf '%s=' "$checkout"; git -C "$checkout" rev-parse HEAD
+            done
+            test "$WORKFLOW_SHA" = "$DRIVER_AGENT_REF"
+            test "$(git -C agent rev-parse HEAD)" = "$WORKFLOW_SHA"
+            shasum -a 256 agent/.github/workflows/journey.yml agent/.github/venue/v03-intel-bootstrap-setup.sh agent/tests/fixtures/release0/served/install
+            bash agent/.github/venue/v03-intel-bootstrap-setup.sh
+          } 2>&1 | tee "$diag/setup.log"
+      - name: Record passed Intel build environment
+        if: github.event_name == 'workflow_dispatch' && matrix.job_id == 'direct-macos' && matrix.runner == 'macos-15-intel'
+        shell: bash
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/v03-intel-bootstrap"
+          test "$PATH" = "$D/rust/bin:${PATH#*:}"
+          test "$CARGO_HOME" = "$D/cargo"
+          test "$OPENSSL_DIR" = "$D/openssl"
+          test "$OPENSSL_STATIC" = 1
+          test "$UV_BUILD_CONSTRAINT" = "$D/build-constraints.txt"
+          { printf 'PATH=%s\nCARGO_HOME=%s\nOPENSSL_DIR=%s\nOPENSSL_STATIC=%s\nUV_BUILD_CONSTRAINT=%s\n' "$PATH" "$CARGO_HOME" "$OPENSSL_DIR" "$OPENSSL_STATIC" "$UV_BUILD_CONSTRAINT"; command -v cargo; cargo -Vv; rustc -Vv; "$OPENSSL_DIR/bin/openssl" version -a; shasum -a 256 "$UV_BUILD_CONSTRAINT"; } | tee "$RUNNER_TEMP/v03-intel-diagnostics/environment.log"
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
@@ -694,6 +726,14 @@ jobs:
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
             --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs @backendConfigArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain Intel build setup diagnostics
+        if: always() && github.event_name == 'workflow_dispatch' && matrix.job_id == 'direct-macos' && matrix.runner == 'macos-15-intel'
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 30
+          name: v03-intel-build-setup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/v03-intel-diagnostics
+          if-no-files-found: warn
       - name: Validate the named lifecycle evidence artifact boundary
         id: evidence_boundary
         if: always()
