@@ -1,0 +1,29 @@
+{
+  "active_realm": "06041861-44a0-404d-9526-2fc92f7fd127",
+  "advertised_at": 1793703470.6603408,
+  "capability_digest": "",
+  "coordinator_epoch": "2a7c8393c2dc4b1a84766c4a6ce5e3c1",
+  "credential_file": "/home/runner/work/_temp/astrid-r1-direct-linux/data/credentials/astrid.json",
+  "door_endpoint": "http://127.0.0.1:17340",
+  "door_origin": "https://astrid.haus",
+  "endpoint": "http://127.0.0.1:34393",
+  "pid": 3836,
+  "process_birth_id": "proc-start-ticks:11220",
+  "protocol_version": "workspace.v1",
+  "realm_root": "/home/runner/work/_temp/astrid-r1-direct-linux/data/runtime/realms/06041861-44a0-404d-9526-2fc92f7fd127",
+  "runtime_instance_id": "2a7c8393c2dc4b1a84766c4a6ce5e3c1",
+  "schema_version": "workspace-schema-v1",
+  "version": 1,
+  "worker_actor": "astrid-pack-host",
+  "worker_credential_file": "/home/runner/work/_temp/astrid-r1-direct-linux/data/runtime/credentials/astrid-pack-host.token",
+  "worker_credential_pending": false,
+  "worker_scopes": [
+    "handshake",
+    "worker:register",
+    "worker:execute",
+    "projects:read",
+    "tasks:read",
+    "objects:read",
+    "objects:write"
+  ]
+}

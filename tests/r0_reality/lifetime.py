@@ -134,3 +134,38 @@ def session_worker():
         except subprocess.TimeoutExpired:
             worker.kill()
             worker.wait(timeout=5)
+
+
+@contextlib.contextmanager
+def daemon_with_session_worker():
+    """Start a disposable parent which launches a worker in its own session.
+
+    POSIX only. Exiting the parent does not itself stop the worker; the context
+    always kills it. It models the process/session topology, not an R0 Worker
+    protocol, process-group drain, or Windows Job custody.
+    """
+    if os.name == "nt":
+        raise NotImplementedError("Windows Jobs are not modeled")
+    code = ("import subprocess,sys\n"
+            "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(300)'], "
+            "start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            "print(p.pid,flush=True)\n"
+            "sys.stdin.readline()\n")
+    parent = subprocess.Popen([sys.executable, "-c", code], start_new_session=True,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    worker_pid = None
+    try:
+        worker_pid = int(parent.stdout.readline())
+        yield parent, worker_pid
+    finally:
+        if parent.poll() is None:
+            parent.terminate()
+            parent.wait(timeout=5)
+        if worker_pid is not None:
+            import signal
+            try:
+                os.kill(worker_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        parent.stdin.close()
+        parent.stdout.close()

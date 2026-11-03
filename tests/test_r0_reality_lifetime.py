@@ -51,3 +51,17 @@ def test_purge_can_remove_a_new_owner_after_unlock(tmp_path):
         assert new_owner._file is not None
     finally:
         new_owner.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX sessions; Windows Job behavior is not modeled")
+def test_worker_survives_its_parent_exit_in_separate_session():
+    from tests.r0_reality.lifetime import daemon_with_session_worker
+
+    with daemon_with_session_worker() as (parent, worker_pid):
+        assert os.getsid(parent.pid) == parent.pid
+        assert os.getsid(worker_pid) == worker_pid
+        parent.stdin.write("exit\n")
+        parent.stdin.flush()
+        assert parent.wait(timeout=5) == 0
+        os.kill(worker_pid, 0)
+        assert os.getsid(worker_pid) == worker_pid

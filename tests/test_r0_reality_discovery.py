@@ -65,3 +65,22 @@ def test_optional_door_pair():
         owner.discovery(**kwargs, door_endpoint="http://127.0.0.1:2")
     value = owner.discovery(**kwargs, door_endpoint="http://127.0.0.1:2", door_origin="http://127.0.0.1:2")
     assert value["door_endpoint"] == value["door_origin"]
+
+
+@pytest.mark.parametrize("system,birth", [
+    ("linux", "proc-start-ticks:11220"),
+    ("macos", "ps-lstart:Tue Nov  3 10:33:05 2026"),
+    ("windows", "windows-creation:134381753723248645"),
+])
+def test_observed_discovery_can_seed_matching_modeled_marker(system, birth):
+    from tests.r0_reality.discovery import captured_discovery
+
+    observed = captured_discovery(system)
+    assert observed["process_birth_id"] == birth
+    owner = R0Owner(observed["pid"], observed["process_birth_id"],
+                    observed["runtime_instance_id"], observed["active_realm"], observed["realm_root"])
+    marker = owner.marker()
+    assert marker["realm_id"] == observed["active_realm"]
+    assert all(marker[key] == observed[key] for key in ("pid", "process_birth_id", "runtime_instance_id", "realm_root"))
+    observed["pid"] = 0
+    assert captured_discovery(system)["pid"] != 0

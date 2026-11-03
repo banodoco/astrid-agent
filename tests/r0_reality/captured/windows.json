@@ -1,0 +1,29 @@
+{
+  "active_realm": "649f4ace-91c2-4838-887d-0dac41265fea",
+  "advertised_at": 1793701772.7808306,
+  "capability_digest": "",
+  "coordinator_epoch": "2226b94ccd174330bf86d1a60c70490e",
+  "credential_file": "D:\\a\\_temp\\astrid-r1-direct-windows\\data\\credentials\\astrid.json",
+  "door_endpoint": "http://127.0.0.1:17340",
+  "door_origin": "https://astrid.haus",
+  "endpoint": "http://127.0.0.1:52405",
+  "pid": 1452,
+  "process_birth_id": "windows-creation:134381753723248645",
+  "protocol_version": "workspace.v1",
+  "realm_root": "D:\\a\\_temp\\astrid-r1-direct-windows\\data\\runtime\\realms\\649f4ace-91c2-4838-887d-0dac41265fea",
+  "runtime_instance_id": "2226b94ccd174330bf86d1a60c70490e",
+  "schema_version": "workspace-schema-v1",
+  "version": 1,
+  "worker_actor": "astrid-pack-host",
+  "worker_credential_file": "D:\\a\\_temp\\astrid-r1-direct-windows\\data\\runtime\\credentials\\astrid-pack-host.token",
+  "worker_credential_pending": false,
+  "worker_scopes": [
+    "handshake",
+    "worker:register",
+    "worker:execute",
+    "projects:read",
+    "tasks:read",
+    "objects:read",
+    "objects:write"
+  ]
+}

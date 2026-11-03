@@ -90,3 +90,29 @@ def test_windows_failure_retry_and_repeat_are_single_instance():
     manager.advance(1)
     assert manager.running and manager.starts == 2
     assert manager.events[-1] == "ignore-new"
+
+
+@pytest.mark.parametrize("system", ["linux", "darwin", "win32"])
+def test_renderer_matches_r0_reviewed_samples(system):
+    from pathlib import Path, PureWindowsPath
+    from tests.r0_reality.render import Version, render_definition
+
+    root = PureWindowsPath("C:/Astrid/versions/v1") if system == "win32" else Path("/astrid/versions/v1")
+    python = root / ("py/Scripts/python.exe" if system == "win32" else "py/bin/python")
+    env = {"PATH": "C:\\Astrid\\tools;C:\\Windows\\System32" if system == "win32" else "/astrid/tools:/usr/bin:/bin", "PYTHONUTF8": "1"}
+    data = PureWindowsPath("C:/Astrid Data") if system == "win32" else Path("/astrid data")
+    log = PureWindowsPath("C:/Astrid/logs/install.log") if system == "win32" else Path("/logs/install.log")
+    version = Version(root, python, root / "profile.json", env)
+    rendered = render_definition(system, version, data, log, user="S-1-5-21-1234", start_boundary="2000-01-01T00:00:00+00:00")
+    assert rendered.encode() == service_definition(system)
+
+
+def test_renderer_registration_env_file_is_part_of_command():
+    from pathlib import Path
+    from tests.r0_reality.render import Version, render_definition
+
+    root = Path("/example/v1")
+    version = Version(root, root / "python", root / "profile.json", {})
+    text = render_definition("linux", version, Path("/example/data"), Path("/example/install.log"), env_file=Path("/example/service-env.json"))
+    assert '"-c"' in text
+    assert "/example/service-env.json" in text

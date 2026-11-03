@@ -32,3 +32,11 @@ stop as completing immediately, and does not model native process trees,
 permissions, scheduler throttling, pending trigger delivery, restart limits
 across scheduler sessions, or real time. Its state and event sequence are test
 instruments, not captured operating-system records or native proof.
+
+`render.render_definition` vendors R0 `service.py:68–148` for consumers that
+need installation-specific paths and environment. It adds a `Version` test
+record, renames `render`, and injects an optional Windows StartBoundary; the
+rendering code otherwise follows the pinned source. Its golden test reproduces
+all three reviewed samples byte-for-byte; production registration supplies
+`env_file`, covered separately. These are generated test definitions, not
+observations of installed services.

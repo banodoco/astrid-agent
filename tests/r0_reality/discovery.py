@@ -80,3 +80,16 @@ class R0Owner:
         marker = runtime_support / "instance.lock"
         marker.write_text(json.dumps(self.marker()), encoding="utf-8")
         return marker
+
+
+def captured_discovery(system: str) -> dict[str, Any]:
+    """Return a fresh copy of the logged R0 discovery from Actions 41617035310.
+
+    Accepted names are linux, macos/darwin, and windows/win32. Paths, PIDs and
+    endpoints are historical observations and must never be used operationally.
+    """
+    name = {"linux": "linux", "macos": "macos", "darwin": "macos",
+            "windows": "windows", "win32": "windows"}.get(system)
+    if name is None:
+        raise ValueError(f"unsupported platform: {system}")
+    return json.loads((Path(__file__).parent / "captured" / f"{name}.json").read_text(encoding="utf-8"))
