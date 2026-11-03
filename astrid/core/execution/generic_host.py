@@ -13175,11 +13175,19 @@ class GenericPackHost:
             self.client._attempt_runtime_epochs[str(attempt_id)] = int(_claim_field(claim, "runtime_epoch"))
             try:
                 live()
-            except Exception:
-                self.client.fail(str(_claim_field(claim, "task_id")), str(_claim_field(claim, "lease_id")),
-                    "parent authority ended before delegated child execution", retryable=False,
-                    attempt_id=str(attempt_id), fence=int(_claim_field(claim, "fence")))
-                raise
+            except Exception as exc:
+                # Even admission failure uses the attempt's publication gate,
+                # so a lost failure ACK retains its exact intent for replay.
+                claimed_task = {
+                    "id": str(_claim_field(claim, "task_id")), "capability": capability,
+                    "attempt_id": str(attempt_id), "fence": int(_claim_field(claim, "fence")),
+                    "runtime_epoch": _claim_field(claim, "runtime_epoch"),
+                    "spec": _claim_field(claim, "spec"),
+                }
+                return self.run_task({"task": claimed_task},
+                    lease_token=str(_claim_field(claim, "lease_id")),
+                    attempt_id=str(attempt_id), fence=int(_claim_field(claim, "fence")),
+                    _setup_error=exc)
             return self._execute_claimed_task(claim, delegated_child=True)
         finally:
             self._handoff_leave_attempt(thread_id)

@@ -885,6 +885,48 @@ def lease_clock(case, monkeypatch):
     return clock
 
 
+def test_delegated_admission_failure_reconciles_only_original_failure(case, monkeypatch):
+    claim = {"task_id": "task-result", "attempt_id": "attempt-result", "lease_id": "lease-result",
+             "fence": 3, "runtime_epoch": 7, "spec": case.task["task"]["spec"]}
+    authority = SimpleNamespace(claim_delegated_child=lambda *_args, **_kwargs: claim)
+    monkeypatch.setattr(case.host, "_preflight", lambda *_args, **_kwargs: [SimpleNamespace(id="test.echo", ready=True)])
+    monkeypatch.setattr(generic_host, "_is_withdrawn", lambda _record: False)
+    monkeypatch.setattr(generic_host, "_TERMINAL_RECONCILE_POLL_SECONDS", 0.01)
+    case.runtime._attempt_runtime_epochs = {}
+    calls, checks = [], []
+    release = threading.Event()
+    original_fail = case.runtime.fail
+
+    def fail(*args, **kwargs):
+        calls.append((copy.deepcopy(args), copy.deepcopy(kwargs)))
+        if not release.is_set():
+            raise OSError("failure ACK unavailable")
+        return original_fail(*args, **kwargs)
+
+    def live():
+        checks.append(None)
+        if len(checks) == 2:
+            raise OSError("parent authority ended")
+
+    monkeypatch.setattr(case.runtime, "fail", fail)
+    with pytest.raises(OSError, match="parent authority ended"):
+        case.host.run_delegated_child({"task_id": "task-result", "capability_id": "test.echo"},
+                                      parent={}, authority_client=authority, target={}, live=live)
+    owner = case.host._reconciliation_owners["attempt-result"]
+    try:
+        assert owner.is_alive() and calls
+        assert all(call == calls[0] for call in calls)
+        assert not case.runtime.settlements and not case.runtime.failures
+        assert case.host._handoff_active_attempts == 1
+    finally:
+        release.set()
+        owner.join(timeout=3)
+    assert not owner.is_alive()
+    assert all(call == calls[0] for call in calls)
+    assert len(case.runtime.failures) == 1 and not case.runtime.settlements
+    assert case.host._handoff_active_attempts == 0
+
+
 def test_terminal_gate_freezes_operation_and_arguments_after_lost_ack(case, lease_clock, monkeypatch):
     calls = []
 
