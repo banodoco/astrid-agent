@@ -61,6 +61,50 @@ def test_uncertain_stop_never_starts_old_service_on_failure_or_recovery(tmp_path
     assert "old-start" not in events and "recovery-stop" not in events
 
 
+def test_busy_stop_refusal_cancels_migration_without_restart(tmp_path, monkeypatch):
+    root, data = tmp_path / "program", tmp_path / "data"
+    root.mkdir()
+    old = core.Version(root / "old", root / "old-python", root / "old-profile", {})
+    candidate = core.Version(root / "new", root / "new-python", root / "new-profile", {})
+    monkeypatch.setattr(core, "install_runtime", lambda *_: None)
+
+    def refuse(*_args):
+        raise core.RuntimeOperationError("busy", details={"safe": False})
+
+    def unexpected(*_args):
+        pytest.fail("a refused stop must not change service or selection")
+
+    backend = SimpleNamespace(wait_for_realm_owner=unexpected)
+    with pytest.raises(core.RuntimeOperationError, match="busy"):
+        core.Installer(root, data, backend)._run_update_transaction(
+            old, {"realm_id": "r", "realm_root": str(data / "realm")},
+            prepare=lambda: candidate, stop=refuse, migrate=unexpected, runtime_upgrade=True,
+            switch_candidate=unexpected, switch_old=unexpected,
+            activate=unexpected, activate_old=unexpected)
+    saved = core.read_json(root / "update-transaction.json")
+    assert saved["step"] == "complete" and saved["outcome"] == "stop_refused"
+    core.recover_transaction(root, data, backend, stop=unexpected,
+                             switch_old=unexpected, activate_old=unexpected)
+
+
+def test_staged_migration_with_unknown_service_state_recovers_without_stop(tmp_path):
+    root, data = tmp_path / "program", tmp_path / "data"
+    root.mkdir()
+    core.write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+        "transaction_kind": "migration", "data_root": str(data), "step": "staged",
+        "backup": None, "original_service_state_unverified": True,
+    })
+
+    def unexpected(*_args):
+        pytest.fail("a pre-stop transaction must not touch the service")
+
+    core.recover_transaction(root, data, SimpleNamespace(), stop=unexpected,
+                             switch_old=unexpected, activate_old=unexpected)
+    saved = core.read_json(root / "update-transaction.json")
+    assert saved["step"] == "complete" and saved["outcome"] == "recovered_before_stop"
+
+
 @pytest.mark.parametrize("failure", [None, "upgrade", "switch", "activate"])
 def test_runtime_handoff_journals_before_call_and_never_restores_after_it(tmp_path, monkeypatch, failure):
     root, data = tmp_path / "program", tmp_path / "data"
