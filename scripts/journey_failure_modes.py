@@ -314,6 +314,18 @@ def _rollback_errors(value: object) -> list[str]:
     for name in required_false:
         if row.get(name) is not False:
             errors.append(f"scenarios.failed_candidate_rollback.{name}: false is required")
+    # A failed readiness attempt still starts a process. Optional executor
+    # evidence cannot contradict the literal no-candidate-start assertion.
+    # This consistency check does not authenticate that evidence or extend the
+    # native adapter's closed-world schema.
+    if "candidate_process_boundary" in row:
+        boundary = _mapping(row["candidate_process_boundary"])
+        if boundary.get("started") is not False:
+            errors.append(
+                "scenarios.failed_candidate_rollback.candidate_process_boundary.started: "
+                "false is required; a started or unknown candidate process cannot "
+                "satisfy candidate_started=false"
+            )
     if not _nonempty(row.get("failure_phase")):
         errors.append("scenarios.failed_candidate_rollback.failure_phase: named phase is required")
     if row.get("journal_terminal_state") not in ("rolled_back", "failed"):

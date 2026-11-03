@@ -59,6 +59,80 @@ def test_rollback_requires_real_release0_executable_and_intact_data(
     assert any(message in error for error in receipt["verification"]["failed_assertions"])
 
 
+@pytest.mark.parametrize("candidate_started", [True, None, 0, "false"])
+def test_rollback_requires_literal_candidate_not_started(candidate_started: object) -> None:
+    observation = valid_observation("direct-linux")
+    observation["scenarios"]["failed_candidate_rollback"]["candidate_started"] = candidate_started
+
+    receipt = failure.create_receipt("direct-linux", PROVISIONAL_CANDIDATE, observation)
+
+    assert receipt["status"] == "fail"
+    assert receipt["checks"]["failed_candidate_rollback"] == "fail"
+    assert any(
+        "candidate_started: false is required" in error
+        for error in receipt["verification"]["failed_assertions"]
+    )
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        {"started": True, "exit_code": 73},  # The disposable executor's actual contradiction.
+        {"started": True, "exit_code": 0},
+        {"started": None},
+        {"started": 0},
+        {"started": "false"},
+        {},
+        None,
+        [],
+    ],
+)
+def test_rollback_rejects_started_or_unknown_candidate_boundary(boundary: object) -> None:
+    observation = valid_observation("direct-linux")
+    rollback = observation["scenarios"]["failed_candidate_rollback"]
+    assert rollback["candidate_started"] is False
+    rollback["candidate_process_boundary"] = boundary
+
+    receipt = failure.create_receipt("direct-linux", PROVISIONAL_CANDIDATE, observation)
+
+    assert receipt["status"] == "fail"
+    assert receipt["checks"]["failed_candidate_rollback"] == "fail"
+    assert any(
+        "candidate_process_boundary.started: false is required" in error
+        for error in receipt["verification"]["failed_assertions"]
+    )
+
+
+def test_rollback_recomputes_candidate_boundary_despite_stale_pass() -> None:
+    receipt = failure.create_receipt(
+        "direct-linux", PROVISIONAL_CANDIDATE, valid_observation("direct-linux")
+    )
+    assert receipt["status"] == "pass"
+    receipt["scenarios"]["failed_candidate_rollback"]["candidate_process_boundary"] = {
+        "started": True,
+        "exit_code": 73,
+    }
+
+    errors = failure.validate_receipt(receipt, PROVISIONAL_CANDIDATE, "direct-linux")
+
+    assert any("candidate_process_boundary.started" in error for error in errors)
+
+
+def test_candidate_boundary_false_does_not_replace_running_release0_proof() -> None:
+    observation = valid_observation("direct-linux")
+    rollback = observation["scenarios"]["failed_candidate_rollback"]
+    rollback["candidate_process_boundary"] = {"started": False}
+    rollback["real_release0_started"] = False
+
+    receipt = failure.create_receipt("direct-linux", PROVISIONAL_CANDIDATE, observation)
+
+    assert receipt["status"] == "fail"
+    assert any(
+        "real_release0_started: true is required" in error
+        for error in receipt["verification"]["failed_assertions"]
+    )
+
+
 @pytest.mark.parametrize(
     "field, value",
     (("keep_data", False), ("data_root_exists", False), ("runtime_processes_after", 1)),
