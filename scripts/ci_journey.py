@@ -73,7 +73,7 @@ AUTHENTIC_R0_CAPTURE_LEG = "authentic-r0-capture"
 AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES = 256 * 1024
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
-    "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
+    "journey-result.json", "install.log", "mac-stop-capture.jsonl", "uninstall.log", "final-uninstall.log",
     "install-bootstrap.log", "update-bootstrap.log", "release0-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
@@ -575,6 +575,9 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
     paths = [log_dir / "install.log", log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
     for source in paths:
+        if (source.name == "install.log" and sys.platform == "darwin"
+                and os.environ.get("ASTRID_INSTALLER_MAC_STOP_CAPTURE") == "1"):
+            continue
         if source.is_symlink() or not source.is_file():
             continue
         name = ("install.log" if source.name == "install.log" else
@@ -1045,6 +1048,9 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         sources.append(release0_assertion)
     for source in sources:
         name = source.name
+        if (name == "install.log" and sys.platform == "darwin"
+                and os.environ.get("ASTRID_INSTALLER_MAC_STOP_CAPTURE") == "1"):
+            continue
         if (name not in JOURNEY_EVIDENCE_NAMES and
                 not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
             continue
@@ -1112,6 +1118,62 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
                           f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
+def capture_mac_stop_records(run_root: Path, destination: Path) -> dict:
+    """Retain only bounded, schema-checked installer capture records."""
+    source = run_root / "home" / "Library" / "Logs" / "Astrid Runtime" / "install.log"
+    target = destination / "mac-stop-capture.jsonl"
+    limit = 1024 * 1024
+    result = {"status": "unavailable", "path": None, "truncated": False, "records": 0}
+    try:
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return result
+            result["truncated"] = info.st_size > limit
+            stream.seek(max(0, info.st_size - limit))
+            raw = stream.read(limit)
+        lines = raw.splitlines()
+        if result["truncated"]:
+            lines = lines[1:]  # The first line may begin in the middle of a record.
+        stages = {"pre_admission", "preflight_return", "bootout_enter", "bootout_return",
+                  "bootout_error", "down_enter", "runtime_stop_enter", "runtime_stop_return",
+                  "runtime_stop_error", "down_return", "stop_error"}
+        enums = {"discovery": {"same", "different", "absent", "present_unbound", "malformed",
+                               "oversize", "not_regular", "unreadable"},
+                 "process": {"same", "different", "different_or_unknown", "unobserved", "unbound"},
+                 "runtime_owner": {"same", "different", "unbound"}}
+        times = {"seq", "wall_ns", "monotonic_ns", "sample_end_wall_ns", "sample_end_monotonic_ns"}
+        allowed = {"format", "capture", "stage"} | times | set(enums)
+        records = []
+        for line in lines:
+            if len(line) > 4096:
+                continue
+            try:
+                item = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if (not isinstance(item, dict) or set(item) - allowed
+                    or item.get("format") != "astrid-mac-stop-capture/v1"
+                    or not isinstance(item.get("capture"), str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", item["capture"])
+                    or not isinstance(item.get("stage"), str) or item["stage"] not in stages
+                    or any(type(item.get(k)) is not int or item[k] < 0 for k in ("seq", "wall_ns", "monotonic_ns"))
+                    or any(k in item and (type(item[k]) is not int or item[k] < 0) for k in times)
+                    or any(k in item and (not isinstance(item[k], str) or item[k] not in values)
+                           for k, values in enums.items())):
+                continue
+            records.append(json.dumps(item, separators=(",", ":")))
+        if records:
+            destination.mkdir(parents=True, exist_ok=True)
+            target.write_text("\n".join(records) + "\n", encoding="utf-8")
+            result.update(status="captured", path=target.relative_to(run_root).as_posix(), records=len(records),
+                          sha256=hashlib.sha256(target.read_bytes()).hexdigest())
+    except OSError as exc:
+        result["error"] = type(exc).__name__
+    return result
+
+
 def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase: str) -> None:
     """Stage named diagnostics and bind their availability to the journey receipt."""
     result_path = evidence / "journey-result.json"
@@ -1122,6 +1184,8 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
         destination = evidence.parent.parent / "evidence-upload" / phase
         recorded = read_json(result_path) if result_path.is_file() else {}
         diagnostic = {}
+        if sys.platform == "darwin" and os.environ.get("ASTRID_INSTALLER_MAC_STOP_CAPTURE") == "1":
+            diagnostic["mac_stop_capture"] = capture_mac_stop_records(run_root, destination)
         for key, name in (("install_log", "install.log"),
                           ("service_manager", f"manager-state-{phase}.json")):
             path = destination / name

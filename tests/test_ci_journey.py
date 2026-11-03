@@ -2350,3 +2350,72 @@ def test_direct_workspace_restores_service_when_helper_fails(tmp_path, monkeypat
     with pytest.raises(ValueError, match="workspace failed"):
         jumps.direct_workspace(tmp_path, {}, tmp_path, tmp_path / "evidence", "seed", {})
     assert state["running"]
+
+
+def test_mac_stop_capture_reaches_bootstrap_child_only_when_opted_in(tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    (app / "public").mkdir(parents=True)
+    # Use a shell wrapper that launches an isolated Python child like the App bootstrap.
+    (app / "public" / "install").write_text(
+        f"{sys.executable} -I -c 'import os; print(os.getenv(\"ASTRID_INSTALLER_MAC_STOP_CAPTURE\", \"absent\"))'\n")
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setenv("ASTRID_INSTALLER_MAC_STOP_CAPTURE", "1")
+    journey.bootstrap(app, app / "manifest", "sh", "update", tmp_path / "evidence", tmp_path / "root", tmp_path / "data")
+    assert (tmp_path / "evidence" / "update-bootstrap.log").read_text().strip() == "1"
+    monkeypatch.delenv("ASTRID_INSTALLER_MAC_STOP_CAPTURE")
+    journey.bootstrap(app, app / "manifest", "sh", "update", tmp_path / "evidence", tmp_path / "root", tmp_path / "data")
+    assert (tmp_path / "evidence" / "update-bootstrap.log").read_text().strip() == "absent"
+
+
+def test_mac_stop_capture_retains_only_valid_bounded_records(tmp_path):
+    run_root = tmp_path / "run"
+    source = run_root / "home" / "Library" / "Logs" / "Astrid Runtime" / "install.log"
+    source.parent.mkdir(parents=True)
+    record = {"format": "astrid-mac-stop-capture/v1", "capture": "a" * 32, "seq": 1,
+              "stage": "pre_admission", "wall_ns": 1, "monotonic_ns": 2,
+              "discovery": "same", "process": "unobserved"}
+    invalid = dict(record, token="secret-value")
+    source.write_bytes(b"x" * (1024 * 1024) + b"\nnormal secret-value\n" +
+                       json.dumps(invalid).encode() + b"\n" + json.dumps(record).encode() + b"\n")
+    dest = run_root / "evidence-upload" / "before-cleanup"
+    result = journey.capture_mac_stop_records(run_root, dest)
+    assert result["status"] == "captured" and result["truncated"] and result["records"] == 1
+    retained = (run_root / result["path"]).read_bytes()
+    assert json.loads(retained) == record and b"secret-value" not in retained
+    assert result["sha256"] == hashlib.sha256(retained).hexdigest()
+    source.unlink()
+    source.symlink_to(tmp_path / "secret")
+    assert journey.capture_mac_stop_records(run_root, dest)["status"] == "unavailable"
+
+
+def test_mac_stop_capture_workflow_scopes_opt_in_and_artifact():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    assert workflow.count("      mac_stop_capture:") == 2
+    assert "matrix.job_id == 'direct-macos' && inputs.mac_stop_capture && '1' || '0'" in workflow
+    assert "'mac-stop-capture.jsonl'" in workflow
+
+
+def test_mac_stop_snapshot_retains_capture_before_cleanup_without_raw_install_log(tmp_path, monkeypatch):
+    run_root = tmp_path / "run"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    evidence.mkdir(parents=True)
+    source = run_root / "home" / "Library" / "Logs" / "Astrid Runtime" / "install.log"
+    source.parent.mkdir(parents=True)
+    record = {"format": "astrid-mac-stop-capture/v1", "capture": "b" * 32,
+              "seq": 1, "stage": "bootout_enter", "wall_ns": 1, "monotonic_ns": 2}
+    source.write_text("ordinary private installer log\n" + json.dumps(record) + "\n")
+    journey.write_json(evidence / "journey-result.json", {"status": "fail"})
+    monkeypatch.setattr(journey.sys, "platform", "darwin")
+    monkeypatch.setenv("ASTRID_INSTALLER_MAC_STOP_CAPTURE", "1")
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "before-cleanup")
+    source.unlink()
+    journey.snapshot_failure_evidence(evidence, run_root, run_root / "data", "after-cleanup")
+    receipt = journey.read_json(evidence / "journey-result.json")
+    before = receipt["failure_diagnostics"]["before-cleanup"]["mac_stop_capture"]
+    after = receipt["failure_diagnostics"]["after-cleanup"]["mac_stop_capture"]
+    assert before["status"] == "captured" and after["status"] == "unavailable"
+    assert json.loads((run_root / before["path"]).read_text()) == record
+    assert not list((run_root / "evidence-upload").rglob("install.log"))
+    staged = journey.read_json(run_root / "evidence-upload" / "after-cleanup" / "journey-result.json")
+    assert staged["failure_diagnostics"]["before-cleanup"]["mac_stop_capture"] == before

@@ -29,6 +29,11 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      mac_stop_capture:
+        description: Enable the diagnostic installer stop capture on the direct macOS row only
+        required: false
+        default: false
+        type: boolean
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
@@ -91,6 +96,11 @@ on:
         required: false
         default: '{"linux":{},"macos":{},"windows":{}}'
         type: string
+      mac_stop_capture:
+        description: Enable the diagnostic installer stop capture on the direct macOS row only
+        required: false
+        default: false
+        type: boolean
       direct_only:
         description: Run only the three direct Release-0 to Release-1 rows; the full Release-1 gate still requires all nine rows
         required: false
@@ -642,6 +652,7 @@ jobs:
       - name: Run the matrix-owned lifecycle driver
         env:
           ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+          ASTRID_INSTALLER_MAC_STOP_CAPTURE: ${{ matrix.job_id == 'direct-macos' && inputs.mac_stop_capture && '1' || '0' }}
           M4_4A_EXECUTOR_CONFIGS: ${{ needs.config.outputs.m4_4a_executor_configs }}
         run: |
           if ('${{ matrix.job_id }}' -eq 'direct-windows') {
@@ -685,7 +696,7 @@ jobs:
         run: |
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}/evidence-upload"
           $allowedNames = @(
-            'journey-result.json', 'install.log', 'uninstall.log', 'final-uninstall.log',
+            'journey-result.json', 'install.log', 'mac-stop-capture.jsonl', 'uninstall.log', 'final-uninstall.log',
             'install-bootstrap.log', 'update-bootstrap.log', 'release0-bootstrap.log', 'start.log',
             'verify-install.json', 'verify-install.log', 'verify-update.json', 'verify-update.log',
             'service-manager-prerequisite.log', 'direct-service-ownership.log',
