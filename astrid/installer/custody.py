@@ -40,7 +40,7 @@ def _same_process_identity(expected, observed):
 
 
 def _binding(root, version, data):
-    from astrid.installer.core import absolute, current, read_json
+    from astrid.installer.core import absolute, current, read_json, require_legacy_lifecycle
     from astrid.installer.service import launch_admission
 
     root, data = absolute(root), absolute(data)
@@ -50,6 +50,7 @@ def _binding(root, version, data):
             or not launch_admission(version, data, custody=True)):
         raise ValueError("The stopped update does not authorize this foreground activation.")
     journal = read_json(root / "update-transaction.json")
+    require_legacy_lifecycle(journal)
     # A journal phase alone never authorizes activation. The updater must
     # still own this installation's operation lock as well as its custody.
     from runtime_protocol import platform
@@ -181,6 +182,9 @@ def stopped_custody(root, backend):
 @contextlib.contextmanager
 def operation(root, backend):
     """Share one custody admission across CLI manifest work and the adapter."""
+    from astrid.installer.core import read_json, require_legacy_lifecycle
+
+    require_legacy_lifecycle(read_json(Path(root) / "update-transaction.json"))
     if hasattr(backend, "_pinokio_custody"):
         yield backend._pinokio_custody
         return

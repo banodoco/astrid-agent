@@ -25,6 +25,7 @@ from .core import (
     owned_by_local_update,
     pending_transaction,
     read_json,
+    require_legacy_lifecycle,
     recover_transaction,
     separate_roots,
     switch,
@@ -433,6 +434,7 @@ class PinokioLifecycle:
 def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bool:
     """Recover Pinokio's shared journal while its operation lock is held."""
     pending = read_json(root / "update-transaction.json")
+    require_legacy_lifecycle(pending)
     if not pending or pending.get("step") in TERMINAL_STEPS:
         return False
     if owned_by_local_update(pending):

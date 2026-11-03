@@ -90,10 +90,26 @@ def write_json(path: Path, value: dict) -> None:
 TERMINAL_STEPS = frozenset({"complete", "rolled_back"})
 
 
+def has_lifecycle_transfer(transaction: dict) -> bool:
+    """A transfer journal is never authority to use the legacy lifecycle path.
+
+    Even a terminal decision may still have release cleanup outstanding. Until
+    the Runtime session and native manager adapter can reconcile it, treat any
+    transfer record (including a malformed one) as unresolved.
+    """
+    context = transaction.get("transaction_context")
+    return isinstance(context, dict) and "lifecycle_transfer" in context
+
+
+def require_legacy_lifecycle(transaction: dict) -> None:
+    if has_lifecycle_transfer(transaction):
+        raise ValueError("Lifecycle transfer recovery requires the original Runtime session; recovery is unavailable.")
+
+
 def pending_transaction(root: Path) -> dict | None:
-    """Return the update journal under root only while its step is not terminal."""
+    """Return a journal until its outcome and any transfer release are resolved."""
     journal = read_json(root / "update-transaction.json")
-    if not journal or journal.get("step") in TERMINAL_STEPS:
+    if not journal or (journal.get("step") in TERMINAL_STEPS and not has_lifecycle_transfer(journal)):
         return None
     return journal
 
@@ -264,6 +280,7 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
                         stop, switch_old, activate_old, save,
                         restore_workspace: bool = True) -> None:
     """Apply the shared stop, optional restore, selection and ready rollback."""
+    require_legacy_lifecycle(transaction)
     old = Version.load(transaction["old"])
     candidate = Version.load(transaction["candidate"]) if transaction.get("candidate") else None
     realm = transaction["realm"]
@@ -299,6 +316,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     publishing ``stopped``.
     """
     transaction = read_json(absolute(root / "update-transaction.json"))
+    require_legacy_lifecycle(transaction)
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return
     if (transaction.get("format") != "astrid-install-update/v1"
@@ -399,6 +417,7 @@ class Installer:
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
         pending = read_json(absolute(self.root / "update-transaction.json"))
+        require_legacy_lifecycle(pending)
         if pending and pending.get("step") not in TERMINAL_STEPS and owned_by_local_update(pending):
             raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
         if pending and pending.get("step") not in TERMINAL_STEPS \
@@ -432,6 +451,11 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
+        # The private Runtime transfer API is not present in the pinned
+        # Runtime. Never let a requested transfer fall through to stop/backup
+        # or to rollback's unconditional old-service activation.
+        require_legacy_lifecycle({"transaction_context": transaction_context})
+        require_legacy_lifecycle(read_json(self.root / "update-transaction.json"))
         with ExitStack() as authority:
             candidate = prepare()
             transaction = {

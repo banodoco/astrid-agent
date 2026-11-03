@@ -28,6 +28,7 @@ from .core import (
     owned_by_local_update,
     pending_transaction,
     read_json,
+    require_legacy_lifecycle,
     recover_transaction,
     separate_roots,
     switch,
@@ -253,6 +254,7 @@ def _assert_selection(root: Path, backend: Backend, expected_versions: tuple[Ver
 
 def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
     transaction = read_json(root / "update-transaction.json")
+    require_legacy_lifecycle(transaction)
     if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return False
     owner = transaction.get("transaction_context")
@@ -512,6 +514,7 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
 def execute(action: dict, root: Path, *, stdin: TextIO, stdout: TextIO, say=print) -> dict:
     if action.get("action") not in {"recover", "update"}:
         raise LocalUpdateStepError("validate-request", "The local update action is invalid.")
+    require_legacy_lifecycle(read_json(root / "update-transaction.json"))
     if action["action"] == "recover":
         pending = pending_transaction(root)
         if pending and not owned_by_local_update(pending):
@@ -535,6 +538,7 @@ def execute(action: dict, root: Path, *, stdin: TextIO, stdout: TextIO, say=prin
 
 def _execute_locked(action: dict, root: Path, backend: Backend, *,
                     stdin: TextIO, stdout: TextIO, say=print) -> dict:
+    require_legacy_lifecycle(read_json(root / "update-transaction.json"))
     hooks: HookClient
     if action["action"] == "recover":
         pending = read_json(root / "update-transaction.json")
