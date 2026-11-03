@@ -114,7 +114,7 @@ dependencies:
 
     assert scan.packs == ()
     assert scan.quarantined[0].pack_dir == pack
-    assert "Python dependency is unavailable" in scan.quarantined[0].error
+    assert "Python requirement 'astrid-pk-m1-14-package-that-does-not-exist' is missing from the locked interpreter." in scan.quarantined[0].error
 
 
 def test_packs_check_alias_uses_shared_compatibility_validator(tmp_path, capsys):

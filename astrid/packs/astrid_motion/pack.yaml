@@ -27,6 +27,20 @@
     "kind": "skill",
     "path": "docs/SKILL.md"
   },
+  "extensions": {
+    "astrid": {
+      "generation_availability": {
+        "fixture_only_routes": {
+          "astrid_motion:preview/scenes.json": true,
+          "astrid_motion:preview/render.mjs": true,
+          "astrid_motion:preview/make_art.py": true,
+          "astrid_motion:preview/src/Preview.tsx": true,
+          "astrid_motion:preview/src/Root.tsx": true,
+          "astrid_motion:preview/src/index.ts": true
+        }
+      }
+    }
+  },
   "agent": {
     "purpose": "Use when a timeline needs a Pixel Modernism motion building block such as pixel plates, stepped transparent sprites, editorial type, floating callouts, or pixel-block wipes.",
     "do_not_use_for": "This pack provides effect elements only. Use pixel or generation packs to prepare artwork and the rendering pack to render the timeline.",

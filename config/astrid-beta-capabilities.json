@@ -1396,7 +1396,14 @@
    "resource_keys": ["provider"],
    "required_env": ["HIVEMIND_CONTRIBUTOR_KEY"],
    "required_binaries": [],
-   "required_packages": []
+   "required_packages": [],
+   "historical_result_contract": {
+    "note": "Optional Hivemind action is declared outside the bundled pack inventory.",
+    "reasons": [
+     "external-escape-hatch"
+    ],
+    "external_contract": "hivemind"
+   }
   },
   {
    "id": "hivemind.get_item",
@@ -1406,7 +1413,14 @@
    "resource_keys": ["provider"],
    "required_env": [],
    "required_binaries": [],
-   "required_packages": []
+   "required_packages": [],
+   "historical_result_contract": {
+    "note": "Optional Hivemind action is declared outside the bundled pack inventory.",
+    "reasons": [
+     "external-escape-hatch"
+    ],
+    "external_contract": "hivemind"
+   }
   },
   {
    "id": "hivemind.ingest_article",
@@ -1416,7 +1430,14 @@
    "resource_keys": ["provider"],
    "required_env": ["HIVEMIND_CONTRIBUTOR_KEY"],
    "required_binaries": [],
-   "required_packages": []
+   "required_packages": [],
+   "historical_result_contract": {
+    "note": "Optional Hivemind action is declared outside the bundled pack inventory.",
+    "reasons": [
+     "external-escape-hatch"
+    ],
+    "external_contract": "hivemind"
+   }
   },
   {
    "id": "hivemind.ingest_workflow",
@@ -1426,7 +1447,14 @@
    "resource_keys": ["provider"],
    "required_env": ["HIVEMIND_CONTRIBUTOR_KEY"],
    "required_binaries": [],
-   "required_packages": []
+   "required_packages": [],
+   "historical_result_contract": {
+    "note": "Optional Hivemind action is declared outside the bundled pack inventory.",
+    "reasons": [
+     "external-escape-hatch"
+    ],
+    "external_contract": "hivemind"
+   }
   },
   {
    "id": "hivemind.ingest_youtube",
@@ -1436,7 +1464,14 @@
    "resource_keys": ["provider"],
    "required_env": ["HIVEMIND_CONTRIBUTOR_KEY"],
    "required_binaries": ["yt-dlp"],
-   "required_packages": []
+   "required_packages": [],
+   "historical_result_contract": {
+    "note": "Optional Hivemind action is declared outside the bundled pack inventory.",
+    "reasons": [
+     "external-escape-hatch"
+    ],
+    "external_contract": "hivemind"
+   }
   },
   {
    "id": "hivemind.refresh_media",
@@ -1446,7 +1481,14 @@
    "resource_keys": ["provider"],
    "required_env": [],
    "required_binaries": [],
-   "required_packages": []
+   "required_packages": [],
+   "historical_result_contract": {
+    "note": "Optional Hivemind action is declared outside the bundled pack inventory.",
+    "reasons": [
+     "external-escape-hatch"
+    ],
+    "external_contract": "hivemind"
+   }
   },
   {
    "id": "hivemind.search",
@@ -1456,7 +1498,14 @@
    "resource_keys": ["provider"],
    "required_env": [],
    "required_binaries": [],
-   "required_packages": []
+   "required_packages": [],
+   "historical_result_contract": {
+    "note": "Optional Hivemind action is declared outside the bundled pack inventory.",
+    "reasons": [
+     "external-escape-hatch"
+    ],
+    "external_contract": "hivemind"
+   }
   },
   {
    "id": "seedance_local.reference_video",
@@ -1502,5 +1551,10 @@
    "required_binaries": ["node"],
    "required_packages": []
   }
- ]
+ ],
+ "external_contracts": {
+  "hivemind": {
+   "note": "Seven Hivemind executors are declared by the optional external pack; installation is proven by the managed source inventory."
+  }
+ }
 }

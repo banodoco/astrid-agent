@@ -68,8 +68,8 @@ def test_product_parser_graph_does_not_load_local_authority() -> None:
     probe = (
         "import sys; "
         "from astrid.core.cli.domain_media import build_parser as media; "
-        "from astrid.packs.references.cli import build_parser as references; "
-        "from astrid.packs.shots.cli import build_parser as shots; "
+        "from astrid.core.cli.domain_references import build_parser as references; "
+        "from astrid.core.cli.domain_shots import build_parser as shots; "
         "print('sqlite3' in sys.modules); "
         "print(any(name.startswith('astrid.core.store') or "
         "name.startswith('astrid.core.repositories') or "
@@ -95,8 +95,8 @@ def test_removed_media_realm_and_render_execution_mode_are_absent() -> None:
 def test_product_parsers_have_no_repository_imports() -> None:
     for relative in (
         "astrid/core/cli/domain_media.py",
-        "astrid/packs/references/cli.py",
-        "astrid/packs/shots/cli.py",
+        "astrid/core/cli/domain_references.py",
+        "astrid/core/cli/domain_shots.py",
     ):
         tree = ast.parse(_source(relative), filename=relative)
         imported = {

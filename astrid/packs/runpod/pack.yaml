@@ -45,6 +45,41 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        exec:
+          reasons:
+          - paid
+          - GPU
+          - external-escape-hatch
+          note: Executes scripts on provisioned RunPod GPU pods requiring paid RunPod
+            account.
+        provision:
+          reasons:
+          - paid
+          - GPU
+          - external-escape-hatch
+          note: Provisions RunPod GPU pods requiring paid RunPod account.
+        pull:
+          reasons:
+          - paid
+          - external-escape-hatch
+          note: Pulls remote artifacts from RunPod pods via SSH requiring paid RunPod
+            account.
+        session:
+          reasons:
+          - paid
+          - GPU
+          - external-escape-hatch
+          note: Composite provision-exec-download-teardown RunPod session requiring
+            paid account.
+        teardown:
+          reasons:
+          - paid
+          - external-escape-hatch
+          note: Terminates RunPod pods requiring paid RunPod account.
 actions:
   provision:
     name: RunPod Provision

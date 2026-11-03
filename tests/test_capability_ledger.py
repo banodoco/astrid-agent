@@ -95,13 +95,20 @@ def test_historical_executor_rows_are_explicitly_not_installed():
     rows = ledger["sources"]["executor_inventory"]
     absent = {row["id"]: row for row in rows if row["discovery_status"] != "discovered"}
 
-    assert set(absent) == {
-        "iteration.prepare",
-        "training.asset_cache",
+    retired_ids = {"iteration.prepare", "training.asset_cache"}
+    external_ids = {
+        "hivemind.contribute", "hivemind.get_item", "hivemind.ingest_article",
+        "hivemind.ingest_workflow", "hivemind.ingest_youtube",
+        "hivemind.refresh_media", "hivemind.search",
     }
+    assert set(absent) == retired_ids | external_ids
     external = {row["id"]: row for row in absent.values() if row["id"].split(".", 1)[0] in {"discord_local", "hivemind", "seedance_local"}}
     historical = {row["id"]: row for row in absent.values() if row["id"] not in external}
-    assert external == {}
+    assert set(external) == external_ids
+    assert {row["disposition"] for row in external.values()} == {"unavailable_external"}
+    assert {row["discovery_status"] for row in external.values()} == {"not_installed"}
+    assert all(row["executable"] is False for row in external.values())
+    assert set(historical) == retired_ids
     assert {row["disposition"] for row in historical.values()} == {"retired"}
     assert {row["discovery_status"] for row in historical.values()} == {"historical_only"}
     assert all(row["executable"] is False for row in historical.values())
@@ -154,8 +161,8 @@ def test_source_census_reports_unreviewed_pack_labels_without_failing_host(monke
 
     original = capability_ledger._census_sets
 
-    def with_unreviewed_label(repo_root):
-        census = original(repo_root)
+    def with_unreviewed_label(repo_root, **kwargs):
+        census = original(repo_root, **kwargs)
         census["current"]["source_labels"].add("hivemind.unreviewed")
         return census
 
@@ -220,8 +227,8 @@ def test_reviewed_v3_source_occurrence_removal_is_reported_by_name(monkeypatch):
 
     original = capability_ledger._census_sets
 
-    def without_reviewed_occurrence(repo_root):
-        census = original(repo_root)
+    def without_reviewed_occurrence(repo_root, **kwargs):
+        census = original(repo_root, **kwargs)
         census["current"]["source_labels"].discard("pixel.snap")
         return census
 

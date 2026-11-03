@@ -23,6 +23,24 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        clip_candidates:
+          reasons:
+          - no-artifact
+          note: Writes ranked clip-candidate JSON but does not yet emit a universal
+            result manifest.
+        segment_map:
+          reasons:
+          - no-artifact
+          note: Writes segment-map JSON but does not yet emit a universal result manifest.
+        distill:
+          reasons:
+          - no-artifact
+          note: Writes segment-map, segments, candidates and a static review page but
+            does not yet emit a universal result manifest.
 actions:
   clip_candidates:
     name: Stream Clip Candidates

@@ -34,6 +34,16 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  astrid:
+    output_result_exemptions:
+      actions:
+        render:
+          reasons:
+          - GPU
+          - external-escape-hatch
+          note: Runs Blender locally or through an external render host and does not
+            yet write the universal result manifest.
 actions:
   render:
     name: Blender Render

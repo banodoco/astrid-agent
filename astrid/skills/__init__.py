@@ -18,15 +18,6 @@ from .harnesses import ADAPTERS, HarnessAdapter, adapter_for, all_adapters
 from .harnesses.base import target_mechanism
 from .links import LinkScan, scan_links
 
-# Legacy setup defaults retained for external and managed pack policy.
-DEFAULT_FIRST_PARTY_SKILL_IDS = (
-    "vibecomfy",
-    "rendering",
-    "typed_timeline",
-    "video_editing",
-)
-
-
 def default_descriptors(
     descriptors: Iterable[SkillDescriptor] | None = None,
 ) -> list[SkillDescriptor]:
@@ -48,10 +39,6 @@ def default_descriptors(
             result.append(descriptor)
         if descriptor.pack_id in managed_default_ids and descriptor not in result:
             result.append(descriptor)
-    for pack_id in DEFAULT_FIRST_PARTY_SKILL_IDS:
-        descriptor = by_id.get(pack_id)
-        if descriptor is not None and descriptor not in result:
-            result.append(descriptor)
     for descriptor in available:
         if descriptor in result:
             continue
@@ -62,17 +49,7 @@ def default_descriptors(
             pack = load_pack_manifest(manifest_path)
         except Exception:  # malformed optional packs remain discoverable only
             continue
-        # Canonical v2 currently normalizes omitted taxonomy fields to the
-        # default value, so inspect the source manifest to distinguish an
-        # explicit default declaration from legacy first-party manifests.
-        try:
-            import yaml
-
-            raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
-        except Exception:  # malformed optional packs remain opt-in
-            raw = {}
-        declared_tier = raw.get("install_tier") if isinstance(raw, dict) else None
-        if declared_tier in {"core", "default"}:
+        if (pack.extensions.get("astrid", {}).get("skills", {}).get("default") is True):
             result.append(descriptor)
     return result
 
@@ -962,7 +939,6 @@ def _link_pack_id(link_name: str) -> str:
 
 
 __all__ = [
-    "DEFAULT_FIRST_PARTY_SKILL_IDS",
     "check",
     "default_descriptors",
     "default_pack_ids",

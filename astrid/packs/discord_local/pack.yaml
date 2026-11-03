@@ -6,6 +6,9 @@ status: experimental
 domain: integration
 stability: experimental
 support: project
+extensions:
+  astrid:
+    project_scope: optional
 visibility: visible
 description: Personal, bounded Discord slash-command generation and result-recovery adapter.
 keywords:
