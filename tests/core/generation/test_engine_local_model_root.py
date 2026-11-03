@@ -194,6 +194,7 @@ def test_host_refuses_when_the_install_cannot_attest_a_binding(tmp_path, monkeyp
 def _child_environment(monkeypatch, tmp_path, *, profile=None, local_engine=None):
     """The VibeComfy child's environment as the real host builds it."""
     from astrid.core.execution import generic_host as module
+    from astrid.core.execution.executor.schema import ExecutorDefinition
 
     monkeypatch.delenv(LOCAL_ENGINE_HOST_ENV, raising=False)
     if local_engine:
@@ -204,8 +205,9 @@ def _child_environment(monkeypatch, tmp_path, *, profile=None, local_engine=None
     host._credential_source_is_explicit = False
     host._vibecomfy_requested_warmth_hint = None
     host.client = None
-    record = SimpleNamespace(id="vibecomfy.validate", definition=SimpleNamespace(
-        isolation=SimpleNamespace(env_passthrough=()), inputs=(), metadata={}), matrix={})
+    definition = ExecutorDefinition(id="vibecomfy.validate", name="VibeComfy validation",
+                                    kind="built_in", version="1")
+    record = SimpleNamespace(id=definition.id, definition=definition, matrix={})
     monkeypatch.setattr(module, "_required_secret_names", lambda _record: ())
     monkeypatch.setattr(module, "_fixed_worker_environment", lambda _record, explicit, _source: dict(explicit))
     monkeypatch.setattr(module, "process_control_support", lambda: None)

@@ -584,18 +584,23 @@ def require_local_generation_readiness(
     )
 
 
-def _installed_managed_target():
+def _installed_managed_target(entry_id=None):
     """Bind an installed ComfyUI through its existing receipt/custody verifier."""
     from .backends.comfy_target import ComfyTarget, ComfyTargetClient
     from .engine_contracts import EngineError
-    from .engine_local_endpoint import local_engine_endpoint, recorded_engine_root
+    from .engine_local_endpoint import EntryAssetsNotReady, local_engine_endpoint, recorded_engine_root
     from .targets import TargetRecord
 
     try:
         root = recorded_engine_root('comfyui')
         if root is None:
             return None
-        installed = local_engine_endpoint('comfyui', root=root)
+        installed = local_engine_endpoint('comfyui', root=root,
+            **({'entry_id': entry_id} if entry_id is not None else {}))
+    except EntryAssetsNotReady as exc:
+        from .asset_gaps import asset_readiness
+        raise GenerationReadinessError(asset_readiness(exc.entry_id, models=exc.assets,
+            target={'root': root, 'owner': 'astrid'})) from exc
     except EngineError as exc:
         if exc.code == 'engine_not_installed':
             # A deleted locked model can fail installed health before workflow
@@ -635,7 +640,7 @@ def _installed_managed_target():
     return client
 
 
-def _select_generation_target(target: str, *, repo=None):
+def _select_generation_target(target: str, *, repo=None, entry_id=None):
     """Select and probe one Comfy target without changing machine config.
 
     ``None`` selects managed lifecycle; a returned client owns only HTTP I/O.
@@ -656,7 +661,7 @@ def _select_generation_target(target: str, *, repo=None):
         selection = resolve_target(target, repo=repo)
         record = selection.record
         if record is None or record.owner == "astrid":
-            return _installed_managed_target()
+            return _installed_managed_target(**({'entry_id': entry_id} if entry_id is not None else {}))
         if record.endpoint is None:
             raise AstridError(
                 "Selected human ComfyUI target has no endpoint; launch it with explicit consent first",
@@ -704,7 +709,8 @@ def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGene
     try:
         if target == 'runpod' and runpod_owner is not None:
             return call_runpod_owner(runpod_owner.validation_target)
-        return _select_generation_target(target, repo=repo)
+        return _select_generation_target(target, repo=repo,
+            **({'entry_id': entry_id} if entry_id is not None else {}))
     except AstridError as exc:
         if isinstance(exc, GenerationReadinessError) and entry_id and all(
                 issue['code'] in {'missing_model', 'missing_node_pack'} for issue in exc.readiness['issues']):

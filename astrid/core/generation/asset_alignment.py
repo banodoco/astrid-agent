@@ -98,10 +98,11 @@ class ManagedAssetTarget:
         recipe = load_recipe(raw['engine'], raw['platform'])
         return platform_adapter(recipe.platform).local_install_lock(str(self.root), deadline=deadline)
 
-    def verify_readiness(self, *, deadline: float) -> None:
+    def verify_readiness(self, *, deadline: float, entry_id: str | None = None) -> None:
         from .engine_local_endpoint import local_engine_endpoint
         installed = local_engine_endpoint('comfyui', root=str(self.root),
-            deadline_seconds=max(0.001, min(120, deadline - time.monotonic())))
+            deadline_seconds=max(0.001, min(120, deadline - time.monotonic())),
+            **({'entry_id': entry_id} if entry_id is not None else {}))
         if installed.endpoint.url != self.url:
             raise IntegrityError('managed target endpoint changed during reconciliation')
 
@@ -181,7 +182,26 @@ def catalog_manifests(entry_id: str | None = None) -> list[dict[str, Any]]:
     if entry_id is not None:
         entries = [entry for entry in entries if entry.id == entry_id]
         if not entries:
-            raise AlignmentError(f'Unknown catalog entry {entry_id}; astrid generate align requires a catalog entry ID')
+            from .entries import find_entry, _load_entry_workflow
+            from .asset_gaps import declared_model_specs
+            entry = find_entry(entry_id)
+            if entry is None or entry.get('source') != 'ready-template':
+                raise AlignmentError(f'Unknown pinned entry {entry_id}; astrid generate align requires a catalog or ready-template entry ID')
+            workflow = _load_entry_workflow(entry)
+            classes = {node.class_type for node in workflow.runtime_nodes().values()}
+            packs, unlocked = [], []
+            for pack in resolve_node_packs(classes, lockfile_path=lockpath):
+                row = node_locks.get(pack.name)
+                revision, repo = getattr(row, 'git_commit_sha', None), getattr(row, 'url', None)
+                if not repo or not revision or not re.fullmatch('[0-9a-f]{40}', revision):
+                    unlocked.append({'kind': 'node_pack', 'name': pack.name,
+                                     'missing': ['locked_repository_and_sha']})
+                else:
+                    packs.append({'name': pack.name, 'repository': repo, 'revision': revision,
+                                  'classes': sorted(pack.classes & classes)})
+            return [{'id': entry_id, 'provider_only': False, 'modes': [
+                {'mode': mode, 'workflow': workflow, 'models': list(declared_model_specs(workflow)),
+                 'node_packs': packs, 'unlocked': unlocked} for mode in entry['modes']]}]
     manifests = []
     for entry in entries:
         modes = []
@@ -398,7 +418,7 @@ def _align_selected(manifests, target, *, entry_id, apply, deadline, opener=None
         report['next_action'] = 'Restart the selected managed ComfyUI to load installed node packs, then retry ' + report['align_command']
     if report['status'] == 'ready':
         try:
-            target.verify_readiness(deadline=deadline)
+            target.verify_readiness(deadline=deadline, entry_id=entry_id)
         except EngineError as exc:
             report['status'] = 'not_ready'
             report['managed_readiness_error'] = exc.code
