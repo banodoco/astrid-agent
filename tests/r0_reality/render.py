@@ -101,4 +101,3 @@ def render_definition(system: str, version: Version, data: Path, log: Path, *, u
   <Actions Context="Owner"><Exec><Command>{escape(argv[0])}</Command><Arguments>{escape(arguments)}</Arguments><WorkingDirectory>{escape(str(version.root))}</WorkingDirectory></Exec></Actions>
 </Task>
 '''
-
