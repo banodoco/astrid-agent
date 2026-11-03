@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import inspect
 import json
 import os
 import platform as system_platform
 import plistlib
 import re
+import selectors
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -42,6 +45,279 @@ SERVICE_SETTINGS = frozenset({"ASTRID_WARM_IDLE_SECONDS", "ASTRID_ALLOW_UNQUALIF
 # Enumerating and filtering makes an absent task a successful no-op while still
 # propagating Task Scheduler access failures through ErrorActionPreference=Stop.
 TASK_QUERY = f"$t=Get-ScheduledTask | Where-Object {{ $_.TaskName -eq '{TASK}' -and $_.TaskPath -eq '\\' }}; "
+
+# This is an observation, not transfer authority. In particular, a systemctl
+# reply does not authenticate the user manager or prove a descendant census.
+_TRANSFER_UNIT_PROPERTIES = (
+    "Id", "LoadState", "FragmentPath", "DropInPaths", "ExecStart",
+    "WorkingDirectory", "Environment", "User", "Group",
+    "DynamicUser", "Restart", "RestartUSec", "KillMode", "TimeoutStopUSec",
+    "Triggers", "TriggeredBy", "Wants", "Requires", "Before", "After",
+    "InvocationID", "MainPID", "ControlPID", "ControlGroup", "ActiveState",
+    "SubState", "Job", "UnitFileState", "NeedDaemonReload",
+)
+
+
+@dataclass(frozen=True)
+class _TransferFileObservation:
+    path: str
+    identity: tuple[int, ...]
+    content: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _SystemdTransferObservation:
+    """Private, non-authoritative preimage for a future transfer adapter."""
+
+    uid: int
+    selection: _TransferFileObservation = field(repr=False)
+    properties: tuple[tuple[str, str], ...] = field(repr=False)
+    files: tuple[_TransferFileObservation, ...] = field(repr=False)
+    environment_files: tuple[tuple[str, bool], ...] = field(repr=False)
+
+
+def _transfer_file_observation(path: Path) -> _TransferFileObservation:
+    """Read an owned regular file without following its final symlink."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("Lifecycle transfer file observation is unsupported.")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or not owned_by_current_user(fd, before)
+                or before.st_size > 1024 * 1024):
+            raise ValueError("Lifecycle transfer file is not a bounded owned regular file.")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            content = stream.read(1024 * 1024 + 1)
+        after = os.fstat(fd)
+        named = path.lstat()
+        fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size",
+                  "st_mtime_ns", "st_ctime_ns")
+        identity = tuple(getattr(before, name) for name in fields)
+        if (len(content) != before.st_size or len(content) > 1024 * 1024
+                or identity != tuple(getattr(after, name) for name in fields)
+                or identity != tuple(getattr(named, name) for name in fields)):
+            raise ValueError("Lifecycle transfer file changed during observation.")
+        return _TransferFileObservation(str(path), identity, content)
+    finally:
+        os.close(fd)
+
+
+def _transfer_systemctl_show() -> str:
+    # Unlike Backend.run, do not write this output to the installer log:
+    # effective environment properties can contain private values.
+    result = subprocess.run(
+        ["systemctl", "--user", "show", "astrid.service", "--all",
+         "--property=" + ",".join(_TRANSFER_UNIT_PROPERTIES)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="strict", check=True, timeout=15,
+    )
+    return result.stdout
+
+
+# Limit both runtime and captured bytes; neither bus errors nor values go to logs.
+def _bounded_busctl(args: list[str]) -> bytes:
+    process = subprocess.Popen(
+        ["busctl", "--user", "--json=short", "--no-pager", "--timeout=15",
+         "--auto-start=no", "--allow-interactive-authorization=no", *args],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    data = bytearray()
+    deadline = time.monotonic() + 15
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise ValueError("systemd typed query timed out")
+                chunk = os.read(process.stdout.fileno(), 65537 - len(data))
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > 65536:
+                    raise ValueError("systemd typed query exceeds limit")
+        if process.wait(timeout=max(0.001, deadline - time.monotonic())) != 0:
+            raise ValueError("systemd typed query failed")
+        return bytes(data)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("systemd typed query timed out") from exc
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+
+
+def _busctl_json(raw: bytes) -> dict:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate typed response key")
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    except (ValueError, UnicodeError, RecursionError):
+        raise ValueError("malformed typed systemd response") from None
+    if not isinstance(value, dict) or set(value) != {"type", "data"}:
+        raise ValueError("malformed typed systemd response")
+    return value
+
+
+def _typed_environment_files() -> tuple[tuple[str, bool], ...]:
+    """Sample the resolved service object; values are private and non-authoritative."""
+    destination = "org.freedesktop.systemd1"
+    object_path = "/org/freedesktop/systemd1/unit/astrid_2eservice"
+    def resolve():
+        reply = _busctl_json(_bounded_busctl([
+            "call", destination, "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager", "GetUnit", "s", "astrid.service"]))
+        if reply != {"type": "o", "data": [object_path]}:
+            raise ValueError("unexpected systemd service object")
+    resolve()
+    reply = _busctl_json(_bounded_busctl([
+        "get-property", destination, object_path,
+        "org.freedesktop.systemd1.Service", "EnvironmentFiles"]))
+    entries = reply.get("data")
+    if reply.get("type") != "a(sb)" or not isinstance(entries, list) or len(entries) > 1024:
+        raise ValueError("unsupported systemd environment files response")
+    result = []
+    for entry in entries:
+        if (not isinstance(entry, list) or len(entry) != 2 or
+                not isinstance(entry[0], str) or type(entry[1]) is not bool):
+            raise ValueError("malformed systemd environment files response")
+        try:
+            encoded = entry[0].encode("utf-8", "strict")
+        except UnicodeError:
+            raise ValueError("malformed systemd environment files response") from None
+        if not encoded or len(encoded) > 4096 or b"\0" in encoded:
+            raise ValueError("malformed systemd environment files response")
+        result.append((entry[0], entry[1]))
+    resolve()
+    return tuple(result)
+
+
+def _transfer_unit_fields(output: str) -> dict[str, str]:
+    # Both observations consume the same systemctl format, including ExecStart
+    # continuations. Completeness and duplicate checks remain mandatory.
+    return _snapshot_unit_fields(output)
+
+
+@dataclass(frozen=True)
+class _TransferPredicate:
+    # match/absent, mismatch/present, or unknown; never an authorization.
+    result: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class _LinuxTransferSnapshot:
+    """Private checkpoint, not ManagerEvidence and never transfer authority."""
+
+    binding_digest: str
+    started_ns: int
+    ended_ns: int
+    predicates: dict[str, _TransferPredicate]
+    # PID, start ticks, UID, parent PID and relevance; no command lines.
+    candidates: tuple[tuple[int, int, int, int, str], ...] = field(repr=False)
+    authority: bool = False
+
+
+def _r0_systemd_fragment(version: Version, data: Path, log: Path, env_file: Path) -> bytes:
+    """Reproduce the frozen 3204bb00 Linux renderer, not the current renderer."""
+    argv = _release0_service_command(version, data, windows=False, log=log, env_file=env_file)
+    executable = " ".join(systemd_quote(arg).replace("$", "$$") for arg in argv)
+    environment = "".join(
+        "Environment=" + systemd_quote(k + "=" + v) + "\n"
+        for k, v in sorted(version.env.items())
+        if k not in {"ASTRID_INSTALL_RELEASE", "ASTRID_INSTALL_MANAGED_BY"}
+    )
+    log = log.with_name("runtime-service.log")
+    return ("[Unit]\nDescription=Astrid Runtime\n\n[Service]\n"
+            f"ExecStart={executable}\n{environment}Restart=always\nRestartSec=5\n"
+            "KillMode=mixed\nTimeoutStopSec=90\n"
+            f"StandardOutput={systemd_quote('append:' + str(log))}\n"
+            f"StandardError={systemd_quote('append:' + str(log))}\n"
+            "\n[Install]\nWantedBy=default.target\n").encode()
+
+
+def _snapshot_unit_fields(output: str) -> dict[str, str]:
+    """Preserve multiline values; duplicate property lines are ambiguous."""
+    fields: dict[str, str] = {}
+    key = None
+    for line in output.splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name == "EnvironmentFiles":
+            raise ValueError("unexpected text systemd property")
+        if separator and name in _TRANSFER_UNIT_PROPERTIES:
+            if name in fields:
+                raise ValueError("ambiguous systemd property")
+            key = name
+            fields[key] = value
+        elif key == "ExecStart":
+            fields[key] += "\n" + line
+        else:
+            raise ValueError("unparseable systemd property")
+    if set(fields) != set(_TRANSFER_UNIT_PROPERTIES):
+        raise ValueError("incomplete systemd properties")
+    return fields
+
+
+def _snapshot_proc_census(version_root: Path, group: str, known: tuple[tuple[int, int], ...],
+                          proc: Path = Path("/proc")) -> tuple[tuple[tuple[int, int, int, int, str], ...], bool, str]:
+    """Read a best-effort current /proc census; any race or visibility error is unknown."""
+    candidates = []
+    found = {}
+    complete = True
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return (), False, "proc enumeration unavailable"
+    for entry in entries:
+        if not entry.name.isdecimal():
+            continue
+        pid = int(entry.name)
+        try:
+            raw = (entry / "stat").read_text()
+            end = raw.rfind(")")
+            if end < 0:
+                raise ValueError("malformed stat")
+            parts = raw[end + 2:].split()
+            ticks = int(parts[19])
+            ppid = int(parts[1])
+            status = (entry / "status").read_text().splitlines()
+            uid_lines = [line for line in status if line.startswith("Uid:")]
+            if len(uid_lines) != 1:
+                raise ValueError("missing process UID")
+            uid = int(uid_lines[0].split()[1])
+            cmd = (entry / "cmdline").read_bytes()
+            cgroups = (entry / "cgroup").read_text().splitlines()
+            after = (entry / "stat").read_text()
+            after_end = after.rfind(")")
+            if after_end < 0 or int(after[after_end + 2:].split()[19]) != ticks:
+                raise ValueError("process changed during read")
+            found[pid] = ticks
+            reasons = []
+            if os.fsencode(str(version_root)) in cmd:
+                reasons.append("selected-path")
+            if group and any(line.partition("::")[2] == group or
+                             line.partition("::")[2].startswith(group.rstrip("/") + "/")
+                             for line in cgroups if "::" in line):
+                reasons.append("unit-cgroup")
+            if any(pid == known_pid for known_pid, _ in known):
+                reasons.append("known-pid")
+            if reasons:
+                candidates.append((pid, ticks, uid, ppid, ",".join(reasons)))
+        except (OSError, ValueError, IndexError):
+            complete = False
+    for pid, ticks in known:
+        if pid in found and found[pid] != ticks:
+            complete = False  # PID reuse is not proof about the old child.
+    return tuple(sorted(candidates)), complete, "complete scan" if complete else "unreadable, racing, or reused process"
 
 
 def _launch_prelude_source() -> str:
@@ -436,6 +712,213 @@ class Service:
             return True
         except (OSError, subprocess.SubprocessError):
             return False
+
+    def _observe_systemd_transfer_definition(self, data: Path) -> _SystemdTransferObservation:
+        """Capture a stable preimage; this cannot authorize a lifecycle action.
+
+        It intentionally does not claim manager authentication, complete
+        process census, or equivalence between loaded and on-disk definitions.
+        Those predicates and retained Runtime custody are required separately.
+        """
+        if self.system != "linux" or sys.platform != "linux":
+            raise RuntimeError("Lifecycle transfer observation is unsupported on this platform.")
+
+        def observe() -> _SystemdTransferObservation:
+            selection = _transfer_file_observation(self.selection)
+            try:
+                record = json.loads(selection.content)
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("Invalid lifecycle transfer selection.") from exc
+            if (not isinstance(record, dict) or record.get("owner") != LABEL
+                    or record.get("program_root") != str(self.root)
+                    or record.get("data_root") != str(data)):
+                raise ValueError("Lifecycle transfer selection does not match this installation.")
+            fields = _transfer_unit_fields(_transfer_systemctl_show())
+            environment_files = _typed_environment_files()
+            if (fields["Id"] != "astrid.service" or fields["LoadState"] != "loaded"
+                    or fields["FragmentPath"] != str(self.path) or not fields["ExecStart"]
+                    or fields["NeedDaemonReload"] != "no"):
+                raise ValueError("The selected systemd definition is unknown or changed.")
+            # systemctl escapes unusual paths. Until the native parser is
+            # implemented, reject these rather than guessing at a file name.
+            dropins = fields["DropInPaths"].split()
+            if (len(dropins) != len(set(dropins)) or any(
+                    not Path(path).is_absolute() or "\\" in path for path in dropins)):
+                raise ValueError("Unsupported systemd drop-in paths.")
+            files = tuple(_transfer_file_observation(path) for path in
+                          (self.path, *(Path(path) for path in dropins)))
+            if (_transfer_file_observation(self.selection) != selection
+                    or tuple(_transfer_file_observation(Path(item.path)) for item in files) != files):
+                raise ValueError("Lifecycle transfer files changed during collection.")
+            return _SystemdTransferObservation(
+                os.getuid(), selection, tuple(sorted(fields.items())), files, environment_files)
+
+        first = observe()
+        if observe() != first:
+            raise ValueError("The systemd transfer observation changed during collection.")
+        return first
+
+    def _snapshot_linux_r0(self, version: Version, data: Path, *,
+                           known_children: tuple[tuple[int, int], ...] | None = None) -> _LinuxTransferSnapshot:
+        """Collect independent observations. Nothing in this result grants authority.
+
+        The caller supplies a selected Version, not a source-authentication proof.
+        Each sample is bounded in time; equality across samples is not continuity.
+        """
+        start = time.monotonic_ns()
+        predicates: dict[str, _TransferPredicate] = {}
+        def put(name: str, result: str, reason: str) -> None:
+            predicates[name] = _TransferPredicate(result, reason)
+        binding_parts = {"version": version.document(), "data": str(data), "unit": str(self.path),
+                         "uid": os.getuid(), "known_children": known_children}
+        candidates: tuple[tuple[int, int, int, int, str], ...] = ()
+        files = []
+        # The same raw, owned objects are reread after the census.
+        for name, path in (("selection", self.selection), ("current", self.root / "current"),
+                           ("version_record", version.root / "version.json"), ("fragment", self.path)):
+            try:
+                obj = _transfer_file_observation(path)
+                files.append((name, path, obj))
+                binding_parts[name] = [obj.identity, hashlib.sha256(obj.content).hexdigest()]
+                if name == "selection":
+                    record = json.loads(obj.content)
+                    ok = (isinstance(record, dict) and record.get("owner") == LABEL and
+                          record.get("program_root") == str(self.root) and record.get("data_root") == str(data))
+                elif name == "current":
+                    ok = (version.root.parent == self.root / "versions" and
+                          obj.content.decode().strip() == version.root.name and
+                          version_id(version.root.name) == version.root.name)
+                elif name == "version_record":
+                    ok = Version.load(json.loads(obj.content)).document() == version.document()
+                else:
+                    ok = obj.content == _r0_systemd_fragment(version, data, self.log, self.env_file)
+                put(name, "match" if ok else "mismatch", "exact local comparison")
+            except (OSError, ValueError, TypeError, KeyError, UnicodeError, RuntimeError):
+                put(name, "unknown", "unreadable or unsupported local object")
+        put("source_authenticity", "unknown", "caller-supplied Version is not frozen-source authentication")
+        put("ancestor_identity", "unknown", "parent path handles and installed images are not pinned")
+        try:
+            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            ns = Path("/proc/self/ns/pid").stat().st_ino
+            if not re.fullmatch(r"[0-9a-fA-F-]{36}", boot):
+                raise ValueError("invalid boot id")
+            binding_parts["collector_scope"] = [boot, ns, os.geteuid()]
+            put("collector_scope", "match", "local boot and PID namespace observed")
+        except (OSError, ValueError):
+            put("collector_scope", "unknown", "boot or PID namespace unavailable")
+        put("manager_identity", "unknown", "systemctl output does not authenticate the user-bus manager peer")
+        put("effective_principal", "unknown", "manager peer and effective service credentials are not authenticated")
+        put("effective_action", "unknown", "systemctl text is not an unambiguous authenticated argv encoding")
+        put("effective_working_directory", "unknown", "manager output and execution defaults are unauthenticated")
+        put("effective_environment", "unknown", "manager environment and inherited values are unauthenticated")
+        put("effective_environment_files", "unknown", "manager output and referenced files are not authenticated")
+        put("effective_group", "unknown", "service group credentials are not authenticated")
+        put("native_invocation", "unknown", "manager invocation identity is not authenticated")
+        put("loaded_disk_equivalence", "unknown", "NeedDaemonReload is not a loaded-bytes proof")
+        put("historical_containment", "unknown", "a current census cannot reconstruct old launch containment")
+        put("other_jobs_triggers", "unknown", "unit properties do not enumerate every activation source")
+        fields = None
+        try:
+            if self.system != "linux" or sys.platform != "linux":
+                raise ValueError("unsupported platform")
+            sampled_fields = _snapshot_unit_fields(_transfer_systemctl_show())
+            environment_files = _typed_environment_files()
+            fields = sampled_fields
+            binding_parts["unit_properties"] = fields
+            binding_parts["environment_files"] = environment_files
+            put("environment_files", "absent" if not environment_files else "present",
+                "unverified manager typed report")
+            put("unit_target", "match" if fields["Id"] == "astrid.service" and
+                fields["FragmentPath"] == str(self.path) and fields["LoadState"] == "loaded" else "mismatch",
+                "unverified manager's unit target")
+            put("dropins", "absent" if not fields["DropInPaths"] else "present",
+                "unverified manager's reported drop-ins")
+            try:
+                paths = fields["DropInPaths"].split()
+                if len(paths) != len(set(paths)) or any(
+                        not Path(path).is_absolute() or "\\" in path for path in paths):
+                    raise ValueError("unsupported drop-in paths")
+                dropins = [_transfer_file_observation(Path(path)) for path in paths]
+                for obj in dropins:
+                    files.append(("dropin", Path(obj.path), obj))
+                binding_parts["dropins"] = [[obj.path, obj.identity, hashlib.sha256(obj.content).hexdigest()]
+                                            for obj in dropins]
+                put("dropin_files", "match", "reported drop-in files sampled; effective meaning unauthenticated")
+            except (OSError, ValueError, RuntimeError):
+                put("dropin_files", "unknown", "reported drop-in paths or files unavailable")
+            for name, field_name, expected in (("active_state", "ActiveState", "inactive"),
+                    ("sub_state", "SubState", "dead"), ("main_pid", "MainPID", "0"),
+                    ("control_pid", "ControlPID", "0"), ("unit_job", "Job", ""),
+                    ("reload_needed", "NeedDaemonReload", "no")):
+                value = fields[field_name]
+                put(name, "match" if value == expected else "mismatch", "unverified manager report")
+            put("unit_file_state", "match" if fields["UnitFileState"] in {"enabled", "disabled", "static"}
+                else "unknown", "unverified manager report")
+        except (OSError, subprocess.SubprocessError, ValueError, UnicodeError):
+            for name in ("unit_target", "dropins", "dropin_files", "environment_files", "active_state", "sub_state", "main_pid", "control_pid",
+                         "unit_job", "reload_needed", "unit_file_state"):
+                put(name, "unknown", "systemd query unavailable or ambiguous")
+        group = fields["ControlGroup"] if fields else ""
+        if group and (not group.startswith("/") or ".." in Path(group).parts):
+            group = ""
+        candidates, complete, reason = _snapshot_proc_census(version.root, group, known_children or ())
+        selected = [c for c in candidates if "selected-path" in c[4]]
+        members = [c for c in candidates if "unit-cgroup" in c[4]]
+        known_live = [c for c in candidates if (c[0], c[1]) in (known_children or ())]
+        # /proc can silently hide processes (hidepid or a restricted namespace).
+        # Successful reads cannot certify a complete system-wide view.
+        put("proc_visibility", "unknown", "proc mount and namespace completeness are not authenticated")
+        put("selected_processes", "present" if selected else "unknown", reason)
+        put("cgroup_members", "present" if members else "unknown",
+            reason if group else "manager did not report an observable cgroup")
+        put("known_children", "present" if known_live else "unknown",
+            reason if known_children is not None else "no known-child inventory supplied")
+        put("current_descendant_completeness", "unknown", "escaped and reparented children cannot be attributed by this census")
+        stable = True
+        for _, path, previous in files:
+            try:
+                stable = stable and _transfer_file_observation(path) == previous
+            except (OSError, ValueError, RuntimeError):
+                stable = False
+        if fields is not None:
+            try:
+                later_fields = _snapshot_unit_fields(_transfer_systemctl_show())
+                later_environment_files = _typed_environment_files()
+                stable = stable and later_fields == fields and later_environment_files == environment_files
+            except (OSError, subprocess.SubprocessError, ValueError, UnicodeError):
+                stable = False
+        else:
+            stable = False
+        put("sample_stability", "match" if stable and all(any(item[0] == name for item in files)
+                             for name in ("selection", "current", "version_record", "fragment"))
+            and predicates["dropin_files"].result == "match" else "unknown",
+            "endpoint samples only; not continuous identity")
+        digest = hashlib.sha256(json.dumps(binding_parts, sort_keys=True, separators=(",", ":"),
+                                           ensure_ascii=True).encode()).hexdigest()
+        return _LinuxTransferSnapshot(digest, start, time.monotonic_ns(), predicates, candidates)
+
+    def _prepare_lifecycle_transfer(self) -> None:
+        """Fail closed until census, custody, and reversible fencing exist."""
+        raise RuntimeError(
+            "Lifecycle transfer is unsupported: historical containment, retained custody, "
+            "and replacement-safe restart fencing are unavailable."
+        )
+
+    def _observe_stopped_systemd_transfer_definition(self, data: Path) -> _SystemdTransferObservation:
+        """Reject visibly non-stopped states; a matching sample grants no authority.
+
+        The unit's current state and job do not prove absence of historical
+        descendants or other queued activations.  In particular this result
+        must not be used to install a gate, stop, register or start a unit.
+        """
+        observation = self._observe_systemd_transfer_definition(data)
+        fields = dict(observation.properties)
+        if (fields["ActiveState"] != "inactive" or fields["SubState"] != "dead"
+                or fields["MainPID"] != "0" or fields["ControlPID"] != "0"
+                or fields["Job"] != ""
+                or fields["UnitFileState"] not in {"enabled", "disabled", "static"}):
+            raise ValueError("The observed systemd unit is not in a supported stopped state.")
+        return observation
 
     def _launchd_stop_identity(self, value: str, data: Path) -> tuple[dict, dict]:
         """Validate and snapshot the loaded, installer-owned LaunchAgent."""
