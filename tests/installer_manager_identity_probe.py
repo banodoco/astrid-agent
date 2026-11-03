@@ -37,13 +37,21 @@ def record(name, value, detail=None):
 
 def proc(pid):
     p = pathlib.Path('/proc') / str(pid)
-    stat = (p / 'stat').read_text()
-    fields = stat[stat.rfind(')') + 2:].split()
-    return {'pid': pid, 'start_ticks': int(fields[19]),
-            'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-            'pidns_inode': (p / 'ns/pid').stat().st_ino,
-            'userns_inode': (p / 'ns/user').stat().st_ino,
-            'exe': os.readlink(p / 'exe'), 'uid': p.stat().st_uid}
+    def observe(fn):
+        try:
+            return {'state': 'known', 'value': fn()}
+        except (OSError, ValueError, IndexError) as exc:
+            return {'state': 'unknown', 'error': type(exc).__name__,
+                    'errno': getattr(exc, 'errno', None)}
+    def ticks():
+        stat = (p / 'stat').read_text()
+        return int(stat[stat.rfind(')') + 2:].split()[19])
+    return {'pid': pid, 'start_ticks': observe(ticks),
+            'boot_id': observe(lambda: pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()),
+            'pidns_inode': observe(lambda: (p / 'ns/pid').stat().st_ino),
+            'userns_inode': observe(lambda: (p / 'ns/user').stat().st_ino),
+            'exe': observe(lambda: os.readlink(p / 'exe')),
+            'uid': observe(lambda: p.stat().st_uid)}
 
 lib = C.CDLL(ctypes.util.find_library('systemd'), use_errno=True)
 libc = C.CDLL(None)
@@ -166,8 +174,12 @@ def main():
         systemctl('daemon-reload')
         peer = Peer(PRIVATE)
         try:
-            peer_id = peer.peer; first = proc(peer_id[0]); fd = os.pidfd_open(peer_id[0])
+            peer_id = peer.peer; first = proc(peer_id[0]); fd = None
             result['manager'] = {'peer_credentials': peer_id, 'first': first, 'socket': str(PRIVATE)}
+            try:
+                fd = os.pidfd_open(peer_id[0]); result['manager']['pidfd_open'] = {'state': 'known'}
+            except OSError as exc:
+                result['manager']['pidfd_open'] = {'state': 'unknown', 'errno': exc.errno}
             record('peer_uid_is_caller', 'observed' if peer_id[1] == os.getuid() else 'failed')
             try:
                 path = peer.load(UNIT); result['unit_object_path'] = path
@@ -186,11 +198,16 @@ def main():
                 systemctl('daemon-reload')
                 versions.append(snapshot('after_reload'))
                 result['selected_properties'] = versions
-                last = proc(peer_id[0]); poller = select.poll(); poller.register(fd, select.POLLIN)
-                exited = bool(poller.poll(0))
+                last = proc(peer_id[0]); exited = None
+                if fd is not None:
+                    poller = select.poll(); poller.register(fd, select.POLLIN); exited = bool(poller.poll(0))
                 end_peer = struct.unpack('3i', peer.identity_socket.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i')))
                 result['manager'].update({'last': last, 'peer_credentials_end': end_peer, 'pidfd_readable_at_end': exited})
-                record('same_process_incarnation_bracket', 'observed' if first == last and peer_id == end_peer and not exited else 'failed')
+                fields = ('start_ticks', 'boot_id', 'pidns_inode', 'userns_inode', 'exe', 'uid')
+                comparable = all(first[k]['state'] == last[k]['state'] == 'known' for k in fields)
+                mismatch = any(first[k]['state'] == last[k]['state'] == 'known' and first[k]['value'] != last[k]['value'] for k in fields)
+                state = 'failed' if mismatch or peer_id != end_peer or exited is True else ('observed' if comparable and exited is False else 'unknown')
+                record('same_process_incarnation_bracket', state, 'all components and live retained pidfd required')
                 descriptions = [v['Description'] for v in versions]
                 envs = [v['Environment'] for v in versions]
                 passed = descriptions == ['Identity discriminator before', 'Identity discriminator before', 'Identity discriminator after']
@@ -199,7 +216,8 @@ def main():
                 record('complete_effective_definition', 'unknown', 'GetAll coverage, inherited environment, routes, parser profile and independent verifier unproved')
                 record('authenticated_manager_epoch', 'unknown', 'peer/process bracket alone does not prove restart/namespace and issuer-barrier requirements')
             finally:
-                os.close(fd)
+                if fd is not None:
+                    os.close(fd)
         finally:
             peer.close()
     finally:
