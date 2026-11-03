@@ -142,7 +142,9 @@ def run(uid, directory):
     ledger = OneUseRequest('request-1')
     for action in ('request-1', 'drift'):
         child = subprocess.Popen(argv, cwd=str(directory), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, text=True, preexec_fn=lambda: drop(uid, account.pw_gid))
+                                 stderr=subprocess.PIPE, text=True,
+                                 env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'TMPDIR': '/tmp'},
+                                 preexec_fn=lambda: drop(uid, account.pw_gid))
         try:
             fd = os.pidfd_open(child.pid)
             controls = json.loads(child.stdout.readline())
