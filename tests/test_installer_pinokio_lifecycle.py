@@ -98,6 +98,10 @@ class PinokioBackend:
         self.calls.append(("doctor", version, data, bundle))
         return bundle
 
+    def remove_skills(self, version):
+        self.calls.append(("remove_skills", version))
+        return {"ok": True, "destinations": []}
+
     def unregister(self):
         self.calls.append(("unregister",))
 
@@ -626,7 +630,10 @@ def test_managed_successful_uninstall_releases_pointer_but_keeps_workspace(tmp_p
     workspace_file.parent.mkdir()
     workspace_file.write_text("preserved", encoding="utf-8")
     monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("astrid.installer.backend.remove_shim", lambda _service: None)
+    monkeypatch.setattr(
+        "astrid.installer.backend.remove_owned_command",
+        lambda _service, _shim_path, _path_entry: {"shim": False, "path": False},
+    )
 
     backend.unregister()
     residue = backend.remove(root, data, delete_data=False)
@@ -661,7 +668,10 @@ def test_managed_uninstall_keeps_manager_pointer_when_files_remain(tmp_path, mon
         "chat_settings": {},
     })
     monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("astrid.installer.backend.remove_shim", lambda _service: None)
+    monkeypatch.setattr(
+        "astrid.installer.backend.remove_owned_command",
+        lambda _service, _shim_path, _path_entry: {"shim": False, "path": False},
+    )
     original_rmtree = __import__("shutil").rmtree
 
     def fail_versions(path, *args, **kwargs):
@@ -716,7 +726,10 @@ def test_partial_uninstall_recreates_owned_marker_when_empty_program_directory_i
         record["managed_by"] = manager
     write_json(backend.service.selection, record)
     monkeypatch.setattr(backend, "preflight_remove", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("astrid.installer.backend.remove_shim", lambda _service: None)
+    monkeypatch.setattr(
+        "astrid.installer.backend.remove_owned_command",
+        lambda _service, _shim_path, _path_entry: {"shim": False, "path": False},
+    )
     original = Path.rmdir
 
     def locked(path):
