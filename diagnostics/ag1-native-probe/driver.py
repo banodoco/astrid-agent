@@ -17,6 +17,10 @@ sys.path.insert(0, str(RUN / 'agent' / 'scripts'))
 import ci_journey as journey
 import journey_version_jumps as jumps
 
+# Keep the existing identity-checked readiness and ownership checks on the
+# selected case port; frozen R0's installer also consumes this environment.
+journey.HEALTH_URL = f"http://127.0.0.1:{int(os.environ['ASTRID_RUNTIME_DOOR_PORT'])}/api/runtime/v1/health"
+
 
 def dump(name, value):
     (OUT / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
@@ -111,7 +115,7 @@ def main():
         assert os.getuid() != 0
         dump('identity.json', {'uid': os.getuid(), 'euid': os.geteuid(), 'home': str(Path.home()),
              'bus': os.environ.get('DBUS_SESSION_BUS_ADDRESS'), 'runtime_dir': os.environ.get('XDG_RUNTIME_DIR'),
-             'mode': mode, 'candidate': '9482dda551130fa1d03d6c114c6f8199572e1422',
+             'mode': mode, 'health_url': journey.HEALTH_URL, 'candidate': '9482dda551130fa1d03d6c114c6f8199572e1422',
              'runtime': '2776ba973b6c8f3555b5629b0840d9691a98d3c2',
              'r0_agent': '3204bb00135bec8ee2d2d3fb21eed5abfceca649',
              'r0_runtime': '6d53a19070faf63fc15ae1f81417722edc2c8a5f'})
@@ -139,6 +143,9 @@ def main():
             if rc: raise RuntimeError('disposable stop failed')
             snap('already-stopped')
         assert not subprocess.check_output(['git', '-C', str(RUN / 'candidate'), 'status', '--porcelain'], text=True).strip()
+        # Separate, adjacent sample: retain the candidate's exact query and
+        # parser outcome even when the candidate maps an exception to unknown.
+        command('systemd-capture', [py, RUN / 'capture-systemd.py', RUN / 'candidate', OUT], 30)
         rc = command('probe', [py, RUN / 'native-probe.py', '--agent', RUN / 'candidate',
                      '--head', '9482dda551130fa1d03d6c114c6f8199572e1422', '--root', RUN / 'program',
                      '--data', RUN / 'data', '--home', RUN / 'home', '--expect', mode], 120)

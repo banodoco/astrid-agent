@@ -8,7 +8,7 @@ attempt=${GITHUB_RUN_ATTEMPT:?}
 [[ "$run_id" =~ ^[0-9]+$ && "$attempt" =~ ^[0-9]+$ ]]
 mode=${1:?running or stopped}
 [[ "$mode" = running || "$mode" = stopped ]]
-if [[ "$mode" = running ]]; then suffix=r; else suffix=s; fi
+if [[ "$mode" = running ]]; then suffix=r; port=17340; else suffix=s; port=17341; fi
 name="ap${run_id}x${attempt}${suffix}"
 [[ ${#name} -le 32 ]]
 out="$workspace/suite-artifacts/$mode"
@@ -56,13 +56,19 @@ log "preflight host=$(uname -a) caller=$(id) pid1=$(ps -p 1 -o comm=)"
 [[ $(ps -p 1 -o comm= | tr -d ' ') = systemd ]]
 ! getent passwd "$name" >/dev/null
 [[ -d "$runner_temp" && ! -L "$runner_temp" ]]
-# Do not interfere with another instance bound to the standard health port.
-python3 - <<'PY'
-import socket
+# Do not interfere with another instance; each serial case uses its own port.
+log "checking health port 127.0.0.1:$port"
+if ! python3 - "$port" <<'PY'
+import socket, sys
 s=socket.socket()
-s.bind(('127.0.0.1', 17340))
+s.bind(('127.0.0.1', int(sys.argv[1])))
 s.close()
 PY
+then
+  ss -tanp >"$out/port-sockets.txt" 2>&1 || true
+  log "health port preflight failed: $port"
+  exit 1
+fi
 # GitHub's /home/runner is mode 0750. A different disposable user cannot
 # traverse RUNNER_TEMP, so create a unique task-owned tree on the ephemeral VM.
 run=$(mktemp -d "/var/tmp/lifecycle-${run_id}-${attempt}-XXXXXX")
@@ -72,6 +78,7 @@ cp -a agent/tests/fixtures/release0 "$run/agent/tests/fixtures/"
 cp app/public/install app/public/install-manifest.json "$run/app/public/"
 cp agent/diagnostics/ag1-native-probe/driver.py "$run/driver.py"
 cp agent/diagnostics/ag1-native-probe/native-probe.py "$run/native-probe.py"
+cp agent/diagnostics/ag1-native-probe/capture-systemd.py "$run/capture-systemd.py"
 [[ $(sha256sum "$run/native-probe.py" | cut -d' ' -f1) = 2d580aafc4c6b095febea8f4983cb62e3e1e2e5e376cbf094edf679bb5e23c60 ]]
 git clone --no-hardlinks --no-checkout agent "$run/candidate"
 git -C "$run/candidate" fetch https://github.com/banodoco/astrid-agent.git 9482dda551130fa1d03d6c114c6f8199572e1422
@@ -121,7 +128,7 @@ if ! sudo -u "$name" test -S "/run/user/$uid_owned/bus"; then
   namei -l "$run/home" >"$out/home-ancestors.txt" 2>&1 || true
   exit 91
 fi
-user_env=(HOME="$run/home" USER="$name" LOGNAME="$name" XDG_RUNTIME_DIR="/run/user/$uid_owned" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid_owned/bus" XDG_CONFIG_HOME="$run/home/.config" XDG_DATA_HOME="$run/home/.local/share" XDG_STATE_HOME="$run/home/.local/state" TMPDIR="$run/tmp" ASTRID_RUNTIME_DATA_ROOT="$run/data" ASTRID_CI_PROGRAM_ROOT="$run/program" ASTRID_CI_DATA_ROOT="$run/data" LOOP_ROOT="$run" PROBE_MODE="$mode" BROWSER=/bin/true)
+user_env=(HOME="$run/home" USER="$name" LOGNAME="$name" XDG_RUNTIME_DIR="/run/user/$uid_owned" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid_owned/bus" XDG_CONFIG_HOME="$run/home/.config" XDG_DATA_HOME="$run/home/.local/share" XDG_STATE_HOME="$run/home/.local/state" TMPDIR="$run/tmp" ASTRID_RUNTIME_DATA_ROOT="$run/data" ASTRID_RUNTIME_DOOR_PORT="$port" ASTRID_CI_PROGRAM_ROOT="$run/program" ASTRID_CI_DATA_ROOT="$run/data" LOOP_ROOT="$run" PROBE_MODE="$mode" BROWSER=/bin/true)
 sudo -u "$name" env "${user_env[@]}" systemctl --user show -p UnitPath -p Version >"$out/manager-preflight.txt"
 sudo -u "$name" env "${user_env[@]}" systemctl --user show-environment >"$out/manager-environment.txt"
 sudo systemctl show "user@$uid_owned.service" -p Id -p MainPID -p ActiveState -p FragmentPath -p DropInPaths >"$out/manager-identity.txt"
