@@ -8,6 +8,7 @@ import pytest
 from astrid import skills
 from astrid.installer import service
 from astrid.skills import cli, state
+from astrid.skills.harnesses.hermes import PACKS_DIR_FOR_EXTERNAL
 
 
 @pytest.mark.parametrize("command", ["sync", "install"])
@@ -52,3 +53,29 @@ def test_off_reports_and_persists_without_readding(tmp_path, capsys, command, js
         capsys.readouterr()
         assert not owned.exists()
         assert edited.read_bytes() == edit_bytes and foreign.is_symlink()
+
+
+@pytest.mark.parametrize("command", ["sync", "install"])
+def test_external_dir_off_dry_run_is_read_only_through_cli(tmp_path, monkeypatch, capsys, command):
+    home = Path.home()
+    hermes_home = home / ".hermes"
+    hermes_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("ASTRID_STATE_HOME", str(tmp_path / "state-home"))
+    record_path = service.install_selection(home, sys.platform)
+    service.write_json(record_path, {"owner": service.LABEL, "program_root": str(tmp_path / "program"),
+        "choices": {"skills": True, "skill_copies": False}})
+    skills.install(["foley"], ["hermes"], mechanism="external-dir")
+    config_path = hermes_home / "config.yaml"
+    config_bytes = config_path.read_bytes()
+    state_bytes = state.state_path().read_bytes()
+    install_record_bytes = record_path.read_bytes()
+
+    assert cli.main([command, "--skills", "off", "--dry-run", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+    action = next(row for row in report["actions"] if row["harness"] == "hermes")
+    assert entry in action["removed"]
+    assert config_path.read_bytes() == config_bytes
+    assert state.state_path().read_bytes() == state_bytes
+    assert record_path.read_bytes() == install_record_bytes

@@ -23,6 +23,7 @@ from astrid.skills.harnesses import (
     HermesAdapter,
 )
 from astrid.skills.harnesses.codex import BEGIN_MARKER, END_MARKER
+from astrid.skills.harnesses.hermes import PACKS_DIR_FOR_EXTERNAL
 
 
 class _Tmp:
@@ -258,6 +259,45 @@ class HermesExternalDirTest(unittest.TestCase):
             data = yaml.safe_load((fx.home / ".hermes" / "config.yaml").read_text(encoding="utf-8"))
             external_dirs = (data.get("skills") or {}).get("external_dirs") or []
             self.assertFalse(any(entry.endswith("/astrid/packs") for entry in external_dirs))
+        finally:
+            fx.close()
+
+    def test_external_dir_off_dry_run_preserves_config_and_install_records(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
+            config_path = fx.home / ".hermes" / "config.yaml"
+            config_bytes = config_path.read_bytes()
+            state_bytes = fx.state_path.read_bytes()
+            entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+
+            report = skills.disable_owned(state_path=fx.state_path, dry_run=True)
+
+            self.assertEqual(config_path.read_bytes(), config_bytes)
+            self.assertEqual(fx.state_path.read_bytes(), state_bytes)
+            action = next(row for row in report["actions"] if row["harness"] == "hermes")
+            self.assertIn(entry, action["removed"])
+        finally:
+            fx.close()
+
+    def test_external_dir_off_removes_only_recorded_entry_and_reports_it(self) -> None:
+        fx = _Tmp()
+        try:
+            skills.install(["foley"], ["hermes"], mechanism="external-dir", state_path=fx.state_path)
+            config_path = fx.home / ".hermes" / "config.yaml"
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            data["skills"]["external_dirs"].append("/unrelated/external-skills")
+            data["other"] = {"keep": "these bytes semantically"}
+            config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+            entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
+
+            report = skills.disable_owned(state_path=fx.state_path)
+
+            after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(after["skills"]["external_dirs"], ["/unrelated/external-skills"])
+            self.assertEqual(after["other"], {"keep": "these bytes semantically"})
+            action = next(row for row in report["actions"] if row["harness"] == "hermes")
+            self.assertIn(entry, action["removed"])
         finally:
             fx.close()
 

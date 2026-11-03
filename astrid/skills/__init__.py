@@ -235,15 +235,21 @@ def disable_owned(*, state_path: Path | None = None, dry_run: bool = False) -> d
             target = Path(record["target"]).expanduser()
             if record.get("mechanism") == "external-dir" and harness == "hermes":
                 external_targets.add(target)
+                recorded_units = [unit for unit in descriptors if unit.skill_id == skill_id]
+                if not any(target == adapter.target_for(unit) for unit in recorded_units):
+                    report["conflicts"].append({"harness": harness, "path": str(target),
+                        "reason": "recorded Hermes external-dir target does not match this skill; preserved"})
+                    harness_report["preserved"].append(str(target))
+                    continue
                 try:
-                    from .harnesses.hermes import PACKS_DIR_FOR_EXTERNAL
-                    changed = adapter._rewrite_config("uninstall", str(PACKS_DIR_FOR_EXTERNAL.resolve()))
+                    steps = adapter.apply("uninstall", descriptors, mechanism="external-dir", dry_run=dry_run)
                 except (OSError, RuntimeError, ValueError) as exc:
                     report["conflicts"].append({"harness": harness, "path": str(target), "reason": str(exc)})
                     harness_report["preserved"].append(str(target))
                     continue
-                if changed:
-                    harness_report["removed"].append(str(target))
+                for step in steps:
+                    if step.extras.get("changed"):
+                        harness_report["removed"].append(step.extras["entry"])
                 retained_records.pop(skill_id, None)
         for target in sorted(paths - external_targets):
             try:

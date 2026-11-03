@@ -87,11 +87,18 @@ class HermesAdapter(HarnessAdapter):
         force = bool(opts.get("force"))
         if mechanism == "external-dir":
             entry = str(PACKS_DIR_FOR_EXTERNAL.resolve())
-            changed = self._rewrite_config(action, entry)
+            dry_run = bool(opts.get("dry_run"))
+            if action == "uninstall" and dry_run:
+                config = self._load_config()
+                skills = config.get("skills")
+                external_dirs = skills.get("external_dirs", []) if isinstance(skills, dict) else []
+                changed = entry in (external_dirs or [])
+            else:
+                changed = self._rewrite_config(action, entry)
             verb = "registered" if action == "install" else "removed"
             return [
                 PlannedStep(
-                    description=(verb if changed else "unchanged") + f" {self.config_path}",
+                    description=(verb if changed else "unchanged") + f" {entry}",
                     target=self.config_path,
                     extras={"changed": changed, "mechanism": "external-dir", "entry": entry},
                 )
