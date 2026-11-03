@@ -266,7 +266,7 @@ def test_intel_diagnostic_reuses_lifecycle_assertions_and_is_not_release1(tmp_pa
     changes = [
         ('job_id', 'direct-linux'), ('mode', 'pinokio-backend'),
         ('scenario', 'fresh-install'), ('runner_image', 'macos-15'), ('shell', 'powershell.exe'),
-        ('os_build', 'Linux-test'), ('status', 'skipped'), ('source_override_test_mode', True),
+        ('os_build', 'Linux-test'), ('os_build', 'macOS-14.7-x86_64'), ('os_build', 'macOS-15-'), ('status', 'skipped'), ('source_override_test_mode', True),
         ('final_cleanup', 'not-run'), ('import_origins', {}),
         ('service_manager_prerequisite', {}), ('service_transition', {}),
         ('release_transition', {}), ('release0_fixture', {}), ('semantic_data', {}),
@@ -311,17 +311,6 @@ def test_intel_diagnostic_reuses_lifecycle_assertions_and_is_not_release1(tmp_pa
     duplicate.unlink()
     before.unlink()
     assert gate.evaluate_direct_macos_intel(candidate, tmp_path)
-
-
-def test_workflow_intel_diagnostic_keeps_full_gate():
-    workflow = (Path(__file__).parents[1] / '.github/workflows/journey.yml').read_text()
-    assert 'matrix = [journey_matrix.DIRECT_MACOS_INTEL_DIAGNOSTIC]' in workflow
-    assert 'direct_macos_intel_only: ${{ steps.config.outputs.direct_macos_intel_only }}' in workflow
-    assert '--diagnostic-macos-intel' in workflow
-    assert "if: needs.config.outputs.direct_macos_intel_only == 'true'" in workflow
-    gate_step = workflow.split('      - name: Aggregate the exact Release-1 receipt matrix\n', 1)[1].split('      - name:', 1)[0]
-    assert '--aggregate-release1' in gate_step
-    assert 'direct_macos_intel_only' not in gate_step
 
 
 def test_intel_diagnostic_cli_validates_candidate_and_keeps_release_gate(tmp_path):

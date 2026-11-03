@@ -30,12 +30,6 @@ RELEASE1_MATRIX: Final = (
     {"job_id": "pinokio-fully-local-windows", "mode": "pinokio-fully-local", "runner": "windows-2022", "shell": "powershell.exe", "os": "windows"},
 )
 
-# This separate diagnostic never substitutes for the fixed Release-1 row.
-DIRECT_MACOS_INTEL_DIAGNOSTIC: Final = {
-    **next(row for row in RELEASE1_MATRIX if row["job_id"] == "direct-macos"),
-    "runner": "macos-15-intel",
-}
-
 RELEASE1_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_MATRIX)
 RELEASE1_MODES: Final = tuple(sorted({row["mode"] for row in RELEASE1_MATRIX}))
 

@@ -12,7 +12,6 @@ from pathlib import Path
 
 if __package__:
     from .journey_matrix import (
-        DIRECT_MACOS_INTEL_DIAGNOSTIC,
         GPU_MATRIX,
         END_STATE_INVENTORY,
         M4_4A_BACKEND_MATRIX,
@@ -31,7 +30,6 @@ if __package__:
 else:
     try:
         from journey_matrix import (
-            DIRECT_MACOS_INTEL_DIAGNOSTIC,
             GPU_MATRIX,
             END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
@@ -49,7 +47,6 @@ else:
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
-            DIRECT_MACOS_INTEL_DIAGNOSTIC,
             GPU_MATRIX,
             END_STATE_INVENTORY,
             M4_4A_BACKEND_MATRIX,
@@ -81,6 +78,13 @@ RUNNER_PROVENANCE = {
     "windows-2022": ("Windows", "win22"),
     "macos-15": ("macOS", "macos15"),
     "macos-15-intel": ("macOS", "macos15"),
+}
+
+
+# Diagnostic only: the fixed nine-row release matrix is unchanged.
+DIRECT_MACOS_INTEL_DIAGNOSTIC = {
+    **next(row for row in RELEASE1_MATRIX if row["job_id"] == "direct-macos"),
+    "runner": "macos-15-intel",
 }
 
 
@@ -249,7 +253,9 @@ def _release1_row_errors(candidate, contract, row):
     if contract["runner"] == "macos-15-intel" and not _intel_provenance_matches(provenance):
         errors.append(f"{job_id}: Intel macOS architecture provenance does not match")
     os_build = row.get("os_build")
-    if not isinstance(os_build, str) or not os_build.startswith(expected_os + "-"):
+    if (not isinstance(os_build, str) or not os_build.startswith(expected_os + "-")
+            or (contract["runner"] == "macos-15-intel"
+                and not re.match(r"^macOS-15(?:\.|-)[^\s]+$", os_build))):
         errors.append(f"{job_id}: OS build does not match the required matrix")
     if row.get("source_override_test_mode") is not False:
         errors.append(f"{job_id}: source override is not admissible")
