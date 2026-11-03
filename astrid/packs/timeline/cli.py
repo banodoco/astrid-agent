@@ -69,8 +69,9 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli.domain_output import DomainResult, envelope_dict, print_result, render_human
-from astrid.core.cli.registration import CommandSpec, register_product_commands
+from astrid.pack_api import print_result
+from astrid.core.cli.domain_output import DomainResult, envelope_dict, render_human
+from astrid.pack_api import CommandSpec, register_product_commands
 from astrid.core.cli.task_progress import task_handoff
 from astrid.core.timeline.clip_names import clip_media_name
 from astrid.sdk.workspace_client import WorkspaceClientError

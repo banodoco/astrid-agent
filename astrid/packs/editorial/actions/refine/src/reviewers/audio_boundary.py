@@ -3,12 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from astrid.core.timeline import (
-    ROLE_DURATION_BOUNDS,
-    TOTAL_DURATION_BOUNDS,
-    TRIM_BOUND_EXTENSION_SEC,
-    load_registry,
-)
+from astrid.pack_api import ROLE_DURATION_BOUNDS, TOTAL_DURATION_BOUNDS, TRIM_BOUND_EXTENSION_SEC, load_registry
 from astrid.packs.editorial.actions.refine.src.reviewers import Reviewer
 from astrid.packs.editorial.shared.hype import enriched_arrangement
 from astrid.packs.editorial.shared.hype.text_match import segments_in_range, token_set_similarity, tokenize

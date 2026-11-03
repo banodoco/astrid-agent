@@ -823,7 +823,8 @@ def total_frames_of(snapshot: Mapping) -> int:
 
 def picture_cut_frames(snapshot: Mapping, fps: Fraction, total: int) -> list[dict]:
     """The shared picture cuts (``astrid.core.timeline.cuts``) on this render's frame clock."""
-    from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot, picture_cuts
+    from astrid.pack_api import picture_cuts
+    from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot
 
     from .motion.model import elements_from_occurrences, words
 

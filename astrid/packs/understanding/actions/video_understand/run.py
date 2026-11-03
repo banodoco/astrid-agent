@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('understanding.video_understand')
 import argparse
@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.cli_choices import add_choice_arg
-from astrid.core.contracts.errors import AstridError
-from astrid.core.media import ffprobe_duration_seconds
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import add_choice_arg
+from astrid.pack_api import AstridError
+from astrid.pack_api import ffprobe_duration_seconds
 from astrid.core.util.llm_clients import build_gemini_client
 from astrid.packs.understanding.shared._common import emit_dry_run_preview
 
@@ -72,7 +72,7 @@ RESPONSE_SCHEMA = {
 }
 
 
-from astrid.core.contracts.die import pack_die
+from astrid.pack_api import pack_die
 
 
 def _die(message: str) -> None:

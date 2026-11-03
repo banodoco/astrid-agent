@@ -16,7 +16,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from astrid.core.contracts.errors import AstridError, AstridValueError, render_astrid_error
+from astrid.pack_api import AstridError, AstridValueError, render_astrid_error
 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
 
 _PINOKIO_INFO_URL = "http://127.0.0.1:42000/pinokio/info"

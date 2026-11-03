@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from astrid.core import timeline
-from astrid.core._shared.jsonio import write_json_atomic
+from astrid.pack_api import write_json_atomic
 from astrid.core.foundation.hash import validate_digest
 from astrid.core.timeline.duration import render_clock
 from astrid.sdk.pagination import paged_rows

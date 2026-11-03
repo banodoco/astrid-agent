@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint
+from astrid.pack_api import CredentialsScope
 from astrid.core.util.secrets import load_local_api_key_with_source
 
 guard_canonical_entrypoint('training.search_loras')
@@ -19,7 +19,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli_choices import add_choice_arg
+from astrid.pack_api import add_choice_arg
 
 HUGGING_FACE_MODELS_API = "https://huggingface.co/api/models"
 DEFAULT_DISCOVERY_LIMIT = 1000

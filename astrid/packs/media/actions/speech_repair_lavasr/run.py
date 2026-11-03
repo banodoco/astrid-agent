@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.pack_api import AstridError
+from astrid.pack_api import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint("media.speech_repair_lavasr")
 
@@ -15,11 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.generation.backends.fal import FalBackend
-from astrid.core.model_catalog.registry import ModelRegistry
-from astrid.core.experiments.capture import sanitize_portable
-from astrid.core.util.generation_helpers import write_journal_atomic
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import FalBackend
+from astrid.pack_api import ModelRegistry
+from astrid.pack_api import sanitize_portable
+from astrid.pack_api import write_journal_atomic
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 

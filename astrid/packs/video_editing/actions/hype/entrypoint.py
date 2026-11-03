@@ -12,13 +12,13 @@
 
 from __future__ import annotations
 
-from astrid.core.contracts.errors import AstridError, render_astrid_error
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import AstridError, render_astrid_error
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('video_editing.hype')
 import sys
 
-from astrid.core.project.runtime import ProjectRuntimeError
+from astrid.pack_api import ProjectRuntimeError
 
 # Extracted modules
 from astrid.packs.video_editing.actions.hype.config import (  # noqa: F401 — re-exported for command compatibility

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.pack_api import guard_canonical_entrypoint
 
 guard_canonical_entrypoint('training.pool_merge')
 import argparse
@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from astrid.core import timeline
-from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.audit import register_outputs
+from astrid.pack_api import build_manifest, write_manifest
+from astrid.pack_api import register_outputs
 from astrid.core.element import catalog as effects_catalog
-from astrid.core.util.time import utc_now_seconds
+from astrid.pack_api import utc_now_seconds
 
 
 def _stable_pool_id(effect_id: str) -> str:

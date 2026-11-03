@@ -36,17 +36,11 @@ if __package__ in {None, ""}:
         sys.path.insert(0, str(_CHECKOUT_ROOT))
 
 from astrid.core import timeline
-from astrid.core.foundation.atomic_io import write_json_atomic
+from astrid.pack_api import write_json_atomic
 from astrid.core.rendering.artifacts import validate_render_result
 from astrid.core.rendering.assets import AssetMaterializer
-from astrid.core.rendering.contracts import (
-    SCHEMA_VERSION,
-    AudioOwnership,
-    RenderRequest,
-    RenderResult,
-    SupportReport,
-    VideoArtifact,
-)
+from astrid.pack_api import SCHEMA_VERSION
+from astrid.core.rendering.contracts import AudioOwnership, RenderRequest, RenderResult, SupportReport, VideoArtifact
 from astrid.core.rendering.errors import (
     RendererException,
     make_renderer_error,

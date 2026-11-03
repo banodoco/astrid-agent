@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from astrid.core._shared.jsonio import write_json_atomic
+from astrid.pack_api import write_json_atomic
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.packs.training.shared.manifest import validate_schema
 from astrid.packs.training.shared.manifest_adapters.ai_toolkit_ltx import (

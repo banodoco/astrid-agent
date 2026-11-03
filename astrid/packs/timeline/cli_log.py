@@ -6,7 +6,8 @@ import json
 import sys
 from typing import Any
 
-from astrid.core.cli.domain_output import DomainResult, print_result
+from astrid.pack_api import print_result
+from astrid.core.cli.domain_output import DomainResult
 from astrid.sdk.contracts import ErrorObject
 
 
