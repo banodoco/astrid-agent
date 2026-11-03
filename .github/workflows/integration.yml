@@ -4,6 +4,7 @@ name: Exact tuple G3 integration
   push:
     branches:
     - lane/M-CI/C-05
+    - lane/M-CI/C-05-TRIGGER-R1
     paths:
     - .github/workflows/c05-run-request
 permissions:
