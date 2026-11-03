@@ -1,0 +1,110 @@
+"""Read-only systemd observations are not lifecycle transfer authority."""
+
+import subprocess
+from unittest.mock import Mock
+
+import pytest
+
+from astrid.installer import service
+from astrid.installer.core import write_json
+
+
+@pytest.fixture
+def observed(tmp_path, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    manager = service.Service(tmp_path / "program", tmp_path / "log", Mock(),
+                              home=tmp_path, system="linux")
+    data = tmp_path / "data"
+    write_json(manager.selection, {"owner": service.LABEL,
+                                  "program_root": str(manager.root), "data_root": str(data)})
+    manager.path.parent.mkdir(parents=True, exist_ok=True)
+    manager.path.write_text("[Service]\nExecStart=/selected\n")
+    dropin = manager.path.parent / "astrid.service.d" / "override.conf"
+    dropin.parent.mkdir()
+    dropin.write_text("[Service]\nRestart=no\n")
+    fields = dict.fromkeys(service._TRANSFER_UNIT_PROPERTIES, "")
+    fields.update(Id="astrid.service", LoadState="loaded", FragmentPath=str(manager.path),
+                  DropInPaths=str(dropin), ExecStart="{ path=/selected ; argv[]=/selected ; }",
+                  User="1001", Environment="SECRET=private", NeedDaemonReload="no")
+    def show():
+        return "\n".join(f"{key}={value}" for key, value in fields.items())
+    monkeypatch.setattr(service, "_transfer_systemctl_show", show)
+    return manager, data, dropin, fields
+
+
+def test_observation_captures_effective_action_principal_and_all_files_without_authority(observed):
+    manager, data, dropin, fields = observed
+    result = manager._observe_systemd_transfer_definition(data)
+    assert dict(result.properties)["ExecStart"] == fields["ExecStart"]
+    assert dict(result.properties)["User"] == "1001"
+    assert [entry.path for entry in result.files] == [str(manager.path), str(dropin)]
+    assert result.files[1].content == dropin.read_bytes()
+    assert "private" not in repr(result)
+    with pytest.raises(RuntimeError, match="unsupported"):
+        manager._prepare_lifecycle_transfer()
+    manager.run.assert_not_called()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("Id", "other.service"), ("LoadState", "not-found"),
+    ("FragmentPath", "/other/astrid.service"), ("ExecStart", ""),
+    ("NeedDaemonReload", "yes"), ("DropInPaths", r"/path/with\\x20spaces.conf"),
+])
+def test_unknown_definition_refuses(observed, key, value):
+    manager, data, _dropin, fields = observed
+    fields[key] = value
+    with pytest.raises(ValueError):
+        manager._observe_systemd_transfer_definition(data)
+    manager.run.assert_not_called()
+
+
+@pytest.mark.parametrize("change", ["principal", "invocation", "file", "selection"])
+def test_replacement_during_collection_refuses(observed, monkeypatch, change):
+    manager, data, dropin, fields = observed
+    original = service._transfer_systemctl_show
+    calls = 0
+    def show():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if change == "principal":
+                fields["User"] = "1002"
+            elif change == "invocation":
+                fields["ExecStart"] = "{ path=/replacement ; }"
+            elif change == "file":
+                dropin.write_text("[Service]\nRestart=always\n")
+            else:
+                write_json(manager.selection, {"owner": service.LABEL,
+                                              "program_root": str(manager.root), "data_root": "/replacement"})
+        return original()
+    monkeypatch.setattr(service, "_transfer_systemctl_show", show)
+    with pytest.raises(ValueError):
+        manager._observe_systemd_transfer_definition(data)
+    manager.run.assert_not_called()
+
+
+def test_symlink_file_and_incomplete_or_failed_manager_query_refuse(observed, monkeypatch):
+    manager, data, dropin, fields = observed
+    dropin.unlink()
+    dropin.symlink_to(manager.path)
+    with pytest.raises(OSError):
+        manager._observe_systemd_transfer_definition(data)
+    dropin.unlink()
+    dropin.write_text("[Service]\nRestart=no\n")
+    del fields["ControlGroup"]
+    with pytest.raises(ValueError, match="Incomplete"):
+        manager._observe_systemd_transfer_definition(data)
+    monkeypatch.setattr(service, "_transfer_systemctl_show", Mock(side_effect=subprocess.CalledProcessError(1, "systemctl")))
+    with pytest.raises(subprocess.CalledProcessError):
+        manager._observe_systemd_transfer_definition(data)
+    manager.run.assert_not_called()
+
+
+@pytest.mark.parametrize("system", ["darwin", "win32", "freebsd"])
+def test_other_managers_explicitly_refuse_transfer(tmp_path, system):
+    manager = service.Service(tmp_path, tmp_path / "log", Mock(), home=tmp_path, system=system)
+    with pytest.raises(RuntimeError, match="unsupported"):
+        manager._observe_systemd_transfer_definition(tmp_path)
+    with pytest.raises(RuntimeError, match="unsupported"):
+        manager._prepare_lifecycle_transfer()
+    manager.run.assert_not_called()

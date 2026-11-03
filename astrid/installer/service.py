@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -42,6 +43,85 @@ SERVICE_SETTINGS = frozenset({"ASTRID_WARM_IDLE_SECONDS", "ASTRID_ALLOW_UNQUALIF
 # Enumerating and filtering makes an absent task a successful no-op while still
 # propagating Task Scheduler access failures through ErrorActionPreference=Stop.
 TASK_QUERY = f"$t=Get-ScheduledTask | Where-Object {{ $_.TaskName -eq '{TASK}' -and $_.TaskPath -eq '\\' }}; "
+
+# This is an observation, not transfer authority. In particular, a systemctl
+# reply does not authenticate the user manager or prove a descendant census.
+_TRANSFER_UNIT_PROPERTIES = (
+    "Id", "LoadState", "FragmentPath", "DropInPaths", "ExecStart",
+    "WorkingDirectory", "Environment", "EnvironmentFiles", "User", "Group",
+    "DynamicUser", "Restart", "RestartUSec", "KillMode", "TimeoutStopUSec",
+    "Triggers", "TriggeredBy", "Wants", "Requires", "Before", "After",
+    "InvocationID", "MainPID", "ControlPID", "ControlGroup", "ActiveState",
+    "SubState", "Job", "UnitFileState", "NeedDaemonReload",
+)
+
+
+@dataclass(frozen=True)
+class _TransferFileObservation:
+    path: str
+    identity: tuple[int, ...]
+    content: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _SystemdTransferObservation:
+    """Private, non-authoritative preimage for a future transfer adapter."""
+
+    uid: int
+    selection: _TransferFileObservation = field(repr=False)
+    properties: tuple[tuple[str, str], ...] = field(repr=False)
+    files: tuple[_TransferFileObservation, ...] = field(repr=False)
+
+
+def _transfer_file_observation(path: Path) -> _TransferFileObservation:
+    """Read an owned regular file without following its final symlink."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("Lifecycle transfer file observation is unsupported.")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or not owned_by_current_user(fd, before)
+                or before.st_size > 1024 * 1024):
+            raise ValueError("Lifecycle transfer file is not a bounded owned regular file.")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            content = stream.read(1024 * 1024 + 1)
+        after = os.fstat(fd)
+        named = path.lstat()
+        fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size",
+                  "st_mtime_ns", "st_ctime_ns")
+        identity = tuple(getattr(before, name) for name in fields)
+        if (len(content) != before.st_size or len(content) > 1024 * 1024
+                or identity != tuple(getattr(after, name) for name in fields)
+                or identity != tuple(getattr(named, name) for name in fields)):
+            raise ValueError("Lifecycle transfer file changed during observation.")
+        return _TransferFileObservation(str(path), identity, content)
+    finally:
+        os.close(fd)
+
+
+def _transfer_systemctl_show() -> str:
+    # Unlike Backend.run, do not write this output to the installer log:
+    # effective environment properties can contain private values.
+    result = subprocess.run(
+        ["systemctl", "--user", "show", "astrid.service", "--all",
+         "--property=" + ",".join(_TRANSFER_UNIT_PROPERTIES)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="strict", check=True, timeout=15,
+    )
+    return result.stdout
+
+
+def _transfer_unit_fields(output: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in output.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key not in _TRANSFER_UNIT_PROPERTIES or key in fields:
+            raise ValueError("Malformed systemd transfer observation.")
+        fields[key] = value
+    if set(fields) != set(_TRANSFER_UNIT_PROPERTIES):
+        raise ValueError("Incomplete systemd transfer observation.")
+    return fields
 
 
 def _launch_prelude_source() -> str:
@@ -436,6 +516,51 @@ class Service:
             return True
         except (OSError, subprocess.SubprocessError):
             return False
+
+    def _observe_systemd_transfer_definition(self, data: Path) -> _SystemdTransferObservation:
+        """Capture a stable preimage; this cannot authorize a lifecycle action.
+
+        It intentionally does not claim manager authentication, complete
+        process census, or equivalence between loaded and on-disk definitions.
+        Those predicates and retained Runtime custody are required separately.
+        """
+        if self.system != "linux" or sys.platform != "linux":
+            raise RuntimeError("Lifecycle transfer observation is unsupported on this platform.")
+
+        def observe() -> _SystemdTransferObservation:
+            selection = _transfer_file_observation(self.selection)
+            try:
+                record = json.loads(selection.content)
+            except (ValueError, UnicodeError) as exc:
+                raise ValueError("Invalid lifecycle transfer selection.") from exc
+            if (not isinstance(record, dict) or record.get("owner") != LABEL
+                    or record.get("program_root") != str(self.root)
+                    or record.get("data_root") != str(data)):
+                raise ValueError("Lifecycle transfer selection does not match this installation.")
+            fields = _transfer_unit_fields(_transfer_systemctl_show())
+            if (fields["Id"] != "astrid.service" or fields["LoadState"] != "loaded"
+                    or fields["FragmentPath"] != str(self.path) or not fields["ExecStart"]
+                    or fields["NeedDaemonReload"] != "no"):
+                raise ValueError("The selected systemd definition is unknown or changed.")
+            # systemctl escapes unusual paths. Until the native parser is
+            # implemented, reject these rather than guessing at a file name.
+            dropins = fields["DropInPaths"].split()
+            if (len(dropins) != len(set(dropins)) or any(
+                    not Path(path).is_absolute() or "\\" in path for path in dropins)):
+                raise ValueError("Unsupported systemd drop-in paths.")
+            files = tuple(_transfer_file_observation(path) for path in
+                          (self.path, *(Path(path) for path in dropins)))
+            return _SystemdTransferObservation(
+                os.getuid(), selection, tuple(sorted(fields.items())), files)
+
+        first = observe()
+        if observe() != first:
+            raise ValueError("The systemd transfer observation changed during collection.")
+        return first
+
+    def _prepare_lifecycle_transfer(self) -> None:
+        """Fail closed until census, custody, and reversible fencing exist."""
+        raise RuntimeError("Lifecycle transfer is unsupported: manager census and restart fencing are unavailable.")
 
     def _launchd_stop_identity(self, value: str, data: Path) -> tuple[dict, dict]:
         """Validate and snapshot the loaded, installer-owned LaunchAgent."""
