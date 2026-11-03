@@ -3,7 +3,7 @@ name: C-06g focused coordinator proof
 on:
   push:
     branches:
-      - lane/M-CI/C-06G-FOCUSED-PROOF-R1
+      - lane/M-CI/C-06G-FOCUSED-PROOF-R2
     paths:
       - .github/workflows/c06g-focused-proof.yml
 
@@ -38,6 +38,30 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD^)" = 024fe668b2e34a86ef2b06e9f918919593580abd
           git diff --exit-code 024fe668b2e34a86ef2b06e9f918919593580abd HEAD -- . ':(exclude).github/workflows/c06g-focused-proof.yml'
+      - name: Install candidate-pinned legacy schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          tuple_source=.github/integration/tuple.schema.json
+          ledger_source=.github/integration/ledger.schema.json
+          tuple_expected=90c200fddd45eae3eaf2796c17bd964e21d0be9b6097748abb8370b8b28774d0
+          ledger_expected=7e9617427bdf0eac8bd22db56b6dec3dd2e3c1a803e616851c944f9a54c28226
+          tuple_actual=$(sha256sum "$tuple_source" | cut -d ' ' -f 1)
+          ledger_actual=$(sha256sum "$ledger_source" | cut -d ' ' -f 1)
+          echo "tuple_source_sha256=$tuple_actual"
+          echo "ledger_source_sha256=$ledger_actual"
+          test "$tuple_actual" = "$tuple_expected"
+          test "$ledger_actual" = "$ledger_expected"
+          sudo install -d /home/user/repo/docs/merge-plan/schemas
+          sudo install -m 0644 "$tuple_source" /home/user/repo/docs/merge-plan/schemas/tuple.schema.json
+          sudo install -m 0644 "$ledger_source" /home/user/repo/docs/merge-plan/schemas/ledger.schema.json
+          tuple_installed=$(sha256sum /home/user/repo/docs/merge-plan/schemas/tuple.schema.json | cut -d ' ' -f 1)
+          ledger_installed=$(sha256sum /home/user/repo/docs/merge-plan/schemas/ledger.schema.json | cut -d ' ' -f 1)
+          echo "tuple_installed_sha256=$tuple_installed"
+          echo "ledger_installed_sha256=$ledger_installed"
+          test "$tuple_installed" = "$tuple_expected"
+          test "$ledger_installed" = "$ledger_expected"
+          echo "installed_schema_sha256_checks=passed"
       - name: Run named and adjacent tests
         shell: bash
         run: |
