@@ -127,8 +127,20 @@
             "--json": {
               "required": false
             },
+            "--kind": {
+              "required": false
+            },
+            "--model": {
+              "required": false
+            },
             "--project": {
               "required": true
+            },
+            "--tag": {
+              "required": false
+            },
+            "--target": {
+              "required": false
             }
           },
           "positionals": [],
@@ -1354,6 +1366,9 @@
             "--name": {
               "required": true
             },
+            "--select": {
+              "required": false
+            },
             "--settings": {
               "required": false
             }
@@ -1860,7 +1875,7 @@
               "required": false
             },
             "--project": {
-              "required": true
+              "required": false
             },
             "--slug": {
               "required": false
@@ -2303,7 +2318,7 @@
               "required": false
             },
             "--project": {
-              "required": true
+              "required": false
             }
           },
           "positionals": [
@@ -2448,6 +2463,9 @@
         },
         "list": {
           "flags": {
+            "--all-projects": {
+              "required": false
+            },
             "--include-archived": {
               "required": false
             },
@@ -2455,6 +2473,9 @@
               "required": false
             },
             "--project": {
+              "required": false
+            },
+            "--recent": {
               "required": false
             }
           },
@@ -3472,6 +3493,7 @@
     "backup",
     "dev",
     "doctor",
+    "generate",
     "skills"
   ]
 }

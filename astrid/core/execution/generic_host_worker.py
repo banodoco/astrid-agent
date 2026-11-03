@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import importlib.util
 import json
 import os
 import runpy
@@ -42,58 +41,61 @@ def _read_captured_source(fd: int):
     return selected, contents
 
 
-def _run_captured_command(encoded: str, selected, contents) -> int:
-    from .executor.runner import _PackSourceFinder
+def _run_pack_command(encoded: str, *, selected=None, bridge_fd: str | None = None) -> int:
+    """Execute live selected source under the same name as a Python action."""
+    from astrid.core.pack.identity import pack_digest
+    from astrid.core.pack.imports import install_pack_imports, pack_command_args, pack_module_path
 
-    args = json.loads(encoded)
-    while args:
-        if args[0] in {"-u", "-B"}:
-            if args.pop(0) == "-B":
-                sys.dont_write_bytecode = True
-        elif args[:2] == ["-X", "utf8"]:
-            del args[:2]
-        else:
-            break
-    if (not args or args[0].startswith("-") and args[0] not in {"-m", "-c"}
-            or args[0] in {"-m", "-c"} and len(args) < 2):
-        raise ValueError("unsupported captured Python command")
-    root = Path(selected["source"]["root"])
-    names = {Path(name).parts[0].split(".")[0] for name in contents if name.endswith(".py")}
-    names.difference_update({"__init__", "__main__"})
-    if root.name.isidentifier():
-        names.add(root.name)
-    finders = []
-    for name in sorted(names):
-        if not name.isidentifier() or name in {"astrid", "runtime_protocol", "astrid_runtime_client"}:
-            raise ValueError("external source namespace is invalid")
-        if name in sys.modules or importlib.util.find_spec(name) is not None:
-            raise ValueError("external source collides with an installed package")
-        finders.append(_PackSourceFinder(name, root, {}, contents, include_prefix=name != root.name))
-    sys.meta_path[:0] = finders
+    control = json.loads(encoded)
+    if (not isinstance(control, dict) or set(control) != {"pack_id", "root", "source_digest", "argv"}
+            or not isinstance(control["argv"], list)
+            or any(not isinstance(arg, str) for arg in control["argv"])):
+        raise ValueError("invalid selected pack command")
+    root = Path(control["root"]).resolve(strict=True)
+    if selected is not None and (root != Path(selected["source"]["root"])
+            or not selected["definition"]["capability_id"].startswith(control["pack_id"] + ".")):
+        raise ValueError("external command differs from Runtime selection")
+    args = pack_command_args(control["argv"], control["pack_id"], root)
+    # This digest belongs to this run, never to an install PIN or old scan.
+    if pack_digest(root) != control["source_digest"]:
+        raise ValueError("admitted capability source digest changed")
+    module_path, path_names = (pack_module_path(Path(args[0]).resolve().relative_to(root))
+                               if args[0] not in {"-m", "-c"} else (None, {}))
+    install_pack_imports(control["pack_id"], root, path_names, source_digest=control["source_digest"])
+    bridge = _install_inherited_bridge(bridge_fd) if bridge_fd is not None else None
     try:
+        if "-B" in control["argv"]:
+            sys.dont_write_bytecode = True
         if args[0] == "-m":
-            if args[1].split(".")[0] not in names:
-                raise ValueError("external command module is outside captured source")
             sys.argv = [args[1], *args[2:]]
             runpy.run_module(args[1], run_name="__main__", alter_sys=True)
         elif args[0] == "-c":
             sys.argv = ["-c", *args[2:]]
-            exec(compile(args[1], "<string>", "exec"), {"__name__": "__main__"})
+            original_main = sys.modules["__main__"]
+            command_main = ModuleType("__main__")
+            sys.modules["__main__"] = command_main
+            try:
+                exec(compile(args[1], "<string>", "exec"), command_main.__dict__)
+            finally:
+                sys.modules["__main__"] = original_main
         else:
-            source = Path(args[0]).absolute()
-            relative = source.relative_to(root).as_posix()
-            if relative not in contents or source.suffix != ".py":
-                raise ValueError("external command script is outside captured source")
-            sys.argv = args
-            exec(compile(contents[relative], str(source), "exec"),
-                 {"__name__": "__main__", "__file__": str(source)})
+            # Turn a pack-relative script into its canonical module identity too.
+            module = "astrid.packs." + control["pack_id"] + "." + module_path
+            sys.argv = [args[0], *args[1:]]
+            runpy.run_module(module, run_name="__main__", alter_sys=True)
         return 0
     finally:
-        for finder in finders:
-            sys.meta_path.remove(finder)
-        for name in tuple(sys.modules):
-            if name.split(".")[0] in names:
-                del sys.modules[name]
+        if bridge is not None:
+            bridge.close()
+
+
+def _run_captured_command(encoded: str, selected, contents) -> int:
+    """Compatibility entry for retained Runtime descriptors; code stays live."""
+    from astrid.core.pack.identity import pack_digest
+
+    root = Path(selected["source"]["root"])
+    return _run_pack_command(json.dumps({"pack_id": root.name, "root": str(root),
+        "source_digest": pack_digest(root), "argv": json.loads(encoded)}), selected=selected)
 
 
 def _install_inherited_bridge(fd: str):
@@ -104,8 +106,8 @@ def _install_inherited_bridge(fd: str):
     return _install_child_bridge(channel)
 
 
-def _run_child_command(fd: str, encoded: str, *, renderer: bool = False, captured=None) -> int:
-    """Install before Python command code, preserving its argv and entry point."""
+def _run_child_command(fd: str | None, encoded: str, *, renderer: bool = False, captured=None) -> int:
+    """Run Python command code with its host channel and optional captured source."""
     args = json.loads(encoded)
     if not isinstance(args, list) or not args or any(not isinstance(arg, str) for arg in args):
         raise ValueError("invalid private Python command")
@@ -123,8 +125,10 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False, capture
     if renderer:
         from .remotion_host_session import install_host_remotion_client
         bridge = install_host_remotion_client(fd)
-    else:
+    elif fd is not None:
         bridge = _install_inherited_bridge(fd)
+    else:
+        bridge = None
     try:
         from ._child_import_receipt import observe_action_entry
 
@@ -151,7 +155,8 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False, capture
             runpy.run_path(args[0], run_name="__main__")
         return 0
     finally:
-        bridge.close()
+        if bridge is not None:
+            bridge.close()
 
 
 def _json_value(value: Any) -> Any:
@@ -239,8 +244,7 @@ def run(payload_path: str | Path, *, captured=None) -> int:
         from astrid.core.execution.executor.schema import validate_executor_definition
 
         registry = ExecutorRegistry([validate_executor_definition(definition_payload)])
-        result = run_executor(_request_object(request_payload, kind=kind, capability_id=capability_id), registry, _admission=admission,
-                              _captured_source=captured[1] if captured is not None else None)
+        result = run_executor(_request_object(request_payload, kind=kind, capability_id=capability_id), registry, _admission=admission)
     else:
         from astrid.core.execution.orchestrator.registry import OrchestratorRegistry
         from astrid.core.execution.orchestrator.schema import validate_orchestrator_definition
@@ -275,6 +279,13 @@ if __name__ == "__main__":
         if len(sys.argv) >= 3 and sys.argv[1] == "--external-source-fd":
             captured = _read_captured_source(int(sys.argv[2]))
             del sys.argv[1:3]
+        if len(sys.argv) in {3, 5} and sys.argv[1] == "--pack-command":
+            if len(sys.argv) == 5 and sys.argv[3] != "--child-bridge":
+                raise ValueError("invalid selected pack bridge controls")
+            raise SystemExit(_run_pack_command(sys.argv[2], selected=captured[0] if captured else None,
+                                               bridge_fd=sys.argv[4] if len(sys.argv) == 5 else None))
+        if len(sys.argv) == 3 and sys.argv[1] == "--python-command" and captured is None:
+            raise SystemExit(_run_child_command(None, sys.argv[2]))
         if len(sys.argv) == 3 and sys.argv[1] == "--captured-command" and captured is not None:
             raise SystemExit(_run_captured_command(sys.argv[2], *captured))
         if len(sys.argv) == 4 and sys.argv[1] in {"--child-command", "--renderer-command"}:

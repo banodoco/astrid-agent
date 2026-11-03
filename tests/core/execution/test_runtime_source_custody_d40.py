@@ -69,6 +69,9 @@ def case(tmp_path, monkeypatch, request):
 
     monkeypatch.setattr(host_module, "_runtime_external_sources", None)
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
+    previous_modules = {name: module for name, module in sys.modules.items()
+                        if name == "astrid.packs.unrelated" or name.startswith("astrid.packs.unrelated.")}
+    previous_finders = list(sys.meta_path)
     root, host, _, definition, admission = pack(tmp_path)
     # A relative import verifies that descendants use the same byte loader.
     (root / "actions/hello.py").write_text("from .helper import answer\ndef run(value='default'):\n    return answer\n")
@@ -83,7 +86,7 @@ def case(tmp_path, monkeypatch, request):
         action = manifest["actions"]["calculate"]
         action["inputs"] = []
         action["invocation"] = {"kind": "command", "command": {
-            "argv": ["{python_exec}", "-m", "unrelated.emit"]}}
+            "argv": ["{python_exec}", "-m", "astrid.packs.unrelated.emit"]}}
         path.write_text(yaml.safe_dump(manifest))
     host.discover()
     definition, admission = host.admit("executor", "unrelated.calculate")
@@ -111,6 +114,15 @@ def case(tmp_path, monkeypatch, request):
                           record=record, capture=capture, selected=selected, preparation=preparation,
                           producer=producer, gate=gate, grant=grant, service=service, owner=owner)
     service.store.close()
+    # Production uses a fresh worker per action. Restore the test interpreter
+    # after the direct loader probes without evicting production worker modules.
+    sys.meta_path[:] = previous_finders
+    for name in tuple(sys.modules):
+        if name == "astrid.packs.unrelated" or name.startswith("astrid.packs.unrelated."):
+            del sys.modules[name]
+    sys.modules.update(previous_modules)
+    if not previous_modules and "astrid.packs" in sys.modules:
+        vars(sys.modules["astrid.packs"]).pop("unrelated", None)
 
 
 def _bind(case):
@@ -199,17 +211,18 @@ def test_capture_after_bind_mutation_is_rejected_before_execution(case):
         custody.descriptor(case.record)
 
 
-def test_command_loader_executes_captured_descendants_after_last_check(case, capsys):
+def test_command_loader_reads_live_source_in_selected_namespace(case, capsys):
     custody = _bind(case)
     with custody.descriptor(case.record) as channel:
         # The child receives only the inherited handle, not task/admission JSON.
         selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
-    (case.root / "actions/helper.py").write_text("raise AssertionError('live child source')\n")
-    assert worker._run_captured_command(json.dumps(["-m", "unrelated.emit"]), selected, contents) == 0
-    assert capsys.readouterr().out == "captured\n"
+    (case.root / "actions/helper.py").write_text("answer = 'live'\n")
+    assert worker._run_captured_command(json.dumps(["-m", "astrid.packs.unrelated.emit"]), selected, contents) == 0
+    assert capsys.readouterr().out == "live\n"
+    assert sys.modules["astrid.packs.unrelated.actions.helper"].__file__ == str(case.root / "actions/helper.py")
 
 
-def test_python_action_loader_executes_captured_descendants_after_last_check(case, monkeypatch):
+def test_python_action_loader_reads_live_source_in_selected_namespace(case, monkeypatch):
     from astrid.core.execution.executor import runner
     from astrid.core.execution.executor.registry import ExecutorRegistry
     from astrid.core.execution.executor.schema import validate_executor_definition
@@ -217,22 +230,25 @@ def test_python_action_loader_executes_captured_descendants_after_last_check(cas
     custody = _bind(case)
     with custody.descriptor(case.record) as channel:
         _, contents = worker._read_captured_source(os.dup(channel.fileno()))
-    original = runner._PackSourceLoader.exec_module
+    from astrid.core.pack import imports as pack_imports
+
+    original = pack_imports._PackSourceLoader.exec_module
     mutated = []
     def mutate_then_load(self, module):
         if not mutated:
-            (case.root / "actions/helper.py").write_text("raise AssertionError('live action source')\n")
+            (case.root / "actions/helper.py").write_text("answer = 'live'\n")
             mutated.append(True)
         return original(self, module)
     monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
-    monkeypatch.setattr(runner._PackSourceLoader, "exec_module", mutate_then_load)
+    monkeypatch.setattr(pack_imports._PackSourceLoader, "exec_module", mutate_then_load)
     result = runner.run_executor(runner.ExecutorRunRequest(executor_id=case.record.id, out=str(case.root.parent / "action-output"),
         project="demo", project_was_auto_resolved=True, invocation="runtime"),
         ExecutorRegistry([validate_executor_definition(case.definition)]),
-        _admission=case.admission, _captured_source=contents)
+        _admission=case.admission)
     assert result.ok, result.error
-    assert result.payload["action_result"] == "captured"
+    assert result.payload["action_result"] == "live"
     assert mutated == [True]
+    assert sys.modules["astrid.packs.unrelated.actions.hello"].__name__ == "astrid.packs.unrelated.actions.hello"
 
 
 @pytest.mark.parametrize("mutation", [False, True])
@@ -258,7 +274,7 @@ def test_production_python_action_uses_private_descriptor(case, tmp_path, monkey
 
 @pytest.mark.parametrize("case", ["command"], indirect=True)
 @pytest.mark.parametrize("mutation", [False, True])
-def test_production_command_executes_only_capture_after_last_check(case, tmp_path, monkeypatch, mutation):
+def test_production_command_keeps_selected_descriptor_and_run_digest(case, tmp_path, monkeypatch, mutation):
     _bind(case)
     original = host_module.spawn_task_scope
     def launch(argv, **kwargs):
@@ -272,9 +288,12 @@ def test_production_command_executes_only_capture_after_last_check(case, tmp_pat
     attempt = tmp_path / "attempt"
     outputs = attempt / "outputs"
     outputs.mkdir(parents=True)
-    result = case.host._run_command_definition(case.record, {}, outputs, attempt,
-        admission=case.admission)
-    assert result.returncode == 0
+    if mutation:
+        with pytest.raises(host_module.HostError, match="source digest changed"):
+            case.host._run_command_definition(case.record, {}, outputs, attempt, admission=case.admission)
+    else:
+        result = case.host._run_command_definition(case.record, {}, outputs, attempt, admission=case.admission)
+        assert result.returncode == 0
 
 
 def test_revoked_owner_custody_never_becomes_a_source_grant(case):
@@ -316,22 +335,24 @@ def test_task_claims_cannot_write_runtime_owner_grants(case, monkeypatch):
     assert case.capture.payload == before
 
 
-def test_package_main_uses_captured_loader(case, capsys):
+def test_package_main_uses_live_canonical_loader(case, capsys):
     custody = _bind(case)
     with custody.descriptor(case.record) as channel:
         selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
-    (case.root / "__main__.py").write_text("raise AssertionError('live main')\n")
-    assert worker._run_captured_command(json.dumps(["-m", "unrelated"]), selected, contents) == 0
+    (case.root / "__main__.py").write_text("from . import emit\nprint('live main')\n")
+    assert worker._run_captured_command(json.dumps(["-m", "astrid.packs.unrelated"]), selected, contents) == 0
+    assert capsys.readouterr().out == "captured\nlive main\n"
+
+
+def test_selected_namespace_cannot_shadow_top_level_installed_package(case, capsys):
+    custody = _bind(case)
+    with custody.descriptor(case.record) as channel:
+        selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
+    original_json = json
+    (case.root / "json.py").write_text("raise AssertionError('top-level shadow')\n")
+    assert worker._run_captured_command(json.dumps(["-m", "astrid.packs.unrelated.emit"]), selected, contents) == 0
     assert capsys.readouterr().out == "captured\n"
-
-
-def test_captured_command_refuses_installed_namespace_collision(case):
-    custody = _bind(case)
-    with custody.descriptor(case.record) as channel:
-        selected, contents = worker._read_captured_source(os.dup(channel.fileno()))
-    contents["json.py"] = b"raise AssertionError('installed collision')\n"
-    with pytest.raises(ValueError, match="installed package"):
-        worker._run_captured_command(json.dumps(["-m", "unrelated.emit"]), selected, contents)
+    assert sys.modules["json"] is original_json
 
 
 def test_standalone_runtime_launcher_keeps_its_own_private_handle_class(case, monkeypatch):

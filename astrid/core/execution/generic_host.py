@@ -5,6 +5,17 @@ pack-side process: discovery and execution happen here, while admission,
 leases, reservations, and settlement remain protocol operations on the daemon.
 """
 
+# Module map (symbol anchors keep this useful as the file evolves):
+# - Startup and process/source identity: _emit_startup_phase, source helpers,
+#   and the task-scope/process-control helpers.
+# - Adapter contracts and session lifecycle: AdapterSpec, AdapterRegistry,
+#   CapabilityRecord, and the engine/session adapters.
+# - Runtime protocol boundary: RuntimeProtocolClient and wire/error handling.
+# - Host lifecycle: GenericPackHost discovery/admission, invocation, output
+#   settlement, cancellation, handoff, and supervision.
+# - Local execution and entry points: LocalExecutionPreparation, publication
+#   and activation helpers, then _cli/module shutdown.
+
 from __future__ import annotations
 
 import argparse
@@ -152,16 +163,10 @@ from astrid.core.execution.process_group import (
     write_cleanup_latch,
 )
 from astrid.core.execution.process_group import (
-    group_exists as _owned_group_exists,
-)
-from astrid.core.execution.process_group import (
     process_birth_identity as _process_birth_identity,
 )
 from astrid.core.execution.process_group import (
     release_group as _release_owned_group,
-)
-from astrid.core.execution.process_group import (
-    signal_group as _signal_owned_group,
 )
 from astrid.core.execution.provider_route_grant import (
     ProviderRouteGrantAuthority,
@@ -1565,7 +1570,15 @@ def _prepare_vibecomfy_execution_identity(
 
 def _dependency_pythonpath() -> tuple[str, ...]:
     """Keep only approved dependency roots across children."""
-    return dependency_pythonpath()
+    roots = dependency_pythonpath()
+    if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") == "installed":
+        return roots
+    # Source-mode workers need the Runtime already selected by this host.
+    # Carry its actual origin, without inheriting the caller's PYTHONPATH.
+    runtime_root = str(Path(sys.modules["runtime_protocol"].__file__).resolve().parent.parent)
+    selected_roots = tuple(root for root in roots
+                           if Path(root).name not in {"site-packages", "dist-packages"})
+    return tuple(dict.fromkeys((runtime_root, *selected_roots)))
 
 
 def _host_product_import_origins() -> dict[str, str | None]:
@@ -1782,15 +1795,6 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return str(value)
-
-
-def _signal_process_group(process: subprocess.Popen, sig: int) -> None:
-    _signal_owned_group(process, sig)
-    return
-
-
-def _process_group_exists(process: subprocess.Popen) -> bool:
-    return _owned_group_exists(process)
 
 
 def _terminate_process_group(process: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
@@ -2212,6 +2216,8 @@ def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment:
 
 
 def _command_worker_pythonpath(record: 'CapabilityRecord', existing: str) -> str:
+    if record.definition.metadata.get("action_invocation"):
+        return existing
     source_pack = str(record.definition.metadata.get('source_pack') or '')
     raw = record.definition.metadata.get('pack_root')
     if source_pack and isinstance(raw, str) and raw:
@@ -4624,10 +4630,27 @@ def _admitted_python_roots(root: Path, definition: Any) -> tuple[Path, ...]:
 
 
 def _source_digest_for_roots(roots: tuple[Path, ...] | list[Path]) -> str:
-    return _canonical_digest([
-        {"root": str(root.resolve()), "digest": _source_digest(root.resolve())}
-        for root in roots
-    ])
+    from astrid.core.pack.identity import pack_digest
+
+    measured = [{"root": str(root.resolve()), "digest": pack_digest(root.resolve())} for root in roots]
+    return measured[0]["digest"] if len(measured) == 1 else _canonical_digest(measured)
+
+
+def _run_source_digest(record: "CapabilityRecord") -> str:
+    """Observe an action's live source and validate its declared import route."""
+    if not record.definition.metadata.get("action_invocation"):
+        return record.source_digest
+    root = Path(str(record.definition.metadata["pack_root"])).resolve()
+    command = record.definition.command
+    if (command is not None and command.argv and command.argv[0] in {"{python_exec}", sys.executable}
+            and not root.is_relative_to(Path(__file__).resolve().parents[2] / "packs")):
+        from astrid.core.pack.imports import pack_command_args
+
+        try:
+            pack_command_args(list(command.argv[1:]), str(record.definition.metadata["source_pack"]), root)
+        except ValueError as exc:
+            raise HostError(str(exc)) from exc
+    return _source_digest_for_roots(_admitted_source_roots(record.source_root, record.definition))
 
 
 def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[str, Any]) -> None:
@@ -4643,17 +4666,17 @@ def _verify_action_admission(definition: Mapping[str, Any], admission: Mapping[s
     roots = tuple(Path(str(value)).expanduser().resolve() for value in admission.get("source_roots", ()))
     if (not root.is_dir() or roots != (root,)
             or Path(str(admission.get("source_root") or "")).expanduser().resolve() != root):
-        raise HostError("Python action pack root does not match the admission source fence")
+        raise HostError("Python action pack root does not match the admitted source selection")
     if (not admission.get("source_digest") or not admission.get("capability_digest")
             or _capability_digest(definition) != admission["capability_digest"]):
         raise HostError("Python action requires a matching admitted definition digest")
     if admission.get("python_path_roots"):
-        raise HostError("Python action pack imports must use the contained namespace")
+        raise HostError("Python action pack imports must use the selected canonical namespace")
 
 
 
 def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
-    """Revalidate the source fence immediately before command/provider execution."""
+    """Validate a single run's observed source; never compare an install PIN."""
     expected = str(admission.get("source_digest") or "")
     if not expected:
         return
@@ -4664,7 +4687,11 @@ def _verify_admitted_source(admission: Mapping[str, Any]) -> None:
         roots = (Path(str(admission["source_root"])).expanduser().resolve(),)
     else:
         return
-    if _source_digest_for_roots(roots) != expected:
+    try:
+        observed = _source_digest_for_roots(roots)
+    except (OSError, ValueError) as exc:
+        raise HostError(f"admitted capability source digest changed: {exc}") from exc
+    if observed != expected:
         raise HostError("admitted capability source digest changed")
 
 
@@ -5735,14 +5762,13 @@ def _quarantine_scope(pack_roots: Any) -> tuple[tuple[Path, ...], frozenset[str]
     Uses the same per-pack admission as discovery (``astrid.core.pack.loader``):
     fail-closed packs still raise here, every other invalid pack is excluded.
     """
-    from astrid.core.pack.loader import scan_packs
+    from astrid.core.pack.loader import scan_pack_roots
 
     dirs: list[Path] = []
     ids: set[str] = set()
-    for root in pack_roots:
-        for record in scan_packs(root).quarantined:
-            dirs.append(record.pack_dir.resolve())
-            ids.add(record.pack_id)
+    for record in scan_pack_roots(tuple(pack_roots)).quarantined:
+        dirs.append(record.pack_dir.resolve())
+        ids.add(record.pack_id)
     return tuple(dirs), frozenset(ids)
 
 
@@ -7004,7 +7030,7 @@ class GenericPackHost:
                 raise HostError(f"capability {capability_id!r} is unavailable: network:reason={exc}") from exc
             return record.definition.to_dict(), {
                 "capability_digest": record.capability_digest,
-                "source_digest": record.source_digest,
+                "source_digest": _run_source_digest(record),
                 "dependency_digest": record.dependency_digest,
                 "version": record.definition.version,
                 "source_root": str(record.source_root),
@@ -9331,6 +9357,18 @@ class GenericPackHost:
         command = record.definition.command
         if command is None:
             raise HostError(f"capability {record.id!r} has no dispatchable command")
+        pack_root = Path(str(record.definition.metadata.get("pack_root") or record.source_root)).resolve()
+        selected_command = (bool(record.definition.metadata.get("action_invocation"))
+                            and not pack_root.is_relative_to(Path(__file__).resolve().parents[2] / "packs")
+                            and bool(command.argv) and command.argv[0] in {"{python_exec}", sys.executable})
+        if selected_command:
+            from astrid.core.pack.imports import pack_command_args
+
+            # Refuse unsupported routes before environment/credential setup or launch.
+            try:
+                pack_command_args(list(command.argv[1:]), str(record.definition.metadata["source_pack"]), pack_root)
+            except ValueError as exc:
+                raise HostError(str(exc)) from exc
         attempt_output_root = (attempt / "outputs").resolve()
         if admission is not None:
             _verify_admitted_source(admission)
@@ -9478,6 +9516,7 @@ class GenericPackHost:
         )
         broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
         inherited_fds: tuple[int, ...] = ()
+        selected_arguments = list(argv[1:])
         if child_bridge is not None:
             # Bootstrap in the action interpreter before pack code. Private
             # launch arguments contain a descriptor and command, no authority.
@@ -9515,7 +9554,18 @@ class GenericPackHost:
                         "--captured-command", json.dumps(argv[1:])]
             worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
             argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
-            # External code is loaded from the descriptor, never PYTHONPATH.
+            # The descriptor proves Runtime selection/custody; execution reads raw source.
+            env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
+        if selected_command:
+            control = {"pack_id": str(record.definition.metadata["source_pack"]), "root": str(pack_root),
+                       "source_digest": (admission or {}).get("source_digest") or _source_digest_for_roots((pack_root,)),
+                       "argv": selected_arguments}
+            argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
+                    "--pack-command", json.dumps(control)]
+            if child_bridge is not None:
+                argv.extend(("--child-bridge", str(child_bridge.inherited_fd())))
+            if source_channel is not None:
+                argv[5:5] = ["--external-source-fd", str(source_channel.fileno())]
             env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
@@ -9534,8 +9584,16 @@ class GenericPackHost:
                 argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
                         "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
             if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
+                if child_bridge is None and remotion_lease is None:
+                    # Delegated leaf commands have no child channel. Run the
+                    # admitted Python command in the host worker so strict
+                    # network startup still precedes every pack import.
+                    if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                        raise HostError("private network commands require the admitted Python interpreter")
+                    argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
+                            "--python-command", json.dumps(argv[1:])]
                 argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
-            if source_channel is not None:
+            if source_channel is not None or selected_command:
                 argv = _captured_worker_argv(argv)
             # Rendering can create native descendants that change groups.
             # Retain their incarnation-bound custody while the leader runs;
@@ -10855,6 +10913,7 @@ class GenericPackHost:
             raise HostError(f"capability not discovered: {capability_id}")
 
         _terminal["record"] = record
+        run_source_digest = _run_source_digest(record)
 
         def evidence_failure_diagnostic(error: BaseException) -> dict[str, Any] | None:
             if not isinstance(error, EvidenceCapError):
@@ -11052,7 +11111,7 @@ class GenericPackHost:
             "attempt_id": attempt_id,
             "fence": fence,
             "capability_digest": record.capability_digest,
-            "source_digest": record.source_digest,
+            "source_digest": run_source_digest,
             "dependency_digest": record.dependency_digest,
             "version": record.definition.version,
             "source_root": str(record.source_root),

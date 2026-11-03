@@ -251,3 +251,87 @@ def test_wrong_provider_volume_blocks_before_create(case, monkeypatch):
         asyncio.run(case.owner.select(case.grant))
     assert case.creates == 0
     assert not case.owner.path.exists()
+
+
+@pytest.mark.parametrize("capacity_failures", [3, 20])
+def test_bounded_capacity_retries_use_real_lifecycle_and_fake_provider(case, monkeypatch, capacity_failures):
+    import runpod_lifecycle
+    from runpod_lifecycle import RunPodConfig, lifecycle
+    from runpod_lifecycle.errors import ProviderCapacityUnavailable
+    from astrid.packs.runpod.worker_preparation import CapacityExhaustedError
+
+    elapsed = [0.0]
+    starts = []
+    sleeps = []
+
+    def create(**kwargs):
+        starts.append(elapsed[0])
+        assert json.loads(case.owner.path.read_text())["create_attempts"] == len(starts)
+        if len(starts) <= capacity_failures:
+            raise ProviderCapacityUnavailable(200, "no instances")
+        case.pods.append({"id": "pod-1", "name": kwargs["name"], "desiredStatus": "RUNNING",
+                          "actualStatus": "RUNNING", "machineType": case.offer.gpu_type,
+                          "imageName": case.prefs.image, "networkVolumeId": case.prefs.volume_id})
+        return {"id": "pod-1"}
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        elapsed[0] += seconds
+
+    async def ready(self, **kwargs):
+        pass
+
+    case.owner.config_factory = lambda offer: RunPodConfig(
+        api_key="fake-only", gpu_type=offer.gpu_type, worker_image=case.prefs.image,
+        volume_mount_path=case.prefs.mount_path, storage_name="wrong", storage_volumes=("other",),
+        ram_tiers_enabled=True, attach_only=True,
+    )
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", lifecycle.launch_when_available)
+    monkeypatch.setattr(lifecycle, "find_gpu_type", lambda *args: {"id": "gpu-1"})
+    monkeypatch.setattr(lifecycle, "get_storage_volume_id", lambda key, name: case.prefs.volume_id)
+    monkeypatch.setattr(lifecycle, "create_pod", create)
+    monkeypatch.setattr(lifecycle.Pod, "wait_ready", ready)
+    monkeypatch.setattr(selection.asyncio, "sleep", sleep)
+    if capacity_failures < 10:
+        result = asyncio.run(case.owner.select(case.grant))
+        assert result["pod_id"] == "pod-1"
+        assert len(starts) == 4
+    else:
+        with pytest.raises(CapacityExhaustedError) as error:
+            asyncio.run(case.owner.select(case.grant))
+        assert error.value.code == "capacity_exhausted"
+        assert len(starts) == 10
+        record = json.loads(case.owner.path.read_text())
+        assert record["state"] == "capacity_exhausted"
+        assert record["create_attempts"] == 10
+        with pytest.raises(AcquisitionUnresolvedError):
+            asyncio.run(case.owner.select(case.grant))
+        assert len(starts) == 10
+    assert sleeps == [min(60, 15 * 1.5 ** i) for i in range(len(starts) - 1)]
+    assert [b - a for a, b in zip(starts, starts[1:])] == sleeps
+    assert all(delay >= 15 for delay in sleeps)
+
+
+def test_bounded_capacity_retries_never_repeat_ambiguous_post(case, monkeypatch):
+    import runpod_lifecycle
+    from runpod_lifecycle import RunPodConfig, lifecycle
+
+    starts = []
+    def create(**kwargs):
+        starts.append(kwargs["name"])
+        raise TimeoutError("lost response")
+
+    case.owner.config_factory = lambda offer: RunPodConfig(
+        api_key="fake-only", gpu_type=offer.gpu_type, worker_image=case.prefs.image,
+        volume_mount_path=case.prefs.mount_path, storage_name="storage", attach_only=True,
+    )
+    monkeypatch.setattr(runpod_lifecycle, "launch_when_available", lifecycle.launch_when_available)
+    monkeypatch.setattr(lifecycle, "find_gpu_type", lambda *args: {"id": "gpu-1"})
+    monkeypatch.setattr(lifecycle, "get_storage_volume_id", lambda key, name: case.prefs.volume_id)
+    monkeypatch.setattr(lifecycle, "create_pod", create)
+    with pytest.raises(AcquisitionUnresolvedError):
+        asyncio.run(case.owner.select(case.grant))
+    assert len(starts) == 1
+    record = json.loads(case.owner.path.read_text())
+    assert record["state"] == "allocation_unknown"
+    assert record["create_attempts"] == 1

@@ -88,9 +88,27 @@ def test_tst_b1_failure_writes_small_result_with_unrun_checks(tmp_path, monkeypa
         journey.execute(args)
     result = json.loads((run_root / "evidence" / "fresh-install" / "journey-result.json").read_text())
     assert result["scenario"] == "fresh-install"
+    assert result["mode"] == "direct"
     assert result["status"] == "fail"
     assert set(result["checks"].values()) == {"not-run"}
     assert result["installed_tuple"] is None
+
+
+def test_explicit_pinokio_backend_mode_uses_backend_executor(tmp_path, monkeypatch):
+    args = argparse.Namespace(leg="fresh-install", shell="sh", mode="pinokio-backend",
+                              source_override=False)
+    expected = {"status": "pass", "pinokio_backend": {}, "source_unit_evidence": {}}
+    monkeypatch.setattr(journey, "execute_pinokio_backend", lambda *unused: expected)
+    result = journey._execute_owned(args, tmp_path / "program", tmp_path / "data",
+                                    tmp_path / "evidence", SimpleNamespace(pid=123), "birth")
+    assert result["mode"] == "pinokio-backend"
+    assert result["status"] == "pass"
+
+
+def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey.yml").read_text()
+    assert workflow.count("repository: banodoco/astrid-app") == 3
+    assert "repository: banodoco/reigh-app" not in workflow
 
 
 def test_tst_b1_isolated_roots_reject_aliases_and_preserve_existing_install(tmp_path):

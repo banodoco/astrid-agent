@@ -22,6 +22,11 @@ from astrid.core.search import short_description_or_truncated
 
 PACKS_DIR = REPO_ROOT / "astrid" / "packs"
 
+# ``metadata.astrid.audience`` in a SKILL.md frontmatter. ``developer`` skills
+# are composed and linked only by ``astrid skills sync --developer``.
+DEFAULT_AUDIENCE = "default"
+DEVELOPER_AUDIENCE = "developer"
+
 # Tokens forbidden in the shared SKILL.md (they leak Hermes-specific dynamic
 # behavior into a file Claude/Codex also read).
 FORBIDDEN_TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -40,6 +45,12 @@ class SkillDescriptor:
     skill_md: Path
     hermes_metadata: dict = field(default_factory=dict)
     skill: str | None = None
+    audience: str = "default"
+
+    @property
+    def developer_only(self) -> bool:
+        """Return whether this skill is installed only by a developer sync."""
+        return self.audience == DEVELOPER_AUDIENCE
 
     @property
     def skill_id(self) -> str:
@@ -72,6 +83,19 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     if not isinstance(data, dict):
         data = {}
     return data, body
+
+
+def frontmatter_audience(front: dict) -> str:
+    """Return the declared ``metadata.astrid.audience`` (``default`` when absent)."""
+    metadata = front.get("metadata") if isinstance(front, dict) else None
+    astrid_meta = metadata.get("astrid") if isinstance(metadata, dict) else None
+    audience = astrid_meta.get("audience") if isinstance(astrid_meta, dict) else None
+    return DEVELOPER_AUDIENCE if audience == DEVELOPER_AUDIENCE else DEFAULT_AUDIENCE
+
+
+def text_audience(text: str) -> str:
+    """Return the audience declared by a SKILL.md document."""
+    return frontmatter_audience(_parse_frontmatter(text)[0])
 
 
 def _declared_skill_path(pack_dir: Path, pack: object) -> tuple[Path, bool] | None:
@@ -143,6 +167,7 @@ def _try_add_skill(
             skill_dir=skill_md.parent,
             skill_md=skill_md,
             hermes_metadata=hermes_meta,
+            audience=frontmatter_audience(front),
         )
     )
     return True
@@ -374,13 +399,17 @@ def get(pack_id: str, packs_dir: Path | None = None) -> SkillDescriptor:
 
 
 __all__ = [
+    "DEFAULT_AUDIENCE",
+    "DEVELOPER_AUDIENCE",
     "FORBIDDEN_TOKEN_PATTERNS",
     "PACKS_DIR",
     "SkillDescriptor",
     "discovery_problems",
+    "frontmatter_audience",
     "get",
     "lint_shared_skill_md",
     "list_extras",
     "list_skills",
+    "text_audience",
     "unit_digest",
 ]

@@ -22,6 +22,7 @@ from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core._shared.result_manifest import write_json_atomic
 from astrid.core.contracts.errors import AstridError, coerce_astrid_error
+from astrid.core.cli_choices import StaticChoices
 from astrid.core.execution.terminal_result import serialize_terminal_result
 from astrid.core.foundation.hash import sha256_file
 from astrid.core.env_vars import ASTRID_TASK_RUN_ID
@@ -121,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--placement",
-        choices=("local", "runpod"),
+        choices=StaticChoices(("local", "runpod")),
         default=None,
         help=(
             "where the H3 engine runs (default: local, or runpod when a legacy "
@@ -2875,7 +2876,7 @@ def execute(*, request, input_bundle, plan, source=None, editorial_approved=Fals
         {"name": "verified_candidate", "path": candidate.name, "ordinal": 0,
          "group_key": "main", "variant_key": "final-composition",
          "media_type": final_rows[0]["media_type"]},
-        {"name": "final_receipt", "path": final_receipt.name, "ordinal": 0, "media_type": "application/json"},
+        {"name": "final_receipt", "path": final_receipt.name, "ordinal": 1, "media_type": "application/json"},
     ], created=datetime.now(timezone.utc).isoformat()))
     return {"status": receipt["overall_status"], "overall_status": receipt["overall_status"],
             "states": receipt["states"]}

@@ -12,6 +12,7 @@ spec.loader.exec_module(gate)
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     for contract in gate.RELEASE1_MATRIX:
+        contract = gate._migrate_macos_receipt_key(contract)
         runner_os, image_os = gate.RUNNER_PROVENANCE[contract["runner"]]
         service = {"required": True, "outcome": "pass", "manager": "native", "version": "1",
                    "foreground_fallback": False}
@@ -91,7 +92,7 @@ def test_runner_shell_and_cleanup_must_match(tmp_path):
     candidate, manifest, row, write = evidence(tmp_path)
     write(row)
     assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'windows-2022', 'powershell.exe')
-    assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-14', 'sh')
+    assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-15', 'sh')
     assert gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'ubuntu-24.04', 'powershell.exe')
     row['final_cleanup'] = 'retained-for-next-leg'
     write(row)
@@ -127,7 +128,7 @@ def test_hosted_image_mappings(tmp_path):
         ('ubuntu-24.04', 'Linux', 'ubuntu24', 'Linux-6.8', 'sh'),
         ('ubuntu-22.04', 'Linux', 'ubuntu22', 'Linux-6.8', 'sh'),
         ('windows-2022', 'Windows', 'win22', 'Windows-Server', 'powershell.exe'),
-        ('macos-14', 'macOS', 'macos14', 'macOS-14.7-arm64', 'sh'),
+        ('macos-15', 'macOS', 'macos15', 'macOS-15.7-arm64', 'sh'),
     ):
         item = copy.deepcopy(row)
         item.update(runner_image=runner, os_build=build, shell=shell)
@@ -137,6 +138,19 @@ def test_hosted_image_mappings(tmp_path):
         item['runner_provenance']['ImageOS'] = 'unexpected'
         write(item)
         assert any('ImageOS' in e for e in gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], runner, shell))
+
+
+def test_macos15_receipt_key_rejects_the_retired_macos14_label(tmp_path):
+    candidate, manifest, row, write = evidence(tmp_path)
+    row.update(runner_image='macos-15', os_build='macOS-15.7-arm64', shell='sh')
+    row['runner_provenance'].update(RUNNER_OS='macOS', ImageOS='macos15')
+    write(row)
+    assert not gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-15', 'sh')
+
+    row['runner_image'] = 'macos-14'
+    write(row)
+    assert any('runner image label' in error
+               for error in gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], 'macos-15', 'sh'))
 
 
 def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_path):
@@ -185,6 +199,7 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
 def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
     for contract in gate.RELEASE1_MATRIX:
+        contract = gate._migrate_macos_receipt_key(contract)
         assert f'"job_id":"{contract["job_id"]}"' in workflow
         assert f'"mode":"{contract["mode"]}"' in workflow
         assert f'"runner":"{contract["runner"]}"' in workflow

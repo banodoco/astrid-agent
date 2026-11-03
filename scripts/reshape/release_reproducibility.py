@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any, Sequence
@@ -22,6 +23,15 @@ LOCK_PATHS = (
 )
 HASH_RE = re.compile(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)")
 PIN_RE = re.compile(r"^([A-Za-z0-9_.-]+)(?:\[[^]]+\])?==([^ ;\\]+)")
+RUNTIME_WHEEL_PYTHON_VERSION = "3.11.13"
+RUNTIME_WHEEL_TARGETS = (
+    ("macos-arm64", "aarch64-apple-darwin"),
+    ("macos-x86_64", "x86_64-apple-darwin"),
+    ("windows-x86_64", "x86_64-pc-windows-msvc"),
+    ("linux-x86_64", "x86_64-unknown-linux-gnu"),
+    ("linux-arm64", "aarch64-unknown-linux-gnu"),
+)
+WHEEL_RESOLUTION_TIMEOUT_SECONDS = 120
 
 
 class ReproducibilityError(RuntimeError):
@@ -78,6 +88,127 @@ def validate_hashed_lock(path: Path) -> dict[str, Any]:
     }
 
 
+def _command_output(result: subprocess.CompletedProcess[str]) -> str:
+    return "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+
+
+def _run_wheel_command(
+    command: Sequence[str], *, root: Path, description: str
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        command,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=WHEEL_RESOLUTION_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        output = _command_output(result)
+        raise ReproducibilityError(
+            f"{description} failed (exit {result.returncode}): {output or 'no output'}"
+        )
+    return result
+
+
+def _managed_python_311_13(uv: str, workdir: Path, root: Path) -> Path:
+    install_dir = workdir / "python"
+    _run_wheel_command(
+        (
+            uv,
+            "python",
+            "install",
+            "--install-dir",
+            str(install_dir),
+            "--no-bin",
+            RUNTIME_WHEEL_PYTHON_VERSION,
+        ),
+        root=root,
+        description=f"uv could not provision CPython {RUNTIME_WHEEL_PYTHON_VERSION}",
+    )
+    candidates = sorted(
+        path
+        for pattern in ("*/bin/python3.11", "*/bin/python.exe", "*/python.exe")
+        for path in install_dir.glob(pattern)
+        if path.is_file()
+    )
+    if not candidates:
+        raise ReproducibilityError(
+            f"uv did not provision a CPython {RUNTIME_WHEEL_PYTHON_VERSION} executable"
+        )
+    return candidates[0]
+
+
+def validate_runtime_lock_wheels(
+    repo_root: Path = REPO_ROOT,
+    *,
+    uv_executable: str | None = None,
+    python_executable: Path | None = None,
+    targets: Sequence[tuple[str, str]] = RUNTIME_WHEEL_TARGETS,
+) -> dict[str, Any]:
+    """Require a hashed binary wheel for every supported runtime target."""
+    root = repo_root.resolve()
+    lock_path = root / "requirements/runtime.lock"
+    if not lock_path.is_file():
+        raise ReproducibilityError(f"required dependency lock is missing: {lock_path}")
+    uv = uv_executable or shutil.which("uv")
+    if uv is None:
+        raise ReproducibilityError("runtime wheel validation requires uv")
+    uv_report = _tool("uv", (uv, "--version"))
+    reports: list[dict[str, str]] = []
+    with tempfile.TemporaryDirectory(prefix="astrid-runtime-wheel-") as scratch:
+        scratch_path = Path(scratch)
+        interpreter = python_executable or _managed_python_311_13(uv, scratch_path, root)
+        failures: list[str] = []
+        for name, platform_target in targets:
+            command = (
+                uv,
+                "pip",
+                "install",
+                "--dry-run",
+                "--target",
+                str(scratch_path / name),
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "--python",
+                str(interpreter),
+                "--python-platform",
+                platform_target,
+                "--requirements",
+                str(lock_path),
+            )
+            result = subprocess.run(
+                command,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=WHEEL_RESOLUTION_TIMEOUT_SECONDS,
+            )
+            reports.append(
+                {
+                    "name": name,
+                    "platform": platform_target,
+                    "exit": str(result.returncode),
+                }
+            )
+            if result.returncode != 0:
+                failures.append(
+                    f"{name} ({platform_target}) exit {result.returncode}: "
+                    f"{_command_output(result) or 'no output'}"
+                )
+        if failures:
+            raise ReproducibilityError(
+                "runtime lock has no binary-only wheel resolution for:\n" + "\n".join(failures)
+            )
+    return {
+        "python_version": RUNTIME_WHEEL_PYTHON_VERSION,
+        "uv": uv_report,
+        "targets": reports,
+    }
+
+
 def validate_dependency_locks(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
     root = repo_root.resolve()
     pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
@@ -116,7 +247,11 @@ def validate_dependency_locks(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             )
     for report in reports.values():
         report.pop("pins")
-    return {"schema": "astrid.dependency_locks.v1", "locks": reports}
+    return {
+        "schema": "astrid.dependency_locks.v1",
+        "locks": reports,
+        "runtime_wheels": validate_runtime_lock_wheels(root),
+    }
 
 
 def _tool(name: str, command: Sequence[str]) -> dict[str, str]:

@@ -272,6 +272,10 @@ def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list
             continue
         aliases = sorted(set((public, *getattr(spec, 'aliases', ()))) - {name})
         kind = _input_type(spec.type)
+        # An IMAGE-typed LoadImage input with image semantics is a filename
+        # reference at this boundary; the media is staged separately below.
+        if kind == 'image' and spec.media_semantics == 'image':
+            kind = 'string'
         if kind == 'unknown':
             # InputSpec defaults and the bound widget are declared workflow
             # values, so their primitive shape is an authoritative fallback.

@@ -92,9 +92,12 @@ def render_registry_block(
     for descriptor in rows:
         summary = (descriptor.short_description or descriptor.description or "").replace("|", "\\|")
         if descriptor.skill is not None:
-            status = "selected" if selected and descriptor.skill_id in selected else (
-                f"available: `astrid skills install {descriptor.pack_id} --skill {descriptor.skill}`"
-            )
+            if selected and descriptor.skill_id in selected:
+                status = "selected"
+            elif descriptor.developer_only:
+                status = "developer skill: `astrid skills sync --developer`"
+            else:
+                status = f"available: `astrid skills install {descriptor.pack_id} --skill {descriptor.skill}`"
             summary = f"{summary}; {status}"
         skill_path = _repo_relative(descriptor.skill_md, view_root=view_root)
         path_cell = f"`{skill_path}`"

@@ -126,6 +126,8 @@ actions:
       runtime_file: actions/publication_finalizer/run.py
       runtime_module: astrid.packs.h3_av.actions.publication_finalizer.run
       output_result_manifest: true
+      auto_forward_skip:
+      - generation_intent
       mutation_authority: workspace_runtime
       generation_publication:
         version: 1

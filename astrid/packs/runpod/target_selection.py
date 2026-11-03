@@ -8,6 +8,7 @@ and preparation functions, with their existing owner lock held throughout.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import math
@@ -22,7 +23,7 @@ from astrid.core.generation.targets import read_config, update_config
 from astrid.sdk.storage_root import resolve_runtime_data_root
 
 from .worker_preparation import (
-    AcquisitionUnresolvedError, RunPodTargetContract, TargetObservationError,
+    AcquisitionUnresolvedError, CapacityExhaustedError, RunPodTargetContract, TargetObservationError,
     acquire_target, create_target_record_exclusive, observe_exact_target, read_exact_pod,
     inspect_volume_records, reconcile_target, replace_target_record, resolve_existing_volume, target_owner,
 )
@@ -263,6 +264,12 @@ class RunPodSelectionOwner:
         if (tuple(config.gpu_type_candidates) != (offer.gpu_type,) or config.worker_image != p.image
                 or config.volume_mount_path != p.mount_path):
             raise PaidSelectionError("provider configuration differs from the consented GPU/image/mount")
+        # Restrict lifecycle's launch matrix to the consented target so each
+        # journaled attempt can issue at most one create POST.
+        config = copy.copy(config)
+        config.ram_tiers_enabled = False
+        config.storage_name = p.volume_name
+        config.storage_volumes = ()
         self._read()  # Reject legacy/symlink custody before creating a lock file.
         with target_owner(self.path):
             record = self._read()
@@ -330,7 +337,7 @@ class RunPodSelectionOwner:
                         acquired = await acquire_target.__wrapped__(
                             config, handle_path=self.path, attempt=record, volume=volume, pod_id=None,
                             max_wait_seconds=max(1, int((expires - now).total_seconds())),
-                            capacity_window_seconds=1, retry_interval_seconds=1,
+                            capacity_window_seconds=60, retry_interval_seconds=15, max_create_attempts=10,
                             ready_timeout_seconds=max(1, min(900, int((expires - self.clock()).total_seconds()))),
                         )
                     else:
@@ -338,6 +345,8 @@ class RunPodSelectionOwner:
                             config, handle_path=self.path, attempt=record, volume=volume,
                             ready_timeout_seconds=max(1, min(900, int((expires - self.clock()).total_seconds()))),
                         )
+                except CapacityExhaustedError:
+                    raise
                 except Exception:
                     raise AcquisitionUnresolvedError("provider acquisition remains unresolved; reconcile the same journal") from None
                 acquired_record, observation = dict(acquired.attempt), acquired.observation

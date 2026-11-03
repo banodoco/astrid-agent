@@ -69,8 +69,22 @@ RUNNER_PROVENANCE = {
     "ubuntu-24.04": ("Linux", "ubuntu24"),
     "ubuntu-22.04": ("Linux", "ubuntu22"),
     "windows-2022": ("Windows", "win22"),
-    "macos-14": ("macOS", "macos14"),
+    "macos-15": ("macOS", "macos15"),
 }
+
+
+def _migrate_macos_receipt_key(contract):
+    """Keep the canonical evaluator on the live hosted macOS receipt key.
+
+    The immutable journey matrix remains the driver's source of job identity.
+    This evaluator-owned copy changes only the runner receipt contract for its
+    macOS rows; it neither creates a second matrix nor changes driver logic.
+    """
+    if contract.get("os") == "macos":
+        return {**contract, "runner": "macos-15"}
+    return contract
+
+
 REQUIRED = {
     # Release candidates are no longer a loose list of legs.  They are the
     # exact nine ownership/OS jobs and must use --aggregate-release1.
@@ -142,17 +156,16 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
         if row.get("runner_image") != expected_runner:
             errors.append(f"{name}: runner image label does not match {expected_runner}")
         provenance = row.get("runner_provenance")
-        expected_os = {"ubuntu-24.04": "Linux", "ubuntu-22.04": "Linux",
-                       "windows-2022": "Windows", "macos-14": "macOS",
-                       "local": {"Darwin": "macOS"}.get(platform.system(), platform.system())}[expected_runner]
+        expected_os = (RUNNER_PROVENANCE[expected_runner][0]
+                       if expected_runner != "local"
+                       else {"Darwin": "macOS"}.get(platform.system(), platform.system()))
         if expected_runner != "local":
             if not isinstance(provenance, dict):
                 errors.append(f"{name}: runner provenance is missing")
             else:
                 if provenance.get("RUNNER_OS") != expected_os:
                     errors.append(f"{name}: runner OS provenance does not match {expected_os}")
-                expected_image_os = {"ubuntu-24.04": "ubuntu24", "ubuntu-22.04": "ubuntu22",
-                                     "windows-2022": "win22", "macos-14": "macos14"}[expected_runner]
+                expected_image_os = RUNNER_PROVENANCE[expected_runner][1]
                 if provenance.get("ImageOS") != expected_image_os:
                     errors.append(f"{name}: ImageOS provenance does not match {expected_image_os}")
                 for field in ("ImageOS", "ImageVersion"):
@@ -197,7 +210,7 @@ def evaluate_release1_matrix(candidate, results):
     must leave exactly one machine-readable ``journey-result.json`` receipt.
     """
     errors = []
-    expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
+    expected = {row["job_id"]: _migrate_macos_receipt_key(row) for row in RELEASE1_MATRIX}
     found = {}
     for path in Path(results).rglob("journey-result.json"):
         try:
@@ -366,7 +379,8 @@ def _sidecar_json(path: Path, *, expected_os: str, mode: str) -> tuple[dict | No
 def evaluate_m4_4a_backend_matrix(candidate, results):
     """Check the provisional M4-4a backend contract, never source evidence alone."""
     errors = []
-    expected = {row["job_id"]: row for row in M4_4A_BACKEND_MATRIX}
+    expected = {row["job_id"]: _migrate_macos_receipt_key(row)
+                for row in M4_4A_BACKEND_MATRIX}
     found = {}
     paths = {}
     for path in Path(results).rglob("journey-result.json"):
@@ -404,8 +418,7 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
         if row.get("final_cleanup") != "pass":
             errors.append(f"{job_id}: final cleanup did not pass")
         provenance = row.get("runner_provenance") or {}
-        expected_os = {"macos-14": "macOS", "ubuntu-24.04": "Linux", "windows-2022": "Windows"}[contract["runner"]]
-        expected_image = {"macos-14": "macos14", "ubuntu-24.04": "ubuntu24", "windows-2022": "win22"}[contract["runner"]]
+        expected_os, expected_image = RUNNER_PROVENANCE[contract["runner"]]
         if (provenance.get("RUNNER_OS") != expected_os or provenance.get("ImageOS") != expected_image
                 or not isinstance(provenance.get("ImageVersion"), str) or not provenance["ImageVersion"].strip()):
             errors.append(f"{job_id}: hosted runner provenance is absent or mismatched")
@@ -680,7 +693,7 @@ def main():
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--app-checkout", type=Path)
     parser.add_argument("--results", type=Path)
-    parser.add_argument("--expected-runner", choices=("ubuntu-24.04", "ubuntu-22.04", "windows-2022", "macos-14", "local"))
+    parser.add_argument("--expected-runner", choices=(*RUNNER_PROVENANCE, "local"))
     parser.add_argument("--expected-shell", choices=("sh", "powershell.exe", "pwsh.exe"))
     parser.add_argument("--cadence", choices=tuple(REQUIRED), default="release-candidate")
     parser.add_argument("--required", action="append", help="Override scenario list for focused local checks")

@@ -1035,7 +1035,7 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
     result_path = evidence / "journey-result.json"
     write_json(result_path, result)
     try:
-        if args.mode == "pinokio-backend":
+        if getattr(args, "mode", "direct") == "pinokio-backend":
             backend_receipt = execute_pinokio_backend(args, evidence)
             result.update(backend_receipt)
             result["pinokio_backend"] = backend_receipt["pinokio_backend"]
