@@ -101,6 +101,82 @@ def test_action_graph_refuses_dynamic_helper_resolution(tmp_path: Path, operatio
         PinokioActionGraph.collect(app)
 
 
+def test_action_graph_binds_static_cycle_and_refuses_equal_size_leaf_drift(tmp_path: Path) -> None:
+    app = _installed_app(tmp_path)
+    actions = app / "pinokio"
+    (actions / "helper.js").write_text("require('./leaf');\n", encoding="utf-8")
+    leaf = actions / "leaf.js"
+    original = "require('./helper'); module.exports = 1;\n"
+    leaf.write_text(original, encoding="utf-8")
+
+    graph = PinokioActionGraph.collect(app)
+
+    assert {Path(item.path).relative_to(app).as_posix() for item in graph.files} == {
+        "pinokio/start.js", "pinokio/stop.js", "pinokio/update.js", "pinokio/uninstall.js",
+        "pinokio/helper.js", "pinokio/leaf.js",
+    }
+    bound_leaf = next(item for item in graph.files if item.path == str(leaf))
+    assert bound_leaf.sha256 == hashlib.sha256(leaf.read_bytes()).hexdigest()
+    assert PinokioActionGraph.collect(app) == graph
+    graph.verify_current_bytes()
+
+    leaf.write_text(original.replace("= 1", "= 2"), encoding="utf-8")
+    assert leaf.stat().st_size == len(original.encode("utf-8"))
+    with pytest.raises(PinokioSourceMismatch, match="action/helper bytes changed"):
+        graph.verify_current_bytes()
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "'./session.mjs'",  # Selected lib.js literal edge still needs a reviewed binder.
+        "'./missing.mjs'",
+        "modulePath",
+        "'./' + moduleName",
+        "'node:fs/promises'",  # Selected update-stage.mjs:137 foreign edge.
+        "'foreign-package'",
+        "'https://example.invalid/helper.mjs'",
+    ],
+)
+def test_transitive_dynamic_closure_remains_refused(tmp_path: Path, expression: str) -> None:
+    app = _installed_app(tmp_path)
+    actions = app / "pinokio"
+    (actions / "helper.js").write_text("require('./update-stage.mjs');\n", encoding="utf-8")
+    (actions / "session.mjs").write_text("export const ready = true;\n", encoding="utf-8")
+    (actions / "update-stage.mjs").write_text(
+        f"export async function stage() {{ return import({expression}); }}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(
+        PinokioSourceMismatch,
+        match=r"dynamic action/helper import cannot be bound: pinokio/update-stage\.mjs",
+    ):
+        PinokioActionGraph.collect(app)
+
+
+def test_action_graph_refuses_missing_transitive_static_helper(tmp_path: Path) -> None:
+    app = _installed_app(tmp_path)
+    (app / "pinokio" / "helper.js").write_text("require('./missing');\n", encoding="utf-8")
+
+    with pytest.raises(PinokioSourceMismatch, match="static helper cannot be resolved"):
+        PinokioActionGraph.collect(app)
+
+
+def test_install_does_not_alias_a_supported_custody_operation(tmp_path: Path) -> None:
+    request = _prepared(tmp_path)
+    app = Path(request.selected_app.app_path)
+    (app / "pinokio" / "install.js").write_text("require('./helper');\n", encoding="utf-8")
+    graph = PinokioActionGraph.collect(app)
+
+    with pytest.raises(ValueError, match="only start, stop, update, and uninstall"):
+        graph.action_for("install")
+    with pytest.raises(ValueError, match="only start, stop, update, and uninstall"):
+        PreparedPinokioRequest.prepare(
+            request_id="unsupported-install", operation="install", graph=graph,
+            selected_app=request.selected_app, input={},
+        )
+
+
 def test_uninstall_helper_closure_is_bound_and_drift_refuses(tmp_path: Path) -> None:
     app = _installed_app(tmp_path)
     actions = app / "pinokio"
