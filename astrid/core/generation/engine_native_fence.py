@@ -404,4 +404,3 @@ class Fence:
         except BaseException:
             self.poison()
             self.channel.close()
-
