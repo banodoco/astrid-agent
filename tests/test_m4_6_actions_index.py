@@ -42,6 +42,12 @@ def test_api_metadata_index_is_explicitly_not_admitted():
     assert "external_checkpoint_join" not in result
 
 
+def test_attempt_scoped_api_response_need_not_repeat_attempt():
+    case = api_case()
+    del case["jobs"][0]["run_attempt"]
+    assert checker.m4_6_actions_index(**case)["admitted"] is False
+
+
 @pytest.mark.parametrize("change", [
     lambda c: c["run"].update(id=22),
     lambda c: c["run"].update(run_attempt=1),

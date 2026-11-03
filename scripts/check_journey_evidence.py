@@ -1030,8 +1030,9 @@ def m4_6_actions_index(candidate, slot_id, run_id, attempt, job_id, artifact_id,
     job = selected[0]
     labels = job.get("labels")
     if (not _positive_integer(job.get("id")) or not _positive_integer(job.get("run_id"))
-            or not _positive_integer(job.get("run_attempt"))
-            or job.get("run_id") != run_id or job.get("run_attempt") != attempt
+            or job.get("run_id") != run_id
+            or ("run_attempt" in job and (not _positive_integer(job["run_attempt"])
+                                           or job["run_attempt"] != attempt))
             or job.get("status") != "completed" or job.get("conclusion") != "success"
             or not isinstance(job.get("name"), str) or not job["name"]
             or not isinstance(job.get("runner_name"), str) or not job["runner_name"]
