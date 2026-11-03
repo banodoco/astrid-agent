@@ -307,7 +307,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
             or absolute(transaction["data_root"]) != absolute(data)):
         raise ValueError("The interrupted update identity does not match this installation.")
     if transaction.get("runtime_upgrade_started"):
-        raise RuntimeError("The Runtime upgrade may have changed the workspace; preserve the current selection and use Runtime upgrade recovery.")
+        raise RuntimeError("The Runtime upgrade may have changed the workspace; preserve the current selection for recovery and reconciliation.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
     persist_callback = save

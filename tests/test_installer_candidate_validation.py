@@ -408,7 +408,6 @@ def test_regular_update_admits_supported_older_schema_and_reaches_migration(
     monkeypatch.setattr(backend, "has_workspace", lambda _data: True)
     monkeypatch.setattr(backend, "stage", lambda *_args: candidate_version)
     monkeypatch.setattr(backend, "stop", lambda version, _data: calls.append(("stop", version)))
-    monkeypatch.setattr(backend, "backup", lambda *_args: calls.append(("backup",)) or None)
     monkeypatch.setattr(backend, "upgrade", lambda version, _data: calls.append(("upgrade", version)))
     monkeypatch.setattr(backend, "register", lambda version, _data: calls.append(("register", version)))
     monkeypatch.setattr(backend, "start", lambda version, _data: calls.append(("start", version)))
@@ -427,6 +426,7 @@ def test_regular_update_admits_supported_older_schema_and_reaches_migration(
         assert not any(call[0] in {"backup", "upgrade"} for call in calls)
     else:
         assert ("upgrade", candidate_version) in calls
+        assert not any(call[0] == "backup" for call in calls)
     assert core.current(backend.root).root == candidate_version.root
     assert (data / "work.bin").read_bytes() == original_workspace
     assert database.read_bytes() == realm_before
