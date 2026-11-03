@@ -85,3 +85,19 @@ def test_offline_backup_requires_lock_and_never_starts_runtime(tmp_path):
     assert not (Path(backup["root"]) / "support" / "runtime" / "realms").exists()
     with pytest.raises(ValueError, match="replacement-directory custody"):
         backend.restore(None, data, realm, backup)
+
+
+def test_manual_upgrade_lock_cannot_be_nested_with_runtime_owner_fence(tmp_path):
+    """The WIP lock is not Runtime's reentrant fence and cannot wrap migration."""
+    from runtime_protocol.errors import OwnerBusyError
+    from runtime_protocol.upgrade import _owner_fence
+
+    root = tmp_path / "realm"
+    root.mkdir()
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    with backend.realm_upgrade_lock({"realm_root": str(root)}, timeout=0):
+        with pytest.raises(OwnerBusyError, match="another runtime daemon owns this realm"):
+            with _owner_fence(root):
+                pytest.fail("separate lock acquisition must not be treated as reentrant")
+    with _owner_fence(root):
+        pass
