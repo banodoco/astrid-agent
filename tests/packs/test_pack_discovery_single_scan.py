@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import builtins
+import hashlib
+import io
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -45,7 +49,7 @@ def _write_pack(parent: Path, pack_id: str, *, duplicate: bool = False, **fields
 @pytest.fixture(autouse=True)
 def _isolated_sources(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ASTRID_PACKS_PATH", raising=False)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: None)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: None)
 
 
 def _two_call_scanner(root=None):
@@ -71,7 +75,7 @@ def test_same_authority_reuses_full_scan_only_with_builtin_scanner(
         pack_root=managed, pack_id="alpha", revision="a" * 40,
         manifest_sha256="b" * 64, tree_sha256="c" * 64,
     ),))
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: inventory)
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: inventory)
     monkeypatch.setattr(loader, "packs_root", lambda: packs)
     monkeypatch.setenv("ASTRID_PACKS_PATH", str(env))
     extra_roots = (str(extra), str(managed))
@@ -201,7 +205,7 @@ def test_managed_identity_guard_is_unchanged(tmp_path: Path, monkeypatch: pytest
     _write_pack(packs, "local")
     managed = _write_pack(tmp_path / "managed", "alpha")
     monkeypatch.setattr(loader, "packs_root", lambda: packs)
-    monkeypatch.setattr(source_setup, "active_source_inventory", lambda: SimpleNamespace(
+    monkeypatch.setattr(source_setup, "active_source_inventory", lambda **kwargs: SimpleNamespace(
         identity="inventory", sources=(SimpleNamespace(pack_root=managed, pack_id="wrong"),),
     ))
     rows = discover_pack_metadata(project_root=tmp_path)
@@ -246,3 +250,92 @@ def test_production_support_caller_uses_single_scan_without_a_backend_process(tm
     assert transport.run.call_count == 1
     assert transport.run.call_args.args[0] == "support"
     assert transport.run.call_args.kwargs["backend"] == "rendering.remotion"
+
+
+def _write_selected_pack(parent: Path, pack_id: str, *, duplicate: bool = False, **fields) -> Path:
+    root = parent / pack_id
+    root.mkdir(parents=True)
+    names = ["a.yaml", "b.yaml"] if duplicate else ["a.yaml"]
+    rendering_root = root / "rendering"
+    rendering_root.mkdir()
+    manifest = {
+        "schema_version": 3,
+        "id": pack_id,
+        "name": pack_id,
+        "version": "1.0.0",
+        "pack_api": "1.0",
+        "documentation": {"kind": "none", "reason": "Test fixture."},
+        "rendering": {
+            f"renderer_{index}": {"type": "renderer", "path": f"rendering/{name}"}
+            for index, name in enumerate(names)
+        },
+        "aliases": [{"kind": "renderer", "alias": f"{pack_id}.alias",
+                     "canonical_id": f"{pack_id}.renderer_0"}],
+        **fields,
+    }
+    (root / "pack.yaml").write_text(json.dumps(manifest), encoding="utf-8")
+    for index, name in enumerate(names):
+        (rendering_root / name).write_text(json.dumps({
+            "schema_version": 1,
+            "id": f"{pack_id}.renderer_{index}",
+            "name": name,
+            "version": "1.0.0",
+            "protocol_version": 1,
+            "command": ["python3", "backend.py"],
+            "operations": ["render", "support"],
+        }), encoding="utf-8")
+    return root
+
+
+def _audit_resource_accesses(monkeypatch):
+    """Audit Path/io/builtin/descriptor opens and both SHA-256 entry paths."""
+    events = {"opens": [], "file_digests": [], "hash_bytes": []}
+
+    def wrap_open(real):
+        def record(file, *args, **kwargs):
+            if not isinstance(file, int):
+                events["opens"].append(Path(file).absolute())
+            return real(file, *args, **kwargs)
+        return record
+
+    for module in (builtins, io, os):
+        monkeypatch.setattr(module, "open", wrap_open(module.open))
+    real_sha256 = hashlib.sha256
+    real_file_digest = hashlib.file_digest
+    real_new = hashlib.new
+
+    class HashAudit:
+        def __init__(self, digest):
+            self.digest_object = digest
+
+        def update(self, data):
+            events["hash_bytes"].append(bytes(data))
+            return self.digest_object.update(data)
+
+        def __getattr__(self, name):
+            return getattr(self.digest_object, name)
+
+    def sha256(data=b"", **kwargs):
+        events["hash_bytes"].append(bytes(data))
+        return HashAudit(real_sha256(data, **kwargs))
+
+    def file_digest(stream, *args, **kwargs):
+        events["file_digests"].append(Path(stream.name).absolute())
+        return real_file_digest(stream, *args, **kwargs)
+
+    def new(name, data=b"", **kwargs):
+        digest = real_new(name, data, **kwargs)
+        if name.lower().replace("-", "") == "sha256":
+            events["hash_bytes"].append(bytes(data))
+            return HashAudit(digest)
+        return digest
+
+    monkeypatch.setattr(hashlib, "sha256", sha256)
+    monkeypatch.setattr(hashlib, "file_digest", file_digest)
+    monkeypatch.setattr(hashlib, "new", new)
+    return events
+
+
+@pytest.fixture
+def resource_accesses(monkeypatch):
+    return _audit_resource_accesses(monkeypatch)

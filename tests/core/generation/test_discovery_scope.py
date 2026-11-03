@@ -289,20 +289,50 @@ def test_find_entry_loads_only_the_requested_ready_workflow(monkeypatch):
 
 @pytest.mark.parametrize("lookup", ["packs", "actions"])
 def test_managed_checkout_is_verified_even_on_snapshot_hits(corpus, tmp_path, monkeypatch, lookup):
-    from tests.core.pack.test_source_setup import _fixture_repo
-    repository = tmp_path / "repository"
-    revision = _fixture_repo(repository)
-    state = tmp_path / "state.json"
-    monkeypatch.setenv("ASTRID_SOURCE_STATE", str(state))
-    declaration = source_setup.SourceDeclaration("demo", str(repository), revision)
-    source_setup.provision((declaration,), state_path=state, data_root=tmp_path / "managed")
-    root = source_setup.active_source_inventory().sources[0].pack_root
+    # Owner-approved C2 spec change: custody follows SELECTED v3 payloads.
+    from tests.packs.test_pack_discovery_single_scan import _write_selected_pack, _audit_resource_accesses
+    from tests.packs.test_selected_source_composition import _install, _unread
+
+    repository = _write_selected_pack(tmp_path / "repositories", "demo", resources=[
+        {"path": "executors/echo/executor.yaml", "kind": "example"}], actions={"paint": {
+        "description": "Selected managed generation action.",
+        "invocation": {"kind": "command", "command": {"argv": ["echo", "{prompt}"]}},
+        "inputs": [{"name": "prompt", "type": "string", "required": True}], "outputs": [],
+        "metadata": {"generation_entry": {"id": "managed_entry", "kind": "image",
+                     "modes": ["t2i"], "inputs": ["prompt"]}},
+    }})
+    executor = repository / "executors/echo/executor.yaml"
+    executor.parent.mkdir(parents=True)
+    executor.write_text("selected managed payload")
+    hidden = _write_selected_pack(tmp_path / "repositories", "hidden", visibility="hidden",
+                                 resources=[{"path": "payload.bin", "kind": "example"}])
+    quarantined = _write_selected_pack(tmp_path / "repositories", "quarantined",
+                                       dependencies={"packs": ["unavailable"]},
+                                       resources=[{"path": "payload.bin", "kind": "example"}])
+    for candidate in (hidden, quarantined):
+        (candidate / "payload.bin").write_bytes(b"NEVER OPEN OR HASH " + candidate.name.encode())
+    roots = _install(tmp_path, monkeypatch, (repository, hidden, quarantined))
+    root = roots["demo"]
+    forbidden = {roots[name] / path: (roots[name] / path).read_bytes()
+                 for name in ("hidden", "quarantined")
+                 for path in ("payload.bin", "rendering/a.yaml")}
+    accesses = _audit_resource_accesses(monkeypatch)
     def read():
         return (discovery.discover_pack_metadata(project_root=tmp_path) if lookup == "packs"
                 else entries.action_entries())
     with discovery.pack_discovery_scope():
-        read()
-        read()
+        first = read()
+        if lookup == "packs":
+            assert "demo" in {row.id for row in first}
+        else:
+            assert "managed_entry" in {row["id"] for row in first}
+        _unread(accesses, forbidden)
+        for events in accesses.values():
+            events.clear()
+        assert read() == first
+        assert root / "executors/echo/executor.yaml" in accesses["opens"]
+        _unread(accesses, forbidden)
         (root / "executors/echo/executor.yaml").write_text("tampered")
         with pytest.raises(source_setup.SourceSetupError, match="dirty"):
             read()
+        _unread(accesses, forbidden)

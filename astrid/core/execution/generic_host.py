@@ -5737,9 +5737,13 @@ def _quarantine_scope(pack_roots: Any) -> tuple[tuple[Path, ...], frozenset[str]
     """
     from astrid.core.pack.loader import scan_pack_roots
 
+    from astrid.core.pack.source_setup import active_source_inventory
+
+    inventory = active_source_inventory(selected_paths={})
+    records = {source.pack_id: source for source in inventory.sources} if inventory else {}
     dirs: list[Path] = []
     ids: set[str] = set()
-    for record in scan_pack_roots(tuple(pack_roots)).quarantined:
+    for record in scan_pack_roots(tuple(pack_roots), source_records=records).quarantined:
         dirs.append(record.pack_dir.resolve())
         ids.add(record.pack_id)
     return tuple(dirs), frozenset(ids)
