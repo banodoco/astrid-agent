@@ -271,11 +271,29 @@ class Backend:
             result = {"root": str(destination), "kind": "offline"}
             write_json(destination / "backup.json", {**result, "manifest": {
                 "realm": realm_manifest, "support": support_manifest}})
+            result["manifest_sha256"] = hashlib.sha256((destination / "backup.json").read_bytes()).hexdigest()
             return result
         except BaseException:
             if destination.exists():
                 shutil.rmtree(destination)
             raise
+
+    def verify_offline_realm_backup(self, backup: dict) -> None:
+        """Recheck the retained snapshot against the journal-bound inventory."""
+        if backup.get("kind") != "offline" or not isinstance(backup.get("manifest_sha256"), str):
+            raise ValueError("The offline backup reference is invalid.")
+        destination = absolute(backup["root"])
+        raw = (destination / "backup.json").read_bytes()
+        if hashlib.sha256(raw).hexdigest() != backup["manifest_sha256"]:
+            raise ValueError("The offline backup inventory changed.")
+        inventory = json.loads(raw)
+        if (not isinstance(inventory, dict) or inventory.get("root") != str(destination)
+                or inventory.get("kind") != "offline" or not isinstance(inventory.get("manifest"), dict)):
+            raise ValueError("The offline backup inventory is invalid.")
+        manifest = inventory["manifest"]
+        if (manifest.get("realm") != self._backup_manifest(destination / "realm")
+                or manifest.get("support") != self._backup_manifest(destination / "support")):
+            raise ValueError("The offline backup could not be verified.")
 
     @staticmethod
     def _command_failure(exc: Exception) -> str:
@@ -876,6 +894,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         def failed(error):
             raise error
 
+        if linked(source) or not stat.S_ISDIR(source.stat(follow_symlinks=False).st_mode):
+            raise ValueError(f"Backup refused a non-directory: {source}")
         result = {}
         for folder, directories, files in os.walk(source, onerror=failed):
             parent = Path(folder)

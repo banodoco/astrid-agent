@@ -102,6 +102,10 @@ def test_offline_backup_requires_lock_and_never_starts_runtime(tmp_path):
     assert manifest["realm"]["empty"] == {"type": "directory"}
     assert (Path(backup["root"]) / "support" / "runtime" / "catalog.json").is_file()
     assert not (Path(backup["root"]) / "support" / "runtime" / "realms").exists()
+    backend.verify_offline_realm_backup(backup)
+    (Path(backup["root"]) / "realm" / "realm.sqlite3").write_bytes(b"damaged")
+    with pytest.raises(ValueError, match="could not be verified"):
+        backend.verify_offline_realm_backup(backup)
     with pytest.raises(ValueError, match="replacement-directory custody"):
         backend.restore(None, data, realm, backup)
 
