@@ -1,0 +1,815 @@
+...........................FFFFFFF.FF..................FFFF........F.... [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+....................................................                     [100%]
+=================================== FAILURES ===================================
+___ test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph ____
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74785ca6d0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_reaches_r0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7475e03c40>
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_path, monkeypatch):
+        import ast
+        import hashlib
+        import inspect
+        from astrid.core.execution import generic_host as module
+        from astrid.sdk import host_bootstrap
+        from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+        from vibecomfy.workflow_bundle import emit_bundle
+        from vibecomfy.security.provenance import Provenance
+    
+        # Derive the actual SDK argv; this route deliberately has no activation graph.
+        tree = ast.parse(inspect.getsource(host_bootstrap.ensure_pack_host))
+        argv = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "argv" for target in node.targets))
+        flags = {node.value for node in ast.walk(argv) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        assert "--register" in flags and not flags.intersection({"--host-control-fd", "--activation-fd", "--activation-socket"})
+        f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
+        profile_path = tmp_path / "readiness.json"
+        profile_path.write_text(json.dumps(f.profile))
+        monkeypatch.setenv("ASTRID_HOST_READINESS_PROFILE_PATH", str(profile_path))
+        monkeypatch.setenv("ASTRID_HOST_READINESS_PROFILE_HASH", "sha256:" + hashlib.sha256(profile_path.read_bytes()).hexdigest())
+        bundle_root = tmp_path / "bundle"
+        bundle_root.mkdir()
+        workflow = VibeWorkflow("sdk-cpu-handoff", WorkflowSource("sdk-cpu-handoff"),
+                                metadata={"model_id": "fixture-model", "ready_template": "fixture-template"})
+        workflow.add_node("Integer", uid="value", value=7)
+        emit_bundle(workflow, bundle_root / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
+        (bundle_root / "source.json").write_text('{"nodes":[],"links":[]}\n')
+        objects, digests = {}, []
+        for name, basename in (("python", "workflow.py"), ("companion", "workflow.vibe.json"), ("source", "source.json")):
+            data = (bundle_root / basename).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            objects[digest] = data
+            digests.append({"name": name, "digest": digest})
+        packs = tmp_path / "packs"
+        for capability, family in (("vibecomfy.run", "local_generation"), ("h3_av.compose", "cpu")):
+            path = packs / capability
+            path.mkdir(parents=True)
+            definition = {"schema_version": 1, "id": capability, "name": capability, "kind": "external", "version": "1.0",
+                "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; p=Path('{out}'); p.mkdir(parents=True,exist_ok=True); (p/'result.txt').write_text('settled')"]},
+                "inputs": [{"name": name, "type": "file"} for name in ("python", "companion", "source")] if family == "local_generation" else [],
+                "outputs": [{"name": "result", "type": "file", "path_template": "{out}/result.txt", "artifact_type": "text/plain"}],
+                "metadata": {"adapter_family": family, "resource_keys": ["gpu"] if family == "local_generation" else ["cpu"]}}
+            (path / "executor.yaml").write_text(json.dumps(definition))
+        runtime = FakeRuntime()
+        runtime.get_object = objects.__getitem__
+        host = GenericPackHost(pack_roots=[packs], client=runtime, attempt_base=tmp_path / "attempts")
+        host._native_engine_graph = None
+        host.discover()
+        host.preflight()
+        assert all(record.ready for record in host.capabilities.values())
+        before = {p.name: p.read_bytes() for p in f.session.iterdir()}
+        native = {"task": {"id": "vibe", "capability": "vibecomfy.run", "project_id": "unit-project",
+            "attempt_id": "vibe-attempt", "fence": 1, "runtime_epoch": 1, "input_object_ids": list(objects),
+            "spec": {"spec": {"inputs": {}, "input_digests": digests}}}}
+        runtime.tasks["vibe"] = native
+        assert host.run_task(native, lease_token="unit-lease")["task"]["status"] == "completed"
+        bridge = host.managed_tool_session.current_adapter
+        assert bridge.native_graph is None
+        assert runtime.settlements[0][2]["result"]["managed_tool_session"]["state"] == "settled"
+        assert not host._unresolved_task_scopes
+        compose = {"task": {"id": "compose", "capability": "h3_av.compose", "project_id": "unit-project",
+                            "attempt_id": "compose-attempt", "fence": 1, "spec": {"spec": {"inputs": {}}}}}
+        runtime.tasks["compose"] = compose
+>       assert host.run_task(compose, lease_token="unit-lease")["task"]["status"] == "completed"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/core/execution/test_generic_host_actions_v3.py:382: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+astrid/core/execution/generic_host.py:11058: in run_task
+    return self._run_task_impl(
+astrid/core/execution/generic_host.py:12024: in _run_task_impl
+    self._open_managed_task_session(
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74785ca6d0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+__________ test_sdk_cpu_handoff_binding_drift_never_restarts[session] __________
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7475e03d90>
+field = 'session'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+>       if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+                               ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'ComfyHostHooks' object has no attribute '_host_session'
+
+tests/core/execution/test_generic_host_actions_v3.py:399: AttributeError
+__________ test_sdk_cpu_handoff_binding_drift_never_restarts[profile] __________
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7475e03a80>
+field = 'profile'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+>       elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+                                 ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'ComfyHostHooks' object has no attribute '_host_profile'
+
+tests/core/execution/test_generic_host_actions_v3.py:400: AttributeError
+___________ test_sdk_cpu_handoff_binding_drift_never_restarts[model] ___________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f7478341e80>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7475e03380>
+field = 'model'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f7478341e80>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+_________ test_sdk_cpu_handoff_binding_drift_never_restarts[template] __________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f7478342d60>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7478342040>
+field = 'template'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f7478342d60>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+__________ test_sdk_cpu_handoff_binding_drift_never_restarts[runtime] __________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74781c25f0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d4')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f74781c2120>
+field = 'runtime'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74781c25f0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+________ test_sdk_cpu_handoff_binding_drift_never_restarts[fingerprint] ________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74781c3310>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d5')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f74781c2270>
+field = 'fingerprint'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74781c3310>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+_______ test_sdk_cpu_handoff_binding_drift_never_restarts[lost_binding] ________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74781c3070>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d6')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f74781c09f0>
+field = 'lost_binding'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74781c3070>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+________ test_sdk_cpu_handoff_binding_drift_never_restarts[invocation] _________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f7478343a10>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_binding_d7')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7478343ee0>
+field = 'invocation'
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("field", ["session", "profile", "model", "template", "runtime", "fingerprint", "backend", "lost_binding", "invocation"])
+    def test_sdk_cpu_handoff_binding_drift_never_restarts(tmp_path, monkeypatch, field):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        backend = f.bridge.backend
+        if field == "session": backend._host_session["config_digest"] = "sha256:" + "0" * 64
+        elif field == "profile": backend._host_profile["launch"]["output_root"] = str(tmp_path)
+        elif field == "model": backend._bound_model_id = "different-model"
+        elif field == "template": backend._bound_template_id = "different-template"
+        elif field == "runtime": backend._runtime_instance_id = "00000000-0000-4000-8000-000000000002"
+        elif field == "fingerprint": backend._bound_fingerprint = "different-fingerprint"
+        elif field == "backend": f.bridge.backend = object()
+        elif field == "lost_binding": backend._host_session = None
+        elif field == "invocation": backend._invocation_identity = "changed-task"
+        with pytest.raises(HostError, match="exact settled ownership"):
+>           _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:409: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f7478343a10>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+___________ test_sdk_cpu_handoff_late_finally_preserves_fresh_token ____________
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74781c1e80>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_late_fina0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7478343850>
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    def test_sdk_cpu_handoff_late_finally_preserves_fresh_token(tmp_path, monkeypatch):
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        newer = f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="newer")
+        _settle_cpu_handoff_token(f.host.managed_tool_session, newer)
+        f.host._record_native_cpu_handoff(f.bridge, newer, managed_settled=True, runtime_settled=True)
+        f.host._record_native_cpu_handoff(f.bridge, f.token, managed_settled=False, runtime_settled=False)
+        assert f.bridge.cpu_handoff_token is newer
+>       _open_cpu_handoff(f)
+
+tests/core/execution/test_generic_host_actions_v3.py:478: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/core/execution/test_generic_host_actions_v3.py:69: in _open_cpu_handoff
+    fixture.host._open_managed_task_session(capability=CapabilityDescriptor("compose", resources_claimed=resources),
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f74781c1e80>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+____ test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources0] ____
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_never_aut0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f74783430e0>
+resources = ('gpu',)
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("resources", [("gpu",), ("cpu", "gpu"), ("model",)])
+    def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeypatch, resources):
+        from astrid.core.execution.managed_tool_session import SessionCapacityError
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        with pytest.raises(SessionCapacityError, match="release was not verified"):
+            _open_cpu_handoff(f, resources=resources)
+        assert f.host.managed_tool_session.occupied
+>       assert f.controls == ["/interrupt", "/queue", "/api/free"]
+E       AssertionError: assert [] == ['/interrupt'..., '/api/free']
+E         
+E         Right contains 3 more items, first extra item: '/interrupt'
+E         Use -v to get more diff
+
+tests/core/execution/test_generic_host_actions_v3.py:489: AssertionError
+____ test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources1] ____
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_never_aut1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7478b84910>
+resources = ('cpu', 'gpu')
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("resources", [("gpu",), ("cpu", "gpu"), ("model",)])
+    def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeypatch, resources):
+        from astrid.core.execution.managed_tool_session import SessionCapacityError
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        with pytest.raises(SessionCapacityError, match="release was not verified"):
+            _open_cpu_handoff(f, resources=resources)
+        assert f.host.managed_tool_session.occupied
+>       assert f.controls == ["/interrupt", "/queue", "/api/free"]
+E       AssertionError: assert [] == ['/interrupt'..., '/api/free']
+E         
+E         Right contains 3 more items, first extra item: '/interrupt'
+E         Use -v to get more diff
+
+tests/core/execution/test_generic_host_actions_v3.py:489: AssertionError
+____ test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources2] ____
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_never_aut2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f7478b86c80>
+resources = ('model',)
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    @pytest.mark.parametrize("resources", [("gpu",), ("cpu", "gpu"), ("model",)])
+    def test_sdk_cpu_handoff_never_authorizes_native_model_restart(tmp_path, monkeypatch, resources):
+        from astrid.core.execution.managed_tool_session import SessionCapacityError
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        with pytest.raises(SessionCapacityError, match="release was not verified"):
+            _open_cpu_handoff(f, resources=resources)
+        assert f.host.managed_tool_session.occupied
+>       assert f.controls == ["/interrupt", "/queue", "/api/free"]
+E       AssertionError: assert [] == ['/interrupt'..., '/api/free']
+E         
+E         Right contains 3 more items, first extra item: '/interrupt'
+E         Use -v to get more diff
+
+tests/core/execution/test_generic_host_actions_v3.py:489: AssertionError
+_____ test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown ______
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-4/test_sdk_cpu_handoff_serialize0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f74781c0fa0>
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    def test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown(tmp_path, monkeypatch):
+        from astrid.core.execution.managed_tool_session import ManagedToolSessionError
+        f = _sdk_cpu_handoff_fixture(tmp_path, monkeypatch)
+        entered, proceed, admission_entered, shutdown_entered = [f.threading.Event() for _ in range(4)]
+        outcomes = []
+        def on_control(count):
+            if count == 5:
+                entered.set()
+                assert proceed.wait(3)
+        f.http["on_control"] = on_control
+        def transition():
+            try: _open_cpu_handoff(f); outcomes.append("transition")
+            except BaseException as exc: outcomes.append(exc)
+        def admit():
+            admission_entered.set()
+            try: f.host.managed_tool_session.admit(capability_id="vibecomfy.run", invocation_id="race")
+            except ManagedToolSessionError: outcomes.append("admission-rejected")
+        def shutdown_gate():
+            shutdown_entered.set()
+            with f.host.managed_tool_session._lock: f.host._shutdown.set()
+            with f.host._handoff_condition: outcomes.append("shutdown-gate")
+        threads = [f.threading.Thread(target=fn) for fn in (transition, admit, shutdown_gate)]
+        try:
+>           threads[0].start(); assert entered.wait(3)
+                                ^^^^^^^^^^^^^^^^^^^^^^
+E           assert False
+E            +  where False = wait(3)
+E            +    where wait = <threading.Event at 0x7f74770ae990: unset>.wait
+
+tests/core/execution/test_generic_host_actions_v3.py:555: AssertionError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+=========================== short test summary info ============================
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[session]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[profile]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[model]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[template]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[runtime]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[fingerprint]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[lost_binding]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[invocation]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_late_finally_preserves_fresh_token
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources0]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources1]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources2]
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown
+14 failed, 254 passed in 253.47s (0:04:13)

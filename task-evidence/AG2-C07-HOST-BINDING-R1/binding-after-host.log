@@ -1,0 +1,136 @@
+BINDING_CAPTURE {"actual": {"config_digest": "sha256:f8a3cb4d2304eedb4658232dfe5e7810761dae3fae5eb56c53a7f17e9ce52137", "endpoint": "http://127.0.0.1:18188", "engine_birth_id": "fixture-child-birth", "execution_identity": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "launch_generation": "fixture-child-birth", "process_birth_id": "fixture-daemon-birth", "runtime_instance_id": "00000000-0000-4000-8000-000000000001", "session_id": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-1/test_sdk_cpu_handoff_reaches_r0/sdk-owner/session", "source_digest": "sha256:be76908218d7b4e0e8d5913cac5d1fedbdec00cc7ba75972a0a2f00e20e3f500"}, "expected": {"config_digest": "sha256:f8a3cb4d2304eedb4658232dfe5e7810761dae3fae5eb56c53a7f17e9ce52137", "endpoint": "http://127.0.0.1:18188", "engine_birth_id": "fixture-child-birth", "execution_identity": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "launch_generation": "fixture-child-birth", "process_birth_id": "fixture-daemon-birth", "runtime_epoch": null, "runtime_instance_id": "00000000-0000-4000-8000-000000000001", "session_id": "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-1/test_sdk_cpu_handoff_reaches_r0/sdk-owner/session", "source_digest": "sha256:be76908218d7b4e0e8d5913cac5d1fedbdec00cc7ba75972a0a2f00e20e3f500"}, "host_provided": true}
+REAL_FACTORY_ACCEPTED ComfyHostHooks
+F
+=================================== FAILURES ===================================
+___ test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph ____
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f2f3b8eaba0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+>               raise RuntimeError("managed session release was not verified")
+E               RuntimeError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:538: RuntimeError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = PosixPath('/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/pytest-of-root/pytest-1/test_sdk_cpu_handoff_reaches_r0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2f39151350>
+
+    @pytest.mark.integration  # needs sibling VibeComfy/Runtime checkout on sys.path
+    def test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph(tmp_path, monkeypatch):
+        import ast
+        import hashlib
+        import inspect
+        from astrid.core.execution import generic_host as module
+        from astrid.sdk import host_bootstrap
+        from vibecomfy.workflow import VibeWorkflow, WorkflowSource
+        from vibecomfy.workflow_bundle import emit_bundle
+        from vibecomfy.security.provenance import Provenance
+    
+        # Derive the actual SDK argv; this route deliberately has no activation graph.
+        tree = ast.parse(inspect.getsource(host_bootstrap.ensure_pack_host))
+        argv = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "argv" for target in node.targets))
+        flags = {node.value for node in ast.walk(argv) if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        assert "--register" in flags and not flags.intersection({"--host-control-fd", "--activation-fd", "--activation-socket"})
+        f = _sdk_cpu_session_fixture(tmp_path, monkeypatch)
+        profile_path = tmp_path / "readiness.json"
+        profile_path.write_text(json.dumps(f.profile))
+        monkeypatch.setenv("ASTRID_HOST_READINESS_PROFILE_PATH", str(profile_path))
+        monkeypatch.setenv("ASTRID_HOST_READINESS_PROFILE_HASH", "sha256:" + hashlib.sha256(profile_path.read_bytes()).hexdigest())
+        bundle_root = tmp_path / "bundle"
+        bundle_root.mkdir()
+        workflow = VibeWorkflow("sdk-cpu-handoff", WorkflowSource("sdk-cpu-handoff"),
+                                metadata={"model_id": "fixture-model", "ready_template": "fixture-template"})
+        workflow.add_node("Integer", uid="value", value=7)
+        emit_bundle(workflow, bundle_root / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
+        (bundle_root / "source.json").write_text('{"nodes":[],"links":[]}\n')
+        objects, digests = {}, []
+        for name, basename in (("python", "workflow.py"), ("companion", "workflow.vibe.json"), ("source", "source.json")):
+            data = (bundle_root / basename).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            objects[digest] = data
+            digests.append({"name": name, "digest": digest})
+        packs = tmp_path / "packs"
+        for capability, family in (("vibecomfy.run", "local_generation"), ("h3_av.compose", "cpu")):
+            path = packs / capability
+            path.mkdir(parents=True)
+            definition = {"schema_version": 1, "id": capability, "name": capability, "kind": "external", "version": "1.0",
+                "command": {"argv": ["{python_exec}", "-c", "from pathlib import Path; p=Path('{out}'); p.mkdir(parents=True,exist_ok=True); (p/'result.txt').write_text('settled')"]},
+                "inputs": [{"name": name, "type": "file"} for name in ("python", "companion", "source")] if family == "local_generation" else [],
+                "outputs": [{"name": "result", "type": "file", "path_template": "{out}/result.txt", "artifact_type": "text/plain"}],
+                "metadata": {"adapter_family": family, "resource_keys": ["gpu"] if family == "local_generation" else ["cpu"]}}
+            (path / "executor.yaml").write_text(json.dumps(definition))
+        runtime = FakeRuntime()
+        runtime.get_object = objects.__getitem__
+        host = GenericPackHost(pack_roots=[packs], client=runtime, attempt_base=tmp_path / "attempts")
+        host._native_engine_graph = None
+        host.discover()
+        host.preflight()
+        assert all(record.ready for record in host.capabilities.values())
+        before = {p.name: p.read_bytes() for p in f.session.iterdir()}
+        native = {"task": {"id": "vibe", "capability": "vibecomfy.run", "project_id": "unit-project",
+            "attempt_id": "vibe-attempt", "fence": 1, "runtime_epoch": 1, "input_object_ids": list(objects),
+            "spec": {"spec": {"inputs": {}, "input_digests": digests}}}}
+        runtime.tasks["vibe"] = native
+        assert host.run_task(native, lease_token="unit-lease")["task"]["status"] == "completed"
+        bridge = host.managed_tool_session.current_adapter
+        assert bridge.native_graph is None
+        assert runtime.settlements[0][2]["result"]["managed_tool_session"]["state"] == "settled"
+        assert not host._unresolved_task_scopes
+        compose = {"task": {"id": "compose", "capability": "h3_av.compose", "project_id": "unit-project",
+                            "attempt_id": "compose-attempt", "fence": 1, "spec": {"spec": {"inputs": {}}}}}
+        runtime.tasks["compose"] = compose
+>       assert host.run_task(compose, lease_token="unit-lease")["task"]["status"] == "completed"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/core/execution/test_generic_host_actions_v3.py:382: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+astrid/core/execution/generic_host.py:11058: in run_task
+    return self._run_task_impl(
+astrid/core/execution/generic_host.py:12025: in _run_task_impl
+    self._open_managed_task_session(
+astrid/core/execution/generic_host.py:10297: in _open_managed_task_session
+    manager._replace_quiescent(
+astrid/core/execution/managed_tool_session.py:376: in _replace_quiescent
+    self._fence_and_release_locked(reason=reason)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <astrid.core.execution.managed_tool_session.ManagedToolSession object at 0x7f2f3b8eaba0>
+
+    def _fence_and_release_locked(self, *, reason: str) -> Mapping[str, Any] | None:
+        active = self._active
+        if active is None:
+            self._generation += 1
+            return
+        try:
+            fenced = self._fence_locked(reason=reason)
+            if isinstance(fenced, Mapping) and fenced.get("ok") is False:
+                raise RuntimeError("managed session fence was not verified")
+            evidence = self._call_adapter(active.adapter, "release", reason=reason)
+            if not isinstance(evidence, Mapping) or evidence.get("ok") is not True:
+                raise RuntimeError("managed session release was not verified")
+        except Exception as exc:
+            # Keep the slot poisoned and occupied.  Admitting a replacement
+            # after an unverified release would make the old process an
+            # orphan and violates the single-resource contract.
+>           raise SessionCapacityError("managed session release was not verified") from exc
+E           astrid.core.execution.managed_tool_session.SessionCapacityError: managed session release was not verified
+
+astrid/core/execution/managed_tool_session.py:543: SessionCapacityError
+------------------------------ Captured log call -------------------------------
+ERROR    astrid.core.execution.generic_host:generic_host.py:10317 CPU residency handoff first failure: capacity>runtime
+=========================== short test summary info ============================
+FAILED tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph
+1 failed in 6.15s

@@ -1,0 +1,148 @@
+{
+  "task": "AG2-C07-HOST-BINDING-R1",
+  "status": "product_stop_exact_head_focused_red",
+  "handoff": false,
+  "repository": "https://github.com/banodoco/astrid-agent",
+  "branch": "lane/M-AG2/AG2-C07-HOST-BINDING-R1",
+  "base": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+  "head": "92af47c9952baa2f5ad97d45f8b47eb02778a802",
+  "product_commit": "92af47c9952baa2f5ad97d45f8b47eb02778a802",
+  "published_tuple": {
+    "app": "79f7e5397c044c4c97dc7e97b20ad96f787e5247",
+    "agent": "ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+    "runtime": "2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+    "pinokio": "3a6a98ae"
+  },
+  "attached_vibecomfy": "e2905d068d5851b9c32856d32b8251852a01d6dd",
+  "environment": {
+    "python": "Python 3.13.18",
+    "pytest": "9.0.2",
+    "runtime_and_vibecomfy": "task-local editable installations",
+    "package_inventory": "environment-freeze.txt",
+    "exports": {
+      "PATH": "<task>/venv/bin:$PATH",
+      "ASTRID_RUNTIME_CHECKOUT": "<task>/runtime",
+      "ASTRID_VIBECOMFY_CHECKOUT": "<task>/vibecomfy",
+      "TMPDIR": "<task>",
+      "PYTHONPATH": "<task>"
+    },
+    "dependency_note": "installed prior receipt freeze with --no-deps, including exact editable task checkouts; resolver otherwise rejected frozen runpod/cryptography combination"
+  },
+  "scope": {
+    "product_changed_paths": [
+      "astrid/core/execution/generic_host.py",
+      "tests/core/execution/test_generic_host_actions_v3.py"
+    ],
+    "audit": "SCOPE-AUDIT.md",
+    "diff": "patch.diff",
+    "diff_check_exit": 0,
+    "assertions": "existing real success/finally and stop/release assertions retained"
+  },
+  "commands": [
+    {
+      "command": "task-clone.sh astrid-agent <task>/agent ab43bad818ef65ca1e929b973a2f61cd9fc4bf61",
+      "exit": 0
+    },
+    {
+      "command": "task-clone.sh astrid-runtime <task>/runtime 2776ba973b6c8f3555b5629b0840d9691a98d3c2",
+      "exit": 0
+    },
+    {
+      "command": "git clone https://github.com/banodoco/VibeComfy.git <task>/vibecomfy; git checkout --detach e2905d068d5851b9c32856d32b8251852a01d6dd",
+      "exit": 0
+    },
+    {
+      "command": "python -m pytest -s -q -o addopts= -p binding_probe tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph",
+      "inner_exit": 1,
+      "log": "binding-before.log",
+      "note": "base host with prior receipt fixture updates applied, before source fix"
+    },
+    {
+      "command": "same single node, corrected source and changed content fixture",
+      "inner_exit": 1,
+      "log": "binding-exact-head.log",
+      "note": "real factory accepts binding; real release refuses without handle"
+    },
+    {
+      "command": "same single node in diagnostic copy with host=self inserted",
+      "inner_exit": 1,
+      "log": "binding-host-callback.log",
+      "note": "not pushed product; real hook returns release_pending"
+    },
+    {
+      "command": "PYTEST_PLUGINS=outcomes_plugin python -m pytest -q -o addopts= tests/core/execution/test_generic_host_actions_v3.py",
+      "inner_exit": 1,
+      "log": "pytest-focused.log",
+      "tested_head": "92af47c9952baa2f5ad97d45f8b47eb02778a802",
+      "outcomes": "NODE-OUTCOMES.json"
+    },
+    {
+      "command": "git diff --check ab43bad818ef65ca1e929b973a2f61cd9fc4bf61 HEAD",
+      "exit": 0
+    },
+    {
+      "command": "git push origin lane/M-AG2/AG2-C07-HOST-BINDING-R1",
+      "exit": 0
+    }
+  ],
+  "node_outcomes": {
+    "counts": {
+      "passed": 254,
+      "failed": 14
+    },
+    "failed_node_ids": [
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_reaches_real_run_task_finally_without_native_graph",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[session]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[profile]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[model]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[template]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[runtime]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[fingerprint]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[lost_binding]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_binding_drift_never_restarts[invocation]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_late_finally_preserves_fresh_token",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources0]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources1]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_never_authorizes_native_model_restart[resources2]",
+      "tests/core/execution/test_generic_host_actions_v3.py::test_sdk_cpu_handoff_serializes_real_control_admission_and_shutdown"
+    ]
+  },
+  "inputs_sha256": {
+    "/home/user/merge/ws/M-AG2/queue/running/AG2-C07-HOST-BINDING-R1/brief.md": "aec3ac89ed23ff66155a63bac0a713dd655bcf0182a40f1948c6ae42ac8e45f1",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R2/REPORT.md": "f44a487536ef39734b8bc39a3bf0ba6639e8de8d87827067fc0fcd33ad970a42",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R2/RECEIPT.json": "13d4e9a9ebbac38ce8c68abeabc43fd50bf8e7024e377c24a8a729ba798e4109",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R2/pytest-focused.log": "ad2d942e94367c955355485899b8a492d4bd0887acaaa422887ef36db633af6a",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R2/binding-probe.log": "33590ebec048374bb82bd3e77cd3fbbbeabdc87abfa8e48218e523253909e5b3",
+    "/home/user/merge/ws/M-AG2/queue/done/AG2-C07-HOOK-CONTRACT-R2/NODE-OUTCOMES.json": "e2c257dc1f09ba520ecbf93ca3a649bba25d0e1534c8b7b8b2796d2030194efd"
+  },
+  "artifacts_sha256": {
+    "REPORT.md": "d4a343dc05474a8db44885a5b85f585d4141c1ff8d3157ce27fe956bb2289ad4",
+    "SCOPE-AUDIT.md": "6c5206d8c258de215dbbfae69e68849dbc7bad2c399772801442330cefc11608",
+    "patch.diff": "fcd9662599f7c5ced60ebf0753bd448f7c4197197c02a5a2ccff8b561c41f7fe",
+    "binding_probe.py": "f4f5913359b0fb2c100d44fb747e8aa93856c61934d1ba29776b3043befac902",
+    "outcomes_plugin.py": "a2cff7f66dbb2e6530c90bf5d2c9ca5a30da623574a7afd4edabac3a537a2407",
+    "binding-before.log": "4da5a25d936b5005e1568314cb81eb4fbd6e3adc107d5d7bcd16e7076857bae0",
+    "binding-before.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "binding-after.log": "e704a116a714119dc41d615c401aba50d3a075d7358cd6868067d093fb31469c",
+    "binding-after.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "binding-after-host.log": "375f42065be7951f8f698e530385cfe3c128e335531f6e6adb39e266bcf144c0",
+    "binding-after-host.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "binding-exact-head.log": "bdc1d68bf23b4564bd3e2755370cff807f93defec4a76e7ad4da40ab848430d0",
+    "binding-exact-head.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "binding-host-callback.log": "e410e7e9032e6bfe916fd411d28bdf95469023f147023fc1d27785605122cadb",
+    "binding-host-callback.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "host-callback-diagnostic.diff": "599e57ed4aff9760fe15b853160c81532e998e48c46a623d9c512263e988cd6f",
+    "pytest-focused.log": "23f4d26b28dbca32badb7d726279ad4c7604a013fd0bda112e76154591793cf2",
+    "pytest-focused.exit": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "NODE-OUTCOMES.json": "6eaf949d873f7accf5dce12f8240cef782dd07e764c2beb1bd4b2d258ab976fa",
+    "environment-freeze.txt": "ba5c5e0b34596a80cadfaf1af4913f97d39320a53a8da3715aaaefb6ed09cce5",
+    "requirements.txt": "d676f31a95ccf775a7341bd8fb79bcc4c782e0517c0ccda087cdfce1c8208425"
+  },
+  "limitations": [
+    "Named real SDK CPU handoff and full focused module remain red; no handoff.",
+    "No verified managed release owner is wired; simply passing self returns release_pending under task lock and re-enters the fenced manager.",
+    "Existing stop/release assertions are unchanged; several older tests exercise superseded hook internals and fail instead of being reclassified.",
+    "Local Python 3.13.18 differs from hosted Python 3.11; no hosted shards or broader suite run.",
+    "The diagnostic wrapper records real arguments and results, forwarding each unchanged."
+  ]
+}

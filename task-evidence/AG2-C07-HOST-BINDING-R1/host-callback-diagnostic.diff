@@ -1,0 +1,12 @@
+diff --git a/astrid/core/execution/generic_host.py b/astrid/core/execution/generic_host.py
+index 789eb7e9465..b957010b140 100644
+--- a/astrid/core/execution/generic_host.py
++++ b/astrid/core/execution/generic_host.py
+@@ -11987,6 +11987,7 @@ class GenericPackHost:
+                         binding=managed_binding,
+                         **endpoint_kwargs,
+                         native_graph=getattr(self, "_native_engine_graph", None),
++                        host=self,
+                         hc03_profile=readiness_profile,
+                     )
+                 from astrid.core.generation.backends.vibecomfy import vibecomfy_warmth_hint
