@@ -291,10 +291,19 @@ def test_bounded_reconciliation_explicitly_cancels_before_renewal_stops(settleme
         _run(case)
     owner = case.host._reconciliation_owners[case.attempt["attempt_id"]]
     owner.join(timeout=3)
-    _assert_resolved(case, "cancelled")
+    _assert_resolved(case, "cancel_requested")
     assert not case.failures and len(case.cancels) == 1
-    assert case.cancels[0][1]["stop_observed"] is True
-    assert case.cancels[0][1]["outputs"] == []
+    task_id, body, _ = case.cancels[0]
+    assert task_id == case.task_id
+    assert {key: body[key] for key in ("attempt_id", "lease_id", "fence", "runtime_epoch")} == {
+        key: case.attempt[key] for key in ("attempt_id", "lease_id", "fence", "runtime_epoch")
+    }
+    assert body["stop_observed"] is False
+    assert body["outputs"] == []
+    assert body["result"] == {"status": "cancelled", "error": {
+        "code": "reconciliation_required",
+        "message": "terminal publication acknowledgement remained unresolved",
+    }}
     assert case.root.exists()
 
 
