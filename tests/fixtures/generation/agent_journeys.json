@@ -1,0 +1,1222 @@
+{
+  "schema": "generation-agent-journeys-v1",
+  "phase": 1,
+  "engines": [
+    "comfyui"
+  ],
+  "evidence_boundary": "Selectors identify CPU contracts, not observed live success. All producer/live rows remain blocked. No private media is included.",
+  "sources": [
+    {
+      "M_row_file_sha256": "674bb9c9dec424eaf92e748de50504afd657ee0b1c1b4ce04920d3a820b57396",
+      "H_row_file_sha256": "689073e50d6531d3c573ecad32fa37a663ea06c118f525fbeaed7ba92f846f26",
+      "evidence_boundary": "Assertions only. No private media, installed success, render, cost or release proof."
+    },
+    {
+      "submission": "R05-RADAGAST-A08-ROWS.md",
+      "sha256": "c48599b384473609d32af01fc510c4d8cfa75e7d942a9aa1b41890a6210bb1e4"
+    },
+    {
+      "submission": "R06-RADAGAST-A08-ROWS.md",
+      "sha256": "4079ffd185558a90ba103ca573b97b21183d372e47ae3ebd2c6b66d0b541f4a1"
+    },
+    {
+      "submission": "R04-RADAGAST-HANDOFF.md",
+      "sha256": "5d30408504ecd60c0ca49f8b0f1c6d53182a85756668a3a2b4527957b5114f59"
+    }
+  ],
+  "selectors": {
+    "cpu": {
+      "profile": "source",
+      "tests": [
+        "tests/test_installed_generation_journey.py",
+        "tests/sdk/test_generation_first_run.py",
+        "tests/stage1/test_storage_root.py",
+        "tests/test_skills_package_data.py"
+      ],
+      "marker": "not integration",
+      "evidence": "CPU contract checks only"
+    },
+    "installed": {
+      "profile": "installed",
+      "environment": {
+        "ASTRID_HOST_EXECUTION_PROFILE": "installed"
+      },
+      "prerequisite": "tests.lanes.has_installed_astrid; provision existing noneditable package and Remotion lane first",
+      "tests": [
+        "tests/test_installed_generation_journey.py::test_generation_package_probe"
+      ],
+      "marker": "not integration",
+      "evidence": "Installed package origin, gateway metadata and shipped skills only"
+    },
+    "runpod-fake": {
+      "profile": "source",
+      "tests": [
+        "tests/sdk/test_runpod_front_door.py",
+        "tests/packs/runpod/test_worker_release.py",
+        "tests/test_runpod_managed_worker_session.py"
+      ],
+      "marker": "not integration",
+      "evidence": "Existing A10 and pack fake contracts; no live pod or release proof"
+    },
+    "runpod-installed-fake": {
+      "profile": "installed",
+      "environment": {
+        "ASTRID_HOST_EXECUTION_PROFILE": "installed"
+      },
+      "prerequisite": "Same installed prerequisite as installed selector",
+      "tests": [
+        "tests/test_installed_generation_journey.py::test_runpod_package_fake_owner"
+      ],
+      "marker": "not integration",
+      "evidence": "Installed gateway describe/release using fake host owner; release remains cleanup_pending"
+    }
+  },
+  "case_count": 28,
+  "cases": [
+    {
+      "id": "A08-repo-ref-first-run",
+      "title": "Pinned local source install, repair and kept-workspace reinstall",
+      "status": "contract-only",
+      "engine": "comfyui",
+      "selectors": [
+        "cpu"
+      ],
+      "assertions": [
+        {
+          "id": "pinned-source",
+          "check": "Materialize only the selected local Git commit; ignore dirty and untracked source bytes."
+        },
+        {
+          "id": "workspace-retained",
+          "check": "Installer repair and kept-data reinstall retain exact Runtime realm/catalog and project bytes."
+        },
+        {
+          "id": "read-only-probes",
+          "check": "Clean-home inspection and metadata probes write no workspace, config, journal or provider state."
+        },
+        {
+          "id": "stable-root",
+          "check": "Recorded install root wins from unrelated cwd on Linux and Windows; linked selections fail before fallback."
+        }
+      ],
+      "stubs": [
+        "installer service/tool/Runtime backend",
+        "Runtime CLI runner"
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run"
+    },
+    {
+      "id": "human-image",
+      "title": "Human-owned Comfy image",
+      "source": "A09-M",
+      "status": "blocked",
+      "engine": "comfyui",
+      "selectors": [
+        "cpu",
+        "installed"
+      ],
+      "assertion_ref": {
+        "file": "tests/fixtures/a09_scenario_assertions.json",
+        "case_id": "human-image"
+      },
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "assertions only; producer execution/output/release evidence pending"
+      ]
+    },
+    {
+      "id": "managed-missing-model",
+      "title": "Managed target missing-model and consented recovery",
+      "source": "A09-M",
+      "status": "blocked",
+      "engine": "comfyui",
+      "selectors": [
+        "cpu",
+        "installed"
+      ],
+      "assertion_ref": {
+        "file": "tests/fixtures/a09_scenario_assertions.json",
+        "case_id": "managed-missing-model"
+      },
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "assertions only; producer execution/output/release evidence pending"
+      ]
+    },
+    {
+      "id": "workflow-input",
+      "title": "Workflow generation with --input",
+      "source": "A09-M",
+      "status": "blocked",
+      "engine": "comfyui",
+      "selectors": [
+        "cpu",
+        "installed"
+      ],
+      "assertion_ref": {
+        "file": "tests/fixtures/a09_scenario_assertions.json",
+        "case_id": "workflow-input"
+      },
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "assertions only; producer execution/output/release evidence pending"
+      ]
+    },
+    {
+      "id": "failure-owned-release",
+      "title": "Durable failure followed by owned release",
+      "source": "A09-M",
+      "status": "blocked",
+      "engine": "comfyui",
+      "selectors": [
+        "cpu",
+        "installed"
+      ],
+      "assertion_ref": {
+        "file": "tests/fixtures/a09_scenario_assertions.json",
+        "case_id": "failure-owned-release"
+      },
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "assertions only; producer execution/output/release evidence pending"
+      ]
+    },
+    {
+      "id": "A09-H3-public-generate",
+      "title": "H3 through public astrid generate",
+      "source": "A09-H",
+      "status": "blocked",
+      "engine": "comfyui",
+      "selectors": [
+        "cpu",
+        "installed"
+      ],
+      "assertion_ref": {
+        "file": "tests/fixtures/a09_scenario_assertions.json",
+        "case_id": "A09-H3-public-generate"
+      },
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "assertions only; producer execution/output/release evidence pending"
+      ]
+    },
+    {
+      "id": "A09-H3-C0-approved",
+      "title": "Approved H-08 C0 request through public astrid generate",
+      "source": "A09-H",
+      "status": "blocked",
+      "engine": "comfyui",
+      "selectors": [
+        "cpu",
+        "installed"
+      ],
+      "assertion_ref": {
+        "file": "tests/fixtures/a09_scenario_assertions.json",
+        "case_id": "A09-H3-C0-approved"
+      },
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "assertions only; producer execution/output/release evidence pending"
+      ]
+    },
+    {
+      "id": "R05-default-dry-run",
+      "title": "Default and dry run",
+      "source": "R05",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Preserve `auto` and saved human target; explicit RunPod selection and dry run do not mutate human config, journal or provider; unsupported input/engine blocks before offer or claim.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R05.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R05-ordinary-modalities",
+      "title": "Image / video / workflow / H3",
+      "source": "R05",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Each uses the ordinary `vibecomfy.run` boundary and validated source, workflow and normalized inputs. Fresh explicit consent binds account, offer, hourly USD price, cap and UTC deadline before one exact journal-created claim and install. Check task/attempt/binding and selected volume/mount; no H3-specific transform substitution.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R05.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R05-no-wait-follow",
+      "title": "Same-host no-wait/follow",
+      "source": "R05",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Return one admitted task receipt after activation; same-host follow/restart observes the same task, binding and receipt, without second claim, install or submission. Changed binding and uncertain submission fail closed.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R05.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R05-artifact-integrity",
+      "title": "Artifact integrity",
+      "source": "R05",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Durable output, source and settings readback survive restart with SHA-256 checked against published bytes; corruption fails; publication outage preserves spool and same receipt for retry.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R05.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R05-warm-consent",
+      "title": "Warm reuse and consent",
+      "source": "R05",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Two compatible invocations, each with fresh consent, use the same journal-owned exact pod and installed process; changed rate/offer, denied/replayed consent, wrong account/image/volume/mount, or insufficient cap/deadline cannot renew or delay the prior idle timer.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R05.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R05-idle-active-deadline",
+      "title": "Idle and active deadline",
+      "source": "R05",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Request > caller env > service env > 600 seconds; explicit zero works. Paid cap/deadline covers preparation, execution and idle and can fence an active hold. Dispatch/resume the exact Runtime release task.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R05.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R05-release-recovery",
+      "title": "Explicit release and recovery",
+      "source": "R05",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Drain/fence and stop the exact generation; preserve volume; require both exact GET 404 and successful account-list absence, including DELETE-404 fast path. Null/errors/stale list/missing stop evidence remain cleanup_pending and block admission. Restart resumes the same release task and exact journal without new claim.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R05.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R05-broker-isolation",
+      "title": "Broker isolation",
+      "source": "R05",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "A foreign or attached pod cannot be adopted, stopped or deleted; ambiguous/orphan custody stays fenced.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R05.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R06-product-image-custody",
+      "title": "V12 product image, sole custody",
+      "source": "R06",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Installed `generate image --target runpod` with a validated frozen entry/input, paid consent, offer, USD cap and UTC deadline creates one product-owned journal/pod, prepares and admits the ordinary `vibecomfy.run` task. Assert exact account, offer/GPU, digest-pinned image, volume/mount, pod and task/attempt/fence/activation binding; no broker claim or foreign pod adoption. Invalid entry or unsupported engine blocks before claim.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R06.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R06-bounds-consent",
+      "title": "Bounds and consent",
+      "source": "R06",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Unknown/changed rate or fallback, absent/replayed consent, insufficient cap/deadline, identity drift and wrong image/volume fail before claim or reuse. Fresh consent is tied to the actual offer and covers preparation, execution and disclosed idle; deadline expiry fences active work.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R06.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R06-receipt-cas-artifact",
+      "title": "Receipt, CAS and durable artifact",
+      "source": "R06",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "No-wait gives one receipt; same-host restart/follow returns the same task/binding without a second claim/install/submit. Verify source and settings CAS readback and output manifest SHA-256/size, pull and durable Runtime readback; corruption fails, publication outage preserves spool and retry retains the receipt. Uncertain submission is fenced.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R06.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R06-release-recovery",
+      "title": "Release and recovery",
+      "source": "R06",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Runtime release task drains/fences the exact task, stops worker and revokes activation, then terminates only its journal-owned pod while preserving volume. Require exact GET 404 **and** successful account-list absence. Exercise DELETE 404, GET null/auth/timeout/error, failed or stale list, missing stop proof and restart: unresolved cases remain `cleanup_pending`, block admission/renewal and resume the same release receipt/journal without replacement.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R06.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R06-isolation-evidence",
+      "title": "Isolation and evidence",
+      "source": "R06",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Separate project/data-root/account journal namespace; foreign pods and human targets remain untouched. Record command/input hashes, tuple, paid interval and cost source; no credential bytes in journal, task, logs or artifacts. Missing/failed row is a blocker, not live product proof.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R06.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R04-ordinary-warm-reuse",
+      "title": "Ordinary warm reuse",
+      "source": "R04",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Two freshly consented image/video/workflow invocations retain the same exact account/pod/GPU/image/volume/mount and engine process births. No second claim or install; one activation per task. Re-finalize/verify the prepared endpoint without reusing foreign or stale source/settings evidence.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R04.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R04-idle-precedence",
+      "title": "Idle precedence",
+      "source": "R04",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Request > caller `ASTRID_WARM_IDLE_SECONDS` > service `ASTRID_WARM_IDLE_SECONDS` > 600; explicit zero releases after retirement. A later run can request zero on the retained owner.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R04.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R04-consent-denial",
+      "title": "Consent denial",
+      "source": "R04",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Missing/replayed consent, changed price or mismatched compatibility identity refuses before leasing and does not postpone the prior idle deadline.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R04.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R04-active-deadline",
+      "title": "Active deadline",
+      "source": "R04",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Active lease cannot suppress paid deadline/cap. Include preparation, execution and idle wall time. Route exact cancellation/drain through Runtime; an unresolved task remains fenced and cannot be renewed.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R04.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R04-restart",
+      "title": "Restart",
+      "source": "R04",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Active/idle saved deadlines survive without extension; earlier current paid bound wins. Invalid paid limits, release-task outage, and journal-lock contention retain or retry exact cleanup.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R04.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R04-release-matrix",
+      "title": "Release matrix",
+      "source": "R04",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "GET404 + successful list absence is the sole positive pair. GET200/null/auth/error/timeout, stale/failed/null/malformed list and each DELETE404 case retain cleanup_pending. Exercise actual Lifecycle DELETE404 early return with fake HTTP.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R04.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R04-release-restart",
+      "title": "Release restart",
+      "source": "R04",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Lost drain, target fence, process stop, credential cleanup, original supervisor stop, provider delete or final receipt response resumes only the persisted exact generation. A completed receipt cannot omit independent absence evidence.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R04.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    },
+    {
+      "id": "R04-broker-isolation",
+      "title": "Broker isolation",
+      "source": "R04",
+      "status": "blocked",
+      "engine": "comfyui",
+      "target": "runpod",
+      "selectors": [
+        "runpod-fake",
+        "runpod-installed-fake"
+      ],
+      "assertions": [
+        {
+          "id": "producer-contract",
+          "check": "Attached pods and another journal's account/pod/name/GPU/image/volume/mount are never stopped/deleted. Preserve the selected persistent volume.",
+          "evidence": [
+            "exact task/attempt/binding",
+            "durable readback",
+            "human and foreign-resource no-touch audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "command_and_input_sha256",
+        "account_offer_price_cap_deadline",
+        "task_attempt_activation_binding",
+        "owned_journal_identity",
+        "human_pid_birth_queue_before_after",
+        "no_touch_audit"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "R04.installed-owner-evidence",
+          "owner": "A10/F07/M05/V08/V09",
+          "status": "unresolved",
+          "needed": "Execute the complete owner-approved installed journey; fake contracts alone are insufficient."
+        }
+      ],
+      "execution_state": "not_run",
+      "gpu_status": "not run",
+      "stubs": [
+        "existing fake provider/clock/Runtime and prepared owner",
+        "installed describe/release host owner; admission only"
+      ]
+    }
+  ],
+  "c0_gate_ref": {
+    "file": "tests/fixtures/a09_scenario_assertions.json",
+    "field": "c0_batch_gate"
+  },
+  "serialization_owner": "A08 sole fixture writer; final A07/A08/A09 freeze is orchestrator ordered"
+}
