@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import plistlib
+import sqlite3
 import subprocess
 import sys
 import importlib
@@ -296,6 +297,15 @@ def test_fresh_recovery_bootouts_stopped_job_once_and_is_repeatable(tmp_path, mo
 def test_downstream_update_failure_runs_real_c1_rollback_and_keeps_old_selected(
         tmp_path, monkeypatch, failure_point):
     backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    if failure_point == "backup":
+        # Use the same supported schema-29 migration source as the installer
+        # recovery tests so this case reaches the real backup callback.
+        from tests.installer_schema_fixtures import remove_round1b_schema_objects
+        with sqlite3.connect(_realm / "realm.sqlite3") as db:
+            remove_round1b_schema_objects(db)
+            db.execute("ALTER TABLE timelines DROP COLUMN name")
+            db.execute("DROP TABLE user_app_state")
+            db.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
     old, candidate = _version(backend, "old", 17), _version(backend, "candidate", 18)
     core.switch(backend.root, old)
     _publish_owner(paths)

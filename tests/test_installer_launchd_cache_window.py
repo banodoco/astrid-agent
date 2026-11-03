@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
+from astrid.installer.backend import Backend
 from astrid.installer.core import Installer, Version, current, read_json, switch, write_json
+from runtime_protocol.store import RealmStore
 
 
 class _Backend:
@@ -14,24 +17,26 @@ class _Backend:
 
     def __init__(self, root: Path, data: Path):
         self.root, self.data = root, data
+        self.log = root / "install.log"
         self.calls: list[str] = []
         self.disk_action = "legacy"
         self.loaded_action = "legacy"
+
+    run = Backend.run
 
     def has_workspace(self, _data):
         return True
 
     def workspace(self, *_args):
         realm = self.data / "runtime" / "realms" / "realm-1"
-        realm.mkdir(parents=True, exist_ok=True)
+        if not realm.exists():
+            RealmStore.initialize(realm, realm_id="realm-1").close()
         return {"realm_id": "realm-1", "realm_root": str(realm)}
 
     def stage(self, _manifest, root, _data):
         folder = root / "versions" / "candidate"
         folder.mkdir(parents=True)
-        python = folder / "py" / "bin" / "python"
-        python.parent.mkdir(parents=True)
-        python.write_text("python", encoding="utf-8")
+        python = Path(sys.executable)
         candidate = Version(folder, python, folder / "profile.json", {}, release=2)
         write_json(folder / "version.json", candidate.document())
         self.calls.append("stage")
@@ -78,9 +83,7 @@ def test_published_plist_interruption_recovers_only_through_c1_stop(tmp_path):
     root, data = tmp_path / "program", tmp_path / "data"
     old_folder = root / "versions" / "old"
     old_folder.mkdir(parents=True)
-    old_python = old_folder / "py" / "bin" / "python"
-    old_python.parent.mkdir(parents=True)
-    old_python.write_text("python", encoding="utf-8")
+    old_python = Path(sys.executable)
     old = Version(old_folder, old_python, old_folder / "profile.json", {}, release=1)
     write_json(old_folder / "version.json", old.document())
     switch(root, old)

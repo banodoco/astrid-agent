@@ -15,9 +15,15 @@ from astrid.installer.backend import Backend
 from astrid.installer.core import Installer, RuntimeOperationError, VerificationError, Version, switch, write_json
 from astrid.installer.service import LABEL
 from astrid_runtime.paths import RuntimePaths
+from runtime_protocol.store import RealmStore
 
 
-def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
+def insert_running(db, task_id):
+    db.execute("INSERT INTO tasks(id, run_id, capability, status, created_at, updated_at) "
+               "VALUES (?, 'run-1', 'render', 'running', '2000-01-01', '2000-01-01')", (task_id,))
+
+
+def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running', previous_schema=False):
     root, data = tmp_path / 'program', tmp_path / 'data'
     value = Backend(root, tmp_path / 'install.log', tmp_path / 'uv')
     value.service.selection = tmp_path / 'selection.json'
@@ -27,23 +33,34 @@ def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
     paths = RuntimePaths.current(data_root=data)
     paths.ensure_support_dirs()
     realm = paths.realms_dir / 'selected'
-    realm.mkdir(parents=True)
+    RealmStore.initialize(realm, realm_id='selected').close()
     with sqlite3.connect(realm / 'realm.sqlite3') as db:
-        db.executescript('''
-            CREATE TABLE tasks(id TEXT, capability TEXT, status TEXT, created_at TEXT);
-            CREATE TABLE attempts(id TEXT,task_id TEXT,lease_id TEXT,lease_expires_at TEXT,runtime_epoch INTEGER,settled INTEGER);
-            CREATE TABLE execution_bindings(binding_id TEXT,task_id TEXT,status TEXT);
-            CREATE TABLE reservations(task_id TEXT,resource_key TEXT,lease_token TEXT,released_at TEXT,executor_id TEXT,fence INTEGER DEFAULT 1,lease_expires_at TEXT,runtime_epoch INTEGER DEFAULT 1);
-        ''')
+        if previous_schema:
+            from tests.installer_schema_fixtures import remove_round1b_schema_objects
+            remove_round1b_schema_objects(db)
+            db.execute("ALTER TABLE timelines DROP COLUMN name")
+            db.execute("DROP TABLE user_app_state")
+            db.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
+        db.execute("INSERT INTO runs(id, capability, status, created_at, updated_at) "
+                   "VALUES ('run-1', 'render', 'running', '2000-01-01', '2000-01-01')")
         if blocker:
             status = 'running' if blocker == 'running' else 'cancel_requested' if blocker == 'cancel' else 'queued'
-            db.execute("INSERT INTO tasks VALUES ('task-1','render',?,'2000-01-01T00:00:00Z')", (status,))
+            db.execute("INSERT INTO tasks(id, run_id, capability, status, created_at, updated_at) "
+                       "VALUES ('task-1', 'run-1', 'render', ?, '2000-01-01', '2000-01-01')", (status,))
             if blocker == 'attempt':
-                db.execute("INSERT INTO attempts VALUES ('attempt-1','task-1','lease-1','2000-01-01T00:00:00Z',1,0)")
+                db.execute("INSERT INTO attempts(id, task_id, lease_id, fence, executor_id, lease_expires_at, settled, runtime_epoch) "
+                           "VALUES ('attempt-1', 'task-1', 'lease-1', 1, 'worker', '2000-01-01T00:00:00Z', 0, 1)")
             if blocker in ('claimed', 'stale'):
-                db.execute("INSERT INTO execution_bindings VALUES ('binding-1','task-1',?)", (blocker,))
+                db.execute("INSERT INTO execution_bindings(binding_id, task_id, run_id, session_id, runtime_epoch, "
+                           "capability_id, target_kind, resolved_target_json, status, created_at, updated_at) "
+                           "VALUES ('binding-1', 'task-1', 'run-1', 'session', 1, 'render', 'local', '{}', ?, "
+                           "'2000-01-01', '2000-01-01')", (blocker,))
             if blocker == 'reservation':
-                db.execute("INSERT INTO reservations(task_id,resource_key,lease_token,released_at) VALUES ('task-1','gpu:0','lease-1',NULL)")
+                db.execute("INSERT INTO reservations(task_id, resource_key, lease_token, created_at, released_at) "
+                           "VALUES ('task-1', 'gpu:0', 'lease-1', '2000-01-01', NULL)")
+    # Settle SQLite sidecars before the byte-for-byte no-mutation snapshot.
+    db.execute("PRAGMA journal_mode=DELETE")
+    db.close()
     write_json(paths.catalog_path, {'version': 1, 'selected_realm_id': 'selected',
         'realms': [{'realm_id': 'selected', 'display_name': 'Selected', 'data_root': str(realm)}], 'source_profiles': {}})
     oldroot = root / 'versions' / 'old'
@@ -175,7 +192,7 @@ def test_idle_owner_stops_once_before_manager_with_fence_held(tmp_path, monkeypa
         calls.append('disable')
         with sqlite3.connect(realm / 'realm.sqlite3', timeout=0) as db:
             with pytest.raises(sqlite3.OperationalError, match='locked'):
-                db.execute("INSERT INTO tasks VALUES ('raced','render','running',NULL)")
+                insert_running(db, 'raced')
     monkeypatch.setattr(backend.service, 'disable', manager_disable)
     backend.stop(old, data)
     assert calls == ['prepare', 'runtime-stop', 'disable', 'stop']
@@ -278,7 +295,8 @@ def test_cli_preflights_once_and_actual_stop_fences_staged_work(tmp_path, monkey
     from astrid.installer import cli
     from tests.test_installer_cli_recovery import _valid_cli_manifest
 
-    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    backend, old, data, paths, realm, calls = realm_fixture(
+        tmp_path, monkeypatch, blocker=None, previous_schema=True)
     publish(paths, realm)
     boundary = Boundary(paths, calls)
     monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
@@ -302,7 +320,7 @@ def test_cli_preflights_once_and_actual_stop_fences_staged_work(tmp_path, monkey
     monkeypatch.setattr(backend, 'preflight_stop', entry_preflight)
     def claim():
         with sqlite3.connect(realm / 'realm.sqlite3') as db:
-            db.execute("INSERT INTO tasks VALUES ('late-task','render','running',NULL)")
+            insert_running(db, 'late-task')
 
     if claim_at == 'final-fence':
         import runtime_protocol.lifecycle as lifecycle
@@ -421,7 +439,7 @@ def test_real_manager_methods_only_run_after_fenced_stop(tmp_path, monkeypatch, 
         assert 'runtime-stop' in calls
         with sqlite3.connect(realm / 'realm.sqlite3', timeout=0) as db:
             with pytest.raises(sqlite3.OperationalError, match='locked'):
-                db.execute("INSERT INTO tasks VALUES ('race','render','running',NULL)")
+                insert_running(db, 'race')
         return 'Ready' if system == 'win32' else 'loaded'
 
     monkeypatch.setattr(backend.service, 'run', run)
@@ -452,7 +470,7 @@ def test_final_stop_holds_admission_until_first_signal(tmp_path, monkeypatch):
         assert first_stop.wait(5)
         try:
             with sqlite3.connect(realm / 'realm.sqlite3', timeout=0.05) as db:
-                db.execute("INSERT INTO tasks VALUES ('concurrent','render','running',NULL)")
+                insert_running(db, 'concurrent')
         except sqlite3.OperationalError as exc:
             claim_result.append(str(exc))
         finally:
@@ -475,7 +493,7 @@ def test_final_stop_holds_admission_until_first_signal(tmp_path, monkeypatch):
     assert not worker.is_alive()
     assert calls == ['prepare', 'runtime-stop', 'disable', 'stop']
     with sqlite3.connect(realm / 'realm.sqlite3') as db:
-        db.execute("INSERT INTO tasks VALUES ('after-stop','render','running',NULL)")
+        insert_running(db, 'after-stop')
 
 
 def test_replacement_before_manager_loses_stop_authority(tmp_path, monkeypatch):
@@ -550,7 +568,7 @@ def test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success(tmp
         original_fenced = bootstrap._fenced_stop_and_manager
         def inject_busy(*args, **kwargs):
             with sqlite3.connect(realm / 'realm.sqlite3') as db:
-                db.execute("INSERT INTO tasks VALUES ('late','render','running',NULL)")
+                insert_running(db, 'late')
             return original_fenced(*args, **kwargs)
         monkeypatch.setattr(bootstrap, '_fenced_stop_and_manager', inject_busy)
     if outcome == 'replacement':
