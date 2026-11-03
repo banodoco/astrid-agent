@@ -1,0 +1,70 @@
+{
+  "stream": "VENUE",
+  "image": "default",
+  "reuse": false,
+  "gpu": false,
+  "container_disk_gb": 100,
+  "cpu": {
+    "vcpu": 8
+  },
+  "max_minutes": 90,
+  "evidence_lane": "lane/M-VENUE/V-05-T04-R6-runpod",
+  "repos": {
+    "astrid-agent": "af5ae8afdb9829beb2bba4f811dbe97765bd72b2",
+    "astrid-runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+    "astrid-app": "a55bec9ff384b5bbfee5535962880084ab2adb1b"
+  },
+  "setup": [
+    "set -eu; mkdir -p /workspace/out/agent /workspace/out/tmp /workspace/out/home; export TMPDIR=/workspace/out/tmp HOME=/workspace/out/home",
+    "python - <<'PY'\nimport hashlib,json,subprocess,pathlib\nroots={'runtime':'/workspace/astrid-runtime','agent':'/workspace/astrid-agent','app':'/workspace/astrid-app'}\nexpected={'runtime':'47e5949465cb6f3afdfd1cb8a0e90009fd9d4020','agent':'af5ae8afdb9829beb2bba4f811dbe97765bd72b2','app':'a55bec9ff384b5bbfee5535962880084ab2adb1b'}\nactual={}\nfor name,root in roots.items():\n sha=subprocess.check_output(['git','-C',root,'rev-parse','HEAD'],text=True).strip(); dirty=subprocess.check_output(['git','-C',root,'status','--porcelain'],text=True).strip()\n if sha!=expected[name] or dirty: raise SystemExit(f'{name} checkout mismatch/dirty: {sha} {dirty}')\n actual[name]=sha\napp=pathlib.Path(roots['app'])/'public/install-manifest.json'; digest=hashlib.sha256(app.read_bytes()).hexdigest()\nif digest!='ced136903a7319e78a0be7db0cc1709c0663eaf7d567c040fe1812a916693874': raise SystemExit(f'App manifest digest mismatch: {digest}')\nlock_hashes={\n 'agent_runtime_lock_sha256':hashlib.sha256((pathlib.Path(roots['agent'])/'requirements/runtime.lock').read_bytes()).hexdigest(),\n 'agent_remotion_lock_sha256':hashlib.sha256((pathlib.Path(roots['agent'])/'remotion/package-lock.json').read_bytes()).hexdigest(),\n 'app_package_lock_sha256':hashlib.sha256((pathlib.Path(roots['app'])/'package-lock.json').read_bytes()).hexdigest(),\n}\nexpected_locks={'agent_runtime_lock_sha256':'24d50415609ae656520e7bc0f87a73acc22ea1524c5f94c6dc19b9faa19cc3e2','agent_remotion_lock_sha256':'7d0c50e072d8fe2f2f8e725ce749642acef29b900a123e42de3df96760916011','app_package_lock_sha256':'90ff5a7479db52f678b901cfa227f9ce68149cde2f31600972467fce900df769'}\nif lock_hashes!=expected_locks: raise SystemExit(f'lockfile digest mismatch: {lock_hashes}')\npathlib.Path('/workspace/out/tuple.json').write_text(json.dumps({'tuple':actual,'pinokio':'89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4','app_manifest_sha256':digest,**lock_hashes,'installed_product_digest':None,'pinokio_binding':'declared only; no Pinokio checkout','repo_clean_before_install':True},indent=2)+'\\n')\nPY",
+    "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg",
+    "python3 -m venv /workspace/out/venv && . /workspace/out/venv/bin/activate && python -m pip install --upgrade pip && python -m pip install -e '/workspace/astrid-agent[dev]' && python -m pip install --no-deps -e /workspace/astrid-runtime -e /workspace/astrid-runtime/packages/python",
+    "set +e\nnpm ci --prefix /workspace/astrid-app > /workspace/out/app-npm-ci.log 2>&1\nrc=$?\nprintf '{\"setup\":\"app_npm_ci\",\"exit\":%s}\\n' \"$rc\" > /workspace/out/app-npm-ci-exit.json\nexit \"$rc\"",
+    "npm ci --prefix /workspace/astrid-agent/remotion && cd /workspace/astrid-agent/remotion && npx remotion browser ensure"
+  ],
+  "run": [
+    "set +e\ncd /workspace/astrid-agent\n. /workspace/out/venv/bin/activate\nexport HOME=/workspace/out/home TMPDIR=/workspace/out/tmp ASTRID_RUNTIME_CHECKOUT=/workspace/astrid-runtime ASTRID_APP_CHECKOUT=/workspace/astrid-app ASTRID_T3_EVIDENCE_DIR=/workspace/out/agent/t3-evidence\nmkdir -p \"$ASTRID_T3_EVIDENCE_DIR\"\npytest -o addopts= --basetemp=/workspace/out/agent/pytest-tmp -vv tests/integrations/test_pinned_element_render_proof.py > /workspace/out/agent/t3-render-preview-export.log 2>&1\nrc=$?\nprintf '{\"test\":\"agent_t3_render_preview_export\",\"exit\":%s}\\n' \"$rc\" > /workspace/out/agent/t3-inner-exit.json\npython - <<'PY2'\nimport hashlib,json,pathlib\nout=pathlib.Path('/workspace/out')\nfiles=[out/'tuple.json',out/'app-npm-ci.log',out/'app-npm-ci-exit.json']+sorted(p for p in (out/'agent').rglob('*') if p.is_file() and not p.is_symlink())\nrows=[{'path':str(p.relative_to(out)),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size} for p in files if p.is_file()]\n(out/'artifact-inventory.json').write_text(json.dumps(rows,indent=2)+'\\n')\nfiles.append(out/'artifact-inventory.json')\n(out/'SHA256SUMS').write_text(''.join(f\"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(out)}\\n\" for p in files if p.is_file()))\nPY2\nexit \"$rc\""
+  ],
+  "artifacts": [
+    "/workspace/out/tuple.json",
+    "/workspace/out/agent/t3-evidence",
+    "/workspace/out/agent/pytest-tmp",
+    "/workspace/out/agent/t3-render-preview-export.log",
+    "/workspace/out/agent/t3-inner-exit.json",
+    "/workspace/out/app-npm-ci.log",
+    "/workspace/out/app-npm-ci-exit.json",
+    "/workspace/out/SHA256SUMS",
+    "/workspace/out/artifact-inventory.json"
+  ],
+  "download": [
+    {
+      "from": "/workspace/out/tuple.json",
+      "to": "/home/user/merge/ws/M-VENUE/queue/running/V-05-T04-R6/runpod/out/tuple.json"
+    },
+    {
+      "from": "/workspace/out/agent/",
+      "to": "/home/user/merge/ws/M-VENUE/queue/running/V-05-T04-R6/runpod/out/agent"
+    },
+    {
+      "from": "/workspace/out/app-npm-ci.log",
+      "to": "/home/user/merge/ws/M-VENUE/queue/running/V-05-T04-R6/runpod/out/app-npm-ci.log"
+    },
+    {
+      "from": "/workspace/out/app-npm-ci-exit.json",
+      "to": "/home/user/merge/ws/M-VENUE/queue/running/V-05-T04-R6/runpod/out/app-npm-ci-exit.json"
+    },
+    {
+      "from": "/workspace/out/SHA256SUMS",
+      "to": "/home/user/merge/ws/M-VENUE/queue/running/V-05-T04-R6/runpod/out/SHA256SUMS"
+    },
+    {
+      "from": "/workspace/out/artifact-inventory.json",
+      "to": "/home/user/merge/ws/M-VENUE/queue/running/V-05-T04-R6/runpod/out/artifact-inventory.json"
+    }
+  ],
+  "download_destination": "/home/user/merge/ws/M-VENUE/queue/running/V-05-T04-R6/runpod/out",
+  "needs": {
+    "python": "3.11",
+    "node": "20.19"
+  }
+}
