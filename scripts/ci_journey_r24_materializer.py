@@ -540,7 +540,8 @@ def _expected_installed_manifest(candidate_manifest: Path,
     if "vibecomfy" in candidate or agent_checkout is None:
         return candidate
     pins = _read(agent_checkout / "astrid/packs/runpod/pins.json")
-    selected = pins.get("vibecomfy") if isinstance(pins, dict) else None
+    sources = pins.get("sources") if isinstance(pins, dict) else None
+    selected = sources.get("vibecomfy") if isinstance(sources, dict) else None
     revision = selected.get("revision") if isinstance(selected, dict) else None
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise MaterializerError("installed default VibeComfy pin is unavailable")

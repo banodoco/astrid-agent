@@ -742,9 +742,9 @@ def test_installed_candidate_selection_is_manifest_and_root_bound(tmp_path):
     agent = tmp_path / "agent"
     pins = agent / "astrid/packs/runpod/pins.json"
     pins.parent.mkdir(parents=True)
-    pins.write_text(json.dumps({"vibecomfy": {
+    pins.write_text(json.dumps({"sources": {"vibecomfy": {
         "revision": "e2905d068d5851b9c32856d32b8251852a01d6dd",
-    }}))
+    }}}))
     (backend / "current").write_text("v1")
     (backend / "install.json").write_text(json.dumps({
         "owner": "haus.astrid.runtime", "managed_by": "pinokio",
