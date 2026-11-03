@@ -60,7 +60,9 @@ def test_macos_capture_records_redacted_observed_publication_and_recheck(tmp_pat
     assert "ProgramArguments" not in encoded
     assert capture["outcome"] == "returned" and not capture["truncated"]
     assert capture["source_sha256"] == hashlib.sha256(open(service.__file__, "rb").read()).hexdigest()
-    assert capture["current_uid"] == os.geteuid()
+    assert capture["current_uid"] == os.getuid()
+    assert capture["effective_uid"] == os.geteuid()
+    assert capture["pid"] == os.getpid() and type(capture["started_ns"]) is int
     assert _checks(capture, "service_regular") == [True]
     assert _checks(capture, "service_owned") == [True]
     assert _checks(capture, "selection_owner_mismatch") == [False]

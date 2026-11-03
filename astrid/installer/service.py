@@ -780,6 +780,7 @@ class Service:
                     capture = {"format": "astrid-macos-admission-diagnostic/v1", "checks": [],
                                "stats": [], "digests": [], "truncated": False,
                                "current_uid": os.getuid(), "effective_uid": os.geteuid(),
+                               "pid": os.getpid(), "started_ns": time.time_ns(),
                                "source_sha256": None, "outcome": "entered", "exception_category": None}
                     try:
                         capture["source_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
