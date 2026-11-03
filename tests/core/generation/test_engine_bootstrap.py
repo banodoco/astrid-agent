@@ -53,7 +53,16 @@ def test_console_dry_run_and_help_are_isolated_and_exact():
         assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
         local = subprocess.run([sys.executable, '-c', 'from astrid.console import main; raise SystemExit(main())', *argv],
                                env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, text=True, capture_output=True)
-        assert local.returncode == 0 and result.stdout == local.stdout
+        assert local.returncode == 0, local.stderr
+        local_plan = json.loads(local.stdout)
+        # Disk free space is sampled independently by the two real processes.
+        # Validate each observation and compare every deterministic plan fact.
+        for document in (plan, local_plan):
+            disk = document['disk_check']
+            free = disk.pop('free_bytes')
+            assert type(free) is int and free >= 0
+            assert disk['status'] == ('ok' if free >= disk['required_bytes'] else 'blocked')
+        assert plan == local_plan
         help_result = run(bootstrap.build_cli_bootstrap(('engines', '--help')))
         assert help_result.returncode == 0 and 'astrid engines' in help_result.stdout
         assert not Path('/tmp/astrid-plan').exists()

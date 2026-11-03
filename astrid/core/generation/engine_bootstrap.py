@@ -99,8 +99,9 @@ def closure_files(argv: tuple[str, ...], *, root: Path | None = None) -> tuple[s
     refs = [ref, recipes._resolve_ref(recipe['models_lock'], 'bootstrap.models_lock')]
     refs.extend(recipes.pin_data_refs(
         recipes._resolve_ref(recipe['pins'], 'bootstrap.pins'), root=package))
-    refs.extend(recipes._resolve_ref(e['requirements']['packaged_lock'], 'bootstrap.requirements')
-                for e in recipe['environments'] if e['requirements']['packaged_lock'] is not None)
+    # This finite bootstrap admits planning/help only. Requirements lock bytes
+    # are install-time inputs, verified by the installed runner and wheel; the
+    # planner carries their authenticated references without opening them.
     for data_ref in refs:
         recipes._read_ref(data_ref, root=package)
         names.add('astrid/' + data_ref.path)

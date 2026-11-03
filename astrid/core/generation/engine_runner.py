@@ -278,7 +278,10 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
         path = root / _RELOCATION_PATH
         if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
             raise IntegrityError("unsafe relocation evidence")
-        result[_RELOCATION_PATH] = hashlib.sha256(path.read_bytes()).hexdigest()
+        try:
+            result[_RELOCATION_PATH] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise IntegrityError("reviewed engine relocation evidence is unavailable") from exc
     for ref in refs:
         _, payload = recipes._read_ref(ref)
         result[ref.path] = hashlib.sha256(payload).hexdigest()

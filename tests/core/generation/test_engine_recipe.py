@@ -280,3 +280,28 @@ def test_duplicate_requirements_source_paths_are_rejected(monkeypatch, tmp_path)
     _recipe_workspace(tmp_path, monkeypatch, duplicate)
     with pytest.raises(RecipeValidationError, match="duplicate requirements source path"):
         recipes.load_recipe("vibecomfy", "windows-x86_64-cu130")
+
+
+@pytest.mark.parametrize("damage", ["digest", "cycle", "duplicate", "unknown", "escape"])
+def test_shared_pin_imports_refuse_invalid_authority(tmp_path, monkeypatch, damage):
+    common = tmp_path / "common.json"
+    common.write_text(json.dumps({"schema": "astrid.engine-pins.v1", "sources": {
+        "client": {"repository": "https://example.invalid/client.git", "revision": "a" * 40}}}))
+    common_ref = {"path": common.name, "sha256": hashlib.sha256(common.read_bytes()).hexdigest()}
+    imported = {"ref": common_ref, "bindings": {"selected-client": "client"}}
+    document = {"schema": "astrid.engine-pins.v1", "sources": {}, "imports": [imported]}
+    outer = tmp_path / "outer.json"
+    if damage == "digest":
+        common.write_bytes(common.read_bytes() + b" ")
+    elif damage == "cycle":
+        imported["ref"] = {"path": outer.name, "sha256": "0" * 64}
+    elif damage == "duplicate":
+        document["imports"].append(imported.copy())
+    elif damage == "unknown":
+        imported["bindings"]["selected-client"] = "absent"
+    else:
+        imported["ref"]["path"] = "../common.json"
+    outer.write_text(json.dumps(document))
+    monkeypatch.setattr(recipes, "_ROOT", tmp_path)
+    with pytest.raises(RecipeValidationError):
+        recipes.load_pin_set(DataRef(outer.name, hashlib.sha256(outer.read_bytes()).hexdigest()))
