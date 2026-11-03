@@ -5,6 +5,12 @@ workspace=${GITHUB_WORKSPACE:?} run_id=${GITHUB_RUN_ID:?} attempt=${GITHUB_RUN_A
 [[ $run_id =~ ^[0-9]+$ && $attempt =~ ^[0-9]+$ ]]
 name="sp${run_id}x${attempt}"; [[ ${#name} -le 32 ]]
 out="$workspace/suite-artifacts/r18-manager-reload"; mkdir -p "$out"
+# Record venue setup and cleanup commands with wall-clock reception timestamps.
+# The probe has its own monotonic timeline; stop tracing before hashing this log.
+exec 9>"$out/venue-actions.log"
+BASH_XTRACEFD=9
+PS4='+${EPOCHREALTIME} ${BASH_SOURCE##*/}:${LINENO}: '
+set -x
 run= uid_owned= dropin= created=0 private_log=
 finish() {
   rc=$?; trap - EXIT; set +e
@@ -34,6 +40,8 @@ finish() {
   if [[ -n $private_log ]]; then rm -f -- "$private_log"; fi
   if [[ -n $run ]]; then sudo rm -rf -- "$run"; printf 'scratch_remove=%s\n' "$?" >> "$out/cleanup.txt"; fi
   printf '%s\n' "$rc" > "$out/inner-exit.txt"
+  set +x
+  exec 9>&-
   (cd "$out" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
   exit "$rc"
 }
