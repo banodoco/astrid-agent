@@ -26,6 +26,10 @@ SAFE_FIELDS = (
     "version", "schema_version", "service_name", "support_root", "pid",
     "process_birth_id", "runtime_service_launch_id", "runtime_instance_id",
     "runtime_epoch", "coordinator_epoch", "active_realm", "job_drained",
+    "python_executable", "executor_id", "ready_file", "credential_file",
+    "source_checkout", "source_checkout_digest", "source_closure_digest",
+    "schema_digest", "boot_manifest_path", "boot_manifest_hash",
+    "execution_profile", "process_image",
 )
 AUTHORITY_NAMES = ("generic-host.json", "pack-host-job-cleanup.json",
                    ".pack-host-job-cleanup.lock", "discovery.json")
