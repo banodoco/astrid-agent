@@ -646,6 +646,25 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
             print(f"Journey evidence copy ({phase}) failed for {name}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
+    # The W1 observer writes under the direct journey's fixed seed directory.
+    # Promote only its bounded, uniquely named files to the existing boundary.
+    seed_evidence = evidence / "release0-api-seed"
+    if seed_evidence.is_dir() and not seed_evidence.is_symlink():
+        pattern = re.compile(
+            r"runtime-service-service-w1-(?:before-stop|owner-exited-before-helper-and-restart)"
+            r"-[0-9a-f]{32}(?:-stderr|-exit)?\.log"
+        )
+        for source in sorted(seed_evidence.iterdir(), key=lambda path: path.name):
+            if not pattern.fullmatch(source.name) or source.is_symlink() or not source.is_file():
+                continue
+            try:
+                with source.open("rb") as stream:
+                    stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    (destination / source.name).write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            except Exception as exc:
+                print(f"Journey W1 evidence copy ({phase}) failed for {source.name}: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
     # The existing hosted boundary accepts this legacy service-log filename
     # pattern. Flatten the seed directories into it without truncating bytes.
     # Numbering follows sorted relative paths so distinct invocations survive.
