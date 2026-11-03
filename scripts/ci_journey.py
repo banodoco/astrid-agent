@@ -1149,6 +1149,8 @@ def bootstrap(app: Path, manifest_path: Path, shell: str, mode: str,
     env = dict(os.environ)
     env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
     if sys.platform == "win32":
+        # Avoid passing hosted pwsh's module paths to Windows PowerShell 5.1.
+        env = {key: value for key, value in env.items() if key.casefold() != "psmodulepath"}
         run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", app / "public" / "install.ps1", *flags], evidence / f"{mode}-bootstrap.log",
             env=env)
