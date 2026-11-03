@@ -16,10 +16,11 @@ Paths are artifact-relative, not paths to read from disk.  All values must come
 from the caller's authenticated index; fields in an artifact cannot confer that
 status.  These checks do not select attempts or establish complete coverage.
 
-The current producer contract does not supply the independent R-30 section 5
-proofs.  Consequently this predicate is deliberately closed even after its
-structural checks pass; remove that refusal only when those proofs and their
-frozen parsing/binding rules are implemented.  It is not an evaluator.
+For direct slots, the M-INT rule-36 P13 checkpoint class can be structurally
+accepted only when M-CI supplies an externally recorded run/job/artifact join.
+That join is caller input, not a claim made by the five producer files.  This
+module validates its binding but remains neither a provenance authenticator nor
+a release evaluator.
 """
 from __future__ import annotations
 
@@ -65,6 +66,105 @@ def _index_files(value: object) -> tuple[dict[str, dict], list[str]]:
         if not isinstance(item.get("json"), dict):
             errors.append(f"files[{number}].json: parsed JSON object required")
     return indexed, errors
+
+
+_DEFERRED_DIRECT_CLAIM_KEYS = frozenset(
+    {
+        "containment",
+        "custody_continuity",
+        "gap_free_custody",
+        "continuous_history",
+        "continuous-history",
+        "removal_authorization_continuity",
+    }
+)
+
+
+def _deferred_claim_errors(value: object, *, prefix: str = "receipt") -> list[str]:
+    """A checkpoint record must never smuggle in a deferred R1.x success claim."""
+    errors: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            name = str(key)
+            if name in _DEFERRED_DIRECT_CLAIM_KEYS:
+                errors.append(f"{prefix}: direct checkpoint must not assert deferred {name}")
+            errors.extend(_deferred_claim_errors(item, prefix=f"{prefix}.{name}"))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            errors.extend(_deferred_claim_errors(item, prefix=f"{prefix}[{index}]"))
+    return errors
+
+
+def _external_direct_checkpoint_join_errors(
+    value: object,
+    *,
+    receipt: dict,
+    slot: str,
+    candidate: dict,
+    files: dict[str, dict],
+) -> list[str]:
+    """Validate the M-CI-owned external join without treating it as self-proof."""
+    if not isinstance(value, dict):
+        return ["external_checkpoint_join: M-CI external run/job/artifact join is required"]
+    required = {
+        "schema_version",
+        "kind",
+        "checkpoint_obligation_class",
+        "slot_id",
+        "candidate",
+        "producer",
+        "artifact",
+        "harness_commit",
+    }
+    if set(value) != required:
+        return ["external_checkpoint_join: exact external join fields are required"]
+    errors: list[str] = []
+    if value.get("schema_version") != 1 or value.get("kind") != "m-ci-external-artifact-join/v1":
+        errors.append("external_checkpoint_join: exact M-CI join schema is required")
+    if value.get("checkpoint_obligation_class") != "direct-r1-checkpoint":
+        errors.append("external_checkpoint_join: direct R1 checkpoint class is required")
+    if value.get("slot_id") != slot or value.get("candidate") != candidate:
+        errors.append("external_checkpoint_join: selected slot/candidate differs")
+    harness = value.get("harness_commit")
+    if not isinstance(harness, str) or len(harness) != 40 or any(char not in "0123456789abcdef" for char in harness):
+        errors.append("external_checkpoint_join.harness_commit: exact harness SHA is required")
+    producer = value.get("producer")
+    if not isinstance(producer, dict) or set(producer) != {
+        "repository", "workflow", "run_id", "run_attempt", "job", "conclusion"
+    }:
+        errors.append("external_checkpoint_join.producer: exact run/job fields are required")
+    else:
+        hosted = receipt.get("hosted_authentication")
+        expected = {
+            "repository": hosted.get("GITHUB_REPOSITORY") if isinstance(hosted, dict) else None,
+            "workflow": hosted.get("GITHUB_WORKFLOW") if isinstance(hosted, dict) else None,
+            "run_id": hosted.get("GITHUB_RUN_ID") if isinstance(hosted, dict) else None,
+            "run_attempt": hosted.get("GITHUB_RUN_ATTEMPT") if isinstance(hosted, dict) else None,
+            "job": hosted.get("GITHUB_JOB") if isinstance(hosted, dict) else None,
+        }
+        if producer.get("conclusion") != "success" or any(
+            not isinstance(producer.get(key), str) or not producer.get(key)
+            for key in expected
+        ):
+            errors.append("external_checkpoint_join.producer: successful exact producer identity is required")
+        elif any(producer.get(key) != expected[key] for key in expected):
+            errors.append("external_checkpoint_join.producer: producer identity differs from receipt")
+    artifact = value.get("artifact")
+    if not isinstance(artifact, dict) or set(artifact) != {"id", "name", "sha256", "files"}:
+        errors.append("external_checkpoint_join.artifact: exact fetched artifact fields are required")
+    else:
+        artifact_files = artifact.get("files")
+        expected_files = {path: item.get("sha256") for path, item in files.items()}
+        if (
+            not isinstance(artifact.get("id"), str)
+            or not artifact["id"]
+            or not isinstance(artifact.get("name"), str)
+            or not artifact["name"]
+            or not failure._digest(artifact.get("sha256"))
+            or artifact_files != expected_files
+        ):
+            errors.append("external_checkpoint_join.artifact: fetched file identities differ")
+    return errors
 
 
 def check_m4_6(evidence: dict) -> tuple[bool, list[str]]:
@@ -147,5 +247,20 @@ def check_m4_6(evidence: dict) -> tuple[bool, list[str]]:
             reasons.append("execution_scope: hosted native-service evidence required")
     else:
         reasons.append("receipt: parsed failure-mode receipt is required")
-    reasons.append("M4-6: independent section 5 observation proofs and frozen bindings unavailable")
-    return False, reasons
+    if isinstance(receipt, dict) and isinstance(slot, str) and slot in failure.SLOT_CONTRACTS:
+        if failure.SLOT_CONTRACTS[slot]["mode"] == "direct":
+            reasons.extend(_deferred_claim_errors(receipt))
+            reasons.extend(
+                _external_direct_checkpoint_join_errors(
+                    evidence.get("external_checkpoint_join"),
+                    receipt=receipt,
+                    slot=slot,
+                    candidate=candidate,
+                    files=files,
+                )
+            )
+        else:
+            reasons.append("M4-6: Pinokio custody remains outside this direct checkpoint predicate")
+    else:
+        reasons.append("M4-6: parsed receipt is unavailable")
+    return not reasons, reasons
