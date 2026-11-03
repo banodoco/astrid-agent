@@ -59,6 +59,47 @@ def snap(name):
         except OSError as exc:
             files[relative] = {'error': repr(exc)}
     stamp['files'] = files
+    # Read only the run-owned unit and the selected same-user process. These
+    # are separately timed samples, not the operands of the installer's call.
+    unit_path = RUN / 'home/.config/systemd/user/astrid.service'
+    try:
+        if unit_path.is_symlink():
+            raise ValueError('unit path is a symlink')
+        unit_bytes = unit_path.read_bytes()
+        stamp['unit_definition'] = {'sha256': hashlib.sha256(unit_bytes).hexdigest(),
+                                    'contents': unit_bytes.decode('utf-8', errors='replace')}
+    except (OSError, ValueError) as exc:
+        stamp['unit_definition'] = {'error': repr(exc)}
+    lock_path = RUN / 'home/.local/share/astrid-install.lock'
+    try:
+        st = lock_path.lstat()
+        stamp['installer_lock'] = {'device': st.st_dev, 'inode': st.st_ino, 'uid': st.st_uid,
+                                   'mode': oct(st.st_mode)}
+    except OSError as exc:
+        stamp['installer_lock'] = {'error': repr(exc)}
+    try:
+        discovery = json.loads((RUN / 'data/runtime/discovery.json').read_text())
+        pid = discovery['pid']
+        if type(pid) is not int or pid <= 0:
+            raise ValueError('invalid selected discovery pid')
+        proc = Path('/proc') / str(pid)
+        if proc.stat().st_uid != os.getuid():
+            raise ValueError('selected pid is not owned by disposable user')
+        stat = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+        observed = {'pid': pid, 'uid': proc.stat().st_uid, 'state': stat[0],
+                    'ppid': int(stat[1]), 'start_ticks': stat[19],
+                    'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                    'pidns_inode': (proc / 'ns/pid').stat().st_ino,
+                    'cgroup': (proc / 'cgroup').read_text(), 'fds': {}}
+        for fd in (proc / 'fd').iterdir():
+            try:
+                st = fd.stat()
+                observed['fds'][fd.name] = {'target': os.readlink(fd), 'device': st.st_dev, 'inode': st.st_ino}
+            except OSError as exc:
+                observed['fds'][fd.name] = {'error': repr(exc)}
+        stamp['selected_process_sample'] = observed
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        stamp['selected_process_sample'] = {'error': repr(exc)}
     dump(name + '.json', stamp)
 
 
@@ -79,6 +120,7 @@ def main():
         rc = command('r0-install', ['sh', *env_boot], 900)
         result['r0_install_exit'] = rc
         if rc:
+            result['checks']['r0_install'] = 'failed'
             raise RuntimeError('authentic R0 bootstrap failed')
         result['stage'] = 'r0-readiness'
         journey.wait_ready(RUN / 'data', timeout=120)
@@ -95,7 +137,7 @@ def main():
         args = ['sh', RUN / 'app' / 'public' / 'install', '--manifest', RUN / 'target-manifest.json',
                 '--root', RUN / 'program', '--data-root', RUN / 'data', '--update']
         if subprocess.run(['sh','-c','command -v strace >/dev/null && strace -o /dev/null true'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0:
-            args = ['strace','-f','-ttt','-e','trace=flock,fcntl','-o',str(OUT / 'updater-lock-syscalls.log'), *args]
+            args = ['strace','-f','-ttt','-yy','-e','trace=flock,fcntl','-o',str(OUT / 'updater-lock-syscalls.log'), *args]
             result['strace'] = 'requested; updater descendants only'
         else:
             result['strace'] = 'unavailable'
