@@ -117,8 +117,12 @@ def _print_run_summary(choices, *, mode, outcomes=None, failure=None, declined=F
                 effects.append("Astrid's command shim removed")
             if command.get("removed_path"):
                 effects.append("Astrid's PATH entry removed")
+            if command.get("preserved_shim"):
+                effects.append("command shim preserved because ownership could not be verified")
             if command.get("error"):
                 message = f"; cleanup failed ({command['error']})"
+                if effects:
+                    message += "; " + ", ".join(effects)
             else:
                 message = "; " + ", ".join(effects) if effects else "; no owned command/PATH changes were needed"
             print("  Command/PATH: off" + message + ".")
