@@ -11,7 +11,9 @@ ROOT = Path(__file__).parent / "fixtures" / "release0" / "runtime-support"
 
 class Release0RuntimeSupportFixtures(unittest.TestCase):
     def test_fixture_checksums_and_runtime_serialization(self):
-        for line in (ROOT / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+        lines = (ROOT / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+        self.assertEqual({line.split("  ")[1] for line in lines}, {"discovery.json", "instance.lock"})
+        for line in lines:
             digest, name = line.split("  ")
             data = (ROOT / name).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), digest)
@@ -40,7 +42,6 @@ class Release0RuntimeSupportFixtures(unittest.TestCase):
             "handshake", "worker:register", "worker:execute", "projects:read", "tasks:read",
             "objects:read", "objects:write",
         ])
-        self.assertNotIn("owner.lock", marker)
 
 
 if __name__ == "__main__":
