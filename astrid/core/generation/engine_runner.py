@@ -297,6 +297,24 @@ def _relocated_identity(recipe, recipe_sha256, helper_sha256=None):
     This applies to persisted install evidence only, never service custody or
     the live controller/target protocol.
     """
+    if (recipe_sha256 == "59655dbb05e48dd3d1bc838bf8fc44e34f5e2bfa79f9660548827314aff8795f"
+            and recipes.recipe_digest(recipe) == "ca2de25e8ffc6fd1e01c5d4bc3c19552f9262ab67775f5e25c050ce78b9871af"):
+        if helper_sha256 is None:
+            return True
+        if helper_sha256 != "f333434895fa5d9e9235230e1f8b687e9e92db7d8914a1b8a0d2a99cd3dfd3ee":
+            return False
+        # Bind the exact H3 closure, with the shared runner byte bound by the
+        # existing ComfyUI relocation record to avoid a self-referential hash.
+        manifest = dict(helper_manifest(recipe))
+        runner_path = "core/generation/engine_runner.py"
+        runner_sha256 = manifest.pop(runner_path)
+        record_path = recipes._ROOT / _RELOCATION_PATH
+        if record_path.is_symlink() or not record_path.resolve().is_relative_to(recipes._ROOT.resolve()):
+            raise IntegrityError("unsafe relocation evidence")
+        record = recipes._json(record_path)
+        return (isinstance(record, dict) and isinstance(record.get("files"), dict)
+                and record["files"].get(runner_path) == runner_sha256
+                and _sha(manifest) == "00af3648bb50ce61055329ac30743995309699935fb3e6f70f4822263fe25ded")
     if recipe.engine != "comfyui":
         return False
     record = recipes._json(recipes._ROOT / _RELOCATION_PATH)
