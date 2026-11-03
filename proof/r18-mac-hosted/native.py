@@ -1,5 +1,5 @@
 """Focused hosted proof; each destructive operation is limited to our fresh roots."""
-import hashlib, json, os, pathlib, platform, plistlib, re, shutil, socket, subprocess, sys, tempfile, time, traceback
+import hashlib, json, os, pathlib, platform, plistlib, re, shutil, socket, stat, subprocess, sys, tempfile, time, traceback
 P = pathlib.Path
 WS = P(os.environ['GITHUB_WORKSPACE']).resolve()
 OUT = WS / 'out'
@@ -15,7 +15,8 @@ def run(args, **kw):
     return p
 
 def inspect():
-    from astrid.installer.service import Service, LABEL, platform as native
+    from astrid.installer.service import (Service, LABEL, platform as native, absolute,
+        bootstrap_root, owned_by_current_user, birth_ids_match)
     home, root, data = (P(os.environ[x]) for x in ('PROOF_HOME','PROOF_ROOT','PROOF_DATA'))
     def launch(args):
         p = run(args, timeout=30)
@@ -50,9 +51,11 @@ def inspect():
         'executable_sha256':hashlib.sha256(exe.read_bytes()).hexdigest(),
         'live_owner':live,'predicates':checks})
     if not all(checks.values()): raise AssertionError('native owner predicates did not all pass')
-    # Create a second real launchd job and real interpreter outside the trusted bootstrap.
-    # Its program remains under the selected root. No product method or observation is mocked.
-    foreign = root/'foreign-python'; shutil.copytree(exe.parent.parent, foreign, symlinks=True)
+    # Focused private-helper negative, not full product service admission.
+    # The copy is confined to a fresh proof-owned sibling of both selected root and home.
+    scratch = home.parent.resolve(strict=True)
+    foreign_scratch = P(tempfile.mkdtemp(prefix='foreign-', dir=scratch)).resolve(strict=True)
+    foreign = foreign_scratch/'python'; shutil.copytree(exe.parent.parent, foreign, symlinks=True)
     foreign_exe = foreign/'bin'/exe.name
     uv = home/'.local/share/astrid/bootstrap/uv'
     fvenv = root/'versions'/'foreign-proof'/'py'; fvenv.parent.mkdir(parents=True)
@@ -60,7 +63,10 @@ def inspect():
     if p.returncode: raise RuntimeError('foreign venv failed')
     foreign_program = fvenv/'bin/python'
     target_exe = foreign_program.resolve(strict=True)
+    bootstrap_python = absolute(bootstrap_root(home, 'darwin')/'python')
     if not target_exe.is_relative_to(foreign.resolve()): raise RuntimeError('foreign venv did not use foreign interpreter')
+    if target_exe.is_relative_to(root.resolve(strict=True)): raise AssertionError('foreign target inside selected root')
+    if target_exe.is_relative_to(bootstrap_python): raise AssertionError('foreign target inside bootstrap python')
     label = 'org.astrid.proof.r18.' + os.environ['GITHUB_RUN_ID'] + '.' + os.environ['GITHUB_RUN_ATTEMPT']
     path = home/'foreign-proof.plist'; log = home/'foreign-proof.log'
     path.write_bytes(plistlib.dumps({'Label':label,'ProgramArguments':[str(foreign_program),'-c','import time; time.sleep(300)'], 'RunAtLoad':True,'StandardOutPath':str(log),'StandardErrorPath':str(log)}))
@@ -82,12 +88,67 @@ def inspect():
         fpid = int(match.group(1)); fo = native.process_identity(fpid)
         fexe = P(native.process_executable(fpid)).resolve(strict=True)
         if fexe != target_exe or fo.get('uid') != os.getuid() or fo.get('pid') != fpid: raise AssertionError('foreign native identity mismatch')
+        # Independently record each input predicate, including those the product
+        # short-circuits after rejecting bootstrap containment.
+        config = fvenv/'pyvenv.cfg'; config_text = config.read_text(encoding='utf-8')
+        homes = [v.strip() for line in config_text.splitlines() for k, sep, v in [line.partition('=')] if sep and k.strip().lower() == 'home']
+        def custody(path):
+            st = path.lstat()
+            return {'path':str(path), 'uid':st.st_uid, 'gid':st.st_gid,
+                    'mode':oct(stat.S_IMODE(st.st_mode)), 'regular':stat.S_ISREG(st.st_mode),
+                    'symlink':stat.S_ISLNK(st.st_mode), 'owned_by_current_user':owned_by_current_user(path, st),
+                    'safe_mode':not bool(stat.S_IMODE(st.st_mode) & 0o022)}
+        foreign_entries = [foreign_scratch, foreign, foreign/'bin', fexe]
+        bootstrap_entries = [bootstrap_python.parent, bootstrap_python]
+        for part in exe.relative_to(bootstrap_python).parts:
+            bootstrap_entries.append(bootstrap_entries[-1]/part)
+        foreign_custody = [custody(p) for p in foreign_entries]
+        bootstrap_custody = [custody(p) for p in bootstrap_entries]
+        cstat = custody(config)
+        again = native.process_identity(fpid)
+        program_parent = absolute(foreign_program.parent)
+        venv_absolute = absolute(foreign_program.parent.parent)
+        configured_home = P(homes[0]) if len(homes) == 1 and homes[0] else None
+        checks = {
+            'state_running': True, 'pid_matches': fo.get('pid') == fpid == again.get('pid'),
+            'uid_matches': fo.get('uid') == os.getuid() == again.get('uid'),
+            'birth_matches_reobservation': isinstance(fo.get('birth_id'), str) and birth_ids_match(fo['birth_id'], again.get('birth_id'), fpid, again.get('pid')),
+            'program_absolute_normalized': foreign_program.is_absolute() and foreign_program == P(os.path.abspath(foreign_program)),
+            'executable_absolute_normalized': fexe.is_absolute() and fexe == P(os.path.abspath(fexe)),
+            'program_parent_link_free': program_parent == foreign_program.parent,
+            'program_and_parent_inside_root': foreign_program.is_relative_to(root.resolve()) and program_parent.is_relative_to(root.resolve()),
+            'program_resolves_to_observed_executable': foreign_program.resolve(strict=True) == target_exe == fexe,
+            'executable_canonical_regular': fexe.resolve(strict=True) == fexe and stat.S_ISREG(fexe.lstat().st_mode),
+            'outside_selected_root': not fexe.is_relative_to(root.resolve(strict=True)),
+            'darwin_and_program_symlink': sys.platform == 'darwin' and foreign_program.is_symlink(),
+            'venv_link_free': venv_absolute == fvenv,
+            'config_regular_owned_safe': cstat['regular'] and cstat['owned_by_current_user'] and cstat['safe_mode'],
+            'one_absolute_normalized_link_free_home_matching_executable_parent': configured_home is not None and configured_home.is_absolute() and configured_home == P(os.path.abspath(configured_home)) and absolute(configured_home) == configured_home == fexe.parent,
+            'bootstrap_python_directory': bootstrap_python.is_dir(),
+            'outside_bootstrap_python': not fexe.is_relative_to(bootstrap_python),
+            'foreign_copy_owned_safe': all(c['owned_by_current_user'] and c['safe_mode'] for c in foreign_custody),
+            'copied_executable_hash_matches_source': hashlib.sha256(fexe.read_bytes()).digest() == hashlib.sha256(exe.read_bytes()).digest(),
+            'bootstrap_to_positive_executable_owned_safe': all(c['owned_by_current_user'] and c['safe_mode'] for c in bootstrap_custody),
+        }
+        trusted = svc._trusted_launchd_interpreter(foreign_program,fexe)
         refused = False
         try:
             svc._launchd_live_pid_is_bound({'program':str(foreign_program)}, {'state':'running','pid':fpid}, owner_pid=fpid, owner_birth_id=fo['birth_id'])
         except ValueError as e:
             refused = True; reason = str(e)
-        record('foreign-owner.json', {'target':target,'pid':fpid,'observed':fo,'program':str(foreign_program),'executable':str(fexe),'config':(fvenv/'pyvenv.cfg').read_text(),'trusted_interpreter':svc._trusted_launchd_interpreter(foreign_program,fexe),'refused':refused,'reason':reason if refused else None})
+        record('foreign-owner.json', {'scope':'private live-owner helper with self-supplied birth; not full product admission',
+            'target':target,'pid':fpid,'observed':fo,'reobserved':again,'program':str(foreign_program),
+            'program_link_target':os.readlink(foreign_program) if foreign_program.is_symlink() else None,
+            'executable':str(fexe),'executable_sha256':hashlib.sha256(fexe.read_bytes()).hexdigest(),
+            'source_executable_sha256':hashlib.sha256(exe.read_bytes()).hexdigest(),
+            'config':config_text,'config_sha256':hashlib.sha256(config.read_bytes()).hexdigest(),
+            'config_custody':cstat,'foreign_custody':foreign_custody,'bootstrap_custody':bootstrap_custody,
+            'bootstrap_python':str(bootstrap_python),'foreign_scratch':str(foreign_scratch),
+            'predicates':checks,'bootstrap_target_containment':False,
+            'bootstrap_to_foreign_custody':'not applicable: target outside bootstrap',
+            'trusted_interpreter':trusted,'refused':refused,'reason':reason if refused else None})
+        if not all(checks.values()): raise AssertionError('foreign fixture or identity predicates did not all pass')
+        if trusted: raise AssertionError('foreign interpreter trusted')
         if not refused: raise AssertionError('foreign interpreter admitted')
     finally:
         if loaded:

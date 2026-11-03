@@ -14,6 +14,6 @@ receipt = {'format':'r18-mac-hosted-native/v1', 'run_id':os.getenv('GITHUB_RUN_I
  'manifest_sha256':'528615bf87637471ef38072e6899e745bdba7e54d5a65436b1bac5af3447b45c'},
  'command':'python3 venue/proof/r18-mac-hosted/native.py',
  'inner_exit':(p/'exit-code.txt').read_text().strip(),
- 'limitations':['Focused admission and foreign refusal only; not a complete R0 to R1 lifecycle, product acceptance, or protected review.',
+ 'limitations':['Positive full service admission; foreign negative calls only a private helper with self-supplied birth, not full product admission. Not a complete R0 to R1 lifecycle, product acceptance, or protected review.',
  'A missing native receipt or cleanup result is not a pass.']}
 (p/'receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
