@@ -705,15 +705,13 @@ def _capture_regular_file(source: Path, destination: Path, run_root: Path) -> di
         raw = source.read_bytes()
         text = raw[-AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES:].decode("utf-8", errors="replace")
         sanitized = windows._redact_pack_host_text(text)
-        captured = sanitized.encode("utf-8")[-AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES:]
-        destination.write_bytes(captured)
+        destination.write_text(sanitized, encoding="utf-8")
     except OSError as exc:
         return {"status": "error", "path": _capture_path_label(source, run_root),
                 "error": type(exc).__name__, "chain": chain["chain"]}
     return {"status": "captured", "path": _capture_path_label(source, run_root),
             "chain": chain["chain"], "raw_sha256": hashlib.sha256(raw).hexdigest(),
-            "bytes": len(raw), "captured_bytes": len(captured),
-            "truncated": len(raw) > AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
+            "bytes": len(raw), "truncated": len(raw) > AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
             "artifact": destination.name}
 
 
@@ -737,14 +735,18 @@ def capture_authentic_r0_bootstrap_failure(output: Path, evidence: Path, run_roo
         return {"status": "error", "source_path": _capture_path_label(source, run_root),
                 "error": type(exc).__name__, **unavailable}
     if captured["status"] == "captured":
+        artifact = target.read_bytes()
+        if len(artifact) > AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES:
+            artifact = artifact[-AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES:]
+            target.write_bytes(artifact)
         return {
             "status": "captured",
             "source_path": captured["path"],
             "path": target.relative_to(run_root).as_posix(),
             "raw_sha256": captured["raw_sha256"],
-            "artifact_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
             "bytes": captured["bytes"],
-            "captured_bytes": captured["captured_bytes"],
+            "captured_bytes": len(artifact),
             "truncated": captured["truncated"],
             "limit_bytes": AUTHENTIC_R0_CAPTURE_MAX_TEXT_BYTES,
             "chain": captured["chain"],
