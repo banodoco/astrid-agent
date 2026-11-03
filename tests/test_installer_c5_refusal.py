@@ -25,7 +25,7 @@ def test_direct_update_keeps_selection_and_does_not_stage(tmp_path):
     before = (root / "current").read_bytes()
     backend = SimpleNamespace(existing=lambda _: old, has_workspace=lambda _: True,
                               workspace=lambda *_: {"realm_id": "r", "realm_root": str(data / "r")},
-                              stage=_unexpected)
+                              stage=_unexpected, stop=_unexpected)
     with pytest.raises(ValueError, match="Safe offline update is unavailable"):
         core.Installer(root, data, backend, say=lambda _: None).run("update", {})
     assert (root / "current").read_bytes() == before
