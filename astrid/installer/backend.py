@@ -172,6 +172,14 @@ class Backend:
         return str(exc)
 
     def runtime(self, version: Version | None, data: Path, *args, profile=False, timeout=1800) -> dict:
+        if (sys.platform == "linux" and args and args[0] == "upgrade"
+                and os.environ.get("ASTRID_LINUX_LOCK_CAPTURE") == "1"):
+            try:
+                from .linux_lock_capture import record
+                from .service import installer_lock_path
+                record(installer_lock_path(Path.home(), sys.platform), self.log, platform.owner_only)
+            except Exception:
+                pass  # Diagnostic failures must not affect the upgrade.
         python = version.python if version else Path(sys.executable)
         argv = [python, "-X", "utf8", "-I", "-m", "astrid_runtime", *args, "--data-root", str(data), "--json"]
         if profile and version:
