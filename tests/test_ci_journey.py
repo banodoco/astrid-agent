@@ -1945,6 +1945,142 @@ def test_windows_release0_task_failure_retains_nested_pack_host_readiness_diagno
         "runtime-service-service-pack-host-readiness-first-failed-poll-service-pack-host.log")
 
 
+def _windows_job_drain_inputs(tmp_path, *, receipt_launch="a" * 32):
+    run_root = tmp_path / "run"
+    data = run_root / "data"
+    support = data / "runtime"
+    evidence = run_root / "evidence" / "release0-to-release1"
+    support.mkdir(parents=True)
+    state = {
+        "pid": 1056,
+        "process_birth_id": "windows-creation:134381369675531916",
+        "runtime_instance_id": "d" * 32,
+        "runtime_service_launch_id": "a" * 32,
+        "support_root": str(support),
+        "credential_file": "must-not-be-retained",
+    }
+    journey.write_json(support / "generic-host.json", state)
+    journey.write_json(support / "discovery.json", {
+        "pid": 2728,
+        "process_birth_id": "windows-creation:134381369671666152",
+        "runtime_instance_id": "b" * 32,
+    })
+    runtime_log = run_root / "localappdata" / "Astrid Runtime" / "logs" / "runtime-service.log"
+    runtime_log.parent.mkdir(parents=True)
+    runtime_log.write_text("access_token=must-not-be-retained\nruntime stopped\n", encoding="utf-8")
+    if receipt_launch is not None:
+        journey.write_json(support / "pack-host-job-cleanup.json", {
+            "version": 1,
+            "service_name": "pack-host",
+            "support_root": str(support),
+            "receipts": [{
+                "pid": 1056,
+                "process_birth_id": "windows-creation:134381369675531916",
+                "runtime_service_launch_id": receipt_launch,
+                "job_drained": True,
+            }],
+        })
+    return run_root, data, evidence, support
+
+
+def test_windows_job_drain_capture_present_matching_is_staged_without_changing_predicates(tmp_path, monkeypatch):
+    run_root, data, evidence, _support = _windows_job_drain_inputs(tmp_path)
+    monkeypatch.delenv(journey.NATIVE_RUNTIME_LOG_DIR_ENV, raising=False)
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setattr(journey, "capture_runtime_service_logs", lambda *unused: None)
+    monkeypatch.setattr(journey, "capture_manager_state", lambda *unused: None)
+    monkeypatch.setattr(journey, "_windows_job_drain_ownership", lambda unused: {
+        "status": "observed", "owner_matches_current_user": True,
+        "access_rule_count": 2, "foreign_allow_write_rule_count": 0,
+    })
+    journey.write_json(evidence / "journey-result.json", {
+        "status": "fail", "scenario": "release0-to-release1",
+    })
+
+    journey.snapshot_failure_evidence(evidence, run_root, data, "before-cleanup")
+
+    staged = run_root / "evidence-upload" / "before-cleanup" / journey.WINDOWS_JOB_DRAIN_CAPTURE_NAME
+    capture = journey.read_json(staged)
+    assert capture["cleanup_receipt"]["status"] == "valid-matching"
+    assert capture["cleanup_receipt"]["entries"][0]["matches_stale_registration"] is True
+    assert capture["cleanup_receipt"]["file"]["ownership"]["owner_matches_current_user"] is True
+    assert capture["stale_host_registration"]["runtime_instance_id"]["value"] == "d" * 32
+    assert capture["current_runtime"]["runtime_instance_id"]["value"] == "b" * 32
+    assert capture["previous_runtime_service_log"]["run_owned_runtime_service_log"]["content"] == (
+        "access_token=<redacted>\nruntime stopped\n")
+    assert "must-not-be-retained" not in staged.read_text(encoding="utf-8")
+    receipt = journey.read_json(run_root / "evidence-upload" / "before-cleanup" / "journey-result.json")
+    diagnostic = receipt["failure_diagnostics"]["before-cleanup"]["windows_job_drain"]
+    assert diagnostic["status"] == "captured"
+    assert diagnostic["cleanup_receipt_status"] == "valid-matching"
+
+
+def test_windows_job_drain_capture_distinguishes_absent_receipt(tmp_path, monkeypatch):
+    run_root, data, evidence, _support = _windows_job_drain_inputs(tmp_path, receipt_launch=None)
+    monkeypatch.setattr(journey, "_windows_job_drain_ownership", lambda unused: {"status": "not-called"})
+
+    capture = journey.capture_windows_job_drain_evidence(evidence, run_root, data)
+
+    assert capture["stale_host_registration"]["status"] == "captured"
+    assert capture["cleanup_receipt"]["status"] == "absent"
+    assert capture["cleanup_receipt"]["file"]["ownership"] == {"status": "not-observed"}
+
+
+def test_windows_job_drain_capture_distinguishes_present_nonmatching_receipt(tmp_path, monkeypatch):
+    run_root, data, evidence, _support = _windows_job_drain_inputs(tmp_path, receipt_launch="c" * 32)
+    monkeypatch.setattr(journey, "_windows_job_drain_ownership", lambda unused: {"status": "not-called"})
+
+    capture = journey.capture_windows_job_drain_evidence(evidence, run_root, data)
+
+    assert capture["cleanup_receipt"]["status"] == "present-nonmatching"
+    assert capture["cleanup_receipt"]["entries"][0]["matches_stale_registration"] is False
+
+
+def test_windows_job_drain_capture_distinguishes_unsafe_and_unreadable_receipts(tmp_path, monkeypatch):
+    run_root, data, evidence, support = _windows_job_drain_inputs(tmp_path)
+    receipt_path = support / "pack-host-job-cleanup.json"
+    receipt_path.unlink()
+    receipt_path.mkdir()
+    monkeypatch.setattr(journey, "_windows_job_drain_ownership", lambda unused: {"status": "not-called"})
+
+    unsafe = journey.capture_windows_job_drain_evidence(evidence, run_root, data)
+    assert unsafe["cleanup_receipt"]["status"] == "unsafe"
+    assert unsafe["cleanup_receipt"]["file"]["reason"] == "non-regular"
+
+    original = journey._windows_job_drain_file
+    def unreadable(path, **kwargs):
+        if path == receipt_path:
+            return {"status": "unreadable", "error": "PermissionError"}, None
+        return original(path, **kwargs)
+    monkeypatch.setattr(journey, "_windows_job_drain_file", unreadable)
+    unreadable_capture = journey.capture_windows_job_drain_evidence(evidence, run_root, data)
+    assert unreadable_capture["cleanup_receipt"]["status"] == "unreadable"
+    assert unreadable_capture["cleanup_receipt"]["file"]["error"] == "PermissionError"
+
+
+def test_windows_job_drain_capture_redacts_previous_runtime_service_log(tmp_path, monkeypatch):
+    run_root, data, evidence, _support = _windows_job_drain_inputs(tmp_path)
+    native_log = tmp_path / "native" / "runtime-service.log"
+    native_log.parent.mkdir()
+    native_log.write_text(
+        "Bearer should-not-escape\nprivate_key=also-private\n"
+        "path=C:\\Users\\runner\\private.log\n", encoding="utf-8")
+    monkeypatch.setenv(journey.NATIVE_RUNTIME_LOG_DIR_ENV, str(native_log.parent))
+    monkeypatch.setattr(journey, "_windows_job_drain_ownership", lambda unused: {"status": "not-called"})
+
+    capture = journey.capture_windows_job_drain_evidence(evidence, run_root, data)
+
+    native = capture["previous_runtime_service_log"]["native_runtime_service_log"]
+    assert native["status"] == "captured"
+    assert native["redacted"] is True
+    assert native["content"] == (
+        "Bearer <redacted>\nprivate_key=<redacted>\npath=<redacted path>\n")
+    artifact = evidence / journey.WINDOWS_JOB_DRAIN_CAPTURE_NAME
+    assert "should-not-escape" not in artifact.read_text(encoding="utf-8")
+    assert "also-private" not in artifact.read_text(encoding="utf-8")
+    assert "C:\\Users\\runner" not in artifact.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("manager", ["systemd-user", "launchd", "task-scheduler"])
 def test_release0_direct_workspace_releases_and_restores_owner(tmp_path, monkeypatch, manager):
     from scripts import journey_version_jumps as jumps

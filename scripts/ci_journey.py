@@ -15,6 +15,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -72,6 +73,12 @@ PACK_HOST_READINESS_NESTED_EVIDENCE_ROOTS = (
     Path("release0-api-seed") / "release0-task",
     Path("release1-working-task"),
 )
+WINDOWS_JOB_DRAIN_CAPTURE_NAME = "runtime-service-service-job-drain-capture.log"
+WINDOWS_JOB_DRAIN_CAPTURE_LIMIT = 64 * 1024
+WINDOWS_JOB_DRAIN_LOG_LIMIT = 32 * 1024
+WINDOWS_JOB_DRAIN_LAUNCH_ID = re.compile(r"[0-9a-f]{32}")
+WINDOWS_JOB_DRAIN_BIRTH_ID = re.compile(r"windows-creation:[0-9]{1,32}")
+WINDOWS_JOB_DRAIN_PRIVATE_PATH = re.compile(r"(?i)(?:[a-z]:\\[^\r\n]*|/(?:home|users|var|tmp)/[^\r\n]*)")
 
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
@@ -592,6 +599,329 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
+def _windows_job_drain_file(path: Path, *, limit: int, tail: bool = False) -> tuple[dict, bytes | None]:
+    """Read a bounded regular diagnostic file without following a leaf symlink."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"status": "absent"}, None
+    except OSError as exc:
+        return {"status": "unreadable", "error": type(exc).__name__}, None
+    if stat.S_ISLNK(info.st_mode):
+        return {"status": "unsafe", "reason": "symlink"}, None
+    if not stat.S_ISREG(info.st_mode):
+        return {"status": "unsafe", "reason": "non-regular"}, None
+    size = info.st_size
+    if not tail and size > limit:
+        return {"status": "unsafe", "reason": "oversized", "bytes": size, "limit": limit}, None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                return {"status": "unsafe", "reason": "opened-non-regular"}, None
+            if tail:
+                os.lseek(descriptor, max(0, opened.st_size - limit), os.SEEK_SET)
+            chunks = []
+            remaining = min(opened.st_size, limit)
+            while remaining:
+                chunk = os.read(descriptor, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        return {"status": "unreadable", "error": type(exc).__name__}, None
+    content = b"".join(chunks)
+    return {"status": "read", "bytes": size, "truncated": bool(tail and size > limit)}, content
+
+
+def _windows_job_drain_file_metadata(path: Path) -> dict:
+    """Observe a file's safe leaf type without opening authority material."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except OSError as exc:
+        return {"status": "unreadable", "error": type(exc).__name__}
+    if stat.S_ISLNK(info.st_mode):
+        return {"status": "unsafe", "reason": "symlink"}
+    if not stat.S_ISREG(info.st_mode):
+        return {"status": "unsafe", "reason": "non-regular"}
+    return {"status": "regular", "bytes": info.st_size}
+
+
+def _windows_job_drain_ownership(path: Path) -> dict:
+    """Summarize Windows ACL facts without retaining account names or ACL text."""
+    if os.name != "nt":
+        return {"status": "unavailable", "reason": "not a native Windows capture"}
+    script = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$acl = Get-Acl -LiteralPath $args[0] -ErrorAction Stop
+$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+$current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+$writeMask = [int]([Security.AccessControl.FileSystemRights]::WriteData -bor
+    [Security.AccessControl.FileSystemRights]::AppendData -bor
+    [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+    [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+    [Security.AccessControl.FileSystemRights]::Delete)
+$foreignAllowWrites = @($rules | Where-Object {
+    $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+    ([int]$_.FileSystemRights -band $writeMask) -ne 0 -and $_.IdentityReference.Value -ne $owner
+})
+@{
+    status = 'observed'
+    owner_matches_current_user = ($owner -eq $current)
+    access_rule_count = $rules.Count
+    foreign_allow_write_rule_count = $foreignAllowWrites.Count
+} | ConvertTo-Json -Compress
+"""
+    env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, str(path)],
+            env=env, capture_output=True, text=True, timeout=15, check=False,
+        )
+        if completed.returncode:
+            return {"status": "unavailable", "reason": "acl-query-failed",
+                    "exit_code": completed.returncode}
+        value = json.loads(completed.stdout)
+        if not isinstance(value, dict) or value.get("status") != "observed":
+            return {"status": "unavailable", "reason": "acl-query-malformed"}
+        if (type(value.get("owner_matches_current_user")) is not bool or
+                type(value.get("access_rule_count")) is not int or
+                type(value.get("foreign_allow_write_rule_count")) is not int):
+            return {"status": "unavailable", "reason": "acl-query-malformed"}
+        return value
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {"status": "unavailable", "reason": "acl-query-unavailable"}
+
+
+def _windows_job_drain_identifier(value: object, pattern: re.Pattern[str]) -> dict:
+    """Keep only known opaque identifiers; never serialize arbitrary state text."""
+    if isinstance(value, str) and pattern.fullmatch(value):
+        return {"status": "observed", "value": value}
+    if value is None:
+        return {"status": "unavailable"}
+    return {"status": "invalid"}
+
+
+def _windows_job_drain_pid(value: object) -> dict:
+    if type(value) is int and value > 1:
+        return {"status": "observed", "value": value}
+    if value is None:
+        return {"status": "unavailable"}
+    return {"status": "invalid"}
+
+
+def _windows_job_drain_path_binding(value: object, expected: Path) -> str:
+    if not isinstance(value, str) or not value:
+        return "unavailable"
+    return "matches-runtime-support" if _same_windows_path(value, str(expected)) else "mismatch"
+
+
+def _windows_job_drain_entry_matches(entry: object, state: dict | None, support: Path) -> bool:
+    """Mirror only the frozen receipt fields for a diagnostic classification.
+
+    This helper intentionally does not establish the Agent's file-ownership
+    predicate or take any lifecycle action; the installed Agent remains the
+    authoritative consumer.
+    """
+    if not isinstance(entry, dict) or not isinstance(state, dict) or entry.get("job_drained") is not True:
+        return False
+    if _windows_job_drain_path_binding(state.get("support_root"), support) != "matches-runtime-support":
+        return False
+    if entry.get("service_name", "pack-host") != "pack-host":
+        return False
+    if _windows_job_drain_path_binding(entry.get("support_root", str(support)), support) != "matches-runtime-support":
+        return False
+    launch = state.get("runtime_service_launch_id")
+    if launch is not None:
+        if not isinstance(launch, str) or WINDOWS_JOB_DRAIN_LAUNCH_ID.fullmatch(launch) is None:
+            return False
+        identities_valid = ((entry.get("pid") is None and entry.get("process_birth_id") is None) or
+                            (type(entry.get("pid")) is int and entry["pid"] > 1 and
+                             isinstance(entry.get("process_birth_id"), str) and bool(entry["process_birth_id"])))
+        return identities_valid and entry.get("runtime_service_launch_id") == launch
+    return (type(entry.get("pid")) is int and entry["pid"] > 1 and
+            isinstance(entry.get("process_birth_id"), str) and bool(entry["process_birth_id"]) and
+            entry.get("pid") == state.get("pid") and
+            entry.get("process_birth_id") == state.get("process_birth_id"))
+
+
+def _windows_job_drain_entry_projection(entry: object, state: dict | None, support: Path) -> dict:
+    if not isinstance(entry, dict):
+        return {"status": "invalid"}
+    birth = entry.get("process_birth_id")
+    if birth is None:
+        identity_shape = "none"
+    elif type(entry.get("pid")) is int and entry["pid"] > 1 and isinstance(birth, str) and birth:
+        identity_shape = "valid"
+    else:
+        identity_shape = "invalid"
+    return {
+        "status": "observed",
+        "runtime_service_launch_id": _windows_job_drain_identifier(
+            entry.get("runtime_service_launch_id"), WINDOWS_JOB_DRAIN_LAUNCH_ID),
+        "pid": _windows_job_drain_pid(entry.get("pid")),
+        "process_identity_shape": identity_shape,
+        "job_drained": entry.get("job_drained") is True,
+        "service_name": "pack-host" if entry.get("service_name", "pack-host") == "pack-host" else "other",
+        "support_root_binding": _windows_job_drain_path_binding(
+            entry.get("support_root", str(support)), support),
+        "matches_stale_registration": _windows_job_drain_entry_matches(entry, state, support),
+    }
+
+
+def _windows_job_drain_log(path: Path) -> dict:
+    details, content = _windows_job_drain_file(
+        path, limit=WINDOWS_JOB_DRAIN_LOG_LIMIT, tail=True)
+    if content is None:
+        return details
+    if not content:
+        return {**details, "status": "empty", "captured_bytes": 0}
+    safe = windows._redact_pack_host_text(content.decode("utf-8", errors="replace"))
+    safe = WINDOWS_JOB_DRAIN_PRIVATE_PATH.sub("<redacted path>", safe)
+    encoded = safe.encode("utf-8")[-WINDOWS_JOB_DRAIN_LOG_LIMIT:]
+    return {**details, "status": "captured", "captured_bytes": len(encoded),
+            "redacted": encoded != content, "content": encoded.decode("utf-8", errors="replace")}
+
+
+def capture_windows_job_drain_evidence(evidence: Path, run_root: Path, data: Path) -> dict:
+    """Capture bounded R0 Job-drain facts without reading credentials or mutating state."""
+    support = data / "runtime"
+    registration_path = support / "generic-host.json"
+    receipt_path = support / "pack-host-job-cleanup.json"
+    discovery_path = support / "discovery.json"
+    registration_file, registration_bytes = _windows_job_drain_file(
+        registration_path, limit=WINDOWS_JOB_DRAIN_CAPTURE_LIMIT)
+    registration = {"file": registration_file, "status": registration_file["status"]}
+    state = None
+    if registration_bytes is not None:
+        try:
+            state = json.loads(registration_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            registration["status"] = "malformed"
+        if isinstance(state, dict):
+            registration.update(
+                status="captured",
+                pid=_windows_job_drain_pid(state.get("pid")),
+                process_birth_id=_windows_job_drain_identifier(
+                    state.get("process_birth_id"), WINDOWS_JOB_DRAIN_BIRTH_ID),
+                runtime_instance_id=_windows_job_drain_identifier(
+                    state.get("runtime_instance_id"), WINDOWS_JOB_DRAIN_LAUNCH_ID),
+                runtime_service_launch_id=_windows_job_drain_identifier(
+                    state.get("runtime_service_launch_id"), WINDOWS_JOB_DRAIN_LAUNCH_ID),
+                support_root_binding=_windows_job_drain_path_binding(state.get("support_root"), support),
+            )
+        elif registration_bytes is not None and registration["status"] != "malformed":
+            registration["status"] = "malformed"
+    if not isinstance(state, dict):
+        state = None
+
+    discovery_file, discovery_bytes = _windows_job_drain_file(
+        discovery_path, limit=WINDOWS_JOB_DRAIN_CAPTURE_LIMIT)
+    current_runtime = {"file": discovery_file, "status": discovery_file["status"]}
+    if discovery_bytes is not None:
+        try:
+            discovery = json.loads(discovery_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            discovery = None
+        if isinstance(discovery, dict):
+            current_runtime.update(
+                status="captured",
+                runtime_instance_id=_windows_job_drain_identifier(
+                    discovery.get("runtime_instance_id"), WINDOWS_JOB_DRAIN_LAUNCH_ID),
+                pid=_windows_job_drain_pid(discovery.get("pid")),
+                process_birth_id=_windows_job_drain_identifier(
+                    discovery.get("process_birth_id"), WINDOWS_JOB_DRAIN_BIRTH_ID),
+            )
+        else:
+            current_runtime["status"] = "malformed"
+
+    receipt_file, receipt_bytes = _windows_job_drain_file(
+        receipt_path, limit=WINDOWS_JOB_DRAIN_CAPTURE_LIMIT)
+    lock_path = support / ".pack-host-job-cleanup.lock"
+    lock = _windows_job_drain_file_metadata(lock_path)
+    receipt = {"file": {**receipt_file, "ownership": (_windows_job_drain_ownership(receipt_path)
+                                                         if receipt_file["status"] == "read"
+                                                         else {"status": "not-observed"})},
+               "lock": {**lock, "ownership": (_windows_job_drain_ownership(lock_path)
+                                                  if lock["status"] == "regular"
+                                                  else {"status": "not-observed"})},
+               "status": receipt_file["status"]}
+    if receipt_bytes is not None:
+        try:
+            value = json.loads(receipt_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            value = None
+        if not isinstance(value, dict):
+            receipt["status"] = "malformed"
+        else:
+            entries = value.get("receipts")
+            if (value.get("version") != 1 or value.get("service_name") != "pack-host" or
+                    _windows_job_drain_path_binding(value.get("support_root"), support) != "matches-runtime-support" or
+                    not isinstance(entries, list)):
+                receipt["status"] = "malformed"
+            else:
+                projected = [_windows_job_drain_entry_projection(entry, state, support)
+                             for entry in entries[:64]]
+                matching = state is not None and any(
+                    _windows_job_drain_entry_matches(entry, state, support) for entry in entries)
+                receipt.update(
+                    status="valid-matching" if matching else "present-nonmatching",
+                    version=1,
+                    service_name="pack-host",
+                    support_root_binding="matches-runtime-support",
+                    receipt_count=len(entries),
+                    entries=projected,
+                    entries_truncated=len(entries) > len(projected),
+                    consumer_contract_scope=(
+                        "content/path comparison only; installed Agent ownership and file checks remain authoritative"),
+                )
+
+    native_log_dir = os.environ.get(NATIVE_RUNTIME_LOG_DIR_ENV)
+    run_log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    logs = {
+        "run_owned_runtime_service_log": _windows_job_drain_log(run_log_dir / "runtime-service.log"),
+        "run_owned_runtime_log": _windows_job_drain_log(run_log_dir / "runtime.log"),
+    }
+    if native_log_dir:
+        native_log_root = Path(native_log_dir)
+        logs["native_runtime_service_log"] = _windows_job_drain_log(
+            native_log_root / "runtime-service.log")
+        logs["native_runtime_log"] = _windows_job_drain_log(native_log_root / "runtime.log")
+    else:
+        logs["native_runtime_service_log"] = {
+            "status": "unavailable", "reason": "native log directory was not declared"}
+        logs["native_runtime_log"] = {
+            "status": "unavailable", "reason": "native log directory was not declared"}
+
+    capture = {
+        "schema_version": 1,
+        "kind": "windows-runtime-job-drain-diagnostic",
+        "capture_scope": "read-only bounded redacted diagnostic",
+        "stale_host_registration": registration,
+        "current_runtime": current_runtime,
+        "cleanup_receipt": receipt,
+        "previous_runtime_service_log": logs,
+    }
+    encoded = (json.dumps(capture, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
+    if len(encoded) > WINDOWS_JOB_DRAIN_CAPTURE_LIMIT:
+        capture["capture_error"] = "bounded capture exceeded its artifact limit"
+        capture["previous_runtime_service_log"] = {
+            key: {field: value for field, value in item.items() if field != "content"}
+            for key, item in logs.items()
+        }
+    write_json(evidence / WINDOWS_JOB_DRAIN_CAPTURE_NAME, capture)
+    return capture
+
+
 def retained_pack_host_evidence_name(name: str) -> str:
     """Map a finite pack-host diagnostic source to the existing hosted pattern."""
     if name not in PACK_HOST_READINESS_EVIDENCE_NAMES:
@@ -709,11 +1039,17 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
     """Stage named diagnostics and bind their availability to the journey receipt."""
     result_path = evidence / "journey-result.json"
     try:
+        recorded = read_json(result_path) if result_path.is_file() else {}
+        job_drain_capture = None
+        if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
+            try:
+                job_drain_capture = capture_windows_job_drain_evidence(evidence, run_root, data)
+            except Exception as exc:
+                job_drain_capture = {"capture_error": type(exc).__name__}
         capture_runtime_service_logs(evidence, run_root, phase)
         capture_manager_state(evidence, data, phase)
         retained_sources = retain_named_evidence(evidence, phase)
         destination = evidence.parent.parent / "evidence-upload" / phase
-        recorded = read_json(result_path) if result_path.is_file() else {}
         diagnostic = {}
         for key, name in (("install_log", "install.log"),
                           ("service_manager", f"manager-state-{phase}.json")):
@@ -755,6 +1091,18 @@ def snapshot_failure_evidence(evidence: Path, run_root: Path, data: Path, phase:
                         item["capture_status"] = "malformed"
                 pack_host.append(item)
             diagnostic["pack_host_readiness"] = pack_host
+            if recorded.get("scenario") == "release0-to-release1":
+                path = destination / WINDOWS_JOB_DRAIN_CAPTURE_NAME
+                receipt = (job_drain_capture or {}).get("cleanup_receipt", {})
+                diagnostic["windows_job_drain"] = {
+                    "status": "captured" if path.is_file() else "unavailable",
+                    "path": path.relative_to(run_root).as_posix() if path.is_file() else None,
+                    "cleanup_receipt_status": receipt.get("status"),
+                    "stale_host_registration_status": (job_drain_capture or {}).get(
+                        "stale_host_registration", {}).get("status"),
+                }
+                if job_drain_capture and job_drain_capture.get("capture_error"):
+                    diagnostic["windows_job_drain"]["capture_error"] = job_drain_capture["capture_error"]
         if sys.platform == "win32" and recorded.get("scenario") == "release0-to-release1":
             # This log is nested under release0, and must remain byte-for-byte
             # intact rather than taking the usual bounded tail of text logs.
