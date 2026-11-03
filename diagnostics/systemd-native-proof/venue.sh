@@ -8,7 +8,10 @@ out="$workspace/suite-artifacts/systemd-native-proof"; mkdir -p "$out"
 run= uid_owned= dropin= created=0 private_log=
 finish() {
   rc=$?; trap - EXIT; set +e
-  if [[ -n $run && -f $run/result.json ]]; then sudo cp "$run/result.json" "$out/result.json"; fi
+  if [[ -n $run ]] && sudo test -f "$run/result.json"; then
+    sudo cp "$run/result.json" "$out/result.json"
+    sudo chown "$(id -u):$(id -g)" "$out/result.json"
+  fi
   if [[ $created = 1 && -n $uid_owned ]]; then
     sudo systemctl stop "user@$uid_owned.service" >/dev/null 2>&1; printf 'manager_stop=%s\n' "$?" >> "$out/cleanup.txt"
     sudo loginctl disable-linger "$name" >/dev/null 2>&1; printf 'disable_linger=%s\n' "$?" >> "$out/cleanup.txt"
