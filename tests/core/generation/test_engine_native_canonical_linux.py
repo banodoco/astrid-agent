@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import sys
 import time
 
 from PIL import Image
@@ -199,12 +200,19 @@ def test_native_uncertainty_retains_original_process_custody(canonical_owner, fa
             native.channel.send(b'{"unknown":true}')
             assert native.channel.recv(65536) == b''
         else:
-            # A replacement assignment cannot redirect the retained controller.
+            # A real replacement process cannot redirect the retained native
+            # controller. Keep both actual handles until explicit cleanup.
             original = owner.engine
-            owner.engine = None
-            with pytest.raises(CustodyUnresolved):
-                native.request('status', {}, time.monotonic() + 2)
-            owner.engine = original
+            from astrid.core.generation.engine_contracts import CommandRequest
+            replacement = owner.spawn(CommandRequest((sys.executable, '-c', 'import time; time.sleep(60)'),
+                owner.root, {}, time.monotonic() + 5))
+            try:
+                owner.engine = replacement
+                with pytest.raises(CustodyUnresolved):
+                    native.request('status', {}, time.monotonic() + 2)
+            finally:
+                owner.engine = original
+                owner.drain(replacement, time.monotonic() + 5)
         assert _http('POST', '/prompt', b'{}')[0] in (403, 503)
         assert owner.engine.live() and identity(owner.engine.process.pid) == evidence['engine']
         assert owner.engine in owner.commands
