@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astrid.m46.selected-install-preflight-request.v1",
+  "title": "Selected-install input preflight only; not an executor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "runner_head", "checkouts", "mode", "output_directory"],
+  "properties": {
+    "schema": {"const": "astrid.m46.selected-install-preflight-request.v1"},
+    "runner_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "checkouts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["app", "agent", "runtime", "pinokio", "runner"],
+      "properties": {
+        "app": {"$ref": "#/$defs/path"}, "agent": {"$ref": "#/$defs/path"},
+        "runtime": {"$ref": "#/$defs/path"}, "pinokio": {"$ref": "#/$defs/path"},
+        "runner": {"$ref": "#/$defs/path"}
+      }
+    },
+    "mode": {"enum": ["backend", "local"]},
+    "output_directory": {"$ref": "#/$defs/path"}
+  },
+  "$defs": {"path": {"type": "string", "pattern": "^/"}}
+}
